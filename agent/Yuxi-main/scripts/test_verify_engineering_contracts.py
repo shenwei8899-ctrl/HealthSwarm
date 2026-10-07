@@ -121,6 +121,9 @@ jobs:
       - 'backend/test/e2e/**'
       - 'backend/test/support/**'
       - 'docker/**'
+      - 'scripts/ci_prepare_system_tests_env.sh'
+      - 'scripts/ci_build_topology_images.sh'
+      - 'scripts/migrate-storage.sh'
       - '.github/workflows/system-tests.yml'
 jobs:
   system:
@@ -131,7 +134,10 @@ jobs:
       - run: docker compose exec -T api uv run --no-sync --no-dev pytest test/integration/services/test_agent_run_lease.py -q
       - run: docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_agent_run_result_causality.py -q
       - run: docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_thread_message_audits_return_persisted_facts_without_leaking_into_history -q --setup-show -o faulthandler_timeout=60
-      - run: docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_deterministic_agent_path_e2e.py -q
+      - run: docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_thread_artifact_uses_image_signature_for_content_type -q
+      - run: docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_deterministic_agent_path_e2e.py -q -m e2e_smoke --durations=10
+      - run: docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_deterministic_agent_path_e2e.py -q -m e2e_lifecycle --durations=10
+      - run: docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_deterministic_agent_path_e2e.py -q -m e2e_boundaries --durations=10
       - run: docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/services/test_identity_admin_service.py test/integration/services/test_api_key_schema_migration.py test/integration/services/test_api_key_user_lifecycle.py test/integration/api/test_apikey_router.py -q
       - run: |
           docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest \\
@@ -450,6 +456,7 @@ jobs:
             "test/integration/services/test_project_workdir_provisioner.py",
             "test/e2e/test_deterministic_agent_path_e2e.py",
             'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_thread_message_audits_return_persisted_facts_without_leaking_into_history -q --setup-show -o faulthandler_timeout=60',
+            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_thread_artifact_uses_image_signature_for_content_type -q',
         ):
             with self.subTest(test_path=test_path):
                 path.write_text(
@@ -591,6 +598,15 @@ jobs:
                 self.assertTrue(
                     any(expected_error in error for error in self._errors())
                 )
+
+    def test_personal_skill_service_is_the_only_service_with_workspace_root_access(self) -> None:
+        """个人 Skill 文件 Owner 可定位用户根，其余 Service 仍被拒绝。"""
+        source = "from yuxi.workspace.paths import user_workspace_dir\n"
+        self._write("backend/package/yuxi/services/skills/personal.py", source)
+        self.assertFalse(any("UserWorkspace 宿主 Path" in error for error in self._errors()))
+
+        self._write("backend/package/yuxi/services/skills/other.py", source)
+        self.assertTrue(any("UserWorkspace 宿主 Path" in error for error in self._errors()))
 
     def test_agents_instruction_file_missing_is_rejected(self) -> None:
         (self.root / "backend/AGENTS.md").unlink()

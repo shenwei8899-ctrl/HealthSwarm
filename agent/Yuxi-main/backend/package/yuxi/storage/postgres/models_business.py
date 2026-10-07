@@ -27,8 +27,85 @@ from yuxi.storage.minio.client import normalize_public_minio_url
 from yuxi.utils.datetime_utils import duration_ms, format_utc_datetime, utc_now_naive
 
 Base = declarative_base()
-
 JSON_VALUE = JSON().with_variant(JSONB, "postgresql")
+
+
+class FamilyArchive(Base):
+    """家庭关系，管理员身份不表示健康数据授权。"""
+
+    __tablename__ = "family_archives"
+    id = Column(String(36), primary_key=True)
+    owner_uid = Column(String, ForeignKey("users.uid"), nullable=False, unique=True)
+    name = Column(String(80), nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
+class FamilyMember(Base):
+    """成员档案及向家庭管理员授予的明确字段权限。"""
+
+    __tablename__ = "family_members"
+    __table_args__ = (UniqueConstraint("family_id", "subject_uid", name="uq_family_member_subject"),)
+    id = Column(String(36), primary_key=True)
+    family_id = Column(String(36), ForeignKey("family_archives.id"), nullable=False, index=True)
+    subject_uid = Column(String, ForeignKey("users.uid"), nullable=True)
+    name = Column(String(80), nullable=False)
+    relationship = Column(String(30), nullable=False)
+    profile = Column(JSON_VALUE, nullable=False, default=dict)
+    version = Column(Integer, nullable=False, default=1)
+    confirmed_version = Column(Integer, nullable=True)
+    grant_fields = Column(JSON_VALUE, nullable=False, default=list)
+    grant_purpose = Column(String(30), nullable=True)
+    grant_expires_at = Column(DateTime, nullable=True)
+    invite_hash = Column(String(64), nullable=True, unique=True)
+    invite_expires_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
+class FamilyMeasurement(Base):
+    """实测指标与更正历史，创建 ID 为幂等边界。"""
+
+    __tablename__ = "family_measurements"
+    id = Column(String(36), primary_key=True)
+    member_id = Column(String(36), ForeignKey("family_members.id"), nullable=False, index=True)
+    kind = Column(String(30), nullable=False)
+    values = Column(JSON_VALUE, nullable=False)
+    measured_at = Column(DateTime, nullable=False, index=True)
+    source = Column(String(100), nullable=False)
+    condition = Column(String(100), nullable=False, default="")
+    note = Column(Text, nullable=False, default="")
+    created_by = Column(String, ForeignKey("users.uid"), nullable=False)
+    creation_intent = Column(JSON_VALUE, nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    previous = Column(JSON_VALUE, nullable=False, default=list)
+    updated_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
+class FamilyProfileRevision(Base):
+    """档案快照与确认事实。"""
+
+    __tablename__ = "family_profile_revisions"
+    __table_args__ = (UniqueConstraint("member_id", "version", name="uq_family_profile_revision"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    member_id = Column(String(36), ForeignKey("family_members.id"), nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    profile = Column(JSON_VALUE, nullable=False)
+    actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
+class FamilyAudit(Base):
+    """只记录访问对象、目的、操作和版本，不复制健康字段值。"""
+
+    __tablename__ = "family_audits"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    family_id = Column(String(36), ForeignKey("family_archives.id"), nullable=False, index=True)
+    member_id = Column(String(36), nullable=True)
+    actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
+    action = Column(String(50), nullable=False)
+    purpose = Column(String(30), nullable=False, default="family_nutrition")
+    version = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
 
 MAX_LOGIN_FAILED_ATTEMPTS = 5
 LOGIN_LOCK_DURATION_SECONDS = 300
@@ -805,6 +882,7 @@ class ModelProvider(Base):
 
     is_enabled = Column(Boolean, nullable=False, default=True, index=True, comment="供应商是否启用")
     is_builtin = Column(Boolean, nullable=False, default=False, comment="是否内置")
+    include_user_uid = Column(Boolean, nullable=False, default=False, comment="聊天模型请求是否注入带签名的用户 UID 头")
 
     created_by = Column(String(100), nullable=True)
     updated_by = Column(String(100), nullable=True)
@@ -832,6 +910,7 @@ class ModelProvider(Base):
             "extra_json": self.extra_json or {},
             "is_enabled": bool(self.is_enabled),
             "is_builtin": bool(self.is_builtin),
+            "include_user_uid": bool(self.include_user_uid),
             "created_by": self.created_by,
             "updated_by": self.updated_by,
             "created_at": format_utc_datetime(self.created_at),

@@ -9,6 +9,7 @@ from server.routers.auth_router import auth
 from server.routers.chat_router import chat
 from server.routers.dashboard_router import dashboard
 from server.routers.external_kb_router import external_kb
+from server.routers.family_router import family
 from server.routers.filesystem_router import filesystem_router
 from server.routers.graph_router import graph
 from server.routers.knowledge_dashboard_router import knowledge_dashboard
@@ -27,6 +28,8 @@ from server.routers.user_router import user_router
 from server.routers.workspace_router import workspace, workspace_knowledge
 
 router = APIRouter()
+
+router.include_router(family)
 
 # 基础系统接口：健康检查、配置、认证与聊天主链路。
 router.include_router(system)  # /api/system/* 系统状态与全局配置

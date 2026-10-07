@@ -73,6 +73,19 @@ const router = createRouter({
       ]
     },
     {
+      path: '/family',
+      name: 'family',
+      component: AppLayout,
+      children: [
+        {
+          path: '',
+          name: 'FamilyArchives',
+          component: () => import('../views/FamilyArchivesView.vue'),
+          meta: { keepAlive: false, requiresAuth: true }
+        }
+      ]
+    },
+    {
       path: '/dashboard',
       name: 'dashboard',
       component: AppLayout,

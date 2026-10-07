@@ -80,9 +80,6 @@ docs/vibe
 
 /models
 
-# Local initialization data may contain private accounts and credentials.
-/backend/scripts/seed_initial_users.py
-
 .taskr/
 .workbuddy/
 web/src/utils/__tests__/
