@@ -1,0 +1,28 @@
+{
+  "navigationBarTitleText": "商品详情",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "enablePullDownRefresh": false,
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "u-swiper": "/uview-ui/components/u-swiper/u-swiper",
+    "u-icon": "/uview-ui/components/u-icon/u-icon",
+    "u-table": "/uview-ui/components/u-table/u-table",
+    "u-tr": "/uview-ui/components/u-tr/u-tr",
+    "u-td": "/uview-ui/components/u-td/u-td",
+    "u-parse": "/uview-ui/components/u-parse/u-parse",
+    "u-rate": "/uview-ui/components/u-rate/u-rate",
+    "u-gap": "/uview-ui/components/u-gap/u-gap",
+    "fa-u-badge": "/components/fa-u-badge/fa-u-badge",
+    "u-button": "/uview-ui/components/u-button/u-button",
+    "fa-skus": "/components/fa-skus/fa-skus",
+    "u-popup": "/uview-ui/components/u-popup/u-popup",
+    "u-cell-group": "/uview-ui/components/u-cell-group/u-cell-group",
+    "u-cell-item": "/uview-ui/components/u-cell-item/u-cell-item",
+    "fa-share": "/components/fa-share/fa-share",
+    "fa-poster": "/components/fa-poster/fa-poster",
+    "fa-coupon": "/components/fa-coupon/fa-coupon",
+    "u-skeleton": "/uview-ui/components/u-skeleton/u-skeleton",
+    "fa-tabbar": "/components/fa-tabbar/fa-tabbar"
+  }
+}

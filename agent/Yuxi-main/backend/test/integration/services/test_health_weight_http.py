@@ -149,6 +149,31 @@ async def test_weight_correction_keeps_time_source_and_profile_version(weight_su
     assert stale.status_code == 409
 
 
+async def test_voided_weight_is_excluded_and_invalidates_recorded_history(weight_subject):
+    """正式作废保留原始事实，普通读取与旧模型依赖均不可再使用。"""
+    subject = weight_subject
+    record = await add_weight(subject)
+    binding, payload, _ = await record_weight_use(subject)
+    response = await subject.client.post(
+        subject.measurement_path + "/" + record["id"] + "/void",
+        headers=subject.headers,
+        json={"expected_version": 1, "reason": "合成测试：误录作废"},
+    )
+    assert response.status_code == 200, response.text
+    current = await read_weight(subject)
+    assert current["records"] == [] and current["code"] == "weight_missing"
+    assert current["truncated"] is False and current["source_hash"] != payload["source_hash"]
+    async with pg_manager.get_async_session_context() as session:
+        persisted = await session.get(FamilyMeasurement, record["id"])
+        assert persisted.voided_at is not None and persisted.values == {"weight": 60} and persisted.version == 2
+        with pytest.raises(HealthVisionError) as changed:
+            await HealthWeightRepository(session).validate_history(subject.uid, binding)
+        assert changed.value.code == "weight_source_changed" and changed.value.status == 410
+        with pytest.raises(HealthVisionError) as stale:
+            await HealthWeightRepository(session).validate_tool_payload(subject.uid, binding, payload)
+        assert stale.value.status == 410
+
+
 async def test_weight_period_filters_other_metrics_caps_twenty_and_orders_stably(weight_subject):
     """独立30自然日边界排除前一天及其他指标，最多20条并明确截断。"""
     subject = weight_subject

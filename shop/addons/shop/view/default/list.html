@@ -1,0 +1,97 @@
+{layout name="common/layout" /}
+<div class="container" id="content-container">
+    <div class="row">
+        <main class="col-xs-12 col-sm-12">
+            <div id="filter-crumb" class="mb-2">
+                <ol class="breadcrumb mb-0 py-2 bg-white">
+                    <!-- S 面包屑导航 -->
+                    {shop:breadcrumb id="item"}
+                    <li><a href="{$item.url|htmlentities}">{$item.name|htmlentities}</a></li>
+                    {/shop:breadcrumb}
+                    <!-- E 面包屑导航 -->
+                </ol>
+            </div>
+            <div id="nav-filter-cat-label" class="mt-1">
+                {if $filterList}
+                <div id="filter" class="filter-container">
+                    <div class="filter-row" style="padding:10px 20px;">
+                        <span class="" style="font-size:14px;">
+                            筛选:
+                        </span>
+                        <span class="pull-right">
+                            <form action="" id="multipleform">
+                            <label for="multiple" class="checkbox-inline">
+                                <input type="checkbox" name="multiple" class="pull-left" id="multiple" onclick="document.getElementById('multipleform').submit();" value="{:$Think.get.multiple?0:1}" {:$Think.get.multiple?'checked':''}>
+                                多选模式
+                            </label>
+                        </form>
+                        </span>
+                    </div>
+                    {foreach name="filterList" id="filter"}
+                    <div class="filter-row">
+                        <span class="filter-title">{$filter.title|htmlentities}:</span>
+                        <ul class="filter-values">
+                            {foreach name="filter.values" id="value"}
+                            <li class="{$value.active?'active':''}"><a href="{$value.url|htmlentities}">{$value.title|htmlentities}</a></li>
+                            {/foreach}
+                        </ul>
+                    </div>
+                    {/foreach}
+                </div>
+                {/if}
+            </div>
+            <div id="nav-bar">
+                <div class="nav-bar-row">
+                    <ul class="list-unstyled list-inline nav-bar-tabs">
+                        {foreach name="orderList" id="item"}
+                        <li class="{:$item.active?'active':''}">
+                            <a href="{$item.url|htmlentities}">
+                                <span>
+                                    {if $item.active}<i class="fa fa-sort-{:$orderway=='desc'?'down':'up'}"></i>{/if}
+                                    {$item.title|htmlentities}
+                                </span>
+                            </a>
+                        </li>
+                        {/foreach}
+                    </ul>
+                </div>
+            </div>
+            <div class="index-tab mb-4">
+                <div class="product-list">
+                    <div class="product-grid">
+                        {foreach name="goodsList" id="goods"}
+                        <div class="product-item text-center">
+                            <a class="card-item" href="{$goods.url|htmlentities}" target="_blank">
+                                <div class="mb-3">
+                                    <div class="embed-responsive embed-responsive-square img-zoom">
+                                        <img src="{$goods.image|cdnurl|htmlentities}" class="" alt="{$goods.title|htmlentities}">
+                                    </div>
+                                </div>
+                                <div class="item-info text-left">
+                                    <div class="item-title">{$goods.title|htmlentities}</div>
+                                    <div class="item-detail text-danger">
+                                        <span>¥</span>{$goods.price|htmlentities}
+                                        <del class="text-muted small">￥{$goods.marketprice|htmlentities}</del>
+                                    </div>
+                                </div>
+                            </a>
+                        </div>
+                        {/foreach}
+                    </div>
+                    {if $goodsList->isEmpty()}
+                    <div class="text-center bg-white py-3">该分类下暂未发布任何商品</div>
+                    {/if}
+                    <div class="pager">
+                        <ul class="pagination">
+                            {$goodsList->render()}
+                        </ul>
+                    </div>
+                    <div class="clearfix"></div>
+                </div>
+            </div>
+        </main>
+
+        <aside class="col-xs-12 col-sm-4">
+        </aside>
+    </div>
+</div>

@@ -1,0 +1,121 @@
+{layout name="common/layout" /}
+<style>
+    body {
+        background: #fff;
+    }
+    .bg-coupon {
+        background-image: linear-gradient(rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.6)), url(__ADDON__/img/banner.jpg);
+        background-size: cover;
+        background-attachment: fixed;
+        background-position: center;
+        width: 100%;
+        height: 500px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+
+    .bg-coupon .content {
+        color: #ffffff;
+        text-align: center;
+    }
+    .bg-coupon .content h1{
+        font-size: 45px;
+    }
+    .bg-coupon .title,.bg-coupon .c-btn{
+        padding:15px 0;
+    }
+    .bg-coupon .btn-lg{
+        width: 50%;
+    }
+    .bg-coupon .title{
+        font-size: 22px;
+        color: #bbb;
+    }
+
+</style>
+
+
+<div class="bg-coupon">
+    <div class="content">
+        <h1>
+            订单满 <span class="text-warning">{$__info__['result_data']['money']} 元 </span>
+            {eq name="__info__.result" value="1"} 减 {else/} 打 {/eq}
+           <span class="text-warning">
+            {$__info__['result_data']['number']}
+            {eq name="__info__.result" value="1"} 元 {else/} 折 {/eq}
+           </span>
+        </h1>
+        <div class="title">{$__info__.name|htmlentities}</div>
+        <div>每人限领{$__info__.allow_num }张</div>
+        <div class="c-btn">
+            {if $__info__.is_received}
+            <a href="javascript:" class="btn btn-lg btn-default">
+                <span class="pix_edit_text">
+                    <strong>您已领取</strong>
+                </span>
+            </a>
+            {elseif $__info__.received_num >= $__info__.give_num}
+            <a href="javascript:" class="btn btn-lg btn-default">
+                <span class="pix_edit_text">
+                    <strong>已被领完</strong>
+                </span>
+            </a>
+            {elseif $__info__.expired && !$__info__.is_received}
+            <a href="javascript:" class="btn btn-lg btn-default">
+                <span class="pix_edit_text">
+                    <strong>已过期~</strong>
+                </span>
+            </a>
+            {elseif !$__info__.online}
+            <a href="javascript:" class="btn btn-lg btn-default">
+                <span class="pix_edit_text">
+                    <strong>未到领取时间</strong>
+                </span>
+            </a>
+            {else/}
+            <a href="javascript:" class="btn btn-lg btn-danger btn-coupon" data-name="{$__info__.id|htmlentities}">
+                <span class="pix_edit_text">
+                    <strong>立即领取</strong>
+                </span>
+            </a>
+            {/if}
+        </div>
+        <div>
+            {if $__info__.mode=='fixation'}
+                领取后 {$__info__.use_times_text|htmlentities} 天内有效
+            {else/}
+                领取后有效期为 {$__info__.use_times_text|htmlentities}
+            {/if}
+        </div>
+    </div>
+</div>
+<div class="container mt-0" id="content-container">
+    <div class="col-xs-12 col-sm-12">
+        <div class="use-goods">
+            <h3>适用商品</h3>
+            <div class="product-list">
+                <div class="product-grid">
+                    {foreach name="coupon_goods" item="item"}
+                    <div class="product-item text-center">
+                        <a class="card-item" href="{$item.url|htmlentities}" target="_blank">
+                            <div class="mb-3">
+                                <div class="embed-responsive embed-responsive-square img-zoom">
+                                    <img src="{$item.image|htmlentities}" class="" alt="{$item.title|htmlentities}">
+                                </div>
+                            </div>
+                            <div class="item-info">
+                                <div class="item-title">{$item.title|htmlentities}</div>
+                                <div class="item-detail text-danger">
+                                    <span>¥</span>{$item.price|htmlentities}
+                                </div>
+                            </div>
+                        </a>
+                    </div>
+                    {/foreach}
+                </div>
+                <div class="clearfix"></div>
+            </div>
+        </div>
+    </div>
+</div>

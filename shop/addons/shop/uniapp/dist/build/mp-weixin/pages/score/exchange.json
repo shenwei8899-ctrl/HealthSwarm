@@ -1,0 +1,24 @@
+{
+  "navigationBarTitleText": "积分兑换",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "enablePullDownRefresh": false,
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "fa-search": "/components/fa-search/fa-search",
+    "u-dropdown": "/uview-ui/components/u-dropdown/u-dropdown",
+    "u-dropdown-item": "/uview-ui/components/u-dropdown-item/u-dropdown-item",
+    "u-button": "/uview-ui/components/u-button/u-button",
+    "u-popup": "/uview-ui/components/u-popup/u-popup",
+    "u-form": "/uview-ui/components/u-form/u-form",
+    "u-form-item": "/uview-ui/components/u-form-item/u-form-item",
+    "u-input": "/uview-ui/components/u-input/u-input",
+    "u-number-box": "/uview-ui/components/u-number-box/u-number-box",
+    "fa-add-my": "/components/fa-add-my/fa-add-my",
+    "u-loadmore": "/uview-ui/components/u-loadmore/u-loadmore",
+    "u-modal": "/uview-ui/components/u-modal/u-modal",
+    "u-select": "/uview-ui/components/u-select/u-select",
+    "u-back-top": "/uview-ui/components/u-back-top/u-back-top",
+    "fa-tabbar": "/components/fa-tabbar/fa-tabbar"
+  }
+}

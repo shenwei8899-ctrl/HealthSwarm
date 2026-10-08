@@ -1,0 +1,60 @@
+<style>
+    .media, .media-body {
+        overflow: inherit;
+    }
+
+    .media .media-heading {
+        margin-bottom: 5px;
+        font-size: 14px;
+        font-weight: normal;
+    }
+</style>
+<div class="container">
+    <div class="section ptb-30">
+        <div class="row">
+            <div class="col-md-3">
+                {include file="common/sidenav" /}
+            </div>
+            <div class="col-md-9">
+                <div class="panel panel-default">
+                    <div class="panel-body">
+                        <h2 class="page-header pos-r">
+                            我的收藏
+                        </h2>
+                        <div class="widget-body">
+                            {volist name="collectList" id="item"}
+                            <div class="media">
+                                <div class="media-left">
+                                    <a href="{$item.goods.url|default='javascript:'}" target="_blank">
+                                        <img class="media-object" src="{$item.goods.image|default=''|cdnurl|htmlentities}" width="110" height="90" alt="">
+                                    </a>
+                                </div>
+                                <div class="media-body">
+                                    <h4 class="media-heading">
+                                        <a href="{$item.goods.url|default='javascript:'}" target="_blank">{$item.goods.title|default='未知'|htmlentities}</a>
+                                    </h4>
+                                    <p class="text-muted">
+                                        {$item.createtime|datetime|htmlentities}
+                                    </p>
+                                    <div>
+                                        <a href="javascript:" class="btn btn-danger btn-delcollect" data-id="{$item.id|htmlentities}"><i class="fa fa-times"></i> 移除</a>
+                                    </div>
+                                </div>
+                                <hr class="mb-5">
+                            </div>
+                            {/volist}
+                        </div>
+
+                        <div class="pager text-center">
+                            {if count($collectList)==0}
+                            暂无收藏
+                            {else /}
+                            {$collectList->render()}
+                            {/if}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

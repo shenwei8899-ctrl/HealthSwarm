@@ -1,0 +1,444 @@
+{
+  "agent_task_id": "agent-plan-demo-1790741959800",
+  "family_ref": "family-demo-001",
+  "user_ref": "user-demo-001",
+  "member_refs": [
+    "member-demo-001"
+  ],
+  "profile_version_refs": [
+    "profile-demo-v1"
+  ],
+  "plan_name": "21天家庭营养联调计划",
+  "plan_days": 21,
+  "delivery_frequency": "daily",
+  "requires_professional_review": false,
+  "days": [
+    {
+      "day_no": 1,
+      "display_title": "第1天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-1",
+          "recipe_name": "联调菜品1",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 2,
+      "display_title": "第2天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-2",
+          "recipe_name": "联调菜品2",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 3,
+      "display_title": "第3天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-3",
+          "recipe_name": "联调菜品3",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 4,
+      "display_title": "第4天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-4",
+          "recipe_name": "联调菜品4",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 5,
+      "display_title": "第5天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-5",
+          "recipe_name": "联调菜品5",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 6,
+      "display_title": "第6天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-6",
+          "recipe_name": "联调菜品6",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 7,
+      "display_title": "第7天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-7",
+          "recipe_name": "联调菜品7",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 8,
+      "display_title": "第8天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-8",
+          "recipe_name": "联调菜品8",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 9,
+      "display_title": "第9天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-9",
+          "recipe_name": "联调菜品9",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 10,
+      "display_title": "第10天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-10",
+          "recipe_name": "联调菜品10",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 11,
+      "display_title": "第11天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-11",
+          "recipe_name": "联调菜品11",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 12,
+      "display_title": "第12天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-12",
+          "recipe_name": "联调菜品12",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 13,
+      "display_title": "第13天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-13",
+          "recipe_name": "联调菜品13",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 14,
+      "display_title": "第14天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-14",
+          "recipe_name": "联调菜品14",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 15,
+      "display_title": "第15天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-15",
+          "recipe_name": "联调菜品15",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 16,
+      "display_title": "第16天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-16",
+          "recipe_name": "联调菜品16",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 17,
+      "display_title": "第17天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-17",
+          "recipe_name": "联调菜品17",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 18,
+      "display_title": "第18天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-18",
+          "recipe_name": "联调菜品18",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 19,
+      "display_title": "第19天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-19",
+          "recipe_name": "联调菜品19",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 20,
+      "display_title": "第20天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-20",
+          "recipe_name": "联调菜品20",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "day_no": 21,
+      "display_title": "第21天",
+      "daily_summary": "本地联调示例",
+      "meals": [
+        {
+          "meal_type": "lunch",
+          "recipe_ref": "recipe-demo-21",
+          "recipe_name": "联调菜品21",
+          "ingredient_requirements": [
+            {
+              "ingredient_code": "tomato",
+              "required_value": "300.000",
+              "required_unit": "g",
+              "is_optional": false
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "nutrition_validation": {
+    "validation_id": "nutrition-plan-demo-001",
+    "status": "passed",
+    "rules_version": "demo-v1",
+    "validated_at": "2026-09-30T04:19:19.800Z",
+    "summary": "演示数据：全计划校验通过"
+  }
+}

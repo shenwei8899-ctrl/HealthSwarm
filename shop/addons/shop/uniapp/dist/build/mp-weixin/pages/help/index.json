@@ -1,0 +1,14 @@
+{
+  "navigationBarTitleText": "帮助中心",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "enablePullDownRefresh": false,
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "u-cell-group": "/uview-ui/components/u-cell-group/u-cell-group",
+    "u-cell-item": "/uview-ui/components/u-cell-item/u-cell-item",
+    "u-loadmore": "/uview-ui/components/u-loadmore/u-loadmore",
+    "u-back-top": "/uview-ui/components/u-back-top/u-back-top",
+    "fa-tabbar": "/components/fa-tabbar/fa-tabbar"
+  }
+}

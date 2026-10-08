@@ -1,0 +1,21 @@
+<ul class="list-group">
+    <li class="list-group-heading">{:__('商城中心')}</li>
+    {if in_array('order', $usersidebar)}
+    <li class="list-group-item {:check_nav_active('shop.order/index')}"><a href="{:url('index/shop.order/index')}"><i class="fa fa-pencil fa-fw"></i> 我的订单</a></li>
+    {/if}
+    {if in_array('coupon', $usersidebar)}
+    <li class="list-group-item {:check_nav_active('shop.coupon/index')}"><a href="{:url('index/shop.coupon/index')}"><i class="fa fa-ticket fa-fw"></i> 我的优惠券</a></li>
+    {/if}
+    {if in_array('exchange', $usersidebar)}
+    <li class="list-group-item {:check_nav_active('shop.exchange/index')}"><a href="{:url('index/shop.exchange/index')}"><i class="fa fa-exchange fa-fw"></i> 我的积分兑换</a></li>
+    {/if}
+    {if in_array('address', $usersidebar)}
+    <li class="list-group-item {:check_nav_active('shop.address/index')} {:check_nav_active('shop.address/add')} {:check_nav_active('shop.address/edit')}"><a href="{:url('index/shop.address/index')}"><i class="fa fa-map-marker fa-fw"></i> 我的收货地址</a></li>
+    {/if}
+    {if in_array('collect', $usersidebar)}
+    <li class="list-group-item {:check_nav_active('shop.collect/index')}"><a href="{:url('index/shop.collect/index')}"><i class="fa fa-bookmark fa-fw"></i> 我的收藏</a></li>
+    {/if}
+    {if in_array('comment', $usersidebar)}
+    <li class="list-group-item {:check_nav_active('shop.comment/index')}"><a href="{:url('index/shop.comment/index')}"><i class="fa fa-comment fa-fw"></i> 我的评价</a></li>
+    {/if}
+</ul>

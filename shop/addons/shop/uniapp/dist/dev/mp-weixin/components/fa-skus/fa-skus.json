@@ -1,0 +1,8 @@
+{
+  "component": true,
+  "usingComponents": {
+    "u-popup": "/uview-ui/components/u-popup/u-popup",
+    "u-button": "/uview-ui/components/u-button/u-button",
+    "u-number-box": "/uview-ui/components/u-number-box/u-number-box"
+  }
+}

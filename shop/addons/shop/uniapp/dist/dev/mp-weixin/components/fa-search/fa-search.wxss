@@ -1,0 +1,42 @@
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+.search.data-v-4f1b268c {
+  display: flex;
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 28rpx;
+}
+.search .content.data-v-4f1b268c {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  background-color: #f2f2f2;
+  overflow: hidden;
+  transition: all 0.2s linear;
+  border-radius: 30px;
+  padding: 0 30rpx;
+}
+.search .content .content-box.data-v-4f1b268c {
+  width: 100%;
+  display: flex;
+  align-items: center;
+}
+.search .content .content-box.center.data-v-4f1b268c {
+  justify-content: center;
+}
+.search .content .content-box .input.data-v-4f1b268c {
+  width: 100%;
+  max-width: 100%;
+  background-color: #f2f2f2;
+  transition: all 0.2s linear;
+}
+.search .content .content-box .input.center.data-v-4f1b268c {
+  width: 250rpx;
+}
+.search .content .content-box .input.sub.data-v-4f1b268c {
+  width: auto;
+  color: grey;
+}

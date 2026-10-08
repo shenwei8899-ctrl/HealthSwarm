@@ -1,0 +1,11 @@
+
+page {
+	background-color: #ffffff;
+}
+.login {
+	padding: 20% 10%;
+}
+.agree {
+	margin-left: -25rpx;
+}
+

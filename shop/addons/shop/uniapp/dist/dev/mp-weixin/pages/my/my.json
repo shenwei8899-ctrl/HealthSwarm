@@ -1,0 +1,15 @@
+{
+  "navigationBarTitleText": "个人中心",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "u-avatar": "/uview-ui/components/u-avatar/u-avatar",
+    "u-button": "/uview-ui/components/u-button/u-button",
+    "u-cell-group": "/uview-ui/components/u-cell-group/u-cell-group",
+    "u-cell-item": "/uview-ui/components/u-cell-item/u-cell-item",
+    "u-icon": "/uview-ui/components/u-icon/u-icon",
+    "u-top-tips": "/uview-ui/components/u-top-tips/u-top-tips",
+    "fa-tabbar": "/components/fa-tabbar/fa-tabbar"
+  }
+}

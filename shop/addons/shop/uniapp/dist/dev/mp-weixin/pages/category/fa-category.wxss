@@ -1,0 +1,105 @@
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+.u-wrap.data-v-8fb06290 {
+  display: flex;
+  flex-direction: column;
+}
+.u-menu-wrap.data-v-8fb06290 {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+.u-tab-view.data-v-8fb06290 {
+  width: 200rpx;
+  height: 100%;
+  background-color: #f6f6f6;
+}
+.u-tab-item.data-v-8fb06290 {
+  height: 110rpx;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26rpx;
+  color: #444;
+  font-weight: 400;
+  line-height: 1;
+}
+.u-tab-item-active.data-v-8fb06290 {
+  position: relative;
+  color: #000;
+  font-size: 30rpx;
+  font-weight: 600;
+  background: #fff;
+}
+.u-tab-item-active.data-v-8fb06290::before {
+  content: "";
+  position: absolute;
+  border-left: 4px solid #374486;
+  height: 32rpx;
+  left: 0;
+  top: 39rpx;
+}
+.u-tab-view.data-v-8fb06290 {
+  height: 100%;
+}
+.right-box.data-v-8fb06290 {
+  background-color: rgb(250, 250, 250);
+  width: 100%;
+}
+.page-view.data-v-8fb06290 {
+  background-color: #fff;
+  padding: 16rpx;
+  height: 100%;
+  position: relative;
+}
+.class-item.data-v-8fb06290 {
+  padding: 16rpx;
+  border-radius: 8rpx;
+  height: 100%;
+}
+.item-title.data-v-8fb06290 {
+  font-size: 26rpx;
+  color: #303133;
+  font-weight: bold;
+}
+.item-container.data-v-8fb06290 {
+  display: flex;
+  flex-wrap: wrap;
+}
+.item-container .thumb-box.data-v-8fb06290 {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  padding: 30rpx 0;
+}
+.item-container .thumb-box .item-menu-image.data-v-8fb06290 {
+  width: 200rpx;
+  height: 150rpx;
+  border-radius: 5rpx;
+}
+.item-container .thumb-box .item-menu-name.data-v-8fb06290 {
+  font-weight: normal;
+  color: #303133;
+  width: 320rpx;
+}
+.item-container .thumb-box .intro.data-v-8fb06290 {
+  width: 320rpx;
+  font-size: 20rpx;
+  padding: 10rpx 0;
+}
+.item-container .thumb-box .market_price.data-v-8fb06290 {
+  text-decoration: line-through;
+}
+.item-container .thumb-box.data-v-8fb06290:not(:last-child) {
+  border-bottom: 1px solid #f4f6f8;
+}
+.item-container .thumb-box .goods.data-v-8fb06290 {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 150rpx;
+}

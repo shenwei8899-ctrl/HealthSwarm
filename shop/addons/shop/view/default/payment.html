@@ -1,0 +1,129 @@
+{layout name="common/layout" /}
+<style>
+    .panel-heading h2 {
+        font-size: 20px;
+        font-weight: normal;
+    }
+
+    .row-paytype div input {
+        display: none;
+    }
+
+    .row-paytype img {
+        height: 30px;
+        margin: 8px;
+        vertical-align: inherit;
+    }
+
+    .row-paytype > div {
+        margin-bottom: 10px;
+    }
+
+    .row-paytype > div > label {
+        width: 100%;
+        height: 50px;
+        display: block;
+        font-size: 14px;
+        line-height: 50px;
+        color: #999;
+        background: #fff;
+        -webkit-border-radius: 3px;
+        -moz-border-radius: 3px;
+        border-radius: 3px;
+        cursor: pointer;
+        text-align: center;
+        border: 1px solid #ddd;
+        margin-bottom: 20px;
+        font-weight: 400;
+    }
+
+    .row-paytype > div > label.active {
+        border-color: #0d95e8;
+        color: #0d95e8;
+    }
+
+    .row-paytype > div > label:hover {
+        z-index: 4;
+        border-color: #27b0d6;
+        color: #27b0d6;
+    }
+
+    .countdown i {
+        font-style: normal;
+    }
+</style>
+<div class="container" id="content-container">
+
+    <div class="row">
+        <div class="col-xs-12">
+            <form id="payment-form" action="" method="post">
+                <input type="hidden" name="paytype" value="{:config('shop.defaultpaytype')}"/>
+                <div class="panel panel-default">
+                    <div class="panel-heading">
+                        <h2>订单信息
+                            <div class="pull-right small ">
+                                <span class="">
+                                    请在
+                                    <span class="countdown text-danger" data-format="<i>%H</i>时<i>%M</i>分<i>%S</i>秒" data-countdown="{$orderInfo.remainseconds|htmlentities}">
+                                        <i>00</i>时<i>00</i>分<i>00</i>秒
+                                    </span>
+                                    内完成支付，超时将自动取消
+                                </span>
+                            </div>
+                        </h2>
+                    </div>
+                    <div class="panel-body">
+                        <p>订单编号：{$orderInfo.order_sn|htmlentities}</p>
+                        <p>订单金额：<span class="text-danger">￥{$orderInfo.saleamount|htmlentities}</span></p>
+                    </div>
+                </div>
+                <div class="panel panel-default">
+                    <div class="panel-heading">
+                        <h2>支付方式</h2>
+                    </div>
+                    <div class="panel-body">
+
+                        <div class="row row-paytype row-paytype">
+                            {foreach name="paytypeList" id="paytype"}
+                            <div class="col-xs-6 col-sm-4 col-md-4 col-lg-2 text-center">
+                                <label class="{:$paytype.default?'active':''}" data-value="{$paytype.value|htmlentities}">
+                                    <img src="{$paytype.image|cdnurl|htmlentities}" alt="">
+                                </label>
+                            </div>
+                            {/foreach}
+                        </div>
+                        <div class="row" style="margin:10px -15px 10px -15px;">
+                            <div class="col-xs-6 col-sm-4 col-md-4 col-lg-2">
+                                <input type="submit" class="btn btn-primary btn-recharge btn-block btn-lg" value="立即支付"/>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+<script data-render="script" src="__ADDON__/js/jquery.countdown.js"></script>
+<script data-render="script">
+    //切换地址
+    $(document).on("click", ".address[data-id]", function () {
+        var that = this;
+        SHOP.api.ajax({
+            url: "{:addon_url('shop/checkout/recount')}",
+            data: $("#checkout-form").serialize()
+        }, function (data, ret) {
+            $(".address[data-id]").removeClass("active");
+            $(that).addClass("active");
+            $("#goodsprice").text(data.orderInfo.goodsprice);
+            $("#shippingfee").text(data.orderInfo.shippingfee);
+            $("#amount").text(data.orderInfo.amount);
+            return false;
+        });
+    });
+    $(document).on("click", ".row-paytype label", function () {
+        $(this).closest("form").find("input[name='paytype']").val($(this).data("value"));
+        $(".row-paytype label").removeClass("active");
+        $(this).addClass("active");
+        return false;
+    });
+</script>

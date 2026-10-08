@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<!--[if lt IE 7]>
+<html class="lt-ie9 lt-ie8 lt-ie7"> <![endif]-->
+<!--[if IE 7]>
+<html class="lt-ie9 lt-ie8"> <![endif]-->
+<!--[if IE 8]>
+<html class="lt-ie9"> <![endif]-->
+<!--[if gt IE 8]><!-->
+<html class=""> <!--<![endif]-->
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,Chrome=1">
+    <meta name="viewport" content="width=device-width,minimum-scale=1.0,maximum-scale=1.0,user-scalable=no">
+    <meta name="renderer" content="webkit">
+    <title>{shop:config name="shop.title"/} - {shop:config name="shop.sitename"/}</title>
+    <meta name="keywords" content="{shop:config name='shop.keywords'/}"/>
+    <meta name="description" content="{shop:config name='shop.description'/}"/>
+
+    <link rel="stylesheet" media="screen" href="__CDN__/assets/css/bootstrap.min.css"/>
+    <link rel="stylesheet" media="screen" href="__CDN__/assets/libs/font-awesome/css/font-awesome.min.css"/>
+    <link rel="stylesheet" media="screen" href="__CDN__/assets/libs/fastadmin-layer/dist/theme/default/layer.css?v={$site.version|htmlentities}"/>
+    <link rel="stylesheet" media="screen" href="__ADDON__/css/share.min.css?v={$site.version|htmlentities}">
+    <link rel="stylesheet" media="screen" href="__ADDON__/css/swiper.min.css?v={$site.version|htmlentities}">
+    <link rel="stylesheet" media="screen" href="__ADDON__/css/jquery.zoom.css?v={$site.version|htmlentities}">
+    <link rel="stylesheet" media="screen" href="__ADDON__/css/common.css?v={$site.version|htmlentities}"/>
+    <link rel="stylesheet" media="screen" href="__ADDON__/shopicon/iconfont.css?v={$site.version|htmlentities}"/>
+
+    {__STYLE__}
+
+    <!--分享-->
+    <meta property="og:title" content="{shop:config name='shop.title|htmlentities'/}"/>
+    <meta property="og:image" content="{shop:config name='shop.image|htmlentities'/}"/>
+    <meta property="og:description" content="{shop:config name='shop.description|htmlentities'/}"/>
+
+    <!--[if lt IE 9]>
+    <script src="__CDN__/assets/js/html5shiv.js"></script>
+    <script src="__CDN__/assets/js/respond.min.js"></script>
+    <![endif]-->
+
+</head>
+<body class="group-page">
+
+<header class="main-header">
+
+    <div class="top-bar">
+        <div class="container">
+            <div class="row">
+                <div class="col-xs-3 col-sm-6 text-left">
+                    <ul class="nav-top nav-top-left list-inline m-0">
+                        <li><a href="javascript:" class="addbookbark">加入收藏</a></li>
+                    </ul>
+                </div>
+                <div class="col-xs-9 col-sm-6 text-right">
+                    <ul class="nav-top nav-top-right list-inline m-0">
+                        {if $user}
+                        <li class="dropdown">
+                            <a href="{:url('index/user/index', '', false, $Think.config.url_domain_deploy?'www':'')}">{$user.nickname|htmlentities}</a>
+                            <ul class="dropdown-menu">
+                                <li><a href="{:url('index/user/index', '', false, $Think.config.url_domain_deploy?'www':'')}"><i class="fa fa-user fa-fw"></i> 会员中心</a></li>
+                                {php}$sidenav = array_filter(explode(',', config('shop.usersidenav')));{/php}
+                                {if in_array('order', $sidenav)}
+                                <li><a href="{:url('index/shop.order/index')}"><i class="fa fa-pencil fa-fw"></i> 我的订单</a></li>
+                                {/if}
+                                {if in_array('address', $sidenav)}
+                                <li><a href="{:url('index/shop.address/index')}"><i class="fa fa-map-marker fa-fw"></i> 我的收货地址</a></li>
+                                {/if}
+                                {if in_array('collect', $sidenav)}
+                                <li><a href="{:url('index/shop.collect/index')}"><i class="fa fa-bookmark fa-fw"></i> 我的收藏夹</a></li>
+                                {/if}
+                                {if in_array('comment', $sidenav)}
+                                <li><a href="{:url('index/shop.comment/index')}"><i class="fa fa-comment fa-fw"></i> 我的评价</a></li>
+                                {/if}
+                                <li><a href="{:url('index/user/logout', '', false, $Think.config.url_domain_deploy?'www':'')}"><i class="fa fa-sign-out fa-fw"></i> 退出</a></li>
+                            </ul>
+                        </li>
+                        <li><a href="{:addon_url('shop/cart/index')}">购物车</a></li>
+                        <li><a href="{:url('index/shop.order/index')}">我的订单</a></li>
+                        <li><a href="{:url('index/user/logout')}">退出</a></li>
+                        {else /}
+                        <li><a href="{:url('index/user/register', '', false, $Think.config.url_domain_deploy?'www':'')}">注册</a></li>
+                        <li><a href="{:url('index/user/login', '', false, $Think.config.url_domain_deploy?'www':'')}">登录</a></li>
+                        {/if}
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="header-header">
+        <div class="container">
+            <div class="row">
+                <div class="brand col-sm-3">
+                    <a href="{shop:config name='shop.indexurl'}" class="logo">
+                        <img src="{:cdnurl(config('shop.sitelogo'))}" alt="" height="80">
+                    </a>
+                </div>
+                <div class="header-search col-sm-9">
+                    <div class="row ">
+                        <div class="col-sm-8 col-sm-offset-1">
+                            <form class="search-form" method="get" action="{:addon_url('shop/search/index')}">
+                                <div class="input-group">
+                                    <input type="text" name="q" class="form-control input-lg search-input" data-suggestion-url="{:addon_url('shop/search/suggestion')}" placeholder="请输入你搜索的关键字" required="required" value="{$keyword|default=''|htmlentities}">
+                                    {:token('__searchtoken__')}
+                                    <div class="input-group-btn">
+                                        <button type="submit" class="btn btn-lg btn-search btn-block btn-primary">
+                                            <i class="fa fa-search"></i> 立即搜索
+                                        </button>
+                                    </div>
+                                </div>
+                            </form>
+                            <div class="search-hot mt-2">
+                                {shop:searchloglist id="item" orderby="nums" row="5"}
+                                <a href="{:addon_url('shop/search/index', ['q'=>$item.keywords])}">{$item.keywords|htmlentities}</a>
+                                {/shop:searchloglist}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="header-menu {if request()->controller()=='index'}static-menu{/if}">
+        <div class="container">
+            {if request()->action()!='cart'}
+            <nav class="nav-bar">
+                <div class="nav-header">
+                    <span class="nav-item-topmenu"><i class="fa fa-list fa-1x"></i> 商品分类</span>
+                    <span class="nav-item-navmenu" data-toggle="collapse" data-target="#header-navbar"><i class="fa fa-menu fa-1x"></i> 导航</span>
+
+                </div>
+                <div id="header-navbar" class="nav-collapse">
+                    <ul class="nav-menu">
+                        <li class="category"><a href="javascript:"><i class="fa fa-list"></i> 商品分类</a></li>
+
+                        {shop:menu maxlevel="3" cache="86400" /}
+                    </ul>
+                </div>
+                <div class="nav-menu nav-menu-right">
+                    <span class="nav-toggle visible-xs" data-toggle="collapse" data-target="#header-navbar"><i></i><i></i><i></i></span>
+                    <a href="{:addon_url('shop/cart/index')}" class="hidden-xs">
+                        <i class="fa fa-shopping-cart"></i> 购物车 <span class="badge" id="cartnums" style="background:#ff565e;">{shop:config name='shop.cartnums'}</span>
+                    </a>
+                </div>
+
+                {include file="common/menu" /}
+            </nav>
+            {/if}
+        </div>
+    </div>
+
+</header>
+
+{__CONTENT__}
+
+<footer class="main-footer text-center p-3">
+    <div class="container">
+        <div class="row">
+            <p>Copyright © {:date('Y')} . {shop:config name="shop.sitename"/} All rights reserved.
+                <a href="https://beian.miit.gov.cn" target="_blank">{shop:config name="shop.icpbeian"/}</a>
+
+                {php}$recordcode = preg_replace("/[^\d+]/", "", $config['gwabeian']);{/php}
+                <a href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode={$recordcode|htmlentities}">{shop:config name="shop.gwabeian"/}</a>
+            </p>
+        </div>
+    </div>
+</footer>
+
+<div id="floatbtn">
+    {if config('shop.wxapp')}
+    <a href="javascript:;">
+        <svg style="margin-top:8px;" width="32" height="32" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="48" height="48" fill="white" fill-opacity="0.01"/><circle cx="24" cy="24" r="20" fill="#d5d5d5" stroke="#d5d5d5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M29 24C29.9889 24 30.9556 23.7068 31.7779 23.1574C32.6001 22.6079 33.241 21.827 33.6194 20.9134C33.9978 19.9998 34.0969 18.9945 33.9039 18.0246C33.711 17.0546 33.2348 16.1637 32.5355 15.4645C31.8363 14.7652 30.9454 14.289 29.9755 14.0961C29.0055 13.9031 28.0002 14.0022 27.0866 14.3806C26.173 14.759 25.3921 15.3999 24.8427 16.2222C24.2932 17.0444 24 18.0111 24 19V29C24 29.9889 23.7068 30.9556 23.1574 31.7779C22.6079 32.6001 21.8271 33.241 20.9134 33.6194C19.9998 33.9978 18.9945 34.0969 18.0246 33.9039C17.0546 33.711 16.1637 33.2348 15.4645 32.5355C14.7652 31.8363 14.289 30.9454 14.0961 29.9755C13.9031 29.0055 14.0022 28.0002 14.3806 27.0866C14.759 26.173 15.3999 25.3921 16.2222 24.8427C17.0444 24.2932 18.0111 24 19 24" stroke="#FFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <div class="floatbtn-wrapper">
+            <div class="qrcode"><img src="{:cdnurl(config('shop.wxapp'))}"></div>
+            <p>微信小程序</p>
+            <p>微信扫一扫体验</p>
+        </div>
+    </a>
+    {/if}
+    {if config('shop.qrcode')}
+    <a href="javascript:;">
+        <svg style="margin-top:8px;" width="32" height="32" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M18 6H6V18H18V6Z" fill="#d5d5d5" stroke="#d5d5d5" stroke-width="2" stroke-linejoin="round"/><path d="M18 30H6V42H18V30Z" fill="#d5d5d5" stroke="#d5d5d5" stroke-width="2" stroke-linejoin="round"/><path d="M42 30H30V42H42V30Z" fill="#d5d5d5" stroke="#d5d5d5" stroke-width="2" stroke-linejoin="round"/><path d="M42 6H30V18H42V6Z" fill="#d5d5d5" stroke="#d5d5d5" stroke-width="2" stroke-linejoin="round"/><path d="M24 6V24" stroke="#d5d5d5" stroke-width="2" stroke-linecap="round"/><path d="M24 30V42" stroke="#d5d5d5" stroke-width="2" stroke-linecap="round"/><path d="M24 24L6 24" stroke="#d5d5d5" stroke-width="2" stroke-linecap="round"/><path d="M42 24H30" stroke="#d5d5d5" stroke-width="2" stroke-linecap="round"/></svg>
+        <div class="floatbtn-wrapper">
+            <div class="qrcode"><img src="{:cdnurl(config('shop.qrcode'))}"></div>
+            <p>微信公众账号</p>
+            <p>微信扫一扫关注</p>
+        </div>
+    </a>
+    {/if}
+    <a id="back-to-top" class="hover" href="javascript:;" style="display:none;">
+        <i class="fa fa-angle-up fa-2x"></i>
+        <em>返回<br>顶部</em>
+    </a>
+</div>
+
+<script type="text/javascript" src="__CDN__/assets/libs/jquery/dist/jquery.min.js"></script>
+<script type="text/javascript" src="__CDN__/assets/libs/bootstrap/dist/js/bootstrap.min.js"></script>
+<script type="text/javascript" src="__CDN__/assets/libs/fastadmin-layer/dist/layer.js"></script>
+<script type="text/javascript" src="__CDN__/assets/libs/art-template/dist/template-native.js"></script>
+<script type="text/javascript" src="__ADDON__/js/share.min.js"></script>
+<script type="text/javascript" src="__ADDON__/js/swiper.min.js"></script>
+<script type="text/javascript" src="__ADDON__/js/jquery.autocomplete.js"></script>
+<script type="text/javascript" src="__ADDON__/js/jquery.zoom.js"></script>
+<script type="text/javascript" src="__ADDON__/js/shop.js?v={$site.version|htmlentities}"></script>
+
+{if $isWechat}
+<script type="text/javascript" src="https://res.wx.qq.com/open/js/jweixin-1.0.0.js"></script>
+{/if}
+
+<script type="text/javascript" src="__ADDON__/js/common.js?v={$site.version|htmlentities}"></script>
+
+{__SCRIPT__}
+
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "navigationBarTitleText": "商品分类",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "enablePullDownRefresh": false,
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "fa-tabbar": "/components/fa-tabbar/fa-tabbar",
+    "fa-categories": "/pages/category/fa-categories",
+    "fa-category": "/pages/category/fa-category",
+    "fa-category-three": "/pages/category/fa-category-three"
+  }
+}

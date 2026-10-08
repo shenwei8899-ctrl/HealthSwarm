@@ -1,0 +1,15 @@
+{
+  "navigationBarTitleText": "申请售后",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "enablePullDownRefresh": false,
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "u-radio-group": "/uview-ui/components/u-radio-group/u-radio-group",
+    "u-radio": "/uview-ui/components/u-radio/u-radio",
+    "u-input": "/uview-ui/components/u-input/u-input",
+    "u-upload": "/uview-ui/components/u-upload/u-upload",
+    "u-gap": "/uview-ui/components/u-gap/u-gap",
+    "u-button": "/uview-ui/components/u-button/u-button"
+  }
+}

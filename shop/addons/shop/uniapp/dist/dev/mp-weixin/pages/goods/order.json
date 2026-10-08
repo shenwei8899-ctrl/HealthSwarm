@@ -1,0 +1,18 @@
+{
+  "navigationBarTitleText": "提交订单",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "enablePullDownRefresh": false,
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "u-icon": "/uview-ui/components/u-icon/u-icon",
+    "u-form": "/uview-ui/components/u-form/u-form",
+    "u-form-item": "/uview-ui/components/u-form-item/u-form-item",
+    "u-input": "/uview-ui/components/u-input/u-input",
+    "u-gap": "/uview-ui/components/u-gap/u-gap",
+    "u-button": "/uview-ui/components/u-button/u-button",
+    "fa-coupon": "/components/fa-coupon/fa-coupon",
+    "u-skeleton": "/uview-ui/components/u-skeleton/u-skeleton",
+    "fa-tabbar": "/components/fa-tabbar/fa-tabbar"
+  }
+}

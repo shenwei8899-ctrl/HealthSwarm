@@ -1,0 +1,138 @@
+<style>
+    .order-state-filter li {
+        margin-right: 5px;
+    }
+
+    .order-state-filter li.active {
+        border-bottom: 2px solid #67a6cb;
+        background: #67a6cb;
+    }
+
+    .order-state-filter li.active a {
+        color: #fff;
+    }
+
+    .order-state-filter li a {
+        padding: 5px;
+    }
+
+    .order-list .table tr {
+        border-bottom: 1px solid #f4f6f8;
+    }
+
+    .order-list .table tr td {
+        padding: 10px;
+    }
+
+    .media-body .link-muted {
+        margin-bottom: 8px;
+    }
+
+    .media-heading {
+        font-size: 14px;
+    }
+</style>
+<div class="container">
+    <div class="section">
+        <div class="row">
+            <div class="col-md-3">
+                {include file="common/sidenav" /}
+            </div>
+            <div class="col-md-9">
+                <div class="panel panel-default">
+                    <div class="panel-body">
+                        <h2 class="page-header" style="margin-bottom:15px;">
+                            我的积分兑换订单
+                        </h2>
+                        <ul class="order-state-filter list-inline list-unstyled"
+                            style="line-height: 25px;margin-bottom:15px;">
+                            <li class="{:$param['f']==''?'active':''}">
+                                <a href="?">全部</a>
+                            </li>
+                            <li class="{:$param['f']=='created'?'active':''}">
+                                <a href="?status=created">待兑换</a>
+                            </li>
+                            <li class="{:$param['f']=='inprogress'?'active':''}">
+                                <a href="?status=inprogress">处理中</a>
+                            </li>
+                            <li class="{:$param['f']=='rejected'?'active':''}">
+                                <a href="?status=rejected">已拒绝</a>
+                            </li>
+                            <li class="{:$param['f']=='delivered'?'active':''}">
+                                <a href="?status=delivered">已发货</a>
+                            </li>
+                            <li class="{:$param['f']=='completed'?'active':''}">
+                                <a href="?status=completed">已完成</a>
+                            </li>
+                        </ul>
+                        <div class="order-list">
+                            <div class="entry-wrapper">
+                                <div class="order-goods" style="margin:0px -10px;">
+                                    <table class="table table-responsive no-border">
+                                        <tbody>
+                                        {volist name="__list__" id="item"}
+                                        <tr>
+                                            <td>
+                                                <div class="media">
+                                                    <a class="media-left" href="{$item.exchange.url|htmlentities}">
+                                                        <img src="{$item.exchange.image|cdnurl|htmlentities}" style="width: 64px; height: 64px;">
+                                                    </a>
+                                                    <div class="media-body">
+                                                        <p class="media-heading">
+                                                            <a href="{$item.exchange.url|htmlentities}" target="_blank">{$item.exchange.title|htmlentities}</a>
+                                                        </p>
+                                                        <div class="link-muted text-muted">
+                                                            类型：<span class=""><span>{:$item.type=='reality'?'实物':'虚拟'}商品</span></span>
+                                                        </div>
+                                                        <div class="link-muted">
+                                                            积分：{$item.score|htmlentities}
+                                                        </div>
+                                                        {if $item.status == 'rejected'}
+                                                        <div class="link-muted">
+                                                            <span class="fa fa-info-circle"></span>
+                                                            拒绝原因：{$item.reason|htmlentities}
+                                                        </div>
+                                                        {/if}
+
+                                                        {if $item.type == 'reality' && ($item.status =='delivered' || $item.status == 'completed')}
+                                                        <div class="link-muted">
+                                                            <span class="fa fa-info-circle"></span>
+                                                            <span>快递名称：{$item.expressname|htmlentities}</span>
+                                                            <span style="margin-left: 10px;">快递单号：{$item.expressno|htmlentities}</span>
+                                                        </div>
+                                                        {/if}
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td>
+                                                <div class="text-muted text-center" style="width:40px;">
+                                                    × {$item.nums|htmlentities}
+                                                </div>
+                                            </td>
+                                            <td style="width: 100px;">
+                                                <div class="text-center order-operate">
+                                                    <span class="label {:$item.status=='completed'?'label-success':
+                                                                    ($item.status=='rejected'?'label-danger':
+                                                                    ($item.status=='inprogress'?'label-warning':'label-info'))}">{$item.status_text|htmlentities}</span>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        {/volist}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="pager text-center">
+                            {if count($__list__)==0}
+                            暂未找到更多积分兑换订单
+                            {else /}
+                            {$__list__->render()}
+                            {/if}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

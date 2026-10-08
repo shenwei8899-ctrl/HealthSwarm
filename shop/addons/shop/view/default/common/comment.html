@@ -1,0 +1,59 @@
+<style>
+    .reply{
+        background: #f4f6f8;padding: 10px;margin-top: 10px;border-radius: 5px;width: 100%;font-size: 12px;
+    }
+    .reply .item:not(:last-child){
+        border-bottom: 1px solid #eaeaea;
+    }
+</style>
+<div id="comment-container">
+    <!-- S 评论列表 -->
+    <div id="commentlist">
+        {foreach name="$commentList" id="comment"}
+        <dl id="comment-{$comment.id|htmlentities}">
+            <dt><a href="javascript:;" rel="nofollow"><img src="{$comment.user.avatar|default='/assets/img/avatar.png'|cdnurl}"></a></dt>
+            <dd>
+                <div class="parent">
+                    <cite><a href="javascript:;" rel="external nofollow">{$comment.user.nickname|default='未知'}</a></cite>
+                    <small> {$comment.createtime|human_date|htmlentities}</small>
+                    <div class="pull-right">
+                        {include file="common/rating" star="comment['star']" /}
+                    </div>
+                    <p>{$comment.content|strip_tags|htmlentities}</p>
+                    <div class="comment-images">
+                        {foreach name="comment.images" id="image"}
+                        <a class="media-left" href="#">
+                            <img src="{$image|htmlentities}" style="width: 64px; height: 64px;">
+                        </a>
+                        {/foreach}
+                    </div>
+                    {if !empty($comment.reply)}
+                    <div class="reply">
+                        {foreach name="comment.reply" item="res"}
+                        <div class="item p-1">
+                            <div style="font-weight: bold;">{$res.manage.nickname|default='管理员'}：</div>
+                            <div>{$res.content|strip_tags|htmlentities}</div>
+                        </div>
+                        {/foreach}
+                    </div>
+                    {/if}
+                </div>
+            </dd>
+            <div class="clearfix"></div>
+        </dl>
+        {/foreach}
+    </div>
+    <!-- E 评论列表 -->
+
+    {if $commentList->isEmpty()}
+    <div class="text-center">暂无评价</div>
+    {/if}
+
+    <!-- S 评论分页 -->
+    <div id="commentpager" class="pager text-center">
+        <ul class="pagination">
+            {$commentList->render()}
+        </ul>
+    </div>
+    <!-- E 评论分页 -->
+</div>

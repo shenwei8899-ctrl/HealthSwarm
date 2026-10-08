@@ -1,0 +1,100 @@
+{layout name="common/layout" /}
+
+<style>
+    .product-grid .product-item a.card-item .item-title em, .product-grid .product-item a.card-item .item-detail em {
+        font-style: normal;
+        color: red;
+    }
+</style>
+
+<div class="container" id="content-container">
+    <div class="row">
+        <main class="col-xs-12 col-sm-12">
+            <div class="search-results-toolbar bg-white p-3">
+                <span>共找到 <span class="text-danger">{:$searchList->total()}</span> 个商品</span>
+                <span class="dropdown">
+                    <span class="dropdown-toggle" data-toggle="dropdown">
+                        {:isset($sortList[$sort])?$sortList[$sort]['title']:reset($sortList)['title']} <span class="caret"></span>
+                    </span>
+                    <ul class="dropdown-menu orderlist">
+                        {foreach name="sortList" id="item"}
+                        <li><a href="{$item.url|htmlentities}" class="p-1 {:$item.active?'active':''}">{$item.title|htmlentities}</a></li>
+                        {/foreach}
+                    </ul>
+                </span>
+            </div>
+            <div class="index-tab mb-4">
+                <div class="product-list">
+                    <div class="product-grid">
+                        {foreach name="searchList" id="goods"}
+                        <div class="product-item text-center">
+                            <a class="card-item" href="{$goods.url|htmlentities}" target="_blank">
+                                <div class="mb-3">
+                                    <div class="embed-responsive embed-responsive-square img-zoom">
+                                        <img src="{$goods.image|cdnurl|htmlentities}" class="" alt="{$goods.title|htmlentities}">
+                                    </div>
+                                </div>
+                                <div class="item-info text-left">
+                                    <div class="item-title">{:$goods.title}</div>
+                                    <div class="item-detail text-danger">
+                                        <span>¥</span>{$goods.price|htmlentities}
+                                        <del class="text-muted small">￥{$goods.marketprice|htmlentities}</del>
+                                    </div>
+                                </div>
+                            </a>
+                        </div>
+                        {/foreach}
+                    </div>
+                    {if $searchList->isEmpty()}
+                    <div class="text-center bg-white py-3">未搜索到任何商品</div>
+                    {/if}
+                    {if $searchList->hasPages()}
+                    <div class="pager">
+                        <ul class="pagination">
+                            {:$searchList->render()}
+                        </ul>
+                    </div>
+                    {/if}
+                    <div class="clearfix"></div>
+                </div>
+            </div>
+
+
+            <!-- 相关搜索 -->
+            {if $relatedList}
+            <div class="panel panel-default">
+                <div class="panel-body">
+                    <div class="search-links">
+                        <h4>相关搜索</h4>
+                        <p>
+                            {foreach name="relatedList" id="word"}
+                            <span><a href="?q={$word|urlencode}">{$word|htmlentities}</a></span>
+                            {/foreach}
+                        </p>
+                    </div>
+                </div>
+            </div>
+            {/if}
+
+            <!-- 热门搜索 -->
+            {if $hotList}
+
+            <div class="panel panel-default">
+                <div class="panel-body">
+                    <div class="search-links">
+                        <h4>热门搜索</h4>
+                        <p>
+                            {foreach name="hotList" id="word"}
+                            <span><a href="?q={$word|urlencode}">{$word|htmlentities}</a></span>
+                            {/foreach}
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            {/if}
+        </main>
+    </div>
+</div>
+
+

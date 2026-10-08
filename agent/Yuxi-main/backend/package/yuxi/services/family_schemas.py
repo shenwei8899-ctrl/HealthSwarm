@@ -86,11 +86,26 @@ class VersionInput(BaseModel):
     expected_version: int = Field(ge=1)
 
 
+class MemberUpdate(MemberInput):
+    """维护成员关系元信息，不改变健康档案。"""
+
+    expected_version: int = Field(ge=1)
+
+
+class MemberStatusInput(BaseModel):
+    """停用或恢复家庭关系。"""
+
+    model_config = ConfigDict(extra="forbid")
+    is_active: bool
+    expected_version: int = Field(ge=1)
+
+
 class AuthorizationInput(BaseModel):
     """由本人授权字段、用途和期限。"""
 
     model_config = ConfigDict(extra="forbid")
     fields: list[str] = Field(max_length=15)
+    edit_fields: list[str] = Field(default_factory=list, max_length=15)
     purpose: Literal["family_nutrition"] = "family_nutrition"
     expires_at: datetime
 
@@ -99,6 +114,8 @@ class AuthorizationInput(BaseModel):
         """授权字段与有效期只能使用支持的当前语义。"""
         if set(self.fields) - (PROFILE_FIELDS | METRIC_FIELDS.keys()):
             raise ValueError("授权字段不支持")
+        if not set(self.edit_fields) <= set(self.fields):
+            raise ValueError("代维护范围必须包含在查看范围内")
         if self.expires_at.tzinfo is None or self.expires_at <= datetime.now(UTC):
             raise ValueError("授权有效期必须为带时区的未来时间")
         if self.expires_at > datetime.now(UTC) + timedelta(days=366):
@@ -137,10 +154,35 @@ class MeasurementInput(BaseModel):
 
 
 class MeasurementUpdate(VersionInput):
-    """更正数值，原测量时间和指标类型保持稳定。"""
+    """更正数值或测量信息，指标类型和成员归属保持稳定。"""
 
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     values: dict[str, float]
     note: str = Field(min_length=1, max_length=1000)
+    measured_at: datetime | None = None
+    source: str | None = Field(default=None, min_length=1, max_length=100)
+    condition: str | None = Field(default=None, max_length=100)
+
+
+class MeasurementVoid(VersionInput):
+    """作废保留原始值、原因与审计。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class MeasurementQuery(BaseModel):
+    """指标查询的自然日范围、分页和条件。"""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["weight", "blood_pressure", "blood_glucose", "blood_lipids"] | None = None
+    days: int = Field(default=30, ge=1, le=366)
+    condition: Literal["fasting", "after_meal_2h", "random"] | None = None
+    from_date: date | None = None
+    to_date: date | None = None
+    include_voided: bool = False
+    limit: int = Field(default=100, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
 
 
 def validate_metric_values(kind: str, values: dict[str, float]) -> None:

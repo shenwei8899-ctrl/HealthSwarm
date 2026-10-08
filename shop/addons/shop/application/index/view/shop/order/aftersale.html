@@ -1,0 +1,108 @@
+<style>
+    .aftersale-body label {
+        font-style: normal;
+        font-weight: normal;
+    }
+
+    .info-text {
+        color: #777;
+        padding: 10px 0;
+    }
+</style>
+<div class="container">
+    <div class="section">
+        <div class="row">
+            <div class="col-md-3">
+                {include file="common/sidenav" /}
+            </div>
+            <div class="col-md-9">
+                <div class="panel panel-default">
+                    <div class="panel-body">
+                        <h2 class="page-header" style="margin-bottom:15px;">
+                            查看售后
+                        </h2>
+
+                        <div class="media">
+                            <a class="media-left" href="javascript:">
+                                <img src="{$goodsInfo.image|cdnurl|htmlentities}" style="width: 64px; height: 64px;">
+                            </a>
+                            <div class="media-body">
+                                <p class="media-heading">
+                                    <a href="javascript:" target="_blank">{$goodsInfo.title|htmlentities}</a>
+                                </p>
+                                <div class="text-muted">
+                                    × {$goodsInfo.nums|htmlentities}
+                                </div>
+                            </div>
+                        </div>
+                        <hr>
+                        <div class="aftersale-body" style="margin-top:20px;">
+                            <div class="form-group">
+                                <label>售后状态</label>
+                                <div style="padding:10px 0;" class="{:$aftersaleInfo.status==2?'text-success':'text-danger'}">{$aftersaleInfo.status_text|htmlentities}{if $goodsInfo.salestate == 3},等待退货{/if}</div>
+                            </div>
+                            {if $aftersaleInfo.refund>0}
+                            <div class="form-group">
+                                <label>退款金额</label>
+                                <div class="info-text">￥{$aftersaleInfo.refund|htmlentities}
+                                <span class="text-muted">(商品实付:￥{$aftersaleInfo.realprice|htmlentities} + 运费:￥{$aftersaleInfo.shippingfee|htmlentities})</span>
+                                </div>
+                            </div>
+                            {/if}
+                            <div class="form-group">
+                                <label>售后类型</label>
+                                <div class="info-text">
+                                    {$aftersaleInfo.type_text|htmlentities}
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>售后原因</label>
+                                <div class="info-text">
+                                    {$aftersaleInfo.reason|htmlentities}
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>售后图片</label>
+                                <div class="info-text">
+                                    {foreach name="aftersaleInfo.images" id="image"}
+                                    <a href="{$image|cdnurl|htmlentities}"><img src="{$image|cdnurl|htmlentities}" alt="" style="width:64px;height:64px;"/></a>
+                                    {/foreach}
+                                    {if !$aftersaleInfo.images}
+                                    无
+                                    {/if}
+                                </div>
+                            </div>
+                            {if $aftersaleInfo.mark}
+                            <div class="form-group">
+                                <label>商家回复</label>
+                                <div class="info-text">{$aftersaleInfo.mark|htmlentities}</div>
+                            </div>
+                            {/if}
+                        </div>
+                        {if $goodsInfo.salestate == 3}
+                        <hr>
+                        <div class="aftersale-body" style="margin-top:20px;">
+                            <h4>请寄回商品</h4>
+                            <div class="form-group">
+                                <label>快递名称</label>
+                                <div>
+                                    <input type="text" name="expressname" class="form-control" id="expressname" value="{$aftersaleInfo.expressname|htmlentities}" {if $aftersaleInfo.expressname}disabled{/if}>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>快递单号</label>
+                                <div>
+                                    <input type="text" name="expressno" class="form-control" id="expressno" value="{$aftersaleInfo.expressno|htmlentities}" {if $aftersaleInfo.expressname}disabled{/if}>
+                                </div>
+                            </div>
+                            <div>
+                                <button class="btn btn-primary btn-saveexpress" data-id="{$aftersaleInfo.order_goods_id|htmlentities}" {if $aftersaleInfo.expressname}disabled{/if} type="button">保存快递信息</button>
+                            </div>
+                        </div>
+                        {/if}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

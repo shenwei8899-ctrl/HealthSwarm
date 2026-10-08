@@ -1,0 +1,115 @@
+@font-face {
+  font-family: "shopicon";
+  src: url('iconfont.woff2?t=1625553772262') format('woff2'),
+       url('iconfont.woff?t=1625553772262') format('woff'),
+       url('iconfont.ttf?t=1625553772262') format('truetype');
+}
+
+.shopicon {
+  font-family: "shopicon" !important;
+  font-size: 16px;
+  font-style: normal;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.icon-outdoor:before {
+  content: "\e633";
+}
+
+.icon-keyword-one:before {
+  content: "\e634";
+}
+
+.icon-microphone:before {
+  content: "\e639";
+}
+
+.icon-sofa:before {
+  content: "\e63b";
+}
+
+.icon-car:before {
+  content: "\e63c";
+}
+
+.icon-microwave-oven:before {
+  content: "\e63d";
+}
+
+.icon-mouse-one:before {
+  content: "\e644";
+}
+
+.icon-washing-machine:before {
+  content: "\e645";
+}
+
+.icon-phone-one:before {
+  content: "\e646";
+}
+
+.icon-iphone:before {
+  content: "\e63a";
+}
+
+.icon-pokeball-one:before {
+  content: "\e63e";
+}
+
+.icon-lipstick:before {
+  content: "\e63f";
+}
+
+.icon-refrigerator:before {
+  content: "\e640";
+}
+
+.icon-medical-box:before {
+  content: "\e641";
+}
+
+.icon-devices:before {
+  content: "\e642";
+}
+
+.icon-bowl-one:before {
+  content: "\e643";
+}
+
+.icon-master:before {
+  content: "\e62a";
+}
+
+.icon-laptop-computer:before {
+  content: "\e62b";
+}
+
+.icon-microwaves:before {
+  content: "\e62d";
+}
+
+.icon-sound-one:before {
+  content: "\e62e";
+}
+
+.icon-printer-two:before {
+  content: "\e631";
+}
+
+.icon-projector-two:before {
+  content: "\e632";
+}
+
+.icon-radio:before {
+  content: "\e636";
+}
+
+.icon-lamp:before {
+  content: "\e637";
+}
+
+.icon-phonograph:before {
+  content: "\e638";
+}
+

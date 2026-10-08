@@ -29,7 +29,7 @@ class HealthFamilyProfileRepository:
         family_repo = FamilyRepository(self.session)
         family = await family_repo.get_family(family_id, uid)
         source = await family_repo.member(family_id, source_member_id) if family else None
-        if source is None or source.subject_uid != uid:
+        if source is None or not source.is_active or source.subject_uid != uid:
             raise HealthVisionError("not_found", "仅能关联自己已认领的家庭成员", 404)
         existing = await self.session.get(HealthFamilyProfileLink, member_id, populate_existing=True)
         if existing is not None:
@@ -187,7 +187,7 @@ class HealthFamilyProfileRepository:
         source = await family_repo.member(link.family_id, link.source_member_id) if family else None
         if source is not None:
             await self.session.refresh(source)
-        if source is None or source.subject_uid != uid or link.actor_uid != uid:
+        if source is None or not source.is_active or source.subject_uid != uid or link.actor_uid != uid:
             raise HealthVisionError("not_found", "正式档案不存在或无本人处理授权", 404)
         return family, source
 

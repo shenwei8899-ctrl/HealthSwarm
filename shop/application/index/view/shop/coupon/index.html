@@ -1,0 +1,228 @@
+<style>
+    .coupon-state li {
+        margin-right: 5px;
+    }
+
+    .coupon-state li.active {
+        border-bottom: 2px solid #67a6cb;
+        background: #67a6cb;
+    }
+
+    .coupon-state li.active a {
+        color: #fff;
+    }
+
+    .coupon-state li a {
+        padding: 5px;
+    }
+
+    .coupon {
+        border-radius: 5px;
+        margin-bottom: 30px;
+        background: #f4f6f8;
+        width: 100%;
+        display: flex;
+        align-items: center;
+    }
+
+    .coupon .coupon-left {
+        width: 70%;
+        position: relative;
+        min-height: 117px;
+        border-right: 1px dashed #ddd;
+    }
+
+    .coupon .coupon-left a:hover {
+        text-decoration: none;
+    }
+
+    .coupon .coupon-right {
+        width: 30%;
+        height: 100%;
+        vertical-align: middle;
+    }
+
+    .coupon .coupon-left .contents {
+        display: flex;
+    }
+
+    .coupon .coupon-left .contents .content-left {
+        flex: 1;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-size: 25px;
+        font-weight: bold;
+        color: #e74c3c;
+    }
+
+    .coupon .coupon-left .contents .content-left .small {
+        font-size: 8px;
+        padding-bottom: 5px;
+        font-weight: normal;
+        margin-left: 5px;
+    }
+
+    .coupon .coupon-left .contents .content-left .money {
+        display: flex;
+        align-items: flex-end;
+    }
+
+    .coupon .coupon-left .contents .content-right {
+        width: 70%;
+    }
+
+    .coupon .coupon-text {
+        padding: 15px 0px;
+    }
+
+    .coupon .coupon-text p {
+        margin-top: 2px;
+        margin-bottom: 0;
+    }
+
+    .coupon .coupon-text h4 {
+        font-weight: normal;
+        font-size: 14px;
+    }
+
+    .coupon .coupon-text .intro {
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        margin-bottom: 5px;
+    }
+
+    .coupon .coupon-right .info {
+        width: 100%;
+        padding: 15px;
+        position: relative;
+    }
+
+    .coupon .coupon-right .info .badge {
+        background: #e74c3c;
+        color: #ffffff;
+    }
+
+    .coupon .coupon-left .contents::before {
+        top: -10px;
+        right: -10px;
+    }
+
+    .coupon .coupon-left .contents::after {
+        bottom: -10px;
+        right: -10px;
+    }
+
+    .coupon .coupon-left .contents::after,
+    .coupon .coupon-left .contents::before {
+        content: '';
+        position: absolute;
+        width: 20px;
+        height: 20px;
+        background: #ffffff;
+        border-radius: 100%;
+    }
+</style>
+<div class="container">
+    <div class="section">
+        <div class="row">
+            <div class="col-md-3">
+                {include file="common/sidenav" /}
+            </div>
+            <div class="col-md-9">
+                <div class="panel panel-default">
+                    <div class="panel-body">
+                        <h2 class="page-header" style="margin-bottom:15px;">
+                            我的优惠券
+                        </h2>
+                        <ul class="coupon-state list-inline list-unstyled"
+                            style="line-height: 25px;margin-bottom:15px;">
+                            <li class="{:$param['f']==0?'active':''}">
+                                <a href="?">全部</a>
+                            </li>
+                            <li class="{:$param['f']==3?'active':''}">
+                                <a href="?begin_time=1">未生效</a>
+                            </li>
+                            <li class="{:$param['f']==1?'active':''}">
+                                <a href="?is_used=1">未使用(已生效)</a>
+                            </li>
+                            <li class="{:$param['f']==2?'active':''}">
+                                <a href="?is_used=2">已使用</a>
+                            </li>
+                            <li class="{:$param['f']==4?'active':''}">
+                                <a href="?expire_time=1">已过期</a>
+                            </li>
+                        </ul>
+                        <div class="row">
+                            {volist name="coupon_list" id="item"}
+                            <div class="col-xs-12 col-sm-6">
+                                <div class="coupon">
+                                    <div class="coupon-left">
+                                        <div class="contents">
+                                            <div class="content-left">
+                                                <div class="money">
+                                                    <span>{$item['coupon']['result_data']['number']}</span>
+                                                    <span class="small">元</span>
+                                                </div>
+                                            </div>
+                                            <div class="content-right">
+                                                <div class="coupon-text">
+                                                    <h4 class="intro mb-2">
+                                                        <a href="{$item.coupon.url|htmlentities}">{$item.coupon.name|htmlentities}</a>
+                                                    </h4>
+                                                    <p class="intro">
+                                                        订单满 <span
+                                                            class="text-warning">{$item['coupon']['result_data']['money']}
+                                                            元 </span>
+                                                        {:$item['coupon']['result']==1?'减':'打'}
+                                                        <span class="text-warning">
+                                                            {$item['coupon']['result_data']['number']}
+                                                            {:$item['coupon']['result']==1?'元': '折'}
+                                                        </span>
+                                                    </p>
+                                                    <p class="intro text-muted">
+                                                        有效期：{$item.expire_time|datetime|htmlentities}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="coupon-right">
+                                        <div class="info">
+                                            {if $item.is_used==2}
+                                            <a href="javascript:;" class="btn btn-default btn-block">
+                                                已使用
+                                            </a>
+                                            {elseif $item.begin_time > time()}
+                                            <a href="javascript:;" class="btn btn-default btn-block">
+                                                未生效
+                                            </a>
+                                            {elseif $item.expire_time < time()}
+                                            <a href="javascript:;" class="btn btn-default btn-block">
+                                                已过期
+                                            </a>
+                                            {else/}
+                                            <a href="{$item.coupon.url|htmlentities}" class="btn btn-danger btn-block" data-name="{$item.id|htmlentities}">
+                                                立即使用
+                                            </a>
+                                            {/if}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {/volist}
+                        </div>
+                        <div class="pager text-center">
+                            {if count($coupon_list)==0}
+                            暂未找到更多优惠券
+                            {else /}
+                            {$coupon_list->render()}
+                            {/if}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

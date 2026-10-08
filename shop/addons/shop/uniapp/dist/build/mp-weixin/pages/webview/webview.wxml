@@ -1,0 +1,1 @@
+<view><web-view src="{{vuex_webs.path}}"></web-view></view>

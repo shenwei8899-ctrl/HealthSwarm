@@ -1,0 +1,224 @@
+<style>
+    .address {
+        position: relative;
+        overflow: hidden;
+        line-height: 25px;
+        cursor: pointer;
+        background: #f8f8f8;
+        padding: 10px;
+        margin-bottom: 5px;
+    }
+
+    .section .panel > .panel-body.no-padding {
+        padding: 15px 0 !important;
+    }
+</style>
+<div class="container">
+    <div class="section">
+        <div class="row">
+            <div class="col-md-3">
+                {include file="common/sidenav" /}
+            </div>
+            <div class="col-md-9">
+
+                <div class="panel panel-default">
+                    <div class="panel-body" style="padding:5px 0;">
+                        <h2 class="page-header" style="margin-bottom:0;border-bottom:0;">
+                            订单详情
+                        </h2>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <div class="panel panel-default">
+                        <div class="panel-heading">
+                            <h3 class="panel-title">订单信息</h3>
+                            <div class="small" style="position:absolute;top:12px;right:0px;">
+                                {if !$orderInfo.paystate && !$orderInfo.orderstate}
+                                <a href="javascript:" class="btn btn-xs btn-danger btn-cancel" data-orderid="{$orderInfo.order_sn|htmlentities}">取消订单</a>
+                                {/if}
+                                <!--{if $orderInfo.shippingstate && in_array($orderInfo.orderstate, [0, 3])}
+                                <a href="{$orderInfo.logisticsurl|htmlentities}" target="_blank" class="btn btn-xs btn-info">查看物流</a>
+                                {/if}-->
+                                {if $orderInfo.shippingstate==1 && !$orderInfo.orderstate}
+                                <a href="javascript:" class="btn btn-xs btn-success btn-received" data-orderid="{$orderInfo.order_sn|htmlentities}">确认收货</a>
+                                {/if}
+                                {if $orderInfo.shippingstate==2 && !$orderInfo.orderstate && $orderInfo.paystate==1}
+                                <a href="{$orderInfo.commenturl|htmlentities}" class="btn btn-xs btn-warning">立即评价</a>
+                                {/if}
+                                {if !$orderInfo.paystate && !$orderInfo.orderstate}
+                                <a href="{$orderInfo.payurl|htmlentities}" class="btn btn-xs btn-primary">立即支付</a>
+                                {/if}
+                            </div>
+                        </div>
+                        <div class="panel-body no-padding">
+                            <div class="row">
+                                <div class="col-xs-12 col-sm-6"><p>订单编号：{$orderInfo.order_sn|htmlentities}</p></div>
+                                <div class="col-xs-12 col-sm-6"><p>下单时间：{$orderInfo.createtime|datetime|htmlentities}</p></div>
+                                <div class="col-xs-12 col-sm-6"><p>支付时间：{:$orderInfo.paytime?datetime($orderInfo.paytime):'未支付'}</p></div>
+                                <div class="col-xs-12 col-sm-6"><p>订单金额：￥{$orderInfo.saleamount|htmlentities}</p></div>
+                                <div class="col-xs-12 col-sm-6"><p>订单状态：<span class="label label-info">{$orderInfo.status_text|htmlentities}</span></p></div>
+                                <div class="col-xs-12 col-sm-6"><p>订单备注：{$orderInfo.memo|default='无'}</p></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="section">
+                    <div class="panel panel-default">
+                        <div class="panel-heading">
+                            <h3 class="panel-title">
+                                收货信息
+                            </h3>
+                        </div>
+                        <div class="panel-body no-padding">
+                            <address class="address" style="cursor: default">
+                                <strong>{$orderInfo.receiver|htmlentities}</strong><br>
+                                {$orderInfo.address|htmlentities}<br>
+                                <abbr title="Phone"></abbr> {$orderInfo.mobile|htmlentities}
+                            </address>
+                        </div>
+                    </div>
+                </div>
+                <div class="section">
+                    <div class="panel panel-default">
+                        <div class="panel-heading">
+                            <h3 class="panel-title">
+                                物流信息
+                            </h3>
+                            <div class="small" style="position:absolute;top:12px;right:0px;">
+                                {if $orderInfo.shippingstate && in_array($orderInfo.orderstate, [0, 3, 4])}
+                                <a href="{$orderInfo.logisticsurl|htmlentities}" target="_blank" class="btn btn-xs btn-info">查看物流</a>
+                                {/if}
+                            </div>
+                        </div>
+                        <div class="panel-body no-padding">
+                            {if $orderInfo.expressname && $orderInfo.expressno}
+                            <p class="">
+                                物流公司：{$orderInfo.expressname|htmlentities}
+                            </p>
+                            <p class="">
+                                快递单号：{$orderInfo.expressno|htmlentities}
+                            </p>
+                            {else /}
+                            <div class="text-muted">
+                                暂无物流信息
+                            </div>
+                            {/if}
+                        </div>
+                    </div>
+                </div>
+                <div class="section">
+
+                    <div class="panel panel-default">
+                        <div class="panel-heading">
+                            <h3 class="panel-title">商品信息</h3>
+                        </div>
+                        <div class="panel-body no-padding">
+                            <table class="table table-responsive no-border">
+                                <tbody>
+                                {volist name="orderInfo.order_goods" id="item"}
+                                <tr>
+                                    <td>
+                                        <div class="media">
+                                            <a class="media-left" href="{$item.goods.url|default='javascript:'}">
+                                                <img src="{:cdnurl($item.image ? $item.image : $item.goods.image)}" style="width: 64px; height: 64px;">
+                                            </a>
+                                            <div class="media-body">
+                                                <p class="media-heading">
+                                                    <a href="{$item.goods.url|default='javascript:'}" target="_blank">{$item.goods.title|default='未知'}</a>
+                                                </p>
+                                                <div class="text-muted">
+                                                    ￥{$item.price|htmlentities}
+                                                </div>
+                                                <div style="margin-top:5px;">
+                                                    {if $orderInfo.paystate && !$orderInfo.shippingstate && in_array($item.salestate, [0,6])}
+                                                    <a href="javascript:" class="btn-refund" data-id="{$item.id|htmlentities}"><span class="label label-danger">申请退款</span></a>
+                                                    {/if}
+                                                    {if $item.salestate == 2}<span class="label label-warning">退款中</span>{/if}
+                                                    {if $item.salestate == 3}<span class="label label-warning">退货中</span>{/if}
+                                                    {if $item.salestate == 4}<span class="label label-success">已退款</span>{/if}
+                                                    {if $item.salestate == 5}<span class="label label-success">已退货退款</span>{/if}
+                                                    {if $orderInfo.shippingstate && in_array($orderInfo.orderstate, [0,3,4]) && !$item.salestate}
+                                                    <a href="{:url('shop.order/apply')}?id={$item.id|htmlentities}"><span class="label label-info">申请售后</span></a>
+                                                    {/if}
+                                                    {if $orderInfo.shippingstate && in_array($orderInfo.orderstate, [0,3,4]) && $item.salestate==6}
+                                                    <a href="{:url('shop.order/apply')}?id={$item.id|htmlentities}"><span class="label label-danger">继续申请</span></a>
+                                                    {/if}
+                                                    {if in_array($item.salestate,[1,2,3,4,6])}
+                                                    <a href="{:url('shop.order/aftersale')}?id={$item.id|htmlentities}"><span class="label label-info">查看售后</span></a>
+                                                    {/if}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td width="80">
+                                        <div class="text-muted text-center">
+                                            × {$item.nums|htmlentities}
+                                        </div>
+                                    </td>
+                                </tr>
+                                {/volist}
+                                </tbody>
+                            </table>
+                            <hr>
+                            <div class="" style="line-height:25px;color:#444;">
+                                <div class="row">
+                                    <div class="col-xs-9 text-right">商品总价格:</div>
+                                    <div class="col-xs-3 text-right price">
+                                        ￥{$orderInfo.goodsprice|htmlentities}
+                                    </div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-xs-9 text-right">物流费用:</div>
+                                    <div class="col-xs-3 text-right price">￥{$orderInfo.shippingfee|htmlentities}</div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-xs-9 text-right">折扣费用:</div>
+                                    <div class="col-xs-3 text-right price">-￥{$orderInfo.discount|htmlentities}</div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-xs-9 text-right">订单总金额:</div>
+                                    <div class="col-xs-3 text-right price">￥{$orderInfo.saleamount|htmlentities}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script type="text/html" id="postcommenttpl">
+    <div class="post-review panel">
+        <form class="horizontal-form form-postcomment" action="{:url('comment/post')}" method="post">
+            <input type="hidden" name="order_id" value="{$orderInfo.id|htmlentities}"/>
+            <input type="hidden" name="goods_id" value="<%=goods_id%>"/>
+            <input type="hidden" name="star" value="5"/>
+            <div class="row row-v-10">
+                <div class="col-xs-12">
+                    <ul class="select-rate list-inline ptb-10">
+                        <li><span>你的评分 : </span></li>
+                        <li>
+                            <div class="rating">
+                                <span class="rating-stars rate-allow" data-rating="5">
+                                    <i class="fa fa-star-o star-active"></i>
+                                    <i class="fa fa-star-o"></i>
+                                    <i class="fa fa-star-o"></i>
+                                    <i class="fa fa-star-o"></i>
+                                    <i class="fa fa-star-o"></i>
+                                </span>
+                            </div>
+                        </li>
+                    </ul>
+                </div>
+                <div class="col-xs-12">
+                    <textarea class="form-control" name="content" placeholder="请输入你的评价" rows="6"></textarea>
+                </div>
+                <div class="col-xs-12 text-right">
+                    <button type="submit" class="btn mt-20">提交</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</script>

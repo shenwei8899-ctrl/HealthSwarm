@@ -1,5 +1,7 @@
 """家庭档案的认证、输入模型和 HTTP 适配。"""
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,8 +11,12 @@ from yuxi.services.family_schemas import (
     FamilyInput,
     JoinInput,
     MeasurementInput,
+    MeasurementQuery,
     MeasurementUpdate,
+    MeasurementVoid,
     MemberInput,
+    MemberStatusInput,
+    MemberUpdate,
     ProfileUpdate,
     VersionInput,
 )
@@ -67,6 +73,18 @@ async def update_profile(fid: str, mid: str, payload: ProfileUpdate, service=Dep
     return await service.update_profile(fid, mid, payload)
 
 
+@family.put("/{fid}/members/{mid}/relationship")
+async def update_member(fid: str, mid: str, payload: MemberUpdate, service=Depends(family_service)):
+    """按版本维护昵称与关系。"""
+    return await service.update_member(fid, mid, payload)
+
+
+@family.put("/{fid}/members/{mid}/status")
+async def member_status(fid: str, mid: str, payload: MemberStatusInput, service=Depends(family_service)):
+    """退出、停用或恢复关系，保留历史。"""
+    return await service.member_status(fid, mid, payload)
+
+
 @family.post("/{fid}/members/{mid}/confirm")
 async def confirm_profile(fid: str, mid: str, payload: VersionInput, service=Depends(family_service)):
     """本人确认当前档案。"""
@@ -74,9 +92,15 @@ async def confirm_profile(fid: str, mid: str, payload: VersionInput, service=Dep
 
 
 @family.get("/{fid}/members/{mid}/history")
-async def profile_history(fid: str, mid: str, service=Depends(family_service)):
+async def profile_history(
+    fid: str,
+    mid: str,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    service=Depends(family_service),
+):
     """受当前授权限制的档案历史。"""
-    return await service.history(fid, mid)
+    return await service.history(fid, mid, limit=limit, offset=offset)
 
 
 @family.post("/{fid}/members/{mid}/invite")
@@ -88,19 +112,37 @@ async def invite_member(fid: str, mid: str, service=Depends(family_service)):
 @family.put("/{fid}/members/{mid}/authorization")
 async def authorize_member(fid: str, mid: str, payload: AuthorizationInput, service=Depends(family_service)):
     """本人维护用途、字段与有效期。"""
-    return await service.authorization(fid, mid, payload.fields, payload.purpose, payload.expires_at)
+    return await service.authorization(
+        fid, mid, payload.fields, payload.purpose, payload.expires_at, payload.edit_fields
+    )
+
+
+@family.post("/{fid}/members/{mid}/invite/revoke")
+async def revoke_invitation(fid: str, mid: str, service=Depends(family_service)):
+    """撤销尚未认领的邀请。"""
+    return await service.revoke_invitation(fid, mid)
 
 
 @family.get("/{fid}/members/{mid}/measurements")
 async def list_measurements(
     fid: str,
     mid: str,
-    kind: str | None = Query(None, pattern="^(weight|blood_pressure|blood_glucose|blood_lipids)$"),
-    days: int = Query(30, ge=1, le=365),
+    filters: Annotated[MeasurementQuery, Query()],
     service=Depends(family_service),
 ):
     """读取当前可见指标。"""
-    return await service.measurements(fid, mid, kind, days)
+    return await service.measurements(fid, mid, **filters.model_dump())
+
+
+@family.get("/{fid}/members/{mid}/measurements/export")
+async def export_measurements(
+    fid: str,
+    mid: str,
+    filters: Annotated[MeasurementQuery, Query()],
+    service=Depends(family_service),
+):
+    """导出经过当前授权校验的所选指标记录。"""
+    return await service.export_measurements(fid, mid, **filters.model_dump(exclude={"limit", "offset"}))
 
 
 @family.post("/{fid}/members/{mid}/measurements")
@@ -115,6 +157,12 @@ async def correct_measurement(
 ):
     """更正并保留旧版本。"""
     return await service.correct_measurement(fid, mid, rid, payload)
+
+
+@family.post("/{fid}/members/{mid}/measurements/{rid}/void")
+async def void_measurement(fid: str, mid: str, rid: str, payload: MeasurementVoid, service=Depends(family_service)):
+    """按版本作废并保留原始记录。"""
+    return await service.void_measurement(fid, mid, rid, payload)
 
 
 @family.get("/{fid}/statistics")

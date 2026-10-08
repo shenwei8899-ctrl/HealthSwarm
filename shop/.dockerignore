@@ -1,0 +1,11 @@
+.git
+.env
+.env.production
+runtime
+public/uploads
+database/backups
+node_modules
+addons/shop/uniapp/node_modules
+.idea
+.vscode
+*.log

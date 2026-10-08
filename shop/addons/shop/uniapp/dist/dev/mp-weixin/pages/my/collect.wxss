@@ -1,0 +1,79 @@
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+page {
+  background-color: #f4f6f8;
+}
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+.hoter-list.data-v-56313d80 {
+  border-radius: 10rpx;
+}
+.hoter-list .item.data-v-56313d80 {
+  position: relative;
+}
+.hoter-list .item .collect.data-v-56313d80 {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 200rpx;
+  position: absolute;
+  right: 30rpx;
+  top: 20rpx;
+  padding: 10rpx;
+  z-index: 9999;
+}
+.hoter-list .item .images.data-v-56313d80 {
+  position: relative;
+}
+.hoter-list .item .images .title.data-v-56313d80 {
+  color: #ffffff;
+  width: 100%;
+  position: absolute;
+  left: 0rpx;
+  bottom: 0rpx;
+  padding: 20rpx 10rpx;
+  background: rgba(0, 0, 0, 0.4);
+}
+.hoter-list .item .price.data-v-56313d80 {
+  font-weight: bold;
+}
+.hoter-list .item .market_price.data-v-56313d80 {
+  text-decoration: line-through;
+  margin-left: 10rpx;
+}
+.thumb-box.data-v-56313d80 {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  padding: 30rpx 0;
+}
+.thumb-box .item-menu-image.data-v-56313d80 {
+  width: 200rpx;
+  height: 150rpx;
+  border-radius: 5rpx;
+}
+.thumb-box .right.data-v-56313d80 {
+  width: 500rpx;
+  height: 150rpx;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.thumb-box .item-menu-name.data-v-56313d80 {
+  font-weight: normal;
+  color: #303133;
+}
+.thumb-box .intro.data-v-56313d80 {
+  font-size: 20rpx;
+  padding: 10rpx 0;
+}
+.thumb-box .market_price.data-v-56313d80 {
+  text-decoration: line-through;
+}
+.thumb-box.data-v-56313d80:not(:last-child) {
+  border-bottom: 1px solid #f4f6f8;
+}

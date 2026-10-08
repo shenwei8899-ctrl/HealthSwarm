@@ -1,0 +1,130 @@
+<style>
+
+    .address {
+        position: relative;
+        overflow: hidden;
+        line-height: 25px;
+        background: #f8f8f8;
+        padding: 10px 15px;
+        margin-bottom: 25px;
+    }
+
+    .address .ribbon-wrapper {
+        display: none;
+    }
+
+    .address.active .ribbon-wrapper {
+        display: block;
+    }
+
+    .address:hover {
+        background: #efefef;
+    }
+
+    .address.active {
+        background: #efefef;
+    }
+
+    .address h4 {
+        font-weight: normal;
+        font-size: 14px;
+    }
+
+    .address .ribbon-wrapper {
+        position: absolute;
+        top: 0;
+        right: 0;
+        overflow: hidden;
+        width: 80px;
+        height: 85px;
+    }
+
+    .ribbon {
+        font-size: 10px;
+        position: relative;
+        top: 17px;
+        left: -8px;
+        width: 120px;
+        padding: 1px;
+        color: #fff;
+        text-align: center;
+        background-color: #ff3100;
+        text-transform: uppercase;
+        z-index: 2;
+        -webkit-transform: rotate(45deg);
+        -moz-transform: rotate(45deg);
+        -ms-transform: rotate(45deg);
+        -o-transform: rotate(45deg);
+    }
+
+    .address .operate {
+        text-align: right;
+    }
+
+    .address .operate a {
+        margin-left: 5px;
+        font-size: 12px;
+        color: #777;
+    }
+
+    .address .operate a:hover {
+        color: #3c8dbc;
+    }
+
+    .address:hover .operate {
+        display: block;
+    }
+</style>
+<div class="container">
+    <div class="section">
+        <div class="row">
+            <div class="col-md-3">
+                {include file="common/sidenav" /}
+            </div>
+            <div class="col-md-9">
+                <div class="panel panel-default">
+                    <div class="panel-body">
+                        <h2 class="page-header" style="margin-bottom:15px;">
+                            我的收货地址
+                            <div class="pull-right">
+                                <a href="{:url('shop.address/add')}" class="btn btn-primary">添加收货地址</a>
+                            </div>
+                        </h2>
+
+                        <div class="address-list">
+                            <div class="row">
+                                {foreach name="addressList" id="item"}
+                                <div class="col-xs-12 col-md-6">
+                                    <address class="address {if $item.isdefault}active{/if}" data-id="{$item.id|htmlentities}">
+                                        <div class="ribbon-wrapper">
+                                            <div class="ribbon">已选择</div>
+                                        </div>
+                                        <h4>
+                                            <a href="{:url('shop.address/edit')}?id={$item.id|htmlentities}">{$item.receiver|htmlentities}</a>
+                                        </h4>
+                                        {$item.address|htmlentities}<br>
+                                        <abbr title="Phone"></abbr> {$item.mobile|htmlentities}
+                                        <div class="operate">
+                                            <a href="{:url('shop.address/edit')}?id={$item.id|htmlentities}" class="btn-editaddress">编辑</a>
+                                            <a href="javascript:;" class="btn-deladdress" data-id="{$item.id|htmlentities}">刪除</a>
+                                            <a href="javascript:;" class="btn-setdefault" data-id="{$item.id|htmlentities}">设为默认</a>
+                                        </div>
+                                    </address>
+                                </div>
+                                {/foreach}
+                            </div>
+                        </div>
+
+                        <div class="pager text-center">
+                            {if count($addressList)==0}
+                            暂无收货地址，<a href="{:url('shop.address/add')}" class="btn btn-primary">添加收货地址</a>
+                            {else /}
+                            {$addressList->render()}
+                            {/if}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

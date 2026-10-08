@@ -43,7 +43,7 @@ globalThis.__modelProviderActionsTestDeps = {
   FileText: null
 }
 
-const { descriptor } = parse(source)
+const { descriptor } = parse(source.replace(/\r\n/g, '\n'))
 const compiled = compileScript(descriptor, { id: 'model-provider-actions-test' }).content
 const executable = compiled
   .replace(/^import(?:\s*\{[\s\S]*?\}|\s+[A-Za-z]\w*)\s+from\s+'[^']+'\n/gm, (line) =>

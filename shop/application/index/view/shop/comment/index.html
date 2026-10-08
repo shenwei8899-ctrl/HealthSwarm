@@ -1,0 +1,127 @@
+<style>
+    .comment-list .media {
+        margin-bottom: 15px;
+        padding: 15px 0;
+        border-bottom: 1px solid #eee;
+    }
+
+    .comment-list .media .media-heading {
+        margin-bottom: 10px;
+        font-weight: normal;
+        font-size: 14px;
+    }
+
+    .comment-list .media .comment-detail {
+        background: #eee;
+        padding: 15px;
+        margin-bottom: 10px;
+        border-radius: 3px;
+    }
+
+    .rating {
+        overflow: hidden;
+        display: inline-block;
+        position: relative;
+        font-size: 14px;
+        color: #FFCA00;
+    }
+
+    .rating-star {
+        padding: 0 2px;
+        margin: 0;
+        cursor: pointer;
+        display: block;
+        float: right;
+    }
+
+    .rating-star:after {
+        position: relative;
+        font-family: FontAwesome;
+        content: '\f006';
+    }
+
+    @media (max-width: 1200px) {
+        .rating-star {
+            padding: 0 1px;
+        }
+    }
+
+    .rating-star.checked ~ .rating-star:after,
+    .rating-star.checked:after {
+        content: '\f005';
+    }
+
+    .rating.vote .rating:hover .rating-star:after {
+        content: '\f006';
+    }
+
+    .rating.vote .rating-star:hover ~ .rating-star:after,
+    .rating.vote .rating-star:hover:after {
+        content: '\f005' !important;
+    }
+</style>
+<div class="container">
+    <div class="section">
+        <div class="row">
+            <div class="col-md-3">
+                {include file="common/sidenav" /}
+            </div>
+            <div class="col-md-9">
+                <div class="panel panel-default">
+                    <div class="panel-body">
+                        <h2 class="page-header" style="margin-bottom:15px;">
+                            我的评价
+                        </h2>
+
+                        <div class="comment-list">
+                            <div class="row">
+                                {foreach name="commentList" id="item"}
+                                <div class="col-xs-12">
+                                    <div class="media">
+                                        <a class="media-left" href="{$item.goods.url|default='javascript:'}" target="_blank">
+                                            <img src="{$item.goods.image|default='/assets/img/blank.gif'|cdnurl|htmlentities}" style="width: 64px; height: 64px;">
+                                        </a>
+                                        <div class="media-body">
+                                            <h4 class="media-heading">
+                                                <a href="{$item.goods.url|default='javascript:'}" target="_blank">{$item.goods.title|default='未知'}</a>
+                                            </h4>
+                                            <div class="rating">
+                                                <span class="rating">
+                                                    {for start="5" end="1" comparison=">=" step="-1"}
+                                                    <span class="rating-star {if $i==$item.star}checked{/if}" data-value="{$i|htmlentities}"></span>
+                                                    {/for}
+                                                </span>
+                                            </div>
+                                            <div class="comment-detail">
+                                                {$item.content|htmlentities}
+                                            </div>
+                                            {if $item.images}
+                                            <div class="comment-images">
+                                                {foreach name="item.images" id="image"}
+                                                <a href="{$image|htmlentities}" target="_blank"><img src="{$image|htmlentities}" alt="" style="width:64px;height:64px;"></a>
+                                                {/foreach}
+                                            </div>
+                                            {/if}
+                                            <div class="text-muted" style="margin-top:10px;">
+                                                发表于 {$item.createtime|datetime|htmlentities}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                {/foreach}
+                            </div>
+                        </div>
+
+                        <div class="pager text-center">
+                            {if count($commentList)==0}
+                            暂无评价
+                            {else /}
+                            {$commentList->render()}
+                            {/if}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

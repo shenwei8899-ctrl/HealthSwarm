@@ -1,0 +1,13 @@
+{
+  "component": true,
+  "usingComponents": {
+    "u-icon": "/uview-ui/components/u-icon/u-icon",
+    "fa-download": "/components/fa-download/fa-download",
+    "fa-images": "/components/fa-images/fa-images",
+    "u-parse": "/uview-ui/components/u-parse/u-parse",
+    "u-table": "/uview-ui/components/u-table/u-table",
+    "u-tr": "/uview-ui/components/u-tr/u-tr",
+    "u-th": "/uview-ui/components/u-th/u-th",
+    "u-td": "/uview-ui/components/u-td/u-td"
+  }
+}

@@ -1,0 +1,176 @@
+<style>
+    .timeline {
+        list-style: none;
+        padding: 0;
+        position: relative;
+    }
+
+    .timeline:before {
+        top: 0;
+        bottom: 0;
+        position: absolute;
+        content: " ";
+        width: 1px;
+        background-color: #eeeeee;
+        left: 17px;
+    }
+
+    .timeline.loading:before {
+        width: 0;
+    }
+
+    .timeline > li {
+        position: relative;
+    }
+
+    .timeline > li:before,
+    .timeline > li:after {
+        content: " ";
+        display: table;
+    }
+
+    .timeline > li:after {
+        clear: both;
+    }
+
+    .timeline > li:before,
+    .timeline > li:after {
+        content: " ";
+        display: table;
+    }
+
+    .timeline > li:after {
+        clear: both;
+    }
+
+    .timeline > li > .timeline-panel {
+        border-radius: 2px;
+        padding: 10px;
+        position: relative;
+        margin-left: 40px;
+    }
+
+    .timeline > li > .timeline-badge {
+        color: #fff;
+        width: 25px;
+        height: 25px;
+        line-height: 25px;
+        text-align: center;
+        position: absolute;
+        top: 13px;
+        left: 30px;
+        margin-left: -25px;
+        background-color: #999999;
+        z-index: 100;
+        border-radius: 50%;
+    }
+
+    .timeline > li h4 {
+        font-size: 14px;
+    }
+
+    .timeline-badge.primary {
+        background-color: #2e6da4 !important;
+    }
+
+    .timeline-badge.success {
+        background-color: #3f903f !important;
+    }
+
+    .timeline-badge.warning {
+        background-color: #f0ad4e !important;
+    }
+
+    .timeline-badge.danger {
+        background-color: #d9534f !important;
+    }
+
+    .timeline-badge.info {
+        background-color: #5bc0de !important;
+    }
+
+    .timeline-title {
+        margin-top: 0;
+        color: inherit;
+    }
+
+    .timeline-body > p,
+    .timeline-body > ul {
+        margin-bottom: 0;
+    }
+
+    .timeline-body > p + p {
+        margin-top: 5px;
+    }
+</style>
+<div class="container">
+    <div class="section">
+        <div class="row">
+            <div class="col-md-3">
+                {include file="common/sidenav" /}
+            </div>
+            <div class="col-md-9">
+                <div class="panel panel-default">
+                    <div class="panel-body">
+                        <h2 class="page-header" style="margin-bottom:15px;">
+                            查看物流
+                        </h2>
+
+                        <div>
+                            <p>
+                                订单编号：{$orderInfo.order_sn|htmlentities}
+                            </p>
+                            {if $orderInfo.expressname && $orderInfo.expressno}
+                            <p>
+                                物流公司：{$orderInfo.expressname|htmlentities}
+                            </p>
+                            <p>
+                                快递单号：{$orderInfo.expressno|htmlentities}
+                            </p>
+                            {else /}
+                            <p>
+                                暂无物流信息
+                            </p>
+                            {/if}
+                        </div>
+                        <hr>
+
+                        <div class="traces-list">
+                            {if $orderInfo.expressname && $orderInfo.expressno}
+                            <ul class="timeline loading">
+                                <li>正在加载物流信息</li>
+                            </ul>
+                            {/if}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script type="text/html" id="timelinetpl">
+    <%for(var i=0;i< traces.length;i++){%>
+    <li>
+        <div class="timeline-badge info">
+            <span class="fa fa-truck"></span>
+        </div>
+        <div class="timeline-date hidden">
+            <%=traces[i]['AcceptTime']%>
+        </div>
+        <div class="timeline-panel">
+            <div class="timeline-heading">
+                <div class="timeline-title">
+                    <h4><%=traces[i]['AcceptStation']%></h4>
+                    <div class="text-muted"><%=traces[i]['Remark']%></div>
+                </div>
+            </div>
+            <div class="timeline-body">
+                <div class="text-muted" style="margin-top:5px;"><%=traces[i]['AcceptTime']%></div>
+                <div class="row">
+                </div>
+            </div>
+        </div>
+    </li>
+    <%}%>
+</script>

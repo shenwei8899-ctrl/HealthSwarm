@@ -58,8 +58,8 @@ class HealthMeasurementRepository:
             if self.kind not in authorized_fields(family, source, uid):
                 raise HealthVisionError("not_found", f"无本人实测{self.label}字段访问授权", 403)
             family_repo = FamilyRepository(self.session)
-            rows = await family_repo.measurements(
-                [source.id], [self.kind], since=since, until=until, limit=MEASUREMENT_LIMIT + 1
+            rows, total = await family_repo.measurement_page(
+                [source.id], [self.kind], since=since, until=until, limit=MEASUREMENT_LIMIT
             )
             for row in rows[:MEASUREMENT_LIMIT]:
                 try:
@@ -87,7 +87,7 @@ class HealthMeasurementRepository:
                     }
                     for row in rows[:MEASUREMENT_LIMIT]
                 ],
-                truncated=len(rows) > MEASUREMENT_LIMIT,
+                truncated=total > MEASUREMENT_LIMIT,
             )
             if audit:
                 await family_repo.audit(link.family_id, source.id, uid, f"agent_{self.kind}_read")

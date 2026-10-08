@@ -1,0 +1,15 @@
+{
+  "navigationBarTitleText": "签到",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "fa-signin": "/components/fa-signin/fa-signin",
+    "u-modal": "/uview-ui/components/u-modal/u-modal",
+    "u-table": "/uview-ui/components/u-table/u-table",
+    "u-tr": "/uview-ui/components/u-tr/u-tr",
+    "u-th": "/uview-ui/components/u-th/u-th",
+    "u-td": "/uview-ui/components/u-td/u-td",
+    "fa-tabbar": "/components/fa-tabbar/fa-tabbar"
+  }
+}

@@ -51,7 +51,7 @@ def bp_record(*, systolic=120, diastolic=80, version=1):
 async def test_blood_pressure_is_independent_minimal_raw_projection(bp_repo):
     """档案未确认也返回原数值、mmHg和独立版本，不外发备注或作医学判断。"""
     state = bp_repo
-    state.measurements.return_value = [bp_record(systolic=120.5)]
+    state.measurements.return_value = ([bp_record(systolic=120.5)], 1)
     payload = await state.repo.read("actor", "health-self", PERIOD)
     assert payload["records"] == [
         {
@@ -75,7 +75,7 @@ async def test_blood_pressure_is_independent_minimal_raw_projection(bp_repo):
         ["blood_pressure"],
         since=datetime(2026, 9, 8, 16),
         until=datetime(2026, 10, 8, 16),
-        limit=21,
+        limit=20,
     )
     state.audit.assert_awaited_with("family", "formal-self", "actor", "agent_blood_pressure_read")
 
@@ -100,7 +100,7 @@ async def test_invalid_stored_blood_pressure_fails_closed(bp_repo, values):
     """已有数据也必须遵守家庭测量数值约束，非法记录不伪装为缺失。"""
     row = bp_record()
     row.values = values
-    bp_repo.measurements.return_value = [row]
+    bp_repo.measurements.return_value = ([row], 1)
     with pytest.raises(HealthVisionError, match="blood_pressure_source_changed") as error:
         await bp_repo.repo.read("actor", "health-self", PERIOD)
     assert error.value.status == 410
@@ -126,7 +126,7 @@ async def test_blood_pressure_empty_and_unlinked_use_are_real_dependencies(bp_re
     set_history(state, [weight_use(payload)])
     state.link = link
     if linked:
-        state.measurements.return_value = [bp_record()]
+        state.measurements.return_value = ([bp_record()], 1)
     with pytest.raises(HealthVisionError, match="blood_pressure_source_changed"):
         await state.repo.validate_history("actor", state.binding)
 
@@ -136,12 +136,12 @@ async def test_blood_pressure_empty_and_unlinked_use_are_real_dependencies(bp_re
 async def test_blood_pressure_history_invalidates_without_new_tool(bp_repo, monkeypatch, change):
     """独立版本、来源、范围选择和字段授权变化均让派生历史停止复用。"""
     state = bp_repo
-    state.measurements.return_value = [bp_record()]
+    state.measurements.return_value = ([bp_record()], 1)
     payload = await state.repo.read("actor", "health-self", PERIOD)
     set_history(state, [weight_use(payload)])
     state.audit.reset_mock()
     if change == "correction":
-        state.measurements.return_value = [bp_record(systolic=121, diastolic=81, version=2)]
+        state.measurements.return_value = ([bp_record(systolic=121, diastolic=81, version=2)], 1)
     elif change == "source":
         state.source.id = "other-source"
     elif change == "field":
@@ -149,7 +149,7 @@ async def test_blood_pressure_history_invalidates_without_new_tool(bp_repo, monk
     elif change == "revoke":
         state.authorize.side_effect = HealthVisionError("not_found", "合成撤回", 404)
     else:
-        state.measurements.return_value = [bp_record() for _ in range(21)]
+        state.measurements.return_value = ([bp_record() for _ in range(21)], 21)
     with pytest.raises(HealthVisionError, match="blood_pressure_source_changed") as error:
         await state.repo.validate_history("actor", state.binding)
     assert error.value.status == 410
@@ -162,7 +162,7 @@ async def test_blood_pressure_history_invalidates_without_new_tool(bp_repo, monk
 async def test_real_receipt_cannot_authorize_blood_pressure_checkpoint_tampering(bp_repo, change):
     """真实线程回执不能授权伪造数值、Python相等的JSON类型或额外正文。"""
     state = bp_repo
-    state.measurements.return_value = [bp_record()]
+    state.measurements.return_value = ([bp_record()], 1)
     current = await state.repo.read("actor", "health-self", PERIOD)
     state.session.scalar.return_value = weight_use(current)
     await state.repo.validate_tool_payload("actor", state.binding, current)
@@ -205,7 +205,7 @@ async def test_forged_hash_json_types_fail_before_database_lookup(bp_repo, sourc
 async def test_stored_receipt_refs_cannot_replace_version_with_boolean(bp_repo):
     """持久化JSON回执与原测量版本必须按JSON类型精确核对。"""
     state = bp_repo
-    state.measurements.return_value = [bp_record()]
+    state.measurements.return_value = ([bp_record()], 1)
     payload = await state.repo.read("actor", "health-self", PERIOD)
     receipt = weight_use(payload)
     receipt.record_refs[0]["version"] = True

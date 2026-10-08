@@ -1,0 +1,101 @@
+<div class="v5-workspace" data-workspace="{$workspace.key|htmlentities}">
+    <div class="v5-heading">
+        <div>
+            <h2>{$workspace.title|htmlentities}</h2>
+            <p>{$workspace.description|htmlentities}</p>
+        </div>
+        <div class="v5-heading-actions">
+            <span class="label label-success"><i class="fa fa-circle"></i> V5 服务正常</span>
+            <button type="button" class="btn btn-default btn-v5-refresh"><i class="fa fa-refresh"></i> 刷新</button>
+        </div>
+    </div>
+
+    {if condition="$workspace.key eq 'dashboard'"}
+    <div class="row v5-metrics">
+        <div class="col-xs-6 col-md-3"><div class="v5-metric"><span>今日实付</span><strong>¥{:number_format($dashboard.today_paid_cent/100, 2)}</strong><small>{$dashboard.today_order_count} 笔订单</small></div></div>
+        <div class="col-xs-6 col-md-3"><div class="v5-metric"><span>三天内待备货</span><strong>{$dashboard.prepare_batch_count}</strong><small>按送达日前 3 天锁库存</small></div></div>
+        <div class="col-xs-6 col-md-3"><div class="v5-metric v5-metric-warning"><span>待处理异常</span><strong>{$dashboard.open_exception_count}</strong><small>供应、履约与接口异常</small></div></div>
+        <div class="col-xs-6 col-md-3"><div class="v5-metric v5-metric-danger"><span>联调/履约待办</span><strong>{:$dashboard.agent_blocked_count+$dashboard.supplier_push_failed_count+$dashboard.pending_aftersale_count}</strong><small>推荐阻断、推单失败、售后</small></div></div>
+    </div>
+    {/if}
+
+    <div class="panel panel-default v5-main-panel">
+        {if condition="$workspace.key eq 'settings'"}
+        <div class="alert alert-info v5-config-entry"><i class="fa fa-sliders"></i> 支付、消息、V5主密钥、计划服务费和专业审核开关沿用插件配置。 <a class="btn btn-xs btn-primary" href="{:url('addon/config',['name'=>'shop'])}">打开商城插件配置</a></div>
+        {/if}
+        <div class="panel-heading">
+            <ul class="nav nav-tabs v5-tabs" role="tablist">
+                {foreach name="workspace.tabs" item="tab" key="index"}
+                <li class="{if condition='$index eq 0'}active{/if}"><a href="#v5-tab-{$index}" data-toggle="tab" data-resource="{$tab.resource|htmlentities}">{$tab.label|htmlentities}</a></li>
+                {/foreach}
+            </ul>
+        </div>
+        <div class="panel-body">
+            <div class="tab-content">
+                {foreach name="workspace.tabs" item="tab" key="index"}
+                <div class="tab-pane {if condition='$index eq 0'}active{/if}" id="v5-tab-{$index}" data-resource="{$tab.resource|htmlentities}">
+                    <div class="v5-toolbar">
+                        <div class="input-group v5-search">
+                            <input type="text" class="form-control v5-query" placeholder="输入编号、名称或状态搜索">
+                            <span class="input-group-btn"><button class="btn btn-default btn-v5-search" type="button"><i class="fa fa-search"></i></button></span>
+                        </div>
+                        {if condition="$tab.editable"}<button class="btn btn-success btn-v5-add"><i class="fa fa-plus"></i> 新增</button>{/if}
+                        {if condition="$tab.resource eq 'imports'"}
+                        <a class="btn btn-default v5-download-template" href="{:request()->root()}/shop/v5/workspace/downloadImportTemplate?v={:time()}" target="_blank" rel="noopener" download="HealthFlow-供应商商品目录-嵌入图片版.xlsx" title="下载供应商商品目录嵌入图片版模板"><i class="fa fa-download"></i> 下载嵌入图片模板</a>
+                        <input id="v5-supplier-import-file" type="file" class="v5-import-file" name="file" accept=".xlsx">
+                        <label class="btn btn-default v5-import-picker" for="v5-supplier-import-file" title="选择供应商商品目录 Excel 文件">
+                            <i class="fa fa-folder-open"></i> 选择 Excel
+                        </label>
+                        <button type="button" class="btn btn-success btn-v5-preview-import" disabled><i class="fa fa-check-circle"></i> 开始预检</button>
+                        <span class="v5-import-filename text-muted">尚未选择文件</span>
+                        {/if}
+                        <button class="btn btn-default btn-v5-tab-refresh"><i class="fa fa-refresh"></i></button>
+                        <span class="v5-total text-muted"></span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover table-bordered v5-table">
+                            <thead></thead><tbody><tr><td class="text-center text-muted">正在加载...</td></tr></tbody>
+                        </table>
+                    </div>
+                    <nav class="v5-pagination-wrap"><ul class="pagination pagination-sm v5-pagination"></ul></nav>
+                </div>
+                {/foreach}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="v5-import-modal" tabindex="-1" role="dialog">
+    <div class="modal-dialog modal-lg" role="document"><div class="modal-content">
+        <div class="modal-header"><button type="button" class="close" data-dismiss="modal"><span>&times;</span></button><h4 class="modal-title">供应商商品目录导入预检</h4></div>
+        <div class="modal-body">
+            <div class="v5-import-summary"></div>
+            <div class="table-responsive"><table class="table table-bordered table-striped v5-import-errors"><thead><tr><th>工作表</th><th>行号</th><th>业务编码</th><th>错误</th></tr></thead><tbody></tbody></table></div>
+        </div>
+        <div class="modal-footer"><button type="button" class="btn btn-default" data-dismiss="modal">关闭</button><button type="button" class="btn btn-primary btn-v5-confirm-import" disabled><i class="fa fa-check"></i> 确认写入</button></div>
+    </div></div>
+</div>
+
+<div class="modal fade" id="v5-edit-modal" tabindex="-1" role="dialog">
+    <div class="modal-dialog" role="document"><div class="modal-content">
+        <div class="modal-header"><button type="button" class="close" data-dismiss="modal"><span>&times;</span></button><h4 class="modal-title">维护资料</h4></div>
+        <div class="modal-body"><form class="form-horizontal" id="v5-edit-form"></form></div>
+        <div class="modal-footer"><button type="button" class="btn btn-default" data-dismiss="modal">取消</button><button type="button" class="btn btn-primary btn-v5-save">保存</button></div>
+    </div></div>
+</div>
+
+<div class="modal fade" id="v5-goods-detail-modal" tabindex="-1" role="dialog">
+    <div class="modal-dialog modal-lg" role="document"><div class="modal-content">
+        <div class="modal-header"><button type="button" class="close" data-dismiss="modal"><span>&times;</span></button><h4 class="modal-title">商品详情与规格库存</h4></div>
+        <div class="modal-body" id="v5-goods-detail-content"></div>
+        <div class="modal-footer"><button type="button" class="btn btn-default" data-dismiss="modal">关闭</button><button type="button" class="btn btn-primary btn-v5-edit-goods"><i class="fa fa-pencil"></i> 编辑商品资料</button></div>
+    </div></div>
+</div>
+
+<style>
+.v5-table td.v5-image-cell{width:72px;min-width:72px;max-width:72px;height:64px;padding:6px;overflow:hidden;vertical-align:middle}.v5-table td.v5-image-cell img.v5-goods-thumb{display:block!important;width:52px!important;height:52px!important;max-width:52px!important;max-height:52px!important;min-width:52px;min-height:52px;object-fit:cover!important;border-radius:4px;background:#f1f4f6;border:1px solid #e1e6ec}.v5-table td.v5-image-cell .v5-image-empty{white-space:nowrap}
+.v5-detail-image{width:88px;height:88px;object-fit:cover;border:1px solid #e1e6ec;border-radius:4px;background:#f1f4f6}.v5-goods-summary h4{margin-top:4px;margin-bottom:10px}.v5-goods-summary p{margin-bottom:7px}
+.v5-front-modal{z-index:1060!important}.v5-front-modal+.modal-backdrop{z-index:1055!important}.v5-import-file{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;border:0!important}.v5-import-filename{max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.v5-image-upload{position:relative}.v5-image-upload .v5-image-file{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}.v5-image-upload .v5-upload-status{margin-left:9px}.v5-image-preview{margin-top:8px}.v5-image-preview img{width:72px;height:72px;object-fit:cover;border:1px solid #e1e6ec;border-radius:4px;background:#f1f4f6}
+.v5-workspace{padding:4px 2px 24px;color:#263238}.v5-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}.v5-heading h2{margin:0 0 5px;font-size:22px;font-weight:600;letter-spacing:0}.v5-heading p{margin:0;color:#718096}.v5-heading-actions{display:flex;align-items:center;gap:8px}.v5-heading-actions .label{padding:7px 9px;font-weight:400}.v5-metrics{margin-bottom:4px}.v5-metric{min-height:112px;padding:17px 18px;margin-bottom:16px;background:#fff;border:1px solid #e5e9ef;border-left:3px solid #1f8f6a;box-shadow:0 1px 2px rgba(20,30,45,.04)}.v5-metric-warning{border-left-color:#d89b27}.v5-metric-danger{border-left-color:#c75146}.v5-metric span,.v5-metric small{display:block;color:#718096}.v5-metric strong{display:block;margin:7px 0 4px;font-size:25px;line-height:1.1}.v5-main-panel{border-color:#e1e6ec;box-shadow:0 1px 3px rgba(20,30,45,.05)}.v5-config-entry{margin:12px 14px 0}.v5-main-panel>.panel-heading{padding:0 14px;background:#fff}.v5-tabs{border:0}.v5-tabs>li>a{padding:13px 15px;color:#536271;border:0;border-bottom:2px solid transparent}.v5-tabs>li.active>a,.v5-tabs>li.active>a:hover{color:#167d5b;border:0;border-bottom:2px solid #167d5b;font-weight:600}.v5-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:13px}.v5-search{width:310px;max-width:45vw}.v5-total{margin-left:auto}.v5-table{margin-bottom:0;font-size:13px}.v5-table th{white-space:nowrap;background:#f7f9fb;color:#52606d;font-weight:600}.v5-table td{max-width:280px;vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.v5-table .v5-actions{min-width:106px}.v5-pagination-wrap{text-align:right;margin-top:10px}.v5-pagination{margin:0}.v5-empty{padding:44px!important;color:#8b98a5}.v5-status{display:inline-block;padding:2px 7px;border-radius:3px;background:#eef2f5}.v5-import-summary{margin-bottom:14px}.v5-import-summary .alert{margin-bottom:10px}.v5-import-errors td{vertical-align:top}.v5-import-errors td:last-child{white-space:normal;min-width:280px}.modal .form-group:last-child{margin-bottom:0}@media(max-width:767px){.v5-heading{align-items:flex-start;gap:12px}.v5-heading-actions .label{display:none}.v5-toolbar{flex-wrap:wrap}.v5-search{width:100%;max-width:none}.v5-total{margin-left:0;width:100%}}
+</style>

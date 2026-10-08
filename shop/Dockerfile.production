@@ -1,0 +1,26 @@
+FROM composer:2 AS vendor
+
+WORKDIR /app
+COPY composer.json ./
+RUN composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader --ignore-platform-reqs
+
+FROM php:8.3-fpm
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libcurl4-openssl-dev libfreetype6-dev libjpeg62-turbo-dev libpng-dev libzip-dev libonig-dev libicu-dev libpq-dev unzip \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install -j"$(nproc)" bcmath curl gd intl mbstring opcache pdo_pgsql zip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /var/www/html
+COPY . /var/www/html
+COPY --from=vendor /app/vendor /var/www/html/vendor
+COPY docker/php-production.ini /usr/local/etc/php/conf.d/zz-healthflow-production.ini
+
+RUN chmod +x docker/production-entrypoint.sh docker/run-v5-scheduler.sh \
+    && mkdir -p runtime public/uploads \
+    && chown -R www-data:www-data runtime public/uploads
+
+ENTRYPOINT ["sh", "docker/production-entrypoint.sh"]
+CMD ["php-fpm", "-F"]

@@ -1,0 +1,8 @@
+
+page {
+	background-color: #ffffff;
+}
+.login {
+	padding: 20% 15%;
+}
+

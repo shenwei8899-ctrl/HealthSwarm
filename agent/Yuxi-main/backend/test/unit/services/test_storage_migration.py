@@ -13,6 +13,16 @@ from yuxi.storage_migrations.v071_workdirs import (
 )
 
 
+@pytest.fixture(autouse=True)
+def family_schema_upgrade(monkeypatch):
+    """流程单测只隔离 SQL；真实迁移由 PostgreSQL integration 验证。"""
+
+    async def upgrade(_manager):
+        return None
+
+    monkeypatch.setattr(storage_migration, "upgrade_family_archives", upgrade)
+
+
 class _Session:
     def __init__(self, calls: list[object] | None = None):
         self.calls = calls

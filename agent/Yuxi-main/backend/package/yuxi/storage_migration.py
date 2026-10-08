@@ -40,6 +40,7 @@ from yuxi.storage_migrations.v072_runtime_identity import (
     migrate_runtime_storage_identity,
     runtime_storage_requires_quiescence,
 )
+from yuxi.storage_migrations.v011_family import upgrade_family_archives
 
 _QUIESCENCE_TOKEN_ENV = "YUXI_STORAGE_MIGRATION_QUIESCENCE_TOKEN"
 _QUIESCENCE_FILE_ENV = "YUXI_STORAGE_MIGRATION_QUIESCENCE_FILE"
@@ -69,7 +70,7 @@ async def main() -> None:
                 "business",
                 business_version,
                 BUSINESS_SCHEMA_VERSION,
-                upgrade_from=(2, 7, 8, 9),
+                upgrade_from=(2, 7, 8, 9, 10),
             )
             knowledge_version = versions.get("knowledge")
             _require_supported_version(
@@ -86,7 +87,7 @@ async def main() -> None:
                 upgrade_from=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17),
             )
 
-            if business_version in {None, 2, 7, 8, 9}:
+            if business_version in {None, 2, 7, 8, 9, 10}:
                 await pg_manager.create_business_tables()
             if migrates_workdirs:
                 await asyncio.to_thread(import_v071_workdirs, workdir_plan.workdirs, workdir_plan.conversations)
@@ -102,6 +103,9 @@ async def main() -> None:
                     await pg_manager.setup_langgraph_checkpointer()
             if business_version in {None, 2, 7, 8}:
                 await pg_manager.upgrade_agent_resource_selection()
+
+            if business_version != BUSINESS_SCHEMA_VERSION:
+                await upgrade_family_archives(pg_manager)
 
             if knowledge_version is None:
                 await pg_manager.create_knowledge_tables()

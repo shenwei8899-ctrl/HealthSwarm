@@ -204,6 +204,31 @@ async def test_link_is_explicit_idempotent_and_persists_one_source(family_profil
         assert rows[0].source_member_id == source["source_member_id"]
 
 
+@pytest.mark.parametrize("linked", [False, True])
+async def test_inactive_source_never_links_or_returns_ready_profile(family_profile_http, linked):
+    """数据库已有停用来源时，即使家庭仍可见也不能建立或重读正式映射。"""
+    client, sessions, identities = family_profile_http
+    headers = identities["self"]
+    source = await create_source(client, headers)
+    member_id = await create_health_member(client, headers)
+    link_path = f"{ROOT}/members/{member_id}/family-profile-link"
+    if linked:
+        response = await client.post(link_path, headers=headers, json=source)
+        assert response.status_code == 200, response.text
+        before = await client.get(f"{ROOT}/members/{member_id}/family-profile", headers=headers)
+        assert before.status_code == 200 and before.json()["status"] == "ready", before.text
+    async with sessions() as session:
+        row = await session.get(SourceMember, source["source_member_id"])
+        row.is_active = False
+        await session.commit()
+    denied = await client.post(link_path, headers=headers, json=source)
+    assert denied.status_code == 404, denied.text
+    if linked:
+        for suffix in ("family-profile-link", "family-profile", "weight-records", "blood-pressure-records"):
+            denied = await client.get(f"{ROOT}/members/{member_id}/{suffix}", headers=headers)
+            assert denied.status_code == 404, (suffix, denied.text)
+
+
 async def test_link_rejects_implicit_confirmation_proxy_and_foreign_family(family_profile_http):
     """确认标志、本人关系及准确家庭归属都是独立入口条件。"""
     client, _, identities = family_profile_http

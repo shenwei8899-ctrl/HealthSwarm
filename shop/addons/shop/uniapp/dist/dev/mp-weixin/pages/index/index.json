@@ -1,0 +1,9 @@
+{
+  "navigationBarTitleText": "首页",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "usingComponents": {
+    "u-loadmore": "/uview-ui/components/u-loadmore/u-loadmore",
+    "u-back-top": "/uview-ui/components/u-back-top/u-back-top"
+  }
+}

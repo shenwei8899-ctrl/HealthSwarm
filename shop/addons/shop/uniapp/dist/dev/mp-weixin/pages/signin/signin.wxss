@@ -1,0 +1,85 @@
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+page {
+  background-color: #f4f6f8;
+}
+.signin {
+  height: 450rpx;
+  position: relative;
+}
+.signin .u-flexs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.signin .garden1 {
+  width: 180rpx;
+  height: 180rpx;
+  border-radius: 200rpx;
+  background-color: rgba(255, 255, 255, 0.4);
+  position: relative;
+}
+.signin .garden1 .garden2 {
+  width: 150rpx;
+  height: 150rpx;
+  border-radius: 200rpx;
+  background-color: rgba(255, 255, 255, 0.7);
+  position: absolute;
+  left: 15rpx;
+  top: 15rpx;
+  z-index: 80;
+}
+.signin .garden1 .garden2 .is-signin {
+  color: #909399;
+}
+.signin .garden1 .garden2.no-signin {
+  animation: gardens2 2s infinite;
+}
+.signin .garden1 .garden3 {
+  width: 120rpx;
+  height: 120rpx;
+  border-radius: 200rpx;
+  background-color: #ffffff;
+  position: relative;
+  z-index: 100;
+}
+.signin .garden1 .garden3.no-signin {
+  animation: gardens3 2s infinite;
+}
+.signin .u-score-color {
+  color: #e0e0e0;
+}
+.signin .rule {
+  position: absolute;
+  right: 0;
+  top: 50rpx;
+  background-color: rgba(255, 255, 255, 0.9);
+  border-top-left-radius: 30rpx;
+  border-bottom-left-radius: 30rpx;
+  padding: 5rpx 10rpx 5rpx 20rpx;
+}
+.number {
+  position: relative;
+  top: -65rpx;
+}
+.number .u-col-center {
+  height: 130rpx;
+  border-radius: 10rpx;
+  box-shadow: 0px 0px 5px 0px rgba(0, 34, 144, 0.1);
+}
+.number .u-col-center .u-row-around {
+  width: 100%;
+}
+@keyframes gardens2 {
+0% {
+    opacity: 1;
+    transform: scale(1);
+}
+100% {
+    opacity: 0;
+    transform: scale(1.5);
+}
+}

@@ -11,12 +11,12 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 import uvicorn
-from sqlalchemy import select, text
+from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from server.routers import router
 from server.utils.auth_middleware import get_db
-from yuxi.storage.postgres.models_business import Base, Department, FamilyMember, User
+from yuxi.storage.postgres.models_business import Base, Department, FamilyMember, FamilyMeasurement, User
 from yuxi.utils.auth_utils import AuthUtils
 
 pytestmark = pytest.mark.integration
@@ -27,6 +27,17 @@ TEST_TOKENS = {}
 def cleanup_test_sandboxes():
     """此文件仅创建临时数据库 schema，不创建或清理 Agent 沙盒。"""
     yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_test_knowledge_resources():
+    """独立家庭 schema 不访问知识库，不清理其他测试资源。"""
+    yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_live_api_schema():
+    """此文件通过独立 TCP 应用验证自己的 schema，不借用主 API。"""
 
 
 @pytest_asyncio.fixture
@@ -123,8 +134,285 @@ async def grant(client, family_id, member_id, fields):
     return await client.put(
         f"/api/family/{family_id}/members/{member_id}/authorization",
         headers=headers("member"),
-        json={"fields": fields, "expires_at": (datetime.now(UTC) + timedelta(days=30)).isoformat()},
+        json={
+            "fields": fields,
+            "edit_fields": fields,
+            "expires_at": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
+        },
     )
+
+
+def measurement_payload(kind="weight", **overrides):
+    """只使用合成实测值，固定创建意图以验证重试。"""
+    return {
+        "id": str(uuid.uuid4()),
+        "kind": kind,
+        "values": {"glucose": 5.5} if kind == "blood_glucose" else {"weight": 60},
+        "measured_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+        "source": "manual",
+        "condition": "fasting" if kind == "blood_glucose" else "",
+        "note": "",
+        **overrides,
+    }
+
+
+@pytest.mark.asyncio
+async def test_view_only_grant_cannot_write_correct_or_void_and_export_rechecks(family_client):
+    """仅查看不授予代维护；撤回后历史、趋势和导出均关闭。"""
+    client, sessions = family_client
+    family = await create_family(client)
+    fid, mid = family["id"], await invite_member(client, family["id"])
+    path = f"/api/family/{fid}/members/{mid}"
+    record = measurement_payload()
+    assert (await client.post(path + "/measurements", headers=headers("member"), json=record)).status_code == 200
+    body = {"fields": ["birth_date", "weight"], "expires_at": (datetime.now(UTC) + timedelta(days=1)).isoformat()}
+    assert (await client.put(path + "/authorization", headers=headers("member"), json=body)).status_code == 200
+    member = next(
+        m for m in (await client.get(f"/api/family/{fid}", headers=headers())).json()["members"] if m["id"] == mid
+    )
+    assert member["editable_fields"] == []
+    assert member["allowed_fields"] == ["birth_date", "weight"]
+    assert (await client.get(path + "/measurements/export", headers=headers())).json()["total"] == 1
+    assert (
+        await client.put(path, headers=headers(), json={"expected_version": 2, "profile": {"birth_date": "1991-01-01"}})
+    ).status_code == 403
+    assert (await client.post(path + "/measurements", headers=headers(), json=measurement_payload())).status_code == 403
+    rid = record["id"]
+    assert (
+        await client.put(
+            path + f"/measurements/{rid}",
+            headers=headers(),
+            json={"expected_version": 1, "values": {"weight": 61}, "note": "更正"},
+        )
+    ).status_code == 403
+    assert (
+        await client.post(
+            path + f"/measurements/{rid}/void", headers=headers(), json={"expected_version": 1, "reason": "重复"}
+        )
+    ).status_code == 403
+    assert (
+        await client.put(
+            path + "/authorization", headers=headers("member"), json={**body, "edit_fields": ["height_cm"]}
+        )
+    ).status_code == 422
+    await grant(client, fid, mid, [])
+    for suffix in ("/history", "/measurements", "/measurements/export"):
+        assert (await client.get(path + suffix, headers=headers())).status_code == 403
+    async with sessions() as db:
+        saved = await db.scalar(select(FamilyMeasurement).where(FamilyMeasurement.id == rid))
+        assert saved.version == 1 and saved.values == {"weight": 60} and saved.voided_at is None
+
+
+@pytest.mark.asyncio
+async def test_noop_preserves_confirmation_and_history_masks_paginated_changes(family_client):
+    """相同保存与确认无额外版本，历史分页保留相邻差异且只含授权字段。"""
+    client, sessions = family_client
+    family = await create_family(client)
+    fid, mid = family["id"], await invite_member(client, family["id"])
+    path = f"/api/family/{fid}/members/{mid}"
+    profile = {"height_cm": 170, "allergens": [], "medical_history": "合成私密资料"}
+    saved = (await client.put(path, headers=headers("member"), json={"expected_version": 2, "profile": profile})).json()
+    confirmed = (await client.post(path + "/confirm", headers=headers("member"), json={"expected_version": 3})).json()
+    assert confirmed["confirmed_at"]
+    replay = await client.put(path, headers=headers("member"), json={"expected_version": 3, "profile": profile})
+    assert replay.json()["version"] == saved["version"] == 3
+    assert replay.json()["confirmed_at"] == confirmed["confirmed_at"]
+    await client.post(path + "/confirm", headers=headers("member"), json={"expected_version": 3})
+    assert (
+        await client.put(path, headers=headers("member"), json={"expected_version": 2, "profile": profile})
+    ).status_code == 409
+    await grant(client, fid, mid, ["height_cm"])
+    await client.put(path, headers=headers(), json={"expected_version": 3, "profile": {"height_cm": 171}})
+    first = (await client.get(path + "/history?limit=1", headers=headers())).json()
+    assert first["total"] == 3 and len(first["items"]) == 1
+    assert first["items"][0]["actor"] == "owner"
+    assert first["items"][0]["changes"] == {"height_cm": {"before": 170, "after": 171}}
+    second = (await client.get(path + "/history?limit=1&offset=1", headers=headers())).json()["items"][0]
+    assert second["confirmed_at"] == confirmed["confirmed_at"]
+    assert second["profile"] == {"height_cm": 170}
+    assert "合成私密" not in str(first) + str(second)
+    assert (await client.get(path + "/history?offset=-1", headers=headers())).status_code == 422
+    async with sessions() as db:
+        assert await db.scalar(text("SELECT count(*) FROM family_audits WHERE action='profile.confirm'")) == 1
+        assert await db.scalar(text("SELECT count(*) FROM family_profile_revisions")) == 3
+
+
+@pytest.mark.asyncio
+async def test_relationship_lifecycle_revokes_grants_invites_and_keeps_history(family_client):
+    """停用、恢复、本人退出与跨家庭尝试在真实接口和数据库闭合。"""
+    client, sessions = family_client
+    family = await create_family(client)
+    fid, mid = family["id"], await invite_member(client, family["id"])
+    path = f"/api/family/{fid}/members/{mid}"
+    await grant(client, fid, mid, ["birth_date", "weight"])
+    changed = await client.put(
+        path + "/relationship",
+        headers=headers(),
+        json={"expected_version": 1, "name": "新合成昵称", "relationship": "家人"},
+    )
+    assert changed.json()["version"] == 2 and changed.json()["relationship_version"] == 2
+    assert (
+        await client.put(
+            path + "/relationship",
+            headers=headers(),
+            json={"expected_version": 1, "name": "旧覆盖", "relationship": "家人"},
+        )
+    ).status_code == 409
+    assert (
+        await client.put(
+            path + "/status", headers=headers("stranger"), json={"expected_version": 2, "is_active": False}
+        )
+    ).status_code == 404
+    status = {"expected_version": 2, "is_active": False}
+    assert (await client.put(path + "/status", headers=headers(), json=status)).status_code == 200
+    assert (await client.get(f"/api/family/{fid}", headers=headers("member"))).status_code == 404
+    assert (await client.get(path + "/measurements/export", headers=headers())).status_code == 404
+    assert (
+        await client.put(path, headers=headers(), json={"expected_version": 2, "profile": {"birth_date": "1991-01-01"}})
+    ).status_code == 404
+    assert (
+        await client.put(path + "/status", headers=headers("member"), json={"expected_version": 3, "is_active": True})
+    ).status_code == 403
+    restored = await client.put(path + "/status", headers=headers(), json={"expected_version": 3, "is_active": True})
+    assert restored.json()["allowed_fields"] == []
+    assert (await client.get(path + "/history", headers=headers())).status_code == 403
+    assert (await client.get(path + "/history", headers=headers("member"))).json()["total"] == 1
+    assert (
+        await client.put(path + "/status", headers=headers("member"), json={"expected_version": 4, "is_active": False})
+    ).status_code == 200
+    assert (await client.get("/api/family", headers=headers("member"))).json() == []
+    owner_mid = family["members"][0]["id"]
+    assert (
+        await client.put(
+            f"/api/family/{fid}/members/{owner_mid}/status",
+            headers=headers(),
+            json={"expected_version": 1, "is_active": False},
+        )
+    ).status_code == 409
+    async with sessions() as db:
+        row = await db.get(FamilyMember, mid)
+        assert not row.is_active and row.grant_fields == row.grant_edit_fields == [] and row.invite_hash is None
+        assert row.profile == {"birth_date": "1990-01-01"}
+    added = (
+        await client.post(
+            f"/api/family/{fid}/members", headers=headers(), json={"name": "未认领", "relationship": "家人"}
+        )
+    ).json()
+    invite_path = f"/api/family/{fid}/members/{added['id']}/invite"
+    code = (await client.post(invite_path, headers=headers())).json()["code"]
+    assert (await client.post(invite_path + "/revoke", headers=headers())).status_code == 200
+    assert (await client.post("/api/family/join", headers=headers("stranger"), json={"code": code})).status_code == 410
+    assert (await client.post(invite_path, headers=headers())).json()["code"] != code
+
+
+@pytest.mark.asyncio
+async def test_measurement_metadata_correction_void_retry_filters_and_persistence(family_client):
+    """更正元信息重新校验，作废幂等，趋势与统计读取有效最终记录。"""
+    client, sessions = family_client
+    family = await create_family(client)
+    fid, mid = family["id"], family["members"][0]["id"]
+    path = f"/api/family/{fid}/members/{mid}/measurements"
+    payload = measurement_payload("blood_glucose")
+    assert (await client.post(path, headers=headers(), json=payload)).status_code == 200
+    correction = {
+        "expected_version": 1,
+        "values": {"glucose": 5.6},
+        "note": "修正采样时间",
+        "source": "report",
+        "condition": "random",
+        "measured_at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+    }
+    for invalid in (
+        {"measured_at": (datetime.now(UTC) + timedelta(days=1)).isoformat()},
+        {"condition": "unknown"},
+        {"source": None},
+    ):
+        assert (
+            await client.put(path + "/" + payload["id"], headers=headers(), json={**correction, **invalid})
+        ).status_code == 422
+    fixed = (await client.put(path + "/" + payload["id"], headers=headers(), json=correction)).json()
+    assert fixed["version"] == 2 and fixed["condition"] == "random" and fixed["source"] == "report"
+    assert fixed["previous"][0]["measured_at"] == payload["measured_at"].replace("+00:00", "Z")
+    assert fixed["previous"][0]["actor"] == "owner"
+    assert (await client.get(path + "?kind=blood_glucose&condition=fasting", headers=headers())).json()["total"] == 0
+    assert (await client.get(path + "?kind=blood_glucose&condition=random", headers=headers())).json()["total"] == 1
+    assert (
+        await client.post(
+            path + f"/{payload['id']}/void", headers=headers(), json={"expected_version": 1, "reason": "重复"}
+        )
+    ).status_code == 409
+    void_body = {"expected_version": 2, "reason": "合成重复记录"}
+    for _ in range(2):
+        voided = await client.post(path + f"/{payload['id']}/void", headers=headers(), json=void_body)
+        assert voided.status_code == 200 and voided.json()["version"] == 3
+    assert (
+        await client.put(path + "/" + payload["id"], headers=headers(), json={**correction, "expected_version": 3})
+    ).status_code == 409
+    assert (
+        await client.post(path + f"/{payload['id']}/void", headers=headers(), json={**void_body, "reason": "不同请求"})
+    ).status_code == 409
+    assert (await client.post(path, headers=headers(), json=payload)).json()["voided_at"]
+    active = (await client.get(path, headers=headers())).json()
+    assert active["total"] == 0 and active["trend"] == []
+    assert (await client.get(path + "/export", headers=headers())).json()["total"] == 0
+    archived = (await client.get(path + "?include_voided=true", headers=headers())).json()
+    assert archived["total"] == 1 and archived["trend"] == []
+    assert (await client.get(f"/api/family/{fid}/statistics", headers=headers())).json()["record_count"] == 0
+    for query in (
+        "from_date=2026-10-08&to_date=2026-10-01",
+        "days=367",
+        "offset=-1",
+        "limit=501",
+        "from_date=2020-01-01",
+        "to_date=2099-01-01",
+    ):
+        assert (await client.get(path + "?" + query, headers=headers())).status_code == 422
+    async with sessions() as db:
+        saved = await db.get(FamilyMeasurement, payload["id"])
+        assert saved.creation_intent == {**payload, "measured_at": payload["measured_at"].replace("+00:00", "Z")}
+        assert saved.voided_by == "owner" and len(saved.previous) == 2
+
+
+@pytest.mark.asyncio
+async def test_long_measurement_history_counts_pages_trend_and_export_limit(family_client):
+    """超过旧截断上限的真实数据不丢计数，分页不改变趋势，导出明确拒绝过大范围。"""
+    client, sessions = family_client
+    family = await create_family(client)
+    fid, mid = family["id"], family["members"][0]["id"]
+    now = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=1)
+    rows = [
+        {
+            "id": str(uuid.uuid4()),
+            "member_id": mid,
+            "kind": "weight",
+            "values": {"weight": 60 + index / 100000},
+            "measured_at": now - timedelta(seconds=index),
+            "source": "manual",
+            "created_by": "owner",
+            "creation_intent": {},
+        }
+        for index in range(10001)
+    ]
+    rows.append({**rows[-1], "id": str(uuid.uuid4()), "measured_at": now - timedelta(days=2), "values": {"weight": 62}})
+    async with sessions() as db:
+        await db.execute(insert(FamilyMeasurement), rows)
+        await db.commit()
+    path = f"/api/family/{fid}/members/{mid}/measurements"
+    first = (await client.get(path + "?limit=20", headers=headers())).json()
+    second = (await client.get(path + "?limit=20&offset=20", headers=headers())).json()
+    assert first["total"] == second["total"] == 10002
+    assert len(first["items"]) == len(second["items"]) == 20
+    assert {r["id"] for r in first["items"]}.isdisjoint(r["id"] for r in second["items"])
+    assert first["trend"] == second["trend"]
+    assert any(point["values"] == {"weight": 62} for point in first["trend"])
+    overview = (await client.get(f"/api/family/{fid}/statistics", headers=headers())).json()
+    assert overview["record_count"] == overview["metric_counts"]["weight"] == 10002
+    assert sum(row["count"] for row in overview["daily_counts"]) == 10002
+    oversized = await client.get(path + "/export", headers=headers())
+    assert oversized.status_code == 422 and oversized.json()["detail"]["code"] == "export_too_large"
+    old_day = (now.replace(tzinfo=UTC) + timedelta(hours=8) - timedelta(days=2)).date().isoformat()
+    bounded = (await client.get(path + f"/export?from_date={old_day}&to_date={old_day}", headers=headers())).json()
+    assert bounded["total"] == 1 and bounded["items"][0]["values"] == {"weight": 62}
 
 
 @pytest.mark.asyncio
@@ -224,7 +512,7 @@ async def test_profile_version_and_unknown_values(family_client):
     ).status_code == 409
     assert (await client.post(path + "/confirm", headers=headers(), json={"expected_version": 2})).status_code == 200
     history = (await client.get(path + "/history", headers=headers())).json()
-    assert history[0]["profile"]["height_cm"] == 165
+    assert history["items"][0]["profile"]["height_cm"] == 165
 
 
 @pytest.mark.asyncio
@@ -272,7 +560,7 @@ async def test_expired_grant_filters_profile_history_and_statistics(family_clien
     )
     await grant(client, fid, mid, ["height_cm", "weight"])
     history = (await client.get(path + "/history", headers=headers())).json()
-    assert history[0]["profile"] == {"height_cm": 172}
+    assert history["items"][0]["profile"] == {"height_cm": 172}
     async with sessions() as db:
         member = await db.scalar(select(FamilyMember).where(FamilyMember.id == mid))
         member.grant_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
@@ -284,7 +572,7 @@ async def test_expired_grant_filters_profile_history_and_statistics(family_clien
     assert (await client.get(path + "/history", headers=headers())).status_code == 403
     assert (await client.get(path + "/measurements", headers=headers())).status_code == 403
     own = (await client.get(path + "/history", headers=headers("member"))).json()
-    assert own[0]["profile"]["medical_history"] == "合成私密信息"
+    assert own["items"][0]["profile"]["medical_history"] == "合成私密信息"
 
 
 @pytest.mark.asyncio

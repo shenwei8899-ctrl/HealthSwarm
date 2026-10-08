@@ -83,6 +83,37 @@ async def test_blood_pressure_missing_and_independent_measurement_need_no_profil
         )
 
 
+async def test_voided_blood_pressure_is_excluded_and_invalidates_history(bp_subject):
+    """血压作废与体重独立，旧血压回执不能继续授权历史或checkpoint。"""
+    subject = bp_subject
+    record = await add_bp(subject)
+    weight = await add_weight(subject)
+    binding, payload, _ = await record_weight_use(subject, repository=HealthBloodPressureRepository)
+    response = await subject.client.post(
+        subject.measurement_path + "/" + record["id"] + "/void",
+        headers=subject.headers,
+        json={"expected_version": 1, "reason": "合成血压误录作废"},
+    )
+    assert response.status_code == 200, response.text
+    current = await read_bp(subject)
+    assert current["records"] == [] and current["code"] == "blood_pressure_missing"
+    weight_read = await subject.client.get(
+        f"{ROOT}/members/{subject.member_id}/weight-records", headers=subject.headers
+    )
+    assert weight_read.status_code == 200, weight_read.text
+    assert [row["record_id"] for row in weight_read.json()["records"]] == [weight["id"]]
+    async with pg_manager.get_async_session_context() as session:
+        persisted = await session.get(FamilyMeasurement, record["id"])
+        assert persisted.voided_at is not None and persisted.values == {"systolic": 120, "diastolic": 80}
+        assert persisted.version == 2
+        with pytest.raises(HealthVisionError) as changed:
+            await HealthBloodPressureRepository(session).validate_history(subject.uid, binding)
+        assert changed.value.code == "blood_pressure_source_changed" and changed.value.status == 410
+        with pytest.raises(HealthVisionError) as stale:
+            await HealthBloodPressureRepository(session).validate_tool_payload(subject.uid, binding, payload)
+        assert stale.value.status == 410
+
+
 async def test_blood_pressure_thirty_days_twenty_cap_and_weight_selection_are_independent(bp_subject):
     """上海自然日边界、稳定排序及截断独立；体重不混入血压结果。"""
     subject = bp_subject

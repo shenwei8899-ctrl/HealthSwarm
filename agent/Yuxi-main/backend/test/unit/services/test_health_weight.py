@@ -43,10 +43,10 @@ def weight_repo(monkeypatch):
     )
     authorize = AsyncMock(return_value=health)
     source_read = AsyncMock(return_value=(SimpleNamespace(owner_uid="actor"), source))
-    measurements, audit = AsyncMock(return_value=[]), AsyncMock()
+    measurements, audit = AsyncMock(return_value=([], 0)), AsyncMock()
     monkeypatch.setattr(measurement_boundary.HealthVisionRepository, "authorize", authorize)
     monkeypatch.setattr(measurement_boundary.HealthFamilyProfileRepository, "source", source_read)
-    monkeypatch.setattr(measurement_boundary.FamilyRepository, "measurements", measurements)
+    monkeypatch.setattr(measurement_boundary.FamilyRepository, "measurement_page", measurements)
     monkeypatch.setattr(measurement_boundary.FamilyRepository, "audit", audit)
     monkeypatch.setattr(measurement_boundary, "authorized_fields", lambda family, member, uid: {"weight"})
     state = SimpleNamespace(
@@ -100,7 +100,7 @@ def set_history(state, uses):
 async def test_read_projects_only_independent_weight_without_profile_confirmation(weight_repo):
     """基础档案尚未确认也可读实测，只返回必要字段和独立版本。"""
     state = weight_repo
-    state.measurements.return_value = [weight_record()]
+    state.measurements.return_value = ([weight_record()], 1)
     payload = await state.repo.read("actor", "health-self", PERIOD)
     assert payload["records"] == [
         {
@@ -120,7 +120,7 @@ async def test_read_projects_only_independent_weight_without_profile_confirmatio
     state.authorize.assert_awaited_once_with("health-self", "actor", "profile_view", lock=True)
     state.source_read.assert_awaited_once_with("actor", state.link, lock=True)
     state.measurements.assert_awaited_once_with(
-        ["formal-self"], ["weight"], since=datetime(2026, 9, 8, 16), until=datetime(2026, 10, 8, 16), limit=21
+        ["formal-self"], ["weight"], since=datetime(2026, 9, 8, 16), until=datetime(2026, 10, 8, 16), limit=20
     )
     state.audit.assert_awaited_once_with("family", "formal-self", "actor", "agent_weight_read")
 
@@ -129,7 +129,7 @@ async def test_read_projects_only_independent_weight_without_profile_confirmatio
 async def test_original_weight_json_hash_remains_compatible_after_shared_repository(weight_repo):
     """旧体重协议固定anchor来自改造前源码，不用当前producer生成预期摘要。"""
     state = weight_repo
-    state.measurements.return_value = [weight_record(value=60)]
+    state.measurements.return_value = ([weight_record(value=60)], 1)
     payload = await state.repo.read("actor", "health-self", PERIOD)
     assert payload["source_hash"] == "4d111a0bbaba5caded3a1f767c01f096742d3533ff04a5bcb6894f4bca66a0ba"
 
@@ -172,7 +172,7 @@ def test_frozen_range_rejects_noncanonical_or_expanded_period(period):
 async def test_read_truncates_at_twenty_and_hash_includes_selection(weight_repo):
     """第21条仅确定截断状态，未外发数据变化不编造额外记录。"""
     state = weight_repo
-    state.measurements.return_value = [weight_record(f"record-{index}") for index in range(21)]
+    state.measurements.return_value = ([weight_record(f"record-{index}") for index in range(21)], 21)
     payload = await state.repo.read("actor", "health-self", PERIOD)
     assert len(payload["records"]) == 20 and payload["truncated"] is True
     assert [row["record_id"] for row in payload["records"]] == [f"record-{index}" for index in range(20)]
@@ -184,7 +184,7 @@ async def test_read_truncates_at_twenty_and_hash_includes_selection(weight_repo)
 async def test_independent_measurement_hash_does_not_depend_on_profile_version(weight_repo):
     """仅编辑或确认基础档案不改变独立测量的引用摘要。"""
     state = weight_repo
-    state.measurements.return_value = [weight_record()]
+    state.measurements.return_value = ([weight_record()], 1)
     original = await state.repo.read("actor", "health-self", PERIOD)
     state.source.version = 9
     state.source.confirmed_version = 9
@@ -214,7 +214,7 @@ async def test_invalid_persisted_weight_cannot_be_sent_or_disguised_as_missing(w
     state = weight_repo
     record = weight_record()
     record.values = values
-    state.measurements.return_value = [record]
+    state.measurements.return_value = ([record], 1)
     with pytest.raises(HealthVisionError, match="weight_source_changed") as error:
         await state.repo.read("actor", "health-self", PERIOD)
     assert error.value.status == 410
@@ -280,7 +280,7 @@ async def test_record_use_rejects_member_from_payload_instead_of_server_binding(
 async def test_history_keeps_frozen_period_and_no_write_locks_or_audit(weight_repo, monkeypatch):
     """历史翌日或多年后重验原查询区间；只读访问不反向取得家庭写锁。"""
     state = weight_repo
-    state.measurements.return_value = [weight_record()]
+    state.measurements.return_value = ([weight_record()], 1)
     payload = await state.repo.read("actor", "health-self", PERIOD)
     set_history(state, [weight_use(payload)])
     state.source_read.reset_mock()
@@ -307,19 +307,19 @@ async def test_thread_dependency_invalidates_correction_and_empty_selection_chan
     """即使下一轮不调用工具，已引用记录、空结果和来源变化也阻止旧回答。"""
     state = weight_repo
     if change not in {"empty_insert", "link"}:
-        state.measurements.return_value = [weight_record()]
+        state.measurements.return_value = ([weight_record()], 1)
     if change == "link":
         state.link = None
     payload = await state.repo.read("actor", "health-self", PERIOD)
     set_history(state, [weight_use(payload)])
     if change == "correction":
-        state.measurements.return_value = [weight_record(version=2)]
+        state.measurements.return_value = ([weight_record(version=2)], 1)
     elif change == "numeric_body":
-        state.measurements.return_value = [weight_record(value=61.5)]
+        state.measurements.return_value = ([weight_record(value=61.5)], 1)
     elif change == "source":
         state.source.id = "different-formal-self"
     elif change == "empty_insert":
-        state.measurements.return_value = [weight_record()]
+        state.measurements.return_value = ([weight_record()], 1)
     elif change == "unlink":
         state.link = None
     else:
@@ -359,7 +359,7 @@ async def test_checkpoint_requires_real_thread_receipt_even_for_missing_result(w
     """自洽hash或真实当前空结果不能替代真实线程已登记的外呼依赖。"""
     state = weight_repo
     if ready:
-        state.measurements.return_value = [weight_record()]
+        state.measurements.return_value = ([weight_record()], 1)
     payload = await state.repo.read("actor", "health-self", PERIOD)
     with pytest.raises(HealthVisionError, match="weight_source_changed"):
         await state.repo.validate_tool_payload("actor", state.binding, payload)
@@ -375,7 +375,7 @@ async def test_checkpoint_requires_real_thread_receipt_even_for_missing_result(w
 async def test_checkpoint_rejects_forged_body_or_receipt_metadata(weight_repo, change):
     """真实回执也不能授权伪造正文、来源、冻结范围或引用版本。"""
     state = weight_repo
-    state.measurements.return_value = [weight_record()]
+    state.measurements.return_value = ([weight_record()], 1)
     payload = await state.repo.read("actor", "health-self", PERIOD)
     use = weight_use(payload)
     state.session.scalar.return_value = use
@@ -399,7 +399,7 @@ async def test_checkpoint_rejects_forged_body_or_receipt_metadata(weight_repo, c
 async def test_checkpoint_rejects_equal_python_values_with_changed_json_types(weight_repo, change):
     """真实摘要不能掩盖JSON类型篡改，即使Python相等判断仍成立。"""
     state = weight_repo
-    state.measurements.return_value = [weight_record(value=60, version=1)]
+    state.measurements.return_value = ([weight_record(value=60, version=1)], 1)
     current = await state.repo.read("actor", "health-self", PERIOD)
     state.session.scalar.return_value = weight_use(current)
     payload = deepcopy(current)

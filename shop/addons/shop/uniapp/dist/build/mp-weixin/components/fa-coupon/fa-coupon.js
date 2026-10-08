@@ -1,0 +1,10 @@
+(global["webpackJsonp"]=global["webpackJsonp"]||[]).push([["components/fa-coupon/fa-coupon"],{"1c2b":function(e,t,o){"use strict";o.r(t);var s,i=function(){var e=this,t=e.$createElement,o=(e._self._c,e.__map(e.list,(function(t,o){var s=e.__get_orig(t),i=t.user_coupon_id?e._f("date")(t.expire_time,"yyyy-mm-dd"):null,r=t.user_coupon_id||"fixation"==t.mode?null:e._f("formatreceive")(t.use_times),a=e.mode||t.is_received||t.has_more||t.expired||!t.online?null:{backgroundColor:e.theme.bgColor,color:e.theme.color},n=e.mode&&e.coupon.user_coupon_id!=t.user_coupon_id?{backgroundColor:e.theme.bgColor,color:e.theme.color}:null;return{$orig:s,f0:i,f1:r,a0:a,a1:n}})));e.$mp.data=Object.assign({},{$root:{l0:o}})},r=[],a="undefined"===typeof a?{}:a,n={props:{value:{type:Boolean,default:!1},mode:{type:Number,default:0},totalPrice:{type:[Number,String],default:0},couponList:{type:Array,default(){return[]}}},watch:{couponList:{immediate:!0,handler(e){e&&(this.list=JSON.parse(JSON.stringify(e)))}}},computed:{scrollHeight(){return(this.list.length>=2?650:350)+"rpx"}},data(){return{list:[],coupon:{}}},methods:{close(){this.$emit("input",!1)},give(e,t){this.$api.drawCoupon({id:e}).then(e=>{this.$u.toast(e.msg),1==e.code&&(this.is_update=!0,this.$set(this.list[t],"received_num",this.list[t].received_num-1))})},selectCoupon(e){e&&e.result_data&&parseFloat(e.result_data.money)>0&&parseFloat(e.result_data.money)>parseFloat(this.totalPrice)?this.$u.toast("订单未满"+e.result_data.money+"元,无法使用优惠券！"):(this.coupon=e,this.$emit("success",e),this.close())}}},u=n,l=(o("8c14"),o("f0c5")),c=Object(l["a"])(u,i,r,!1,null,"4ee8cf92",null,!1,a,s);t["default"]=c.exports},"344e":function(e,t,o){},"8c14":function(e,t,o){"use strict";var s=o("344e"),i=o.n(s);i.a}}]);
+;(global["webpackJsonp"] = global["webpackJsonp"] || []).push([
+    'components/fa-coupon/fa-coupon-create-component',
+    {
+        'components/fa-coupon/fa-coupon-create-component':(function(module, exports, __webpack_require__){
+            __webpack_require__('543d')['createComponent'](__webpack_require__("1c2b"))
+        })
+    },
+    [['components/fa-coupon/fa-coupon-create-component']]
+]);

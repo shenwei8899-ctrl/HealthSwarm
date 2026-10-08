@@ -18,7 +18,7 @@ Owner：backend/package/yuxi/services/family_service.py
 
 本人管理自身健康信息；家庭管理员访问其他成员时，服务端校验认领账号、字段、家庭营养管理用途、有效期与成年条件。出生日期采用本人档案声明，不提供身份核验。邀请认领不自动授予健康访问权限；授权撤回后历史、导出、指标和聚合同样按当前范围过滤。前端刷新重新请求指标和统计，并清理失效的敏感展示。
 
-家庭域表由 `yuxi.storage_migration` 拥有；上游与家庭的组合 schema 为 10，兼容规则见 [上游升级决策](./2026-10-04-upstream-family-upgrade.md)。API 和 Worker 继续要求精确的运行 schema，运行时不新增建表路径。
+家庭域表由 `yuxi.storage_migration` 拥有；上游与家庭的组合 schema 为 11。上游兼容背景见 [上游升级决策](./2026-10-04-upstream-family-upgrade.md)，成员生命周期、独立代维护授权和指标作废迁移见 [日常维护闭环](./2026-10-08-family-archives-completion.md)。API 和 Worker 继续要求精确的运行 schema，运行时不新增建表路径。
 
 ## 替代方案
 

@@ -1,0 +1,59 @@
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+page {
+  background-color: #f4f6f9;
+}
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+.cart-bar.data-v-0f00adf4 {
+  background-color: #f4f6f9;
+}
+.goods-cart image.data-v-0f00adf4 {
+  width: 150rpx;
+  height: 150rpx;
+  border-radius: 5rpx;
+}
+.goods-cart .right.data-v-0f00adf4 {
+  padding: 0 30rpx;
+  height: 150rpx;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.goods-cart .right .title-sku.data-v-0f00adf4 {
+  width: 450rpx;
+}
+.page-box .loading.data-v-0f00adf4 {
+  padding-top: 30vh;
+}
+.centre.data-v-0f00adf4 {
+  text-align: center;
+  margin: 200rpx auto;
+  font-size: 32rpx;
+}
+.centre image.data-v-0f00adf4 {
+  width: 400rpx;
+  height: 400rpx;
+  border-radius: 50%;
+  margin-bottom: 20rpx;
+}
+.centre .tips.data-v-0f00adf4 {
+  font-size: 24rpx;
+  color: #999999;
+  margin-top: 20rpx;
+}
+.centre .btn.data-v-0f00adf4 {
+  margin: 80rpx auto;
+  width: 200rpx;
+  border-radius: 32rpx;
+  line-height: 64rpx;
+  color: #ffffff;
+  font-size: 26rpx;
+  background: linear-gradient(270deg, rgb(55, 68, 134) 0%, rgb(55, 68, 134) 100%);
+}

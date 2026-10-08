@@ -1,0 +1,50 @@
+[
+  {
+    "route": "pages/index/index",
+    "actual": "pages/index/index",
+    "screenshot": "core-pages-index-index.png",
+    "errors": []
+  },
+  {
+    "route": "pages/category/index",
+    "actual": "pages/category/index",
+    "screenshot": "core-pages-category-index.png",
+    "errors": []
+  },
+  {
+    "route": "pages/goods/goods",
+    "actual": "pages/goods/goods",
+    "screenshot": "core-pages-goods-goods.png",
+    "errors": []
+  },
+  {
+    "route": "pages/coupon/coupon",
+    "actual": "pages/coupon/coupon",
+    "screenshot": "core-pages-coupon-coupon.png",
+    "errors": []
+  },
+  {
+    "route": "pages/search/search",
+    "actual": "pages/search/search",
+    "screenshot": "core-pages-search-search.png",
+    "errors": []
+  },
+  {
+    "route": "pages/help/index",
+    "actual": "pages/help/index",
+    "screenshot": "core-pages-help-index.png",
+    "errors": []
+  },
+  {
+    "route": "pages/login/login",
+    "actual": "pages/login/login",
+    "screenshot": "core-pages-login-login.png",
+    "errors": []
+  },
+  {
+    "route": "pages/cart/cart",
+    "actual": "pages/login/mobilelogin",
+    "screenshot": "core-pages-cart-cart.png",
+    "errors": []
+  }
+]

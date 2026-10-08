@@ -1,0 +1,15 @@
+{
+  "navigationBarTitleText": "查看售后",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "enablePullDownRefresh": true,
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "u-grid": "/uview-ui/components/u-grid/u-grid",
+    "u-grid-item": "/uview-ui/components/u-grid-item/u-grid-item",
+    "u-image": "/uview-ui/components/u-image/u-image",
+    "u-input": "/uview-ui/components/u-input/u-input",
+    "u-button": "/uview-ui/components/u-button/u-button",
+    "u-modal": "/uview-ui/components/u-modal/u-modal"
+  }
+}
