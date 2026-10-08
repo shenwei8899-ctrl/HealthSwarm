@@ -9,7 +9,7 @@ const source = readFileSync(
   new URL('../../src/components/AgentRuntimeConfigForm.vue', import.meta.url),
   'utf8'
 )
-const { descriptor } = parse(source)
+const { descriptor } = parse(source.replace(/\r\n/g, '\n'))
 const compiled = compileScript(descriptor, { id: 'resource-visibility-test' }).content
 const executable = compiled
   .replace(/^import(?:\s*\{[\s\S]*?\}|\s+[A-Za-z]\w*)\s+from\s+'[^']+'\n/gm, '')

@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, UTC
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -15,7 +16,7 @@ from yuxi.services.family_schemas import (
     METRIC_UNITS,
     PROFILE_FIELDS,
     REQUIRED_PROFILE_FIELDS,
-    validate_metric_values,
+    MeasurementInput,
 )
 from yuxi.storage.postgres.models_business import FamilyArchive, FamilyMeasurement, FamilyMember, FamilyProfileRevision
 from yuxi.utils.datetime_utils import format_utc_datetime, utc_now_naive
@@ -34,8 +35,10 @@ def is_adult(member):
     return today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day)) >= 18
 
 
-def authorized_fields(family, member, uid, now=None):
-    """本人管理自身；管理员仅在明确用途与有效期内访问授予字段。"""
+def authorized_fields(family, member, uid, now=None, *, write=False):
+    """在有效关系与授权中分别计算查看和代维护范围。"""
+    if not member.is_active:
+        return set()
     if member.subject_uid == uid:
         return PROFILE_FIELDS | METRIC_FIELDS.keys()
     now = now or utc_now_naive()
@@ -47,13 +50,15 @@ def authorized_fields(family, member, uid, now=None):
         and member.grant_expires_at
         and member.grant_expires_at > now
     ):
-        return set(member.grant_fields or [])
+        readable = set(member.grant_fields or [])
+        return readable & set(member.grant_edit_fields or []) if write else readable
     return set()
 
 
 def member_view(family, member, uid):
     """按当前访问范围投影，隐藏未经授权的字段及其完整度。"""
     allowed = authorized_fields(family, member, uid)
+    editable = authorized_fields(family, member, uid, write=True)
     profile = {key: value for key, value in (member.profile or {}).items() if key in allowed}
     missing = [key for key in REQUIRED_PROFILE_FIELDS if key in allowed and profile.get(key) in (None, "", [])]
     full_profile_access = set(REQUIRED_PROFILE_FIELDS) <= allowed
@@ -61,17 +66,24 @@ def member_view(family, member, uid):
         "id": member.id,
         "name": member.name,
         "relationship": member.relationship,
+        "is_active": member.is_active,
+        "relationship_version": member.relationship_version,
         "is_self": member.subject_uid == uid,
         "claimed": member.subject_uid is not None,
         "profile": profile,
         "allowed_fields": sorted(allowed),
+        "editable_fields": sorted(editable),
         "version": member.version,
         "confirmed": member.confirmed_version == member.version if full_profile_access else None,
         "missing_fields": missing,
         "ready": full_profile_access and not missing and member.confirmed_version == member.version,
+        "readiness_scope": "basic_profile",
+        "unknown_fields": sorted(key for key in allowed & PROFILE_FIELDS if profile.get(key) in (None, "")),
+        "confirmed_at": format_utc_datetime(member.confirmed_at) if full_profile_access else None,
         "updated_at": format_utc_datetime(member.updated_at),
         "authorization": {
             "fields": sorted(allowed) if member.subject_uid != uid else sorted(member.grant_fields or []),
+            "edit_fields": sorted(editable) if member.subject_uid != uid else sorted(member.grant_edit_fields or []),
             "expires_at": format_utc_datetime(member.grant_expires_at),
             "purpose": member.grant_purpose,
         }
@@ -80,8 +92,9 @@ def member_view(family, member, uid):
     }
 
 
-def measurement_view(record):
+def measurement_view(record, names=None):
     """返回带来源、更正版本及固定单位的实测记录。"""
+    names = names or {}
     return {
         "id": record.id,
         "member_id": record.member_id,
@@ -94,6 +107,10 @@ def measurement_view(record):
         "note": record.note,
         "version": record.version,
         "previous": record.previous or [],
+        "created_by": names.get(record.created_by, "家庭成员"),
+        "voided_at": format_utc_datetime(record.voided_at),
+        "voided_by": names.get(record.voided_by) if record.voided_by else None,
+        "void_reason": record.void_reason,
     }
 
 
@@ -104,19 +121,19 @@ class FamilyService:
         self.db, self.uid = db, str(uid)
         self.repo = FamilyRepository(db)
 
-    async def context(self, fid, mid=None):
+    async def context(self, fid, mid=None, *, include_inactive=False):
         """获取可访问家庭和严格属于该家庭的成员。"""
-        family = await self.repo.get_family(fid, self.uid)
+        family = await self.repo.get_family(fid, self.uid, include_inactive=include_inactive)
         if family is None:
             raise HTTPException(404, "家庭不存在或不可访问")
         member = await self.repo.member(fid, mid) if mid else None
-        if mid and member is None:
+        if mid and (member is None or (not member.is_active and not include_inactive)):
             raise HTTPException(404, "成员不存在")
         return family, member
 
-    def require_fields(self, family, member, fields):
+    def require_fields(self, family, member, fields, *, write=False):
         """授权字段必须覆盖此次读写；空白和过期都拒绝。"""
-        if not set(fields) <= authorized_fields(family, member, self.uid):
+        if not set(fields) <= authorized_fields(family, member, self.uid, write=write):
             raise HTTPException(403, "请由成员本人授权对应字段")
 
     def require_version(self, member, expected):
@@ -137,7 +154,10 @@ class FamilyService:
             "id": fid,
             "name": family.name,
             "is_owner": family.owner_uid == self.uid,
-            "members": [member_view(family, member, self.uid) for member in members],
+            "members": [member_view(family, member, self.uid) for member in members if member.is_active],
+            "inactive_members": [member_view(family, member, self.uid) for member in members if not member.is_active]
+            if family.owner_uid == self.uid
+            else [],
         }
         await self.repo.audit(fid, None, self.uid, "profiles.read")
         await self.db.commit()
@@ -174,7 +194,7 @@ class FamilyService:
         if family.owner_uid != self.uid:
             raise HTTPException(403, "仅家庭管理员可添加成员")
         members = await self.repo.members(fid)
-        if len(members) >= 30:
+        if sum(member.is_active for member in members) >= 30:
             raise HTTPException(422, "一个家庭最多30名成员")
         member = FamilyMember(id=str(uuid.uuid4()), family_id=fid, name=name, relationship=relationship)
         self.db.add(member)
@@ -183,6 +203,55 @@ class FamilyService:
         await self.repo.audit(fid, member.id, self.uid, "member.create")
         await self.db.commit()
         return result
+
+    async def update_member(self, fid, mid, payload):
+        """本人或管理员按关系版本维护昵称与关系。"""
+        family, member = await self.context(fid, mid)
+        if self.uid not in {family.owner_uid, member.subject_uid}:
+            raise HTTPException(403, "仅本人或家庭管理员可维护成员关系")
+        if member.relationship_version != payload.expected_version:
+            raise HTTPException(409, "成员关系已更新，请重新核对")
+        if (member.name, member.relationship) != (payload.name, payload.relationship):
+            member.name, member.relationship = payload.name, payload.relationship
+            member.relationship_version += 1
+            await self.repo.audit(fid, mid, self.uid, "member.update", member.relationship_version)
+        result = member_view(family, member, self.uid)
+        await self.db.commit()
+        return result
+
+    async def member_status(self, fid, mid, payload):
+        """退出或停用撤销授权与邀请；恢复关系不恢复授权。"""
+        family, member = await self.context(fid, mid, include_inactive=True)
+        is_owner = family.owner_uid == self.uid
+        if not is_owner and (member.subject_uid != self.uid or payload.is_active):
+            raise HTTPException(403, "仅管理员可恢复成员，本人可退出自己的关系")
+        if member.subject_uid == family.owner_uid:
+            raise HTTPException(409, "家庭管理员不能停用或退出本人关系")
+        if member.relationship_version != payload.expected_version:
+            raise HTTPException(409, "成员关系已更新，请重新核对")
+        if member.is_active != payload.is_active:
+            if payload.is_active and sum(row.is_active for row in await self.repo.members(fid)) >= 30:
+                raise HTTPException(422, "一个家庭最多30名有效成员")
+            member.is_active = payload.is_active
+            member.relationship_version += 1
+            member.grant_fields, member.grant_edit_fields = [], []
+            member.grant_expires_at, member.grant_purpose = None, None
+            member.invite_hash, member.invite_expires_at = None, None
+            action = "member.restore" if payload.is_active else "member.deactivate" if is_owner else "member.leave"
+            await self.repo.audit(fid, mid, self.uid, action, member.relationship_version)
+        result = member_view(family, member, self.uid)
+        await self.db.commit()
+        return result
+
+    async def revoke_invitation(self, fid, mid):
+        """管理员撤销未认领邀请，下次生成不同代码。"""
+        family, member = await self.context(fid, mid)
+        if family.owner_uid != self.uid or member.subject_uid:
+            raise HTTPException(403, "当前成员不能撤销邀请")
+        member.invite_hash, member.invite_expires_at = None, None
+        await self.repo.audit(fid, mid, self.uid, "member.invite.revoke")
+        await self.db.commit()
+        return {"revoked": True}
 
     async def invite(self, fid, mid):
         """只向管理员返回一次性短期邀请；数据库保存摘要。"""
@@ -208,11 +277,17 @@ class FamilyService:
         family = await self.db.scalar(select(FamilyArchive).where(FamilyArchive.id == fid).with_for_update())
         member = await self.repo.member(fid, mid)
         await self.db.refresh(member)
-        valid = member.invite_hash == digest and member.invite_expires_at and member.invite_expires_at > utc_now_naive()
+        valid = (
+            member.is_active
+            and member.invite_hash == digest
+            and member.invite_expires_at
+            and member.invite_expires_at > utc_now_naive()
+        )
         if valid and member.subject_uid == self.uid:
             return await self.family(fid)
         if (
             member.invite_hash != digest
+            or not member.is_active
             or member.subject_uid
             or not member.invite_expires_at
             or member.invite_expires_at <= utc_now_naive()
@@ -225,14 +300,17 @@ class FamilyService:
         await self.db.commit()
         return await self.family(fid)
 
-    async def authorization(self, fid, mid, fields, purpose, expires_at):
+    async def authorization(self, fid, mid, fields, purpose, expires_at, edit_fields):
         """仅档案本人可授予或撤回向家庭管理员开放的字段。"""
         family, member = await self.context(fid, mid)
         if member.subject_uid != self.uid:
             raise HTTPException(403, "授权须由成员本人确认")
         if fields and not is_adult(member):
             raise HTTPException(422, "请先在本人档案填写出生日期；一期仅支持成年成员向管理员授权")
+        if not set(edit_fields) <= set(fields):
+            raise HTTPException(422, "代维护范围必须包含在查看范围内")
         member.grant_fields = sorted(set(fields))
+        member.grant_edit_fields = sorted(set(edit_fields))
         member.grant_purpose = purpose
         member.grant_expires_at = expires_at.astimezone(UTC).replace(tzinfo=None)
         result = member_view(family, member, self.uid)
@@ -246,10 +324,16 @@ class FamilyService:
         changes = payload.profile.model_dump(mode="json", exclude_unset=True)
         if not changes:
             raise HTTPException(422, "没有档案变更")
-        self.require_fields(family, member, changes)
+        self.require_fields(family, member, changes, write=True)
         self.require_version(member, payload.expected_version)
+        changes = {key: value for key, value in changes.items() if (member.profile or {}).get(key) != value}
+        if not changes:
+            result = member_view(family, member, self.uid)
+            await self.db.commit()
+            return result
         member.profile = {**(member.profile or {}), **changes}
         member.version += 1
+        member.confirmed_at = None
         member.updated_at = utc_now_naive()
         self.db.add(
             FamilyProfileRevision(member_id=mid, version=member.version, profile=member.profile, actor_uid=self.uid)
@@ -265,49 +349,108 @@ class FamilyService:
         if member.subject_uid != self.uid:
             raise HTTPException(403, "档案确认须由本人完成")
         self.require_version(member, expected_version)
-        member.confirmed_version = member.version
+        if member.confirmed_version != member.version:
+            member.confirmed_version = member.version
+            member.confirmed_at = utc_now_naive()
+            await self.repo.audit(
+                fid, mid, self.uid, "profile.confirm", member.version, occurred_at=member.confirmed_at
+            )
         result = member_view(family, member, self.uid)
-        await self.repo.audit(fid, mid, self.uid, "profile.confirm", member.version)
         await self.db.commit()
         return result
 
-    async def history(self, fid, mid):
+    async def history(self, fid, mid, *, limit=20, offset=0):
         """历史快照同样使用当前授权，撤回不能通过历史绕过。"""
         family, member = await self.context(fid, mid)
         allowed = authorized_fields(family, member, self.uid) & PROFILE_FIELDS
         if not allowed:
             raise HTTPException(403, "无档案访问权限")
-        records = await self.repo.revisions(mid)
-        result = [
-            {
-                "version": row.version,
-                "profile": {k: v for k, v in row.profile.items() if k in allowed},
-                "created_at": format_utc_datetime(row.created_at),
+        records, total = await self.repo.revisions(mid, limit=limit, offset=offset)
+        names = await self.repo.actor_names(fid)
+        confirmations = await self.repo.confirmations(mid)
+        items = []
+        for index, row in enumerate(records[:limit]):
+            previous = records[index + 1].profile if index + 1 < len(records) else {}
+            changes = {
+                key: {"before": previous.get(key), "after": row.profile.get(key)}
+                for key in allowed
+                if previous.get(key) != row.profile.get(key)
             }
-            for row in records
-        ]
+            items.append(
+                {
+                    "version": row.version,
+                    "profile": {k: v for k, v in row.profile.items() if k in allowed},
+                    "changes": changes,
+                    "actor": names.get(row.actor_uid, "家庭成员"),
+                    "created_at": format_utc_datetime(row.created_at),
+                    "confirmed_at": format_utc_datetime(confirmations.get(row.version)),
+                }
+            )
+        result = {"items": items, "total": total, "limit": limit, "offset": offset}
         await self.repo.audit(fid, mid, self.uid, "profile.history")
         await self.db.commit()
         return result
 
-    async def measurements(self, fid, mid, kind=None, days=30):
-        """查询当前授权指标的历史，返回最多1000条并明确截断。"""
+    async def measurements(
+        self,
+        fid,
+        mid,
+        kind=None,
+        days=30,
+        *,
+        limit=100,
+        offset=0,
+        condition=None,
+        include_voided=False,
+        from_date=None,
+        to_date=None,
+    ):
+        """分页读取当前授权指标，支持日期、条件与作废记录筛选。"""
         family, member = await self.context(fid, mid)
         allowed = authorized_fields(family, member, self.uid) & METRIC_FIELDS.keys()
         if not allowed or (kind and kind not in allowed):
             raise HTTPException(403, "无指标访问权限")
-        start = datetime.now(DISPLAY_ZONE).date() - timedelta(days=days - 1)
-        since = datetime.combine(start, datetime.min.time(), DISPLAY_ZONE).astimezone(UTC).replace(tzinfo=None)
-        records = await self.repo.measurements([mid], [kind] if kind else allowed, since=since, limit=1001)
-        result = {"items": [measurement_view(row) for row in records[:1000]], "truncated": len(records) > 1000}
+        since, until = self._measurement_period(days, from_date, to_date)
+        records, total = await self.repo.measurement_page(
+            [mid],
+            [kind] if kind else allowed,
+            since,
+            until,
+            limit=limit,
+            offset=offset,
+            condition=condition,
+            include_voided=include_voided,
+        )
+        names = await self.repo.actor_names(fid)
+        trend = await self.repo.measurement_trend(mid, [kind] if kind else allowed, since, until, condition)
+        result = {
+            "items": [measurement_view(row, names) for row in records],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "truncated": offset + len(records) < total,
+            "trend": [
+                {"kind": row.kind, "values": row.values, "measured_at": format_utc_datetime(row.measured_at)}
+                for row in trend
+            ],
+        }
         await self.repo.audit(fid, mid, self.uid, "measurements.read")
         await self.db.commit()
         return result
 
+    async def export_measurements(self, fid, mid, kind=None, days=30, **filters):
+        """重新校验授权后导出所选记录，超过明确上限时要求缩短范围。"""
+        result = await self.measurements(fid, mid, kind, days, limit=10000, **filters)
+        if result["truncated"]:
+            raise HTTPException(
+                422, detail={"code": "export_too_large", "message": "记录超过10000条，请缩短导出日期范围"}
+            )
+        return {"exported_at": format_utc_datetime(utc_now_naive()), "items": result["items"], "total": result["total"]}
+
     async def add_measurement(self, fid, mid, payload):
         """幂等创建实测记录，不把失败或重试当成新增摄入。"""
         family, member = await self.context(fid, mid)
-        self.require_fields(family, member, [payload.kind])
+        self.require_fields(family, member, [payload.kind], write=True)
         intent = payload.model_dump(mode="json")
         rid = str(payload.id)
         existing = await self.repo.measurement(rid)
@@ -339,39 +482,74 @@ class FamilyService:
         return result
 
     async def correct_measurement(self, fid, mid, rid, payload):
-        """更正创建新版本，保留旧值与更正时间。"""
+        """更正测量数值及元信息，保留旧快照和操作者。"""
         family, member = await self.context(fid, mid)
         record = await self.repo.measurement(rid)
         if record is None or record.member_id != mid:
             raise HTTPException(404, "记录不存在")
-        self.require_fields(family, member, [record.kind])
+        self.require_fields(family, member, [record.kind], write=True)
+        if record.voided_at:
+            raise HTTPException(409, "作废记录不能更正，请重新录入正确记录")
         if record.version != payload.expected_version:
             raise HTTPException(409, "记录已更新")
         try:
-            validate_metric_values(record.kind, payload.values)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        record.previous = [
-            *(record.previous or []),
-            {
-                "version": record.version,
-                "values": record.values,
-                "note": record.note,
-                "corrected_at": format_utc_datetime(utc_now_naive()),
-            },
-        ]
-        record.values, record.note = payload.values, payload.note
+            updated = MeasurementInput(
+                **{
+                    "id": record.id,
+                    "kind": record.kind,
+                    "values": record.values,
+                    "measured_at": record.measured_at.replace(tzinfo=UTC),
+                    "source": record.source,
+                    "condition": record.condition,
+                    "note": record.note,
+                    **payload.model_dump(exclude_unset=True, exclude={"expected_version"}),
+                }
+            )
+        except ValidationError:
+            raise HTTPException(422, "更正信息必须包含有效数值、非未来时间和正确测量条件") from None
+        names = await self.repo.actor_names(fid)
+        record.previous = [*(record.previous or []), self._measurement_revision(record, names, "corrected")]
+        record.values, record.note = updated.values, updated.note
+        record.measured_at = updated.measured_at.astimezone(UTC).replace(tzinfo=None)
+        record.source, record.condition = updated.source, updated.condition
         record.version += 1
         record.updated_at = utc_now_naive()
-        result = measurement_view(record)
+        result = measurement_view(record, names)
         await self.repo.audit(fid, mid, self.uid, "measurement.correct", record.version)
+        await self.db.commit()
+        return result
+
+    async def void_measurement(self, fid, mid, rid, payload):
+        """作废保留原值与创建意图，重复同一请求不新增版本。"""
+        family, member = await self.context(fid, mid)
+        record = await self.repo.measurement(rid)
+        if record is None or record.member_id != mid:
+            raise HTTPException(404, "记录不存在")
+        self.require_fields(family, member, [record.kind], write=True)
+        names = await self.repo.actor_names(fid)
+        if record.voided_at:
+            if (
+                record.voided_by != self.uid
+                or record.void_reason != payload.reason
+                or payload.expected_version not in {record.version, record.version - 1}
+            ):
+                raise HTTPException(409, "记录已作废，请重新核对")
+        else:
+            if record.version != payload.expected_version:
+                raise HTTPException(409, "记录已更新")
+            record.previous = [*(record.previous or []), self._measurement_revision(record, names, "voided")]
+            record.voided_at, record.voided_by, record.void_reason = utc_now_naive(), self.uid, payload.reason
+            record.version += 1
+            record.updated_at = record.voided_at
+            await self.repo.audit(fid, mid, self.uid, "measurement.void", record.version)
+        result = measurement_view(record, names)
         await self.db.commit()
         return result
 
     async def statistics(self, fid, days=30):
         """仅汇总当前可见实测记录，不计算跨成员的医学平均值。"""
         family, _ = await self.context(fid)
-        members = await self.repo.members(fid)
+        members = [member for member in await self.repo.members(fid) if member.is_active]
         today = datetime.now(DISPLAY_ZONE).date()
         start = today - timedelta(days=days - 1)
         since = datetime.combine(start, datetime.min.time(), DISPLAY_ZONE).astimezone(UTC).replace(tzinfo=None)
@@ -381,19 +559,19 @@ class FamilyService:
             .replace(tzinfo=None)
         )
         visible = {row.id: authorized_fields(family, row, self.uid) for row in members}
-        records = await self.repo.measurements(list(visible), since=since, until=until)
-        records = [row for row in records if row.kind in visible[row.member_id]]
+        records = await self.repo.measurement_statistics(
+            {mid: fields & METRIC_FIELDS.keys() for mid, fields in visible.items()}, since, until
+        )
         dates = {(start + timedelta(days=index)).isoformat(): 0 for index in range(days)}
         counts = {kind: 0 for kind in METRIC_FIELDS}
         for row in records:
-            day = row.measured_at.replace(tzinfo=UTC).astimezone(DISPLAY_ZONE).date().isoformat()
-            dates[day] += 1
-            counts[row.kind] += 1
+            dates[row.day.isoformat()] += row.count
+            counts[row.kind] += row.count
         result = {
             "member_count": len(members),
             "visible_member_count": sum(bool(fields) for fields in visible.values()),
             "ready_member_count": sum(member_view(family, row, self.uid)["ready"] for row in members),
-            "record_count": len(records),
+            "record_count": sum(row.count for row in records),
             "record_member_count": len({row.member_id for row in records}),
             "daily_counts": [{"date": key, "count": value} for key, value in dates.items()],
             "metric_counts": counts,
@@ -405,3 +583,34 @@ class FamilyService:
         await self.repo.audit(fid, None, self.uid, "statistics.read")
         await self.db.commit()
         return result
+
+    def _measurement_revision(self, record, names, action):
+        """在受控记录内保存完整旧状态，审计表仍只保存元信息。"""
+        return {
+            "version": record.version,
+            "values": record.values,
+            "note": record.note,
+            "measured_at": format_utc_datetime(record.measured_at),
+            "source": record.source,
+            "condition": record.condition,
+            "action": action,
+            "actor": names.get(self.uid, "家庭成员"),
+            "corrected_at": format_utc_datetime(utc_now_naive()),
+        }
+
+    def _measurement_period(self, days, from_date, to_date):
+        """把上海自然日范围转换为统一 UTC 查询边界。"""
+        today = datetime.now(DISPLAY_ZONE).date()
+        end = to_date or today
+        start = from_date or end - timedelta(days=days - 1)
+        if start > end or end > today or (end - start).days >= 366:
+            raise HTTPException(
+                422, detail={"code": "invalid_period", "message": "日期范围须为过去或今天，且不超过366天"}
+            )
+        since = datetime.combine(start, datetime.min.time(), DISPLAY_ZONE).astimezone(UTC).replace(tzinfo=None)
+        until = (
+            datetime.combine(end + timedelta(days=1), datetime.min.time(), DISPLAY_ZONE)
+            .astimezone(UTC)
+            .replace(tzinfo=None)
+        )
+        return since, until

@@ -50,10 +50,14 @@ class FamilyMember(Base):
     subject_uid = Column(String, ForeignKey("users.uid"), nullable=True)
     name = Column(String(80), nullable=False)
     relationship = Column(String(30), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    relationship_version = Column(Integer, nullable=False, default=1)
     profile = Column(JSON_VALUE, nullable=False, default=dict)
     version = Column(Integer, nullable=False, default=1)
     confirmed_version = Column(Integer, nullable=True)
+    confirmed_at = Column(DateTime, nullable=True)
     grant_fields = Column(JSON_VALUE, nullable=False, default=list)
+    grant_edit_fields = Column(JSON_VALUE, nullable=False, default=list)
     grant_purpose = Column(String(30), nullable=True)
     grant_expires_at = Column(DateTime, nullable=True)
     invite_hash = Column(String(64), nullable=True, unique=True)
@@ -65,6 +69,7 @@ class FamilyMeasurement(Base):
     """实测指标与更正历史，创建 ID 为幂等边界。"""
 
     __tablename__ = "family_measurements"
+    __table_args__ = (Index("ix_family_measurements_member_time", "member_id", "measured_at"),)
     id = Column(String(36), primary_key=True)
     member_id = Column(String(36), ForeignKey("family_members.id"), nullable=False, index=True)
     kind = Column(String(30), nullable=False)
@@ -77,6 +82,9 @@ class FamilyMeasurement(Base):
     creation_intent = Column(JSON_VALUE, nullable=False)
     version = Column(Integer, nullable=False, default=1)
     previous = Column(JSON_VALUE, nullable=False, default=list)
+    voided_at = Column(DateTime, nullable=True)
+    voided_by = Column(String, ForeignKey("users.uid"), nullable=True)
+    void_reason = Column(Text, nullable=True)
     updated_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 

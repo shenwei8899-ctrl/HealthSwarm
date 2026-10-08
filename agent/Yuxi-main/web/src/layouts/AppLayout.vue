@@ -26,6 +26,7 @@ import { useProjectsStore } from '@/stores/projects'
 import { useTaskerStore } from '@/stores/tasker'
 import { useUserStore } from '@/stores/user'
 import { storeToRefs } from 'pinia'
+import { useMediaQuery } from '@vueuse/core'
 import UserInfoComponent from '@/components/UserInfoComponent.vue'
 import TaskCenterDrawer from '@/components/TaskCenterDrawer.vue'
 import SettingsModal from '@/components/SettingsModal.vue'
@@ -56,7 +57,7 @@ const isLoadingStars = ref(false)
 const showSettingsModal = ref(false)
 const settingsInitialTab = ref('')
 
-const { sidebarCollapsed } = storeToRefs(chatUIStore)
+const { sidebarCollapsed: storedSidebarCollapsed } = storeToRefs(chatUIStore)
 const conversationSearchOpen = ref(false)
 const projectPendingId = ref(null)
 
@@ -149,6 +150,21 @@ onUnmounted(() => {
 
 const route = useRoute()
 const router = useRouter()
+const familyNarrow = useMediaQuery('(max-width: 650px)')
+const familyMobileExpanded = ref(false)
+const familyMobile = computed(
+  () => familyNarrow.value && route.matched.some((record) => record.name === 'family')
+)
+const sidebarCollapsed = computed({
+  get: () => (familyMobile.value ? !familyMobileExpanded.value : storedSidebarCollapsed.value),
+  set: (value) => {
+    if (familyMobile.value) familyMobileExpanded.value = !value
+    else storedSidebarCollapsed.value = value
+  }
+})
+watch(familyMobile, () => {
+  familyMobileExpanded.value = false
+})
 
 const activeTaskCount = computed(() => activeCountRef.value || 0)
 const activeConversationThreadId = computed(() => {
@@ -380,6 +396,12 @@ provide('settingsModal', {
       'family-layout': route.matched.some((record) => record.name === 'family')
     }"
   >
+    <button
+      v-if="familyMobile && !sidebarCollapsed"
+      class="family-navigation-mask"
+      aria-label="收起家庭导航"
+      @click="setSidebarCollapsed(true)"
+    />
     <div class="header">
       <div class="sidebar-brand" @click.stop>
         <router-link v-if="!sidebarCollapsed" to="/" class="brand-link">
@@ -597,6 +619,31 @@ provide('settingsModal', {
 
 .app-layout.family-layout {
   min-width: 0;
+}
+
+.family-navigation-mask {
+  position: fixed;
+  inset: 0 0 0 @sidebar-width;
+  z-index: 40;
+  border: 0;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+@media (max-width: 650px) {
+  .app-layout.family-layout {
+    box-sizing: border-box;
+    padding-left: @sidebar-collapsed-width;
+    > .header {
+      position: absolute;
+      left: 0;
+      z-index: 50;
+    }
+    > #app-router-view {
+      position: relative;
+      z-index: 0;
+      min-width: 0;
+    }
+  }
 }
 
 div.header,

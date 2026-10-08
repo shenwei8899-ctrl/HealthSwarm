@@ -19,7 +19,7 @@
             aria-label="选择家庭"
             :options="families.map((row) => ({ value: row.id, label: row.name }))"
             style="min-width: 170px"
-            @change="loadFamily"
+            @change="selectFamily"
           />
           <span v-else>管理家人的档案与健康记录</span>
           <a-tag v-if="family">{{ family.is_owner ? '家庭管理员' : '家庭成员' }}</a-tag>
@@ -62,6 +62,7 @@
             :revision="revision"
           />
           <FamilyAuthorizationPanel
+            ref="authorizationPanel"
             v-else-if="activeTab === 'authorization'"
             :family="family"
             @changed="loadFamily"
@@ -84,7 +85,7 @@
                 class="member-row"
                 :class="{ selected: memberId === item.id }"
                 :aria-pressed="memberId === item.id"
-                @click="memberId = item.id"
+                @click="selectMember(item.id)"
               >
                 <span class="member-name"
                   >{{ item.name }}<span v-if="item.is_self" class="self-label">本人</span></span
@@ -102,6 +103,7 @@
             </aside>
             <div class="member-detail">
               <FamilyProfilePanel
+                ref="profilePanel"
                 v-if="member && activeTab === 'profiles'"
                 :key="member.id"
                 :family-id="family.id"
@@ -109,6 +111,7 @@
                 @changed="loadFamily"
               />
               <FamilyMetricsPanel
+                ref="metricsPanel"
                 v-else-if="member"
                 :key="member.id"
                 :family-id="family.id"
@@ -176,12 +179,12 @@
 
 <script setup>
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { Empty, message } from 'ant-design-vue'
+import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
+import { Empty, Modal, message } from 'ant-design-vue'
 import { Plus, RefreshCw, ShieldCheck, Users } from '@lucide/vue'
 import { useUserStore } from '@/stores/user'
 import { familyApi } from '@/apis/family_api'
-import { profileStatus } from '@/utils/familyArchives'
+import { profileStatus, scrubFamilyAccess } from '@/utils/familyArchives'
 import PageHeader from '@/components/shared/PageHeader.vue'
 import FamilyProfilePanel from '@/components/family/FamilyProfilePanel.vue'
 import FamilyMetricsPanel from '@/components/family/FamilyMetricsPanel.vue'
@@ -218,6 +221,15 @@ const familyName = ref(''),
   relationship = ref('配偶'),
   joinCode = ref('')
 const member = computed(() => family.value?.members.find((row) => row.id === memberId.value))
+const profilePanel = ref(null),
+  metricsPanel = ref(null),
+  authorizationPanel = ref(null)
+const hasDraft = computed(
+  () =>
+    profilePanel.value?.hasDraft ||
+    metricsPanel.value?.hasDraft ||
+    authorizationPanel.value?.hasDraft
+)
 const searchedMembers = computed(
   () => family.value?.members.filter((row) => row.name.includes(search.value.trim())) || []
 )
@@ -246,7 +258,40 @@ watch(
   }
 )
 function changeTab(item) {
+  activeTab.value = tabFromRoute()
   router.replace({ path: '/family', query: { tab: item.key } })
+}
+function allowDiscard() {
+  if (!hasDraft.value) return true
+  return new Promise((resolve) =>
+    Modal.confirm({
+      title: '有未保存的草稿',
+      content: '离开当前内容会丢弃草稿，是否继续？',
+      okText: '丢弃并继续',
+      cancelText: '继续编辑',
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false)
+    })
+  )
+}
+async function selectMember(id) {
+  if (id !== memberId.value && (await allowDiscard())) memberId.value = id
+}
+async function selectFamily(id) {
+  const previous = family.value?.id || ''
+  familyId.value = previous
+  if (id !== previous && (await allowDiscard())) {
+    familyId.value = id
+    await loadFamily()
+  }
+}
+onBeforeRouteLeave(allowDiscard)
+onBeforeRouteUpdate((to, from) => (to.query.tab !== from.query.tab ? allowDiscard() : true))
+function beforeUnload(event) {
+  if (hasDraft.value) {
+    event.preventDefault()
+    event.returnValue = ''
+  }
 }
 async function load() {
   const current = ++generation
@@ -293,14 +338,21 @@ async function loadFamily() {
     if (expiration.length)
       expiryTimer = setTimeout(
         () => {
-          family.value = null
+          family.value = scrubFamilyAccess(family.value)
+          revision.value++
           loadFamily()
         },
         Math.min(2147483647, Math.min(...expiration) - Date.now() + 50)
       )
   } catch (cause) {
     if (current === generation) {
-      family.value = null
+      if ([403, 404].includes(cause.status)) {
+        family.value = null
+        await load()
+        return
+      }
+      family.value = scrubFamilyAccess(family.value, Date.now(), true)
+      revision.value++
       error.value = cause.message
     }
   } finally {
@@ -375,6 +427,7 @@ onMounted(() => {
   load()
   refreshTimer = setInterval(refreshVisible, 30000)
   window.addEventListener('focus', refreshVisible)
+  window.addEventListener('beforeunload', beforeUnload)
 })
 onBeforeUnmount(() => {
   generation++
@@ -382,6 +435,7 @@ onBeforeUnmount(() => {
   clearInterval(refreshTimer)
   clearTimeout(expiryTimer)
   window.removeEventListener('focus', refreshVisible)
+  window.removeEventListener('beforeunload', beforeUnload)
 })
 </script>
 

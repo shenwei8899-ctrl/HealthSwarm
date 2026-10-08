@@ -26,7 +26,8 @@
             <span>家庭成员</span><strong>{{ stats.member_count }}<small> 人</small></strong>
           </div>
           <div>
-            <span>档案就绪</span><strong>{{ stats.ready_member_count }}<small> 人</small></strong>
+            <span>基础档案已确认</span
+            ><strong>{{ stats.ready_member_count }}<small> 人</small></strong>
           </div>
           <div>
             <span>期间指标记录</span><strong>{{ stats.record_count }}<small> 条</small></strong>
@@ -43,7 +44,7 @@
           label="每天新增的健康指标记录条数，仅代表记录行为"
         />
         <p class="muted">
-          记录条数表示记录行为。档案就绪指关键字段齐全、当前版本经本人确认，并在当前访问范围内。
+          记录条数表示有效实测记录。基础档案已确认指基础字段齐全、当前版本经本人确认，并在当前访问范围内；不代表个体化营养任务已就绪。
         </p>
         <div class="metric-counts">
           <span v-for="(count, key) in stats.metric_counts" :key="key"

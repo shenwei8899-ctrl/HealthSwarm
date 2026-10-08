@@ -19,19 +19,19 @@
       type="warning"
       show-icon
       :message="'待补充：' + member.missing_fields.map((key) => profileLabels[key]).join('、')"
-      description="关键字段缺失时不能进行对应的个体化营养评估。"
+      description="此处仅表示基础资料完整度；个体化营养建议还需核对适用范围、指标与专业规则。"
     />
     <a-empty
-      v-if="!editableKeys.length"
+      v-if="!visibleKeys.length"
       description="健康档案尚未授权。成员本人认领并授权后才可查看。"
     />
     <dl v-else class="profile-grid">
-      <div v-for="key in editableKeys" :key="key">
+      <div v-for="key in visibleKeys" :key="key">
         <dt>{{ profileLabels[key] }}</dt>
         <dd>{{ display(key, member.profile[key]) }}</dd>
       </div>
     </dl>
-    <div v-if="editableKeys.length" class="section-footer">
+    <div v-if="visibleKeys.length" class="section-footer">
       <a-button type="link" @click="showHistory">查看变更记录</a-button>
       <a-button type="link" @click="exportProfile">导出当前可见档案</a-button>
       <span class="muted">未填写与明确“无”分别保留</span>
@@ -50,6 +50,14 @@
         message="仅维护当前授权字段。保存后形成新版本，由本人重新确认。"
       />
       <a-form layout="vertical" :model="draft" name="family-profile">
+        <a-alert
+          v-if="member.version !== baseVersion"
+          type="warning"
+          show-icon
+          message="档案已有新版本，草稿已保留。请核对后重新载入最新档案再编辑。"
+        >
+          <template #action><a-button @click="openEditor">放弃草稿并载入最新</a-button></template>
+        </a-alert>
         <div class="form-grid">
           <a-form-item
             v-for="key in editableKeys"
@@ -76,12 +84,20 @@
               :min="1"
               :max="300"
             />
-            <a-select
-              v-else-if="['allergens', 'avoidances'].includes(key)"
-              v-model:value="draft[key]"
-              mode="tags"
-              placeholder="逐项输入；未填写表示未知"
-            />
+            <template v-else-if="['allergens', 'avoidances'].includes(key)">
+              <a-select
+                :value="listEditing[key] ? 'known' : listState(draft[key])"
+                :options="listStates"
+                @change="setListState(key, $event)"
+              />
+              <a-select
+                v-if="listState(draft[key]) === 'known' || listEditing[key]"
+                :value="draft[key] || []"
+                mode="tags"
+                placeholder="逐项输入；清空后恢复未知"
+                @change="setListItems(key, $event)"
+              />
+            </template>
             <a-textarea
               v-else
               v-model:value="draft[key]"
@@ -94,16 +110,28 @@
       </a-form>
       <a-alert v-if="editError" type="error" :message="editError" show-icon />
     </a-modal>
-    <a-drawer v-model:open="historyOpen" title="档案变更记录" :width="480">
+    <a-drawer v-model:open="historyOpen" title="档案变更记录" width="min(480px, 100vw)">
       <a-spin :spinning="historyLoading">
         <a-alert v-if="historyError" type="error" :message="historyError" />
-        <a-empty v-else-if="!history.length" description="尚无档案变更记录" />
+        <a-empty v-else-if="!historyLoading && !history.length" description="尚无档案变更记录" />
         <section v-for="revision in history" :key="revision.version" class="revision">
           <h3>v{{ revision.version }} · {{ formatTime(revision.created_at) }}</h3>
-          <p v-for="(value, key) in revision.profile" :key="key">
-            {{ profileLabels[key] }}：{{ display(key, value) }}
+          <p class="muted">
+            {{ revision.actor }} · 本人确认：{{ formatTime(revision.confirmed_at) }}
+          </p>
+          <p v-for="(change, key) in revision.changes" :key="key">
+            {{ profileLabels[key] }}：{{ display(key, change.before) }} →
+            {{ display(key, change.after) }}
           </p>
         </section>
+        <a-pagination
+          v-if="historyTotal > 20"
+          :current="historyPage"
+          :total="historyTotal"
+          :page-size="20"
+          :show-size-changer="false"
+          @change="showHistory"
+        />
       </a-spin>
     </a-drawer>
   </section>
@@ -117,7 +145,11 @@ import {
   profileLabels,
   sexLabels,
   activityLabels,
-  profileChanges,
+  profileDraft,
+  changedProfile,
+  scrubProfileDraft,
+  listState,
+  downloadFamilyJson,
   profileStatus,
   formatTime
 } from '@/utils/familyArchives'
@@ -127,26 +159,52 @@ const props = defineProps({
   member: { type: Object, required: true }
 })
 const emit = defineEmits(['changed'])
-const editableKeys = computed(() =>
+const visibleKeys = computed(() =>
   Object.keys(profileLabels).filter((key) => props.member.allowed_fields.includes(key))
 )
+const editableKeys = computed(() =>
+  Object.keys(profileLabels).filter((key) => props.member.editable_fields.includes(key))
+)
+const baseVersion = ref(0),
+  original = ref({}),
+  listEditing = reactive({})
+const listStates = [
+  { value: 'unknown', label: '未知 / 未填写' },
+  { value: 'none', label: '本人确认无' },
+  { value: 'known', label: '有，逐项填写' }
+]
 const editing = ref(false),
   saving = ref(false),
   editError = ref('')
 const draft = reactive({})
+defineExpose({
+  hasDraft: computed(
+    () =>
+      editing.value &&
+      Object.keys(changedProfile(draft, original.value, editableKeys.value)).length > 0
+  )
+})
 const historyOpen = ref(false),
   historyLoading = ref(false),
   historyError = ref(''),
-  history = ref([])
-let generation = 0
+  history = ref([]),
+  historyTotal = ref(0),
+  historyPage = ref(1)
+let generation = 0,
+  historyRequest = 0
 watch(
   () => props.member,
-  () => {
+  (next, previous) => {
+    const lost = previous?.allowed_fields.some((key) => !next.allowed_fields.includes(key))
+    const lostEdit = previous?.editable_fields.some((key) => !next.editable_fields.includes(key))
+    if (!lost && !lostEdit) return
     generation++
-    editing.value = false
+    scrubProfileDraft(draft, next.editable_fields)
+    scrubProfileDraft(original.value, next.editable_fields)
+    if (!editableKeys.value.length) editing.value = false
+    editError.value = '授权范围已缩减，相关草稿已清除'
     historyOpen.value = false
     history.value = []
-    for (const key of Object.keys(draft)) delete draft[key]
   }
 )
 onBeforeUnmount(() => {
@@ -161,26 +219,41 @@ function display(key, value) {
 }
 function openEditor() {
   for (const key of Object.keys(draft)) delete draft[key]
-  for (const key of editableKeys.value) draft[key] = props.member.profile[key] ?? null
+  const captured = profileDraft(props.member, editableKeys.value)
+  baseVersion.value = captured.version
+  original.value = captured.profile
+  Object.assign(draft, structuredClone(captured.profile))
+  for (const key of ['allergens', 'avoidances'])
+    listEditing[key] = listState(draft[key]) === 'known'
   editError.value = ''
   editing.value = true
 }
 async function save() {
+  if (baseVersion.value !== props.member.version) {
+    editError.value = '档案已更新，草稿保留，请核对最新版本'
+    return
+  }
   saving.value = true
   try {
-    const payload = profileChanges(draft, props.member.allowed_fields)
-    for (const key of editableKeys.value) {
-      if (draft[key] === undefined || draft[key] === '') payload[key] = null
+    const payload = changedProfile(draft, original.value, editableKeys.value)
+    if (!Object.keys(payload).length) {
+      editing.value = false
+      message.info('档案没有变化')
+      return
     }
-    await familyApi.updateProfile(props.familyId, props.member.id, {
-      expected_version: props.member.version,
+    const result = await familyApi.updateProfile(props.familyId, props.member.id, {
+      expected_version: baseVersion.value,
       profile: payload
     })
     editing.value = false
-    message.success('已保存新版本，请由本人核对确认')
+    message.success(
+      result.version === baseVersion.value ? '档案没有变化' : '已保存新版本，请由本人核对确认'
+    )
     emit('changed')
   } catch (error) {
-    editError.value = error.message
+    editError.value =
+      error.status === 409 ? '档案已更新，草稿已保留。请载入最新版本后重新核对' : error.message
+    if ([403, 409].includes(error.status)) emit('changed')
   } finally {
     saving.value = false
   }
@@ -197,18 +270,27 @@ async function confirm() {
     saving.value = false
   }
 }
-async function showHistory() {
+async function showHistory(page = 1) {
+  if (typeof page !== 'number') page = 1
+  historyPage.value = page
   const current = generation
+  const request = ++historyRequest
   historyOpen.value = true
   historyLoading.value = true
   historyError.value = ''
   try {
-    const rows = await familyApi.history(props.familyId, props.member.id)
-    if (current === generation) history.value = rows
+    const result = await familyApi.history(props.familyId, props.member.id, {
+      limit: 20,
+      offset: (page - 1) * 20
+    })
+    if (current === generation && request === historyRequest) {
+      history.value = result.items
+      historyTotal.value = result.total
+    }
   } catch (error) {
-    if (current === generation) historyError.value = error.message
+    if (current === generation && request === historyRequest) historyError.value = error.message
   } finally {
-    if (current === generation) historyLoading.value = false
+    if (current === generation && request === historyRequest) historyLoading.value = false
   }
 }
 async function exportProfile() {
@@ -222,25 +304,25 @@ async function exportProfile() {
       emit('changed')
       return
     }
-    const blob = new Blob(
-      [
-        JSON.stringify(
-          { member: member.name, version: member.version, profile: member.profile },
-          null,
-          2
-        )
-      ],
-      { type: 'application/json' }
+    downloadFamilyJson(
+      {
+        member: member.name,
+        version: member.version,
+        confirmed_at: member.confirmed_at,
+        profile: member.profile
+      },
+      '家庭档案.json'
     )
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = '家庭档案.json'
-    link.click()
-    URL.revokeObjectURL(url)
   } catch (error) {
     if (current === generation) message.error(error.message)
   }
+}
+function setListState(key, state) {
+  listEditing[key] = state === 'known'
+  draft[key] = state === 'none' ? [] : state === 'known' && draft[key]?.length ? draft[key] : null
+}
+function setListItems(key, values) {
+  draft[key] = values.length ? values : null
 }
 </script>
 

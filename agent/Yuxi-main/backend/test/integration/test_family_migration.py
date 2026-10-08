@@ -27,7 +27,7 @@ async def no_file_migration(*_args, **_kwargs):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("old_version,fail_after_schema", [(7, False), (8, False), (9, False), (8, True)])
+@pytest.mark.parametrize("old_version,fail_after_schema", [(7, False), (8, False), (9, False), (10, False), (10, True)])
 async def test_supported_upgrade_preserves_data_and_is_repeatable(
     monkeypatch, tmp_path, old_version, fail_after_schema
 ):
@@ -46,7 +46,7 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
     manager.AsyncSession = async_sessionmaker(engine, expire_on_commit=False)
     manager._initialized = True
     old_tables = [
-        table for table in Base.metadata.sorted_tables if old_version == 8 or not table.name.startswith("family_")
+        table for table in Base.metadata.sorted_tables if old_version in (8, 10) or not table.name.startswith("family_")
     ]
     try:
         async with engine.begin() as conn:
@@ -54,7 +54,7 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
         async with manager.get_async_session_context() as db:
             db.add(User(uid="old-user", username="保留的合成用户", password_hash="synthetic-only", role="user"))
             await db.flush()
-            if old_version == 8:
+            if old_version in (8, 10):
                 db.add(FamilyArchive(id="old-family", owner_uid="old-user", name="保留家庭"))
                 await db.flush()
                 db.add(
@@ -76,12 +76,18 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
                     share_config={},
                     config_json={
                         "context": {
-                            "tools": [] if old_version == 9 else None,
-                            "subagents": [] if old_version == 9 else None,
+                            "tools": [] if old_version >= 9 else None,
+                            "subagents": [] if old_version >= 9 else None,
                         }
                     },
                 )
             )
+        if old_version in (8, 10):
+            async with engine.begin() as conn:
+                for column in ("is_active", "relationship_version", "confirmed_at", "grant_edit_fields"):
+                    await conn.execute(text(f"ALTER TABLE family_members DROP COLUMN {column}"))
+                for column in ("voided_at", "voided_by", "void_reason"):
+                    await conn.execute(text(f"ALTER TABLE family_measurements DROP COLUMN {column}"))
         await manager.create_schema_version_table()
         await manager.record_schema_version("business", old_version)
         await manager.record_schema_version("knowledge", 2)
@@ -110,7 +116,7 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
             monkeypatch.setattr(storage_migration, "_converge_database_state", fail_convergence)
             with pytest.raises(RuntimeError, match="injected convergence failure"):
                 await storage_migration.main()
-            assert await manager.get_schema_versions() == {"business": 9, "knowledge": 2}
+            assert await manager.get_schema_versions() == {"business": 10, "knowledge": 2}
             monkeypatch.setattr(storage_migration, "_converge_database_state", no_file_migration)
         await storage_migration.main()
         await storage_migration.main()
@@ -126,9 +132,9 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
             } <= set(tables)
             assert await conn.scalar(text("SELECT username FROM users WHERE uid = 'old-user'")) == "保留的合成用户"
             config = await conn.scalar(text("SELECT config_json FROM agents WHERE slug = 'old-agent'"))
-            assert config["context"]["subagents"] == ([] if old_version == 9 else "all")
-            assert config["context"]["tools"] == ([] if old_version == 9 else "all")
-            if old_version == 8:
+            assert config["context"]["subagents"] == ([] if old_version >= 9 else "all")
+            assert config["context"]["tools"] == ([] if old_version >= 9 else "all")
+            if old_version in (8, 10):
                 assert await conn.scalar(text("SELECT profile FROM family_members WHERE id = 'old-member'")) == {
                     "height_cm": 170
                 }
@@ -136,7 +142,26 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
                     "height_cm",
                     "weight",
                 ]
-        assert await manager.get_schema_versions() == {"business": 10, "knowledge": 2}
+                assert await conn.scalar(
+                    text("SELECT grant_edit_fields FROM family_members WHERE id = 'old-member'")
+                ) == ["height_cm", "weight"]
+                assert await conn.scalar(text("SELECT is_active FROM family_members WHERE id = 'old-member'")) is True
+                await conn.execute(
+                    text("UPDATE family_members SET grant_edit_fields = '[]'::jsonb WHERE id = 'old-member'")
+                )
+                await conn.commit()
+            assert {"voided_at", "voided_by", "void_reason"} <= set(
+                await conn.run_sync(lambda sync: [c["name"] for c in inspect(sync).get_columns("family_measurements")])
+            )
+        await storage_migration.upgrade_family_archives(manager)
+        await storage_migration.main()
+        if old_version in (8, 10):
+            async with engine.connect() as conn:
+                assert (
+                    await conn.scalar(text("SELECT grant_edit_fields FROM family_members WHERE id = 'old-member'"))
+                    == []
+                )
+        assert await manager.get_schema_versions() == {"business": 11, "knowledge": 2}
     finally:
         await engine.dispose()
         async with bootstrap.begin() as conn:
