@@ -142,3 +142,34 @@ def test_model_cache_defaults_include_user_uid_to_false(monkeypatch: pytest.Monk
 
     info = ModelCache().get_model_info("provider:chat")
     assert info.include_user_uid is False
+
+
+@pytest.mark.parametrize("change", ["endpoint", "removed", "unavailable"])
+def test_explicit_refresh_does_not_reuse_warm_model_view(monkeypatch, change):
+    """审批刷新立即发现端点修改、模型移除或 Redis 读取失败。"""
+    redis = _FakeRedis()
+    _patch_redis(monkeypatch, redis)
+    info = ModelInfo("synthetic", "fixed", "chat", "Synthetic", "synthetic-key", "http://old.invalid", "openai")
+    redis.data[REDIS_CACHE_KEY] = json.dumps({info.spec: info.to_dict()})
+    cache = ModelCache()
+    assert cache.get_model_info(info.spec).base_url == "http://old.invalid"
+    if change == "endpoint":
+        value = info.to_dict()
+        value["base_url"] = "http://new.invalid"
+        redis.data[REDIS_CACHE_KEY] = json.dumps({info.spec: value})
+    elif change == "removed":
+        redis.data[REDIS_CACHE_KEY] = "{}"
+    else:
+
+        def unavailable(_key):
+            """故障注入仅作用于 Redis wire 读取。"""
+            raise ConnectionError("synthetic Redis unavailable")
+
+        monkeypatch.setattr(redis, "get", unavailable)
+    assert cache.get_model_info(info.spec).base_url == "http://old.invalid"
+    cache.refresh()
+    current = cache.get_model_info(info.spec)
+    if change == "endpoint":
+        assert current.base_url == "http://new.invalid"
+    else:
+        assert current is None

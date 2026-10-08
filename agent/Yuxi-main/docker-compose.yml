@@ -152,7 +152,7 @@ services:
     command: watchfiles --filter python "python -m server.worker_main" /app/server /app/package
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-m", "yuxi.services.worker_health"]
+      test: ["CMD", "uv", "run", "--no-sync", "--no-dev", "python", "-m", "server.worker_health"]
       interval: 10s
       timeout: 10s
       retries: 6

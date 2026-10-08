@@ -124,17 +124,43 @@ def test_api_healthcheck_uses_readiness_in_development_and_production():
         ]
 
 
-def test_worker_healthcheck_uses_arq_health_contract_in_development_and_production():
+def test_worker_healthcheck_uses_lightweight_contract_with_original_budget():
+    """开发和生产使用相同轻量入口，保留原外部超时预算。"""
     project_root = _project_root()
     for filename in ("docker-compose.yml", "docker-compose.prod.yml"):
         compose = yaml.safe_load((project_root / filename).read_text())
 
-        assert compose["services"]["worker"]["healthcheck"]["test"] == [
+        healthcheck = compose["services"]["worker"]["healthcheck"]
+        assert healthcheck["test"] == [
             "CMD",
+            "uv",
+            "run",
+            "--no-sync",
+            "--no-dev",
             "python",
             "-m",
-            "yuxi.services.worker_health",
+            "server.worker_health",
         ]
+        assert healthcheck["timeout"] == "10s"
+        assert healthcheck["interval"] == "10s"
+
+
+def test_worker_health_probe_ci_and_e2e_use_shipping_budget():
+    """CI 执行真实入口与租约负控，隔离环境不能通过更大预算掩盖故障。"""
+    project_root = _project_root()
+    workflow = yaml.load((project_root / ".github/workflows/system-tests.yml").read_text(), Loader=yaml.BaseLoader)
+    steps = {step.get("name"): step for step in workflow["jobs"]["system-tests"]["steps"]}
+    assert steps["Verify worker shipping health"]["run"] == (
+        "docker compose exec -T worker uv run --no-sync --no-dev python -m server.worker_health"
+    )
+    assert (
+        "test/integration/services/test_worker_health_service.py"
+        in steps["Verify worker probe uses bounded real leases"]["run"]
+    )
+    override = yaml.load(
+        (project_root / "backend/test/support/health_consultation_e2e.compose.yml").read_text(), Loader=yaml.BaseLoader
+    )
+    assert "healthcheck" not in override["services"]["worker"]
 
 
 def test_worker_starts_owned_entrypoint_in_development_and_production():

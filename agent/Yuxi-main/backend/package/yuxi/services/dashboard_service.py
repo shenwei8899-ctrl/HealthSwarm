@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS
 from datetime import datetime
 from typing import Any
 
@@ -105,6 +106,8 @@ class DashboardService:
         """获取指定会话完整消息流水与统计。"""
         conversation = await self.conv_repo.get_conversation_by_thread_id(thread_id)
         if not conversation:
+            return None
+        if conversation.agent_id in HEALTH_AGENT_BACKENDS:
             return None
 
         messages = await self.conv_repo.get_messages(conversation.id)

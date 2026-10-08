@@ -5,13 +5,15 @@ from functools import partial
 from yuxi.repositories.task_repository import TaskRepository
 from yuxi.services.run_queue_service import get_arq_pool
 from yuxi.services.task_registry import get_failure_task_definition, get_task_definition
+from yuxi.services.worker_health_service import (  # noqa: F401 - 保留现有任务契约导出
+    TASK_RECONCILIATION_HEALTH_KEY,
+    TASK_RECONCILIATION_HEALTH_TTL_SECONDS,
+    TASK_RECONCILIATION_SECONDS,
+)
 from yuxi.utils.logging_config import logger
 
 TASK_LEASE_SECONDS = 30.0
 TASK_HEARTBEAT_SECONDS = 10.0
-TASK_RECONCILIATION_SECONDS = 30.0
-TASK_RECONCILIATION_HEALTH_KEY = "yuxi:worker:health:durable-task-reconciliation-v1"
-TASK_RECONCILIATION_HEALTH_TTL_SECONDS = int(TASK_RECONCILIATION_SECONDS * 2 + 5)
 
 
 async def publish_task(task_id: str) -> None:
@@ -44,6 +46,12 @@ async def reconcile_and_publish_tasks() -> list[tuple[str, str, int]]:
     reconciled = await repository.reconcile_expired_leases(
         before_fail=finalize_task_failure,
     )
+    from yuxi.services.health_vision_tasks import cleanup_health_result_objects
+
+    try:
+        await cleanup_health_result_objects()
+    except Exception:
+        logger.error("健康临时结果恢复清理失败，将在下一轮重试")
     await publish_pending_tasks()
     await repository.prune_terminal()
     return reconciled

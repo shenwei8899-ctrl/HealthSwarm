@@ -139,3 +139,36 @@ async def test_unbound_non_completed_run_never_reads_orphan_assistant_message(se
     )
 
     assert result is None
+
+
+@pytest.mark.parametrize("audit_type", ["model_audit", "tool_audit"])
+async def test_audit_pointer_and_legacy_fallback_cannot_publish_raw_body(session, audit_type):
+    """审计有非空正文也不成为结果，原正式text仍可读取。"""
+    conversation, first, last, _, _ = await _seed_messages(session)
+    run = await session.get(AgentRun, "run-1")
+    run.agent_slug = "health-meal-planner"
+    audit = Message(
+        conversation_id=conversation.id,
+        run_id="run-1",
+        role="assistant",
+        message_type=audit_type,
+        content="UNVERIFIED",
+        created_at=last.created_at + timedelta(seconds=10),
+    )
+    session.add(audit)
+    await session.commit()
+    repository = AgentRunOutputRepository(session)
+    assert (
+        await repository.get_output_message(run_id="run-1", conversation_id=conversation.id, output_message_id=audit.id)
+        is None
+    )
+    assert (
+        await repository.get_output_message(
+            run_id="run-1", conversation_id=conversation.id, output_message_id=None, allow_legacy_fallback=True
+        )
+        is last
+    )
+    assert (
+        await repository.get_output_message(run_id="run-1", conversation_id=conversation.id, output_message_id=first.id)
+        is first
+    )

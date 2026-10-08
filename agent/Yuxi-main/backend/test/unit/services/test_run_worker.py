@@ -1128,7 +1128,7 @@ async def test_process_agent_run_retryable_error_retries_then_completes(monkeypa
 
 @pytest.mark.asyncio
 async def test_finish_run_terminal_loser_does_not_append_end_event(monkeypatch: pytest.MonkeyPatch):
-    """终态竞争失败不发布结束事件，单测隔离数据库 state 读取。"""
+    """终态竞争只验证事件 Owner，checkpoint 读取按 unit 边界隔离。"""
     events: list[tuple[str, dict]] = []
 
     async def fake_mark_terminal(run_id: str, status: str, **kwargs):

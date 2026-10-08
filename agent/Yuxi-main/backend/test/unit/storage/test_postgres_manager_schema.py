@@ -7,6 +7,7 @@ import pytest
 from yuxi.storage.postgres.manager import (
     BUSINESS_SCHEMA_VERSION,
     KNOWLEDGE_SCHEMA_VERSION,
+    HEALTH_SCHEMA_VERSION,
     BusinessBase,
     KnowledgeBase,
     PostgresManager,
@@ -41,7 +42,7 @@ async def test_require_current_schema_rejects_missing_or_incompatible_domains(mo
     monkeypatch.setattr(
         manager,
         "get_schema_versions",
-        lambda: _async_value({"business": BUSINESS_SCHEMA_VERSION, "knowledge": KNOWLEDGE_SCHEMA_VERSION}),
+        lambda: _async_value({"business": BUSINESS_SCHEMA_VERSION, "knowledge": KNOWLEDGE_SCHEMA_VERSION, "health": HEALTH_SCHEMA_VERSION}),
     )
     await manager.require_current_schema()
 

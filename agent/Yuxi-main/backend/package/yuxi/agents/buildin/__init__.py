@@ -1,10 +1,18 @@
 from yuxi.agents.base import BaseAgent
 from yuxi.agents.buildin.chatbot.graph import ChatbotAgent
+from yuxi.agents.buildin.health_consultation.graph import HealthConsultationAgent
+from yuxi.agents.buildin.health_meal_planner.graph import HealthMealPlannerAgent
+from yuxi.agents.buildin.health_diet_analyst.graph import HealthDietAnalystAgent
+from yuxi.agents.buildin.health_quality.graph import HealthQualityAgent
 from yuxi.agents.buildin.subagent.graph import SubAgentBackend
 
 BUILTIN_BACKENDS: dict[str, type[BaseAgent]] = {
     "ChatbotAgent": ChatbotAgent,
     "SubAgentBackend": SubAgentBackend,
+    "HealthConsultationAgent": HealthConsultationAgent,
+    "HealthMealPlannerAgent": HealthMealPlannerAgent,
+    "HealthDietAnalystAgent": HealthDietAnalystAgent,
+    "HealthQualityAgent": HealthQualityAgent,
 }
 
 

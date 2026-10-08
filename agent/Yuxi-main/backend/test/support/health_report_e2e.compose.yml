@@ -1,0 +1,17 @@
+# 叠加在健康合成槽位上；只信任该槽位临时生成的 HTTPS 证书。
+services:
+  api:
+    environment:
+      SSL_CERT_FILE: /app/health-report-tls/cert.pem
+    volumes:
+      - type: bind
+        source: ${YUXI_STATE_DIR}/health-report-tls
+        target: /app/health-report-tls
+  worker:
+    environment:
+      SSL_CERT_FILE: /app/health-report-tls/cert.pem
+    volumes:
+      - type: bind
+        source: ${YUXI_STATE_DIR}/health-report-tls
+        target: /app/health-report-tls
+        read_only: true

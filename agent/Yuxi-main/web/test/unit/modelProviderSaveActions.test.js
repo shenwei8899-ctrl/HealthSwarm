@@ -14,7 +14,7 @@ const componentPath = fileURLToPath(
 const compiledPath = fileURLToPath(
   new URL(`../../.model-provider-actions-test-${pid}.mjs`, import.meta.url)
 )
-const source = readFileSync(componentPath, 'utf8')
+const source = readFileSync(componentPath, 'utf8').replace(/\r\n/g, '\n')
 const requests = []
 const confirmations = []
 const notices = []

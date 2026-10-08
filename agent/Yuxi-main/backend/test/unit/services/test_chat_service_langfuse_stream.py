@@ -117,6 +117,28 @@ async def _fake_normalize_agent_context_config(context, **_kwargs):
     return dict(context or {})
 
 
+@pytest.mark.parametrize(
+    ("agent_id", "backend_id"),
+    [("health-consultation", "HealthConsultationAgent"), ("synthetic-clone", "HealthConsultationAgent")],
+)
+def test_health_consultation_never_builds_external_trace_context(monkeypatch, agent_id, backend_id):
+    """咨询处理用途不授权通用追踪，保留普通 tracing 路径的独立测试。"""
+    from unittest.mock import Mock
+
+    external = Mock(side_effect=AssertionError("健康内容不得装配外部追踪"))
+    monkeypatch.setattr(svc, "build_run_context", external)
+    context = svc._build_langfuse_run_context(
+        current_user=SimpleNamespace(id=1, uid="synthetic-user", username="synthetic-name"),
+        thread_id="synthetic-bound-thread",
+        agent_id=agent_id,
+        request_id="synthetic-request",
+        operation="chat",
+        backend_id=backend_id,
+    )
+    assert context.callbacks == [] and context.metadata == {} and context.tags == [] and context.trace_id is None
+    external.assert_not_called()
+
+
 async def _fake_save_messages_from_langgraph_state(
     *,
     state,

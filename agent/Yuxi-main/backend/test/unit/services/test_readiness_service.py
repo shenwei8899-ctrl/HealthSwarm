@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from yuxi.services import readiness_service, task_queue_service
+from yuxi.services import readiness_service, worker_health_service
 
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
@@ -22,11 +22,11 @@ def reset_readiness_cache(monkeypatch: pytest.MonkeyPatch) -> None:
             return f"healthy:{key}"
 
         async def pttl(self, key: str) -> int:
-            if key == readiness_service.WORKER_HEALTH_KEY:
-                return readiness_service.WORKER_HEALTH_MAX_TTL_MS
-            if key == readiness_service.WORKER_RECONCILIATION_HEALTH_KEY:
-                return readiness_service.WORKER_RECONCILIATION_HEALTH_TTL_SECONDS * 1000
-            return readiness_service.TASK_RECONCILIATION_HEALTH_TTL_SECONDS * 1000
+            if key == worker_health_service.WORKER_HEALTH_KEY:
+                return worker_health_service.WORKER_HEALTH_MAX_TTL_MS
+            if key == worker_health_service.WORKER_RECONCILIATION_HEALTH_KEY:
+                return worker_health_service.WORKER_RECONCILIATION_HEALTH_TTL_SECONDS * 1000
+            return worker_health_service.TASK_RECONCILIATION_HEALTH_TTL_SECONDS * 1000
 
     async def healthy_redis() -> HealthyWorkerRedis:
         return HealthyWorkerRedis()
@@ -101,7 +101,7 @@ async def test_missing_worker_health_lease_blocks_readiness(monkeypatch: pytest.
         return None
 
     async def missing_worker() -> None:
-        raise readiness_service.WorkerUnavailableError("must not leak")
+        raise worker_health_service.WorkerUnavailableError("must not leak")
 
     monkeypatch.setattr(readiness_service, "_probe_postgres", ok)
     monkeypatch.setattr(readiness_service, "_probe_redis", ok)
@@ -132,7 +132,7 @@ async def test_worker_probe_rejects_missing_or_non_expiring_health_lease(
 
     monkeypatch.setattr(readiness_service, "get_redis_client", invalid_redis)
 
-    with pytest.raises(readiness_service.WorkerUnavailableError):
+    with pytest.raises(worker_health_service.WorkerUnavailableError):
         await readiness_service._probe_worker()
 
 
@@ -148,11 +148,11 @@ async def test_worker_probe_requires_arq_and_reconciliation_leases_with_bounded_
 
         async def pttl(self, key: str) -> int:
             requested.append(("pttl", key))
-            if key == readiness_service.WORKER_HEALTH_KEY:
-                return readiness_service.WORKER_HEALTH_MAX_TTL_MS
-            if key == readiness_service.WORKER_RECONCILIATION_HEALTH_KEY:
-                return readiness_service.WORKER_RECONCILIATION_HEALTH_TTL_SECONDS * 1000
-            return readiness_service.TASK_RECONCILIATION_HEALTH_TTL_SECONDS * 1000
+            if key == worker_health_service.WORKER_HEALTH_KEY:
+                return worker_health_service.WORKER_HEALTH_MAX_TTL_MS
+            if key == worker_health_service.WORKER_RECONCILIATION_HEALTH_KEY:
+                return worker_health_service.WORKER_RECONCILIATION_HEALTH_TTL_SECONDS * 1000
+            return worker_health_service.TASK_RECONCILIATION_HEALTH_TTL_SECONDS * 1000
 
     async def worker_redis() -> WorkerRedis:
         return WorkerRedis()
@@ -162,12 +162,12 @@ async def test_worker_probe_requires_arq_and_reconciliation_leases_with_bounded_
     await readiness_service._probe_worker()
 
     assert requested == [
-        ("get", readiness_service.WORKER_HEALTH_KEY),
-        ("pttl", readiness_service.WORKER_HEALTH_KEY),
-        ("get", readiness_service.WORKER_RECONCILIATION_HEALTH_KEY),
-        ("pttl", readiness_service.WORKER_RECONCILIATION_HEALTH_KEY),
-        ("get", task_queue_service.TASK_RECONCILIATION_HEALTH_KEY),
-        ("pttl", task_queue_service.TASK_RECONCILIATION_HEALTH_KEY),
+        ("get", worker_health_service.WORKER_HEALTH_KEY),
+        ("pttl", worker_health_service.WORKER_HEALTH_KEY),
+        ("get", worker_health_service.WORKER_RECONCILIATION_HEALTH_KEY),
+        ("pttl", worker_health_service.WORKER_RECONCILIATION_HEALTH_KEY),
+        ("get", worker_health_service.TASK_RECONCILIATION_HEALTH_KEY),
+        ("pttl", worker_health_service.TASK_RECONCILIATION_HEALTH_KEY),
     ]
 
 

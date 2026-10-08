@@ -223,6 +223,31 @@ remote_skill_source_policy = Option(
     },
 )
 
+health_vision_opts = Option(
+    key="health_vision_opts",
+    name="健康识图",
+    description="模型与云处理政策由管理员审批；留空关闭自动识别，仍可人工录入。",
+    params={
+        "internal": True,
+        "fields": [
+            {"key": "report_model", "label": "报告字段模型", "type": "model"},
+            {"key": "meal_model", "label": "饮食视觉模型", "type": "model"},
+            {"key": "consultation_model", "label": "健康咨询模型", "type": "model"},
+            {"key": "meal_plan_model", "label": "基础配餐模型", "type": "model"},
+            {"key": "diet_analysis_model", "label": "饮食分析模型", "type": "model"},
+            {"key": "quality_review_model", "label": "质量检查模型", "type": "model"},
+            {"key": "policy_version", "label": "已审批处理政策版本", "type": "text"},
+            {"key": "approved_report_processor", "label": "报告处理配置审批指纹", "type": "text"},
+            {"key": "approved_meal_processor", "label": "饮食处理配置审批指纹", "type": "text"},
+            {"key": "approved_consultation_processor", "label": "咨询处理配置审批指纹", "type": "text"},
+            {"key": "approved_meal_plan_processor", "label": "配餐处理配置审批指纹", "type": "text"},
+            {"key": "approved_diet_analysis_processor", "label": "分析处理配置审批指纹", "type": "text"},
+            {"key": "approved_quality_review_processor", "label": "质量检查处理配置审批指纹", "type": "text"},
+        ],
+    },
+)
+
+
 OPTION_DEFINITIONS = {
     option.key: option
     for option in (
@@ -232,6 +257,7 @@ OPTION_DEFINITIONS = {
         paddleocr_api_opts,
         remote_skill_source_policy,
         system_options,
+        health_vision_opts,
     )
 }
 

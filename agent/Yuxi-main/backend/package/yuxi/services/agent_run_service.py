@@ -14,6 +14,7 @@ subagent presentation details.
 
 from __future__ import annotations
 
+from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS
 import asyncio
 import json
 import uuid
@@ -420,6 +421,8 @@ async def create_resume_run_view(
     origin_metadata: dict[str, Any] | None = None,
 ) -> dict:
     """继承中断 Run 的配置创建恢复运行，提交后投递 worker。"""
+    if agent_slug in HEALTH_AGENT_BACKENDS:
+        raise HTTPException(status_code=422, detail="专属咨询不支持恢复审批，请重新发送文字咨询")
     meta = meta or {}
     if resume is None:
         raise HTTPException(status_code=422, detail="resume 不能为空")
@@ -936,6 +939,11 @@ async def stream_agent_run_events(
             return
 
         while True:
+            if run.agent_slug in HEALTH_AGENT_BACKENDS:
+                run = await _load_stream_run_for_user(run_id, current_uid)
+                if run is None:
+                    yield format_sse({"run_id": run_id, "message": "运行任务不存在或无权访问"}, event="error")
+                    return
             try:
                 events = await list_run_stream_events(run_id, after_seq=last_seq, limit=200)
             except Exception as e:
@@ -956,6 +964,10 @@ async def stream_agent_run_events(
 
             emitted_terminal = False
             for event in events:
+                if run.agent_slug in HEALTH_AGENT_BACKENDS:
+                    if await _load_stream_run_for_user(run_id, current_uid) is None:
+                        yield format_sse({"run_id": run_id, "message": "运行任务不存在或无权访问"}, event="error")
+                        return
                 seq = str(event.get("seq") or "0-0")
                 last_seq = seq
                 event_type = event.get("event_type") or "message"
@@ -1052,5 +1064,8 @@ async def get_active_run_by_thread(*, thread_id: str, current_uid: str, db: Asyn
     )
     run = result.scalar_one_or_none()
     if run and run.status in ("pending", "running", "cancel_requested", "interrupted"):
+        if run.agent_slug in HEALTH_AGENT_BACKENDS:
+            if await AgentRunRepository(db).get_run_for_user(run.id, str(current_uid)) is None:
+                return {"run": None}
         return {"run": run.to_dict()}
     return {"run": None}

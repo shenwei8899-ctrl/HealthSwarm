@@ -25,6 +25,7 @@ from yuxi.utils.singleton import SingletonMeta
 AGENT_RUN_TERMINAL_STATUS_SQL = ", ".join(f"'{status}'" for status in AGENT_RUN_TERMINAL_STATUSES)
 BUSINESS_SCHEMA_VERSION = 10
 KNOWLEDGE_SCHEMA_VERSION = 2
+HEALTH_SCHEMA_VERSION = 18
 SCHEMA_VERSION_TABLE = "yuxi_schema_migrations"
 AGENT_RUN_LEASE_SCHEMA_STATEMENTS = (
     "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS worker_id VARCHAR(128)",
@@ -535,6 +536,7 @@ class PostgresManager(metaclass=SingletonMeta):
         required = {
             "business": BUSINESS_SCHEMA_VERSION,
             "knowledge": KNOWLEDGE_SCHEMA_VERSION,
+            "health": HEALTH_SCHEMA_VERSION,
         }
         mismatches = [
             f"{domain}={versions.get(domain, 'missing')} (required {version})"
@@ -558,6 +560,46 @@ class PostgresManager(metaclass=SingletonMeta):
         async with self.async_engine.begin() as conn:
             await conn.run_sync(BusinessBase.metadata.create_all)
         logger.info("PostgreSQL business tables created/checked")
+
+    async def create_health_tables(self):
+        """只由迁移进程创建增量健康表，保留既有业务数据。"""
+        from yuxi.storage.postgres.models_health import HEALTH_TABLES
+
+        self._check_initialized()
+        async with self.async_engine.begin() as conn:
+            await conn.run_sync(lambda connection: BusinessBase.metadata.create_all(connection, tables=HEALTH_TABLES))
+            await conn.execute(
+                text("ALTER TABLE health_consultation ADD COLUMN IF NOT EXISTS family_planner_selection JSONB")
+            )
+            await conn.execute(
+                text("ALTER TABLE health_consultation ADD COLUMN IF NOT EXISTS initial_planner_selection JSONB")
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE health_initial_plan_preview ADD COLUMN IF NOT EXISTS conversation_id INTEGER "
+                    "REFERENCES health_consultation(conversation_id) ON DELETE SET NULL"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE health_initial_plan_preview ADD COLUMN IF NOT EXISTS run_id VARCHAR(64) "
+                    "REFERENCES agent_runs(id) ON DELETE SET NULL"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_health_initial_plan_preview_run_id "
+                    "ON health_initial_plan_preview (run_id)"
+                )
+            )
+            await conn.execute(
+                text("""
+                INSERT INTO health_meal_plan_adoption_member (actor_uid, member_id, plan_date, adoption_id)
+                SELECT actor_uid, member_id, plan_date, id FROM health_meal_plan_adoption
+                WHERE status = 'active'
+                ON CONFLICT (actor_uid, member_id, plan_date) DO NOTHING
+            """)
+            )
 
     async def upgrade_knowledge_schema_v1_to_v2(self) -> None:
         """为知识文件处理中间态增加 Durable Task attempt owner。"""
@@ -1532,7 +1574,7 @@ class PostgresManager(metaclass=SingletonMeta):
             await session.commit()
         except Exception as e:
             await session.rollback()
-            logger.error(f"PostgreSQL async operation failed: {e}")
+            logger.error("PostgreSQL async operation failed: %s", type(e).__name__)
             raise
         finally:
             await session.close()

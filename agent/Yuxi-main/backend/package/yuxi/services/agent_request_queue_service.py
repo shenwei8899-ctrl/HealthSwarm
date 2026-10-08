@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
@@ -297,6 +298,10 @@ async def get_request(*, db: AsyncSession, request_id: str, uid: str) -> dict | 
     request = await repo.get_by_request_id(request_id)
     if not request or request.uid != str(uid):
         return None
+    if request.agent_slug in HEALTH_AGENT_BACKENDS:
+        await get_thread_conversation(
+            db=db, uid=uid, agent_slug=request.agent_slug, thread_id=request.conversation_thread_id
+        )
     return request.to_dict()
 
 
@@ -410,6 +415,11 @@ async def stream_request_events(
                     yield format_sse({"request_id": request_id, "message": "请求不存在"}, event="error")
                     return
 
+                if request.agent_slug in HEALTH_AGENT_BACKENDS:
+                    await get_thread_conversation(
+                        db=db, uid=uid, agent_slug=request.agent_slug, thread_id=request.conversation_thread_id
+                    )
+
                 if request.status == REQUEST_STATUS_DISPATCHED:
                     yield format_sse(
                         {
@@ -495,6 +505,10 @@ async def get_thread_conversation(
         else await repo.get_conversation_by_thread_id(thread_id)
     )
     if _conversation_matches(conversation, uid=uid, agent_slug=agent_slug):
+        if agent_slug in HEALTH_AGENT_BACKENDS:
+            from yuxi.services.conversation_service import require_user_conversation
+
+            await require_user_conversation(repo, thread_id, str(uid))
         return conversation
     raise HTTPException(status_code=404, detail="对话线程不存在")
 

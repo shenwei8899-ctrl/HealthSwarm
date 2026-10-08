@@ -3,11 +3,22 @@
     <div class="agent-view-body">
       <!-- 中间内容区域 -->
       <div class="content">
+        <a-alert
+          v-if="needsHealthBinding"
+          type="info"
+          show-icon
+          message="健康角色需要先选择成员和用途"
+        >
+          <template #action>
+            <a-button @click="router.push({ name: 'HealthVision' })">选择健康成员</a-button>
+          </template>
+        </a-alert>
         <AgentChatComponent
           ref="chatComponentRef"
           :single-mode="false"
           :initial-project-id="routeDraftProjectId"
           :is-new-conversation="!getRouteThreadId()"
+          :send-disabled="syncingRouteThread || !agentStore.isInitialized || needsHealthBinding"
           @thread-change="handleThreadChange"
         >
           <template #input-actions-left="{ hasActiveThread, isCreatingThread }">
@@ -130,6 +141,7 @@ import { handleChatError } from '@/utils/errorHandler'
 import { generatePixelAvatar } from '@/utils/pixelAvatar'
 import { normalizeAgentBackendOption } from '@/utils/agentConfigUtils'
 import FallbackAvatar from '@/components/common/FallbackAvatar.vue'
+import { isHealthAgentId } from '@/utils/healthVision'
 
 import { storeToRefs } from 'pinia'
 
@@ -163,6 +175,10 @@ const routeDraftProjectId = computed(() => {
   return typeof value === 'string' ? value : ''
 })
 
+const needsHealthBinding = computed(
+  () => !getRouteThreadId() && isHealthAgentId(selectedAgentId.value)
+)
+
 const syncSelectedThreadFromRoute = async () => {
   const chatComponent = chatComponentRef.value
   if (!chatComponent?.selectThreadFromRoute) return
@@ -195,6 +211,12 @@ const consumeRouteAgentSelection = async () => {
       await agentStore.initialize()
     }
 
+    if (isHealthAgentId(targetAgentId)) {
+      message.info('请先在健康识图选择成员和用途')
+      await router.push({ name: 'HealthVision' })
+      return
+    }
+
     await nextTick()
     const canSwitch = await chatComponentRef.value?.selectThreadFromRoute?.('')
     if (canSwitch === null) return
@@ -202,9 +224,11 @@ const consumeRouteAgentSelection = async () => {
   } catch (error) {
     handleChatError(error, 'load')
   } finally {
-    const nextQuery = { ...route.query }
-    delete nextQuery.agent_id
-    await router.replace({ name: 'AgentComp', query: nextQuery })
+    if (getRouteAgentId() === targetAgentId && !getRouteThreadId()) {
+      const nextQuery = { ...route.query }
+      delete nextQuery.agent_id
+      await router.replace({ name: 'AgentComp', query: nextQuery })
+    }
   }
 }
 
@@ -290,6 +314,12 @@ const handleAgentSwitch = async (agentId, hasActiveThread, isCreatingThread) => 
   }
   if (hasActiveThread) {
     message.info('当前对话已绑定智能体，请新建对话后切换')
+    return
+  }
+  if (isHealthAgentId(agentId)) {
+    agentDropdownOpen.value = false
+    message.info('请先在健康识图选择成员和用途')
+    await router.push({ name: 'HealthVision' })
     return
   }
   try {

@@ -306,7 +306,14 @@
                         @click="toggleStatePanel"
                       />
                       <div class="input-model-selector">
+                        <span
+                          v-if="isHealthRole"
+                          title="健康角色模型由后台审核配置，不能在聊天中切换"
+                        >
+                          后台批准模型
+                        </span>
                         <ModelSelectorComponent
+                          v-else
                           upward
                           :model_spec="currentModelSpec"
                           size="nano"
@@ -889,6 +896,7 @@ import {
 } from '@/utils/contextUsage'
 import { AgentValidator } from '@/utils/agentValidator'
 import { useAgentStore } from '@/stores/agent'
+import { isHealthAgentId } from '@/utils/healthVision'
 import { useChatThreadsStore } from '@/stores/chatThreads'
 import { useChatUIStore } from '@/stores/chatUI'
 import { useConfigStore } from '@/stores/config'
@@ -1387,6 +1395,10 @@ watch(
 // 当前选择优先；否则依次使用 Conversation、智能体和系统默认模型。
 const DRAFT_MODEL_KEY = '__draft__'
 const selectedModelByThread = reactive({})
+// 健康角色不能沿用普通聊天默认模型或旧会话覆盖，由后端核对当前审批配置。
+const isHealthRole = computed(
+  () => isHealthAgentId(currentThread.value?.agent_id || currentAgentId.value)
+)
 const savedToolApprovalMode = ref(readToolApprovalModePreference())
 const agentDefaultModel = computed(
   () =>
@@ -1402,6 +1414,7 @@ const currentModelSpec = computed(
     agentDefaultModel.value
 )
 const handleModelSelect = (spec) => {
+  if (isHealthRole.value) return
   if (typeof spec === 'string') {
     if (spec) {
       selectedModelByThread[currentChatId.value || DRAFT_MODEL_KEY] = spec
@@ -3314,8 +3327,8 @@ const handleSendMessage = async ({ images = [], queuePolicy = 'enqueue' } = {}) 
     // 该线程由草稿发送创建，清理新建对话草稿，避免已发送文本再次还原
     threadDraftSession.clearDraftThread()
   }
-  // 每次请求都下发输入框展示的模型，后端在同一事务内绑定到 Conversation。
-  const modelSpec = currentModelSpec.value || null
+  // 普通对话提交展示模型；健康专属咨询由后端选择批准模型，避免系统默认值覆盖。
+  const modelSpec = isHealthRole.value ? null : currentModelSpec.value || null
   const toolApprovalMode = currentToolApprovalMode.value
 
   userInput.value = ''
@@ -3336,7 +3349,8 @@ const handleSendMessage = async ({ images = [], queuePolicy = 'enqueue' } = {}) 
     .map((attachment) => attachment.file_id)
     .filter(Boolean)
 
-  if ((threadMessages.value[threadId] || []).length === 0) {
+  // 健康会话保留服务器固定标题，不能把首条健康问题发送到普通标题模型。
+  if (!isHealthRole.value && (threadMessages.value[threadId] || []).length === 0) {
     const autoTitle = text.replace(/\s+/g, ' ').trim().slice(0, 2000)
     if (autoTitle) {
       void (async () => {

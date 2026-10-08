@@ -2,6 +2,7 @@
 对话域持久化 Repository（Async）
 """
 
+from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS, STRUCTURED_HEALTH_AGENTS
 import json
 import uuid as uuid_lib
 
@@ -64,7 +65,11 @@ def _state_proven_model_tool_call_condition():
         Message.message_type == MODEL_AUDIT_MESSAGE_TYPE,
         Message.tool_calls.any(),
         Message.extra_metadata["state_reconciled"].as_boolean().is_(True),
-        Message.run_id.in_(select(AgentRun.id).where(AgentRun.status.in_(AGENT_RUN_TERMINAL_STATUSES))),
+        Message.run_id.in_(
+            select(AgentRun.id).where(
+                AgentRun.status.in_(AGENT_RUN_TERMINAL_STATUSES), AgentRun.agent_slug.notin_(STRUCTURED_HEALTH_AGENTS)
+            )
+        ),
     )
 
 
@@ -760,6 +765,7 @@ class ConversationRepository:
         return [
             Conversation.uid == str(uid),
             Conversation.status == "active",
+            Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS),
             *self._exclude_source_conditions(INVOCATION_CONVERSATION_SOURCES),
             ~child_thread_exists.exists(),
         ]

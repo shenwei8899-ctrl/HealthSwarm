@@ -8,7 +8,7 @@ import * as configUtils from '../../src/utils/agentConfigUtils.js'
 const source = readFileSync(
   new URL('../../src/components/AgentRuntimeConfigForm.vue', import.meta.url),
   'utf8'
-)
+).replace(/\r\n/g, '\n')
 const { descriptor } = parse(source)
 const compiled = compileScript(descriptor, { id: 'resource-visibility-test' }).content
 const executable = compiled

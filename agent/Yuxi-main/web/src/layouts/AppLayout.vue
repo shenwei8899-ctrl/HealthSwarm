@@ -13,7 +13,8 @@ import {
   PanelLeft,
   PanelLeftOpen,
   MessageCirclePlus,
-  Search
+  Search,
+  ScanLine
 } from '@lucide/vue'
 
 import { useConfigStore } from '@/stores/config'
@@ -209,6 +210,7 @@ const mainList = computed(() => {
     })
   }
 
+  items.push({ name: '健康识图', path: '/health-vision', icon: ScanLine, activeIcon: ScanLine })
   return items
 })
 

@@ -590,7 +590,7 @@ async def test_model_state_reconcile_uses_latest_message_when_operation_id_is_re
             pass
 
         async def lock_output_persistence(self, *_args, **_kwargs):
-            return object()
+            return SimpleNamespace(agent_slug="worker")
 
         async def set_output_message(self, *_args, **_kwargs):
             pass
@@ -736,7 +736,7 @@ async def test_interrupted_run_does_not_bind_older_reconciled_model_audit(
             pass
 
         async def lock_output_persistence(self, *_args, **_kwargs):
-            return object()
+            return SimpleNamespace(agent_slug="worker")
 
         async def set_output_message(self, _run_id, message_id, *, worker_id):
             output_ids.append(message_id)
@@ -822,7 +822,7 @@ async def test_tool_call_interrupt_ignores_historical_same_id_tool_message(monke
             pass
 
         async def lock_output_persistence(self, *_args, **_kwargs):
-            return object()
+            return SimpleNamespace(agent_slug="worker")
 
         async def set_output_message(self, _run_id, message_id, *, worker_id):
             output_ids.append(message_id)
@@ -879,7 +879,7 @@ async def test_interrupt_persists_message_and_terminal_status_in_one_commit(
 
         async def lock_output_persistence(self, *_args, **_kwargs):
             events.append(("lock",))
-            return object()
+            return SimpleNamespace(agent_slug="worker")
 
         async def set_output_message(self, run_id, message_id, *, worker_id):
             events.append(("message", run_id, message_id, worker_id))

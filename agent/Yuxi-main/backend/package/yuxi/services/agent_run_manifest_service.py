@@ -8,6 +8,7 @@ write-once 固化后不得改写；历史 Run 保持 NULL 表示 unknown。
 
 from __future__ import annotations
 
+from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS
 import hashlib
 import json
 import os
@@ -144,6 +145,8 @@ async def prepare_run_execution(
     )
     if agent_item is None:
         raise ValueError("智能体不存在或无权限访问")
+    if run.agent_slug in HEALTH_AGENT_BACKENDS and agent_item.backend_id != HEALTH_AGENT_BACKENDS[run.agent_slug]:
+        raise ValueError("专属咨询后端配置已变化")
     backend = get_agent_backend(agent_item.backend_id)
 
     context = backend.context_schema()
@@ -172,7 +175,12 @@ async def prepare_run_execution(
         if not parent_thread_id:
             raise ValueError("子智能体运行缺少必需的 parent_thread_id")
         context.update({"parent_thread_id": parent_thread_id, "is_subagent_runtime": True})
-    context = await prepare_agent_runtime_context(context)
+    if agent_item.backend_id in HEALTH_AGENT_BACKENDS.values():
+        from yuxi.services.health_consultation_service import prepare_consultation_context
+
+        context = await prepare_consultation_context(context, db, run)
+    else:
+        context = await prepare_agent_runtime_context(context)
     if not getattr(context, "_runtime_prepared", False):
         raise ValueError("执行用户不存在，无法准备 Context")
 

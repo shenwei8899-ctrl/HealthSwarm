@@ -44,6 +44,10 @@ async def test_discovered_presets_creates_orchestrator_and_subagents(monkeypatch
         "deep-research",
         "research-explorer",
         "fact-verifier",
+        "health-consultation",
+        "health-meal-planner",
+        "health-diet-analyst",
+        "health-quality",
     }
 
     explorer = created["research-explorer"]

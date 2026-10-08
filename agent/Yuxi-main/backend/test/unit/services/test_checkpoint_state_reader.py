@@ -98,7 +98,7 @@ async def test_state_view_reads_persisted_fields_without_agent_runtime(checkpoin
 
     async def conversation(thread_id):
         """返回已授权的持久化线程。"""
-        return SimpleNamespace(id=1, uid="user", status="active")
+        return SimpleNamespace(id=1, uid="user", status="active", agent_id="default")
 
     async def latest_run(thread_id, uid):
         """返回已完成运行。"""

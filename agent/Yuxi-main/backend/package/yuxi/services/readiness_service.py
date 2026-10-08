@@ -10,16 +10,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from sqlalchemy import text
-from yuxi.services.run_queue_service import (
-    WORKER_RECONCILIATION_HEALTH_KEY,
-    WORKER_RECONCILIATION_HEALTH_TTL_SECONDS,
-    get_redis_client,
-)
-from yuxi.services.task_queue_service import (
-    TASK_RECONCILIATION_HEALTH_KEY,
-    TASK_RECONCILIATION_HEALTH_TTL_SECONDS,
-)
-from yuxi.services.worker_health import WORKER_HEALTH_KEY, WORKER_HEALTH_MAX_TTL_MS
+from yuxi.services.run_queue_service import get_redis_client
+from yuxi.services.worker_health_service import probe_worker_health
 from yuxi.storage.postgres.manager import pg_manager
 
 READINESS_PROBE_TIMEOUT_SECONDS = float(os.getenv("READINESS_PROBE_TIMEOUT_SECONDS", "2"))
@@ -43,24 +35,11 @@ async def _probe_redis() -> None:
     await redis.ping()
 
 
-class WorkerUnavailableError(RuntimeError):
-    """当前队列没有完成启动且仍在续租的兼容 worker。"""
-
-
 async def _probe_worker() -> None:
     """验证兼容 AgentRun worker 的短 TTL 健康事实仍然存在。"""
 
     redis = await get_redis_client()
-    leases = (
-        (WORKER_HEALTH_KEY, WORKER_HEALTH_MAX_TTL_MS),
-        (WORKER_RECONCILIATION_HEALTH_KEY, WORKER_RECONCILIATION_HEALTH_TTL_SECONDS * 1000),
-        (TASK_RECONCILIATION_HEALTH_KEY, TASK_RECONCILIATION_HEALTH_TTL_SECONDS * 1000),
-    )
-    for key, max_ttl_ms in leases:
-        value = await redis.get(key)
-        ttl_ms = await redis.pttl(key)
-        if not value or ttl_ms <= 0 or ttl_ms > max_ttl_ms:
-            raise WorkerUnavailableError("worker health lease missing or invalid")
+    await probe_worker_health(redis)
 
 
 async def _run_probe(probe: Probe) -> dict[str, str]:

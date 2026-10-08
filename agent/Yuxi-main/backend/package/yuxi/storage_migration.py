@@ -14,6 +14,7 @@ from yuxi.config.options import ensure_options_in_db
 from yuxi.repositories.agent_run_repository import AgentRunRepository
 from yuxi.storage.postgres.manager import (
     BUSINESS_SCHEMA_VERSION,
+    HEALTH_SCHEMA_VERSION,
     KNOWLEDGE_SCHEMA_VERSION,
     V071_WORKDIR_CUTOVER_STATEMENTS,
     pg_manager,
@@ -77,6 +78,13 @@ async def main() -> None:
                 KNOWLEDGE_SCHEMA_VERSION,
                 upgrade_from=(1,),
             )
+            health_version = versions.get("health")
+            _require_supported_version(
+                "health",
+                health_version,
+                HEALTH_SCHEMA_VERSION,
+                upgrade_from=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17),
+            )
 
             if business_version in {None, 2, 7, 8, 9}:
                 await pg_manager.create_business_tables()
@@ -102,6 +110,10 @@ async def main() -> None:
             elif knowledge_version == 1:
                 await pg_manager.upgrade_knowledge_schema_v1_to_v2()
                 await pg_manager.record_schema_version("knowledge", KNOWLEDGE_SCHEMA_VERSION)
+
+            if health_version in (None, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17):
+                await pg_manager.create_health_tables()
+                await pg_manager.record_schema_version("health", HEALTH_SCHEMA_VERSION)
 
             await _converge_database_state(fail_nonterminal_runs=requires_quiescence)
             legacy_config_file = get_legacy_storage_dir() / "config/base.toml"

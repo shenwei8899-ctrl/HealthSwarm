@@ -1,8 +1,11 @@
+from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS
 import asyncio
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from yuxi.repositories.conversation_repository import ConversationRepository
+from yuxi.services.conversation_service import require_user_conversation
 from yuxi.services.langfuse_service import submit_user_feedback_score
 from yuxi.storage.postgres.models_business import Conversation, Message, MessageFeedback
 from yuxi.utils.logging_config import logger
@@ -29,6 +32,8 @@ async def submit_message_feedback_view(
         conversation = conversation_result.scalar_one_or_none()
         if not conversation or conversation.uid != str(current_uid):
             raise HTTPException(status_code=403, detail="Access denied")
+        if conversation.agent_id in HEALTH_AGENT_BACKENDS:
+            await require_user_conversation(ConversationRepository(db), conversation.thread_id, str(current_uid))
 
         existing_feedback_result = await db.execute(
             select(MessageFeedback).filter_by(message_id=message_id, uid=str(current_uid))
@@ -49,7 +54,7 @@ async def submit_message_feedback_view(
         await db.refresh(new_feedback)
 
         trace_id = (message.extra_metadata or {}).get("langfuse_trace_id")
-        if trace_id:
+        if trace_id and conversation.agent_id not in HEALTH_AGENT_BACKENDS:
             # submit_user_feedback_score 内部会同步调用 client.flush() 发起阻塞网络请求，
             # 放到线程池执行避免阻塞事件循环；本地反馈已落库，上传失败不影响主流程。
             await asyncio.to_thread(
@@ -88,6 +93,13 @@ async def get_message_feedback_view(
     current_uid: str,
 ) -> dict:
     try:
+        conversation = await db.scalar(
+            select(Conversation)
+            .join(Message, Message.conversation_id == Conversation.id)
+            .where(Message.id == message_id)
+        )
+        if conversation is not None and conversation.agent_id in HEALTH_AGENT_BACKENDS:
+            await require_user_conversation(ConversationRepository(db), conversation.thread_id, str(current_uid))
         feedback_result = await db.execute(
             select(MessageFeedback).filter_by(message_id=message_id, uid=str(current_uid))
         )
@@ -106,6 +118,8 @@ async def get_message_feedback_view(
             },
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"Error getting message feedback: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get feedback: {str(e)}")

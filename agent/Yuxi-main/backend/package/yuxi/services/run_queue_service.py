@@ -7,17 +7,21 @@ import json
 import os
 from datetime import UTC, datetime
 
-from yuxi.services.worker_health import WORKER_HEALTH_KEY
+from yuxi.services.worker_health_service import (  # noqa: F401 - 保留现有队列契约导出
+    RUN_RECONCILIATION_SECONDS,
+    WORKER_HEALTH_CONTRACT,
+    WORKER_HEALTH_INTERVAL_SECONDS,
+    WORKER_HEALTH_KEY,
+    WORKER_HEALTH_MAX_TTL_MS,
+    WORKER_RECONCILIATION_HEALTH_KEY,
+    WORKER_RECONCILIATION_HEALTH_TTL_SECONDS,
+)
 from yuxi.storage.redis import close_async_redis_client, create_arq_redis_pool, get_async_redis_client
 from yuxi.utils.logging_config import logger
 
 RUN_CANCEL_KEY_TTL_SECONDS = int(os.getenv("RUN_CANCEL_KEY_TTL_SECONDS", "1800"))
 RUN_EVENTS_STREAM_TTL_SECONDS = int(os.getenv("RUN_EVENTS_STREAM_TTL_SECONDS", "7200"))
 RUN_EVENTS_STREAM_MAXLEN = int(os.getenv("RUN_EVENTS_STREAM_MAXLEN", "0"))
-RUN_RECONCILIATION_SECONDS = 30
-WORKER_RECONCILIATION_HEALTH_KEY = f"{WORKER_HEALTH_KEY}:lease-reconciliation"
-WORKER_RECONCILIATION_HEALTH_TTL_SECONDS = RUN_RECONCILIATION_SECONDS * 2 + 5
-
 _arq_pool = None
 
 

@@ -1,5 +1,6 @@
 """Dashboard 统计读模型的数据访问层。"""
 
+from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -95,7 +96,7 @@ class DashboardRepository:
         offset: int = 0,
     ) -> dict[str, Any]:
         """分页查询 Dashboard 对话，并装配用户与 Agent 展示名称。"""
-        filters = []
+        filters = [Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS)]
         if uid:
             filters.append(Conversation.uid == uid)
         if agent_id:
@@ -182,6 +183,7 @@ class DashboardRepository:
                 select(Conversation.uid, User.username, User.avatar, User.is_deleted)
                 .select_from(Conversation)
                 .outerjoin(User, Conversation.uid == User.uid)
+                .where(Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS))
                 .distinct()
             )
         ).all()
@@ -190,6 +192,7 @@ class DashboardRepository:
                 select(Conversation.agent_id, Agent.name, Agent.icon)
                 .select_from(Conversation)
                 .outerjoin(Agent, Conversation.agent_id == Agent.slug)
+                .where(Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS))
                 .distinct()
             )
         ).all()
@@ -249,6 +252,7 @@ class DashboardRepository:
             .join(Agent, Conversation.agent_id == Agent.slug)
             .where(
                 Conversation.updated_at >= query_now - timedelta(days=1),
+                Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS),
                 Conversation.status.notin_(("deleted", "subagent")),
                 User.is_deleted == 0,
             )
@@ -260,6 +264,7 @@ class DashboardRepository:
             .join(Agent, Conversation.agent_id == Agent.slug)
             .where(
                 Conversation.updated_at >= query_now - timedelta(days=30),
+                Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS),
                 Conversation.status.notin_(("deleted", "subagent")),
                 User.is_deleted == 0,
             )
@@ -274,6 +279,7 @@ class DashboardRepository:
             .where(
                 Conversation.updated_at >= query_now - timedelta(days=120),
                 Conversation.updated_at < query_now,
+                Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS),
                 Conversation.status.notin_(("deleted", "subagent")),
                 User.is_deleted == 0,
             )
@@ -296,7 +302,11 @@ class DashboardRepository:
     async def get_tool_call_stats(self, *, now: datetime | None = None) -> dict[str, Any]:
         """统计有效用户与非删除会话中的工具调用。"""
         query_now = (now or utc_now()).replace(tzinfo=None)
-        valid_filters = [Conversation.status.notin_(("deleted", "subagent")), User.is_deleted == 0]
+        valid_filters = [
+            Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS),
+            Conversation.status.notin_(("deleted", "subagent")),
+            User.is_deleted == 0,
+        ]
         total_result = await self.db_session.execute(
             select(func.count(ToolCall.id))
             .join(Message, ToolCall.message_id == Message.id)
@@ -368,7 +378,11 @@ class DashboardRepository:
     async def get_agent_analytics(self) -> dict[str, Any]:
         """汇总仍存在 Agent 在有效用户与非删除会话中的使用情况。"""
         agents = list((await self.db_session.execute(select(Agent).order_by(Agent.name.asc()))).scalars().all())
-        valid_filters = [Conversation.status.notin_(("deleted", "subagent")), User.is_deleted == 0]
+        valid_filters = [
+            Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS),
+            Conversation.status.notin_(("deleted", "subagent")),
+            User.is_deleted == 0,
+        ]
 
         conversation_rows = (
             await self.db_session.execute(
@@ -441,7 +455,11 @@ class DashboardRepository:
 
     async def get_basic_stats(self) -> dict[str, Any]:
         """读取有效用户与非删除会话的 Dashboard 基础计数。"""
-        valid_filters = [Conversation.status.notin_(("deleted", "subagent")), User.is_deleted == 0]
+        valid_filters = [
+            Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS),
+            Conversation.status.notin_(("deleted", "subagent")),
+            User.is_deleted == 0,
+        ]
         total_conversations_result = await self.db_session.execute(
             select(func.count(Conversation.id))
             .join(User, Conversation.uid == User.uid)
@@ -512,6 +530,7 @@ class DashboardRepository:
             .join(User, MessageFeedback.uid == User.uid)
             .join(Agent, Conversation.agent_id == Agent.slug)
             .where(
+                Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS),
                 Conversation.status.notin_(("deleted", "subagent")),
                 User.is_deleted == 0,
                 or_(Message.message_type.is_(None), Message.message_type.notin_(AUDIT_MESSAGE_TYPES)),
@@ -569,6 +588,7 @@ class DashboardRepository:
                     or_(Message.message_type.is_(None), Message.message_type.notin_(AUDIT_MESSAGE_TYPES)),
                     Message.created_at >= query_start_time,
                     Message.extra_metadata.isnot(None),
+                    Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS),
                     Conversation.status.notin_(("deleted", "subagent")),
                     User.is_deleted == 0,
                 )
@@ -589,6 +609,7 @@ class DashboardRepository:
                 .where(
                     Conversation.updated_at.isnot(None),
                     Conversation.updated_at >= query_start_time,
+                    Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS),
                     Conversation.status.notin_(("deleted", "subagent")),
                     User.is_deleted == 0,
                 )
@@ -618,6 +639,7 @@ class DashboardRepository:
                         or_(Message.message_type.is_(None), Message.message_type.notin_(AUDIT_MESSAGE_TYPES)),
                         Message.extra_metadata.isnot(None),
                         Message.extra_metadata["usage_metadata"].isnot(None),
+                        Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS),
                         Conversation.status.notin_(("deleted", "subagent")),
                         User.is_deleted == 0,
                     )
@@ -639,6 +661,7 @@ class DashboardRepository:
                 .join(Agent, Conversation.agent_id == Agent.slug)
                 .where(
                     ToolCall.created_at >= query_start_time,
+                    Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS),
                     Conversation.status.notin_(("deleted", "subagent")),
                     User.is_deleted == 0,
                 )
@@ -706,7 +729,11 @@ class DashboardRepository:
                 .join(Conversation, Message.conversation_id == Conversation.id)
                 .join(User, Conversation.uid == User.uid)
                 .join(Agent, Conversation.agent_id == Agent.slug)
-                .where(Conversation.status.notin_(("deleted", "subagent")), User.is_deleted == 0)
+                .where(
+                    Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS),
+                    Conversation.status.notin_(("deleted", "subagent")),
+                    User.is_deleted == 0,
+                )
             )
             total_count = total_result.scalar() or 0
         else:
@@ -744,6 +771,7 @@ class DashboardRepository:
             else Conversation.status.notin_(("deleted", "subagent"))
         )
         conversation_filters = [
+            Conversation.agent_id.not_in(HEALTH_AGENT_BACKENDS),
             Conversation.created_at.isnot(None),
             status_filter,
             User.is_deleted == 0,

@@ -43,6 +43,7 @@ async def test_storage_migration_reads_legacy_schema_before_cutover(monkeypatch)
         record_schema_version=lambda domain, version: _record(calls, f"version:{domain}:{version}"),
         create_business_tables=lambda: _record(calls, "create_business_tables"),
         create_knowledge_tables=lambda: _record(calls, "create_knowledge_tables"),
+        create_health_tables=lambda: _record(calls, "create_health"),
         ensure_business_schema=lambda: _record(calls, "ensure_business_schema"),
         ensure_knowledge_schema=lambda: _record(calls, "ensure_knowledge_schema"),
         setup_langgraph_checkpointer=lambda: _record(calls, "setup_langgraph_checkpointer"),
@@ -114,6 +115,7 @@ async def test_storage_migration_rejects_v071_schema_without_quiescence_proof(mo
         record_schema_version=lambda domain, version: _record(calls, f"version:{domain}:{version}"),
         create_business_tables=lambda: _record(calls, "create"),
         create_knowledge_tables=lambda: _record(calls, "create_knowledge"),
+        create_health_tables=lambda: _record(calls, "create_health"),
         ensure_business_schema=lambda: _record(calls, "schema"),
         ensure_knowledge_schema=lambda: _record(calls, "knowledge_schema"),
         setup_langgraph_checkpointer=lambda: _record(calls, "checkpoint"),
@@ -139,7 +141,11 @@ async def test_storage_migration_rejects_v071_schema_without_quiescence_proof(mo
 
 
 @pytest.mark.asyncio
-async def test_current_schema_skips_schema_ddl(monkeypatch):
+@pytest.mark.parametrize(
+    "health_version",
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, storage_migration.HEALTH_SCHEMA_VERSION],
+)
+async def test_current_schema_skips_unrelated_ddl_and_upgrades_health(monkeypatch, health_version):
     calls: list[str] = []
     sessions = [_Session(), _Session(), _Session()]
 
@@ -155,12 +161,14 @@ async def test_current_schema_skips_schema_ddl(monkeypatch):
             {
                 "business": storage_migration.BUSINESS_SCHEMA_VERSION,
                 "knowledge": storage_migration.KNOWLEDGE_SCHEMA_VERSION,
+                "health": health_version,
             }
         ),
         upgrade_agent_resource_selection=lambda: _record(calls, "resource_selection"),
         record_schema_version=lambda domain, version: _record(calls, f"version:{domain}:{version}"),
         create_business_tables=lambda: _record(calls, "create_business"),
         create_knowledge_tables=lambda: _record(calls, "create_knowledge"),
+        create_health_tables=lambda: _record(calls, "create_health"),
         ensure_business_schema=lambda: _record(calls, "business_schema"),
         ensure_knowledge_schema=lambda: _record(calls, "knowledge_schema"),
         setup_langgraph_checkpointer=lambda: _record(calls, "checkpoint"),
@@ -196,6 +204,10 @@ async def test_current_schema_skips_schema_ddl(monkeypatch):
         f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}",
         f"version:knowledge:{storage_migration.KNOWLEDGE_SCHEMA_VERSION}",
     }.isdisjoint(calls)
+    assert ("create_health" in calls) == (health_version != storage_migration.HEALTH_SCHEMA_VERSION)
+    assert (f"version:health:{storage_migration.HEALTH_SCHEMA_VERSION}" in calls) == (
+        health_version != storage_migration.HEALTH_SCHEMA_VERSION
+    )
     assert "converge:False" in calls
 
 
@@ -255,6 +267,7 @@ async def test_supported_legacy_business_schema_is_converged_and_versioned_as_cu
         record_schema_version=lambda domain, version: _record(calls, f"version:{domain}:{version}"),
         create_business_tables=lambda: _record(calls, "create_business"),
         create_knowledge_tables=lambda: _record(calls, "create_knowledge"),
+        create_health_tables=lambda: _record(calls, "create_health"),
         ensure_business_schema=lambda: _record(calls, "business_schema"),
         ensure_knowledge_schema=lambda: _record(calls, "knowledge_schema"),
         setup_langgraph_checkpointer=lambda: _record(calls, "checkpoint"),
@@ -308,6 +321,7 @@ async def test_failed_business_migration_does_not_record_version(monkeypatch):
         record_schema_version=lambda domain, version: _record(calls, f"version:{domain}:{version}"),
         create_business_tables=lambda: _record(calls, "create_business"),
         create_knowledge_tables=lambda: _record(calls, "create_knowledge"),
+        create_health_tables=lambda: _record(calls, "create_health"),
         ensure_business_schema=lambda: _record(calls, "business_schema"),
         ensure_knowledge_schema=lambda: _record(calls, "knowledge_schema"),
         setup_langgraph_checkpointer=fail_checkpoint_setup,
@@ -351,6 +365,7 @@ async def test_current_schema_does_not_rewrite_workdir_data(monkeypatch):
         record_schema_version=lambda domain, version: _record(calls, f"version:{domain}:{version}"),
         create_business_tables=lambda: _record(calls, "create"),
         create_knowledge_tables=lambda: _record(calls, "create_knowledge"),
+        create_health_tables=lambda: _record(calls, "create_health"),
         ensure_business_schema=lambda: _record(calls, "schema"),
         ensure_knowledge_schema=lambda: _record(calls, "knowledge_schema"),
         setup_langgraph_checkpointer=lambda: _record(calls, "checkpoint"),

@@ -21,6 +21,8 @@ Skill 是一个可复用的能力包，通常包含一个 `SKILL.md`、提示词
 
 同一用户有个人 Skill 和共享 Skill 使用同一个 slug 时，个人版本覆盖该用户看到的共享版本。删除个人版本后，如果共享版本仍可访问，会恢复共享版本。
 
+成员专属营养咨询 `health-consultation` 固定预加载内置 `family-nutritionist`，使用服务器限定的健康工具；个人同名 Skill 不替换此入口的内容。管理员停用该内置 Skill 后，提交咨询、构图及后续模型和工具调用会拒绝执行；重新启用后可以再次提交。发布与装配边界见[家庭营养师 Skill 决策](../develop-guides/decisions/implemented/2026-10-06-family-nutritionist-builtin-skill.md)。
+
 ## 创建 Skill
 
 标准目录至少包含根级 `SKILL.md`：

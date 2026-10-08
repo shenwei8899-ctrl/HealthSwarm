@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -47,7 +48,7 @@ async def test_submit_message_feedback_syncs_langfuse_score(monkeypatch: pytest.
         conversation_id=7,
         extra_metadata={"langfuse_trace_id": "trace-1"},
     )
-    conversation = SimpleNamespace(id=7, uid="user-1")
+    conversation = SimpleNamespace(id=7, uid="user-1", agent_id="default")
     db = _FakeSession([message, conversation, None])
     calls = []
 
@@ -86,7 +87,7 @@ async def test_submit_message_feedback_syncs_langfuse_score(monkeypatch: pytest.
 @pytest.mark.asyncio
 async def test_submit_message_feedback_skips_langfuse_without_trace_id(monkeypatch: pytest.MonkeyPatch):
     message = SimpleNamespace(id=3, conversation_id=7, extra_metadata={})
-    conversation = SimpleNamespace(id=7, uid="user-1")
+    conversation = SimpleNamespace(id=7, uid="user-1", agent_id="default")
     db = _FakeSession([message, conversation, None])
     calls = []
 
@@ -103,3 +104,22 @@ async def test_submit_message_feedback_skips_langfuse_without_trace_id(monkeypat
     assert result["rating"] == "dislike"
     assert result["reason"] == "不相关"
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_health_feedback_rechecks_member_and_never_exports_reason_to_langfuse(monkeypatch):
+    """健康反馈留在本地，已有 trace 也不能绕过咨询用途审批外发。"""
+    message = SimpleNamespace(id=3, conversation_id=7, extra_metadata={"langfuse_trace_id": "synthetic-trace"})
+    conversation = SimpleNamespace(id=7, uid="user-1", agent_id="health-consultation", thread_id="bound-thread")
+    db = _FakeSession([message, conversation, None])
+    authorize = AsyncMock(return_value=conversation)
+    export = AsyncMock()
+    monkeypatch.setattr(svc, "require_user_conversation", authorize)
+    monkeypatch.setattr(svc, "submit_user_feedback_score", export)
+    result = await svc.submit_message_feedback_view(
+        message_id=3, rating="dislike", reason="synthetic-health-reason", db=db, current_uid="user-1"
+    )
+    assert result["reason"] == "synthetic-health-reason" and db.committed
+    authorize.assert_awaited_once()
+    assert authorize.await_args.args[1:] == ("bound-thread", "user-1")
+    export.assert_not_called()

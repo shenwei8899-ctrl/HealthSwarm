@@ -23,6 +23,7 @@ def _sse_data(chunk: str) -> dict:
 def _run_state(status: str = "running", *, cleanup_pending: bool = False):
     return SimpleNamespace(
         status=status,
+        agent_slug="default",
         conversation_thread_id="thread-1",
         request_id="req-1",
         runtime_cleanup_pending=cleanup_pending,
@@ -507,7 +508,7 @@ async def test_stream_agent_run_events_reads_redis_and_ends_on_end_event(monkeyp
 
         async def get_run_for_user(self, run_id: str, uid: str):
             del run_id, uid
-            return SimpleNamespace(status="completed", conversation_thread_id="thread-1")
+            return SimpleNamespace(status="completed", conversation_thread_id="thread-1", agent_slug="default")
 
     calls = {"count": 0}
 
@@ -740,7 +741,7 @@ async def test_stream_agent_run_events_compacts_verbose_false(monkeypatch: pytes
 
         async def get_run_for_user(self, run_id: str, uid: str):
             del run_id, uid
-            return SimpleNamespace(status="completed", conversation_thread_id="thread-1")
+            return SimpleNamespace(status="completed", conversation_thread_id="thread-1", agent_slug="default")
 
     async def fake_list_events(run_id: str, *, after_seq: str, limit: int):
         del run_id, after_seq, limit
@@ -949,6 +950,7 @@ async def test_stream_agent_run_events_compact_fallback_end_keeps_request_id(mon
                 conversation_thread_id="thread-1",
                 request_id="req-1",
                 runtime_cleanup_pending=False,
+                agent_slug="default",
             )
 
     async def fake_list_events(run_id: str, *, after_seq: str, limit: int):
@@ -997,6 +999,7 @@ async def test_stream_agent_run_events_does_not_fallback_end_before_runtime_clea
                 conversation_thread_id="thread-1",
                 request_id="req-1",
                 runtime_cleanup_pending=True,
+                agent_slug="default",
             )
 
     async def fake_list_events(run_id: str, *, after_seq: str, limit: int):

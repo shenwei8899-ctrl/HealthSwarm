@@ -1,0 +1,15 @@
+# 与仓库根 docker-compose.yml 合并；模型重放在 api 内监听 8766。
+services:
+  api:
+    image: ${YUXI_TEST_API_IMAGE:-yuxi-api:0.7.3}
+    ports: !override
+      - "127.0.0.1:${YUXI_API_PORT}:5050"
+  worker:
+    image: ${YUXI_TEST_API_IMAGE:-yuxi-api:0.7.3}
+  storage-migrator:
+    image: ${YUXI_TEST_API_IMAGE:-yuxi-api:0.7.3}
+  sandbox-provisioner:
+    image: ${YUXI_TEST_PROVISIONER_IMAGE:-yuxi-sandbox-provisioner:0.7.3}
+networks:
+  app-network:
+    internal: true

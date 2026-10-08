@@ -7,6 +7,10 @@ import pytest
 
 from yuxi.agents import buildin, presets
 from yuxi.agents.buildin.chatbot.graph import ChatbotAgent
+from yuxi.agents.buildin.health_consultation.graph import HealthConsultationAgent
+from yuxi.agents.buildin.health_meal_planner.graph import HealthMealPlannerAgent
+from yuxi.agents.buildin.health_diet_analyst.graph import HealthDietAnalystAgent
+from yuxi.agents.buildin.health_quality.graph import HealthQualityAgent
 from yuxi.agents.buildin.subagent.graph import SubAgentBackend
 from yuxi.services.skills import shared as skill_service
 
@@ -31,11 +35,31 @@ def test_preset_discovery_includes_shipping_roles():
         "deep-research",
         "research-explorer",
         "fact-verifier",
+        "health-consultation",
+        "health-meal-planner",
+        "health-diet-analyst",
+        "health-quality",
     }
     assert found["deep-research"].context["subagents"] == ["research-explorer", "fact-verifier"]
     assert found["general-purpose"].context == {}
     assert found["default-chatbot"].backend_id == "ChatbotAgent"
     assert found["fact-verifier"].backend_id == "SubAgentBackend"
+    assert found["health-consultation"].backend_id == "HealthConsultationAgent"
+    assert found["health-quality"].backend_id == "HealthQualityAgent"
+    assert found["health-quality"].context == {
+        "tools": [],
+        "knowledges": [],
+        "mcps": [],
+        "skills": ["family-quality-review"],
+        "preload_skills": ["family-quality-review"],
+    }
+    assert found["health-consultation"].context == {
+        "tools": [],
+        "knowledges": [],
+        "mcps": [],
+        "skills": ["family-nutritionist"],
+        "preload_skills": ["family-nutritionist"],
+    }
 
 
 def test_new_preset_file_is_discovered_without_registry(tmp_path, monkeypatch):
@@ -88,6 +112,10 @@ def test_explicit_backend_ids_create_independent_instances():
     assert buildin.BUILTIN_BACKENDS == {
         "ChatbotAgent": ChatbotAgent,
         "SubAgentBackend": SubAgentBackend,
+        "HealthConsultationAgent": HealthConsultationAgent,
+        "HealthMealPlannerAgent": HealthMealPlannerAgent,
+        "HealthDietAnalystAgent": HealthDietAnalystAgent,
+        "HealthQualityAgent": HealthQualityAgent,
     }
     for backend_id, expected_type in buildin.BUILTIN_BACKENDS.items():
         first = buildin.get_agent_backend(backend_id)
@@ -130,7 +158,10 @@ from yuxi.agents import buildin
 with patch('pathlib.Path.iterdir', side_effect=AssertionError('directory scan')), \
      patch.object(buildin.ChatbotAgent, '__init__', side_effect=AssertionError('eager instance')):
     reload(buildin)
-assert set(buildin.BUILTIN_BACKENDS) == {'ChatbotAgent', 'SubAgentBackend'}
+assert set(buildin.BUILTIN_BACKENDS) == {
+    'ChatbotAgent', 'SubAgentBackend', 'HealthConsultationAgent', 'HealthMealPlannerAgent',
+    'HealthDietAnalystAgent', 'HealthQualityAgent'
+}
 """
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -177,7 +208,48 @@ async def test_each_graph_uses_its_own_run_context(monkeypatch, backend_id):
 def test_shipping_skills_keep_required_dependencies():
     """默认知识能力及研究依赖不能因发现重组缺失。"""
     found = {spec["slug"]: spec for spec in skill_service.list_builtin_skill_specs()}
-    assert set(found) == {"image-gen", "html-preview", "deep-research", "knowledge-base", "mysql-reporter"}
+    assert set(found) == {
+        "image-gen",
+        "html-preview",
+        "deep-research",
+        "knowledge-base",
+        "mysql-reporter",
+        "family-nutritionist",
+        "family-meal-planner",
+        "family-diet-analyst",
+        "family-quality-review",
+    }
+    assert found["family-meal-planner"]["version"] == "2026.10.08.2"
+    assert found["family-quality-review"]["tool_dependencies"] == [
+        "get_quality_review_context",
+        "check_selected_plan_quality",
+    ]
+    assert found["family-quality-review"]["skill_dependencies"] == []
+    assert found["family-quality-review"]["mcp_dependencies"] == []
+    assert found["family-meal-planner"]["tool_dependencies"] == [
+        "search_meal_plan_recipes",
+        "preview_meal_plan",
+        "get_family_plan_context",
+        "preview_family_plan_swap",
+        "preview_family_plan_regeneration",
+        "preview_family_plan_participation",
+        "get_initial_plan_context",
+        "preview_initial_meal_plan",
+    ]
+    assert found["family-nutritionist"]["name"] == "家庭营养师"
+    assert found["family-nutritionist"]["version"] == "2026.10.08.4"
+    assert found["family-nutritionist"]["tool_dependencies"] == [
+        "get_confirmed_profile",
+        "get_confirmed_diet",
+        "get_complete_health_profile",
+        "get_member_weight_records",
+        "get_member_blood_pressure_records",
+        "query_reviewed_nutrition_knowledge",
+        "get_member_memories",
+        "remember_member_fact",
+        "get_meal_feedback",
+    ]
+    assert found["family-nutritionist"]["skill_dependencies"] == found["family-nutritionist"]["mcp_dependencies"] == []
     assert found["knowledge-base"]["tool_dependencies"] == [
         "list_kbs",
         "query_kb",

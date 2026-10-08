@@ -7,8 +7,8 @@ import { renderToString } from 'vue/server-renderer'
 const source = readFileSync(
   new URL('../../src/components/AgentChatComponent.vue', import.meta.url),
   'utf8'
-)
-const view = readFileSync(new URL('../../src/views/AgentView.vue', import.meta.url), 'utf8')
+).replace(/\r\n/g, '\n')
+const view = readFileSync(new URL('../../src/views/AgentView.vue', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 const dock = source.slice(
   source.indexOf('<div\n            ref="messageInputDockRef"'),
   source.indexOf('              <section\n                v-if="currentQueuedRequests.length"')

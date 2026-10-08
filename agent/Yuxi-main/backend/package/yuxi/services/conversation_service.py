@@ -1,3 +1,4 @@
+from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS
 import uuid
 from typing import Any
 
@@ -10,6 +11,8 @@ from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.agent_run_repository import AgentRunRepository
 from yuxi.repositories.conversation_repository import INVOCATION_CONVERSATION_SOURCES, ConversationRepository
 from yuxi.repositories.project_repository import ProjectRepository
+from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
+from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.attachment_service import serialize_attachment
 from yuxi.services.input_message_service import extract_image_contents
 from yuxi.services.project_service import create_implicit_project
@@ -40,6 +43,11 @@ async def require_user_conversation(conv_repo: ConversationRepository, thread_id
     conversation = await conv_repo.get_conversation_by_thread_id(thread_id)
     if not conversation or conversation.uid != str(uid) or conversation.status == "deleted":
         raise HTTPException(status_code=404, detail="对话线程不存在")
+    if conversation.agent_id in HEALTH_AGENT_BACKENDS:
+        try:
+            await HealthConsultationRepository(conv_repo.db).authorize(str(uid), thread_id)
+        except HealthVisionError as exc:
+            raise HTTPException(status_code=404, detail="对话线程不存在或无权访问") from exc
     return conversation
 
 
@@ -94,6 +102,8 @@ async def create_thread_view(
     agent_item = await agent_repo.get_visible_by_slug(slug=agent_slug, user=current_user)
     if not agent_item:
         raise HTTPException(status_code=404, detail="智能体不存在")
+    if agent_item.slug in HEALTH_AGENT_BACKENDS or agent_item.backend_id in HEALTH_AGENT_BACKENDS.values():
+        raise HTTPException(status_code=422, detail="请从健康识图选择成员和用途后进入专属健康角色")
 
     conv_repo = ConversationRepository(db)
     project_repo = ProjectRepository(db)
@@ -234,6 +244,15 @@ async def list_threads_view(
     )
 
     run_repo = AgentRunRepository(db)
+    visible_conversations = []
+    for conv in conversations:
+        try:
+            if conv.agent_id in HEALTH_AGENT_BACKENDS:
+                await require_user_conversation(conv_repo, conv.thread_id, str(current_uid))
+        except HTTPException:
+            continue
+        visible_conversations.append(conv)
+    conversations = visible_conversations
     thread_ids = [conv.thread_id for conv in conversations]
     run_map = await run_repo.get_latest_top_level_runs_for_threads(str(current_uid), thread_ids)
 
@@ -277,6 +296,11 @@ async def search_threads_view(
     items = []
     for item in search_items:
         conv = item["conversation"]
+        try:
+            if conv.agent_id in HEALTH_AGENT_BACKENDS:
+                await require_user_conversation(conv_repo, conv.thread_id, str(current_uid))
+        except HTTPException:
+            continue
         snippets = [
             {
                 "message_id": snippet.get("message_id"),
@@ -314,6 +338,12 @@ async def delete_thread_view(
 ) -> dict:
     conv_repo = ConversationRepository(db)
     await require_user_conversation(conv_repo, thread_id, str(current_uid))
+    from yuxi.repositories.health_daily_repository import HealthDailyRepository
+    from yuxi.services.health_daily_service import business_date
+
+    daily = await HealthDailyRepository(db).for_thread(str(current_uid), thread_id)
+    if daily is not None and daily.business_date == business_date():
+        raise HTTPException(status_code=409, detail="今天的营养咨询需保留至日终归档，请明天再删除")
     deleted = await conv_repo.delete_conversation(thread_id, soft_delete=True)
     if not deleted:
         raise HTTPException(status_code=404, detail="对话线程不存在")
@@ -385,9 +415,7 @@ async def get_thread_history_view(
 ) -> dict:
     """读取线程、Run 与历史消息，保留独立的已读写操作。"""
     conv_repo = ConversationRepository(db)
-    conversation = await conv_repo.get_conversation_by_thread_id(thread_id)
-    if not conversation or conversation.uid != str(current_uid) or conversation.status == "deleted":
-        raise HTTPException(status_code=404, detail="对话线程不存在")
+    conversation = await require_user_conversation(conv_repo, thread_id, str(current_uid))
 
     messages = await conv_repo.get_messages(conversation.id)
     messages = [

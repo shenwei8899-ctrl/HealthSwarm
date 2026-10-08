@@ -34,6 +34,9 @@ from yuxi.services.agent_request_queue_service import (
 )
 from yuxi.services.agent_run_service import create_agent_run_input_message, enqueue_agent_run, resolve_agent_run_config
 from yuxi.services.input_message_service import AgentRunInputMessage
+from yuxi.services.health_consultation_service import require_consultation
+from yuxi.repositories.health_consultation_repository import CONSULTATION_BACKEND, HEALTH_AGENT_BACKENDS
+from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.project_service import create_implicit_project
 from yuxi.services.workdir_service import WorkdirBinding, resolve_conversation_workdir_binding
 from yuxi.storage.postgres.models_business import AgentRunRequest, User
@@ -67,6 +70,7 @@ class AgentRequestInput:
     create_conversation: bool = False
     conversation_title: str | None = None
     conversation_project_id: str | None = None
+    health_processing_snapshot: dict | None = None
 
 
 async def submit_agent_request(
@@ -103,6 +107,23 @@ async def submit_agent_request(
     )
     if not agent_item:
         raise HTTPException(status_code=404, detail="智能体不存在")
+
+    if agent_item.slug in HEALTH_AGENT_BACKENDS and agent_item.backend_id != HEALTH_AGENT_BACKENDS[agent_item.slug]:
+        raise HTTPException(status_code=503, detail="专属咨询后端配置已变化")
+    if agent_item.backend_id in HEALTH_AGENT_BACKENDS.values():
+        if HEALTH_AGENT_BACKENDS.get(agent_item.slug) != agent_item.backend_id:
+            raise HTTPException(status_code=503, detail="健康角色后端不能映射其他入口")
+        if request_input.input_message.message_type != "text" or request_input.request_metadata.get(
+            "attachment_file_ids"
+        ):
+            raise HTTPException(status_code=422, detail="专属咨询只支持文字，报告与照片请在健康识图复核")
+        try:
+            _, snapshot = await require_consultation(
+                db, str(current_user.uid), request_input.thread_id, request_input.model_spec, lock=True
+            )
+        except HealthVisionError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.message) from exc
+        request_input = replace(request_input, model_spec=snapshot["model"], health_processing_snapshot=snapshot)
 
     existing_request = await AgentRunRequestRepository(db).get_by_request_id(request_input.request_id)
     existing_run = (
@@ -143,6 +164,14 @@ async def submit_agent_request(
         if project is None or project.status != "active":
             raise HTTPException(status_code=404, detail="Project 不存在或不可访问")
         return await request_view(repo=AgentRunRequestRepository(db), request=existing_request)
+
+    if agent_item.backend_id == CONSULTATION_BACKEND:
+        from yuxi.services.health_daily_service import require_current_day
+
+        try:
+            await require_current_day(db, str(current_user.uid), request_input.thread_id)
+        except HealthVisionError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.message) from exc
 
     try:
         agent_backend = get_agent_backend(agent_item.backend_id)
@@ -332,6 +361,8 @@ async def _persist_request(
             "model_spec": resolved_model_spec,
             "tool_approval_mode": resolved_tool_approval_mode,
         }
+        if request_input.health_processing_snapshot is not None:
+            input_payload["health_processing"] = request_input.health_processing_snapshot
 
     run_input_message = input_message.with_metadata(
         _build_message_metadata(request_id=request_id, source=source, input_message=input_message, meta=meta)

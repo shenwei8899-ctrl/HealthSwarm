@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { agentApi, databaseApi, toolApi } from '@/apis'
 import { normalizeAgent } from '@/utils/agentConfigUtils'
 import { handleChatError } from '@/utils/errorHandler'
+import { isHealthAgentId } from '@/utils/healthVision'
 
 export const BUILTIN_AGENT_ID = 'default-chatbot'
 
@@ -18,7 +19,7 @@ function sortAgents(agents) {
 }
 
 function getPreferredAgentId(agents, persistedId) {
-  const chatAgents = agents.filter((agent) => !agent.is_subagent)
+  const chatAgents = agents.filter((agent) => !agent.is_subagent && !isHealthAgentId(agent.id))
   if (persistedId && chatAgents.some((agent) => agent.id === persistedId)) return persistedId
   return chatAgents.find(isBuiltinAgent)?.id || chatAgents[0]?.id || null
 }
@@ -60,7 +61,7 @@ export const useAgentStore = defineStore(
     const isLoadingAgentDetail = ref(false)
     const error = ref(null)
     const isInitialized = ref(false)
-    const isInitializing = ref(false)
+    let initializationPromise = null
 
     const selectedAgent = computed(() => {
       const agentId = selectedAgentId.value
@@ -104,23 +105,33 @@ export const useAgentStore = defineStore(
       }
     }
 
+    /** 并发调用等待同一次初始化，避免线程选择被迟到的默认配置覆盖。 */
     async function initialize() {
-      if (isInitialized.value || isInitializing.value) return
-      isInitializing.value = true
-      try {
-        await Promise.all([fetchAgents(), fetchAccessibleKnowledgeBases(), fetchToolMetadata()])
+      if (initializationPromise) return initializationPromise
+      if (isInitialized.value) return
+      const pending = (async () => {
+        try {
+          await Promise.all([fetchAgents(), fetchAccessibleKnowledgeBases(), fetchToolMetadata()])
 
-        const targetAgentId = getPreferredAgentId(agents.value, selectedAgentId.value)
-        if (targetAgentId) {
-          await selectAgent(targetAgentId)
+          const targetAgentId = getPreferredAgentId(agents.value, selectedAgentId.value)
+          if (targetAgentId) {
+            await selectAgent(targetAgentId)
+          }
+          isInitialized.value = true
+        } catch (err) {
+          console.error('Failed to initialize agent store:', err)
+          handleChatError(err, 'initialize')
+          error.value = err.message
         }
-        isInitialized.value = true
-      } catch (err) {
-        console.error('Failed to initialize agent store:', err)
-        handleChatError(err, 'initialize')
-        error.value = err.message
+      })()
+      initializationPromise = pending
+      try {
+        return await pending
       } finally {
-        isInitializing.value = false
+        // reset 后可以有新初始化；旧请求结束不能清理新等待。
+        if (initializationPromise === pending) {
+          initializationPromise = null
+        }
       }
     }
 
@@ -283,7 +294,7 @@ export const useAgentStore = defineStore(
       isLoadingAgentDetail.value = false
       error.value = null
       isInitialized.value = false
-      isInitializing.value = false
+      initializationPromise = null
     }
 
     return {

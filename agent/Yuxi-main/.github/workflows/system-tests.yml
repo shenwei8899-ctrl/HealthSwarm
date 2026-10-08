@@ -234,7 +234,9 @@ jobs:
           done
           exit 1
       - name: Verify worker shipping health
-        run: docker compose exec -T worker uv run --no-sync --no-dev arq --check server.worker_main.WorkerSettings
+        run: docker compose exec -T worker uv run --no-sync --no-dev python -m server.worker_health
+      - name: Verify worker probe uses bounded real leases
+        run: docker compose exec -T api uv run --no-sync --no-dev pytest test/integration/services/test_worker_health_service.py -q
       - name: Verify local job filtering preserves ARQ dispatch and retry
         run: docker compose exec -T api uv run --no-sync --no-dev pytest test/integration/services/test_arq_worker_dispatch.py -q
       - name: Verify worker can write personal Skill UserWorkspace

@@ -88,6 +88,33 @@ class ModelInfo:
             batch_size=data.get("batch_size", 40),
         )
 
+    @classmethod
+    def from_provider(cls, provider: Any, model: dict) -> ModelInfo:
+        """数据库配置与 Redis 投影共用凭据、端点覆盖及请求参数解释。"""
+        from yuxi.models.providers.service import resolve_api_key
+
+        model_type = model.get("type", "chat")
+        base_url = provider.base_url
+        if model_type == "embedding" and provider.embedding_base_url:
+            base_url = provider.embedding_base_url
+        elif model_type == "rerank" and provider.rerank_base_url:
+            base_url = provider.rerank_base_url
+        return cls(
+            provider_id=provider.provider_id,
+            model_id=model["id"],
+            model_type=model_type,
+            display_name=model.get("display_name", model["id"]),
+            api_key=resolve_api_key(provider) or "",
+            base_url=model.get("base_url_override") or base_url,
+            provider_type=provider.provider_type,
+            headers=dict(provider.headers_json or {}),
+            extra=dict(provider.extra_json or {}),
+            request_body_overrides=dict(model.get("request_body_overrides") or {}),
+            include_user_uid=bool(provider.include_user_uid),
+            dimension=model.get("dimension"),
+            batch_size=model.get("batch_size", 40),
+        )
+
 
 class ModelCache:
     """基于 Redis 的模型缓存，所有写入均走 Redis，保证跨进程一致。"""
@@ -123,6 +150,11 @@ class ModelCache:
         self._local_cache = None
         self._local_cache_at = 0.0
 
+    def refresh(self) -> None:
+        """审批边界读取当前 Redis 投影，失败也不沿用进程内旧视图。"""
+        self._invalidate_local()
+        self._load_cache()
+
     def get_model_info(self, spec: str) -> ModelInfo | None:
         cache = self._load_cache()
         return cache.get(spec)
@@ -143,35 +175,14 @@ class ModelCache:
         return grouped
 
     def rebuild(self, providers: list[Any]) -> None:
-        from yuxi.models.providers.service import resolve_api_key
-
         new_cache: dict[str, ModelInfo] = {}
 
         for provider in providers:
             if not provider.is_enabled:
                 continue
 
-            api_key = resolve_api_key(provider)
-
             for model in provider.enabled_models or []:
-                model_type = model.get("type", "chat")
-                base_url = model.get("base_url_override") or self._get_base_url_for_type(provider, model_type)
-
-                info = ModelInfo(
-                    provider_id=provider.provider_id,
-                    model_id=model["id"],
-                    model_type=model_type,
-                    display_name=model.get("display_name", model["id"]),
-                    api_key=api_key or "",
-                    base_url=base_url,
-                    provider_type=provider.provider_type,
-                    headers=dict(provider.headers_json or {}),
-                    extra=dict(provider.extra_json or {}),
-                    request_body_overrides=dict(model.get("request_body_overrides") or {}),
-                    include_user_uid=bool(provider.include_user_uid),
-                    dimension=model.get("dimension"),
-                    batch_size=model.get("batch_size", 40),
-                )
+                info = ModelInfo.from_provider(provider, model)
                 new_cache[info.spec] = info
 
         self._save_cache(new_cache)
@@ -185,14 +196,6 @@ class ModelCache:
                 redis_client.set(REDIS_CACHE_KEY, json.dumps(data, ensure_ascii=False))
         except Exception as e:
             logger.error(f"Failed to save model cache to Redis: {e}")
-
-    @staticmethod
-    def _get_base_url_for_type(provider: Any, model_type: str) -> str:
-        if model_type == "embedding" and provider.embedding_base_url:
-            return provider.embedding_base_url
-        if model_type == "rerank" and provider.rerank_base_url:
-            return provider.rerank_base_url
-        return provider.base_url
 
 
 model_cache = ModelCache()

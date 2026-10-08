@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS
 from datetime import datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select, update
@@ -18,6 +19,8 @@ from yuxi.storage.postgres.models_business import (
     ToolCall,
 )
 from yuxi.utils.datetime_utils import utc_now_naive
+from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
+from yuxi.services.health_vision_types import HealthVisionError
 
 TERMINAL_RUN_STATUSES = set(AGENT_RUN_TERMINAL_STATUSES)
 LEASED_RUN_STATUSES = {"running", "cancel_requested"}
@@ -44,7 +47,13 @@ class AgentRunRepository:
 
     async def get_run_for_user(self, run_id: str, uid: str) -> AgentRun | None:
         result = await self.db.execute(select(AgentRun).where(and_(AgentRun.id == run_id, AgentRun.uid == str(uid))))
-        return result.scalar_one_or_none()
+        run = result.scalar_one_or_none()
+        if run is not None and run.agent_slug in HEALTH_AGENT_BACKENDS:
+            try:
+                await HealthConsultationRepository(self.db).authorize(str(uid), run.conversation_thread_id)
+            except HealthVisionError:
+                return None
+        return run
 
     async def lock_run_for_user(self, run_id: str, uid: str) -> AgentRun | None:
         """锁定用户 Run，串行化 execution tree 创建与父 Run 终态提交。"""
@@ -52,7 +61,13 @@ class AgentRunRepository:
         result = await self.db.execute(
             select(AgentRun).where(and_(AgentRun.id == run_id, AgentRun.uid == str(uid))).with_for_update()
         )
-        return result.scalar_one_or_none()
+        run = result.scalar_one_or_none()
+        if run is not None and run.agent_slug in HEALTH_AGENT_BACKENDS:
+            try:
+                await HealthConsultationRepository(self.db).authorize(str(uid), run.conversation_thread_id, lock=True)
+            except HealthVisionError:
+                return None
+        return run
 
     async def get_subagent_run_with_creator(
         self,

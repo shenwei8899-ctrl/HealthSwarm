@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import TaskRecord
+from yuxi.services.health_vision_types import HEALTH_TASK_TYPES
 
 TERMINAL_TASK_STATUSES = {"success", "failed", "cancelled"}
 _UNSET = object()
@@ -19,22 +20,31 @@ class TaskRepository:
         async with pg_manager.get_async_session_context() as session:
             return await session.get(TaskRecord, task_id)
 
-    async def list(self, status: str | None = None, limit: int = 100) -> list[TaskRecord]:
+    async def list(
+        self, status: str | None = None, limit: int = 100, *, exclude_health: bool = False
+    ) -> list[TaskRecord]:
         async with pg_manager.get_async_session_context() as session:
             stmt = select(TaskRecord)
+            if exclude_health:
+                stmt = stmt.where(TaskRecord.type.not_in(HEALTH_TASK_TYPES))
             if status:
                 stmt = stmt.where(TaskRecord.status == status)
             active_first = case((TaskRecord.status.in_({"pending", "running"}), 0), else_=1)
             stmt = stmt.order_by(active_first, TaskRecord.created_at.desc()).limit(max(limit, 0))
             return list((await session.execute(stmt)).scalars().all())
 
-    async def summarize(self, *, status: str | None = None) -> dict[str, Any]:
+    async def summarize(self, *, status: str | None = None, exclude_health: bool = False) -> dict[str, Any]:
         """从完整 Task 表计算列表摘要，不受返回 limit 影响。"""
         async with pg_manager.get_async_session_context() as session:
+            filters = [TaskRecord.type.not_in(HEALTH_TASK_TYPES)] if exclude_health else []
             status_rows = (
-                await session.execute(select(TaskRecord.status, func.count()).group_by(TaskRecord.status))
+                await session.execute(
+                    select(TaskRecord.status, func.count()).where(*filters).group_by(TaskRecord.status)
+                )
             ).all()
-            type_rows = (await session.execute(select(TaskRecord.type, func.count()).group_by(TaskRecord.type))).all()
+            type_rows = (
+                await session.execute(select(TaskRecord.type, func.count()).where(*filters).group_by(TaskRecord.type))
+            ).all()
             total = sum(int(count) for _value, count in status_rows)
             filtered_total = total
             if status is not None:
@@ -186,6 +196,7 @@ class TaskRepository:
         lease_seconds: float,
         now: datetime | None = None,
         max_running: int | None = None,
+        max_health_running: int | None = None,
     ) -> tuple[TaskRecord | None, bool]:
         """由一个 attempt 原子取得 pending Task 的执行权。"""
         if not worker_id.strip():
@@ -203,6 +214,17 @@ class TaskRepository:
                 )
                 if running_count >= max_running:
                     return await session.get(TaskRecord, task_id), False
+                if max_health_running is not None:
+                    health_count = int(
+                        await session.scalar(
+                            select(func.count(TaskRecord.id)).where(
+                                TaskRecord.status == "running", TaskRecord.type.in_(HEALTH_TASK_TYPES)
+                            )
+                        )
+                        or 0
+                    )
+                    if health_count >= max_health_running:
+                        return await session.get(TaskRecord, task_id), False
             record = await self._lock_task(session, task_id)
             current_time = await self._current_time(session, now)
             if record is None or record.status != "pending":
@@ -422,6 +444,7 @@ class TaskRepository:
                     await session.execute(
                         select(TaskRecord.id)
                         .where(TaskRecord.status.in_(TERMINAL_TASK_STATUSES))
+                        .where(TaskRecord.type.not_in(HEALTH_TASK_TYPES))
                         .order_by(TaskRecord.created_at.desc(), TaskRecord.id.desc())
                         .offset(max(keep, 0))
                     )
@@ -437,6 +460,7 @@ class TaskRepository:
                 delete(TaskRecord).where(
                     TaskRecord.id == task_id,
                     TaskRecord.status.in_(TERMINAL_TASK_STATUSES),
+                    TaskRecord.type.not_in(HEALTH_TASK_TYPES),
                 )
             )
             return bool(result.rowcount)

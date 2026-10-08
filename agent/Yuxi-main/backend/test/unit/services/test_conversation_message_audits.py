@@ -76,7 +76,7 @@ async def test_get_thread_message_audits_view_serializes_model_and_tool_facts(mo
             pass
 
         async def get_conversation_by_thread_id(self, _thread_id):
-            return SimpleNamespace(id=7, uid="user-1", status="active")
+            return SimpleNamespace(id=7, uid="user-1", status="active", agent_id="default")
 
         async def list_message_audits(self, conversation_id, *, limit):
             assert conversation_id == 7
@@ -204,7 +204,7 @@ async def test_get_thread_message_audits_view_uses_agent_run_terminal_status(mon
             pass
 
         async def get_conversation_by_thread_id(self, _thread_id):
-            return SimpleNamespace(id=7, uid="user-1", status="active")
+            return SimpleNamespace(id=7, uid="user-1", status="active", agent_id="default")
 
         async def list_message_audits(self, _conversation_id, *, limit):
             assert limit == conversation_service.MESSAGE_AUDIT_LIMIT

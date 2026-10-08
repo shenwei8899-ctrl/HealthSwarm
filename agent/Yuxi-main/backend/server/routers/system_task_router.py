@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from yuxi.storage.postgres.models_business import User
 from yuxi.services.task_service import tasker
 from server.utils.auth_middleware import get_admin_user
+from yuxi.services.health_vision_types import HEALTH_TASK_TYPES
 
 tasks = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -14,14 +15,14 @@ async def list_tasks(
     current_user: User = Depends(get_admin_user),
 ):
     """List tasks, optionally filtered by status."""
-    return await tasker.list_tasks(status=status, limit=limit)
+    return await tasker.list_tasks(status=status, limit=limit, exclude_health=True)
 
 
 @tasks.get("/{task_id}")
 async def get_task(task_id: str, current_user: User = Depends(get_admin_user)):
     """Retrieve a single task by id."""
     task = await tasker.get_task(task_id)
-    if not task:
+    if not task or task["type"] in HEALTH_TASK_TYPES:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"task": task}
 
@@ -29,6 +30,9 @@ async def get_task(task_id: str, current_user: User = Depends(get_admin_user)):
 @tasks.post("/{task_id}/cancel")
 async def cancel_task(task_id: str, current_user: User = Depends(get_admin_user)):
     """Request cancellation of a task."""
+    current = await tasker.get_task(task_id)
+    if current and current["type"] in HEALTH_TASK_TYPES:
+        raise HTTPException(status_code=404, detail="Task not found")
     task = await tasker.cancel_task(task_id)
     if task is None:
         raise HTTPException(status_code=400, detail="Task cannot be cancelled")
@@ -42,6 +46,9 @@ async def cancel_task(task_id: str, current_user: User = Depends(get_admin_user)
 @tasks.delete("/{task_id}")
 async def delete_task(task_id: str, current_user: User = Depends(get_admin_user)):
     """Delete a task by id."""
+    current = await tasker.get_task(task_id)
+    if current and current["type"] in HEALTH_TASK_TYPES:
+        raise HTTPException(status_code=404, detail="Task not found")
     success = await tasker.delete_task(task_id)
     if not success:
         raise HTTPException(status_code=409, detail="Task must exist and be terminal before deletion")

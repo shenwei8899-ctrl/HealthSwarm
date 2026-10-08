@@ -281,6 +281,23 @@ async def test_durable_capacity_reserves_worker_slots_for_agent_runs(durable_tas
     assert (await repo.get_by_id(task_ids[4])).status == "pending"
 
 
+async def test_health_capacity_leaves_two_durable_slots_for_other_tasks(durable_task_schema) -> None:
+    """健康任务最多占两个 durable 槽位，第三个不能挤占其他业务。"""
+    repo = TaskRepository()
+    ids = [uuid.uuid4().hex for _ in range(4)]
+    for task_id in ids[:3]:
+        await repo.create(task_id, {**_task_data(), "type": "meal_recognize_v1"})
+    await repo.create(ids[3], _task_data())
+    for task_id in ids[:2]:
+        _, claimed = await repo.claim(task_id, worker_id=task_id, lease_seconds=30, max_running=4, max_health_running=2)
+        assert claimed
+    _, claimed = await repo.claim(ids[2], worker_id="third", lease_seconds=30, max_running=4, max_health_running=2)
+    assert not claimed
+    assert (await repo.get_by_id(ids[2])).status == "pending"
+    _, claimed = await repo.claim(ids[3], worker_id="other", lease_seconds=30, max_running=4)
+    assert claimed
+
+
 async def test_knowledge_task_failure_fences_file_intermediate_state(durable_task_schema) -> None:
     kb_id = f"kb_{uuid.uuid4().hex[:8]}"
     file_id = f"file_{uuid.uuid4().hex[:8]}"

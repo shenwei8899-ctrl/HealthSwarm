@@ -158,7 +158,7 @@ curl --fail http://localhost/api/system/ready
 - `/api/system/health` 只表示 API 进程存活；
 - `/api/system/ready` 表示启动完成、PostgreSQL/Redis 可用，并且兼容 worker 正在提供健康租约。
 
-worker 的 Compose 健康检查通过 `python -m yuxi.services.worker_health` 轻量读取 `REDIS_URL` 中的 ARQ 心跳，不加载业务执行依赖。心跳缺失、过期、没有 TTL、TTL 超过约定上界或 Redis 连接失败时检查失败。该心跳表达共享队列的消费健康，多副本部署不能用它判断单个 worker 进程是否失活。
+worker 容器使用 `python -m server.worker_health` 检查 ARQ 消费、AgentRun 收敛和 Durable Task 收敛三项短期租约，与 API readiness 共用验证。该入口不初始化 Agent 或模型，Redis 操作预算为 2 秒，Compose 超时为 10 秒。缺失、永久、过长或过期租约以及连接失败均返回非零退出码；失败输出只包含异常类型。检查通过后仍需执行业务链路验收。
 
 就绪接口返回 `ready` 后，再用浏览器完成登录和一次真实对话。健康或就绪状态不能证明知识库、模型、沙盒或外部服务的业务链路正确。
 

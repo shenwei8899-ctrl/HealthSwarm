@@ -8,8 +8,9 @@ from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from yuxi import storage_migration
-from yuxi.storage.postgres.manager import PostgresManager
+from yuxi.storage.postgres.manager import HEALTH_SCHEMA_VERSION, PostgresManager
 from yuxi.storage.postgres.models_business import Agent, Base, User, FamilyArchive, FamilyMember
+from yuxi.storage.postgres.models_health import HEALTH_TABLES
 from yuxi.storage_migrations.v071_workdirs import V071WorkdirMigrationPlan
 
 pytestmark = pytest.mark.integration
@@ -46,7 +47,9 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
     manager.AsyncSession = async_sessionmaker(engine, expire_on_commit=False)
     manager._initialized = True
     old_tables = [
-        table for table in Base.metadata.sorted_tables if old_version == 8 or not table.name.startswith("family_")
+        table
+        for table in Base.metadata.sorted_tables
+        if table not in HEALTH_TABLES and (old_version == 8 or not table.name.startswith("family_"))
     ]
     try:
         async with engine.begin() as conn:
@@ -110,7 +113,11 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
             monkeypatch.setattr(storage_migration, "_converge_database_state", fail_convergence)
             with pytest.raises(RuntimeError, match="injected convergence failure"):
                 await storage_migration.main()
-            assert await manager.get_schema_versions() == {"business": 9, "knowledge": 2}
+            assert await manager.get_schema_versions() == {
+                "business": 9,
+                "knowledge": 2,
+                "health": HEALTH_SCHEMA_VERSION,
+            }
             monkeypatch.setattr(storage_migration, "_converge_database_state", no_file_migration)
         await storage_migration.main()
         await storage_migration.main()
@@ -136,7 +143,7 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
                     "height_cm",
                     "weight",
                 ]
-        assert await manager.get_schema_versions() == {"business": 10, "knowledge": 2}
+        assert await manager.get_schema_versions() == {"business": 10, "knowledge": 2, "health": HEALTH_SCHEMA_VERSION}
     finally:
         await engine.dispose()
         async with bootstrap.begin() as conn:

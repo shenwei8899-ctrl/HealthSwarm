@@ -20,6 +20,7 @@ from yuxi.services.task_queue_service import (
 from yuxi.services.task_registry import get_failure_task_definition, get_task_definition
 from yuxi.utils.datetime_utils import utc_isoformat, utc_now_naive
 from yuxi.utils.logging_config import logger
+from yuxi.services.health_vision_types import HEALTH_TASK_TYPES
 
 TERMINAL_STATUSES = TERMINAL_TASK_STATUSES
 PROGRESS_PERSIST_DELTA = 2.0
@@ -239,11 +240,14 @@ class Tasker:
         )
         return Task.from_dict(record.to_dict()) if record else None
 
-    async def list_tasks(self, status: str | None = None, limit: int = 100) -> dict[str, Any]:
-        records = await self._repo.list(status=status, limit=limit)
+    async def list_tasks(
+        self, status: str | None = None, limit: int = 100, *, exclude_health: bool = False
+    ) -> dict[str, Any]:
+        options = {"exclude_health": True} if exclude_health else {}
+        records = await self._repo.list(status=status, limit=limit, **options)
         return {
             "tasks": [record.to_summary_dict() for record in records],
-            "summary": await self._repo.summarize(status=status),
+            "summary": await self._repo.summarize(status=status, **options),
         }
 
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
@@ -437,6 +441,7 @@ async def process_task(ctx: dict[str, Any], task_id: str) -> None:
         worker_id=owner,
         lease_seconds=TASK_LEASE_SECONDS,
         max_running=DURABLE_TASK_MAX_RUNNING,
+        **({"max_health_running": 2} if record.type in HEALTH_TASK_TYPES else {}),
     )
     if not claimed or record is None:
         return
@@ -530,6 +535,13 @@ async def process_task(ctx: dict[str, Any], task_id: str) -> None:
     finally:
         heartbeat.cancel()
         await asyncio.gather(heartbeat, return_exceptions=True)
+        if record.type in HEALTH_TASK_TYPES:
+            from yuxi.services.health_vision_tasks import cleanup_health_result_objects
+
+            try:
+                await cleanup_health_result_objects(task_id)
+            except Exception:
+                logger.error("健康临时结果清理失败，将由恢复轮询重试: task_id=%s", task_id)
         await _publish_pending_after_slot_release()
 
 

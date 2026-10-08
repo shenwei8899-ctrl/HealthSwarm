@@ -12,6 +12,13 @@ this file focused on execution makes normal chat, resume runs and subagent runs
 share the same runtime behavior once they reach the worker.
 """
 
+from yuxi.repositories.health_consultation_repository import (
+    HEALTH_AGENT_BACKENDS,
+    PLANNER_SLUG,
+    ANALYST_SLUG,
+    QUALITY_SLUG,
+    STRUCTURED_HEALTH_AGENTS,
+)
 import asyncio
 import json
 import uuid
@@ -49,7 +56,7 @@ from yuxi.services.subagent_run_service import serialize_subagent_run_state
 from yuxi.services.tool_message_audit_service import ToolMessageAuditCollector
 from yuxi.services.workdir_service import resolve_conversation_workdir_path
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_business import MODEL_AUDIT_MESSAGE_TYPE, Agent, Conversation, User
+from yuxi.storage.postgres.models_business import MODEL_AUDIT_MESSAGE_TYPE, Agent, AgentRun, Conversation, User
 from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.utils.logging_config import logger
 from yuxi.utils.question_utils import (
@@ -94,6 +101,9 @@ def _build_langfuse_run_context(
     message_type: str | None = None,
     meta: dict | None = None,
 ) -> LangfuseRunContext:
+    # 咨询同意只授权批准的模型处理，不授权向通用追踪服务外发健康正文或身份。
+    if agent_id in HEALTH_AGENT_BACKENDS or backend_id in HEALTH_AGENT_BACKENDS.values():
+        return LangfuseRunContext()
     extra_metadata = None
     extra_tags = None
     invocation_meta = (meta or {}).get("agent_invocation_meta") if isinstance(meta, dict) else None
@@ -557,6 +567,33 @@ async def save_partial_message(
             if locked_run is None:
                 raise ValueError(f"AgentRun 不存在: {run_id}")
 
+            if locked_run.agent_slug in STRUCTURED_HEALTH_AGENTS and not interrupt_run:
+                return None  # 结构化角色的失败由Run错误表达，未经核验的正文不进入普通历史。
+            if locked_run.agent_slug == "health-consultation":
+                from sqlalchemy import exists, or_, select
+                from yuxi.storage.postgres.models_health import (
+                    HealthFamilyProfileUse,
+                    HealthWeightUse,
+                    HealthBloodPressureUse,
+                )
+
+                if await conv_repo.db.scalar(
+                    select(AgentRun.id)
+                    .where(
+                        AgentRun.conversation_id == locked_run.conversation_id,
+                        or_(
+                            exists().where(HealthFamilyProfileUse.run_id == AgentRun.id),
+                            exists().where(HealthWeightUse.run_id == AgentRun.id),
+                            exists().where(HealthBloodPressureUse.run_id == AgentRun.id),
+                        ),
+                    )
+                    .limit(1)
+                ):
+                    if not interrupt_run:
+                        return None  # 使用正式来源的失败只保留私有审计，发布须走来源复核。
+                    content = ""
+                    extra_metadata = {"error_type": error_type, "is_error": True, "error_message": "咨询已中断"}
+
         message = await conv_repo.add_message_by_thread_id(
             thread_id=thread_id,
             role="assistant",
@@ -807,6 +844,25 @@ async def save_messages_from_langgraph_state(
                     raise ValueError("最终 State AIMessage 无法与当前 Run 的 Model lifecycle 事实关联")
                 last_ai_message = terminal_ai_message
             if last_ai_message is not None:
+                if (complete_run or interrupt_run) and locked_run.agent_slug == "health-consultation":
+                    from yuxi.services.health_family_profile_service import validate_profile_publication
+
+                    await validate_profile_publication(conv_repo.db, locked_run)
+                if complete_run and locked_run.agent_slug == PLANNER_SLUG:
+                    from yuxi.services.health_family_planner_service import validate_family_planner_publication
+
+                    await validate_family_planner_publication(conv_repo.db, locked_run, last_ai_message.content)
+                    from yuxi.services.health_initial_planner_service import validate_initial_planner_publication
+
+                    await validate_initial_planner_publication(conv_repo.db, locked_run, last_ai_message.content)
+                if complete_run and locked_run.agent_slug == ANALYST_SLUG:
+                    from yuxi.services.health_diet_analysis_service import validate_analyst_publication
+
+                    await validate_analyst_publication(conv_repo.db, locked_run, last_ai_message.content)
+                if complete_run and locked_run.agent_slug == QUALITY_SLUG:
+                    from yuxi.services.health_quality_service import validate_quality_publication
+
+                    await validate_quality_publication(conv_repo.db, locked_run, last_ai_message.content)
                 has_tool_calls = bool((last_ai_message.extra_metadata or {}).get("tool_calls"))
                 should_publish = (
                     last_ai_message.message_type != MODEL_AUDIT_MESSAGE_TYPE
@@ -815,11 +871,12 @@ async def save_messages_from_langgraph_state(
                 )
                 if should_publish:
                     await conv_repo.publish_assistant_output(last_ai_message)
-                await run_repo.set_output_message(
-                    run_id,
-                    last_ai_message.id,
-                    worker_id=worker_id,
-                )
+                if should_publish or locked_run.agent_slug not in STRUCTURED_HEALTH_AGENTS:
+                    await run_repo.set_output_message(
+                        run_id,
+                        last_ai_message.id,
+                        worker_id=worker_id,
+                    )
             terminal_status = "completed" if complete_run else "interrupted" if interrupt_run else None
             if terminal_status:
                 terminal_run, changed = await run_repo.set_terminal_status(
@@ -1191,6 +1248,8 @@ async def stream_agent_chat(
                 )
 
                 for stream_event in stream_events:
+                    if agent_item.slug in STRUCTURED_HEALTH_AGENTS and stream_event.get("type") == "message_delta":
+                        continue  # 配餐正文须经过回执核验；原始模型消息仍由上方审计保存。
                     content = _stream_event_response(stream_event)
                     if not is_subagent_chunk and content:
                         trace_info = get_trace_info(langfuse_run)
@@ -1571,6 +1630,10 @@ async def get_agent_state_view(
     if conversation:
         if conversation.uid != str(current_uid) or conversation.status == "deleted":
             raise HTTPException(status_code=404, detail="对话线程不存在")
+        if conversation.agent_id in HEALTH_AGENT_BACKENDS:
+            from yuxi.services.conversation_service import require_user_conversation
+
+            await require_user_conversation(conv_repo, thread_id, current_uid)
 
         latest_run = await run_repo.get_latest_run_by_thread_for_user(thread_id, current_uid)
         workdir_path = await resolve_conversation_workdir_path(

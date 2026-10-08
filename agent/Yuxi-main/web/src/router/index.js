@@ -169,6 +169,11 @@ const router = createRouter({
       ]
     },
     {
+      path: '/health-vision',
+      component: AppLayout,
+      children: [{ path: '', name: 'HealthVision', component: () => import('../views/HealthVisionView.vue'), meta: { requiresAuth: true, keepAlive: false } }]
+    },
+    {
       path: '/:pathMatch(.*)*',
       name: 'NotFound',
       component: () => import('../views/EmptyView.vue'),
