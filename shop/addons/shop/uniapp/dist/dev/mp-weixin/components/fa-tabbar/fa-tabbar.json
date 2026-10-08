@@ -1,0 +1,7 @@
+{
+  "component": true,
+  "usingComponents": {
+    "u-image": "/uview-ui/components/u-image/u-image",
+    "u-badge": "/uview-ui/components/u-badge/u-badge"
+  }
+}

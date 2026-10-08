@@ -1,0 +1,184 @@
+{
+  "id": "1",
+  "name": "shopicon",
+  "font_family": "shopicon",
+  "css_prefix_text": "icon-",
+  "description": "",
+  "glyphs": [
+    {
+      "icon_id": "22692764",
+      "name": "outdoor",
+      "font_class": "outdoor",
+      "unicode": "e633",
+      "unicode_decimal": 58931
+    },
+    {
+      "icon_id": "22692765",
+      "name": "keyword-one",
+      "font_class": "keyword-one",
+      "unicode": "e634",
+      "unicode_decimal": 58932
+    },
+    {
+      "icon_id": "22692766",
+      "name": "microphone",
+      "font_class": "microphone",
+      "unicode": "e639",
+      "unicode_decimal": 58937
+    },
+    {
+      "icon_id": "22692767",
+      "name": "sofa",
+      "font_class": "sofa",
+      "unicode": "e63b",
+      "unicode_decimal": 58939
+    },
+    {
+      "icon_id": "22692768",
+      "name": "car",
+      "font_class": "car",
+      "unicode": "e63c",
+      "unicode_decimal": 58940
+    },
+    {
+      "icon_id": "22692769",
+      "name": "microwave-oven",
+      "font_class": "microwave-oven",
+      "unicode": "e63d",
+      "unicode_decimal": 58941
+    },
+    {
+      "icon_id": "22692770",
+      "name": "mouse-one",
+      "font_class": "mouse-one",
+      "unicode": "e644",
+      "unicode_decimal": 58948
+    },
+    {
+      "icon_id": "22692771",
+      "name": "washing-machine",
+      "font_class": "washing-machine",
+      "unicode": "e645",
+      "unicode_decimal": 58949
+    },
+    {
+      "icon_id": "22692772",
+      "name": "phone-one",
+      "font_class": "phone-one",
+      "unicode": "e646",
+      "unicode_decimal": 58950
+    },
+    {
+      "icon_id": "22652869",
+      "name": "iphone",
+      "font_class": "iphone",
+      "unicode": "e63a",
+      "unicode_decimal": 58938
+    },
+    {
+      "icon_id": "22652873",
+      "name": "pokeball-one",
+      "font_class": "pokeball-one",
+      "unicode": "e63e",
+      "unicode_decimal": 58942
+    },
+    {
+      "icon_id": "22652874",
+      "name": "lipstick",
+      "font_class": "lipstick",
+      "unicode": "e63f",
+      "unicode_decimal": 58943
+    },
+    {
+      "icon_id": "22652875",
+      "name": "refrigerator",
+      "font_class": "refrigerator",
+      "unicode": "e640",
+      "unicode_decimal": 58944
+    },
+    {
+      "icon_id": "22652876",
+      "name": "medical-box",
+      "font_class": "medical-box",
+      "unicode": "e641",
+      "unicode_decimal": 58945
+    },
+    {
+      "icon_id": "22652877",
+      "name": "devices",
+      "font_class": "devices",
+      "unicode": "e642",
+      "unicode_decimal": 58946
+    },
+    {
+      "icon_id": "22652878",
+      "name": "bowl-one",
+      "font_class": "bowl-one",
+      "unicode": "e643",
+      "unicode_decimal": 58947
+    },
+    {
+      "icon_id": "22652853",
+      "name": "master",
+      "font_class": "master",
+      "unicode": "e62a",
+      "unicode_decimal": 58922
+    },
+    {
+      "icon_id": "22652854",
+      "name": "laptop-computer",
+      "font_class": "laptop-computer",
+      "unicode": "e62b",
+      "unicode_decimal": 58923
+    },
+    {
+      "icon_id": "22652856",
+      "name": "microwaves",
+      "font_class": "microwaves",
+      "unicode": "e62d",
+      "unicode_decimal": 58925
+    },
+    {
+      "icon_id": "22652857",
+      "name": "sound-one",
+      "font_class": "sound-one",
+      "unicode": "e62e",
+      "unicode_decimal": 58926
+    },
+    {
+      "icon_id": "22652860",
+      "name": "printer-two",
+      "font_class": "printer-two",
+      "unicode": "e631",
+      "unicode_decimal": 58929
+    },
+    {
+      "icon_id": "22652861",
+      "name": "projector-two",
+      "font_class": "projector-two",
+      "unicode": "e632",
+      "unicode_decimal": 58930
+    },
+    {
+      "icon_id": "22652865",
+      "name": "radio",
+      "font_class": "radio",
+      "unicode": "e636",
+      "unicode_decimal": 58934
+    },
+    {
+      "icon_id": "22652866",
+      "name": "lamp",
+      "font_class": "lamp",
+      "unicode": "e637",
+      "unicode_decimal": 58935
+    },
+    {
+      "icon_id": "22652867",
+      "name": "phonograph",
+      "font_class": "phonograph",
+      "unicode": "e638",
+      "unicode_decimal": 58936
+    }
+  ]
+}

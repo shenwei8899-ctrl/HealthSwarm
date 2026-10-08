@@ -1,0 +1,25 @@
+{foreach name="$__goods__.comment" id="comment"}
+<dl id="comment-{$comment.id|htmlentities}">
+    <dt><a href="javascript:;" rel="nofollow"><img src="{$comment.user.avatar|default='/assets/img/avatar.png'|cdnurl}"></a></dt>
+    <dd>
+        <div class="parent">
+            <cite><a href="javascript:;" rel="external nofollow">{$comment.user.nickname|default='未知'}</a></cite>
+            <small> {$comment.createtime|human_date|htmlentities}</small>
+            <div class="rating pull-right">
+                {for start="5" end="1" comparison=">=" step="-1"}
+                <span class="rating-star {if $i==$comment.star}checked{/if}" data-value="{$i|htmlentities}"></span>
+                {/for}
+            </div>
+            <p>{$comment.content|strip_tags|htmlentities}</p>
+            <div class="comment-images">
+                {foreach name="comment.images" id="image"}
+                <a class="media-left" href="#">
+                    <img src="{$image|htmlentities}" style="width: 64px; height: 64px;">
+                </a>
+                {/foreach}
+            </div>
+        </div>
+    </dd>
+    <div class="clearfix"></div>
+</dl>
+{/foreach}

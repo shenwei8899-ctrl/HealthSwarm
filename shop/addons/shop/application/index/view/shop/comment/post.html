@@ -1,0 +1,124 @@
+<style>
+    .rating {
+        overflow: hidden;
+        display: inline-block;
+        position: relative;
+        font-size: 14px;
+        color: #FFCA00;
+    }
+
+    .rating-star {
+        padding: 0 2px;
+        margin: 0;
+        cursor: pointer;
+        display: block;
+        float: right;
+    }
+
+    .rating-star:after {
+        position: relative;
+        font-family: FontAwesome;
+        content: '\f006';
+    }
+
+    @media (max-width: 1200px) {
+        .rating-star {
+            padding: 0 1px;
+        }
+    }
+
+    .rating-star.checked ~ .rating-star:after,
+    .rating-star.checked:after {
+        content: '\f005';
+    }
+
+    .rating.vote .rating:hover .rating-star:after {
+        content: '\f006';
+    }
+
+    .rating.vote .rating-star:hover ~ .rating-star:after,
+    .rating.vote .rating-star:hover:after {
+        content: '\f005' !important;
+    }
+</style>
+<div class="container">
+    <div class="section">
+        <div class="row">
+            <div class="col-md-3">
+                {include file="common/sidenav" /}
+            </div>
+            <div class="col-md-9">
+                <div class="panel panel-default">
+                    <div class="panel-body">
+                        <h2 class="page-header" style="margin-bottom:15px;">
+                            我的评价
+                        </h2>
+
+                        <div class="comment-list">
+                            <form id="postform" class="horizontal-form form-postcomment" action="" method="post">
+                                {foreach name="orderInfo.order_goods" id="goods"}
+                                {php}if(!in_array($goods->salestate, [0, 6])) continue;{/php}
+                                <input type="hidden" name="remark[{$key|htmlentities}][goods_id]" value="{$goods.goods_id|htmlentities}">
+                                <input type="hidden" name="remark[{$key|htmlentities}][star]" value="0">
+                                <div class="row row-v-10">
+                                    <div class="col-xs-12">
+                                        <div class="media">
+                                            <a class="media-left" href="javascript:">
+                                                <img src="{$goods.image|cdnurl|htmlentities}" style="width: 64px; height: 64px;">
+                                            </a>
+                                            <div class="media-body">
+                                                <p class="media-heading">
+                                                    <a href="javascript:" target="_blank">{$goods.title|htmlentities}</a>
+                                                </p>
+                                                <div class="row">
+                                                    <div class="col-xs-12">
+                                                        <ul class="select-rate list-inline ptb-10">
+                                                            <li>
+                                                                <div class="rating vote" data-name="remark[{$key|htmlentities}][star]">
+                                                                    <span class="rating-star" data-value="5"></span>
+                                                                    <span class="rating-star" data-value="4"></span>
+                                                                    <span class="rating-star" data-value="3"></span>
+                                                                    <span class="rating-star" data-value="2"></span>
+                                                                    <span class="rating-star" data-value="1"></span>
+                                                                </div>
+                                                            </li>
+                                                        </ul>
+                                                    </div>
+                                                    <div class="col-xs-12">
+                                                        <textarea class="form-control" style="height:110px;display:block;" name="remark[{$key|htmlentities}][content]" placeholder="请输入你的评价" rows="6"></textarea>
+                                                    </div>
+                                                    <div class="col-xs-12">
+                                                        <div class="form-group">
+                                                            <div style="margin-top:15px;">
+                                                                <div class="input-group">
+                                                                    <input id="c-images-{$key|htmlentities}" class="form-control hidden" size="50" name="remark[{$key|htmlentities}][images]" type="text" value="">
+                                                                    <div class="input-group-addon no-border no-padding">
+                                                                        <span><button type="button" id="faupload-images-{$key|htmlentities}" class="btn btn-danger faupload" data-input-id="c-images-{$key|htmlentities}" data-mimetype="image/gif,image/jpeg,image/png,image/jpg,image/bmp,image/webp" data-multiple="true" data-preview-id="p-images-{$key|htmlentities}"><i class="fa fa-upload"></i> 上传图片</button></span>
+                                                                    </div>
+                                                                    <span class="msg-box n-right" for="c-images-{$key|htmlentities}"></span>
+                                                                </div>
+                                                                <ul class="row list-inline faupload-preview" id="p-images-{$key|htmlentities}"></ul>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <hr>
+                                    </div>
+
+                                </div>
+                                {/foreach}
+                                <div class="row">
+                                    <div class="col-xs-12">
+                                        <button type="submit" class="btn btn-primary">提交评价</button>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

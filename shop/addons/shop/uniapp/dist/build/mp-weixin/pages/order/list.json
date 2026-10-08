@@ -1,0 +1,16 @@
+{
+  "navigationBarTitleText": "商品订单",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "enablePullDownRefresh": false,
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "u-tabs-swiper": "/uview-ui/components/u-tabs-swiper/u-tabs-swiper",
+    "u-tag": "/uview-ui/components/u-tag/u-tag",
+    "u-loadmore": "/uview-ui/components/u-loadmore/u-loadmore",
+    "u-button": "/uview-ui/components/u-button/u-button",
+    "u-loading": "/uview-ui/components/u-loading/u-loading",
+    "u-modal": "/uview-ui/components/u-modal/u-modal",
+    "fa-tabbar": "/components/fa-tabbar/fa-tabbar"
+  }
+}

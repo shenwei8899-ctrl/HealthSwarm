@@ -1,0 +1,4 @@
+FROM nginx:1.27-alpine
+
+COPY public /var/www/html/public
+COPY docker/nginx/default.conf.template /etc/nginx/templates/default.conf.template

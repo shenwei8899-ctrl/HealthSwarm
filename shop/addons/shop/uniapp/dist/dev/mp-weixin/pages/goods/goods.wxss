@@ -1,0 +1,45 @@
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+page {
+  background-color: #f4f6f8;
+}
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+.goods-list.data-v-5566b618 {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  padding: 30rpx;
+}
+.goods-list .item.data-v-5566b618 {
+  width: calc((100vw - 90rpx) / 2);
+  background-color: #ffffff;
+  box-shadow: 0px 0px 5px rgb(233, 235, 243);
+  margin-bottom: 30rpx;
+  border-radius: 10rpx;
+  overflow: hidden;
+}
+.goods-list .item .name.data-v-5566b618 {
+  min-height: 110rpx;
+}
+.goods-list .item .foot.data-v-5566b618 {
+  padding: 0 15rpx;
+}
+.goods-list .item .images.data-v-5566b618 {
+  width: 100%;
+  height: 350rpx;
+}
+.goods-list .item .images image.data-v-5566b618 {
+  width: 100%;
+  height: 100%;
+}
+.goods-list .item .market_price.data-v-5566b618 {
+  text-decoration: line-through;
+  margin-left: 10rpx;
+}

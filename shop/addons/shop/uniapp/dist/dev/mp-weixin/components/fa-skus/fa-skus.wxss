@@ -1,0 +1,26 @@
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+.add-carts.data-v-74e92196 {
+  padding: 30rpx 30rpx 0;
+}
+.add-carts .content.data-v-74e92196 {
+  display: flex;
+  flex-direction: column;
+}
+.add-carts .content .item.data-v-74e92196 {
+  margin-right: 15rpx;
+}
+.header image.data-v-74e92196 {
+  width: 200rpx;
+  height: 150rpx;
+  border-radius: 10rpx;
+}
+.header .right.data-v-74e92196 {
+  height: 120rpx;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}

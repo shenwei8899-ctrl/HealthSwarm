@@ -1,0 +1,190 @@
+{layout name="common/layout" /}
+<style>
+
+    .table-cart > thead > tr > th {
+        padding: 12px 10px;
+        border-bottom: none;
+        text-align: center;
+        font-weight: 400;
+    }
+
+    .table-cart > tbody > tr > td {
+        padding: 25px 10px;
+        text-align: center;
+    }
+
+    .table-cart > thead > tr > th, .table-cart > tbody > tr > td, .table-cart > tfoot > tr > td {
+        display: table-cell;
+        vertical-align: middle;
+        border-top: 1px solid #eee;
+    }
+
+    .table-cart .btn-delete i {
+        font-size: 1.4em;
+    }
+
+    .table-cart .col-sm-2 label {
+        margin: 0;
+        font-weight: 400;
+    }
+
+    @media (max-width: 767px) {
+        .table-cart tr {
+            display: -ms-flexbox;
+            display: -webkit-flex;
+            display: flex;
+            -webkit-flex-wrap: wrap;
+            -ms-flex-wrap: wrap;
+            flex-wrap: wrap;
+        }
+
+        .table-cart > tbody > tr > td {
+            padding: 20px 10px;
+        }
+
+        .table-cart tr td {
+            width: 50%;
+            padding: 15px 10px;
+        }
+
+        .table-cart tr td:first-child {
+            width: 10%;
+        }
+
+        .table-cart tr td:nth-child(2) {
+            width: 90%;
+        }
+
+        .table-cart tr td:nth-child(2) > .row > .col-xs-9 {
+            padding: 0;
+        }
+
+        .table-cart tr td:nth-child(2) > .row > .col-xs-9 .my-1 {
+            margin: 0 !important;
+        }
+
+        .table-cart > thead > tr > th, .table-cart > tbody > tr > td, .table-cart > tfoot > tr > td {
+            display: block;
+        }
+
+        .table-cart tr td .totalamount {
+            display: block;
+            margin-bottom: 10px;
+        }
+
+        .table-cart tfoot tr td:last-child {
+            width: 100%;
+        }
+
+    }
+</style>
+<div class="container" id="content-container">
+
+    <div class="mb-3">
+        <img src="__ADDON__/img/cartbanner.jpg" alt="" class="img-responsive">
+    </div>
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="panel panel-default">
+                <div class="panel-body">
+                    <div class="table-responsive">
+                        <form id="cart-form" action="{:addon_url('shop/checkout/index')}" method="post" role="form">
+                            <table class="table table-hover table-condensed table-cart">
+                                {:token()}
+                                <thead class="hidden-xs" style="background:#f4f4f4;">
+                                <tr>
+                                    <th width="1%" class="text-center">
+                                        <div style="width:50px;"><input type="checkbox" class="checkall" id="checkall-top"/></div>
+                                    </th>
+                                    <th style="width:40%;text-align:left;min-width:200px;">
+                                        <div class="row">
+                                            <div class="col-sm-4 col-md-2" style="min-width:50px;">
+                                                <label for="checkall-top">全选</label>
+                                            </div>
+                                            <div class="col-sm-8 col-md-10 text-left">
+                                                商品
+                                            </div>
+                                        </div>
+                                    </th>
+                                    <th style="width:10%">单价</th>
+                                    <th width="15%">
+                                        <div style="min-width:100px">数量</div>
+                                    </th>
+                                    <th style="width:15%">小计</th>
+                                    <th width="10%">
+                                        <div style="min-width:80px;">操作</div>
+                                    </th>
+                                </tr>
+                                </thead>
+                                <tbody>
+
+                                {foreach name="cartList" id="item"}
+                                <tr data-id="{$item.id|htmlentities}" data-goods-id="{$item.goods_id|htmlentities}" data-sku-id="{$item.goods_sku_id|htmlentities}" data-price="{:$item.sku.price??$item.goods.price}">
+                                    <td><input type="checkbox" name="ids[]" value="{$item.id|htmlentities}"/></td>
+                                    <td data-th="Product" class="text-left">
+                                        <div class="row">
+                                            <div class="col-xs-3 col-sm-4 col-md-2">
+                                                <a href="{$item.goods.url|htmlentities}"><img src="{:cdnurl(isset($item.sku.image) && $item.sku.image ? $item.sku.image : $item.goods.image)}" class="img-responsive" style="width:64px;"/></a>
+                                            </div>
+                                            <div class="col-xs-9 col-sm-8 col-md-10 text-left">
+                                                <div class="my-1"><a href="{$item.goods.url|htmlentities}" target="_blank">{$item.goods.title|htmlentities}</a></div>
+                                                <div class="text-muted small">{$item.sku_attr|htmlentities}</div>
+                                                <div class="text-danger visible-xs">￥{:$item.sku.price??$item.goods.price}</div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td data-th="Price" class="hidden-xs">￥{:$item.sku.price??$item.goods.price}</td>
+                                    <td data-th="Quantity">
+                                        <div class="quantity m-0">
+                                            <div class="quantity-down">-</div>
+                                            <input type="text" class="quantity-text" step="1" min="1" max="" name="quantity" value="{$item.nums|htmlentities}" title="数量" size="4" inputmode="numeric">
+                                            <div class="quantity-up">+</div>
+                                        </div>
+                                    </td>
+                                    <td data-th="Subtotal" class="text-center text-danger hidden-xs">￥<span class="cart-item-subtotal">{$item.subtotal|htmlentities}</span></td>
+                                    <td class="actions text-right">
+                                        <button type="button" class="btn btn-sm btn-link btn-delete" data-id="{$item.id|htmlentities}"><i class="fa fa-trash-o fa-2x"></i></button>
+                                    </td>
+                                </tr>
+                                {/foreach}
+                                {if !$cartList}
+                                <tr>
+                                    <td colspan="6">
+                                        <div class="text-center">购物车暂无任何商品</div>
+                                    </td>
+                                </tr>
+                                {/if}
+                                </tbody>
+                                {if $cartList}
+                                <tfoot>
+                                <tr>
+                                    <td class="text-center"><input type="checkbox" class="checkall" id="checkall-bottom"/></td>
+                                    <td>
+                                        <div class="row">
+                                            <div class="col-sm-2 hidden-xs">
+                                                <label for="checkall-bottom">全选</label>
+                                            </div>
+                                            <div class="col-sm-10 text-left">
+                                                已选 <span class="text-danger cart-selected-nums">0</span> 件 <a href="javascript:" class="btn-delete-selected ml-3">删除选中</a>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td colspan="4" class="text-right py-4">
+                                        <span class="mr-4 text-danger totalamount"><b>总计 ￥<span class="cart-selected-amount">0.00</span></b><span class="text-muted ml-2">(不含邮费)</span></span>
+                                        <a href="{shop:config name='shop.indexurl'}" class="btn btn-warning btn-lg"><i class="fa fa-angle-left"></i> 继续购物</a>
+                                        <button type="submit" class="btn btn-success btn-lg btn-checkout">去结算 <i class="fa fa-angle-right"></i></button>
+                                    </td>
+                                </tr>
+                                </tfoot>
+                                {/if}
+                            </table>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script data-render="script" src="__ADDON__/js/cart.js?v={$site.version|htmlentities}"></script>
+

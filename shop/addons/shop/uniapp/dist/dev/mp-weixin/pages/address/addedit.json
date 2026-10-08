@@ -1,0 +1,15 @@
+{
+  "navigationBarTitleText": "添加地址",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "enablePullDownRefresh": false,
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "u-form": "/uview-ui/components/u-form/u-form",
+    "u-form-item": "/uview-ui/components/u-form-item/u-form-item",
+    "u-input": "/uview-ui/components/u-input/u-input",
+    "u-button": "/uview-ui/components/u-button/u-button",
+    "u-switch": "/uview-ui/components/u-switch/u-switch",
+    "fa-citys": "/components/fa-citys/fa-citys"
+  }
+}

@@ -1,0 +1,132 @@
+{layout name="common/layout" /}
+<style>
+    .statistics {
+        padding: 30px 0;
+        margin: 0;
+    }
+
+    .statistics .statistics-nums {
+        color: #ff7243;
+    }
+
+    .statistics .statistics-text {
+        color: #a5a5a5;
+    }
+
+    .statistics .col-xs-4 {
+        padding: 15px;
+        border-top: 1px solid #eee;
+        border-bottom: 1px solid #eee;
+        border-right: 1px solid #eee;
+    }
+
+    .btn-exchange {
+        padding: 10px 40px;
+    }
+</style>
+
+<div class="container" id="content-container">
+    <div class="panel panel-default panel-author">
+        <div class="panel-body">
+            <div class="row">
+                <div class="col-md-5">
+                    <img src="{$row.image|htmlentities}" class="img-responsive" alt="">
+                </div>
+                <div class="col-md-7">
+                    <h1 class="my-3" style="line-height:inherit;font-size:24px;">{$row.title|htmlentities}</h1>
+                    <div class="pt-2 pb-2">
+                        <p class="score-info">
+                            需要积分：<span class="text-danger">{$row.score|htmlentities}</span> 积分
+                        </p>
+                    </div>
+                    <div class="meta-data">
+                        <span>兑换说明:</span>
+                        {$row.description|htmlentities}
+                    </div>
+                    <div class="row statistics text-center">
+                        <div class="col-xs-4">
+                            <div class="statistics-text">积分</div>
+                            <div class="statistics-nums">{$row.score|htmlentities}</div>
+                        </div>
+                        <div class="col-xs-4">
+                            <div class="statistics-text">已兑换</div>
+                            <div class="statistics-nums">{$row.sales|htmlentities}</div>
+                        </div>
+                        <div class="col-xs-4">
+                            <div class="statistics-text">库存</div>
+                            <div class="statistics-nums">{:$row.stocks>0?'充足':'不足'}</div>
+                        </div>
+                    </div>
+                    <div class="meta-data">
+                        <span>物品类型:</span>
+                        {:$row.type=='virtual'?'虚拟物品':'实物商品'}
+                    </div>
+                    <div class="row mt-2">
+                        <div class="col-xs-12 col-md-4">
+                            <div class="my-4">
+                                <a href="javascript:" class="btn btn-buynow btn-primary btn-exchange" data-id="{$row.id|htmlentities}"
+                                   data-type="{$row.type|htmlentities}">立即兑换</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="panel panel-default panel-author">
+        <div class="panel-heading">
+            <h4 style="font-size:16px;line-height: inherit;margin:0;">
+                <i class="fa fa-fw fa-list"></i>
+                物品详情
+            </h4>
+        </div>
+        <div class="panel-body">
+            {:$row.content}
+        </div>
+    </div>
+</div>
+<script type="text/html" id="exchangetpl">
+    <form id="exchange-form" class="form-horizontal" role="form" data-toggle="validator" method="POST" action="" style="padding:15px 0;overflow: hidden;">
+       {if $row.type=='reality'}
+        <div class="form-group">
+            <label class="control-label col-xs-12 col-sm-2">地址:</label>
+            <div class="col-xs-12 col-sm-8">
+                {if !$addressList}
+                <div class="alert alert-warning alert-warning-light mb-0">请添加收货地址后重试，<a href="{:url('index/shop/address')}" target="_blank">点击添加</a></div>
+                {else/}
+                <select id="c-result" class="form-control selectpicker" data-rule="required" name="address_id">
+                    {foreach name="addressList" item="vo"}
+                    <option value="{$vo.id|htmlentities}">{$vo.receiver|htmlentities}-{$vo.address|htmlentities}</option>
+                    {/foreach}
+                </select>
+                {/if}
+            </div>
+        </div>
+       {/if}
+        <div class="form-group">
+            <label class="control-label col-xs-12 col-sm-2">备注:</label>
+            <div class="col-xs-12 col-sm-8">
+                <input id="c-name" class="form-control" name="memo" type="text">
+            </div>
+        </div>
+        <div class="form-group">
+            <label class="control-label col-xs-12 col-sm-2">数量:</label>
+            <div class="col-xs-12 col-sm-8">
+                <div class="value">
+                    <div class="quantity" data-id="">
+                        <div class="quantity-down">-</div>
+                        <input type="text" class="quantity-text" step="1" min="1" max="" name="nums" data-stocks="{$row.stocks|htmlentities}" value="1" title="数量" size="4" inputmode="numeric">
+                        <div class="quantity-up">+</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <label class="control-label col-xs-12 col-sm-2"></label>
+            <div class="col-xs-12 col-sm-8">
+                <a href="javascript:;" style="padding:10px 40px;" class="btn btn-primary btn-submit-exchange">提交</a>
+            </div>
+        </div>
+    </form>
+</script>
+<script data-render="script" src="__ADDON__/js/exchange.js?v={$site.version|htmlentities}"></script>

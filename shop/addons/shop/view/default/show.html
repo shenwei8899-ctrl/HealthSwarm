@@ -1,0 +1,439 @@
+{layout name="common/layout" /}
+<style>
+    html, body {
+        background: #fff;
+    }
+
+    .swiper-container {
+        width: 100%;
+        height: 100%;
+        margin-left: auto;
+        margin-right: auto;
+    }
+
+    .swiper-slide {
+        background-size: cover;
+        background-position: center;
+    }
+
+    .gallery-top {
+        height: 100%;
+        width: 100%;
+    }
+
+    .gallery-thumbs {
+        height: 70px;
+        box-sizing: border-box;
+        margin-top: 10px;
+    }
+
+    .gallery-thumbs .swiper-slide {
+        width: 70px;
+        height: 70px;
+        opacity: 0.8;
+        margin-right: 8px;
+    }
+
+    .gallery-thumbs .swiper-slide {
+        border: 1px solid #ebebeb;
+        padding: 1px;
+    }
+
+    .gallery-thumbs .swiper-slide:hover {
+        cursor: pointer;
+    }
+
+    .gallery-thumbs .swiper-slide-thumb-active {
+        opacity: 1;
+        border: 1px solid #333;
+    }
+
+    .swiper-button-prev, .swiper-button-next {
+        opacity: 0;
+    }
+
+    .embed-responsive-item:hover .swiper-button-prev, .embed-responsive-item:hover .swiper-button-next {
+        opacity: 0.6;
+    }
+
+    #detail img {
+        max-width: 100%;
+    }
+
+    .product-cart-btn .btn {
+        width: 120px;
+    }
+
+    .goods-spec-text li {
+        position: relative;
+        overflow: hidden;
+    }
+
+    .goods-spec-text li a {
+        display: block;
+        margin: 0;
+        padding: 5px 15px;
+        height: 35px;
+        font-size: .9em;
+        line-height: 23px;
+        color: #666;
+        border: 1px solid #ccc;
+        cursor: pointer;
+        overflow: hidden;
+        position: relative;
+    }
+
+    .goods-spec-text li a img {
+        width: 20px;
+        height: 20px;
+    }
+
+    .goods-spec-text li a:hover {
+        border-color: #007bff;
+        text-decoration: none;
+    }
+
+    .goods-spec-text li.selected a {
+        border-color: #007bff;
+    }
+
+    .goods-spec-text li.disabled a {
+        border-color: #ddd;
+        color: rgba(0, 0, 0, .3);
+        background-color: #f7f7f7;
+    }
+
+    .goods-spec-text li.selected a:after,
+    .goods-spec-text li.selected a:before {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        content: "";
+    }
+
+    .goods-spec-text li.selected a:before {
+        width: 0;
+        height: 0;
+        right: -11px;
+        line-height: 0;
+        border: 11px solid #fff;
+        border-bottom: 11px solid #007bff;
+    }
+
+    .goods-spec-text li.selected a:after {
+        width: 10px;
+        height: 10px;
+        background: url(__ADDON__/img/check.png) no-repeat 100% 100%;
+        background-size: 6px auto;
+    }
+
+    .goods-spec-text li.selected i {
+        display: block;
+    }
+
+    .coupon {
+        display: flex;
+        justify-content: space-between;
+    }
+
+    .coupon .left {
+        width: 80px;
+    }
+
+    .coupon .right {
+        flex: 1;
+        color: #999;
+    }
+
+    .coupon .item {
+        padding-bottom: 10px;
+        display: inline-block;
+        margin-right: 5px;
+    }
+
+    .coupon .item a:hover {
+        text-decoration: none;
+    }
+
+    .coupon .item .coupon-text {
+        padding: 1px 10px;
+        border: 1px solid #ff464e;
+        color: #ff464e;
+        position: relative;
+        font-size: 12px;
+    }
+
+    .coupon .item .coupon-text::before,
+    .coupon .item .coupon-text::after {
+        content: ' ';
+        position: absolute;
+        width: 6px;
+        height: 8px;
+        border-radius: 10px;
+        border: 1px solid #ff464e;
+        background-color: #fff;
+        bottom: 50%;
+        margin-bottom: -4px;
+    }
+
+    .coupon .item .coupon-text::before {
+        left: -2px;
+        border-left-color: #fff;
+    }
+
+    .coupon .item .coupon-text::after {
+        border-right-color: #fff;
+        right: -2px;
+    }
+
+    .guarantee {
+        display: flex;
+        margin-bottom: 20px;
+    }
+
+    .guarantee img {
+        width: 50px;
+        height: 50px;
+    }
+</style>
+<div class="bg-gray hidden-xs" style="background:#f4f4f4;">
+    <div class="container">
+        <ol class="breadcrumb bg-gray mb-0 py-2">
+            <!-- S 面包屑导航 -->
+            {shop:breadcrumb id="item"}
+            <li><a href="{$item.url|htmlentities}">{$item.name|htmlentities}</a></li>
+            {/shop:breadcrumb}
+            <!-- E 面包屑导航 -->
+            <li>商品详情</li>
+        </ol>
+    </div>
+</div>
+<div class="container" id="content-container">
+
+    <div class="row" style="margin-bottom:60px;">
+        <div class="col-md-5">
+            <div class="product-gallery">
+                <div class="embed-responsive embed-responsive-square">
+                    <div class="embed-responsive-item">
+                        <div class="swiper-container gallery-top">
+                            <div class="swiper-wrapper">
+                                {foreach name="__goods__.images" id="image"}
+                                <div class="swiper-slide" style="background-image:url({$image|cdnurl|htmlentities})"></div>
+                                {/foreach}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="swiper-container gallery-thumbs">
+                    <div class="swiper-wrapper">
+                        {foreach name="__goods__.images" id="image"}
+                        <div class="swiper-slide" style="background-image:url({$image|cdnurl|htmlentities})"></div>
+                        {/foreach}
+                    </div>
+                </div>
+                <div class="my-2 text-muted" style="font-size:12px;">
+                    <a href="javascript:" class="btn-collect text-muted mr-1" data-id="{$__goods__.id|htmlentities}"><i class="fa fa-heart"></i> <span>收藏</span></a>
+                    <a href="javascript:" class="btn-share text-muted" data-image="{$__goods__.image|htmlentities}"><i class="fa fa-share-alt"></i> 分享</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-7">
+            <form action="{:addon_url('shop/checkout/index')}" method="post">
+                <input type="hidden" name="ids" value="{$__goods__.id|htmlentities}"/>
+                <input type="hidden" name="sku" value=""/>
+                <input type="hidden" name="skuId" value=""/>
+                <input type="hidden" name="spectype" value="{:$__goods__.spectype}"/>
+                <input type="hidden" name="sceneval" value="2"/>
+
+                <h1 style="font-size:22px;color:#444;line-height: 1.5;">{$__goods__.title|htmlentities}</h1>
+                <div class="text-danger my-2">{$__goods__.subtitle|htmlentities}</div>
+                <div class="mb-3">
+                    <div class="bg-gray p-3" style="background:#f4f4f4;font-size:24px;">
+                    <span style="color:red;">
+                        ¥<span class="goods-price">{$__goods__.price|htmlentities}</span>
+                    </span>
+                        <small style="font-size:.6em;margin-left:5px;">
+                            <del>市场价 ¥<span class="goods-marketprice">{$__goods__.marketprice|htmlentities}</span></del>
+                        </small>
+                    </div>
+                </div>
+                {if !empty($couponList)}
+                <div class="variations mt-4 mb-3">
+                    <div class="tr-item">
+                        <div class="label">优惠券</div>
+
+                        <div class="value coupon">
+                            {foreach name="couponList" item="item"}
+                            <div class="item">
+                                <a href="{$item.url|htmlentities}">
+                                <span class="coupon-text">
+                                    满{$item['result_data']['money']}元{eq name="item.result" value="1"}减{else/}打{/eq}{$item['result_data']['number']}{eq name="item.result" value="1"}元{else/}折{/eq}
+                                </span>
+                                </a>
+                            </div>
+                            {/foreach}
+                        </div>
+                    </div>
+                </div>
+                {/if}
+                <div class="variations mb-0" cellspacing="0">
+                    <!--规格属性-->
+                    {foreach name="__goods__.sku_spec" id="spec"}
+                    <div class="tr-item">
+                        <div class="label">{$spec.title|htmlentities}</div>
+                        <div class="value">
+                            <div class="goods-spec">
+                                <ul class="list-inline goods-spec-text">
+                                    {foreach name="spec.sku_value" id="attr"}
+                                    <li data-id="{$attr.id|htmlentities}"><a href="javascript:;" title="{$attr.title|htmlentities}">{$attr.title|htmlentities}</a></li>
+                                    {/foreach}
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                    {/foreach}
+                    <!--规格属性-->
+                </div>
+                <div class="variations mt-1 mb-0">
+                    <div class="tr-item mb-3">
+                        <div class="label">库存</div>
+                        <div class="value text-muted">
+                            <span class="goods-stocks">{$__goods__.stocks|htmlentities}</span> 件
+                        </div>
+                    </div>
+                </div>
+                <div class="variations mt-1 mb-0">
+                    <div class="tr-item">
+                        <div class="label">数量</div>
+                        <div class="value">
+                            <div class="quantity" data-id="">
+                                <div class="quantity-down">-</div>
+                                <input type="text" class="quantity-text" step="1" min="1" max="" name="quantity" data-stocks="{$__goods__.stocks|htmlentities}" value="1" title="数量" size="4" inputmode="numeric">
+                                <div class="quantity-up">+</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="product-cart-btn mt-3">
+                    <button type="button" name="checkout" class="btn btn-buynow btn-primary btn-lg" data-id="{$__goods__.id|htmlentities}" data-sku-id="">立即购买</button>
+                    <button type="button" name="cart" class="btn btn-cart btn-outline-primary btn-lg" data-id="{$__goods__.id|htmlentities}" data-sku-id=""><i class="fa fa-shopping-cart"></i> 加入购物车</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <div class="row">
+        <div class="col-xs-3 hidden-xs">
+            <div class="panel panel-default panel-border" id="recommend-goods">
+                <div class="panel-heading">
+                    <h3 class="panel-title">推荐商品</h3>
+                </div>
+                <div class="panel-body">
+                    {shop:goodslist flag="recommend" id="goods" row="5"}
+                    <div class="media">
+                        <div class="media-left">
+                            <a href="{$goods.url|htmlentities}">
+                                <img class="media-object" src="{$goods.image|cdnurl|htmlentities}" width="70">
+                            </a>
+                        </div>
+                        <div class="media-body">
+                            <div class="mb-5">
+                                <a href="{$goods.url|htmlentities}">{$goods.title|htmlentities}</a>
+                            </div>
+                            <div class="mb-5">
+                                {include file="common/rating" star="goods['star']" /}
+                            </div>
+                            <div class="price font-16">
+                                <span class="text-danger">￥{$goods.price|htmlentities}</span>
+                                <span class="price-sale text-muted small"><del>￥{$goods.marketprice|htmlentities}</del></span>
+                            </div>
+                        </div>
+                    </div>
+                    {/shop:goodslist}
+                </div>
+            </div>
+            <div class="panel panel-default panel-border" id="hot-goods">
+                <div class="panel-heading">
+                    <h3 class="panel-title">热门商品</h3>
+                </div>
+                <div class="panel-body">
+                    {shop:goodslist flag="hot" id="goods" row="5"}
+                    <div class="media">
+                        <div class="media-left">
+                            <a href="{$goods.url|htmlentities}">
+                                <img class="media-object" src="{$goods.image|cdnurl|htmlentities}" width="70">
+                            </a>
+                        </div>
+                        <div class="media-body">
+                            <div class="mb-5">
+                                <a href="{$goods.url|htmlentities}">{$goods.title|htmlentities}</a>
+                            </div>
+                            <div class="mb-5">
+                                {include file="common/rating" star="goods['star']" /}
+                            </div>
+                            <div class="price font-16">
+                                <span class="text-danger">￥{$goods.price|htmlentities}</span>
+                                <span class="price-sale text-muted small"><del>￥{$goods.marketprice|htmlentities}</del></span>
+                            </div>
+                        </div>
+                    </div>
+                    {/shop:goodslist}
+                </div>
+            </div>
+        </div>
+        <div class="col-xs-12 col-sm-9">
+            <ul class="nav nav-tabs nav-product" style="margin-bottom: 15px;">
+                <li class="active"><a href="#detail" data-toggle="tab">商品详情</a></li>
+                <li><a href="#comment" data-toggle="tab">商品评价 ({$__goods__.comments|htmlentities})</a></li>
+                <li><a href="#guarantee" data-toggle="tab">专享服务</a></li>
+            </ul>
+            <div id="myTabContent" class="tab-content">
+                <div class="tab-pane fade active in" id="detail">
+                    <div class="detail-content clearfix z-have-detail-nav" data-name="z-have-detail-nav">
+                        {if !empty($attributes)}
+                        <div class="row" style="margin-bottom: 10px;">
+                            {foreach name="attributes" item="item"}
+                            {php}$values=array_column($item['attribute_value'],'name'){/php}
+                            <div class="col-xs-4 pb-2">{$item.name|htmlentities}:{php}echo implode(',',$values);{/php}</div>
+                            {/foreach}
+                        </div>
+                        {/if}
+                        <div class="detail-content-wrap">
+                            {:$__goods__.content}
+                        </div>
+                    </div>
+                </div>
+                <div class="tab-pane fade" id="comment">
+                    {include file="common/comment" /}
+                </div>
+                <div class="tab-pane fade" id="guarantee">
+                    {foreach name="guarantee" item="item" empty="暂时没有数据" }
+                    <div class="guarantee">
+                        <img src="{$item.image|htmlentities}">
+                        <div class="ml-3">
+                            <div style="font-weight: bold;">{$item.name|htmlentities}</div>
+                            <div class="pt-1">{$item.intro|htmlentities}</div>
+                        </div>
+                    </div>
+                    {/foreach}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!--@formatter:off-->
+<script type="text/javascript">
+    var GOODS = {
+        "id": "{$__goods__.id|htmlentities}",
+        "title": "{$__goods__.title|htmlentities}",
+        "image": "{$__goods__.image|cdnurl|htmlentities}",
+        "marketprice": "{$__goods__.marketprice|htmlentities}",
+        "price": "{$__goods__.price|htmlentities}",
+        "stocks": "{$__goods__.stocks|htmlentities}",
+        "pricelist": {:json_encode($priceList)}
+    };
+</script>
+<!--@formatter:on-->
+
+<script data-render="script" src="__ADDON__/js/goods.js?v={$site.version|htmlentities}"></script>
+

@@ -1,0 +1,14 @@
+{
+  "agent_task_id": "agent-task-demo-001",
+  "family_ref": "family-demo-001",
+  "user_ref": "user-demo-001",
+  "member_refs": ["member-demo-001"],
+  "menu_version_ref": "menu-demo-v1",
+  "catalog_version": "1",
+  "recipes": [{"recipe_ref": "recipe-tomato-egg", "recipe_name": "西红柿炒蛋", "meal_type": "lunch", "sort": 1}],
+  "ingredient_requirements": [
+    {"recipe_ref": "recipe-tomato-egg", "ingredient_code": "tomato", "required_value": "300.000", "required_unit": "g", "is_optional": false},
+    {"recipe_ref": "recipe-tomato-egg", "ingredient_code": "egg", "required_value": "3.000", "required_unit": "piece", "is_optional": false}
+  ],
+  "nutrition_validation": {"validation_id": "nutrition-demo-001", "status": "passed", "rules_version": "demo-v1", "validated_at": "2026-09-30T12:00:00+08:00", "summary": "演示数据：营养校验通过"}
+}

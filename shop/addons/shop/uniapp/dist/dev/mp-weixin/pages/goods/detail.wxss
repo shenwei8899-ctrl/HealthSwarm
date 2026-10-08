@@ -1,0 +1,163 @@
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+page {
+  background-color: #f4f6f8;
+}
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+.goods-detail .market_price.data-v-f0a9f5ba {
+  text-decoration: line-through;
+  margin-left: 15rpx;
+}
+.coupon.data-v-f0a9f5ba {
+  padding: 0 20rpx;
+  border: 1rpx solid #f2857b;
+  color: #e93323;
+  position: relative;
+}
+.coupon.data-v-f0a9f5ba:before, .coupon.data-v-f0a9f5ba:after {
+  content: " ";
+  position: absolute;
+  width: 8rpx;
+  height: 10rpx;
+  border-radius: 10rpx;
+  border: 1rpx solid #f2857b;
+  background-color: #fff;
+  bottom: 50%;
+  margin-bottom: -8rpx;
+}
+.coupon.data-v-f0a9f5ba:before {
+  left: -4rpx;
+  border-left-color: #fff;
+}
+.coupon.data-v-f0a9f5ba:after {
+  border-right-color: #fff;
+  right: -4rpx;
+}
+.comment.data-v-f0a9f5ba {
+  display: flex;
+  padding: 30rpx;
+}
+.comment .left image.data-v-f0a9f5ba {
+  width: 64rpx;
+  height: 64rpx;
+  border-radius: 50%;
+  background-color: #f2f2f2;
+}
+.comment .right.data-v-f0a9f5ba {
+  flex: 1;
+  padding-left: 20rpx;
+  font-size: 30rpx;
+}
+.comment .right .top.data-v-f0a9f5ba {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10rpx;
+}
+.comment .right .top .like.data-v-f0a9f5ba {
+  display: flex;
+  align-items: center;
+  font-size: 26rpx;
+}
+.comment .right .top .like .num.data-v-f0a9f5ba {
+  margin-right: 4rpx;
+}
+.comment .right .content.data-v-f0a9f5ba {
+  margin-bottom: 10rpx;
+}
+.comment .right .reply-box.data-v-f0a9f5ba {
+  background-color: rgb(242, 242, 242);
+  border-radius: 12rpx;
+  margin-top: 15rpx;
+}
+.comment .right .reply-box .item.data-v-f0a9f5ba {
+  padding: 20rpx;
+  font-size: 24rpx;
+}
+.comment .right .reply-box .item.data-v-f0a9f5ba:not(:last-child) {
+  border-bottom: solid 2rpx #e4e7ed;
+}
+.comment .right .reply-box .all-reply.data-v-f0a9f5ba {
+  padding: 20rpx;
+  display: flex;
+  align-items: center;
+}
+.comment .right .reply-box .all-reply .more.data-v-f0a9f5ba {
+  margin-left: 6rpx;
+}
+.comment .right .bottom.data-v-f0a9f5ba {
+  margin-top: 20rpx;
+  display: flex;
+  font-size: 24rpx;
+  color: #9a9a9a;
+}
+.comment .right .images.data-v-f0a9f5ba {
+  display: flex;
+  flex-wrap: wrap;
+}
+.comment .right .images .thumb.data-v-f0a9f5ba {
+  width: 130rpx;
+  height: 130rpx;
+  margin: 15rpx 15rpx 0 0;
+}
+.guarantee-content.data-v-f0a9f5ba {
+  padding: 24rpx;
+  text-align: center;
+}
+.recommends.data-v-f0a9f5ba {
+  padding: 30rpx 30rpx 0;
+}
+.recommends .title.data-v-f0a9f5ba {
+  position: relative;
+  padding-left: 15rpx;
+}
+.recommends .title .stroke.data-v-f0a9f5ba::before {
+  content: "";
+  width: 8rpx;
+  height: 30rpx;
+  background-color: #374486;
+  position: absolute;
+  top: 15%;
+  left: 0rpx;
+  border-radius: 20rpx;
+}
+.goods-list.data-v-f0a9f5ba {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  margin-top: 30rpx;
+}
+.goods-list .item.data-v-f0a9f5ba {
+  width: calc((100vw - 90rpx) / 2);
+  background-color: #ffffff;
+  box-shadow: 0px 0px 5px rgb(233, 235, 243);
+  margin-bottom: 30rpx;
+  border-radius: 10rpx;
+  overflow: hidden;
+  border: 1px solid #e9ebf3;
+}
+.goods-list .item .name.data-v-f0a9f5ba {
+  min-height: 110rpx;
+}
+.goods-list .item .foot.data-v-f0a9f5ba {
+  padding: 0 15rpx;
+}
+.goods-list .item .images.data-v-f0a9f5ba {
+  width: 100%;
+  height: 350rpx;
+}
+.goods-list .item .images image.data-v-f0a9f5ba {
+  width: 100%;
+  height: 100%;
+}
+.goods-list .item .market_price.data-v-f0a9f5ba {
+  text-decoration: line-through;
+  margin-left: 10rpx;
+}

@@ -1,0 +1,11 @@
+{
+  "navigationBarTitleText": "排行榜",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "u-avatar": "/uview-ui/components/u-avatar/u-avatar",
+    "u-gap": "/uview-ui/components/u-gap/u-gap",
+    "fa-tabbar": "/components/fa-tabbar/fa-tabbar"
+  }
+}

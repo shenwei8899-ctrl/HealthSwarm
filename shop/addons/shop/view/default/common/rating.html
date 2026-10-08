@@ -1,0 +1,5 @@
+<span class="rating">
+    {for start="5" end="1" comparison=">=" step="-1"}
+    <span class="rating-star {if $i==$[star]}checked{/if}" data-value="{$i|htmlentities}"></span>
+    {/for}
+</span>

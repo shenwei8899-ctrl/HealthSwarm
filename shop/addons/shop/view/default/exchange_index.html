@@ -1,0 +1,111 @@
+{layout name="common/layout" /}
+<style>
+    .bg-exchange {
+        background-image: linear-gradient(rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.6)), url(__ADDON__/img/banner.jpg);
+        background-size: cover;
+        background-attachment: fixed;
+        background-position: center;
+        width: 100%;
+        height: 500px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+
+    .bg-exchange .content h1 {
+        text-align: center;
+        font-size: 45px;
+        color: #fff;
+    }
+
+    .bg-exchange .title {
+        font-size: 22px;
+        color: #bbb;
+        padding: 15px 0;
+    }
+
+    .product-list .product-grid {
+        background: none;
+    }
+
+    .product-item .item-detail {
+        display: flex;
+        justify-content: space-between;
+        text-align: center;
+    }
+
+    .product-item .item-detail .text-grey {
+        color: #a5a5a5;
+        font-size: 15px;
+    }
+
+    .product-item .item-detail div {
+        width: calc(100% / 3);
+    }
+
+</style>
+<div class="bg-exchange">
+    <div class="content">
+        <h1>积分兑换</h1>
+        <div class="title">积分可免费兑换更多品质商品！</div>
+    </div>
+</div>
+<div class="container" id="content-container">
+    <div>
+        <ul class="nav nav-tabs nav-filter" style="margin-bottom: 15px;">
+            <li class="{:empty($type)?'active':''}">
+                <a href="?">全部</a>
+            </li>
+            <li class="{:$type=='reality'?'active':''}">
+                <a href="?type=reality">实物商品</a>
+            </li>
+            <li class="{:$type=='virtual'?'active':''}">
+                <a href="?type=virtual">虚拟商品</a>
+            </li>
+        </ul>
+        <div id="" class="tab-content">
+            <div class="product-list">
+                <div class="product-grid">
+                    {foreach name="exchangeList" item="item"}
+                    <div class="product-item text-center">
+                        <a class="card-item" href="{$item.url|htmlentities}">
+                            <div class="mb-3">
+                                <div class="embed-responsive embed-responsive-square img-zoom">
+                                    <img src="{$item.image|htmlentities}" class="" alt="{$item.title|htmlentities}">
+                                </div>
+                            </div>
+                            <div class="item-info">
+                                <div class="item-title">{$item.title|htmlentities}</div>
+                                <div class="item-detail text-danger">
+                                    <div>
+                                        <p>{$item.score|htmlentities}</p>
+                                        <p class="text-grey">积分</p>
+                                    </div>
+                                    <div>
+                                        <p>{$item.sales|htmlentities}</p>
+                                        <p class="text-grey">已兑换</p>
+                                    </div>
+                                    <div>
+                                        <p>{:$item.stocks>0?'充足':'不足'}</p>
+                                        <p class="text-grey">库存</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </a>
+                    </div>
+                    {/foreach}
+                </div>
+                <div class="clearfix"></div>
+            </div>
+            {if $exchangeList->isEmpty()}
+            <div class="text-center">暂无相关信息</div>
+            {/if}
+            <div class="pager">
+                <ul class="pagination">
+                    {$exchangeList->render()}
+                </ul>
+            </div>
+            <div class="clearfix"></div>
+        </div>
+    </div>
+</div>

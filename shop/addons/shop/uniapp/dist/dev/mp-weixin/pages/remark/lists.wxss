@@ -1,0 +1,72 @@
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+.comment.data-v-57526382 {
+  display: flex;
+  padding: 30rpx;
+}
+.comment .left image.data-v-57526382 {
+  width: 64rpx;
+  height: 64rpx;
+  border-radius: 50%;
+  background-color: #f2f2f2;
+}
+.comment .right.data-v-57526382 {
+  flex: 1;
+  padding-left: 20rpx;
+  font-size: 30rpx;
+}
+.comment .right .top.data-v-57526382 {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10rpx;
+}
+.comment .right .top .like.data-v-57526382 {
+  display: flex;
+  align-items: center;
+  font-size: 26rpx;
+}
+.comment .right .top .like .num.data-v-57526382 {
+  margin-right: 4rpx;
+}
+.comment .right .content.data-v-57526382 {
+  margin-bottom: 10rpx;
+}
+.comment .right .reply-box.data-v-57526382 {
+  background-color: rgb(242, 242, 242);
+  border-radius: 12rpx;
+  margin-top: 15rpx;
+}
+.comment .right .reply-box .item.data-v-57526382 {
+  padding: 20rpx;
+  font-size: 24rpx;
+}
+.comment .right .reply-box .item.data-v-57526382:not(:last-child) {
+  border-bottom: solid 2rpx #e4e7ed;
+}
+.comment .right .reply-box .all-reply.data-v-57526382 {
+  padding: 20rpx;
+  display: flex;
+  align-items: center;
+}
+.comment .right .reply-box .all-reply .more.data-v-57526382 {
+  margin-left: 6rpx;
+}
+.comment .right .bottom.data-v-57526382 {
+  margin-top: 20rpx;
+  display: flex;
+  font-size: 24rpx;
+  color: #9a9a9a;
+}
+.comment .right .images.data-v-57526382 {
+  display: flex;
+  flex-wrap: wrap;
+}
+.comment .right .images .thumb.data-v-57526382 {
+  width: 130rpx;
+  height: 130rpx;
+  margin: 15rpx 15rpx 0 0;
+}

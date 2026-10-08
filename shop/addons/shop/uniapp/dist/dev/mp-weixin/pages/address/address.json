@@ -1,0 +1,15 @@
+{
+  "navigationBarTitleText": "地址管理",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "enablePullDownRefresh": false,
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "u-swipe-action": "/uview-ui/components/u-swipe-action/u-swipe-action",
+    "u-tag": "/uview-ui/components/u-tag/u-tag",
+    "u-loading": "/uview-ui/components/u-loading/u-loading",
+    "u-gap": "/uview-ui/components/u-gap/u-gap",
+    "u-button": "/uview-ui/components/u-button/u-button",
+    "fa-tabbar": "/components/fa-tabbar/fa-tabbar"
+  }
+}

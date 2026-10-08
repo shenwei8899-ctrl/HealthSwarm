@@ -1,0 +1,14 @@
+{
+  "navigationBarTitleText": "我的评论",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "enablePullDownRefresh": false,
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "u-rate": "/uview-ui/components/u-rate/u-rate",
+    "u-back-top": "/uview-ui/components/u-back-top/u-back-top",
+    "u-empty": "/uview-ui/components/u-empty/u-empty",
+    "u-loadmore": "/uview-ui/components/u-loadmore/u-loadmore",
+    "fa-tabbar": "/components/fa-tabbar/fa-tabbar"
+  }
+}

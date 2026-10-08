@@ -1,0 +1,1 @@
+page{background-color:#f4f6f8}.u-flexs{display:flex;flex-direction:column;align-items:center}.self-rank{position:fixed;width:100%;bottom:0;left:0}.medal{width:50rpx;height:50rpx}

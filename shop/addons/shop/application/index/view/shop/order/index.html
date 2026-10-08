@@ -1,0 +1,155 @@
+<style>
+    .order-list .order-title {
+        background: #f5f5f5;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        margin-bottom: 10px;
+    }
+
+    .order-state-filter li {
+        margin-right: 5px;
+    }
+
+    .order-state-filter li.active {
+        border-bottom: 2px solid #67a6cb;
+        background: #67a6cb;
+    }
+
+    .order-state-filter li.active a {
+        color: #fff;
+    }
+
+    .order-state-filter li a {
+        padding: 5px;
+    }
+
+    .order-operate a.btn {
+        margin-bottom: 5px;
+    }
+
+    @media (max-width: 767px) {
+        .order-title .row > div {
+            padding: 5px 10px;
+        }
+
+        .order-goods {
+            margin-bottom: 15px;
+        }
+
+        .order-operate {
+            text-align: right;
+        }
+    }
+</style>
+<div class="container">
+    <div class="section">
+        <div class="row">
+            <div class="col-md-3">
+                {include file="common/sidenav" /}
+            </div>
+            <div class="col-md-9">
+                <div class="panel panel-default">
+                    <div class="panel-body">
+                        <h2 class="page-header" style="margin-bottom:15px;">
+                            我的订单
+                            <div style="" class="pull-right">
+                                <form action="" class="form-inline" method="get" role="form">
+                                    <input type="text" class="form-control" name="q" placeholder="订单号/商品名称" value="{$Think.get.q|htmlentities}">
+                                </form>
+                            </div>
+                        </h2>
+
+                        <ul class="order-state-filter list-inline list-unstyled" style="line-height: 25px;margin-bottom:15px;">
+                            <li class="{:$param['f']==0?'active':''}"><a href="?">全部</a></li>
+                            <li class="{:$param['f']==1?'active':''}"><a href="?f=1&orderstate=0&paystate=0">待付款</a></li>
+                            <li class="{:$param['f']==2?'active':''}"><a href="?f=2&orderstate=0&paystate=1&shippingstate=0">待发货</a></li>
+                            <li class="{:$param['f']==3?'active':''}"><a href="?f=3&orderstate=0&paystate=1&shippingstate=1">待收货</a></li>
+                            <li class="{:$param['f']==4?'active':''}"><a href="?f=4&orderstate=0&paystate=1&shippingstate=2">待评价</a></li>
+                            <li class="{:$param['f']==5?'active':''}"><a href="?f=5&orderstate=3&paystate=1">已完成</a></li>
+                        </ul>
+                        <div class="order-list">
+                            {volist name="orderList" id="order"}
+                            <div class="entry-wrapper">
+                                <div class="order-title">
+                                    <div class="row">
+                                        <div class="col-xs-12 col-sm-6">
+                                            <div style="padding-left:10px;">订单号：{$order.order_sn|htmlentities}</div>
+                                        </div>
+                                        <div class="col-xs-6 col-sm-4">
+                                            <span style="padding-left:10px;" class="text-muted">金额：￥{$order.saleamount|htmlentities}</span>
+                                        </div>
+                                        <div class="col-xs-6 col-sm-2 text-center text-muted">
+                                            {$order.status_text|htmlentities}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="order-goods">
+                                    <div class="row">
+                                        <div class="col-xs-12 col-sm-10">
+                                            <table class="table table-responsive no-border">
+                                                <tbody>
+                                                {volist name="order.order_goods" id="item"}
+                                                <tr>
+                                                    <td>
+                                                        <div class="media">
+                                                            <a class="media-left" href="{$item.goods.url|default='javascript:'}">
+                                                                <img src="{:cdnurl($item.image ? $item.image : $item.goods.image)}" style="width: 64px; height: 64px;">
+                                                            </a>
+                                                            <div class="media-body">
+                                                                <p class="media-heading">
+                                                                    <a href="{$item.goods.url|default='javascript:'}" target="_blank">{$item.goods.title|default='未知'}</a>
+                                                                </p>
+                                                                <div class="text-muted">
+                                                                    ￥{$item.price|htmlentities}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </td>
+                                                    <td style="min-width:40px;">
+                                                        <div class="text-muted">
+                                                            × {$item.nums|htmlentities}
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                                {/volist}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                        <div class="col-xs-12 col-sm-2">
+                                            <div class="text-center order-operate" style="padding-right:4px;">
+                                                <a href="{$order.url|htmlentities}" class="btn btn-xs btn-link">订单详情</a>
+                                                {if $order.shippingstate && in_array($order.orderstate, [0, 3])}
+                                                <a href="{$order.logisticsurl|htmlentities}" target="_blank" class="btn btn-xs btn-info">查看物流</a>
+                                                {/if}
+                                                {if $order.shippingstate==1 && !$order.orderstate}
+                                                <a href="javascript:" class="btn btn-xs btn-success btn-received" data-orderid="{$order.order_sn|htmlentities}">确认收货</a>
+                                                {/if}
+                                                {if $order.shippingstate==2 && !$order.orderstate && $order.paystate==1}
+                                                <a href="{$order.commenturl|htmlentities}" class="btn btn-xs btn-warning">立即评价</a>
+                                                {/if}
+                                                {if !$order.paystate && !$order.orderstate}
+                                                <a href="{$order.payurl|htmlentities}" class="btn btn-xs btn-warning">立即支付</a>
+                                                {/if}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                </div>
+                            </div>
+                            {/volist}
+                        </div>
+
+                        <div class="pager text-center">
+                            {if count($orderList)==0}
+                            暂未找到更多订单
+                            {else /}
+                            {$orderList->render()}
+                            {/if}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

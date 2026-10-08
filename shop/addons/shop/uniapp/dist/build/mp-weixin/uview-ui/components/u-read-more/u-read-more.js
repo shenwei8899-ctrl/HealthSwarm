@@ -1,0 +1,10 @@
+(global["webpackJsonp"]=global["webpackJsonp"]||[]).push([["uview-ui/components/u-read-more/u-read-more"],{"7f00":function(t,e,n){"use strict";n.r(e);var i,o=function(){var t=this,e=t.$createElement,n=(t._self._c,t.isLongContent?t.__get_style([t.innerShadowStyle]):null);t.$mp.data=Object.assign({},{$root:{s0:n}})},a=[],s="undefined"===typeof s?{}:s,r=n("9aea"),h=r["a"],u=(n("af0d"),n("f0c5")),d=Object(u["a"])(h,o,a,!1,null,"2ba19b5d",null,!1,s,i);e["default"]=d.exports},"9aea":function(t,e,n){"use strict";(function(t){e["a"]={name:"u-read-more",props:{showHeight:{type:[Number,String],default:400},toggle:{type:Boolean,default:!1},closeText:{type:String,default:"展开阅读全文"},openText:{type:String,default:"收起"},color:{type:String,default:"#2979ff"},fontSize:{type:[String,Number],default:28},shadowStyle:{type:Object,default(){return{backgroundImage:"linear-gradient(-180deg, rgba(255, 255, 255, 0) 0%, #fff 80%)",paddingTop:"300rpx",marginTop:"-300rpx"}}},textIndent:{type:String,default:"2em"},index:{type:[Number,String],default:""}},watch:{paramsChange(t){this.init()}},computed:{paramsChange(){return`${this.toggle}-${this.showHeight}`},innerShadowStyle(){return this.showMore?{}:this.shadowStyle}},data(){return{isLongContent:!1,showMore:!1,elId:this.$u.guid()}},mounted(){this.$nextTick(()=>{this.init()})},methods:{init(){this.$uGetRect("."+this.elId).then(e=>{e.height>t.upx2px(this.showHeight)&&(this.isLongContent=!0,this.showMore=!1)})},toggleReadMore(){this.showMore=!this.showMore,0==this.toggle&&(this.isLongContent=!1),this.$emit(this.showMore?"open":"close",this.index)}}}}).call(this,n("543d")["default"])},af0d:function(t,e,n){"use strict";var i=n("de92"),o=n.n(i);o.a},de92:function(t,e,n){}}]);
+;(global["webpackJsonp"] = global["webpackJsonp"] || []).push([
+    'uview-ui/components/u-read-more/u-read-more-create-component',
+    {
+        'uview-ui/components/u-read-more/u-read-more-create-component':(function(module, exports, __webpack_require__){
+            __webpack_require__('543d')['createComponent'](__webpack_require__("7f00"))
+        })
+    },
+    [['uview-ui/components/u-read-more/u-read-more-create-component']]
+]);

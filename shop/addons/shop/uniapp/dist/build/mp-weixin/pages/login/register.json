@@ -1,0 +1,16 @@
+{
+  "navigationBarTitleText": "注册",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "u-avatar": "/uview-ui/components/u-avatar/u-avatar",
+    "u-form": "/uview-ui/components/u-form/u-form",
+    "u-form-item": "/uview-ui/components/u-form-item/u-form-item",
+    "u-input": "/uview-ui/components/u-input/u-input",
+    "u-button": "/uview-ui/components/u-button/u-button",
+    "u-checkbox": "/uview-ui/components/u-checkbox/u-checkbox",
+    "u-verification-code": "/uview-ui/components/u-verification-code/u-verification-code",
+    "u-toast": "/uview-ui/components/u-toast/u-toast"
+  }
+}

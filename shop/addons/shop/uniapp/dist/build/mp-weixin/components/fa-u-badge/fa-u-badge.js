@@ -1,0 +1,10 @@
+(global["webpackJsonp"]=global["webpackJsonp"]||[]).push([["components/fa-u-badge/fa-u-badge"],{"1f57":function(t,e,o){"use strict";var r=o("65f7"),n=o.n(r);n.a},"65f7":function(t,e,o){},"72bb":function(t,e,o){"use strict";o.r(e);var r,n=function(){var t=this,e=t.$createElement,o=(t._self._c,t.show?t.__get_style([{top:t.offset[0]+"rpx",marginRight:t.offset[1]+"rpx",fontSize:t.fontSize+"rpx",position:t.absolute?"absolute":"static",color:t.color,backgroundColor:t.bgColor},t.boxStyle]):null);t.$mp.data=Object.assign({},{$root:{s0:o}})},a=[],s="undefined"===typeof s?{}:s,f={name:"u-badge",props:{type:{type:String,default:"error"},size:{type:String,default:"default"},isDot:{type:Boolean,default:!1},count:{type:[Number,String]},overflowCount:{type:Number,default:99},showZero:{type:Boolean,default:!1},offset:{type:Array,default:()=>[20,20]},absolute:{type:Boolean,default:!0},fontSize:{type:[String,Number],default:"20"},color:{type:String,default:"#ffffff"},bgColor:{type:String,default:""},isCenter:{type:Boolean,default:!1}},computed:{boxStyle(){let t={width:"38rpx",height:"38rpx"};return this.isCenter?(t.top=0,t.transform="translateY(-50%) translateX(50%)"):(t.top=this.offset[0]+"rpx",t.transform="translateY(0) translateX(0)"),"mini"==this.size&&(t.transform=t.transform+" scale(0.8)"),this.count>this.overflowCount&&(t.width="50rpx",t.borderRadius="55rpx",t.lineHeight="10rpx",t.marginRight="-70rpx"),t},showText(){return this.isDot?"":this.count>this.overflowCount?this.overflowCount+"+":this.count},show(){return 0!=this.count||0!=this.showZero}}},l=f,i=(o("1f57"),o("f0c5")),u=Object(i["a"])(l,n,a,!1,null,"4e2cdad1",null,!1,s,r);e["default"]=u.exports}}]);
+;(global["webpackJsonp"] = global["webpackJsonp"] || []).push([
+    'components/fa-u-badge/fa-u-badge-create-component',
+    {
+        'components/fa-u-badge/fa-u-badge-create-component':(function(module, exports, __webpack_require__){
+            __webpack_require__('543d')['createComponent'](__webpack_require__("72bb"))
+        })
+    },
+    [['components/fa-u-badge/fa-u-badge-create-component']]
+]);

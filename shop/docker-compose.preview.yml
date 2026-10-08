@@ -1,0 +1,58 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: healthflow
+      POSTGRES_USER: healthflow
+      POSTGRES_PASSWORD: healthflow
+    ports:
+      - "15433:5432"
+    volumes:
+      - healthflow_preview_db:/var/lib/postgresql/data
+      - ./database/postgresql/000_compatibility.sql:/docker-entrypoint-initdb.d/000_compatibility.sql:ro
+      - ./database/postgresql/001_fastadmin.sql:/docker-entrypoint-initdb.d/001_fastadmin.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.preview
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_DEBUG: "false"
+      PHP_CLI_SERVER_WORKERS: "8"
+      PHP_DATABASE_HOSTNAME: db
+      PHP_DATABASE_DATABASE: healthflow
+      PHP_DATABASE_USERNAME: healthflow
+      PHP_DATABASE_PASSWORD: healthflow
+      PHP_DATABASE_HOSTPORT: "5432"
+      PHP_DATABASE_TYPE: pgsql
+      PHP_DATABASE_PREFIX: fa_
+      SHOP_WECHAT_APP_ID: "${SHOP_WECHAT_APP_ID:-}"
+      SHOP_WECHAT_MCH_ID: "${SHOP_WECHAT_MCH_ID:-}"
+      SHOP_WECHAT_API_V2_KEY: "${SHOP_WECHAT_API_V2_KEY:-}"
+      SHOP_WECHAT_CERT_PATH: "${SHOP_WECHAT_CERT_PATH:-}"
+      SHOP_WECHAT_KEY_PATH: "${SHOP_WECHAT_KEY_PATH:-}"
+      SHOP_WECHAT_NOTIFY_URL: "${SHOP_WECHAT_NOTIFY_URL:-}"
+      SHOP_WECHAT_SANDBOX: "${SHOP_WECHAT_SANDBOX:-false}"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./:/var/www/html
+      - ./docker/php-preview.ini:/usr/local/etc/php/conf.d/zz-preview.ini:ro
+    working_dir: /var/www/html
+    command: ["sh", "docker/start-healthflow.sh"]
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(@file_get_contents('http://127.0.0.1:8080/') === false ? 1 : 0);"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  healthflow_preview_db:

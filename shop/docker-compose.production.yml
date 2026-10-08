@@ -1,0 +1,152 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-app-environment: &app-environment
+  PHP_DATABASE_HOSTNAME: db
+  PHP_DATABASE_DATABASE: ${POSTGRES_DB:?POSTGRES_DB is required}
+  PHP_DATABASE_USERNAME: ${POSTGRES_USER:?POSTGRES_USER is required}
+  PHP_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+  PHP_DATABASE_HOSTPORT: "5432"
+  PHP_DATABASE_PREFIX: fa_
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+  FASTADMIN_FORCE_ADMIN_CREDENTIALS: "true"
+  FASTADMIN_ADMIN_USERNAME: ${FASTADMIN_ADMIN_USERNAME:?FASTADMIN_ADMIN_USERNAME is required}
+  FASTADMIN_ADMIN_PASSWORD: ${FASTADMIN_ADMIN_PASSWORD:?FASTADMIN_ADMIN_PASSWORD is required}
+  SHOP_V5_MASTER_KEY: ${SHOP_V5_MASTER_KEY:?SHOP_V5_MASTER_KEY is required}
+  SHOP_WECHAT_APP_ID: ${SHOP_WECHAT_APP_ID:-}
+  SHOP_WECHAT_MCH_ID: ${SHOP_WECHAT_MCH_ID:-}
+  SHOP_WECHAT_API_V2_KEY: ${SHOP_WECHAT_API_V2_KEY:-}
+  SHOP_WECHAT_CERT_PATH: ${SHOP_WECHAT_CERT_PATH:-}
+  SHOP_WECHAT_KEY_PATH: ${SHOP_WECHAT_KEY_PATH:-}
+  SHOP_WECHAT_NOTIFY_URL: ${SHOP_WECHAT_NOTIFY_URL:-}
+  SHOP_WECHAT_SANDBOX: ${SHOP_WECHAT_SANDBOX:-false}
+  ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - healthflow_prod_postgres:/var/lib/postgresql/data
+      - ./database/postgresql/000_compatibility.sql:/docker-entrypoint-initdb.d/000_compatibility.sql:ro
+      - ./database/postgresql/001_fastadmin.sql:/docker-entrypoint-initdb.d/001_fastadmin.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    logging: *default-logging
+
+  php:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *app-environment
+    volumes:
+      - healthflow_prod_runtime:/var/www/html/runtime
+      - healthflow_prod_uploads:/var/www/html/public/uploads
+    healthcheck:
+      test: ["CMD", "php", "-r", "$$s=@fsockopen('127.0.0.1',9000,$$e,$$m,2); exit($$s?0:1);"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    logging: *default-logging
+
+  nginx:
+    build:
+      context: .
+      dockerfile: docker/nginx/Dockerfile.production
+    restart: unless-stopped
+    depends_on:
+      php:
+        condition: service_healthy
+    environment:
+      SERVER_NAME: ${SERVER_NAME:?SERVER_NAME is required}
+      ADMIN_ALLOW_CIDR: ${ADMIN_ALLOW_CIDR:?ADMIN_ALLOW_CIDR is required}
+      NGINX_ENVSUBST_FILTER: SERVER_NAME|ADMIN_ALLOW_CIDR
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ${TLS_CERT_PATH:?TLS_CERT_PATH is required}:/etc/nginx/certs/fullchain.pem:ro
+      - ${TLS_KEY_PATH:?TLS_KEY_PATH is required}:/etc/nginx/certs/privkey.pem:ro
+      - healthflow_prod_uploads:/var/www/html/public/uploads:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --no-check-certificate -O - https://127.0.0.1/healthz | grep -q ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    logging: *default-logging
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    restart: unless-stopped
+    depends_on:
+      php:
+        condition: service_healthy
+    environment:
+      <<: *app-environment
+      V5_JOB_INTERVAL_SECONDS: "60"
+    volumes:
+      - healthflow_prod_runtime:/var/www/html/runtime
+      - healthflow_prod_uploads:/var/www/html/public/uploads
+    command: ["sh", "docker/run-v5-scheduler.sh"]
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(is_file('/tmp/healthflow-scheduler-ok') && filemtime('/tmp/healthflow-scheduler-ok') > time()-300 ? 0 : 1);"]
+      interval: 60s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    logging: *default-logging
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_INTERVAL_SECONDS: "86400"
+    volumes:
+      - ./database/backups:/backups
+      - ./docker/backup-postgresql.sh:/opt/healthflow/backup-postgresql.sh:ro
+      - ./docker/run-production-backups.sh:/opt/healthflow/run-production-backups.sh:ro
+    command: ["sh", "/opt/healthflow/run-production-backups.sh"]
+    logging: *default-logging
+
+  monitor:
+    image: curlimages/curl:8.10.1
+    restart: unless-stopped
+    depends_on:
+      nginx:
+        condition: service_healthy
+    environment:
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      MONITOR_INTERVAL_SECONDS: "60"
+    volumes:
+      - ./docker/monitor-health.sh:/opt/healthflow/monitor-health.sh:ro
+    entrypoint: ["sh", "/opt/healthflow/monitor-health.sh"]
+    logging: *default-logging
+
+volumes:
+  healthflow_prod_postgres:
+  healthflow_prod_runtime:
+  healthflow_prod_uploads:

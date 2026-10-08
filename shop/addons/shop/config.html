@@ -1,0 +1,350 @@
+<style>
+    #config-form table tr td {
+        border: none;
+        padding: 10px 8px;
+    }
+
+    #config-form div a.btn {
+        color: #fff;
+        text-decoration: none;
+    }
+
+    #config-form table.table-notice {
+        margin: 0 -8px;
+        width: 100%;
+    }
+
+    #config-form table.table-notice tr td {
+        padding: 5px 8px;
+        width: 50%;
+    }
+    #config-form table.table-notice tr td input:first-child {
+        width: 100%;
+    }
+
+</style>
+<!--@formatter:off-->
+{php}
+$groupList = [
+    'config'=>'icpbeian,gwabeian,sitelogo,notice,sitename,title,keywords,description,theme,domain,audittype,nlptype,aip_appid,aip_apikey,aip_secretkey,apikey,autolinks,cachelifetime,flagtype,freightitemfee',
+    'order'=>'order_timeout,order_refund_sync,auto_delivery_time,money_score,comment_score,sendnoticemode',
+    'express'=>'EBusinessID,kdNiaoApiKey,logisticstype,api_mode',
+    'rewrite'=>'domain,rewrite,urlsuffix,moduleurlsuffix',
+    'uniapp'=>'notice,wxapp,mobileurl,porfilePrompt,autoredirectmobile,wx_appid,wx_app_secret,mp_appid,mp_app_secret,app_id,app_secret,,logintypelist,wechatautocreate',
+    'other'=>'category_mode,phone,coupon_key',
+];
+$group = [];
+foreach($groupList as $k=>$v){
+   $item = explode(',', $v);
+   $item = array_flip($item);
+   $group = array_merge($group, array_map(function($value) use($k){return $k;}, $item));
+}
+$epayInfo = get_addon_info('epay');
+$thirdInfo = get_addon_info('third');
+$areaInfo = \app\admin\model\shop\Area::where('id', '>', 0)->find();
+
+function getArrayTitle($name){
+    $titleArr = [
+        'rewrite'=>['控制器/方法', 'URL'],
+        'moduleurlsuffix'=>['模块', '后缀'],
+        'flagtype'=>['标识', '名称'],
+        'score'=>['模块', '积分'],
+        'limitscore'=>['模块', '积分'],
+    ];
+    return $titleArr[$name]??['键名', '键值'];
+}
+{/php}
+
+
+<form id="config-form" class="edit-form form-horizontal" role="form" data-toggle="validator" method="POST" action="">
+    <div class="alert {$addon.tips.extend|default='alert-info-light'}" style="margin-bottom:10px;">
+        <a href="{:addon_url('shop/index/index')}" class="btn btn-warning" target="_blank"><i class="fa fa-home"></i> 商城首页</a>
+        <a href="__PUBLIC__index/user/index" class="btn btn-info" target="_blank"><i class="fa fa-user"></i> 会员中心</a>
+        <a href="shop/ajax/clearcache" class="btn btn-danger btn-ajax"><i class="fa fa-trash"></i> 清除简单商城缓存</a>
+    </div>
+
+    {php}{/php}
+    {if !$epayInfo || !$epayInfo['state'] || !$thirdInfo || !$thirdInfo['state'] || !$areaInfo}
+    <div class="alert alert-warning-light" style="margin-bottom:10px;">
+        <b>温馨提示：</b><br>
+        {if !$epayInfo || !$epayInfo['state']}
+        <i class="fa fa-info-circle"></i> 未{:$epayInfo?'启用':'安装'}《微信支付宝整合》插件，<a href="javascript:" class="btn-addtabs" data-url="addon" title="插件管理">点击前往</a><br>
+        {/if}
+        {if !$thirdInfo || !$thirdInfo['state']}
+        <i class="fa fa-info-circle"></i> 未{:$thirdInfo?'启用':'安装'}《第三方登录》插件，<a href="javascript:" class="btn-addtabs" data-url="addon" title="插件管理">点击前往</a><br>
+        {/if}
+        {if !$areaInfo}
+        <i class="fa fa-info-circle"></i> 地区数据未导入，<a href="javascript:" class="btn-addtabs" data-url="shop/area" title="地区管理">点击前往</a><br>
+        {/if}
+    </div>
+    {/if}
+
+    <div class="panel panel-default panel-intro">
+        <div class="panel-heading">
+            <ul class="nav nav-tabs nav-group">
+                <li class="active"><a href="#all" data-toggle="tab">全部</a></li>
+                <li><a href="#config" data-toggle="tab">基础配置</a></li>
+                <li><a href="#order" data-toggle="tab">订单配置</a></li>
+                <li><a href="#express" data-toggle="tab">快递配置</a></li>
+                <li><a href="#rewrite" data-toggle="tab">伪静态</a></li>
+                <li><a href="#uniapp" data-toggle="tab">Uniapp</a></li>
+                <li><a href="#other" data-toggle="tab">其它</a></li>
+                <li class="pull-right"><a href="{:url('shop.ajax/config?name=signin')}" title="签到配置" class="dialogit">签到配置</a></li>
+                <li class="pull-right"><a href="{:url('shop.ajax/config?name=sms')}" title="短信配置" class="dialogit">短信配置</a></li>
+                <li class="pull-right"><a href="{:url('shop.ajax/config?name=third')}" title="登录配置" class="dialogit">登录配置</a></li>
+                <li class="pull-right"><a href="{:url('shop.ajax/config?name=oss')}" title="云存储配置" class="dialogit">云存储配置</a></li>
+                <li class="pull-right"><a href="{:url('shop.ajax/config?name=epay')}" title="支付配置" class="dialogit">支付配置</a></li>
+            </ul>
+        </div>
+
+            <div class="panel-body">
+                <div id="myTabContent" class="tab-content">
+                    <div class="tab-pane fade active in" id="one">
+                        <!--@formatter:off-->
+                        <table class="table table-config">
+                            <tbody>
+                            {foreach $addon.config as $item}
+                            <tr data-type="{:isset($group[$item['name']])?$group[$item['name']]:'other'}" data-favisible="{$item.favisible|default=''}">
+                                <td width="15%">
+                                    {$item.title|htmlentities}
+                                    {if $item.type=='array' && $item.tip}
+                                    <a href="javascript:" class="text-info" data-toggle="popover" data-content="{$item.tip|htmlentities}" data-trigger="click" data-title="配置提示" data-html="true"><i class="fa fa-info-circle"></i></a>
+                                    {/if}
+                                </td>
+                                <td>
+                                    <div class="row">
+                                        <div class="col-sm-8 col-xs-12">
+                                            {switch $item.type}
+                                            {case string}
+                                            <input type="text" name="row[{$item.name|htmlentities}]" value="{$item.value|htmlentities}" class="form-control" data-rule="{$item.rule|htmlentities}" data-tip="{$item.tip|htmlentities}"/>
+                                            {/case}
+                                            {case text}
+                                            <textarea name="row[{$item.name|htmlentities}]" class="form-control" data-rule="{$item.rule|htmlentities}" rows="5" data-tip="{$item.tip|htmlentities}">{$item.value|htmlentities}</textarea>
+                                            {/case}
+                                            {case array}
+                                            {if $item.name == 'notice'}
+                                                <table class="fieldlist table-notice" data-name="row[{$item.name|htmlentities}]" data-template="{$item.name|htmlentities}tpl" data-tag="tr">
+                                                    <tr data-type="{:isset($group[$item['name']])?$group[$item['name']]:'other'}">
+                                                        <td>标题</td>
+                                                        <td>路径</td>
+                                                    </tr>
+                                                    <tr data-type="{:isset($group[$item['name']])?$group[$item['name']]:'other'}">
+                                                        <td colspan="2">
+                                                            <a href="javascript:;" class="btn btn-sm btn-success btn-append"><i class="fa fa-plus"></i> {:__('Append')}</a>
+                                                            <textarea name="row[{$item.name|htmlentities}]" cols="30" rows="5" class="hide">{$item.value|json_encode|htmlentities}</textarea>
+                                                        </td>
+                                                    </tr>
+                                                </table>
+                                                <script type="text/html" id="{$item.name|htmlentities}tpl">
+                                                    <tr class="form-inline" data-type="{:isset($group[$item['name']])?$group[$item['name']]:'other'}">
+                                                        <td>
+                                                        <input type="text" name="<%=name%>[<%=index%>][title]" class="form-control" value="<%=row?row['title']:''%>" size="60" />
+                                                        </td>
+                                                        <td>
+                                                        <div class="input-group">
+                                                            <input type="text" name="<%=name%>[<%=index%>][path]" class="form-control" value="<%=row?row['path']:''%>" />
+                                                            <div class="input-group-btn">
+                                                                <input type="button" value="选择" class="btn btn-info btn-select-page" style="width:50px;" />
+                                                            </div>
+                                                        </div>
+                                                        <span class="btn btn-sm btn-danger btn-remove"><i class="fa fa-times"></i></span>
+                                                        <span class="btn btn-sm btn-primary btn-dragsort"><i class="fa fa-arrows"></i></span>
+                                                        </td>
+
+                                                    </tr>
+                                                </script>
+                                            {else}
+                                                <dl class="fieldlist" data-name="row[{$item.name|htmlentities}]">
+                                                    <dd>
+                                                        {php}list($arrayKeyTitle, $arrayValueTitle) = getArrayTitle($item['name']);{/php}
+                                                        <ins>{$arrayKeyTitle|htmlentities}</ins>
+                                                        <ins>{$arrayValueTitle|htmlentities}</ins>
+                                                    </dd>
+                                                    <dd>
+                                                        <a href="javascript:;" class="btn btn-sm btn-success btn-append"><i class="fa fa-plus"></i> {:__('Append')}</a>
+                                                        {if $item.name=='moduleurlsuffix'}
+                                                        <a href="javascript:" class="btn btn-sm btn-warning btn-removerewrite" data-text="html">一键移除后缀中的html</a>
+                                                        {/if}
+
+                                                        {if $item.name=='rewrite'}
+                                                        <a href="javascript:" class="btn btn-sm btn-warning btn-removerewrite" data-text="/shop">一键移除URL中的/shop</a>
+                                                        {/if}
+                                                    </dd>
+                                                    <textarea name="row[{$item.name|htmlentities}]" cols="30" rows="5" class="hide">{$item.value|json_encode|htmlentities}</textarea>
+                                                </dl>
+                                            {/if}
+                                            {/case}
+                                            {case date}
+                                            <input type="text" name="row[{$item.name|htmlentities}]" value="{$item.value|htmlentities}" class="form-control datetimepicker" data-date-format="YYYY-MM-DD" data-tip="{$item.tip|htmlentities}" data-rule="{$item.rule|htmlentities}"/>
+                                            {/case}
+                                            {case time}
+                                            <input type="text" name="row[{$item.name|htmlentities}]" value="{$item.value|htmlentities}" class="form-control datetimepicker" data-date-format="HH:mm:ss" data-tip="{$item.tip|htmlentities}" data-rule="{$item.rule|htmlentities}"/>
+                                            {/case}
+                                            {case datetime}
+                                            <input type="text" name="row[{$item.name|htmlentities}]" value="{$item.value|htmlentities}" class="form-control datetimepicker" data-date-format="YYYY-MM-DD HH:mm:ss" data-tip="{$item.tip|htmlentities}" data-rule="{$item.rule|htmlentities}"/>
+                                            {/case}
+                                            {case number}
+                                            <input type="number" name="row[{$item.name|htmlentities}]" value="{$item.value|htmlentities}" class="form-control" data-tip="{$item.tip|htmlentities}" data-rule="{$item.rule|htmlentities}"/>
+                                            {/case}
+                                            {case checkbox}
+                                            {foreach name="item.content" item="vo"}
+                                            <label for="row[{$item.name|htmlentities}][]-{$key|htmlentities}"><input id="row[{$item.name|htmlentities}][]-{$key|htmlentities}" name="row[{$item.name|htmlentities}][]" type="checkbox" value="{$key|htmlentities}" data-tip="{$item.tip|htmlentities}" {in name="key" value="$item.value" }checked{/in} /> {$vo|htmlentities}</label>
+                                            {/foreach}
+                                            {/case}
+                                            {case radio}
+                                            {foreach name="item.content" item="vo"}
+                                            <label for="row[{$item.name|htmlentities}]-{$key|htmlentities}"><input id="row[{$item.name|htmlentities}]-{$key|htmlentities}" name="row[{$item.name|htmlentities}]" type="radio" value="{$key|htmlentities}" data-tip="{$item.tip|htmlentities}" {in name="key" value="$item.value" }checked{/in} /> {$vo|htmlentities}</label>
+                                            {/foreach}
+                                            {/case}
+                                            {case value="select" break="0"}{/case}
+                                            {case value="selects"}
+                                            <select name="row[{$item.name|htmlentities}]{$item.type=='selects'?'[]':''}" class="form-control selectpicker" data-tip="{$item.tip|htmlentities}" {$item.type=='selects'?'multiple':''}>
+                                                {foreach name="item.content" item="vo"}
+                                                <option value="{$key|htmlentities}" {in name="key" value="$item.value" }selected{/in}>{$vo|htmlentities}</option>
+                                                {/foreach}
+                                            </select>
+                                            {/case}
+                                            {case value="image" break="0"}{/case}
+                                            {case value="images"}
+                                            <div class="form-inline">
+                                                <input id="c-{$item.name|htmlentities}" class="form-control" size="35" name="row[{$item.name|htmlentities}]" type="text" value="{$item.value|htmlentities}" data-tip="{$item.tip|htmlentities}">
+                                                <span><button type="button" id="faupload-{$item.name|htmlentities}" class="btn btn-danger faupload" data-input-id="c-{$item.name|htmlentities}" data-mimetype="image/*" data-multiple="{$item.type=='image'?'false':'true'}" data-preview-id="p-{$item.name|htmlentities}"><i class="fa fa-upload"></i> {:__('Upload')}</button></span>
+                                                <span><button type="button" id="fachoose-{$item.name|htmlentities}" class="btn btn-primary fachoose" data-input-id="c-{$item.name|htmlentities}" data-mimetype="image/*" data-multiple="{$item.type=='image'?'false':'true'}"><i class="fa fa-list"></i> {:__('Choose')}</button></span>
+                                                <ul class="row list-inline faupload-preview" id="p-{$item.name|htmlentities}"></ul>
+                                            </div>
+                                            {/case}
+                                            {case value="file" break="0"}{/case}
+                                            {case value="files"}
+                                            <div class="form-inline">
+                                                <input id="c-{$item.name|htmlentities}" class="form-control" size="35" name="row[{$item.name|htmlentities}]" type="text" value="{$item.value|htmlentities}" data-tip="{$item.tip|htmlentities}">
+                                                <span><button type="button" id="faupload-{$item.name|htmlentities}" class="btn btn-danger faupload" data-input-id="c-{$item.name|htmlentities}" data-multiple="{$item.type=='file'?'false':'true'}"><i class="fa fa-upload"></i> {:__('Upload')}</button></span>
+                                                <span><button type="button" id="fachoose-{$item.name|htmlentities}" class="btn btn-primary fachoose" data-input-id="c-{$item.name|htmlentities}" data-multiple="{$item.type=='file'?'false':'true'}"><i class="fa fa-list"></i> {:__('Choose')}</button></span>
+                                            </div>
+                                            {/case}
+
+                                            {case value="gallery"}
+
+                                            {php}$galleryImages = array_map(function($arr){return $arr['image'];}, (array)json_decode($item['value'], true));{/php}
+                                            <div class="input-group">
+                                                <input id="c-{$item.name|htmlentities}" data-rule="required" class="form-control gallery-control hidden" size="50" name="row[{$item.name|htmlentities}]" type="text" value="{$galleryImages|implode=',',###}">
+                                                <div class="input-group-addon no-border no-padding pull-left">
+                                                    <span><button type="button" id="plupload-{$item.name|htmlentities}" class="btn btn-danger plupload" data-input-id="c-{$item.name|htmlentities}" data-mimetype="image/gif,image/jpeg,image/png,image/jpg,image/bmp,image/webp" data-multiple="true" data-preview-id="p-{$item.name|htmlentities}"><i class="fa fa-upload"></i> {:__('Upload')}</button></span>
+                                                    <span><button type="button" id="fachoose-{$item.name|htmlentities}" class="btn btn-primary fachoose" data-input-id="c-{$item.name|htmlentities}" data-mimetype="image/*" data-multiple="true"><i class="fa fa-list"></i> {:__('Choose')}</button></span>
+                                                </div>
+                                                <span class="msg-box n-right" for="c-{$item.name|htmlentities}"></span>
+                                            </div>
+
+                                            <ul class="row list-inline plupload-preview" id="p-{$item.name|htmlentities}" data-template="{$item.name|htmlentities}tpl" data-name="row[{$item.name|htmlentities}]"></ul>
+                                            <textarea name="row[{$item.name|htmlentities}]" class="form-control hidden" style="margin-top:5px;">{$item.value|htmlentities}</textarea>
+
+                                            <script type="text/html" id="{$item.name|htmlentities}tpl">
+                                                <li class="col-xs-4">
+                                                    <a href="<%=fullurl%>" data-url="<%=url%>" target="_blank" class="thumbnail">
+                                                        <img src="<%=fullurl%>" class="img-responsive">
+                                                    </a>
+                                                    <input type="hidden" name="row[{$item.name|htmlentities}][<%=index%>][image]" class="form-control" placeholder="" value="<%=fullurl%>"/>
+                                                    <input type="text" name="row[{$item.name|htmlentities}][<%=index%>][title]" class="form-control" placeholder="请输入标题" value="<%=value?value['title']:''%>"/>
+                                                    <div class="input-group" style="margin:5px 0;">
+                                                        <input type="text" name="row[{$item.name|htmlentities}][<%=index%>][path]" class="form-control" placeholder="请输入路径" value="<%=value?value['path']:''%>"/>
+                                                        <div class="input-group-btn">
+                                                            <input type="button" value="选择" class="btn btn-info btn-select-page" />
+                                                        </div>
+                                                    </div>
+
+                                                    <a href="javascript:;" class="btn btn-danger btn-xs btn-trash"><i class="fa fa-trash"></i></a>
+                                                </li>
+                                            </script>
+                                            {/case}
+                                            {case bool}
+                                            <label for="row[{$item.name|htmlentities}]-yes"><input id="row[{$item.name|htmlentities}]-yes" name="row[{$item.name|htmlentities}]" type="radio" value="1" {$item.value?'checked':''} data-tip="{$item.tip|htmlentities}" /> {:__('Yes')}</label>
+                                            <label for="row[{$item.name|htmlentities}]-no"><input id="row[{$item.name|htmlentities}]-no" name="row[{$item.name|htmlentities}]" type="radio" value="0" {$item.value?'':'checked'} data-tip="{$item.tip|htmlentities}" /> {:__('No')}</label>
+                                            {/case}
+                                            {case editor}
+                                            <textarea name="row[{$item.name|htmlentities}]" class="form-control editor"
+                                                data-rule="{$item.rule|htmlentities}" rows="5"
+                                                data-tip="{$item.tip|htmlentities}">{$item.value|htmlentities}</textarea>
+                                            {/case}
+                                            {/switch}
+                                        </div>
+                                        <div class="col-sm-4"></div>
+                                    </div>
+                                </td>
+                            </tr>
+                            {/foreach}
+                            </tbody>
+                        </table>
+                        <!--@formatter:on-->
+
+                        <div class="form-group layer-footer">
+                            <label class="control-label col-xs-12 col-sm-2"></label>
+                            <div class="col-xs-12 col-sm-8">
+                                <button type="submit" class="btn btn-primary btn-embossed disabled">{:__('OK')}</button>
+                                <button type="reset" class="btn btn-default btn-embossed">{:__('Reset')}</button>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+        </div>
+</form>
+
+<!--@formatter:off-->
+
+<script>
+    require.callback = function () {
+        var tabevent = function () {
+            $(document).on("click", ".nav-group li a[data-toggle='tab']", function () {
+                var type = $(this).attr("href").substring(1);
+                if (type == 'all') {
+                    $(".table-config tr").show();
+                } else {
+                    $(".table-config tr").hide();
+                    $(".table-config tr[data-type='" + type + "']").show();
+                }
+            });
+            $(document).on("click", ".btn-select-page", function (e, obj) {
+                var that = this;
+                Fast.api.open("shop/ajax/get_page_list", "选择路径", {
+                    callback: function (data) {
+                        $(that).parent().prev().val(data).trigger("change");
+                    }
+                })
+            });
+            $(document).on("keyup change", ".gallery-control", function(){
+                $(this).parent().next().find("input:last").trigger("change");
+                return false;
+            });
+
+            $(document).on("click", ".btn-removerewrite", function () {
+                $("dd", $(this).closest("dl.fieldlist")).each(function () {
+
+                });
+                var reg = new RegExp($(this).data("text"));
+                $(this).closest("dl.fieldlist").find("input[name$='[value]']").each(function () {
+                    $(this).val($(this).val().replace(reg, ''));
+                });
+                $(this).closest("dl.fieldlist").find("input[name$='[value]']:first").trigger("change");
+            });
+        };
+        define('backend/addon', ['jquery', 'form'], function ($, Form) {
+            var Controller = {
+                config: function () {
+                    Form.api.bindevent($("form[role=form]"));
+                    tabevent();
+                }
+            };
+            return Controller;
+        });
+        define('backend/shop/config', ['jquery', 'form'], function ($, Form) {
+            var Controller = {
+                index: function () {
+                    Form.api.bindevent($("form[role=form]"));
+                    tabevent();
+                }
+            };
+            return Controller;
+        });
+    }
+</script>
+<!--@formatter:on-->

@@ -1,0 +1,76 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-healthflow}
+      POSTGRES_USER: ${POSTGRES_USER:-healthflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-healthflow_local}
+    ports:
+      - "15434:5432"
+    volumes:
+      - healthflow_postgres:/var/lib/postgresql/data
+      - ./database/postgresql/000_compatibility.sql:/docker-entrypoint-initdb.d/000_compatibility.sql:ro
+      - ./database/postgresql/001_fastadmin.sql:/docker-entrypoint-initdb.d/001_fastadmin.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      FASTADMIN_ADMIN_USERNAME: ${FASTADMIN_ADMIN_USERNAME:-liubeiping}
+      FASTADMIN_ADMIN_PASSWORD: ${FASTADMIN_ADMIN_PASSWORD:-HealthFlow@2026}
+      SHOP_V5_MASTER_KEY: ${SHOP_V5_MASTER_KEY:-}
+      SHOP_WECHAT_APP_ID: ${SHOP_WECHAT_APP_ID:-}
+      SHOP_WECHAT_MCH_ID: ${SHOP_WECHAT_MCH_ID:-}
+      SHOP_WECHAT_API_V2_KEY: ${SHOP_WECHAT_API_V2_KEY:-}
+      SHOP_WECHAT_CERT_PATH: ${SHOP_WECHAT_CERT_PATH:-}
+      SHOP_WECHAT_KEY_PATH: ${SHOP_WECHAT_KEY_PATH:-}
+      SHOP_WECHAT_NOTIFY_URL: ${SHOP_WECHAT_NOTIFY_URL:-}
+      SHOP_WECHAT_SANDBOX: ${SHOP_WECHAT_SANDBOX:-false}
+    restart: unless-stopped
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./:/var/www/html
+    working_dir: /var/www/html
+    command: ["sh", "docker/start-healthflow.sh"]
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(@file_get_contents('http://127.0.0.1:8080/') === false ? 1 : 0);"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      V5_JOB_INTERVAL_SECONDS: 60
+      SHOP_V5_MASTER_KEY: ${SHOP_V5_MASTER_KEY:-}
+      SHOP_WECHAT_APP_ID: ${SHOP_WECHAT_APP_ID:-}
+      SHOP_WECHAT_MCH_ID: ${SHOP_WECHAT_MCH_ID:-}
+      SHOP_WECHAT_API_V2_KEY: ${SHOP_WECHAT_API_V2_KEY:-}
+      SHOP_WECHAT_CERT_PATH: ${SHOP_WECHAT_CERT_PATH:-}
+      SHOP_WECHAT_KEY_PATH: ${SHOP_WECHAT_KEY_PATH:-}
+      SHOP_WECHAT_NOTIFY_URL: ${SHOP_WECHAT_NOTIFY_URL:-}
+      SHOP_WECHAT_SANDBOX: ${SHOP_WECHAT_SANDBOX:-false}
+    restart: unless-stopped
+    volumes:
+      - ./:/var/www/html
+    working_dir: /var/www/html
+    command: ["sh", "docker/run-v5-scheduler.sh"]
+
+volumes:
+  healthflow_postgres:

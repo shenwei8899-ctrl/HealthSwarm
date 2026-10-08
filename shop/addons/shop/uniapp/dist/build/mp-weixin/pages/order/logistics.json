@@ -1,0 +1,11 @@
+{
+  "navigationBarTitleText": "查看物流",
+  "navigationBarTextStyle": "white",
+  "enablePullDownRefresh": false,
+  "usingComponents": {
+    "u-tag": "/uview-ui/components/u-tag/u-tag",
+    "u-button": "/uview-ui/components/u-button/u-button",
+    "u-empty": "/uview-ui/components/u-empty/u-empty",
+    "u-loading": "/uview-ui/components/u-loading/u-loading"
+  }
+}

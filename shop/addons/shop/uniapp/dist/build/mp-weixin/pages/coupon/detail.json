@@ -1,0 +1,10 @@
+{
+  "navigationBarTitleText": "优惠券详情",
+  "navigationStyle": "custom",
+  "navigationBarTextStyle": "white",
+  "enablePullDownRefresh": false,
+  "usingComponents": {
+    "fa-navbar": "/components/fa-navbar/fa-navbar",
+    "u-button": "/uview-ui/components/u-button/u-button"
+  }
+}

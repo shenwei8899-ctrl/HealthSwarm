@@ -1,0 +1,60 @@
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+.orderby-select image.data-v-cc94669c {
+  width: 35rpx;
+  height: 35rpx;
+}
+.orderby-select .order.data-v-cc94669c {
+  position: relative;
+  padding-right: 20rpx;
+}
+.orderby-select .order .arrow.data-v-cc94669c {
+  position: absolute;
+  right: 0;
+  width: 0;
+  height: 0;
+  border-left: 8rpx solid transparent;
+  border-right: 8rpx solid transparent;
+}
+.orderby-select .order .arrow-img.data-v-cc94669c {
+  border-bottom: 10rpx solid #b1b1b1;
+}
+.orderby-select .order .up.data-v-cc94669c {
+  transform: scaleY(-1);
+  bottom: 8rpx;
+}
+.orderby-select .order .down.data-v-cc94669c {
+  transform: scaleY(1);
+  top: 8rpx;
+}
+.orderby-select .order .active-img.data-v-cc94669c {
+  border-bottom: 12rpx solid #374486;
+}
+.fa-select-list.data-v-cc94669c {
+  background-color: #ffffff;
+}
+.fa-select-list .list .item.data-v-cc94669c {
+  background-color: #eeeeee;
+  padding: 10rpx 30rpx;
+  border-radius: 100rpx;
+  margin-right: 15rpx;
+  color: #909399;
+}
+.fa-popup.data-v-cc94669c {
+  height: 100%;
+  background-color: #f7f7f7;
+}
+.fa-popup .fa-scroll-view.data-v-cc94669c {
+  height: calc(100% - 100rpx);
+}
+.fa-popup .footer.data-v-cc94669c {
+  background-color: #ffffff;
+  height: 100rpx;
+  line-height: 100rpx;
+  display: flex;
+  width: 100%;
+  text-align: center;
+}

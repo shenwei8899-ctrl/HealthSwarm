@@ -1,0 +1,10 @@
+(global["webpackJsonp"]=global["webpackJsonp"]||[]).push([["uview-ui/components/u-action-sheet/u-action-sheet"],{"278a":function(t,e,i){},"2fec":function(t,e,i){"use strict";var s=i("278a"),l=i.n(s);l.a},9107:function(t,e,i){"use strict";i.r(e);var s,l=function(){var t=this,e=t.$createElement,i=(t._self._c,t.tips.text?t.__get_style([t.tipsStyle]):null),s=t.list.length,l=t.__map(t.list,(function(e,i){var s=t.__get_orig(e),l=t.__get_style([t.itemStyle(i)]);return{$orig:s,s1:l}}));t.$mp.data=Object.assign({},{$root:{s0:i,g0:s,l0:l}})},o=[],n="undefined"===typeof n?{}:n,r={name:"u-action-sheet",props:{maskCloseAble:{type:Boolean,default:!0},list:{type:Array,default(){return[]}},tips:{type:Object,default(){return{text:"",color:"",fontSize:"26"}}},cancelBtn:{type:Boolean,default:!0},safeAreaInsetBottom:{type:Boolean,default:!1},value:{type:Boolean,default:!1},borderRadius:{type:[String,Number],default:0},zIndex:{type:[String,Number],default:0},cancelText:{type:String,default:"取消"}},computed:{tipsStyle(){let t={};return this.tips.color&&(t.color=this.tips.color),this.tips.fontSize&&(t.fontSize=this.tips.fontSize+"rpx"),t},itemStyle(){return t=>{let e={};return this.list[t].color&&(e.color=this.list[t].color),this.list[t].fontSize&&(e.fontSize=this.list[t].fontSize+"rpx"),this.list[t].disabled&&(e.color="#c0c4cc"),e}},uZIndex(){return this.zIndex?this.zIndex:this.$u.zIndex.popup}},methods:{close(){this.popupClose(),this.$emit("close")},popupClose(){this.$emit("input",!1)},itemClick(t){this.list[t].disabled||(this.$emit("click",t),this.$emit("input",!1))}}},c=r,u=(i("2fec"),i("f0c5")),a=Object(u["a"])(c,l,o,!1,null,"3c2ecc76",null,!1,n,s);e["default"]=a.exports}}]);
+;(global["webpackJsonp"] = global["webpackJsonp"] || []).push([
+    'uview-ui/components/u-action-sheet/u-action-sheet-create-component',
+    {
+        'uview-ui/components/u-action-sheet/u-action-sheet-create-component':(function(module, exports, __webpack_require__){
+            __webpack_require__('543d')['createComponent'](__webpack_require__("9107"))
+        })
+    },
+    [['uview-ui/components/u-action-sheet/u-action-sheet-create-component']]
+]);

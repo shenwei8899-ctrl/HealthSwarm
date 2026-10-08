@@ -1,0 +1,38 @@
+{layout name="common/layout" /}
+<div class="container" id="content-container">
+
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="panel panel-default">
+                <div class="panel-body">
+                    <div class="text-center">
+                        <h1 class="mt-3 mb-3" style="color:#444;">
+                            {$__page__.title|htmlentities}
+                        </h1>
+                        <div class="metas-body">
+                            <div class="text-muted">
+                                <span class="views-num">
+                                    发布日期：{$__page__.createtime|datetime|htmlentities}
+                                </span>
+                            </div>
+                        </div>
+                        <!-- E 标题区域 -->
+                    </div>
+                    <div class="article-text">
+                        <!-- S 正文 -->
+                        <p>
+                            {:$__page__.content}
+                        </p>
+                        <!-- E 正文 -->
+                    </div>
+
+                    <div class="clearfix"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script data-render="script">
+
+</script>

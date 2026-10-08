@@ -1,0 +1,39 @@
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+.date-wrap.data-v-787e13a4 {
+  width: 100%;
+  padding: 2% 0;
+  border-radius: 16upx;
+  background: #fff;
+  box-sizing: border-box;
+  text-align: center;
+  box-shadow: 0px 0px 5px 0px rgba(0, 34, 144, 0.1);
+}
+.date-wrap .cur-date.data-v-787e13a4 {
+  font-size: 30upx;
+}
+.date-wrap .item-box.data-v-787e13a4 {
+  display: flex;
+  color: #777;
+  flex-wrap: wrap;
+  font-size: 28upx;
+  justify-content: flex-start;
+}
+.date-wrap .item-box .item.data-v-787e13a4 {
+  width: 14.28%;
+  padding: 25rpx 0;
+}
+.date-wrap .item-box .item text.data-v-787e13a4 {
+  padding: 5rpx 25rpx;
+  border-radius: 100upx;
+}
+.date-wrap .item-box .item .isSign.data-v-787e13a4 {
+  background: #efefef;
+  color: #999;
+}
+.text-danger.data-v-787e13a4 {
+  color: #e74c3c;
+}

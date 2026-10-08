@@ -1,0 +1,27 @@
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+page {
+  background-color: #ffffff;
+}
+@charset "UTF-8";
+/**
+ * 下方引入的为uView UI的集成样式文件，为scss预处理器，其中包含了一些"u-"开头的自定义变量
+ * uView自定义的css类名和scss变量，均以"u-"开头，不会造成冲突，请放心使用 
+ */
+.fa-list-item.data-v-8743148e {
+  color: #333;
+  padding: 30rpx;
+}
+.fa-list-item .fa-item-image image.data-v-8743148e {
+  width: 100%;
+  flex: 0 0 120rpx;
+  height: 350rpx;
+  border-radius: 10rpx;
+}
+.u-flex-column.data-v-8743148e {
+  flex-direction: column;
+  height: 100%;
+}
