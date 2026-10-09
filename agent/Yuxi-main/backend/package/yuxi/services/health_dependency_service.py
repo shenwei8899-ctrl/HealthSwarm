@@ -6,6 +6,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from yuxi.repositories.health_quality_repository import HealthQualityRepository
+from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
 from yuxi.services.health_evidence_service import require_evidence_admin
 from yuxi.services.health_quality_checks import external_projection, projection_digest
@@ -23,6 +24,9 @@ def import_parts(data):
     if attested > utc_now_naive() or valid_until <= utc_now_naive():
         raise HealthVisionError("external_version_invalid", "外部确认时间或有效期无效", 422)
     proof = data.model_dump(mode="json", exclude={"payload"})
+    for field in ("family_profile_source", "weight_measurement_source"):
+        if proof.get(field) is None:
+            proof.pop(field, None)
     payload = data.payload.model_dump(mode="json") if hasattr(data, "payload") else {}
     # 新增可空目标字段缺失时保持历史导入指纹，同版本重放不因模型默认扩展冲突。
     for field in (
@@ -42,10 +46,30 @@ def import_parts(data):
 async def import_profile_projection(uid, member_id, data):
     """成员编辑授权的管理员只登记外部已确认投影，不执行建档确认。"""
     payload, proof, attested, valid_until = import_parts(data)
-    digest = projection_digest("profile", member_id, data.version, payload, proof)
     async with pg_manager.get_async_session_context() as session:
         await require_evidence_admin(session, uid)
         await HealthVisionRepository(session).authorize(member_id, uid, "profile_edit", lock=True)
+        source = await HealthFamilyProfileRepository(session).confirmed_source(member_id)
+        requested = data.family_profile_source.model_dump(mode="json") if data.family_profile_source else None
+        if source is None:
+            if requested is not None:
+                raise HealthVisionError("not_found", "没有对应的本人正式档案关联", 404)
+        else:
+            if requested is None:
+                raise HealthVisionError("family_profile_source_required", "专业投影须明确绑定本人正式档案版本", 409)
+            if requested != {key: value for key, value in source.items() if key != "source_hash"}:
+                raise HealthVisionError("family_profile_source_conflict", "正式档案来源或确认版本已变化", 409)
+            proof["family_profile_source"] = source
+        if data.weight_measurement_source is not None:
+            weight, weight_source = await HealthFamilyProfileRepository(session).weight_source(
+                member_id, str(data.weight_measurement_source.record_id)
+            )
+            if data.weight_measurement_source.version != weight_source["version"] or data.payload.weight_kg != weight:
+                raise HealthVisionError(
+                    "weight_measurement_source_conflict", "所选体重版本或专业确认数值不符，请重新核对", 409
+                )
+            proof["weight_measurement_source"] = weight_source
+        digest = projection_digest("profile", member_id, data.version, payload, proof)
         repo = HealthQualityRepository(session)
         latest = await repo.profile(member_id)
         existing = await session.scalar(
@@ -56,7 +80,7 @@ async def import_profile_projection(uid, member_id, data):
         if existing is not None:
             if existing.content_hash != digest:
                 raise HealthVisionError("version_conflict", "同一外部档案版本不能改变内容或依据", 409)
-            return {"scope": "nutrition_safety_projection", **external_projection(latest, "profile", member_id)}
+            return {"scope": "nutrition_safety_projection", **await repo.profile_projection(member_id)}
         if data.version != (latest.version + 1 if latest is not None else 1):
             raise HealthVisionError("version_conflict", "外部档案投影须按当前版本递增", 409)
         row = HealthProfileSnapshot(
@@ -72,15 +96,16 @@ async def import_profile_projection(uid, member_id, data):
         )
         session.add(row)
         await repo.invalidate(member_id=member_id, reason="profile_changed")
-        return {"scope": "nutrition_safety_projection", **external_projection(row, "profile", member_id)}
+        await session.flush()
+        return {"scope": "nutrition_safety_projection", **await repo.profile_projection(member_id)}
 
 
 async def read_profile_projection(uid, member_id):
     """只向当前完整档案读取授权返回营养安全投影，缺失不补齐。"""
     async with pg_manager.get_async_session_context() as session:
-        await HealthVisionRepository(session).authorize(member_id, uid, "profile_view")
-        row = await HealthQualityRepository(session).profile(member_id)
-        return {"scope": "nutrition_safety_projection", **external_projection(row, "profile", member_id)}
+        await HealthVisionRepository(session).authorize(member_id, uid, "profile_view", lock=True)
+        projection = await HealthQualityRepository(session).profile_projection(member_id)
+        return {"scope": "nutrition_safety_projection", **projection}
 
 
 async def revoke_profile_projection(uid, member_id, version):

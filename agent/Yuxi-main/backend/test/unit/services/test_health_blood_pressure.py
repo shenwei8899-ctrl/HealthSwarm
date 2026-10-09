@@ -15,6 +15,8 @@ from test.unit.services.test_health_weight_publication import checkpoint_guard, 
 from yuxi.agents.toolkits.health import get_member_blood_pressure_records
 from yuxi.repositories import health_measurement_repository as boundary
 from yuxi.repositories.health_blood_pressure_repository import HealthBloodPressureRepository
+from yuxi.repositories.health_blood_glucose_repository import HealthBloodGlucoseRepository
+from yuxi.repositories.health_blood_lipids_repository import HealthBloodLipidsRepository
 from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
 from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
 from yuxi.repositories.health_weight_repository import HealthWeightRepository
@@ -272,6 +274,8 @@ async def test_consultation_and_final_publication_recheck_both_measurement_depen
     monkeypatch.setattr(HealthFamilyProfileRepository, "validate_history", profile)
     monkeypatch.setattr(HealthWeightRepository, "validate_history", weight)
     monkeypatch.setattr(HealthBloodPressureRepository, "validate_history", bp)
+    monkeypatch.setattr(HealthBloodGlucoseRepository, "validate_history", AsyncMock())
+    monkeypatch.setattr(HealthBloodLipidsRepository, "validate_history", AsyncMock())
     await HealthConsultationRepository(session).authorize("actor", "thread")
     for guard in (profile, weight, bp):
         guard.assert_awaited_once_with("actor", binding, lock=False)

@@ -94,10 +94,14 @@ class HealthConsultationRepository:
             from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
             from yuxi.repositories.health_weight_repository import HealthWeightRepository
             from yuxi.repositories.health_blood_pressure_repository import HealthBloodPressureRepository
+            from yuxi.repositories.health_blood_glucose_repository import HealthBloodGlucoseRepository
+            from yuxi.repositories.health_blood_lipids_repository import HealthBloodLipidsRepository
 
             await HealthFamilyProfileRepository(self.session).validate_history(uid, binding, lock=lock)
             await HealthWeightRepository(self.session).validate_history(uid, binding, lock=lock)
             await HealthBloodPressureRepository(self.session).validate_history(uid, binding, lock=lock)
+            await HealthBloodGlucoseRepository(self.session).validate_history(uid, binding, lock=lock)
+            await HealthBloodLipidsRepository(self.session).validate_history(uid, binding, lock=lock)
         if conversation.agent_id == ANALYST_SLUG:
             from yuxi.repositories.health_diet_analysis_repository import HealthDietAnalysisRepository
             from yuxi.repositories.health_dialog_feedback_repository import HealthDialogFeedbackRepository

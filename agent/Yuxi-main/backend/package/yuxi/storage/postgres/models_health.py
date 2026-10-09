@@ -89,6 +89,32 @@ class HealthBloodPressureUse(Base):
     record_refs = Column(JSON_VALUE, nullable=False)
 
 
+class HealthBloodGlucoseUse(Base):
+    """Run 的独立血糖依赖，仅保存冻结范围、摘要和版本引用。"""
+
+    __tablename__ = "health_blood_glucose_use"
+    run_id = Column(String(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), primary_key=True)
+    payload_hash = Column(String(64), primary_key=True)
+    member_id = Column(String(36), ForeignKey("family_member.id"), nullable=False)
+    source_member_id = Column(String(36), ForeignKey("family_members.id"), nullable=True)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    record_refs = Column(JSON_VALUE, nullable=False)
+
+
+class HealthBloodLipidsUse(Base):
+    """Run的同条血脂四项依赖，仅保存冻结范围、摘要与版本引用。"""
+
+    __tablename__ = "health_blood_lipids_use"
+    run_id = Column(String(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), primary_key=True)
+    payload_hash = Column(String(64), primary_key=True)
+    member_id = Column(String(36), ForeignKey("family_member.id"), nullable=False)
+    source_member_id = Column(String(36), ForeignKey("family_members.id"), nullable=True)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    record_refs = Column(JSON_VALUE, nullable=False)
+
+
 class HealthProcessingConsent(Base):
     """访问权限之外的用途和处理方同意。"""
 
@@ -768,6 +794,8 @@ HEALTH_TABLES = [
         HealthFamilyProfileUse,
         HealthWeightUse,
         HealthBloodPressureUse,
+        HealthBloodGlucoseUse,
+        HealthBloodLipidsUse,
         HealthProcessingConsent,
         HealthConsultation,
         HealthFamilyPlannerPreview,

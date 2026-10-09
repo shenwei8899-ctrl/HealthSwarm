@@ -25,7 +25,6 @@ from yuxi.services.health_family_safe_plan_service import family_safe_preview_in
 from yuxi.services.health_family_participation_service import participation_preview_in_session
 from yuxi.services.health_meal_plan_types import PlannerAnswer
 from yuxi.services.health_nutrition_service import input_fingerprint
-from yuxi.services.health_quality_checks import external_projection
 from yuxi.services.health_quality_service import quality_context_in_session, quality_snapshot
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.manager import pg_manager
@@ -71,6 +70,8 @@ async def family_planner_context_in_session(session, uid, anchor_id, selected):
     }
     for member_id in ids:
         await health.require_consent(member_id, uid, "meal_plan", processing)
+    quality = HealthQualityRepository(session)
+    await quality.lock_profile_sources(ids)
     current = await quality_context_in_session(
         session,
         uid,
@@ -79,10 +80,9 @@ async def family_planner_context_in_session(session, uid, anchor_id, selected):
     # 全部当前参与者已持锁；质量Owner仍复核计划版本和当前来源。
     if not set(current["profiles"]) <= set(ids):
         raise HealthVisionError("source_invalidated", "家庭参与范围已变化，请重新选择", 410)
-    quality = HealthQualityRepository(session)
     for member_id in ids:
         if member_id not in current["profiles"]:
-            profile = external_projection(await quality.profile(member_id), "profile", member_id)
+            profile = await quality.profile_projection(member_id)
             current["profiles"][member_id] = profile
             current["sources"]["profiles"][member_id] = {
                 k: profile[k] for k in ("id", "version", "content_hash", "status", "reason")

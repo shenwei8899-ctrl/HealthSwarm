@@ -66,6 +66,22 @@ async def get_member_blood_pressure_records(runtime: ToolRuntime) -> dict:
     return await blood_pressure_records_for_run(runtime.context)
 
 
+@tool(category="health", display_name="本人血糖实测记录", args_schema=HealthReadInput)
+async def get_member_blood_glucose_records(runtime: ToolRuntime) -> dict:
+    """读取固定本人近30日血糖原值、条件及独立版本；缺失保持未知，不作医学判断。"""
+    from yuxi.services.health_blood_glucose_service import blood_glucose_records_for_run
+
+    return await blood_glucose_records_for_run(runtime.context)
+
+
+@tool(category="health", display_name="本人血脂四项实测记录", args_schema=HealthReadInput)
+async def get_member_blood_lipids_records(runtime: ToolRuntime) -> dict:
+    """读取固定本人近30日同条血脂四项及独立版本；不补项或作医学判断。"""
+    from yuxi.services.health_blood_lipids_service import blood_lipids_records_for_run
+
+    return await blood_lipids_records_for_run(runtime.context)
+
+
 class HealthKnowledgeInput(HealthReadInput):
     """模型只选择短关键词，知识范围与成员由后端决定。"""
 

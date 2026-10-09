@@ -1,6 +1,7 @@
 <script setup>
 import HealthMealFeedback from '@/components/health/HealthMealFeedback.vue'
 import HealthFamilyProfile from '@/components/health/HealthFamilyProfile.vue'
+import HealthProfessionalProfile from '@/components/health/HealthProfessionalProfile.vue'
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { ScanLine, FileHeart, Utensils, ShieldCheck, Plus, RefreshCw } from '@lucide/vue'
@@ -767,13 +768,20 @@ async function retryJob(job) {
           :configuration="config"
           @saved="initialize"
         />
-        <HealthFamilyProfile
-          v-else-if="tab === 'profile'"
-          :key="memberId"
-          :member="member"
-          :disabled="busy || confirming"
-          @consult="openConsultation('new')"
-        />
+        <div v-else-if="tab === 'profile'" class="profile-panels">
+          <HealthFamilyProfile
+            :key="`family-${memberId}`"
+            :member="member"
+            :disabled="busy || confirming"
+            @consult="openConsultation('new')"
+          />
+          <HealthProfessionalProfile
+            :key="`professional-${memberId}`"
+            :member="member"
+            :disabled="busy || confirming"
+            @plans="activeTab = 'plans'"
+          />
+        </div>
         <HealthMemoryDaily
           v-else-if="tab === 'memory'"
           :member-id="memberId"
@@ -784,6 +792,7 @@ async function retryJob(job) {
           :member-id="memberId"
           :scopes="member?.scopes || []"
           :configuration="config"
+          @profile="activeTab = 'profile'"
         />
         <template v-else-if="tab === 'report' || tab === 'meal'">
           <section class="panel upload-panel">
@@ -1159,14 +1168,15 @@ async function retryJob(job) {
       <p>
         当前成员：{{
           member?.display_name
-        }}。会话创建后不能更换成员；咨询按当前授权读取已确认记录、已关联的本人确认档案及独立实测体重、血压。
+        }}。会话创建后不能更换成员；咨询按当前授权读取已确认记录、已关联的本人确认档案及独立实测体重、血压、血糖、血脂四项。
       </p>
       <p>处理方：{{ config?.consultation?.processor }}；政策：{{ config?.policy_version }}。</p>
       <p>
-        咨询会将问题和必要的已确认记录、本人档案及实测体重、血压发送给已审批模型。实测与档案确认版本分开，
-        体重、血压各仅包含近30个北京时间自然日最多20条记录；体重保留原值与kg，血压保留成对收缩压、舒张压与mmHg，
-        均含测量时间、来源、记录ID和版本。报告原图或 OCR
-        原文证据、实测备注、测量条件和更正历史不发送。 当前不生成个人配餐或治疗方案。
+        咨询会将问题和必要的已确认记录、本人档案及实测体重、血压、血糖、血脂四项发送给已审批模型。实测与档案确认版本分开，
+        体重、血压、血糖、血脂各仅包含近30个北京时间自然日最多20条记录；体重保留原值与kg，血压保留成对收缩压、舒张压与mmHg，
+        血糖保留原值、mmol/L及空腹、餐后2小时或随机的测量条件；血脂保留同条总胆固醇、甘油三酯、高密度脂蛋白、低密度脂蛋白原值与mmol/L，
+        均含测量时间、来源、记录ID和版本。报告原图或 OCR 原文证据、实测备注、血压和血脂测量条件及更正历史不发送。
+        营养安全评估与21天控糖仍未就绪，当前不生成个人配餐或治疗方案。
       </p>
       <p v-if="consultationMode === 'new'">将创建新的独立咨询，保留原会话。</p>
       <a-alert
@@ -1236,6 +1246,10 @@ async function retryJob(job) {
 </template>
 
 <style scoped lang="less">
+.profile-panels {
+  display: grid;
+  gap: 24px;
+}
 .health-workbench {
   height: 100%;
   overflow-y: auto;

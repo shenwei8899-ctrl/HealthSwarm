@@ -11,6 +11,7 @@ const props = defineProps({
   scopes: { type: Array, default: () => [] },
   configuration: { type: Object, required: true }
 })
+const emit = defineEmits(['profile'])
 const router = useRouter()
 const canRead = computed(() => !!props.memberId && props.scopes.includes('diet_edit'))
 const canGenerate = computed(
@@ -41,6 +42,9 @@ const working = ref(false)
 const error = ref('')
 const preview = ref(null)
 const current = ref(null)
+const approval = ref(null)
+const approvalLoading = ref(false)
+const approvalError = ref('')
 const historyVersion = ref(null)
 const saveAttempt = ref(null)
 const swap = ref(null)
@@ -71,6 +75,24 @@ const recipeOptions = computed(() =>
 const locked = computed(
   () => working.value || polling.value || !!saveAttempt.value || !!generation.value
 )
+const approvalLabels = {
+  draft: '当前版本待提交专业审核',
+  pending_review: '当前版本正在等待专业审核',
+  returned: '当前版本已退回补充',
+  not_reviewed: '当前版本尚未专业审核',
+  invalidated: '当前版本的专业审核已失效'
+}
+const invalidationLabels = {
+  weight_measurement_changed:
+    '所选体重记录已更正或作废，请核对体重并重新专业确认、计算目标和检查餐单。',
+  profile_changed: '专业档案版本已变化，请核对当前档案和目标后重新检查。',
+  profile_revoked: '专业档案已撤回，请补充当前有效的专业确认版本。',
+  family_profile_linked: '本人正式档案来源已变化，请核对来源后重新检查。',
+  source_changed_or_expired: '档案、体重、规则或批准来源已变化或过期，请重新核对并检查。',
+  reviewer_unavailable: '专业审核资格或授权当前不可用，请重新专业审核。',
+  rules_changed: '批准规则版本已变化，请重新计算目标并检查餐单。',
+  rules_revoked: '批准规则已撤回，请核对当前可用规则。'
+}
 
 function newDish() {
   return { recipe_version_id: null, grams: null }
@@ -93,6 +115,39 @@ function failure(exc) {
       : '操作结果未确认，请重试原请求或刷新核对。'
 }
 
+/** 成员变更或读取明确撤权时，同步清空私有内容并使所有旧请求失效。 */
+function clearPrivateState() {
+  epoch++
+  clearTimeout(timer)
+  plans.value = []
+  truncated.value = false
+  loading.value = false
+  error.value = ''
+  preview.value = null
+  current.value = null
+  approval.value = null
+  approvalError.value = ''
+  approvalLoading.value = false
+  historyVersion.value = null
+  saveAttempt.value = null
+  swap.value = null
+  swapAttempt.value = null
+  generation.value = null
+  consent.value = false
+  polling.value = false
+  working.value = false
+  questions.value = []
+  generationStatus.value = ''
+  selectedId.value = ''
+  meals.value = newMeals()
+  notes.value = ''
+  recipes.value = []
+  recipesError.value = ''
+  recipesLoading.value = false
+  recipeQuery.value = ''
+  manual.value = false
+}
+
 /** 成员列表与选中详情各有读取代次，迟到响应不能覆盖新选择。 */
 async function reload() {
   const ticket = epoch,
@@ -109,15 +164,13 @@ async function reload() {
     if (!active(ticket) || sequence !== listSequence) return
     plans.value = result.plans
     truncated.value = result.truncated
+    if (current.value && selectedId.value && !locked.value) await selectPlan(selectedId.value)
   } catch (exc) {
     if (active(ticket) && sequence === listSequence) {
-      error.value = failure(exc)
-      if (exc.status === 403) {
-        current.value = null
-        historyVersion.value = null
-        preview.value = null
-        swap.value = null
-      }
+      if ([403, 404].includes(exc.status)) {
+        clearPrivateState()
+        error.value = '成员授权已变化，已清除旧餐单，请重新确认授权。'
+      } else error.value = failure(exc)
     }
   } finally {
     if (active(ticket) && sequence === listSequence) loading.value = false
@@ -144,6 +197,8 @@ async function selectPlan(id) {
     sequence = ++detailSequence
   selectedId.value = id
   current.value = null
+  approval.value = null
+  approvalError.value = ''
   preview.value = null
   historyVersion.value = null
   error.value = ''
@@ -153,12 +208,41 @@ async function selectPlan(id) {
     if (active(ticket) && sequence === detailSequence) {
       if (result.member_id !== props.memberId) throw Error('member mismatch')
       current.value = result
+      await readApproval(result, ticket, sequence)
     }
   } catch (exc) {
     if (active(ticket) && sequence === detailSequence) error.value = failure(exc)
   } finally {
     if (active(ticket) && sequence === detailSequence) working.value = false
   }
+}
+/** 当前审核状态由服务端重验，历史快照不继承此状态。 */
+async function readApproval(plan, ticket, sequence) {
+  approvalLoading.value = true
+  try {
+    const result = await api.mealPlanApproval(plan.plan_id, plan.version)
+    if (!active(ticket) || sequence !== detailSequence) return
+    if (result.plan_id !== plan.plan_id || result.version !== plan.version)
+      throw Error('approval mismatch')
+    approval.value = result
+  } catch (exc) {
+    if (active(ticket) && sequence === detailSequence) {
+      if ([403, 404].includes(exc.status)) {
+        clearPrivateState()
+        error.value = '当前无权核对餐单，已清除旧餐单，请核对成员授权后重新读取。'
+      } else {
+        approval.value = null
+        approvalError.value = '当前专业审核状态未能核对，请刷新餐单后重试。'
+      }
+    }
+  } finally {
+    if (active(ticket) && sequence === detailSequence) approvalLoading.value = false
+  }
+}
+
+/** 失效后的下一步回到同一成员的档案与目标维护区。 */
+function openProfile() {
+  if (!disposed && canRead.value && !locked.value) emit('profile')
 }
 /** 手动预览只提交菜谱与计划份量，显示服务端营养快照。 */
 async function makePreview() {
@@ -168,6 +252,8 @@ async function makePreview() {
   error.value = ''
   preview.value = null
   current.value = null
+  approval.value = null
+  approvalError.value = ''
   historyVersion.value = null
   try {
     const result = await api.previewMealPlan(props.memberId, {
@@ -205,6 +291,7 @@ async function save() {
     selectedId.value = result.plan_id
     working.value = false
     await selectPlan(result.plan_id)
+    if (!active(ticket)) return
     await reload()
   } catch (exc) {
     if (active(ticket)) error.value = failure(exc)
@@ -262,6 +349,7 @@ async function submitSwap() {
     swapAttempt.value = null
     working.value = false
     await selectPlan(id)
+    if (!active(ticket)) return
     await reload()
   } catch (exc) {
     if (active(ticket)) {
@@ -270,6 +358,8 @@ async function submitSwap() {
         swap.value = null
         swapAttempt.value = null
         current.value = null
+        approval.value = null
+        approvalError.value = ''
       }
     }
   } finally {
@@ -362,6 +452,8 @@ async function generate() {
   working.value = true
   preview.value = null
   current.value = null
+  approval.value = null
+  approvalError.value = ''
   historyVersion.value = null
   questions.value = []
   error.value = ''
@@ -442,28 +534,7 @@ watch(
 watch(
   () => [props.memberId, props.scopes.join(',')],
   () => {
-    epoch++
-    clearTimeout(timer)
-    preview.value = null
-    current.value = null
-    historyVersion.value = null
-    saveAttempt.value = null
-    swap.value = null
-    swapAttempt.value = null
-    generation.value = null
-    consent.value = false
-    polling.value = false
-    working.value = false
-    questions.value = []
-    generationStatus.value = ''
-    selectedId.value = ''
-    meals.value = newMeals()
-    notes.value = ''
-    recipes.value = []
-    recipesError.value = ''
-    recipesLoading.value = false
-    recipeQuery.value = ''
-    manual.value = false
+    clearPrivateState()
     void reload()
   }
 )
@@ -471,6 +542,9 @@ onMounted(() => reload())
 onBeforeUnmount(() => {
   disposed = true
   epoch++
+  approval.value = null
+  approvalError.value = ''
+  approvalLoading.value = false
   clearTimeout(timer)
 })
 </script>
@@ -482,7 +556,7 @@ onBeforeUnmount(() => {
       <a-alert
         type="warning"
         show-icon
-        message="完整健康档案与专业配餐规则尚未接入。餐单为未个体适配、未专业审核的单成员三餐草稿。"
+        message="完整健康档案尚待联调。此页生成或手动预览的是单成员三餐草稿；专业审核状态以选定餐单的服务端回读为准。"
       />
       <a-alert v-if="error" type="error" show-icon :message="error" />
       <section class="panel">
@@ -642,6 +716,36 @@ onBeforeUnmount(() => {
             saveAttempt ? '重试原保存请求' : '保存草稿'
           }}</a-button>
         </div>
+        <div v-if="current" class="approval-state">
+          <p v-if="approvalLoading" class="muted" role="status">正在核对当前版本专业审核状态…</p>
+          <a-alert v-if="approvalError" type="warning" show-icon :message="approvalError" />
+          <a-alert
+            v-else-if="approval"
+            :type="approval.available ? 'success' : 'warning'"
+            show-icon
+            :message="
+              approval.available
+                ? `当前版本 ${current.version} 已专业批准`
+                : approvalLabels[approval.professional_review] || '当前版本尚无有效专业批准'
+            "
+            :description="
+              approval.professional_review === 'invalidated'
+                ? invalidationLabels[approval.invalidation_reason] ||
+                  '当前专业来源已失效，请核对档案、目标和规则后重新检查。'
+                : '餐单草稿与专业审核分别管理；当前审核状态只对应当前餐单版本。'
+            "
+          />
+          <p v-if="historyVersion" class="muted">正在查看历史快照；上方审核状态对应当前版本 {{ current.version }}。</p>
+          <a-button
+            v-if="approval?.professional_review === 'invalidated'"
+            :disabled="locked"
+            @click="openProfile"
+          >前往档案与目标</a-button>
+        </div>
+        <template v-if="current">
+          <h3>生成时快照</h3>
+          <p class="muted">下方状态为生成时记录；当前专业审核以上方服务端回读为准。</p>
+        </template>
         <HealthMealPlanSnapshot
           :snapshot="displayed"
           :editable="!!current && !historyVersion && !locked"
@@ -729,6 +833,12 @@ onBeforeUnmount(() => {
   gap: 12px;
   align-items: center;
   flex-wrap: wrap;
+}
+.approval-state {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  margin-bottom: 16px;
 }
 .heading {
   justify-content: space-between;

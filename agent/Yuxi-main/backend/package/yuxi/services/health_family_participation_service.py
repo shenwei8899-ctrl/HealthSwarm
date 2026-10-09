@@ -93,8 +93,12 @@ async def participation_preview_in_session(session, uid, plan_id, data):
     calculated_snapshot = {k: v for k, v in plan.snapshot.items() if k != "generation_origin"}
     if input_fingerprint(original) != input_fingerprint(calculated_snapshot):
         raise HealthVisionError("source_invalidated", "原餐单营养来源已变化，请刷新", 410)
+    await quality.lock_profile_sources(
+        set(plan_member_ids(plan.member_id, plan.spec))
+        | set(plan_member_ids(plan.member_id, spec.model_dump(mode="json")))
+    )
     profiles = {
-        member_id: external_projection(await quality.profile(member_id), "profile", member_id)
+        member_id: await quality.profile_projection(member_id)
         for member_id in plan_member_ids(plan.member_id, spec.model_dump(mode="json"))
     }
     rules = external_projection(await quality.rules(data.rule_code, lock=True), "rules", data.rule_code)

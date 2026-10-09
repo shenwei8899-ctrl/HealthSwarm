@@ -83,7 +83,16 @@ def evaluate_plan_quality(snapshot, profile, rules, ingredients, *, classificati
         p = ProfileProjection.model_validate(p)
     if not isinstance(r, QualityRules):
         r = QualityRules.model_validate(r)
-    targets = calculate_personal_targets(p, r) if r.personal_targets is not None else None
+    targets = (
+        calculate_personal_targets(
+            p,
+            r,
+            weight_source_missing=bool((profile.get("attestation") or {}).get("family_profile_source"))
+            and not (profile.get("attestation") or {}).get("weight_measurement_source"),
+        )
+        if r.personal_targets is not None
+        else None
+    )
     partial = covered_meals is not None and set(covered_meals) != {"breakfast", "lunch", "dinner"}
     if partial and r.meal_target_shares is None:
         unknown("rules.meal_target_shares", "covered_meal_ranges_not_approved")

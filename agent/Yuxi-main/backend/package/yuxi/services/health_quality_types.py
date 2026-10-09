@@ -73,11 +73,35 @@ class ExternalVersion(HealthDTO):
         return self
 
 
+class FamilyProfileSource(HealthDTO):
+    """由本人正式关联确定的专业确认来源，摘要由服务端计算。"""
+
+    family_id: UUID
+    source_member_id: UUID
+    confirmed_version: Version
+
+
+class WeightMeasurementSource(HealthDTO):
+    """明确选择本人实测的独立版本，不由客户端提供数值或摘要。"""
+
+    record_id: UUID
+    version: Version
+
+
 class ProfileImport(ExternalVersion):
     """只接受外部已确认版本，未知字段可以显式保留。"""
 
     status: Literal["confirmed"]
     payload: ProfileProjection
+    family_profile_source: FamilyProfileSource | None = None
+    weight_measurement_source: WeightMeasurementSource | None = None
+
+    @model_validator(mode="after")
+    def weight_requires_family_source(self):
+        """体重记录必须通过本人正式档案关联确定归属。"""
+        if self.weight_measurement_source is not None and self.family_profile_source is None:
+            raise ValueError("选定实测体重须同时明确本人正式档案来源")
+        return self
 
 
 class NutrientBounds(HealthDTO):

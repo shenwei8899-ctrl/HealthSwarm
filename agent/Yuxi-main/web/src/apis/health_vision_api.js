@@ -15,6 +15,13 @@ export const healthVisionApi = {
   familyProfileLink: (id) => apiGet(`${root}/members/${id}/family-profile-link`),
   linkFamilyProfile: (id, data) => apiPost(`${root}/members/${id}/family-profile-link`, data),
   familyProfile: (id) => apiGet(`${root}/members/${id}/family-profile`),
+  profileImportContext: (id, limit = 20, offset = 0) =>
+    apiGet(`${root}/members/${id}/profile-import-context?${buildQuery({ limit, offset })}`),
+  professionalProfile: (id) => apiGet(`${root}/members/${id}/external-profile-versions/current`),
+  importProfessionalProfile: (id, data) =>
+    apiPost(`${root}/members/${id}/external-profile-versions`, data),
+  approvedQualityRules: (code) => apiGet(`${root}/approved-quality-rules/${encodeURIComponent(code)}`),
+  personalTargets: (id, data) => apiPost(`${root}/members/${id}/nutrition-targets`, data),
   consent: (id, data) => apiPost(`${root}/members/${id}/processing-consents`, data),
   createConsultation: (id, data) =>
     apiPost(`${root}/members/${id}/consultations`, data, idempotent(data)),
@@ -23,6 +30,8 @@ export const healthVisionApi = {
   previewMealPlan: (id, data) => apiPost(`${root}/members/${id}/meal-plan-previews`, data),
   mealPlans: (id) => apiGet(`${root}/members/${id}/meal-plans`),
   mealPlan: (id) => apiGet(`${root}/meal-plans/${id}`),
+  mealPlanApproval: (id, version) =>
+    apiGet(`${root}/meal-plans/${id}/approval-state?${buildQuery({ version })}`),
   saveMealPlan: (id, data) => apiPost(`${root}/members/${id}/meal-plans`, data, idempotent(data)),
   swapMealPlan: (id, data) =>
     apiPost(`${root}/meal-plans/${id}/swap`, data, {

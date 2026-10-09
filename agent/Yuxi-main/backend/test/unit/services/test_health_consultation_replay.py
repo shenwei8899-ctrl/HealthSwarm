@@ -43,6 +43,8 @@ def replay_body():
                 "get_complete_health_profile",
                 "get_member_weight_records",
                 "get_member_blood_pressure_records",
+                "get_member_blood_glucose_records",
+                "get_member_blood_lipids_records",
                 "query_reviewed_nutrition_knowledge",
                 "get_member_memories",
                 "remember_member_fact",

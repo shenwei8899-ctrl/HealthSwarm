@@ -575,6 +575,8 @@ async def save_partial_message(
                     HealthFamilyProfileUse,
                     HealthWeightUse,
                     HealthBloodPressureUse,
+                    HealthBloodGlucoseUse,
+                    HealthBloodLipidsUse,
                 )
 
                 if await conv_repo.db.scalar(
@@ -585,6 +587,8 @@ async def save_partial_message(
                             exists().where(HealthFamilyProfileUse.run_id == AgentRun.id),
                             exists().where(HealthWeightUse.run_id == AgentRun.id),
                             exists().where(HealthBloodPressureUse.run_id == AgentRun.id),
+                            exists().where(HealthBloodGlucoseUse.run_id == AgentRun.id),
+                            exists().where(HealthBloodLipidsUse.run_id == AgentRun.id),
                         ),
                     )
                     .limit(1)

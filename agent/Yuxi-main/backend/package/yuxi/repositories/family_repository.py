@@ -65,6 +65,40 @@ class FamilyRepository:
             select(FamilyMember).where(FamilyMember.family_id == fid, FamilyMember.subject_uid == uid)
         )
 
+    async def linked_health_member(self, fid, mid):
+        """唯一正式来源关联只用于当前档案事务中的营养结果失效。"""
+        from yuxi.storage.postgres.models_health import HealthFamilyProfileLink
+
+        return await self.db.scalar(
+            select(HealthFamilyProfileLink.member_id).where(
+                HealthFamilyProfileLink.family_id == fid, HealthFamilyProfileLink.source_member_id == mid
+            )
+        )
+
+    async def linked_weight_target_member(self, fid, mid, rid):
+        """只失效最高专业投影明确选中的体重，不把新实测当作自动替换。"""
+        from yuxi.storage.postgres.models_health import HealthProfileSnapshot
+
+        member_id = await self.linked_health_member(fid, mid)
+        if member_id is None:
+            return None
+        projection = await self.db.scalar(
+            select(HealthProfileSnapshot)
+            .where(HealthProfileSnapshot.member_id == member_id)
+            .order_by(HealthProfileSnapshot.version.desc())
+            .limit(1)
+            .execution_options(populate_existing=True)
+        )
+        proof = projection.attestation if projection is not None else None
+        source = proof.get("weight_measurement_source") if isinstance(proof, dict) else None
+        if isinstance(source, dict) and (
+            source.get("family_id"),
+            source.get("source_member_id"),
+            source.get("record_id"),
+        ) == (fid, mid, rid):
+            return member_id
+        return None
+
     async def measurement_page(
         self, mids, kinds=None, since=None, until=None, *, condition=None, include_voided=False, limit=100, offset=0
     ):

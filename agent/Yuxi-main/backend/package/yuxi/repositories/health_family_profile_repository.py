@@ -2,17 +2,20 @@
 
 import hashlib
 import json
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from yuxi.repositories.family_repository import FamilyRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
-from yuxi.services.family_schemas import PROFILE_FIELDS, REQUIRED_PROFILE_FIELDS
+from yuxi.services.family_schemas import PROFILE_FIELDS, REQUIRED_PROFILE_FIELDS, validate_metric_values
 from yuxi.services.family_service import authorized_fields
+from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.models_business import AgentRun
 from yuxi.storage.postgres.models_health import HealthFamilyProfileLink, HealthFamilyProfileUse
+from yuxi.utils.datetime_utils import format_utc_datetime, utc_now_naive
 
 
 class HealthFamilyProfileRepository:
@@ -46,6 +49,9 @@ class HealthFamilyProfileRepository:
         )
         self.session.add(link)
         await family_repo.audit(family_id, source_member_id, uid, "agent_profile_link", source.version)
+        from yuxi.repositories.health_quality_repository import HealthQualityRepository
+
+        await HealthQualityRepository(self.session).invalidate(member_id=member_id, reason="family_profile_linked")
         return self.link_result(link)
 
     async def read_link(self, uid, member_id):
@@ -56,6 +62,162 @@ class HealthFamilyProfileRepository:
             return {"member_id": member_id, "source_member_id": None, "scope": "self_confirmed_profile"}
         await self.source(uid, link)
         return self.link_result(link)
+
+    async def read_import_source(self, uid, member_id, *, limit=20, offset=0):
+        """健康授权后读取操作者当前可见来源；原始字段不借用关联本人的授权。"""
+        formal = {
+            "status": "not_ready",
+            "reason": "profile_not_linked",
+            "family_profile_source": None,
+            "profile": {},
+            "allowed_fields": [],
+        }
+        weights = {
+            "status": "not_ready",
+            "reason": "profile_not_linked",
+            "items": [],
+            "total": 0,
+            "limit": limit,
+            "offset": offset,
+        }
+        result = {"formal_source": formal, "weight_candidates": weights}
+        link = await self.session.get(HealthFamilyProfileLink, member_id, populate_existing=True)
+        if link is None:
+            return result
+        family_repo = FamilyRepository(self.session)
+        family = await family_repo.get_family(link.family_id, uid)
+        if family is None:
+            formal["reason"] = weights["reason"] = "family_profile_access_required"
+            return result
+        source = await family_repo.member(link.family_id, link.source_member_id)
+        if source is not None:
+            await self.session.refresh(source)
+        if source is None or not source.is_active or source.subject_uid != link.actor_uid:
+            formal["reason"] = weights["reason"] = "family_profile_source_unavailable"
+            return result
+        allowed = authorized_fields(family, source, uid)
+        basic_fields = set(REQUIRED_PROFILE_FIELDS) & allowed
+        formal.update(
+            reason="family_profile_fields_required",
+            profile={key: (source.profile or {}).get(key) for key in sorted(basic_fields)},
+            allowed_fields=sorted(basic_fields),
+        )
+        if set(REQUIRED_PROFILE_FIELDS) <= allowed:
+            if source.confirmed_version != source.version:
+                formal["reason"] = "family_profile_unconfirmed"
+            elif any((source.profile or {}).get(key) in (None, "", []) for key in REQUIRED_PROFILE_FIELDS):
+                formal["reason"] = "family_profile_incomplete"
+            else:
+                formal.update(
+                    status="ready",
+                    reason=None,
+                    family_profile_source={
+                        "family_id": link.family_id,
+                        "source_member_id": source.id,
+                        "confirmed_version": source.version,
+                    },
+                )
+        if basic_fields:
+            await family_repo.audit(link.family_id, source.id, uid, "profile_import_source_read")
+        if "weight" not in allowed:
+            weights["reason"] = "weight_access_required"
+            return result
+        rows, total = await family_repo.measurement_page(
+            [source.id], ["weight"], until=utc_now_naive(), limit=limit, offset=offset
+        )
+        items = []
+        for row in rows:
+            try:
+                if (
+                    not isinstance(row.values, dict)
+                    or type(row.values.get("weight")) not in (int, float)
+                    or type(row.version) is not int
+                    or row.version < 1
+                ):
+                    raise ValueError
+                validate_metric_values("weight", row.values)
+                weight = Decimal(str(row.values["weight"]))
+            except (ValueError, TypeError, OverflowError) as error:
+                raise HealthVisionError(
+                    "weight_measurement_source_changed", "体重记录无法核对，请更正原记录", 410
+                ) from error
+            items.append(
+                {
+                    "record_id": row.id,
+                    "version": row.version,
+                    "weight_kg": str(weight),
+                    "unit": "kg",
+                    "measured_at": format_utc_datetime(row.measured_at),
+                    "source": row.source,
+                }
+            )
+        weights.update(
+            status="ready" if items else "not_ready",
+            reason=None if items else "weight_missing",
+            items=items,
+            total=total,
+        )
+        await family_repo.audit(link.family_id, source.id, uid, "profile_import_weights_read")
+        return result
+
+    async def confirmed_source(self, member_id):
+        """调用方已核对健康授权；专业投影绑定本人当前确认事实。"""
+        link = await self.session.get(HealthFamilyProfileLink, member_id, populate_existing=True)
+        if link is None:
+            return None
+        _, source = await self.source(link.actor_uid, link, lock=True)
+        if source.confirmed_version != source.version:
+            raise HealthVisionError("family_profile_unconfirmed", "正式档案当前版本尚未由本人确认", 409)
+        facts = {
+            "family_id": link.family_id,
+            "source_member_id": source.id,
+            "confirmed_version": source.version,
+            "profile": source.profile,
+        }
+        digest = hashlib.sha256(
+            json.dumps(facts, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+        ).hexdigest()
+        return {key: value for key, value in facts.items() if key != "profile"} | {"source_hash": digest}
+
+    async def weight_source(self, member_id, record_id):
+        """在本人家庭锁下核对明确实测，不从查询窗口自动选取。"""
+        link = await self.session.get(HealthFamilyProfileLink, member_id, populate_existing=True)
+        if link is None:
+            raise HealthVisionError("not_found", "没有对应的本人正式档案关联", 404)
+        _, source = await self.source(link.actor_uid, link, lock=True)
+        record = await FamilyRepository(self.session).measurement(record_id)
+        if record is not None:
+            await self.session.refresh(record)
+        if (
+            record is None
+            or record.member_id != source.id
+            or record.kind != "weight"
+            or record.voided_at is not None
+            or record.measured_at > utc_now_naive()
+        ):
+            raise HealthVisionError("not_found", "所选本人实测体重不可用", 404)
+        try:
+            if not isinstance(record.values, dict) or type(record.values.get("weight")) not in (int, float):
+                raise ValueError
+            validate_metric_values("weight", record.values)
+            weight = Decimal(str(record.values["weight"]))
+        except (ValueError, TypeError, OverflowError) as error:
+            raise HealthVisionError(
+                "weight_measurement_source_changed", "体重记录无法核对，请更正原记录", 410
+            ) from error
+        facts = {
+            "family_id": link.family_id,
+            "source_member_id": source.id,
+            "record_id": record.id,
+            "version": record.version,
+            "kind": "weight",
+            "weight_kg": str(weight),
+            "unit": "kg",
+            "measured_at": format_utc_datetime(record.measured_at),
+            "source": record.source,
+        }
+        reference = {key: value for key, value in facts.items() if key not in {"kind", "weight_kg"}}
+        return weight, {**reference, "source_hash": input_fingerprint(facts)}
 
     async def read(self, uid, member_id, *, lock=True, audit=True):
         """只返回本人已确认的原始档案；临床编码与独立测量不继承确认。"""

@@ -2,16 +2,18 @@
 
 import json
 from datetime import datetime, UTC
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import select, text, update, or_, and_
 from yuxi.services.health_family_meal_plan_types import plan_member_ids
 
+from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
 from yuxi.services.health_nutrition_service import input_fingerprint
-from yuxi.services.health_quality_checks import projection_digest
+from yuxi.services.health_quality_checks import external_projection, projection_digest
 from yuxi.services.health_vision_types import HealthVisionError
-from yuxi.storage.postgres.models_business import AgentRun, Message, User, TOOL_AUDIT_MESSAGE_TYPE
+from yuxi.storage.postgres.models_business import AgentRun, FamilyArchive, Message, User, TOOL_AUDIT_MESSAGE_TYPE
 from yuxi.storage.postgres.models_health import (
     HealthProfileSnapshot,
     HealthRuleSnapshot,
@@ -52,6 +54,60 @@ class HealthQualityRepository:
             .limit(1)
         )
 
+    async def profile_projection(self, member_id):
+        """最高安全投影须仍对应本人当前确认来源，失败不回退旧版本。"""
+        result = external_projection(await self.profile(member_id), "profile", member_id)
+        if result["status"] != "ready":
+            return result
+        try:
+            source = await HealthFamilyProfileRepository(self.session).confirmed_source(member_id)
+        except HealthVisionError as error:
+            if error.code == "family_profile_unconfirmed":
+                reason = error.code
+            elif error.status == 404:
+                reason = "family_profile_source_unavailable"
+            else:
+                raise
+        else:
+            recorded = result["attestation"].get("family_profile_source")
+            if source is None and recorded is None and result["attestation"].get("weight_measurement_source") is None:
+                return result
+            if source is not None and recorded is None:
+                reason = "family_profile_source_unmapped"
+            elif input_fingerprint(recorded) != input_fingerprint(source):
+                reason = "family_profile_source_changed"
+            else:
+                recorded_weight = result["attestation"].get("weight_measurement_source")
+                if recorded_weight is None:
+                    return result
+                try:
+                    weight, weight_source = await HealthFamilyProfileRepository(self.session).weight_source(
+                        member_id, str(UUID(recorded_weight["record_id"]))
+                    )
+                    value = result["payload"].get("weight_kg")
+                    if (
+                        input_fingerprint(recorded_weight) == input_fingerprint(weight_source)
+                        and value is not None
+                        and Decimal(str(value)) == weight
+                    ):
+                        return result
+                except (KeyError, TypeError, ValueError):
+                    pass
+                except HealthVisionError as error:
+                    if error.status != 404 and error.code != "weight_measurement_source_changed":
+                        raise
+                reason = "weight_measurement_source_changed"
+        return {**result, "status": "not_ready", "reason": reason, "payload": None, "attestation": None}
+
+    async def lock_profile_sources(self, member_ids):
+        """健康成员锁后按家庭ID排序锁来源，跨计划共享家庭也不会反序等待。"""
+        from yuxi.storage.postgres.models_health import HealthFamilyProfileLink
+
+        families = select(HealthFamilyProfileLink.family_id).where(HealthFamilyProfileLink.member_id.in_(member_ids))
+        await self.session.execute(
+            select(FamilyArchive).where(FamilyArchive.id.in_(families)).order_by(FamilyArchive.id).with_for_update()
+        )
+
     async def rules(self, rule_code, *, lock=False):
         """规则发布与使用共享来源锁，未知规则不会换到其他目录。"""
         if lock:
@@ -61,6 +117,22 @@ class HealthQualityRepository:
             .where(HealthRuleSnapshot.rule_code == rule_code)
             .order_by(HealthRuleSnapshot.version.desc())
             .limit(1)
+        )
+
+    async def latest_plan_review(self, uid, plan_id, version):
+        """仅查询当前操作者、餐单与修订版本的最近检查复核状态。"""
+        return await self.session.scalar(
+            select(HealthProfessionalReview)
+            .join(HealthQualityCheck, HealthQualityCheck.id == HealthProfessionalReview.check_id)
+            .where(
+                HealthQualityCheck.actor_uid == uid,
+                HealthQualityCheck.plan_id == plan_id,
+                HealthQualityCheck.plan_version == version,
+                HealthProfessionalReview.actor_uid == uid,
+            )
+            .order_by(HealthQualityCheck.created_at.desc(), HealthQualityCheck.id.desc())
+            .limit(1)
+            .execution_options(populate_existing=True)
         )
 
     async def reviewer(self, uid, *, lock=False):

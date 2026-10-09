@@ -1,4 +1,4 @@
-"""本人独立体重与血压的共同授权、冻结范围及依赖校验。"""
+"""本人独立实测的共同授权、冻结范围及依赖校验。"""
 
 import hashlib
 import json
@@ -68,6 +68,8 @@ class HealthMeasurementRepository:
                     ):
                         raise ValueError
                     validate_metric_values(self.kind, row.values)
+                    if self.kind == "blood_glucose" and row.condition not in {"fasting", "after_meal_2h", "random"}:
+                        raise ValueError
                 except (ValueError, TypeError, OverflowError) as error:
                     raise HealthVisionError(
                         f"{self.kind}_source_changed", f"{self.label}记录无法核对，请更正原记录", 410
@@ -80,6 +82,7 @@ class HealthMeasurementRepository:
                     {
                         "record_id": row.id,
                         **{output: row.values[field] for output, field in self.value_fields.items()},
+                        **({"condition": row.condition} if self.kind == "blood_glucose" else {}),
                         "unit": METRIC_UNITS[self.kind],
                         "measured_at": format_utc_datetime(row.measured_at),
                         "source": row.source,

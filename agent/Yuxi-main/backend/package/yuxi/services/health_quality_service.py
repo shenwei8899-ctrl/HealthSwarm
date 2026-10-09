@@ -38,10 +38,9 @@ async def quality_context_in_session(session, uid, selection, *, review=False):
         ingredients, recipes = await repo.ingredients(spec)
     except (ValidationError, ValueError, KeyError, TypeError):
         raise HealthVisionError("source_invalidated", "餐单或营养来源无法复算", 410) from None
-    profiles = {
-        member_id: external_projection(await repo.profile(member_id), "profile", member_id)
-        for member_id in plan_member_ids(plan.member_id, plan.spec)
-    }
+    member_ids = plan_member_ids(plan.member_id, plan.spec)
+    await repo.lock_profile_sources(member_ids)
+    profiles = {member_id: await repo.profile_projection(member_id) for member_id in member_ids}
     profile = profiles[plan.member_id]
     rules = external_projection(await repo.rules(selection.rule_code, lock=True), "rules", selection.rule_code)
     sources = {
@@ -202,8 +201,11 @@ async def review_case_in_session(session, uid, case_id):
     reviewer = uid != case.actor_uid
     check = await session.get(HealthQualityCheck, case.check_id)
     repo = HealthQualityRepository(session)
-    await repo.plan(
+    plan = await repo.plan(
         uid, check.plan_id, review=reviewer, lock=True, historical_member_ids=check.snapshot["sources"]["profiles"]
+    )
+    await repo.lock_profile_sources(
+        set(plan_member_ids(plan.member_id, plan.spec)) | set(check.snapshot["sources"]["profiles"])
     )
     await session.refresh(case)
     await repo.rules(check.rule_code, lock=True)
@@ -387,11 +389,18 @@ async def approved_plan_state_in_session(session, uid, plan_id, version, *, revi
                 "check_id": check.id,
                 "sources": check.snapshot["sources"],
             }
+    latest = await repo.latest_plan_review(uid, plan_id, version)
+    if latest is not None:
+        latest, _, _ = await review_case_in_session(session, uid, latest.id)
     return {
         "available": False,
         "reason": "current_professional_approval_required",
         "plan_id": plan_id,
         "version": version,
+        "professional_review": latest.status if latest is not None else "not_reviewed",
+        "invalidation_reason": latest.invalidation_reason if latest is not None else None,
+        "review_id": latest.id if latest is not None else None,
+        "check_id": latest.check_id if latest is not None else None,
     }
 
 

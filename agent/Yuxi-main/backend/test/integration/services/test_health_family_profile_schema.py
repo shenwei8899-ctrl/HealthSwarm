@@ -1,4 +1,4 @@
-"""正式health15→18迁移保留旧成员授权和咨询，约束与重放使用隔离PG。"""
+"""正式health15→当前版本迁移保留旧成员授权和咨询，约束与重放使用隔离PG。"""
 
 from datetime import datetime
 from uuid import uuid4
@@ -13,7 +13,7 @@ from test.integration.services.test_schema_migration_version import (
     _scoped_manager,
 )
 from yuxi import storage_migration
-from yuxi.storage.postgres.manager import BUSINESS_SCHEMA_VERSION, KNOWLEDGE_SCHEMA_VERSION
+from yuxi.storage.postgres.manager import BUSINESS_SCHEMA_VERSION, KNOWLEDGE_SCHEMA_VERSION, HEALTH_SCHEMA_VERSION
 from yuxi.storage.postgres.models_business import Conversation, Project, User
 from yuxi.storage.postgres.models_health import FamilyMember, HealthConsultation, HealthGrant
 from yuxi.storage_migrations.v071_workdirs import V071WorkdirMigrationPlan
@@ -65,9 +65,20 @@ async def prepare_schema15(manager, engine):
     await manager.create_schema_version_table()
     async with engine.begin() as connection:
         await connection.execute(text("DROP TABLE health_blood_pressure_use"))
+        await connection.execute(text("DROP TABLE health_blood_glucose_use"))
+        await connection.execute(text("DROP TABLE health_blood_lipids_use"))
         await connection.execute(text("DROP TABLE health_weight_use"))
         await connection.execute(text("DROP TABLE health_family_profile_use"))
         await connection.execute(text("DROP TABLE health_family_profile_link"))
+        for table in (
+            "health_family_profile_link",
+            "health_family_profile_use",
+            "health_weight_use",
+            "health_blood_pressure_use",
+            "health_blood_glucose_use",
+            "health_blood_lipids_use",
+        ):
+            assert await connection.scalar(text("SELECT to_regclass(:table)"), {"table": table}) is None
     for domain, version in (
         ("business", BUSINESS_SCHEMA_VERSION),
         ("knowledge", KNOWLEDGE_SCHEMA_VERSION),
@@ -152,7 +163,8 @@ async def test_formal_schema15_upgrade_preserves_member_grant_and_consultation(m
             await storage_migration.main()
             async with sessions() as session:
                 assert (
-                    await session.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'")) == 18
+                    await session.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'"))
+                    == HEALTH_SCHEMA_VERSION
                 )
                 member = await session.get(FamilyMember, member_id)
                 assert (member.owner_uid, member.display_name, member.relationship_label, member.created_at) == (
@@ -172,7 +184,14 @@ async def test_formal_schema15_upgrade_preserves_member_grant_and_consultation(m
                 )
                 assert bound.family_planner_selection is None and bound.initial_planner_selection is None
                 assert (await session.get(Conversation, conversation_id)).thread_id == thread_id
-                for table in ("health_family_profile_link", "health_family_profile_use"):
+                for table in (
+                    "health_family_profile_link",
+                    "health_family_profile_use",
+                    "health_weight_use",
+                    "health_blood_pressure_use",
+                    "health_blood_glucose_use",
+                    "health_blood_lipids_use",
+                ):
                     assert await session.scalar(text(f"SELECT COUNT(*) FROM {table}")) == 0
             async with engine.connect() as connection:
                 constraints = await connection.run_sync(profile_constraints)
@@ -200,16 +219,26 @@ async def test_formal_migration_rejects_future_health_schema_without_new_ddl(mon
     schema, admin, engine, manager = await _create_isolated_manager("pytest_family_profile_future")
     try:
         await prepare_schema15(manager, engine)
-        await manager.record_schema_version("health", 19)
+        await manager.record_schema_version("health", HEALTH_SCHEMA_VERSION + 1)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         manager.AsyncSession = sessions
         isolate_other_migration_effects(monkeypatch, tmp_path)
         monkeypatch.setattr(storage_migration, "pg_manager", manager)
-        with pytest.raises(RuntimeError, match="Unsupported health schema version: 19"):
+        with pytest.raises(RuntimeError, match=f"Unsupported health schema version: {HEALTH_SCHEMA_VERSION + 1}"):
             await storage_migration.main()
         async with sessions() as session:
-            assert await session.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'")) == 19
-            for table in ("health_family_profile_link", "health_family_profile_use"):
+            assert (
+                await session.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'"))
+                == HEALTH_SCHEMA_VERSION + 1
+            )
+            for table in (
+                "health_family_profile_link",
+                "health_family_profile_use",
+                "health_weight_use",
+                "health_blood_pressure_use",
+                "health_blood_glucose_use",
+                "health_blood_lipids_use",
+            ):
                 assert await session.scalar(text("SELECT to_regclass(:table)"), {"table": table}) is None
     finally:
         await _drop_isolated_schema(schema, admin, engine)

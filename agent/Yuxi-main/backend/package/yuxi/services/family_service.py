@@ -239,6 +239,15 @@ class FamilyService:
             member.invite_hash, member.invite_expires_at = None, None
             action = "member.restore" if payload.is_active else "member.deactivate" if is_owner else "member.leave"
             await self.repo.audit(fid, mid, self.uid, action, member.relationship_version)
+            if not payload.is_active:
+                health_member_id = await self.repo.linked_health_member(fid, mid)
+                if health_member_id is not None:
+                    from yuxi.repositories.health_quality_repository import HealthQualityRepository
+
+                    # 已持家庭锁；失效事务不反向取得健康成员锁。
+                    await HealthQualityRepository(self.db).invalidate(
+                        member_id=health_member_id, reason="family_profile_source_unavailable"
+                    )
         result = member_view(family, member, self.uid)
         await self.db.commit()
         return result
@@ -340,6 +349,14 @@ class FamilyService:
         )
         result = member_view(family, member, self.uid)
         await self.repo.audit(fid, mid, self.uid, "profile.update", member.version)
+        health_member_id = await self.repo.linked_health_member(fid, mid)
+        if health_member_id is not None:
+            from yuxi.repositories.health_quality_repository import HealthQualityRepository
+
+            # 当前事务已经持有家庭锁；只写失效状态，不反向获取健康成员锁。
+            await HealthQualityRepository(self.db).invalidate(
+                member_id=health_member_id, reason="family_profile_changed"
+            )
         await self.db.commit()
         return result
 
@@ -507,15 +524,28 @@ class FamilyService:
             )
         except ValidationError:
             raise HTTPException(422, "更正信息必须包含有效数值、非未来时间和正确测量条件") from None
+        measured_at = updated.measured_at.astimezone(UTC).replace(tzinfo=None)
         names = await self.repo.actor_names(fid)
+        if (record.values, record.note, record.measured_at, record.source, record.condition) == (
+            updated.values,
+            updated.note,
+            measured_at,
+            updated.source,
+            updated.condition,
+        ):
+            result = measurement_view(record, names)
+            await self.db.commit()
+            return result
         record.previous = [*(record.previous or []), self._measurement_revision(record, names, "corrected")]
         record.values, record.note = updated.values, updated.note
-        record.measured_at = updated.measured_at.astimezone(UTC).replace(tzinfo=None)
+        record.measured_at = measured_at
         record.source, record.condition = updated.source, updated.condition
         record.version += 1
         record.updated_at = utc_now_naive()
         result = measurement_view(record, names)
         await self.repo.audit(fid, mid, self.uid, "measurement.correct", record.version)
+        if record.kind == "weight":
+            await self._invalidate_weight_target(fid, mid, rid, "weight_measurement_changed")
         await self.db.commit()
         return result
 
@@ -542,6 +572,8 @@ class FamilyService:
             record.version += 1
             record.updated_at = record.voided_at
             await self.repo.audit(fid, mid, self.uid, "measurement.void", record.version)
+            if record.kind == "weight":
+                await self._invalidate_weight_target(fid, mid, rid, "weight_measurement_changed")
         result = measurement_view(record, names)
         await self.db.commit()
         return result
@@ -583,6 +615,14 @@ class FamilyService:
         await self.repo.audit(fid, None, self.uid, "statistics.read")
         await self.db.commit()
         return result
+
+    async def _invalidate_weight_target(self, fid, mid, rid, reason):
+        """当前家庭写事务只收敛绑定该记录的营养流程，不反向锁健康成员。"""
+        health_member_id = await self.repo.linked_weight_target_member(fid, mid, rid)
+        if health_member_id is not None:
+            from yuxi.repositories.health_quality_repository import HealthQualityRepository
+
+            await HealthQualityRepository(self.db).invalidate(member_id=health_member_id, reason=reason)
 
     def _measurement_revision(self, record, names, action):
         """在受控记录内保存完整旧状态，审计表仍只保存元信息。"""

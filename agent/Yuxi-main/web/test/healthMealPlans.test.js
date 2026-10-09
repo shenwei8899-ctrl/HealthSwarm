@@ -3,6 +3,10 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { setImmediate } from 'node:timers'
 import { computed, effectScope, nextTick, reactive, ref, watch } from 'vue'
+import * as Vue from 'vue'
+import { parse, compileTemplate } from 'vue/compiler-sfc'
+import { renderToString } from 'vue/server-renderer'
+import { mealLabels, nutrientLabels, nutrientText } from '../src/utils/healthVision.js'
 
 const source = await readFile(
   new URL('../src/components/health/HealthMealPlans.vue', import.meta.url),
@@ -30,6 +34,7 @@ function panel(api = {}, agentApi = {}) {
     }
   })
   const scope = effectScope()
+  const events = []
   let cleanup
   const factory = new Function(
     'ref',
@@ -38,10 +43,11 @@ function panel(api = {}, agentApi = {}) {
     'onMounted',
     'onBeforeUnmount',
     'defineProps',
+    'defineEmits',
     'useRouter',
     'api',
     'agentApi',
-    `${script}\nreturn { reload, loadRecipes, selectPlan, makePreview, save, openSwap, submitSwap, closeSwap, generate, checkGeneration, stopGeneration, preview, current, historyVersion, saveAttempt, swapAttempt, swap, plans, error, working, polling, generation, generationStatus, consent, date, notes, meals, questions, recipes, recipesError, displayed, canPreview, canGenerate }`
+    `${script}\nreturn { reload, loadRecipes, selectPlan, makePreview, save, openSwap, submitSwap, closeSwap, generate, checkGeneration, stopGeneration, preview, current, historyVersion, saveAttempt, swapAttempt, swap, plans, error, working, polling, generation, generationStatus, consent, date, notes, meals, questions, recipes, recipesError, displayed, canPreview, canGenerate, approval, approvalLoading, approvalError, approvalLabels, invalidationLabels, openProfile }`
   )
   const state = scope.run(() =>
     factory(
@@ -53,13 +59,25 @@ function panel(api = {}, agentApi = {}) {
         cleanup = fn
       },
       () => props,
+      () =>
+        (...args) =>
+          events.push(args),
       () => ({ push: () => {} }),
-      api,
+      {
+        mealPlanApproval: async (plan_id, version) => ({
+          plan_id,
+          version,
+          available: false,
+          professional_review: 'not_reviewed'
+        }),
+        ...api
+      },
       agentApi
     )
   )
   return {
     props,
+    events,
     ...state,
     dispose: () => {
       cleanup()
@@ -98,6 +116,282 @@ test('切换成员和授权立即清空旧数据，迟到列表与预览均丢�
   state.dispose()
 })
 
+test('当前餐单专业来源失效由服务器回读，历史快照不继承当前批准', async () => {
+  const requests = []
+  const state = panel({
+    ...empty,
+    mealPlan: async () =>
+      snapshot({
+        plan_id: 'plan-a',
+        version: 4,
+        revisions: [{ version: 1, snapshot: snapshot({ personalized: true }) }]
+      }),
+    mealPlanApproval: async (id, version) => {
+      requests.push([id, version])
+      return {
+        plan_id: id,
+        version,
+        available: false,
+        professional_review: 'invalidated',
+        invalidation_reason: 'weight_measurement_changed'
+      }
+    }
+  })
+  await state.selectPlan('plan-a')
+  assert.deepEqual(requests, [['plan-a', 4]])
+  assert.equal(state.approval.value.professional_review, 'invalidated')
+  state.historyVersion.value = state.current.value.revisions[0]
+  assert.equal(state.displayed.value.personalized, true)
+  assert.equal(state.approval.value.available, false)
+  assert.equal(state.approval.value.version, 4)
+  const { descriptor } = parse(source)
+  const block = descriptor.template.content.match(
+    /<div v-if="current" class="approval-state">[\s\S]*?<\/div>/
+  )[0]
+  const compiled = compileTemplate({
+    source: block,
+    filename: 'HealthMealPlans.vue',
+    id: 'approval-state-test',
+    compilerOptions: { mode: 'function' }
+  })
+  assert.deepEqual(compiled.errors, [])
+  const render = new Function('Vue', compiled.code)(Vue)
+  const vnode = render(
+    {
+      current: state.current.value,
+      approvalLoading: false,
+      approvalError: '',
+      approval: state.approval.value,
+      approvalLabels: state.approvalLabels,
+      invalidationLabels: state.invalidationLabels,
+      historyVersion: state.historyVersion.value,
+      locked: false,
+      openProfile: state.openProfile
+    },
+    []
+  )
+  const alert = vnode.children.find((child) => child.props?.message)
+  assert.equal(alert.props.message, '当前版本的专业审核已失效')
+  assert.match(alert.props.description, /所选体重记录已更正或作废.*核对体重.*专业确认、计算目标和检查餐单/)
+  vnode.children.find((child) => child.props?.onClick).props.onClick()
+  assert.deepEqual(state.events, [['profile']])
+  state.dispose()
+})
+
+test('当前批准与生成时未审核快照在真实模板中明确区分，历史内容保持原样', async () => {
+  const notice = '专业规则未接入'
+  const historical = snapshot({ version: 1, notice, professional_review: 'not_reviewed' })
+  const state = panel({
+    ...empty,
+    mealPlan: async () =>
+      snapshot({
+        plan_id: 'plan-a',
+        version: 2,
+        notice,
+        professional_review: 'not_reviewed',
+        revisions: [{ version: 1, snapshot: historical }]
+      }),
+    mealPlanApproval: async (plan_id, version) => ({ plan_id, version, available: true })
+  })
+  await state.selectPlan('plan-a')
+  const { descriptor } = parse(source)
+  const start = descriptor.template.content.indexOf('<section v-if="displayed"')
+  const end = descriptor.template.content.indexOf('<template v-if="current?.revisions"', start)
+  const snapshotSource = await readFile(
+    new URL('../src/components/health/HealthMealPlanSnapshot.vue', import.meta.url),
+    'utf8'
+  )
+  const { descriptor: snapshotDescriptor } = parse(snapshotSource)
+  const compileRender = (template, filename) => {
+    const compiled = compileTemplate({
+      source: template,
+      filename,
+      id: 'snapshot-status-test',
+      compilerOptions: { mode: 'function' }
+    })
+    assert.deepEqual(compiled.errors, [])
+    return new Function('Vue', compiled.code)(Vue)
+  }
+  const render = compileRender(
+    `${descriptor.template.content.slice(start, end)}</section>`,
+    'HealthMealPlans.vue'
+  )
+  const snapshotRender = compileRender(snapshotDescriptor.template.content, 'HealthMealPlanSnapshot.vue')
+  for (const historyVersion of [null, state.current.value.revisions[0]]) {
+    state.historyVersion.value = historyVersion
+    const displayed = state.displayed.value
+    const app = Vue.createSSRApp({
+      render,
+      setup: () => ({
+        current: state.current.value,
+        displayed,
+        historyVersion,
+        approval: state.approval.value,
+        approvalLoading: false,
+        approvalError: '',
+        approvalLabels: state.approvalLabels,
+        invalidationLabels: state.invalidationLabels,
+        locked: false,
+        preview: null,
+        openProfile: state.openProfile,
+        openSwap: state.openSwap
+      })
+    })
+    app.component('AAlert', {
+      props: ['message', 'description'],
+      setup: (props) => () => Vue.h('p', [props.message, props.description])
+    })
+    for (const name of ['AButton', 'ATag'])
+      app.component(name, { setup: (_, { slots }) => () => Vue.h('span', slots.default?.()) })
+    app.component('HealthMealPlanSnapshot', {
+      props: ['snapshot', 'editable'],
+      render: snapshotRender,
+      setup: (props) => {
+        assert.strictEqual(props.snapshot, displayed)
+        return { mealLabels, nutrientLabels, nutrientText }
+      }
+    })
+    const html = await renderToString(app)
+    assert.match(html, /当前版本 2 已专业批准[\s\S]*生成时快照/)
+    assert.match(html, /下方状态为生成时记录；当前专业审核以上方服务端回读为准。[\s\S]*未个体适配[\s\S]*未专业审核/)
+    assert.match(html, /专业规则未接入/)
+    assert.equal(displayed.professional_review, 'not_reviewed')
+    if (historyVersion) assert.match(html, /历史版本 1/)
+  }
+  assert.equal(state.approval.value.available, true)
+  state.dispose()
+})
+
+test('迟到专业审核状态不能覆盖另一成员，失败或错版本不能伪装批准', async () => {
+  let finish
+  const state = panel({
+    ...empty,
+    mealPlan: async () => snapshot({ plan_id: 'plan-a', version: 2 }),
+    mealPlanApproval: () =>
+      new Promise((resolve) => {
+        finish = resolve
+      })
+  })
+  const reading = state.selectPlan('plan-a')
+  await new Promise(setImmediate)
+  state.props.memberId = 'b'
+  await nextTick()
+  finish({ plan_id: 'plan-a', version: 2, available: true })
+  await reading
+  assert.equal(state.approval.value, null)
+  assert.equal(state.approvalError.value, '')
+  assert.equal(state.approvalLoading.value, false)
+  state.dispose()
+  for (const response of [
+    new Error('synthetic disconnected'),
+    { plan_id: 'plan-a', version: 1, available: true }
+  ]) {
+    const failed = panel({
+      ...empty,
+      mealPlan: async () => snapshot({ plan_id: 'plan-a', version: 2 }),
+      mealPlanApproval: async () => {
+        if (response instanceof Error) throw response
+        return response
+      }
+    })
+    await failed.selectPlan('plan-a')
+    assert.equal(failed.current.value.version, 2)
+    assert.equal(failed.approval.value, null)
+    assert.match(failed.approvalError.value, /未能核对/)
+    failed.dispose()
+  }
+})
+
+test('实际专业审核 pending_review 状态在真实模板中显示待审核而不冒充批准', async () => {
+  const state = panel({
+    ...empty,
+    mealPlan: async () => snapshot({ plan_id: 'plan-a', version: 2 }),
+    mealPlanApproval: async (plan_id, version) => ({
+      plan_id,
+      version,
+      available: false,
+      professional_review: 'pending_review'
+    })
+  })
+  await state.selectPlan('plan-a')
+  const { descriptor } = parse(source)
+  const block = descriptor.template.content.match(
+    /<div v-if="current" class="approval-state">[\s\S]*?<\/div>/
+  )[0]
+  const compiled = compileTemplate({
+    source: block,
+    filename: 'HealthMealPlans.vue',
+    id: 'pending-review-state-test',
+    compilerOptions: { mode: 'function' }
+  })
+  assert.deepEqual(compiled.errors, [])
+  const render = new Function('Vue', compiled.code)(Vue)
+  const vnode = render(
+    {
+      current: state.current.value,
+      approvalLoading: false,
+      approvalError: '',
+      approval: state.approval.value,
+      approvalLabels: state.approvalLabels,
+      invalidationLabels: state.invalidationLabels,
+      historyVersion: null,
+      locked: false,
+      openProfile: state.openProfile
+    },
+    []
+  )
+  const alert = vnode.children.find((child) => child.props?.message)
+  assert.equal(alert.props.message, '当前版本正在等待专业审核')
+  assert.equal(alert.props.type, 'warning')
+  assert.equal(state.approval.value.available, false)
+  state.dispose()
+})
+
+test('刷新餐单重新核对当前审核，服务端撤权后迟到批准不恢复旧状态', async () => {
+  let count = 0,
+    finish
+  const state = panel({
+    ...empty,
+    mealPlan: async () => snapshot({ plan_id: 'plan-a', version: 2 }),
+    mealPlanApproval: async (plan_id, version) => ({
+      plan_id,
+      version,
+      available: ++count === 1,
+      professional_review: count === 1 ? undefined : 'invalidated'
+    })
+  })
+  await state.selectPlan('plan-a')
+  assert.equal(state.approval.value.available, true)
+  await state.reload()
+  assert.equal(state.approval.value.professional_review, 'invalidated')
+  state.dispose()
+  for (const status of [403, 404]) {
+    const denied = panel({
+      mealPlans: async () => {
+        throw { status }
+      },
+      mealPlan: async () => snapshot({ plan_id: 'plan-a', version: 2 }),
+      mealPlanApproval: () =>
+        new Promise((resolve) => {
+          finish = resolve
+        })
+    })
+    const reading = denied.selectPlan('plan-a')
+    await new Promise(setImmediate)
+    denied.historyVersion.value = { version: 1, snapshot: snapshot() }
+    denied.approval.value = { plan_id: 'plan-a', version: 2, available: true }
+    await denied.reload()
+    finish({ plan_id: 'plan-a', version: 2, available: true })
+    await reading
+    assert.equal(denied.current.value, null)
+    assert.equal(denied.historyVersion.value, null)
+    assert.equal(denied.approval.value, null)
+    assert.equal(denied.approvalLoading.value, false)
+    assert.equal(denied.working.value, false)
+    denied.dispose()
+  }
+})
+
 test('手动预览由服务器计算；改日期或计划量后旧预览失效', async () => {
   let sent
   const state = panel({
@@ -121,6 +415,133 @@ test('手动预览由服务器计算；改日期或计划量后旧预览失效',
   assert.equal(state.preview.value, null)
   state.dispose()
 })
+
+for (const status of [403, 404]) {
+  for (const operation of ['preview', 'save', 'swap', 'generated-plan', 'generated-questions']) {
+    test(`餐单读取撤权 ${status} 后丢弃迟到 ${operation}，不恢复私有内容或继续回读`, async () => {
+      let finish,
+        listReads = 0,
+        detailReads = 0
+      const lateSnapshot = snapshot({ plan_id: 'saved', version: 2 })
+      const delayed = () =>
+        new Promise((resolve) => {
+          finish = resolve
+        })
+      const state = panel(
+        {
+          mealPlans: async () => {
+            if (++listReads === 1) throw { status }
+            return { plans: [], truncated: false }
+          },
+          mealPlan: async () => {
+            detailReads++
+            return lateSnapshot
+          },
+          previewMealPlan: delayed,
+          saveMealPlan: delayed,
+          swapMealPlan: delayed,
+          recipes: async () => []
+        },
+        {
+          getRequest: async () => ({
+            request: { request_id: 'request', thread_id: 'bound', dispatched_run_id: 'run-a' }
+          }),
+          getAgentRunResult: delayed
+        }
+      )
+      let pending
+      try {
+        if (operation === 'preview') {
+          state.meals.value.forEach((meal) => {
+            meal.dishes[0].recipe_version_id = 'recipe'
+          })
+          await nextTick()
+          pending = state.makePreview()
+        } else if (operation === 'save') {
+          state.preview.value = snapshot()
+          pending = state.save()
+        } else if (operation === 'swap') {
+          state.current.value = lateSnapshot
+          state.openSwap('lunch', { dish_index: 0, name: '旧菜' })
+          state.swap.value.replacement.recipe_version_id = 'new-recipe'
+          state.swap.value.reason = '换口味'
+          pending = state.submitSwap()
+        } else {
+          state.generation.value = { request_id: 'request', thread_id: 'bound' }
+          pending = state.checkGeneration()
+        }
+        await new Promise(setImmediate)
+        assert.equal(typeof finish, 'function')
+        state.historyVersion.value = { version: 1, snapshot: snapshot() }
+        await state.reload()
+        finish(
+          operation.startsWith('generated-')
+            ? {
+                status: 'completed',
+                agent_slug: 'health-meal-planner',
+                thread_id: 'bound',
+                agent_run_id: 'run-a',
+                request_id: 'request',
+                output: JSON.stringify(
+                  operation === 'generated-questions'
+                    ? { status: 'needs_input', questions: ['旧成员的私人要求'] }
+                    : lateSnapshot
+                )
+              }
+            : lateSnapshot
+        )
+        await pending
+        assert.equal(state.displayed.value, null, '撤权后迟到结果不能恢复餐单快照')
+        assert.deepEqual(state.questions.value, [], '撤权后迟到结果不能恢复私人补充问题')
+        assert.equal(detailReads, 0, '撤权后旧写入回执不能继续读取详情')
+        assert.equal(listReads, 1, '撤权后旧写入回执不能继续读取列表')
+        assert.equal(state.current.value, null)
+        assert.equal(state.preview.value, null)
+        assert.equal(state.historyVersion.value, null)
+        assert.equal(state.approval.value, null)
+        assert.equal(state.saveAttempt.value, null)
+        assert.equal(state.swapAttempt.value, null)
+        assert.equal(state.generation.value, null)
+        assert.equal(state.working.value, false)
+        assert.equal(state.polling.value, false)
+      } finally {
+        state.dispose()
+      }
+    })
+  }
+
+  test(`专业审核回读撤权 ${status} 清空当前和历史餐单，普通网络失败不作撤权处理`, async () => {
+    let rejectApproval
+    const state = panel({
+      ...empty,
+      mealPlan: async () => snapshot({ plan_id: 'saved', version: 2 }),
+      mealPlanApproval: () =>
+        new Promise((_, reject) => {
+          rejectApproval = reject
+        })
+    })
+    try {
+      const pending = state.selectPlan('saved')
+      await new Promise(setImmediate)
+      state.historyVersion.value = { version: 1, snapshot: snapshot() }
+      state.preview.value = snapshot()
+      state.plans.value = [snapshot({ plan_id: 'saved', version: 2 })]
+      rejectApproval({ status })
+      await pending
+      assert.equal(state.displayed.value, null, '审核读取明确撤权后旧餐单不能继续展示')
+      assert.equal(state.current.value, null)
+      assert.equal(state.historyVersion.value, null)
+      assert.equal(state.preview.value, null)
+      assert.deepEqual(state.plans.value, [])
+      assert.equal(state.approval.value, null)
+      assert.equal(state.approvalLoading.value, false)
+      assert.equal(state.working.value, false)
+      assert.match(state.error.value, /授权|无权/)
+    } finally {
+      state.dispose()
+    }
+  })
+}
 
 test('保存响应丢失重试原回执与幂等键，回读当前版本及历史', async () => {
   const requests = []

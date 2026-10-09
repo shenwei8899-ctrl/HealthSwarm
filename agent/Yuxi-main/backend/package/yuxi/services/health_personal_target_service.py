@@ -14,7 +14,7 @@ async def read_personal_targets(uid, member_id, data):
     async with pg_manager.get_async_session_context() as session:
         await HealthVisionRepository(session).authorize(member_id, uid, "profile_view", lock=True)
         repo = HealthQualityRepository(session)
-        profile = external_projection(await repo.profile(member_id), "profile", member_id)
+        profile = await repo.profile_projection(member_id)
         rules = external_projection(await repo.rules(data.rule_code, lock=True), "rules", data.rule_code)
         sources = {
             "profile": {k: profile[k] for k in ("id", "version", "content_hash", "status", "reason")},
@@ -28,7 +28,10 @@ async def read_personal_targets(uid, member_id, data):
         if profile["version"] != data.profile_version or rules["version"] != data.rule_version:
             raise HealthVisionError("source_version_conflict", "档案或规则版本已变化，请刷新个人目标", 409)
         result = calculate_personal_targets(
-            ProfileProjection.model_validate(profile["payload"]), QualityRules.model_validate(rules["payload"])
+            ProfileProjection.model_validate(profile["payload"]),
+            QualityRules.model_validate(rules["payload"]),
+            weight_source_missing=bool(profile["attestation"].get("family_profile_source"))
+            and not profile["attestation"].get("weight_measurement_source"),
         )
         return {
             **result,

@@ -149,11 +149,11 @@ async def test_weight_tool_error_feedback_is_not_parsed_as_successful_source(che
 @pytest.mark.asyncio
 @pytest.mark.parametrize("interrupt", [False, True])
 @pytest.mark.parametrize("has_weight_dependency", [False, True])
-@pytest.mark.parametrize("dependency_kind", ["weight", "blood_pressure"])
+@pytest.mark.parametrize("dependency_kind", ["weight", "blood_pressure", "blood_glucose", "blood_lipids"])
 async def test_weight_derived_partial_discards_private_body_and_metadata(
     monkeypatch, interrupt, has_weight_dependency, dependency_kind
 ):
-    """只有前轮体重或血压依赖也阻断私有正文；去除对应EXISTS分支使负控变红。"""
+    """只有前轮独立测量依赖也阻断私有正文；去除对应EXISTS分支使负控变红。"""
 
     async def dependency_run(statement):
         """仅当本次查询确实包含当前测量表，才返回该表的历史回执。"""
@@ -195,6 +195,8 @@ async def test_weight_derived_partial_discards_private_body_and_metadata(
     sql = str(query)
     assert "health_weight_use.run_id = agent_runs.id" in sql and "EXISTS" in sql and " OR " in sql
     assert "health_blood_pressure_use.run_id = agent_runs.id" in sql
+    assert "health_blood_glucose_use.run_id = agent_runs.id" in sql
+    assert "health_blood_lipids_use.run_id = agent_runs.id" in sql
     assert "agent_runs.conversation_id" in sql and 7 in query.compile().params.values()
     session.rollback.assert_not_awaited()
     if has_weight_dependency and not interrupt:

@@ -1,4 +1,4 @@
-"""真实health17→18正式迁移，保留体重回执、本人关联及独立测量。"""
+"""真实health17→当前版本正式迁移，保留体重回执、本人关联及独立测量。"""
 
 from datetime import date, datetime
 from uuid import uuid4
@@ -14,7 +14,7 @@ from test.integration.services.test_health_weight_schema import (
     scoped_weight_manager,
 )
 from yuxi import storage_migration
-from yuxi.storage.postgres.manager import BUSINESS_SCHEMA_VERSION, KNOWLEDGE_SCHEMA_VERSION
+from yuxi.storage.postgres.manager import BUSINESS_SCHEMA_VERSION, KNOWLEDGE_SCHEMA_VERSION, HEALTH_SCHEMA_VERSION
 from yuxi.storage.postgres.models_business import (
     AgentRun,
     Conversation,
@@ -167,10 +167,13 @@ async def test_formal_schema17_upgrade_preserves_weight_receipts_and_blood_press
             await storage_migration.main()
             async with sessions() as session:
                 assert (
-                    await session.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'")) == 18
+                    await session.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'"))
+                    == HEALTH_SCHEMA_VERSION
                 )
                 assert await preserved_facts(session, ids) == before
                 assert await session.scalar(text("SELECT COUNT(*) FROM health_blood_pressure_use")) == 0
+                for table in ("health_blood_glucose_use", "health_blood_lipids_use"):
+                    assert await session.scalar(text(f"SELECT COUNT(*) FROM {table}")) == 0
             async with engine.connect() as connection:
                 constraints = await connection.run_sync(bp_constraints)
             assert constraints == {
@@ -195,33 +198,40 @@ async def test_formal_schema17_upgrade_preserves_weight_receipts_and_blood_press
         await drop_weight_schema(schema, admin, engine)
 
 
-async def test_formal_schema18_rejects_future19_without_creating_blood_pressure_table(monkeypatch, tmp_path):
+async def test_formal_schema18_rejects_future_version_without_creating_blood_pressure_table(monkeypatch, tmp_path):
     """未知未来版本失败在DDL前，既有17结构和未来标记保持。"""
     schema, admin, engine, manager = await create_weight_schema()
     try:
         await prepare_schema17(manager, engine)
-        await manager.record_schema_version("health", 19)
+        await manager.record_schema_version("health", HEALTH_SCHEMA_VERSION + 1)
         manager.AsyncSession = async_sessionmaker(engine, expire_on_commit=False)
         isolate_other_migration_effects(monkeypatch, tmp_path)
         monkeypatch.setattr(storage_migration, "pg_manager", manager)
-        with pytest.raises(RuntimeError, match="Unsupported health schema version: 19"):
+        with pytest.raises(RuntimeError, match=f"Unsupported health schema version: {HEALTH_SCHEMA_VERSION + 1}"):
             await storage_migration.main()
         async with engine.connect() as connection:
             assert (
-                await connection.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'")) == 19
+                await connection.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'"))
+                == HEALTH_SCHEMA_VERSION + 1
             )
             assert await connection.scalar(text("SELECT to_regclass('health_blood_pressure_use')")) is None
+            for table in ("health_blood_glucose_use", "health_blood_lipids_use"):
+                assert await connection.scalar(text("SELECT to_regclass(:table)"), {"table": table}) is None
             assert await connection.scalar(text("SELECT to_regclass('health_weight_use')")) is not None
     finally:
         await drop_weight_schema(schema, admin, engine)
 
 
 async def prepare_schema17(manager, engine):
-    """移除新增BP表形成旧17，原体重回执表保持存在。"""
+    """移除17之后的血压、血糖和血脂表，保留原体重回执。"""
     await manager.create_business_tables()
     await manager.create_schema_version_table()
     async with engine.begin() as connection:
         await connection.execute(text("DROP TABLE health_blood_pressure_use"))
+        await connection.execute(text("DROP TABLE health_blood_glucose_use"))
+        await connection.execute(text("DROP TABLE health_blood_lipids_use"))
+        for table in ("health_blood_pressure_use", "health_blood_glucose_use", "health_blood_lipids_use"):
+            assert await connection.scalar(text("SELECT to_regclass(:table)"), {"table": table}) is None
     for domain, version in (
         ("business", BUSINESS_SCHEMA_VERSION),
         ("knowledge", KNOWLEDGE_SCHEMA_VERSION),

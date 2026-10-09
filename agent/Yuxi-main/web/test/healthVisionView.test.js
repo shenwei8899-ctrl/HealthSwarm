@@ -8,6 +8,30 @@ import { parse, compileScript, compileTemplate } from 'vue/compiler-sfc'
 import * as helpers from '../src/utils/healthVision.js'
 
 const source = await readFile(new URL('../src/views/HealthVisionView.vue', import.meta.url), 'utf8')
+
+test('专业目标与餐单失效入口通过实际组件事件切换同一成员分区', () => {
+  const state = workbench({})
+  const context = { memberId: 'member-a', member: { id: 'member-a', scopes: [] }, config: {}, busy: false, confirming: false }
+  Object.defineProperty(context, 'activeTab', {
+    get: () => state.activeTab.value,
+    set: (value) => { state.activeTab.value = value }
+  })
+  for (const [component, event, expected] of [
+    ['HealthProfessionalProfile', 'onPlans', 'plans'],
+    ['HealthMealPlans', 'onProfile', 'profile']
+  ]) {
+    const fragment = source.match(new RegExp(`<${component}[\\s\\S]*?\\/>`))[0]
+      .replace(/\s+v-else-if="[^"]*"/, '')
+    const compiled = compileTemplate({ source: fragment, filename: 'HealthVisionView.vue', id: component, compilerOptions: { mode: 'function' } })
+    assert.deepEqual(compiled.errors, [])
+    const render = new Function('Vue', compiled.code)(Vue)
+    const vnode = render(context, [])
+    vnode.props[event]()
+    assert.equal(state.tab.value, expected)
+    assert.equal(vnode.props.member?.id || vnode.props['member-id'], 'member-a')
+  }
+  state.dispose()
+})
 const script = source
   .match(/<script setup>([\s\S]*?)<\/script>/)[1]
   .replace(/^import[\s\S]*?from ['"][^'"]+['"]\s*\n/gm, '')
@@ -69,7 +93,7 @@ async function consultationWorkbench(overrides) {
   return state
 }
 
-test('咨询同意说明披露体重和血压各自的实测范围、单位与发送字段', () => {
+test('咨询同意说明披露体重、血压、血糖和同条血脂四项的实测范围、单位与发送字段', () => {
   const { descriptor } = parse(source)
   const disclosure = descriptor.template.content.match(/<p>\s*咨询会将[\s\S]*?<\/p>/)[0]
   const compiled = compileTemplate({
@@ -81,13 +105,16 @@ test('咨询同意说明披露体重和血压各自的实测范围、单位与�
   assert.deepEqual(compiled.errors, [])
   const render = new Function('Vue', compiled.code)(Vue)
   const text = render({}, []).children
-  assert.match(text, /实测体重、血压发送给已审批模型/)
+  assert.match(text, /实测体重、血压、血糖、血脂四项发送给已审批模型/)
   assert.match(text, /实测与档案确认版本分开/)
-  assert.match(text, /体重、血压各仅包含近30个北京时间自然日最多20条记录/)
+  assert.match(text, /体重、血压、血糖、血脂各仅包含近30个北京时间自然日最多20条记录/)
   assert.match(text, /体重保留原值与kg/)
   assert.match(text, /血压保留成对收缩压、舒张压与mmHg/)
+  assert.match(text, /血糖保留原值、mmol\/L及空腹、餐后2小时或随机的测量条件/)
+  assert.match(text, /血脂保留同条总胆固醇、甘油三酯、高密度脂蛋白、低密度脂蛋白原值与mmol\/L/)
   assert.match(text, /均含测量时间、来源、记录ID和版本/)
-  assert.match(text, /实测备注、测量条件和更正历史不发送/)
+  assert.match(text, /实测备注、血压和血脂测量条件及更正历史不发送/)
+  assert.match(text, /营养安全评估与21天控糖仍未就绪/)
 })
 
 test('新建咨询必须明确同意，未知响应重试复用同一幂等键，成功后换键', async () => {

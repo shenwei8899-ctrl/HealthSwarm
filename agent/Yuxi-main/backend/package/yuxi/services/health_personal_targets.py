@@ -6,7 +6,7 @@ from yuxi.services.health_quality_types import ProfileProjection, QualityRules
 from yuxi.services.health_vision_types import NUTRIENTS
 
 
-def calculate_personal_targets(profile: ProfileProjection, rules: QualityRules):
+def calculate_personal_targets(profile: ProfileProjection, rules: QualityRules, *, weight_source_missing=False):
     """只消费已解析的确认字段与批准参数，缺依赖及冲突不产生可用目标。"""
     result = {"status": "not_ready", "reason": None, "units": NUTRIENTS}
     if rules.personal_targets is None:
@@ -58,6 +58,9 @@ def calculate_personal_targets(profile: ProfileProjection, rules: QualityRules):
         ]:
             if not coefficient:
                 continue
+            if name == "weight_kg" and weight_source_missing:
+                result.update(reason="selected_weight_measurement_required", missing_field=name)
+                return result
             value = getattr(profile, name)
             if value is None:
                 result.update(reason="confirmed_formula_input_required", missing_field=name)

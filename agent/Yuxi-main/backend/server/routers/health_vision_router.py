@@ -66,6 +66,7 @@ from yuxi.services.health_quality_types import (
     PersonalTargetSelection,
 )
 from yuxi.services.health_personal_target_service import read_personal_targets
+from yuxi.services.health_profile_import_service import read_profile_import_context
 from yuxi.services.health_family_profile_service import (
     FamilyProfileLinkInput,
     link_family_profile,
@@ -200,11 +201,29 @@ async def member_blood_pressure_records(member_id: UUID, response: Response, use
     return await read_blood_pressure_records(user.uid, str(member_id))
 
 
+@health_vision.get("/members/{member_id}/blood-glucose-records")
+async def member_blood_glucose_records(member_id: UUID, response: Response, user: User = Depends(get_required_user)):
+    """读取本人的原始血糖与测量条件，不建立模型处理同意。"""
+    from yuxi.services.health_blood_glucose_service import read_blood_glucose_records
+
+    response.headers["Cache-Control"] = "no-store"
+    return await read_blood_glucose_records(user.uid, str(member_id))
+
+
 @health_vision.get("/members/{member_id}/family-profile")
 async def family_profile_read(member_id: UUID, response: Response, user: User = Depends(get_required_user)):
     """读取本人确认原档案及专业字段缺口。"""
     response.headers["Cache-Control"] = "no-store"
     return await read_family_profile(user.uid, str(member_id))
+
+
+@health_vision.get("/members/{member_id}/blood-lipids-records")
+async def member_blood_lipids_records(member_id: UUID, response: Response, user: User = Depends(get_required_user)):
+    """读取本人同条血脂四项，不建立模型处理同意。"""
+    from yuxi.services.health_blood_lipids_service import read_blood_lipids_records
+
+    response.headers["Cache-Control"] = "no-store"
+    return await read_blood_lipids_records(user.uid, str(member_id))
 
 
 @health_vision.get("/configuration")
@@ -275,6 +294,19 @@ async def diet_period_analysis(member_id: UUID, data: DietAnalysisPeriod, user: 
 async def import_external_profile(member_id: UUID, data: ProfileImport, user: User = Depends(get_admin_user)):
     """登记外部确认版本，服务仍复核管理员与成员编辑权限。"""
     return await import_profile_projection(user.uid, str(member_id), data)
+
+
+@health_vision.get("/members/{member_id}/profile-import-context")
+async def profile_import_context(
+    member_id: UUID,
+    response: Response,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user: User = Depends(get_admin_user),
+):
+    """读取专业导入上下文，原始来源仍受当前家庭字段授权。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await read_profile_import_context(user.uid, str(member_id), limit=limit, offset=offset)
 
 
 @health_vision.get("/members/{member_id}/external-profile-versions/current")

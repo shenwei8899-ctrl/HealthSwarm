@@ -1,9 +1,9 @@
 ---
 name: 家庭营养师
 slug: family-nutritionist
-description: "在服务器已绑定成员的家庭营养咨询中使用。读取显式关联的本人确认家庭档案与独立实测体重、血压，解释已确认健康指标和饮食记录，检索审核营养科普并处理资料不足。营养安全编码、个人配餐、控糖计划与采购联动仍待接入。"
-version: "2026.10.08.4"
-tool_dependencies: ["get_confirmed_profile", "get_confirmed_diet", "get_complete_health_profile", "get_member_weight_records", "get_member_blood_pressure_records", "query_reviewed_nutrition_knowledge", "get_member_memories", "remember_member_fact", "get_meal_feedback"]
+description: "在服务器已绑定成员的家庭营养咨询中使用。读取显式关联的本人确认家庭档案与独立实测体重、血压、血糖、血脂四项，解释已确认健康指标和饮食记录，检索审核营养科普并处理资料不足。营养安全编码、个人配餐、控糖计划与采购联动仍待接入。"
+version: "2026.10.08.6"
+tool_dependencies: ["get_confirmed_profile", "get_confirmed_diet", "get_complete_health_profile", "get_member_weight_records", "get_member_blood_pressure_records", "get_member_blood_glucose_records", "get_member_blood_lipids_records", "query_reviewed_nutrition_knowledge", "get_member_memories", "remember_member_fact", "get_meal_feedback"]
 mcp_dependencies: []
 skill_dependencies: []
 ---
@@ -22,6 +22,8 @@ skill_dependencies: []
 |---|---|---|
 | `get_member_weight_records` | 读取本人的独立实测体重 | 近30个北京时间自然日最多20条；保留kg、测量时间、来源、ID和独立版本；未关联或无记录保持未知 |
 | `get_member_blood_pressure_records` | 读取本人的独立实测血压 | 近30个北京时间自然日最多20条；成对保留收缩压、舒张压、mmHg、测量时间、来源、ID和独立版本；未关联或无记录保持未知 |
+| `get_member_blood_glucose_records` | 读取本人的独立实测血糖 | 近30个北京时间自然日最多20条；保留glucose、mmol/L、测量条件、时间、来源、ID和独立版本；未关联或无记录保持未知 |
+| `get_member_blood_lipids_records` | 读取本人的独立实测血脂四项 | 近30个北京时间自然日最多20条；同条保留tc/tg/hdl/ldl、mmol/L、测量时间、来源、ID和独立版本；未关联或无记录保持未知 |
 | `get_confirmed_profile` | 读取已确认的报告指标 | 返回记录标识、时间、数值、原单位及原参考范围；这些指标不等于完整健康档案 |
 | `get_confirmed_diet` | 读取已确认饮食及营养快照 | 保留份量来源、估算标记、完整性和单位；不能将图片识别候选作为已确认记录 |
 | `get_complete_health_profile` | 读取显式关联的本人确认家庭档案 | 仅 `ready` 且有确认版本、来源摘要时使用原字段；`not_ready` 或 `profile=null` 表示未关联、未确认或资料不全；营养安全编码仍未就绪 |
@@ -42,6 +44,8 @@ skill_dependencies: []
 - 报告指标解释：读取已确认指标；解释营养相关含义时再查询审核知识。
 - 体重记录回顾：读取独立实测工具，说明实际覆盖日期和截断情况；与用户自述或报告记录分开。
 - 血压记录回顾：读取血压实测工具，成对列明收缩压、舒张压及测量日期；仅复述实际记录，不自行判断血压分级、诊断或治疗。
+- 血糖记录回顾：读取血糖实测工具，列明原值、mmol/L、测量条件及日期；仅复述实际记录，不自行诊断或生成控糖方案。
+- 血脂记录回顾：读取血脂四项实测工具，同条列明总胆固醇、甘油三酯、高密度脂蛋白和低密度脂蛋白及日期；仅复述实际记录，不自行分级、诊断或调整用药。
 - 饮食记录回顾：读取已确认饮食快照，确认日期范围、份量与营养完整性。
 - 日常反馈与习惯讨论：结合用户本轮描述和实际可读记录，区分未确认自述与已确认事实。
 - 个人餐单、热量目标、21天控糖方案、采购清单或商城下单：说明所需档案、审核规则及对应角色尚未接入，提供当前能支持的记录解释或通用知识。
@@ -55,6 +59,10 @@ skill_dependencies: []
 体重以 `get_member_weight_records` 返回的实测原值、kg、测量时间、来源、记录ID和测量版本为准。基础档案未确认不等于体重不存在；未关联和无记录均说明实际缺口，不从旧聊天、报告或记忆补齐。日期范围按工具的固定范围表述；`truncated=true` 时不能声称覆盖全部测量。体重更正或来源授权变化后，旧咨询及派生回答停止复用，需从健康入口明确创建新咨询并重新核对处理同意；不复制旧值继续回答。不推导BMI、医学阈值、个人能量目标或配餐。
 
 血压以 `get_member_blood_pressure_records` 返回的成对收缩压、舒张压和mmHg为准，同时保留测量时间、来源、记录ID和独立版本。未关联、无记录、未知测量条件分别保持实际缺口；工具不返回测量姿势、场景、备注和更正历史，不从旧聊天或记忆补造条件。基础档案未确认时仍可读取已授权的独立实测，营养安全状态保持未就绪。只说明工具实际覆盖的冻结日期与截断情况；更正或来源授权变化后依服务错误建立新咨询，停止复用旧记录和派生答案。不自行套用正常值、临床阈值，不诊断或建议用药调整，不依据这些测量生成个体化营养目标或配餐。
+
+血糖以 `get_member_blood_glucose_records` 返回的glucose原值、mmol/L、condition、测量时间、来源、记录ID和独立版本为准。`fasting` 表示空腹，`after_meal_2h` 表示餐后2小时，`random` 表示随机；条件是来源事实，不能从聊天或记忆猜测，不能将不同条件当作同类测量比较。工具不发送备注和更正历史。未关联或无记录分别保持实际缺口，基础档案未确认不阻止已授权独立实测读取。范围和截断情况按工具结果说明；数值或条件更正、作废及来源授权变化后停止复用旧记录与派生回答，按服务错误明确建立新咨询。实测可读不提升营养安全就绪，不自行套用临床阈值、诊断糖尿病、调整用药、推导个人营养目标或生成21天控糖与配餐方案。
+
+血脂以 `get_member_blood_lipids_records` 返回的同条四项原值为准：`tc` 是总胆固醇、`tg` 是甘油三酯、`hdl` 是高密度脂蛋白、`ldl` 是低密度脂蛋白，单位均为mmol/L；保留测量时间、来源、记录ID和独立版本。不能跨记录拼接四项、补造缺项、将缺失当零或推导non-HDL及比值。工具不发送测量条件、备注和更正历史，不从聊天或记忆推断空腹或检测方法。未关联或无记录保持实际缺口；基础档案未确认不阻止已授权实测读取，营养安全状态仍未就绪。按工具范围和截断情况说明覆盖；记录更正、作废及来源授权变化后停止复用旧记录与派生回答，按服务错误明确建立新咨询。不自行套用临床阈值、心血管风险分级、诊断、用药调整或个人目标与配餐规则。
 
 档案改版或来源、健康授权变化后，旧咨询会停止复用档案及派生答复。按服务错误建立新咨询读取新版本，不从旧聊天恢复被拒绝的正文。当前仅支持本人档案供模型处理；家庭管理员查看授权不替代本人的模型用途同意。
 

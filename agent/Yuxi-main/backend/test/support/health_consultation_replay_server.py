@@ -16,6 +16,8 @@ TOOLS = {
     "get_complete_health_profile",
     "get_member_weight_records",
     "get_member_blood_pressure_records",
+    "get_member_blood_glucose_records",
+    "get_member_blood_lipids_records",
     "query_reviewed_nutrition_knowledge",
     "get_member_memories",
     "remember_member_fact",
@@ -43,7 +45,7 @@ def validate_request(authorization, body):
     users = [item for item in messages if item.get("role") == "user"]
     marker = (
         re.fullmatch(
-            r"HEALTH_CONSULTATION_E2E:([0-9a-f]{32}):(one|two|evidence|invalid_evidence|memory|read_memory|derived_memory|update_memory|empty_memory|feedback|derived_feedback|edited_feedback|empty_feedback|feedback_gate|mixed_feedback|neutral|profile|profile_updated|derived_profile|profile_gate|derived_profile_gate|weight_read|weight_updated|weight_missing|weight_gate|weight_derived_gate|bp_read|bp_updated|bp_missing|bp_not_linked|bp_gate|bp_derived_gate)(?:\n我以后(?:不吃|会吃)香菜)?",
+            r"HEALTH_CONSULTATION_E2E:([0-9a-f]{32}):(one|two|evidence|invalid_evidence|memory|read_memory|derived_memory|update_memory|empty_memory|feedback|derived_feedback|edited_feedback|empty_feedback|feedback_gate|mixed_feedback|neutral|profile|profile_updated|derived_profile|profile_gate|derived_profile_gate|weight_read|weight_updated|weight_missing|weight_gate|weight_derived_gate|bp_read|bp_updated|bp_missing|bp_not_linked|bp_gate|bp_derived_gate|glucose_read|glucose_updated|glucose_missing|glucose_not_linked|glucose_gate|glucose_derived_gate|lipids_read|lipids_updated|lipids_missing|lipids_not_linked|lipids_gate|lipids_derived_gate)(?:\n我以后(?:不吃|会吃)香菜)?",
             str(users[-1]["content"]),
         )
         if users
@@ -55,6 +57,206 @@ def validate_request(authorization, body):
     call_id = f"health-read-{token}-{step}"
     results = [item for item in messages if item.get("role") == "tool" and item.get("tool_call_id") == call_id]
     record_ids = []
+    if step in {
+        "lipids_read",
+        "lipids_updated",
+        "lipids_missing",
+        "lipids_not_linked",
+        "lipids_gate",
+        "lipids_derived_gate",
+    }:
+        if step == "lipids_derived_gate":
+            if not any(
+                item.get("role") == "assistant"
+                and "合成本人血脂四项tc4.8、tg1.2、hdl1.3、ldl2.6 mmol/L" in str(item.get("content"))
+                for item in messages
+            ):
+                raise ValueError("prior_blood_lipids_answer_required")
+            return token, step, call_id, True, []
+        if not results:
+            return token, step, call_id, False, []
+        payload = json.loads(results[-1]["content"])
+        if set(payload) != {
+            "status",
+            "code",
+            "owner",
+            "member_id",
+            "source_member_id",
+            "period",
+            "limit",
+            "records",
+            "truncated",
+            "full_health_profile_available",
+            "nutrition_safety_ready",
+            "source_hash",
+        }:
+            raise ValueError("minimal_blood_lipids_projection_required")
+        period = payload["period"]
+        if set(period) != {"start_date", "end_date", "timezone"} or period["timezone"] != "Asia/Shanghai":
+            raise ValueError("blood_lipids_period_required")
+        start, end = date.fromisoformat(period["start_date"]), date.fromisoformat(period["end_date"])
+        if end - start != timedelta(days=29) or type(payload["limit"]) is not int or payload["limit"] != 20:
+            raise ValueError("blood_lipids_period_required")
+        if (
+            payload["owner"] != "健康档案服务"
+            or payload["truncated"] is not False
+            or payload["full_health_profile_available"] is not False
+            or payload["nutrition_safety_ready"] is not False
+            or not re.fullmatch(r"[0-9a-f-]{36}", str(payload["member_id"]))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(payload["source_hash"]))
+        ):
+            raise ValueError("independent_blood_lipids_source_required")
+        if step == "lipids_not_linked":
+            if (
+                payload["status"] != "not_ready"
+                or payload["code"] != "blood_lipids_not_linked"
+                or payload["source_member_id"] is not None
+                or payload["records"] != []
+            ):
+                raise ValueError("unlinked_blood_lipids_required")
+            return token, step, call_id, True, []
+        if not re.fullmatch(r"[0-9a-f-]{36}", str(payload["source_member_id"])):
+            raise ValueError("independent_blood_lipids_source_required")
+        if step == "lipids_missing":
+            if (
+                payload["status"] != "not_ready"
+                or payload["code"] != "blood_lipids_missing"
+                or payload["records"] != []
+            ):
+                raise ValueError("missing_blood_lipids_required")
+            return token, step, call_id, True, []
+        if (
+            payload["status"] != "ready"
+            or payload["code"] != "self_blood_lipids_records"
+            or len(payload["records"]) != 1
+        ):
+            raise ValueError("synthetic_blood_lipids_record_required")
+        record = payload["records"][0]
+        if set(record) != {"record_id", "tc", "tg", "hdl", "ldl", "unit", "measured_at", "source", "version"}:
+            raise ValueError("minimal_blood_lipids_record_required")
+        ldl, version = (2.7, 2) if step == "lipids_updated" else (2.6, 1)
+        if (
+            any(type(record[field]) not in {int, float} for field in ("tc", "tg", "hdl", "ldl"))
+            or record["tc"] != 4.8
+            or record["tg"] != 1.2
+            or record["hdl"] != 1.3
+            or record["ldl"] != ldl
+            or type(record["version"]) is not int
+            or record["version"] != version
+            or record["unit"] != "mmol/L"
+            or type(record["source"]) is not str
+            or not record["source"]
+            or not re.fullmatch(r"[0-9a-f-]{36}", str(record["record_id"]))
+        ):
+            raise ValueError("synthetic_blood_lipids_pair_required")
+        measured = str(record["measured_at"])
+        when = datetime.fromisoformat(measured)
+        if (
+            not measured.endswith("Z")
+            or when.utcoffset() != timedelta(0)
+            or not start <= when.astimezone(ZoneInfo("Asia/Shanghai")).date() <= end
+        ):
+            raise ValueError("blood_lipids_utc_measurement_required")
+        return token, step, call_id, True, [record["record_id"]]
+    if step in {
+        "glucose_read",
+        "glucose_updated",
+        "glucose_missing",
+        "glucose_not_linked",
+        "glucose_gate",
+        "glucose_derived_gate",
+    }:
+        if step == "glucose_derived_gate":
+            if not any(
+                item.get("role") == "assistant"
+                and "合成本人血糖5.5 mmol/L，测量条件fasting" in str(item.get("content"))
+                for item in messages
+            ):
+                raise ValueError("prior_blood_glucose_answer_required")
+            return token, step, call_id, True, []
+        if not results:
+            return token, step, call_id, False, []
+        payload = json.loads(results[-1]["content"])
+        if set(payload) != {
+            "status",
+            "code",
+            "owner",
+            "member_id",
+            "source_member_id",
+            "period",
+            "limit",
+            "records",
+            "truncated",
+            "full_health_profile_available",
+            "nutrition_safety_ready",
+            "source_hash",
+        }:
+            raise ValueError("minimal_blood_glucose_projection_required")
+        period = payload["period"]
+        if set(period) != {"start_date", "end_date", "timezone"} or period["timezone"] != "Asia/Shanghai":
+            raise ValueError("blood_glucose_period_required")
+        start, end = date.fromisoformat(period["start_date"]), date.fromisoformat(period["end_date"])
+        if end - start != timedelta(days=29) or type(payload["limit"]) is not int or payload["limit"] != 20:
+            raise ValueError("blood_glucose_period_required")
+        if (
+            payload["owner"] != "健康档案服务"
+            or payload["truncated"] is not False
+            or payload["full_health_profile_available"] is not False
+            or payload["nutrition_safety_ready"] is not False
+            or not re.fullmatch(r"[0-9a-f-]{36}", str(payload["member_id"]))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(payload["source_hash"]))
+        ):
+            raise ValueError("independent_blood_glucose_source_required")
+        if step == "glucose_not_linked":
+            if (
+                payload["status"] != "not_ready"
+                or payload["code"] != "blood_glucose_not_linked"
+                or payload["source_member_id"] is not None
+                or payload["records"] != []
+            ):
+                raise ValueError("unlinked_blood_glucose_required")
+            return token, step, call_id, True, []
+        if not re.fullmatch(r"[0-9a-f-]{36}", str(payload["source_member_id"])):
+            raise ValueError("independent_blood_glucose_source_required")
+        if step == "glucose_missing":
+            if (
+                payload["status"] != "not_ready"
+                or payload["code"] != "blood_glucose_missing"
+                or payload["records"] != []
+            ):
+                raise ValueError("missing_blood_glucose_required")
+            return token, step, call_id, True, []
+        if (
+            payload["status"] != "ready"
+            or payload["code"] != "self_blood_glucose_records"
+            or len(payload["records"]) != 1
+        ):
+            raise ValueError("synthetic_blood_glucose_record_required")
+        record = payload["records"][0]
+        if set(record) != {"record_id", "glucose", "condition", "unit", "measured_at", "source", "version"}:
+            raise ValueError("minimal_blood_glucose_record_required")
+        condition, version = ("after_meal_2h", 2) if step == "glucose_updated" else ("fasting", 1)
+        if (
+            type(record["glucose"]) not in {int, float}
+            or record["glucose"] != 5.5
+            or record["condition"] != condition
+            or type(record["version"]) is not int
+            or record["version"] != version
+            or record["unit"] != "mmol/L"
+            or type(record["source"]) is not str
+            or not record["source"]
+            or not re.fullmatch(r"[0-9a-f-]{36}", str(record["record_id"]))
+        ):
+            raise ValueError("synthetic_blood_glucose_pair_required")
+        measured = str(record["measured_at"])
+        when = datetime.fromisoformat(measured)
+        if (
+            not measured.endswith("Z")
+            or when.utcoffset() != timedelta(0)
+            or not start <= when.astimezone(ZoneInfo("Asia/Shanghai")).date() <= end
+        ):
+            raise ValueError("blood_glucose_utc_measurement_required")
+        return token, step, call_id, True, [record["record_id"]]
     if step in {"bp_read", "bp_updated", "bp_missing", "bp_not_linked", "bp_gate", "bp_derived_gate"}:
         if step == "bp_derived_gate":
             if not any(
@@ -459,6 +661,10 @@ class HealthReplayHandler(BaseHTTPRequestHandler):
                 "weight_derived_gate",
                 "bp_gate",
                 "bp_derived_gate",
+                "glucose_gate",
+                "glucose_derived_gate",
+                "lipids_gate",
+                "lipids_derived_gate",
             }
             and answered
             and not state["release"].wait(40)
@@ -495,6 +701,22 @@ class HealthReplayHandler(BaseHTTPRequestHandler):
                     if step == "bp_missing"
                     else "当前未关联本人血压来源；请明确关联本人档案"
                     if step == "bp_not_linked"
+                    else "合成本人血糖5.5 mmol/L，测量条件fasting；实测记录，不作为临床诊断或专业配餐依据"
+                    if step in {"glucose_read", "glucose_gate", "glucose_derived_gate"}
+                    else "合成本人血糖5.5 mmol/L，测量条件after_meal_2h；实测记录，不作为临床诊断或专业配餐依据"
+                    if step == "glucose_updated"
+                    else "当前没有血糖实测记录；请补充数值和测量条件"
+                    if step == "glucose_missing"
+                    else "当前未关联本人血糖来源；请明确关联本人档案"
+                    if step == "glucose_not_linked"
+                    else "合成本人血脂四项tc4.8、tg1.2、hdl1.3、ldl2.6 mmol/L；实测记录，不作为临床诊断或专业配餐依据"
+                    if step in {"lipids_read", "lipids_gate", "lipids_derived_gate"}
+                    else "合成本人血脂四项tc4.8、tg1.2、hdl1.3、ldl2.7 mmol/L；实测记录，不作为临床诊断或专业配餐依据"
+                    if step == "lipids_updated"
+                    else "当前没有血脂四项实测记录；请补充完整四项原值"
+                    if step == "lipids_missing"
+                    else "当前未关联本人血脂来源；请明确关联本人档案"
+                    if step == "lipids_not_linked"
                     else "合成读取：我以后不吃香菜"
                     if step in {"read_memory", "derived_memory"}
                     else f"HEALTH_CONSULTATION_E2E_OK:{token}:{step}"
@@ -550,6 +772,18 @@ class HealthReplayHandler(BaseHTTPRequestHandler):
                             if step in {"weight_read", "weight_updated", "weight_missing", "weight_gate"}
                             else {"name": "get_member_blood_pressure_records", "arguments": "{}"}
                             if step in {"bp_read", "bp_updated", "bp_missing", "bp_not_linked", "bp_gate"}
+                            else {"name": "get_member_blood_glucose_records", "arguments": "{}"}
+                            if step
+                            in {
+                                "glucose_read",
+                                "glucose_updated",
+                                "glucose_missing",
+                                "glucose_not_linked",
+                                "glucose_gate",
+                            }
+                            else {"name": "get_member_blood_lipids_records", "arguments": "{}"}
+                            if step
+                            in {"lipids_read", "lipids_updated", "lipids_missing", "lipids_not_linked", "lipids_gate"}
                             else {"name": "get_confirmed_profile", "arguments": "{}"}
                         ),
                     }

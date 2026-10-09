@@ -30,7 +30,8 @@ async def initial_context_in_session(session, uid, member_id, selection):
     for mid in ids:
         await health.authorize(mid, uid, "diet_edit", lock=True)
         await health.authorize(mid, uid, "profile_view")
-    profiles = {mid: external_projection(await quality.profile(mid), "profile", mid) for mid in ids}
+    await quality.lock_profile_sources(ids)
+    profiles = {mid: await quality.profile_projection(mid) for mid in ids}
     rules = external_projection(await quality.rules(selection.rule_code, lock=True), "rules", selection.rule_code)
     selected_versions = {str(mid): version for mid, version in selection.profile_versions.items()}
     if any(p["status"] == "ready" and p["version"] != selected_versions[mid] for mid, p in profiles.items()) or (
