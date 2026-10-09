@@ -45,7 +45,7 @@ async def require_user_conversation(conv_repo: ConversationRepository, thread_id
         raise HTTPException(status_code=404, detail="对话线程不存在")
     if conversation.agent_id in HEALTH_AGENT_BACKENDS:
         try:
-            await HealthConsultationRepository(conv_repo.db).authorize(str(uid), thread_id)
+            await HealthConsultationRepository(conv_repo.db).authorize(str(uid), thread_id, preview_history=True)
         except HealthVisionError as exc:
             raise HTTPException(status_code=404, detail="对话线程不存在或无权访问") from exc
     return conversation

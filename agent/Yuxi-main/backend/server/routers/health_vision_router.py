@@ -10,9 +10,10 @@ from fastapi.routing import APIRoute
 
 from server.utils.auth_middleware import get_admin_user, get_required_user
 from yuxi.services.health_vision_service import health_vision_service as service
-from yuxi.services.health_consultation_service import create_consultation, create_daily_consultation
+from yuxi.services.health_consultation_service import create_consultation, create_daily_consultation, list_consultations
 from yuxi.services.health_family_planner_types import FamilyPlannerInput
 from yuxi.services.health_initial_meal_plan_types import InitialPlannerInput
+from yuxi.services.health_safe_planner_types import SafePlannerInput
 from yuxi.services.health_daily_service import daily_history, daily_summary
 from yuxi.services.health_memory_service import list_member_memory, memory_history, change_member_memory
 from yuxi.services.health_memory_types import MemoryPatch, MemoryRevoke
@@ -259,6 +260,18 @@ async def create_family_planner(member_id: UUID, data: FamilyPlannerInput, user:
         data,
         agent_slug=PLANNER_SLUG,
         family_selection=data.model_dump(mode="json", exclude={"client_request_id"}),
+    )
+
+
+@health_vision.post("/members/{member_id}/safe-meal-plan-conversations", status_code=201)
+async def create_safe_planner(member_id: UUID, data: SafePlannerInput, user: User = Depends(get_required_user)):
+    """绑定单成员当前已保存餐单，Agent仅提供安全改版预览。"""
+    return await create_consultation(
+        str(user.uid),
+        str(member_id),
+        data,
+        agent_slug=PLANNER_SLUG,
+        safe_selection=data.model_dump(mode="json", exclude={"client_request_id"}),
     )
 
 
@@ -738,6 +751,17 @@ async def grant(member_id: UUID, data: GrantInput, user: User = Depends(get_requ
 async def consent(member_id: UUID, data: ConsentInput, user: User = Depends(get_required_user)):
     """按用途和政策记录处理同意或撤回。"""
     return await service.consent(user.uid, str(member_id), data)
+
+
+@health_vision.get("/members/{member_id}/consultations")
+async def consultation_list(
+    member_id: UUID,
+    limit: int = Query(default=20, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(get_required_user),
+):
+    """读取当前成员的咨询列表，不返回正文或工具数据。"""
+    return await list_consultations(user.uid, str(member_id), limit=limit, offset=offset)
 
 
 @health_vision.post("/members/{member_id}/consultations", status_code=201)

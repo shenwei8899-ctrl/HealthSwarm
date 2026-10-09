@@ -1,4 +1,4 @@
-"""正式Schema12→13入口与旧单成员绑定在隔离PG上保持。"""
+"""正式Schema12→当前版本入口与旧单成员绑定在隔离PG上保持。"""
 
 from datetime import datetime
 
@@ -7,6 +7,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from test.integration.services.test_schema_migration_version import _create_isolated_manager, _drop_isolated_schema
+from test.support.health_schema_legacy import remove_schema21_safe_planner_structures
 from yuxi import storage_migration
 from yuxi.storage.postgres.models_business import User, Project, Conversation
 from yuxi.storage.postgres.models_health import FamilyMember, HealthConsultation
@@ -86,6 +87,8 @@ async def test_formal_schema12_upgrade_preserves_old_binding_and_is_idempotent(m
             ("health", 12),
         ):
             await manager.record_schema_version(domain, version)
+
+        await remove_schema21_safe_planner_structures(engine)
 
         async def unrelated(*_args, **_kwargs):
             """只隔离不属于健康DDL的文件和运行收敛副作用。"""

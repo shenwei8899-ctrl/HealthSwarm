@@ -1,0 +1,13 @@
+{
+  "pages": [
+    { "path": "pages/login/index", "style": { "navigationStyle": "custom", "navigationBarTitleText": "账号登录" } },
+    { "path": "pages/members/index", "style": { "navigationStyle": "custom", "navigationBarTitleText": "本人成员接入" } },
+    { "path": "pages/consultation/index", "style": { "navigationStyle": "custom", "navigationBarTitleText": "本人营养咨询" } }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "家庭营养师",
+    "navigationBarBackgroundColor": "#f5f5f7",
+    "backgroundColor": "#f5f5f7"
+  }
+}

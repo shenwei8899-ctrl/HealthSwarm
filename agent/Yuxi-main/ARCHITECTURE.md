@@ -35,7 +35,7 @@ Yuxi 是一个面向 RAG、知识图谱和多智能体工作流的知识库平�
 - `server/utils/lifespan.py` 管理数据库、内置模型/MCP/Skills、知识库、Redis、沙盒和 LangGraph checkpoint；通用 Task 只由独立 ARQ worker 执行。
 - `server/worker_main.py` 是 ARQ worker 入口，实际执行设置位于 `yuxi.services.run_worker`。
 
-Yuxi 只交付完整知识能力路径。API 始终注册 `external_kb`、`knowledge`、`evaluation`、`graph`、知识域 Dashboard 与 `/workspace/knowledge/*` 路由，并注册 `knowledge-base` Skill 和知识库工具；系统 discovery 始终向 Web 与 CLI 宣告知识能力。`storage-migrator` 创建并迁移 business、knowledge 与 health schema，API 与 worker 启动时要求三个域都兼容。当前健康域版本为 20，兼容版本由 `storage/postgres/manager.py` 的版本常量拥有。聊天附件仍只在真实解析动作发生时惰性加载 parser。
+Yuxi 只交付完整知识能力路径。API 始终注册 `external_kb`、`knowledge`、`evaluation`、`graph`、知识域 Dashboard 与 `/workspace/knowledge/*` 路由，并注册 `knowledge-base` Skill 和知识库工具；系统 discovery 始终向 Web 与 CLI 宣告知识能力。`storage-migrator` 创建并迁移 business、knowledge 与 health schema，API 与 worker 启动时要求三个域都兼容。当前健康域版本为 21，兼容版本由 `storage/postgres/manager.py` 的版本常量拥有；单成员安全改版预览的绑定与发布取舍见[对应决策](docs/develop-guides/decisions/implemented/2026-10-09-single-member-safe-planner-agent.md)。聊天附件仍只在真实解析动作发生时惰性加载 parser。
 
 ### `backend/package/yuxi`
 
@@ -75,6 +75,10 @@ Yuxi 只交付完整知识能力路径。API 始终注册 `external_kb`、`knowl
 - `utils` 放轻量转换和展示辅助；全局样式集中在 `assets/css`，颜色和基础规范优先复用 `base.css`。
 
 `/` 是公开首页；登录后的核心工作区是 `/agent`。`/extensions` 对所有登录用户开放，其中 Skills 对普通用户可见，知识库、工具和 MCP 管理能力仅管理员可见；Dashboard 仅超级管理员可访问。后端权限检查始终是最终边界，前端守卫只负责页面体验。
+
+健康识图中的餐单页面通过 `HealthSafeMealPlanner` 对选定单成员保存版本进入安全换菜或整餐预览，首次确认重验原AgentRun回执，再复用既有业务安全确认与幂等收据；保存后回读版本和专业审核。UI状态、恢复及授权边界见[页面确认决策](docs/develop-guides/decisions/implemented/2026-10-09-safe-planner-web-confirmation.md)，业务计算和最终授权仍由健康service拥有。
+
+家庭保存版本由 `HealthFamilyMealPlanner` 与独立家庭快照显示逐人成员、参加餐次、具体菜品及份量，并提供共同换菜、三餐重生成和参加成员／份量调整。全体选定者各自核对授权、专业来源和模型用途同意；完整服务预览经过首次同Run重验与明确确认后，调用既有家庭业务接口保存新版本。界面与恢复取舍见[家庭页面确认决策](docs/develop-guides/decisions/implemented/2026-10-09-family-planner-web-confirmation.md)。
 
 ## 智能体运行链路
 

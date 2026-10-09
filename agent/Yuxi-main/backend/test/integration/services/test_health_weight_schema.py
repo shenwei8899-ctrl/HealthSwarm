@@ -9,6 +9,10 @@ from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from test.integration.services.test_health_family_profile_schema import isolate_other_migration_effects
+from test.support.health_schema_legacy import (
+    assert_schema21_safe_planner_absent,
+    remove_schema21_safe_planner_structures,
+)
 from yuxi import storage_migration
 from yuxi.storage.postgres.manager import (
     BUSINESS_SCHEMA_VERSION,
@@ -169,6 +173,7 @@ async def test_formal_schema16_upgrade_preserves_family_weight_and_health_facts(
                     version=2,
                 )
             )
+        await remove_schema21_safe_planner_structures(engine)
         isolate_other_migration_effects(monkeypatch, tmp_path)
         for _ in range(2):
             manager = scoped_weight_manager(engine)
@@ -268,11 +273,13 @@ async def test_formal_weight_migration_rejects_future_version_before_ddl(monkeyp
         await prepare_schema16(manager, engine)
         await manager.record_schema_version("health", HEALTH_SCHEMA_VERSION + 1)
         manager.AsyncSession = async_sessionmaker(engine, expire_on_commit=False)
+        await remove_schema21_safe_planner_structures(engine)
         isolate_other_migration_effects(monkeypatch, tmp_path)
         monkeypatch.setattr(storage_migration, "pg_manager", manager)
         with pytest.raises(RuntimeError, match=f"Unsupported health schema version: {HEALTH_SCHEMA_VERSION + 1}"):
             await storage_migration.main()
         async with engine.connect() as connection:
+            await assert_schema21_safe_planner_absent(connection)
             assert (
                 await connection.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'"))
                 == HEALTH_SCHEMA_VERSION + 1

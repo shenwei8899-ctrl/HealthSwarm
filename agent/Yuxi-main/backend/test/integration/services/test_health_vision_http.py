@@ -125,9 +125,20 @@ async def health_http():
 
 
 async def cleanup_health_test_resources(identities, department_id):
-    """只在本轮 Task 全部终态且无 lease 后清理精确测试资源。"""
+    """只在本轮Run/Task全部终态且无lease后清理精确测试资源。"""
     uids = [item["uid"] for item in identities]
     async with pg_manager.get_async_session_context() as session:
+        owned_runs = list((await session.scalars(select(AgentRun).where(AgentRun.uid.in_(uids)))).all())
+        active_runs = [
+            run.id
+            for run in owned_runs
+            if run.status not in {"completed", "failed", "cancelled", "interrupted"}
+            or run.worker_id is not None
+            or run.lease_expires_at is not None
+            or run.runtime_cleanup_pending
+        ]
+        if active_runs:
+            raise RuntimeError(f"健康测试AgentRun尚未收敛，保留账号、PG及运行诊断数据：{active_runs}")
         owned_tasks = list(
             (
                 await session.scalars(

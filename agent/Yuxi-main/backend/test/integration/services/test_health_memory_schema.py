@@ -6,6 +6,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from test.integration.services.test_schema_migration_version import _create_isolated_manager, _drop_isolated_schema
+from test.support.health_schema_legacy import remove_schema21_safe_planner_structures
 from yuxi.storage.postgres.models_business import User
 from yuxi.storage.postgres.models_health import (
     FamilyMember,
@@ -199,6 +200,7 @@ async def test_incremental_health_tables_preserve_existing_rows_and_repeat(legac
                         snapshot={"migration": "old-active-snapshot"},
                     )
                 )
+        await remove_schema21_safe_planner_structures(engine)
         await manager.record_schema_version("health", legacy_version)
         for iteration in range(2):
             await manager.create_health_tables()

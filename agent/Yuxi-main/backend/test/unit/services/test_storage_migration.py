@@ -153,7 +153,7 @@ async def test_storage_migration_rejects_v071_schema_without_quiescence_proof(mo
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "health_version",
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, storage_migration.HEALTH_SCHEMA_VERSION],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, storage_migration.HEALTH_SCHEMA_VERSION],
 )
 async def test_current_schema_skips_unrelated_ddl_and_upgrades_health(monkeypatch, health_version):
     calls: list[str] = []

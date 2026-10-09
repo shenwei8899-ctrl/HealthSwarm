@@ -20,13 +20,18 @@ export const healthVisionApi = {
   professionalProfile: (id) => apiGet(`${root}/members/${id}/external-profile-versions/current`),
   importProfessionalProfile: (id, data) =>
     apiPost(`${root}/members/${id}/external-profile-versions`, data),
-  approvedQualityRules: (code) => apiGet(`${root}/approved-quality-rules/${encodeURIComponent(code)}`),
+  approvedQualityRules: (code) =>
+    apiGet(`${root}/approved-quality-rules/${encodeURIComponent(code)}`),
   personalTargets: (id, data) => apiPost(`${root}/members/${id}/nutrition-targets`, data),
   consent: (id, data) => apiPost(`${root}/members/${id}/processing-consents`, data),
   createConsultation: (id, data) =>
     apiPost(`${root}/members/${id}/consultations`, data, idempotent(data)),
   createMealPlanner: (id, data) =>
     apiPost(`${root}/members/${id}/meal-planner`, data, idempotent(data)),
+  createSafeMealPlanner: (id, data) =>
+    apiPost(`${root}/members/${id}/safe-meal-plan-conversations`, data, idempotent(data)),
+  createFamilyMealPlanner: (id, data) =>
+    apiPost(`${root}/members/${id}/family-meal-planner`, data, idempotent(data)),
   previewMealPlan: (id, data) => apiPost(`${root}/members/${id}/meal-plan-previews`, data),
   mealPlans: (id) => apiGet(`${root}/members/${id}/meal-plans`),
   mealPlan: (id) => apiGet(`${root}/meal-plans/${id}`),
@@ -35,6 +40,26 @@ export const healthVisionApi = {
   saveMealPlan: (id, data) => apiPost(`${root}/members/${id}/meal-plans`, data, idempotent(data)),
   swapMealPlan: (id, data) =>
     apiPost(`${root}/meal-plans/${id}/swap`, data, {
+      headers: { 'Idempotency-Key': data.client_request_id, 'If-Match': `"${data.version}"` }
+    }),
+  safeSwapMealPlan: (id, data) =>
+    apiPost(`${root}/meal-plans/${id}/safe-swap`, data, {
+      headers: { 'Idempotency-Key': data.client_request_id, 'If-Match': `"${data.version}"` }
+    }),
+  safeRegenerateMealPlan: (id, data) =>
+    apiPost(`${root}/meal-plans/${id}/safe-regenerate`, data, {
+      headers: { 'Idempotency-Key': data.client_request_id, 'If-Match': `"${data.version}"` }
+    }),
+  familySafeSwapMealPlan: (id, data) =>
+    apiPost(`${root}/meal-plans/${id}/family-safe-swap`, data, {
+      headers: { 'Idempotency-Key': data.client_request_id, 'If-Match': `"${data.version}"` }
+    }),
+  familySafeRegenerateMealPlan: (id, data) =>
+    apiPost(`${root}/meal-plans/${id}/family-safe-regenerate`, data, {
+      headers: { 'Idempotency-Key': data.client_request_id, 'If-Match': `"${data.version}"` }
+    }),
+  familyParticipationMealPlan: (id, data) =>
+    apiPost(`${root}/meal-plans/${id}/family-participation`, data, {
       headers: { 'Idempotency-Key': data.client_request_id, 'If-Match': `"${data.version}"` }
     }),
   createDailyConsultation: (id) => apiPost(`${root}/members/${id}/daily-consultations`),

@@ -3,6 +3,7 @@ import { mealLabels, nutrientLabels, nutrientText } from '@/utils/healthVision'
 
 defineProps({
   snapshot: { type: Object, required: true },
+  ruleChecked: { type: Boolean, default: false },
   editable: { type: Boolean, default: false }
 })
 defineEmits(['swap'])
@@ -18,10 +19,18 @@ function gramsText(value) {
 <template>
   <section class="plan-snapshot">
     <div class="status">
-      <a-tag>草稿</a-tag><a-tag color="orange">未个体适配</a-tag
+      <a-tag>草稿</a-tag
+      ><a-tag color="orange">{{ ruleChecked ? '按批准规则检查' : '未个体适配' }}</a-tag
       ><a-tag color="orange">未专业审核</a-tag>
     </div>
-    <p class="muted">{{ snapshot.notice }} 保存草稿后仍需核对，不计入实际饮食记录。</p>
+    <p class="muted">
+      {{
+        ruleChecked
+          ? '此预览按列明专业来源与批准规则检查，营养依据计划份量计算，仍需专业审核。'
+          : snapshot.notice
+      }}
+      保存草稿后仍需核对，不计入实际饮食记录。
+    </p>
     <div class="totals">
       <div v-for="([label, unit], key) in nutrientLabels" :key="key" class="nutrient">
         <span>{{ label }} · 全天</span

@@ -859,6 +859,9 @@ async def save_messages_from_langgraph_state(
                     from yuxi.services.health_initial_planner_service import validate_initial_planner_publication
 
                     await validate_initial_planner_publication(conv_repo.db, locked_run, last_ai_message.content)
+                    from yuxi.services.health_safe_planner_service import validate_safe_planner_publication
+
+                    await validate_safe_planner_publication(conv_repo.db, locked_run, last_ai_message.content)
                 if complete_run and locked_run.agent_slug == ANALYST_SLUG:
                     from yuxi.services.health_diet_analysis_service import validate_analyst_publication
 

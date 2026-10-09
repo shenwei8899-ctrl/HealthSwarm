@@ -81,6 +81,32 @@ QUALITY_SKILL_SNAPSHOT = consultation_skill_snapshot(QUALITY_SKILLS)
 QUALITY_PROMPT = QUALITY_SKILL_SNAPSHOT["preloaded_skill_contents"]["family-quality-review"]
 
 
+async def list_consultations(uid, member_id, *, limit=20, offset=0):
+    """重验成员授权后返回咨询元数据，历史正文仍由独立读取校验。"""
+    async with pg_manager.get_async_session_context() as session:
+        health = HealthVisionRepository(session)
+        for scope in ("ai_use", "report_view", "diet_edit"):
+            await health.authorize(member_id, uid, scope)
+        rows = await HealthConsultationRepository(session).list_member_consultations(
+            uid, member_id, limit=limit, offset=offset
+        )
+        has_more = len(rows) > limit
+        return {
+            "items": [
+                {
+                    "thread_id": thread_id,
+                    "member_id": member_id,
+                    "agent_slug": CONSULTATION_SLUG,
+                    "business_date": business_date.isoformat() if business_date is not None else None,
+                    "created_at": format_utc_datetime(created_at),
+                }
+                for thread_id, business_date, created_at in rows[:limit]
+            ],
+            "has_more": has_more,
+            "next_offset": offset + limit if has_more else None,
+        }
+
+
 async def create_daily_consultation(uid, member_id):
     """服务器日期与确定请求键使同一天的成员入口可并发重入。"""
     from yuxi.services.health_daily_service import business_date
@@ -101,24 +127,42 @@ async def create_consultation(
     quality_selection=None,
     family_selection=None,
     initial_selection=None,
+    safe_selection=None,
 ):
     """单事务幂等创建项目、会话与固定成员绑定；不调用模型。"""
     request_id = str(data.client_request_id)
-    if family_selection is not None and initial_selection is not None:
-        raise HealthVisionError("request_conflict", "初始生成与既有家庭餐单选择不能同时使用", 409)
+    if sum(selection is not None for selection in (family_selection, initial_selection, safe_selection)) > 1:
+        raise HealthVisionError("request_conflict", "每个配餐线程只能明确选择一种模式", 409)
     async with pg_manager.get_async_session_context() as session:
         repo = HealthConsultationRepository(session)
         await repo.lock_request(uid, request_id)
         binding = await repo.find_request(uid, request_id)
         old_family = getattr(binding, "family_planner_selection", None)
         old_initial = getattr(binding, "initial_planner_selection", None)
+        old_safe = getattr(binding, "safe_planner_selection", None)
         if old_initial is not None and initial_selection is None:
             raise HealthVisionError("request_conflict", "同一幂等键不能改变初始线程模式", 409)
         if old_family is not None and family_selection is None:
             raise HealthVisionError("request_conflict", "同一幂等键不能改变家庭线程模式", 409)
+        if old_safe is not None and safe_selection is None:
+            raise HealthVisionError("request_conflict", "同一幂等键不能改变单成员安全线程模式", 409)
         family_binding = None
         initial_binding = None
-        if initial_selection is not None:
+        safe_binding = None
+        if safe_selection is not None:
+            from yuxi.services.health_safe_planner_types import SafePlannerSelection
+            from yuxi.services.health_safe_planner_service import safe_planner_context_in_session
+            from yuxi.services.health_nutrition_service import input_fingerprint
+
+            selected = SafePlannerSelection.model_validate(safe_selection)
+            chosen = selected.model_dump(mode="json")
+            if agent_slug != PLANNER_SLUG:
+                raise HealthVisionError("request_conflict", "安全改版选择只属于配餐师", 409)
+            if binding is not None and (not isinstance(old_safe, dict) or old_safe.get("selection") != chosen):
+                raise HealthVisionError("request_conflict", "同一幂等键不能改变单成员安全选择", 409)
+            current = await safe_planner_context_in_session(session, uid, member_id, selected)
+            safe_binding = {"selection": chosen, "source_hash": input_fingerprint(current["sources"])}
+        elif initial_selection is not None:
             from yuxi.services.health_initial_meal_plan_types import InitialPlanSelection
             from yuxi.services.health_initial_planner_service import initial_planner_context_in_session
             from yuxi.services.health_nutrition_service import input_fingerprint
@@ -214,6 +258,7 @@ async def create_consultation(
                     request_id=request_id,
                     family_planner_selection=family_binding,
                     initial_planner_selection=initial_binding,
+                    safe_planner_selection=safe_binding,
                 )
             )
             if feedback_selection is not None:
@@ -259,12 +304,17 @@ async def create_consultation(
             ),
             **({"family_selection": family_binding["selection"]} if family_binding is not None else {}),
             **({"initial_selection": initial_binding["selection"]} if initial_binding is not None else {}),
+            **({"safe_selection": safe_binding["selection"]} if safe_binding is not None else {}),
         }
 
 
-async def require_consultation(session, uid, thread_id, model_spec=None, *, expected=None, lock=False):
+async def require_consultation(
+    session, uid, thread_id, model_spec=None, *, expected=None, lock=False, preview_history=False
+):
     """咨询用途、处理指纹和当前 grant 都满足后才能提交或调用模型。"""
-    binding = await HealthConsultationRepository(session).authorize(uid, thread_id, lock=lock)
+    binding = await HealthConsultationRepository(session).authorize(
+        uid, thread_id, lock=lock, preview_history=preview_history
+    )
     conversation = await session.get(Conversation, binding.conversation_id)
     purpose = {PLANNER_SLUG: "meal_plan", ANALYST_SLUG: "diet_analysis", QUALITY_SLUG: "quality_review"}.get(
         conversation.agent_id, "consultation"
@@ -289,6 +339,10 @@ async def require_consultation(session, uid, thread_id, model_spec=None, *, expe
         from yuxi.services.health_nutrition_service import input_fingerprint
 
         snapshot["initial_selection_hash"] = input_fingerprint(binding.initial_planner_selection)
+    if getattr(binding, "safe_planner_selection", None) is not None:
+        from yuxi.services.health_nutrition_service import input_fingerprint
+
+        snapshot["safe_selection_hash"] = input_fingerprint(binding.safe_planner_selection)
     if (model_spec and model_spec != snapshot["model"]) or (expected is not None and expected != snapshot):
         raise HealthVisionError("policy_changed", "咨询处理配置已变化，请重新提交并确认用途同意", 409)
     await HealthVisionRepository(session).require_consent(
@@ -316,6 +370,20 @@ async def require_consultation_attempt(context, messages=None):
         )
         health_repo = HealthVisionRepository(session)
         for message in messages or []:
+            if getattr(binding, "safe_planner_selection", None) is not None and isinstance(message, ToolMessage):
+                from yuxi.services.health_safe_planner_types import SAFE_PLANNER_TOOLS
+                from yuxi.services.health_safe_planner_service import validate_safe_planner_tool_payload
+
+                if message.name not in SAFE_PLANNER_TOOLS:
+                    raise HealthVisionError("source_invalidated", "单成员安全checkpoint工具不属于固定资源", 410)
+                if message.status == "error":
+                    continue
+                try:
+                    payload = json.loads(message.content)
+                except (ValueError, TypeError):
+                    raise HealthVisionError("source_invalidated", "单成员安全checkpoint无法解析", 410) from None
+                await validate_safe_planner_tool_payload(session, binding, message.name, payload)
+                continue
             if (
                 isinstance(message, ToolMessage)
                 and message.name
@@ -623,7 +691,15 @@ async def prepare_consultation_context(context, db, run):
     elif run.agent_slug == PLANNER_SLUG:
         skill_snapshot, skills, prompt = PLANNER_SKILL_SNAPSHOT, PLANNER_SKILLS, PLANNER_PROMPT
         tools = ["search_meal_plan_recipes", "preview_meal_plan"]
-        if getattr(binding, "initial_planner_selection", None) is not None:
+        if getattr(binding, "safe_planner_selection", None) is not None:
+            from yuxi.services.health_safe_planner_types import SAFE_PLANNER_TOOLS
+
+            tools = list(SAFE_PLANNER_TOOLS)
+            prompt += (
+                "\n本线程为服务器固定的单成员已保存餐单安全改版模式。先读get_safe_plan_context；"
+                "只用该模式三个工具，身份、计划及专业来源版本不可改变；最终选择本Runpreview_id或questions。"
+            )
+        elif getattr(binding, "initial_planner_selection", None) is not None:
             from yuxi.services.health_initial_meal_plan_types import INITIAL_PLANNER_TOOLS
 
             tools = list(INITIAL_PLANNER_TOOLS)
@@ -651,6 +727,7 @@ async def prepare_consultation_context(context, db, run):
         if run.agent_slug == QUALITY_SLUG
         or getattr(binding, "family_planner_selection", None) is not None
         or getattr(binding, "initial_planner_selection", None) is not None
+        or getattr(binding, "safe_planner_selection", None) is not None
         or tools == ["get_selected_meal_feedback", "record_selected_meal_feedback"]
         else 20
     )

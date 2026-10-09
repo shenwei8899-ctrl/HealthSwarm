@@ -1,0 +1,9 @@
+node_modules/
+dist/
+unpackage/
+.cache/
+.env*
+!.env.example
+*.log
+.hbuilderx/
+.idea/

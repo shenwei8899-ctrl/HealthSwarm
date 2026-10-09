@@ -1,0 +1,14 @@
+# 仅用于明确开启的合成真实模型验收；保留健康测试隔离网络。
+services:
+  api:
+    networks:
+      - app-network
+      - health-live-egress
+  worker:
+    networks:
+      - app-network
+      - health-live-egress
+networks:
+  health-live-egress:
+    driver: bridge
+    internal: false

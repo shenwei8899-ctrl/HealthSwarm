@@ -5,10 +5,14 @@ import { healthVisionApi as api } from '@/apis/health_vision_api'
 import { agentApi } from '@/apis/agent_api'
 import { mealLabels } from '@/utils/healthVision'
 import HealthMealPlanSnapshot from './HealthMealPlanSnapshot.vue'
+import HealthSafeMealPlanner from './HealthSafeMealPlanner.vue'
+import HealthFamilyMealPlanner from './HealthFamilyMealPlanner.vue'
+import HealthFamilyMealPlanSnapshot from './HealthFamilyMealPlanSnapshot.vue'
 
 const props = defineProps({
   memberId: { type: String, default: '' },
   scopes: { type: Array, default: () => [] },
+  members: { type: Array, default: () => [] },
   configuration: { type: Object, required: true }
 })
 const emit = defineEmits(['profile'])
@@ -56,6 +60,7 @@ const questions = ref([])
 const manual = ref(false)
 const meals = ref(newMeals())
 const selectedId = ref('')
+const safeBusy = ref(false)
 let epoch = 0
 let listSequence = 0
 let detailSequence = 0
@@ -63,6 +68,15 @@ let recipeSequence = 0
 let timer
 let disposed = false
 const displayed = computed(() => historyVersion.value?.snapshot || current.value || preview.value)
+function isFamilySnapshot(snapshot) {
+  return (
+    snapshot?.scope === 'family_recipe_draft' ||
+    (!!snapshot?.members && !Array.isArray(snapshot.members) &&
+      Object.keys(snapshot.members).length > 0)
+  )
+}
+const displayedIsFamily = computed(() => isFamilySnapshot(displayed.value))
+const currentIsFamily = computed(() => isFamilySnapshot(current.value))
 const canPreview = computed(
   () =>
     canRead.value &&
@@ -73,7 +87,8 @@ const recipeOptions = computed(() =>
   recipes.value.map((r) => ({ value: r.id, label: `${r.name} · ${r.dataset_version}` }))
 )
 const locked = computed(
-  () => working.value || polling.value || !!saveAttempt.value || !!generation.value
+  () =>
+    working.value || polling.value || !!saveAttempt.value || !!generation.value || safeBusy.value
 )
 const approvalLabels = {
   draft: '当前版本待提交专业审核',
@@ -146,6 +161,7 @@ function clearPrivateState() {
   recipesLoading.value = false
   recipeQuery.value = ''
   manual.value = false
+  safeBusy.value = false
 }
 
 /** 成员列表与选中详情各有读取代次，迟到响应不能覆盖新选择。 */
@@ -192,7 +208,8 @@ async function loadRecipes() {
   }
 }
 async function selectPlan(id) {
-  if (working.value || saveAttempt.value || polling.value || generation.value) return
+  if (working.value || saveAttempt.value || polling.value || generation.value || safeBusy.value)
+    return
   const ticket = epoch,
     sequence = ++detailSequence
   selectedId.value = id
@@ -211,7 +228,10 @@ async function selectPlan(id) {
       await readApproval(result, ticket, sequence)
     }
   } catch (exc) {
-    if (active(ticket) && sequence === detailSequence) error.value = failure(exc)
+    if (active(ticket) && sequence === detailSequence) {
+      if ([403, 404].includes(exc.status)) clearPrivateState()
+      error.value = failure(exc)
+    }
   } finally {
     if (active(ticket) && sequence === detailSequence) working.value = false
   }
@@ -243,6 +263,17 @@ async function readApproval(plan, ticket, sequence) {
 /** 失效后的下一步回到同一成员的档案与目标维护区。 */
 function openProfile() {
   if (!disposed && canRead.value && !locked.value) emit('profile')
+}
+async function safeSaved(result) {
+  safeBusy.value = false
+  await selectPlan(result.plan_id)
+  await reload()
+}
+async function safeInvalidated(reason, status) {
+  safeBusy.value = false
+  if ([403, 404].includes(status)) clearPrivateState()
+  else if (selectedId.value) await selectPlan(selectedId.value)
+  error.value = reason
 }
 /** 手动预览只提交菜谱与计划份量，显示服务端营养快照。 */
 async function makePreview() {
@@ -300,7 +331,7 @@ async function save() {
   }
 }
 function openSwap(meal_type, dish) {
-  if (locked.value || !current.value || historyVersion.value) return
+  if (locked.value || !current.value || historyVersion.value || currentIsFamily.value) return
   swap.value = {
     meal_type,
     dish_index: dish.dish_index,
@@ -322,6 +353,7 @@ async function submitSwap() {
   if (
     !canRead.value ||
     !current.value ||
+    currentIsFamily.value ||
     !swap.value?.replacement.recipe_version_id ||
     !swap.value.reason.trim() ||
     working.value
@@ -538,6 +570,16 @@ watch(
     void reload()
   }
 )
+watch(
+  () => JSON.stringify(props.members.map(({ id, scopes }) => [id, scopes])),
+  () => {
+    if (!currentIsFamily.value && !displayedIsFamily.value && !(working.value && selectedId.value))
+      return
+    clearPrivateState()
+    void reload()
+  },
+  { flush: 'sync' }
+)
 onMounted(() => reload())
 onBeforeUnmount(() => {
   disposed = true
@@ -680,9 +722,10 @@ onBeforeUnmount(() => {
       <section class="panel">
         <div class="heading">
           <h2>已保存的餐单草稿</h2>
-          <a-button :loading="loading" :disabled="working" @click="reload">刷新餐单</a-button>
+          <a-button :loading="loading" :disabled="locked" @click="reload">刷新餐单</a-button>
         </div>
         <a-select
+          aria-label="已保存餐单"
           :value="selectedId || undefined"
           :options="
             plans.map((p) => ({
@@ -735,22 +778,56 @@ onBeforeUnmount(() => {
                 : '餐单草稿与专业审核分别管理；当前审核状态只对应当前餐单版本。'
             "
           />
-          <p v-if="historyVersion" class="muted">正在查看历史快照；上方审核状态对应当前版本 {{ current.version }}。</p>
+          <p v-if="historyVersion" class="muted">
+            正在查看历史快照；上方审核状态对应当前版本 {{ current.version }}。
+          </p>
           <a-button
             v-if="approval?.professional_review === 'invalidated'"
             :disabled="locked"
             @click="openProfile"
-          >前往档案与目标</a-button>
+            >前往档案与目标</a-button
+          >
         </div>
         <template v-if="current">
           <h3>生成时快照</h3>
           <p class="muted">下方状态为生成时记录；当前专业审核以上方服务端回读为准。</p>
         </template>
+        <HealthFamilyMealPlanSnapshot
+          v-if="displayedIsFamily"
+          :snapshot="displayed"
+          :members="members"
+        />
         <HealthMealPlanSnapshot
+          v-else
           :snapshot="displayed"
           :editable="!!current && !historyVersion && !locked"
           @swap="openSwap"
-        /><template v-if="current?.revisions"
+        />
+        <HealthSafeMealPlanner
+          v-if="current && !historyVersion && !currentIsFamily"
+          :key="`${memberId}:${current.plan_id}:${current.version}`"
+          :member-id="memberId"
+          :plan="current"
+          :scopes="scopes"
+          :configuration="configuration"
+          :disabled="working || polling || !!saveAttempt || !!generation"
+          @busy="safeBusy = $event"
+          @saved="safeSaved"
+          @invalidated="safeInvalidated"
+        />
+        <HealthFamilyMealPlanner
+          v-if="current && !historyVersion && currentIsFamily"
+          :key="`${memberId}:${current.plan_id}:${current.version}`"
+          :member-id="memberId"
+          :members="members"
+          :plan="current"
+          :configuration="configuration"
+          :disabled="working || polling || !!saveAttempt || !!generation"
+          @busy="safeBusy = $event"
+          @saved="safeSaved"
+          @invalidated="safeInvalidated"
+        />
+        <template v-if="current?.revisions"
           ><div class="heading">
             <h3>版本历史</h3>
             <a-button v-if="historyVersion" @click="historyVersion = null">返回当前版本</a-button>
@@ -758,7 +835,7 @@ onBeforeUnmount(() => {
           <div v-for="revision in current.revisions" :key="revision.version" class="revision">
             <span>版本 {{ revision.version }} · {{ revision.reason }}</span
             ><span class="muted">{{ revision.created_at }}</span
-            ><a-button size="small" :disabled="working" @click="historyVersion = revision"
+            ><a-button size="small" :disabled="locked" @click="historyVersion = revision"
               >查看快照</a-button
             >
           </div></template

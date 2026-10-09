@@ -1,0 +1,15 @@
+{
+  "name": "家庭营养师账号接入",
+  "appid": "__UNI__HEALTHSWARM_ACCESS",
+  "description": "现有账号登录与本人成员显式关联",
+  "versionName": "0.1.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "uniStatistics": { "enable": false },
+  "h5": { "title": "家庭营养师 · 账号接入" },
+  "mp-weixin": {
+    "appid": "",
+    "setting": { "urlCheck": true, "es6": true, "minified": true },
+    "usingComponents": true
+  }
+}

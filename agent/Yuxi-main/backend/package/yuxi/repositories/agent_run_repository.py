@@ -50,7 +50,9 @@ class AgentRunRepository:
         run = result.scalar_one_or_none()
         if run is not None and run.agent_slug in HEALTH_AGENT_BACKENDS:
             try:
-                await HealthConsultationRepository(self.db).authorize(str(uid), run.conversation_thread_id)
+                await HealthConsultationRepository(self.db).authorize(
+                    str(uid), run.conversation_thread_id, preview_history=True
+                )
             except HealthVisionError:
                 return None
         return run
@@ -64,7 +66,9 @@ class AgentRunRepository:
         run = result.scalar_one_or_none()
         if run is not None and run.agent_slug in HEALTH_AGENT_BACKENDS:
             try:
-                await HealthConsultationRepository(self.db).authorize(str(uid), run.conversation_thread_id, lock=True)
+                await HealthConsultationRepository(self.db).authorize(
+                    str(uid), run.conversation_thread_id, lock=True, preview_history=True
+                )
             except HealthVisionError:
                 return None
         return run

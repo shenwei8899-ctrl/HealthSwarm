@@ -1,4 +1,4 @@
-"""正式13/14→15迁移保留旧预览和家庭绑定，重复执行幂等。"""
+"""正式13/14→当前版本迁移保留旧预览和家庭绑定，重复执行幂等。"""
 
 from datetime import datetime
 from uuid import uuid4
@@ -12,6 +12,7 @@ from test.integration.services.test_schema_migration_version import (
     _drop_isolated_schema,
     _scoped_manager,
 )
+from test.support.health_schema_legacy import remove_schema21_safe_planner_structures
 from test.unit.services.test_health_meal_planner import spec_input
 from yuxi import storage_migration
 from yuxi.storage.postgres.manager import BUSINESS_SCHEMA_VERSION, KNOWLEDGE_SCHEMA_VERSION, HEALTH_SCHEMA_VERSION
@@ -134,6 +135,8 @@ async def test_formal_upgrade_preserves_old_previews_and_family_binding(monkeypa
             ("health", source_version),
         ):
             await manager.record_schema_version(domain, version)
+
+        await remove_schema21_safe_planner_structures(engine)
 
         async def unrelated(*_args, **_kwargs):
             """隔离与健康DDL无关的文件和运行收敛副作用。"""

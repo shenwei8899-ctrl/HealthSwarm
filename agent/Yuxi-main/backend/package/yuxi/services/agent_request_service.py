@@ -119,7 +119,12 @@ async def submit_agent_request(
             raise HTTPException(status_code=422, detail="专属咨询只支持文字，报告与照片请在健康识图复核")
         try:
             _, snapshot = await require_consultation(
-                db, str(current_user.uid), request_input.thread_id, request_input.model_spec, lock=True
+                db,
+                str(current_user.uid),
+                request_input.thread_id,
+                request_input.model_spec,
+                lock=True,
+                preview_history=True,
             )
         except HealthVisionError as exc:
             raise HTTPException(status_code=exc.status, detail=exc.message) from exc

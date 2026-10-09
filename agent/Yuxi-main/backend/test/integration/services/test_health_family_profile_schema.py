@@ -12,6 +12,10 @@ from test.integration.services.test_schema_migration_version import (
     _drop_isolated_schema,
     _scoped_manager,
 )
+from test.support.health_schema_legacy import (
+    assert_schema21_safe_planner_absent,
+    remove_schema21_safe_planner_structures,
+)
 from yuxi import storage_migration
 from yuxi.storage.postgres.manager import BUSINESS_SCHEMA_VERSION, KNOWLEDGE_SCHEMA_VERSION, HEALTH_SCHEMA_VERSION
 from yuxi.storage.postgres.models_business import Conversation, Project, User
@@ -155,6 +159,7 @@ async def test_formal_schema15_upgrade_preserves_member_grant_and_consultation(m
                 )
             )
 
+        await remove_schema21_safe_planner_structures(engine)
         isolate_other_migration_effects(monkeypatch, tmp_path)
         for _ in range(2):
             manager = _scoped_manager(engine)
@@ -222,11 +227,13 @@ async def test_formal_migration_rejects_future_health_schema_without_new_ddl(mon
         await manager.record_schema_version("health", HEALTH_SCHEMA_VERSION + 1)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         manager.AsyncSession = sessions
+        await remove_schema21_safe_planner_structures(engine)
         isolate_other_migration_effects(monkeypatch, tmp_path)
         monkeypatch.setattr(storage_migration, "pg_manager", manager)
         with pytest.raises(RuntimeError, match=f"Unsupported health schema version: {HEALTH_SCHEMA_VERSION + 1}"):
             await storage_migration.main()
         async with sessions() as session:
+            await assert_schema21_safe_planner_absent(session)
             assert (
                 await session.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'"))
                 == HEALTH_SCHEMA_VERSION + 1

@@ -10,6 +10,12 @@ from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 MODEL = "deterministic-health-20261004"
+SAFE_PLANNER_MODEL = "deterministic-safe-meal-plan-20261009"
+SAFE_PLANNER_TOOLS = {
+    "get_safe_plan_context",
+    "preview_safe_plan_swap",
+    "preview_safe_plan_regeneration",
+}
 TOOLS = {
     "get_confirmed_profile",
     "get_confirmed_diet",
@@ -25,6 +31,107 @@ TOOLS = {
 }
 STATES = {}
 LOCK = Lock()
+
+
+def safe_planner_replay_delta(authorization, body):
+    """单成员协议独立核对固定工具、300/310/305手算结果及本轮收据。"""
+    if (
+        authorization != "Bearer synthetic-safe-planner-key"
+        or body.get("model") != SAFE_PLANNER_MODEL
+        or body.get("stream") is not True
+    ):
+        raise ValueError("synthetic_safe_model_required")
+    names = [t.get("function", {}).get("name") for t in body.get("tools", [])]
+    if len(names) != 3 or set(names) != SAFE_PLANNER_TOOLS:
+        raise ValueError("fixed_safe_tools_required")
+    messages = body.get("messages", [])
+    if not any(m.get("role") == "system" and "slug: family-meal-planner" in str(m.get("content")) for m in messages):
+        raise ValueError("fixed_safe_skill_required")
+    user = next((m for m in reversed(messages) if m.get("role") == "user"), {})
+    match = re.fullmatch(
+        r"SAFE_PLANNER_E2E:([0-9a-f]{32}):(swap|swap_second|regeneration|questions|invalid|forged|foreign|safe_gate)(?::([0-9a-f-]{36}))?",
+        str(user.get("content", "")),
+    )
+    if match is None or (match[2] == "foreign") != bool(match[3]):
+        raise ValueError("synthetic_safe_input_required")
+    token, mode, foreign = match.groups()
+    context_id, preview_id = f"safe-context-{token}", f"safe-preview-{token}"
+    if mode == "swap_second" and not any(
+        message.get("role") == "tool"
+        and str(message.get("tool_call_id", "")).startswith("safe-preview-")
+        and message.get("tool_call_id") != preview_id
+        for message in messages
+    ):
+        raise ValueError("prior_safe_checkpoint_required")
+    outputs = {
+        m.get("tool_call_id"): json.loads(m["content"])
+        for m in messages
+        if m.get("role") == "tool" and m.get("tool_call_id") in {context_id, preview_id}
+    }
+    if preview_id in outputs:
+        receipt = outputs[preview_id]
+        if (
+            set(receipt) != {"preview_id", "scope", "member_id", "operation", "result"}
+            or receipt["scope"] != "single_member_saved_plan"
+            or not re.fullmatch(r"[0-9a-f-]{36}", str(receipt["preview_id"]))
+            or receipt["operation"] != ("regeneration" if mode == "regeneration" else "swap")
+        ):
+            raise ValueError("single_member_receipt_required")
+        result = receipt["result"]
+        if result.get("status") != "ready":
+            raise ValueError("safe_preview_ready_required")
+        if mode == "regeneration":
+            if result["plan_snapshot"]["nutrition"]["totals"]["energy_kcal"] != "305.00":
+                raise ValueError("independent_305kcal_required")
+        else:
+            candidates = result["candidates"]
+            if len(candidates) != 1 or candidates[0]["plan_snapshot"]["nutrition"]["totals"]["energy_kcal"] != "310.00":
+                raise ValueError("independent_310kcal_required")
+        answer = {"preview_id": foreign if mode == "foreign" else receipt["preview_id"]}
+        if mode == "invalid":
+            answer["professional_review"] = "approved"
+        elif mode == "forged":
+            answer["preview_id"] = "00000000-0000-0000-0000-000000000000"
+        return token, mode, {"role": "assistant", "content": json.dumps(answer)}, True
+    if context_id in outputs:
+        current = outputs[context_id]
+        if (
+            current.get("scope") != "single_member_saved_plan"
+            or current["plan_snapshot"]["nutrition"]["totals"]["energy_kcal"] != "300.00"
+            or not re.fullmatch(r"[0-9a-f-]{36}", str(current["member_id"]))
+            or current["professional_review"] != "not_a_professional_decision"
+        ):
+            raise ValueError("independent_original_300kcal_required")
+        if mode == "questions":
+            return (
+                token,
+                mode,
+                {"role": "assistant", "content": json.dumps({"questions": ["合成：要调整哪一餐？"]})},
+                True,
+            )
+        name, args, call_id = (
+            ("preview_safe_plan_regeneration", {}, preview_id)
+            if mode == "regeneration"
+            else ("preview_safe_plan_swap", {"meal_type": "lunch", "dish_index": 0}, preview_id)
+        )
+    else:
+        name, args, call_id = "get_safe_plan_context", {}, context_id
+    return (
+        token,
+        mode,
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)},
+                }
+            ],
+        },
+        False,
+    )
 
 
 def validate_request(authorization, body):
@@ -636,10 +743,17 @@ class HealthReplayHandler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("content-length", "0"))
-            if not 0 < length <= 200000:
+            if not 0 < length <= 1000000:
                 raise ValueError("invalid_length")
             body = json.loads(self.rfile.read(length))
-            token, step, call_id, answered, record_ids = validate_request(self.headers.get("authorization"), body)
+            safe_planner = body.get("model") == SAFE_PLANNER_MODEL
+            if not safe_planner and length > 200000:
+                raise ValueError("invalid_length")
+            if safe_planner:
+                token, step, safe_delta, answered = safe_planner_replay_delta(self.headers.get("authorization"), body)
+                call_id, record_ids = "", []
+            else:
+                token, step, call_id, answered, record_ids = validate_request(self.headers.get("authorization"), body)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             if isinstance(error, ValueError) and re.fullmatch(r"[a-z_]+", str(error)):
                 print(f"合成协议拒绝：{error}", flush=True)
@@ -665,6 +779,7 @@ class HealthReplayHandler(BaseHTTPRequestHandler):
                 "glucose_derived_gate",
                 "lipids_gate",
                 "lipids_derived_gate",
+                "safe_gate",
             }
             and answered
             and not state["release"].wait(40)
@@ -808,11 +923,13 @@ class HealthReplayHandler(BaseHTTPRequestHandler):
                     },
                 ],
             }
+        if safe_planner:
+            delta = safe_delta
         common = {
             "id": f"chatcmpl-{token}-{step}",
             "object": "chat.completion.chunk",
             "created": int(time.time()),
-            "model": MODEL,
+            "model": SAFE_PLANNER_MODEL if safe_planner else MODEL,
         }
         chunks = [
             {**common, "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},

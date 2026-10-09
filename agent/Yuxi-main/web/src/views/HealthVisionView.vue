@@ -790,6 +790,7 @@ async function retryJob(job) {
         <HealthMealPlans
           v-else-if="tab === 'plans'"
           :member-id="memberId"
+          :members="members"
           :scopes="member?.scopes || []"
           :configuration="config"
           @profile="activeTab = 'profile'"

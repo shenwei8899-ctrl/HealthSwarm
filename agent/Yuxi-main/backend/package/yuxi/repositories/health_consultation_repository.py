@@ -1,11 +1,11 @@
 """健康咨询的会话身份及当前执行所有权查询。"""
 
-from sqlalchemy import select, text
+from sqlalchemy import and_, or_, select, text
 
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.models_business import AgentRun, Conversation, Project
-from yuxi.storage.postgres.models_health import HealthConsultation
+from yuxi.storage.postgres.models_health import HealthConsultation, HealthDailyConversation, HealthSafePlannerPreview
 from yuxi.utils.datetime_utils import utc_now_naive
 
 CONSULTATION_SLUG = "health-consultation"
@@ -31,6 +31,36 @@ class HealthConsultationRepository:
     def __init__(self, session):
         self.session = session
 
+    async def list_member_consultations(self, uid, member_id, *, limit, offset):
+        """只查询当前账号和成员的有效咨询元数据，额外一行判断分页。"""
+        result = await self.session.execute(
+            select(Conversation.thread_id, HealthDailyConversation.business_date, Conversation.created_at)
+            .select_from(HealthConsultation)
+            .join(Conversation, Conversation.id == HealthConsultation.conversation_id)
+            .join(Project, Project.id == Conversation.project_id)
+            .outerjoin(
+                HealthDailyConversation,
+                and_(
+                    HealthDailyConversation.conversation_id == Conversation.id,
+                    HealthDailyConversation.actor_uid == uid,
+                    HealthDailyConversation.member_id == member_id,
+                ),
+            )
+            .where(
+                HealthConsultation.actor_uid == uid,
+                HealthConsultation.member_id == member_id,
+                Conversation.uid == uid,
+                Conversation.agent_id == CONSULTATION_SLUG,
+                Conversation.status == "active",
+                Project.uid == uid,
+                Project.status == "active",
+            )
+            .order_by(Conversation.created_at.desc(), Conversation.id.desc())
+            .limit(limit + 1)
+            .offset(offset)
+        )
+        return result.all()
+
     async def lock_request(self, uid, request_id):
         """同账号同幂等键串行创建，跨成员重放也共享锁。"""
         await self.session.execute(
@@ -46,7 +76,7 @@ class HealthConsultationRepository:
             )
         )
 
-    async def authorize(self, uid, thread_id, *, lock=False):
+    async def authorize(self, uid, thread_id, *, lock=False, preview_history=False):
         """逐次验证会话、项目、账号及成员 grant，成员锁与撤回排序。"""
         binding = await self.session.scalar(
             select(HealthConsultation)
@@ -65,6 +95,36 @@ class HealthConsultationRepository:
         if binding is None:
             raise HealthVisionError("not_found", "专属咨询不存在或无权访问", 404)
         conversation = await self.session.get(Conversation, binding.conversation_id)
+        if preview_history and getattr(binding, "safe_planner_selection", None) is None:
+            had_safe_history = await self.session.scalar(
+                select(
+                    or_(
+                        select(HealthSafePlannerPreview.id)
+                        .where(HealthSafePlannerPreview.conversation_id == binding.conversation_id)
+                        .exists(),
+                        select(AgentRun.id)
+                        .where(
+                            AgentRun.conversation_id == binding.conversation_id,
+                            AgentRun.input_payload["health_processing"]["safe_selection_hash"].as_string().is_not(None),
+                        )
+                        .exists(),
+                    )
+                )
+            )
+            if had_safe_history:
+                raise HealthVisionError("source_invalidated", "单成员安全历史的固定选择已丢失或变更", 410)
+        if getattr(binding, "safe_planner_selection", None) is not None:
+            from yuxi.services.health_safe_planner_service import (
+                authorize_safe_planner_binding,
+                validate_safe_planner_history,
+            )
+
+            if conversation.agent_id != PLANNER_SLUG:
+                raise HealthVisionError("source_invalidated", "单成员安全选择不属于配餐线程", 410)
+            await authorize_safe_planner_binding(self.session, binding)
+            if preview_history:
+                await validate_safe_planner_history(self.session, binding)
+            return binding
         if getattr(binding, "initial_planner_selection", None) is not None:
             from yuxi.services.health_initial_planner_service import authorize_initial_planner_binding
 

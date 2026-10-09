@@ -21,6 +21,12 @@ from yuxi.agents.toolkits.meal_planner import (
 )
 from yuxi.services.health_family_planner_types import FAMILY_PLANNER_TOOLS
 from yuxi.services.health_initial_meal_plan_types import INITIAL_PLANNER_TOOLS
+from yuxi.services.health_safe_planner_types import SAFE_PLANNER_TOOLS
+from yuxi.agents.toolkits.safe_meal_planner import (
+    get_safe_plan_context,
+    preview_safe_plan_swap,
+    preview_safe_plan_regeneration,
+)
 from yuxi.models.chat import load_chat_model
 from yuxi.models.providers.cache import model_cache
 
@@ -39,10 +45,10 @@ class MealPlanResultMiddleware(AgentMiddleware):
 
 
 class HealthMealPlannerAgent(BaseAgent):
-    """单成员草稿或固定家庭范围的只读安全预览，由服务器装配资源。"""
+    """初始配餐、单成员草稿或已选餐单的只读预览，由服务器装配资源。"""
 
     name = "基础配餐师"
-    description = "单成员三餐草稿及明确选定家庭的换菜、重算、参与调整预览；专业批准由审核流程处理。"
+    description = "初始三餐及明确选定个人/家庭餐单的安全换菜和重算预览；专业批准由审核流程处理。"
 
     async def _stream_input_with_state(self, graph_input, *, context, **kwargs):
         """保留工具审计和核验后的checkpoint；消息正文在发布端过滤。"""
@@ -58,7 +64,9 @@ class HealthMealPlannerAgent(BaseAgent):
         if not getattr(context, "_runtime_prepared", False):
             raise ValueError("构图需要已准备的 Context")
         await require_consultation_attempt(context)
-        if tuple(context.tools) == INITIAL_PLANNER_TOOLS:
+        if tuple(context.tools) == SAFE_PLANNER_TOOLS:
+            tools = [get_safe_plan_context, preview_safe_plan_swap, preview_safe_plan_regeneration]
+        elif tuple(context.tools) == INITIAL_PLANNER_TOOLS:
             tools = [get_initial_plan_context, preview_initial_meal_plan]
         elif tuple(context.tools) == FAMILY_PLANNER_TOOLS:
             tools = [

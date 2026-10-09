@@ -84,7 +84,7 @@ async def main() -> None:
                 "health",
                 health_version,
                 HEALTH_SCHEMA_VERSION,
-                upgrade_from=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19),
+                upgrade_from=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20),
             )
 
             if business_version in {None, 2, 7, 8, 9, 10}:
@@ -115,7 +115,7 @@ async def main() -> None:
                 await pg_manager.upgrade_knowledge_schema_v1_to_v2()
                 await pg_manager.record_schema_version("knowledge", KNOWLEDGE_SCHEMA_VERSION)
 
-            if health_version in (None, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19):
+            if health_version in (None, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20):
                 await pg_manager.create_health_tables()
                 await pg_manager.record_schema_version("health", HEALTH_SCHEMA_VERSION)
 

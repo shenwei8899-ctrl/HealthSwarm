@@ -219,7 +219,7 @@ def test_shipping_skills_keep_required_dependencies():
         "family-diet-analyst",
         "family-quality-review",
     }
-    assert found["family-meal-planner"]["version"] == "2026.10.08.2"
+    assert found["family-meal-planner"]["version"] == "2026.10.09.2"
     assert found["family-quality-review"]["tool_dependencies"] == [
         "get_quality_review_context",
         "check_selected_plan_quality",
@@ -235,6 +235,9 @@ def test_shipping_skills_keep_required_dependencies():
         "preview_family_plan_participation",
         "get_initial_plan_context",
         "preview_initial_meal_plan",
+        "get_safe_plan_context",
+        "preview_safe_plan_swap",
+        "preview_safe_plan_regeneration",
     ]
     assert found["family-nutritionist"]["name"] == "家庭营养师"
     assert found["family-nutritionist"]["version"] == "2026.10.08.6"

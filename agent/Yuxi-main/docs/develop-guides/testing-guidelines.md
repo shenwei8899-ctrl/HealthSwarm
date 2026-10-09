@@ -287,6 +287,33 @@ docker compose @healthCompose stop api worker sandbox-provisioner minio redis po
 
 历史运行后端 wire/replay 51 项、前端五文件 35 项、隔离联合 56 项通过。结束后回读活动任务为零及合成审批关闭，再停止专用服务，保留卷。浏览器只能使用明确合成替身或经批准的隔离资源；不得通过用户现有收费任务证明按钮修复，也不能据重放推断原失败响应的具体格式。
 
+## 单成员安全配餐真实模型探针
+
+维护者使用[健康咨询独立槽位](#健康咨询隔离合成-e2e)和已配置的固定聊天模型验证中文换菜、三餐重生成、无候选与规则未就绪。探针仅创建合成资料、菜谱和批准规则；覆盖边界见[真实模型探针决定](./decisions/implemented/2026-10-09-safe-planner-real-model-probe.md)。先确认独立API与Worker就绪、无活动请求，并保留原Compose参数。增加`backend/test/support/health_safe_planner_live.compose.yml`覆盖层后，仅API与Worker获得外部网络。
+
+```powershell
+$safePlannerLiveCompose = @($healthCompose) + @('-f', 'backend/test/support/health_safe_planner_live.compose.yml')
+docker compose @safePlannerLiveCompose config --quiet
+docker compose @safePlannerLiveCompose up -d --no-build --pull never --no-deps api worker
+```
+
+由已配置供应商的正式Owner导出选定模型，经内存管道传给独立测试进程。`export`输出包含凭据，必须直接捕获后传递，禁止单独运行、打印或保存该变量。每一步检查退出码；配置导出失败时停止。以下命令在Yuxi目录执行，主服务沿用其默认Compose，`$healthCompose`必须指向独立槽位。
+
+```powershell
+$safePlannerWire = docker compose exec -T -e RUN_HEALTH_SAFE_PLANNER_REAL_MODEL=1 api uv run --no-sync --group test python -m test.support.health_safe_planner_live_runner export --spec '<configured-provider>:<fixed-chat-model>'
+if ($LASTEXITCODE -ne 0) { $safePlannerWire = $null; throw '模型配置未就绪' }
+try {
+    $safePlannerWire | docker compose @safePlannerLiveCompose exec -T -e RUN_HEALTH_SAFE_PLANNER_REAL_MODEL=1 api uv run --no-sync --group test python -m test.support.health_safe_planner_live_runner run
+    if ($LASTEXITCODE -ne 0) { throw '真实模型探针未通过，先核对合成诊断' }
+} finally {
+    $safePlannerWire = $null
+}
+```
+
+入口要求显式开启、独立标记和实际数据库身份，并拒绝默认模型、本地回放、latest/preview浮动别名和无效端点。四个场景每例提交一次请求，不追加模型修复或备用调用。输出必须与同Run持久回执一致，独立手算换菜300→310、重生成300→305，预览前后正式业务事实深等。仅成功换菜额外明确确认保存并用原包原键恢复，回读唯一新修订和旧专业批准及采用失效。
+
+结束后先核对Run终态、租约及清理释放，将`/tmp/health-safe-planner-live-evidence`复制到本地受控且被忽略的测试输出目录，再用原`$healthCompose`重建API与Worker，移除已无连接的本轮`health-live-egress`网络。fixture恢复空配置、删除本轮临时供应商及合成数据并精确清理运行事件；用独立连接核对PG与Redis残留，以及主槽配置摘要未变。失败场景的有界合成模型诊断在清理前保留，日志只输出ID与状态。主槽正式配餐用途须单独审批；生产专业资料、医学质量和长期性能仍需单独验收。
+
 ## 性能评测
 
 性能工具位于 `backend/test/performance/`；参数、采样和探针的单测位于 `backend/test/unit/performance/`，由常规后端 unit 命令执行。仓库根目录使用同一个模块入口，Python 环境需要后端依赖：

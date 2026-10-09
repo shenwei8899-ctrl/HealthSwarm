@@ -1,4 +1,4 @@
-"""真实health19→20正式迁移保留体重、血压、血糖事实与三种引用。"""
+"""真实health19→当前版本正式迁移保留体重、血压、血糖事实与三种引用。"""
 
 from datetime import date, datetime
 from uuid import uuid4
@@ -13,8 +13,12 @@ from test.integration.services.test_health_weight_schema import (
     drop_weight_schema,
     scoped_weight_manager,
 )
+from test.support.health_schema_legacy import (
+    assert_schema21_safe_planner_absent,
+    remove_schema21_safe_planner_structures,
+)
 from yuxi import storage_migration
-from yuxi.storage.postgres.manager import BUSINESS_SCHEMA_VERSION, KNOWLEDGE_SCHEMA_VERSION
+from yuxi.storage.postgres.manager import BUSINESS_SCHEMA_VERSION, HEALTH_SCHEMA_VERSION, KNOWLEDGE_SCHEMA_VERSION
 from yuxi.storage.postgres.models_business import (
     AgentRun,
     Conversation,
@@ -201,6 +205,7 @@ async def test_formal_schema19_upgrade_preserves_three_measurements_and_receipts
             assert before["family_measurements" + ids["glucose"]]["previous"] == [
                 {"version": 1, "values": {"glucose": 5.5}, "condition": "fasting"}
             ]
+        await remove_schema21_safe_planner_structures(engine)
         isolate_other_migration_effects(monkeypatch, tmp_path)
         for _ in range(2):
             scoped = scoped_weight_manager(engine)
@@ -209,7 +214,8 @@ async def test_formal_schema19_upgrade_preserves_three_measurements_and_receipts
             await storage_migration.main()
             async with sessions() as session:
                 assert (
-                    await session.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'")) == 20
+                    await session.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'"))
+                    == HEALTH_SCHEMA_VERSION
                 )
                 assert await preserved_facts(session, ids) == before
                 assert await session.scalar(text("SELECT COUNT(*) FROM health_blood_lipids_use")) == 0
@@ -237,20 +243,23 @@ async def test_formal_schema19_upgrade_preserves_three_measurements_and_receipts
         await drop_weight_schema(schema, admin, engine)
 
 
-async def test_formal_schema20_rejects_future21_before_creating_blood_lipids_table(monkeypatch, tmp_path):
-    """未来21标记在DDL前拒绝，旧19三种回执结构与未来标记均保持。"""
+async def test_formal_migration_rejects_future_version_before_creating_blood_lipids_table(monkeypatch, tmp_path):
+    """未来标记在DDL前拒绝，旧19三种回执结构与未来标记均保持。"""
     schema, admin, engine, manager = await create_weight_schema()
     try:
         await prepare_schema19(manager, engine)
-        await manager.record_schema_version("health", 21)
+        await manager.record_schema_version("health", HEALTH_SCHEMA_VERSION + 1)
         manager.AsyncSession = async_sessionmaker(engine, expire_on_commit=False)
+        await remove_schema21_safe_planner_structures(engine)
         isolate_other_migration_effects(monkeypatch, tmp_path)
         monkeypatch.setattr(storage_migration, "pg_manager", manager)
-        with pytest.raises(RuntimeError, match="Unsupported health schema version: 21"):
+        with pytest.raises(RuntimeError, match=f"Unsupported health schema version: {HEALTH_SCHEMA_VERSION + 1}"):
             await storage_migration.main()
         async with engine.connect() as connection:
+            await assert_schema21_safe_planner_absent(connection)
             assert (
-                await connection.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'")) == 21
+                await connection.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'"))
+                == HEALTH_SCHEMA_VERSION + 1
             )
             assert await connection.scalar(text("SELECT to_regclass('health_blood_lipids_use')")) is None
             for table in ("health_weight_use", "health_blood_pressure_use", "health_blood_glucose_use"):

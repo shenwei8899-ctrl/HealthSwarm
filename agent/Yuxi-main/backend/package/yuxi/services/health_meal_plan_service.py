@@ -178,6 +178,7 @@ async def meal_plan_recipes_for_run(context, query):
         if (
             getattr(binding, "family_planner_selection", None) is not None
             or getattr(binding, "initial_planner_selection", None) is not None
+            or getattr(binding, "safe_planner_selection", None) is not None
         ):
             raise HealthVisionError("planner_mode_conflict", "当前配餐模式只使用其固定工具", 409)
         rows = await HealthVisionRepository(session).recipes(query)
@@ -211,6 +212,7 @@ async def create_meal_plan_preview(uid, member_id, spec, *, context=None):
             if (
                 getattr(binding, "family_planner_selection", None) is not None
                 or getattr(binding, "initial_planner_selection", None) is not None
+                or getattr(binding, "safe_planner_selection", None) is not None
             ):
                 raise HealthVisionError("planner_mode_conflict", "当前配餐模式只使用其固定工具", 409)
             uid, member_id, run_id = context.uid, binding.member_id, run.id
@@ -411,6 +413,10 @@ async def planner_final_result(context, text):
         raise HealthVisionError("planner_output_invalid", "配餐输出须为预览回执或补充问题", 422) from None
     async with pg_manager.get_async_session_context() as session:
         run, binding = await require_planner_run(session, context)
+        if getattr(binding, "safe_planner_selection", None) is not None:
+            from yuxi.services.health_safe_planner_service import safe_answer_in_session
+
+            return await safe_answer_in_session(session, run, binding, answer)
         if getattr(binding, "initial_planner_selection", None) is not None:
             from yuxi.services.health_initial_planner_service import initial_answer_in_session
 

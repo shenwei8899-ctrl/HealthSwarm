@@ -40,7 +40,10 @@ async def test_pending_health_task_blocks_cleanup_before_any_delete(monkeypatch)
     rows = SimpleNamespace(
         all=lambda: [SimpleNamespace(id="synthetic", status="pending", worker_id=None, lease_expires_at=None)]
     )
-    session = SimpleNamespace(scalars=AsyncMock(return_value=rows), execute=AsyncMock())
+    # Run查询为空，随后Task查询仍返回待发布任务，保留独立Task门禁证据。
+    session = SimpleNamespace(
+        scalars=AsyncMock(side_effect=[SimpleNamespace(all=lambda: []), rows]), execute=AsyncMock()
+    )
 
     @asynccontextmanager
     async def session_context():
@@ -51,6 +54,7 @@ async def test_pending_health_task_blocks_cleanup_before_any_delete(monkeypatch)
     with pytest.raises(RuntimeError, match="保留账号、PG 及对象诊断数据"):
         await support.cleanup_health_test_resources([{"uid": "synthetic"}], 1)
     session.execute.assert_not_awaited()
+    assert session.scalars.await_count == 2
 
 
 def synthetic_png(size=(512, 512), color=(44, 180, 91), mode="RGB", fmt="PNG"):

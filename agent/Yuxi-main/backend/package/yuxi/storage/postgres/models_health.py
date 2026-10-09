@@ -156,6 +156,24 @@ class HealthConsultation(Base):
     request_id = Column(String(36), nullable=False)
     family_planner_selection = Column(JSON_VALUE)
     initial_planner_selection = Column(JSON_VALUE)
+    safe_planner_selection = Column(JSON_VALUE)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
+class HealthSafePlannerPreview(Base):
+    """单成员已保存餐单的不可变当前Run安全预览收据。"""
+
+    __tablename__ = "health_safe_planner_preview"
+    __table_args__ = (CheckConstraint("operation IN ('swap','regeneration')", name="ck_health_safe_planner_operation"),)
+    id = Column(String(36), primary_key=True)
+    actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
+    conversation_id = Column(
+        Integer, ForeignKey("health_consultation.conversation_id", ondelete="CASCADE"), nullable=False
+    )
+    run_id = Column(String(64), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    operation = Column(String(24), nullable=False)
+    parameters = Column(JSON_VALUE, nullable=False)
+    snapshot = Column(JSON_VALUE, nullable=False)
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
@@ -798,6 +816,7 @@ HEALTH_TABLES = [
         HealthBloodLipidsUse,
         HealthProcessingConsent,
         HealthConsultation,
+        HealthSafePlannerPreview,
         HealthFamilyPlannerPreview,
         PrivateUpload,
         VisionJob,
