@@ -20,7 +20,7 @@ const compiled = compileTemplate({
 assert.deepEqual(compiled.errors, [])
 const render = new Function('Vue', compiled.code)({ ...Vue, resolveComponent: (name) => name })
 
-/** 独立给定六项已有配置，避免由生产字段清单生成期望值。 */
+/** 独立给定七项已有配置，采购模型未就绪时也须保留。 */
 function configuration() {
   return {
     report: { model: 'synthetic:report-fixed' },
@@ -29,6 +29,7 @@ function configuration() {
     meal_plan: { model: 'synthetic:planner-fixed' },
     diet_analysis: { model: 'synthetic:analyst-fixed' },
     quality_review: { model: 'synthetic:quality-fixed' },
+    purchase: { model: 'synthetic:purchase-fixed', available: false, reason: '合成供应商未就绪' },
     policy_version: 'synthetic-policy-v1',
     model_options: [],
     food_count: 0
@@ -83,12 +84,13 @@ function nodes(node, type) {
   ]
 }
 
-test('保存服务配置完整保留六项模型并要求管理员重新批准', async () => {
+test('保存其他服务配置保留已有未就绪采购模型并要求管理员重新批准', async () => {
   const requests = []
   const state = admin({
     configure: async (value) => requests.push(structuredClone(Vue.toRaw(value)))
   })
   assert.equal(state.settings.cloud_processing_reviewed, false)
+  state.settings.quality_review_model = 'synthetic:quality-v2'
   state.settings.cloud_processing_reviewed = true
   await state.saveConfiguration()
   assert.deepEqual(requests, [
@@ -98,7 +100,8 @@ test('保存服务配置完整保留六项模型并要求管理员重新批准',
       consultation_model: 'synthetic:consultation-fixed',
       meal_plan_model: 'synthetic:planner-fixed',
       diet_analysis_model: 'synthetic:analyst-fixed',
-      quality_review_model: 'synthetic:quality-fixed',
+      quality_review_model: 'synthetic:quality-v2',
+      purchase_model: 'synthetic:purchase-fixed',
       policy_version: 'synthetic-policy-v1',
       cloud_processing_reviewed: true
     }
@@ -108,13 +111,13 @@ test('保存服务配置完整保留六项模型并要求管理员重新批准',
   state.dispose()
 })
 
-test('实际模板显示六个选择项，清空配餐仅停用配餐服务', async () => {
+test('实际模板显示七个选择项，清空配餐仅停用配餐服务', async () => {
   const requests = []
   const state = admin({
     configure: async (value) => requests.push(structuredClone(Vue.toRaw(value)))
   })
   const selectors = nodes(state.template(), 'a-select')
-  assert.equal(selectors.length, 6)
+  assert.equal(selectors.length, 7)
   assert.deepEqual(
     selectors.map((node) => node.props.value),
     [
@@ -123,7 +126,8 @@ test('实际模板显示六个选择项，清空配餐仅停用配餐服务', as
       'synthetic:consultation-fixed',
       'synthetic:planner-fixed',
       'synthetic:analyst-fixed',
-      'synthetic:quality-fixed'
+      'synthetic:quality-fixed',
+      'synthetic:purchase-fixed'
     ]
   )
   selectors[3].props['onUpdate:value'](undefined)
@@ -134,16 +138,38 @@ test('实际模板显示六个选择项，清空配餐仅停用配餐服务', as
   assert.equal(requests[0].diet_analysis_model, 'synthetic:analyst-fixed')
   assert.equal(requests[0].quality_review_model, 'synthetic:quality-fixed')
   assert.equal(requests[0].consultation_model, 'synthetic:consultation-fixed')
+  assert.equal(requests[0].purchase_model, 'synthetic:purchase-fixed')
   state.dispose()
 })
 
 test('重载服务端配置更新角色模型且重置审批', async () => {
   const state = admin()
   state.settings.cloud_processing_reviewed = true
-  state.props.configuration = { ...configuration(), meal_plan: { model: 'synthetic:planner-v2' } }
+  state.props.configuration = {
+    ...configuration(),
+    meal_plan: { model: 'synthetic:planner-v2' },
+    purchase: { model: 'synthetic:purchase-v2', available: false }
+  }
   await Vue.nextTick()
   assert.equal(state.settings.meal_plan_model, 'synthetic:planner-v2')
+  assert.equal(state.settings.purchase_model, 'synthetic:purchase-v2')
   assert.equal(state.settings.cloud_processing_reviewed, false)
+  state.dispose()
+})
+
+test('管理员明确清空采购选择仅停用采购模型', async () => {
+  const requests = []
+  const state = admin({
+    configure: async (value) => requests.push(structuredClone(Vue.toRaw(value)))
+  })
+  const selector = nodes(state.template(), 'a-select')[6]
+  selector.props['onUpdate:value'](undefined)
+  selector.props.onChange(undefined)
+  state.settings.cloud_processing_reviewed = true
+  await state.saveConfiguration()
+  assert.equal(requests[0].purchase_model, '')
+  assert.equal(requests[0].meal_plan_model, 'synthetic:planner-fixed')
+  assert.equal(requests[0].quality_review_model, 'synthetic:quality-fixed')
   state.dispose()
 })
 

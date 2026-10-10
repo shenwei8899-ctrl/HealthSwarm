@@ -19,7 +19,7 @@
 统一入口支持八类显式任务：`consultation`、`meal_preview`、`initial_meal_preview`、`family_meal_revision`、`safe_meal_revision`、`diet_analysis`、`quality_check`、`purchase_requirements`。输入与结果以 [Task DTO](../Yuxi-main/backend/package/yuxi/services/health_task_types.py) 为准：
 
 - `POST /api/health/v1/members/{member_id}/task-entries` 返回 `ready`、`needs_input` 或 `dependency_not_ready`；就绪只表示固定线程已创建，客户端仍需显式提交 `POST /api/agent/runs`。
-- `GET /api/health/v1/tasks/{request_id}` 从 PostgreSQL 读取当前 Request、Run、权威最终 Message 和业务结果；沿既有 Request/Run SSE 游标及查询恢复，不新增 Task 表或事件流。执行完成、追问、专业批准和交易状态分别表达。
+- `GET /api/health/v1/tasks/{request_id}` 从 PostgreSQL 读取当前 Request、Run、权威最终 Message 和业务结果；排队时重新订阅 Request 当前 PG 状态，派发后 Run SSE 按游标恢复，Task GET 提供断线查询兜底。Request 排队事件没有持久事件游标。执行完成、追问、专业批准和交易状态分别表达。
 - `glucose_plan`、`multi_day_plan`、`automatic_family_coordination` 当前返回 `dependency_not_ready` / `external_contract_required`。纯意图建议可由营养师 Skill 引导用户明确选择上述八类入口；当前没有自动调用通用 subAgent 的健康协调闭环。
 
 ## 独立核心项与事实 Owner
@@ -35,8 +35,15 @@
 | 次日提议 | 用户明确选择普通单成员配餐的 Request/Run/最终 Message/预览后登记；无自动保存、采用或饮食写入；实际并发锁及 Worker 验证 | [次日 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-agent-next-day-proposal.md)、[bridge service](../Yuxi-main/backend/package/yuxi/services/health_next_day_agent_service.py) |
 | 采购需求 | 当前有效个人/家庭采用、确认库存及独立用途绑定；受控两工具与同 Run 回执；真实 PG/Worker 验证 | [采购 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-purchase-agent.md)、[purchase service](../Yuxi-main/backend/package/yuxi/services/health_purchase_service.py) |
 | 图片交互 | 受控上传、候选、用户确认、程序计算和正式饮食记录；识别失败保留手动路径 | [图片链路 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-04-health-meal-e2e.md)、[vision service](../Yuxi-main/backend/package/yuxi/services/health_vision_service.py) |
+| 后台分析与反馈入口 | 健康识图选择成员和1/7/30日或确认单餐后进入分析会话；确认记录旁提供固定选餐反馈对话与最终事实卡片，手动反馈保留；模型用途配置完整保存采购值 | [使用说明](../Yuxi-main/docs/advanced/health-diet-analysis.md)、[入口 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-analysis-web-entry.md) |
 | 追踪、用量与装配 | 安全 `trace_id`、识图供应商已报告用量与未知值分离；本地独立固定图门禁核对 Worker/PG；远端自动入口单独验收 | [观测 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-observability.md)、[statistics Owner](../Yuxi-main/backend/package/yuxi/services/health_vision_statistics.py)、[运维参考](../Yuxi-main/docs/advanced/health-agent-operations.md) |
 | 执行预算与失败发布 | 五个固定健康角色按首次执行起点共享跨 attempt 预算；SDK 受剩余时限约束；咨询失败不保留回答正文或最终指针；实际取消、撤同意、lease 及重试恢复验证 | [预算 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-run-execution-budget.md)、[失败发布 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-consultation-partial-publication.md)、[Worker Owner](../Yuxi-main/backend/package/yuxi/services/run_worker.py) |
+
+## B 的剩余接口交付
+
+已实现的任务输入、结果分类、安全错误、七用途模型可用原因和平台 readiness 分别由当前 DTO、配置服务和系统就绪接口拥有。后续还需提供当前账号、成员、授权与用途同意、专业来源及菜谱等业务依赖的能力汇总，并对客户端需要的饮食、草稿及任务列表明确分页合同。该范围属于 Agent 接口交付，尚未因固定图通过而完成；页码或游标、选定范围和数据来源按实际客户端消费确定。
+
+客户端联调还需确认排队 Request 重订阅、Run 游标恢复及 Task GET 兜底的组合，以及业务结果失效、追问、取消和专业等待的具体展示。这些合同沿用既有事实 Owner；正式小程序页面与真机验收由同事负责。
 
 ## 待对接清单
 

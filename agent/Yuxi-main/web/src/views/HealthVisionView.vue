@@ -1,5 +1,7 @@
 <script setup>
 import HealthMealFeedback from '@/components/health/HealthMealFeedback.vue'
+import HealthDietAnalysis from '@/components/health/HealthDietAnalysis.vue'
+import HealthFeedbackConversation from '@/components/health/HealthFeedbackConversation.vue'
 import HealthFamilyProfile from '@/components/health/HealthFamilyProfile.vue'
 import HealthProfessionalProfile from '@/components/health/HealthProfessionalProfile.vue'
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
@@ -100,6 +102,7 @@ const tabs = computed(() => [
   { key: 'profile', label: '本人档案' },
   { key: 'meal', label: '饮食照片' },
   { key: 'plans', label: '餐单草稿' },
+  { key: 'analysis', label: '饮食分析' },
   { key: 'records', label: '已确认记录' },
   { key: 'memory', label: '营养师记忆与历史' },
   ...(userStore.isAdmin ? [{ key: 'settings', label: '服务与食品数据' }] : [])
@@ -795,6 +798,15 @@ async function retryJob(job) {
           :configuration="config"
           @profile="activeTab = 'profile'"
         />
+        <HealthDietAnalysis
+          v-else-if="tab === 'analysis'"
+          :key="`analysis-${memberId}`"
+          :member-id="memberId"
+          :scopes="member?.scopes || []"
+          :configuration="config"
+          :records="records.meal"
+          :disabled="busy || confirming"
+        />
         <template v-else-if="tab === 'report' || tab === 'meal'">
           <section class="panel upload-panel">
             <div class="section-title">
@@ -1151,6 +1163,14 @@ async function retryJob(job) {
               </p>
               <small>计算版本：{{ record.snapshot.nutrition.calculation_version }}</small>
               <HealthMealFeedback :record="record" />
+              <HealthFeedbackConversation
+                :key="`feedback-${memberId}-${record.id}`"
+                :member-id="memberId"
+                :scopes="member?.scopes || []"
+                :configuration="config"
+                :record="record"
+                :disabled="busy || confirming"
+              />
             </div>
           </section>
         </div>
@@ -1176,7 +1196,8 @@ async function retryJob(job) {
         咨询会将问题和必要的已确认记录、本人档案及实测体重、血压、血糖、血脂四项发送给已审批模型。实测与档案确认版本分开，
         体重、血压、血糖、血脂各仅包含近30个北京时间自然日最多20条记录；体重保留原值与kg，血压保留成对收缩压、舒张压与mmHg，
         血糖保留原值、mmol/L及空腹、餐后2小时或随机的测量条件；血脂保留同条总胆固醇、甘油三酯、高密度脂蛋白、低密度脂蛋白原值与mmol/L，
-        均含测量时间、来源、记录ID和版本。报告原图或 OCR 原文证据、实测备注、血压和血脂测量条件及更正历史不发送。
+        均含测量时间、来源、记录ID和版本。报告原图或 OCR
+        原文证据、实测备注、血压和血脂测量条件及更正历史不发送。
         营养安全评估与21天控糖仍未就绪，当前不生成个人配餐或治疗方案。
       </p>
       <p v-if="consultationMode === 'new'">将创建新的独立咨询，保留原会话。</p>

@@ -11,6 +11,8 @@
         <AgentMessageComponent
           v-if="displayItem.type === 'message'"
           :message="displayItem.message"
+          :agent-slug="agentSlug"
+          :run="runs.find((run) => run.run_id === displayItem.message.run_id) || null"
           :is-processing="isDisplayMessageProcessing(conv, displayItem)"
           :show-refs="false"
           :hide-tool-calls="true"
@@ -43,6 +45,7 @@ import { MessageProcessor } from '@/utils/messageProcessor'
 import { getConversationDisplayItems } from '@/utils/messageGrouping'
 
 const props = defineProps({
+  agentSlug: { type: String, default: '' },
   runs: { type: Array, default: () => [] },
   messages: {
     type: Array,

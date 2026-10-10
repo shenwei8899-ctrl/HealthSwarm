@@ -4,6 +4,7 @@ import asyncio
 import os
 import subprocess
 import sys
+from copy import deepcopy
 from uuid import uuid4
 
 import httpx
@@ -22,6 +23,7 @@ from test.integration.services.test_health_family_meal_plan_http import setup_fa
 from test.integration.services.test_health_vision_http import ROOT, health_http  # noqa: F401
 from test.support.health_purchase_replay_server import MODEL
 from yuxi.storage.postgres.manager import pg_manager
+from yuxi.storage.postgres.models_business import ConfigOption
 from yuxi.storage.postgres.models_health import HealthConsultation, HealthMealPlanAdoption, RecipeVersion
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -196,6 +198,71 @@ async def consent_purchase(client, users, current, consent, *, family=False):
             f"{ROOT}/members/{member}/processing-consents", headers=users[0]["headers"], json=consent
         )
         assert response.status_code == 200, response.text
+
+
+@ISOLATED
+async def test_purchase_configuration_requires_approval_and_retains_unedited_model(purchase_runtime):
+    """配置审批拒绝不得写PG，完整保存其他用途时保留采购事实。"""
+    client, users, _consent = purchase_runtime
+    headers = users[2]["headers"]
+    response = await client.get(f"{ROOT}/configuration", headers=headers)
+    assert response.status_code == 200, response.text
+    original = response.json()
+    async with pg_manager.get_async_session_context() as session:
+        record = await session.scalar(select(ConfigOption).where(ConfigOption.key == "health_vision_opts"))
+        before = (deepcopy(record.value), record.updated_by, record.updated_at)
+
+    for policy_version, reviewed in [("", False), (original["policy_version"], False), ("", True)]:
+        denied = await client.put(
+            f"{ROOT}/configuration",
+            headers=headers,
+            json={
+                "purchase_model": original["purchase"]["model"],
+                "policy_version": policy_version,
+                "cloud_processing_reviewed": reviewed,
+            },
+        )
+        assert denied.status_code == 422 and "启用前须确认处理政策与费用限额已经审批" in denied.text, denied.text
+        async with pg_manager.get_async_session_context() as session:
+            record = await session.scalar(select(ConfigOption).where(ConfigOption.key == "health_vision_opts"))
+            assert (record.value, record.updated_by, record.updated_at) == before
+
+    approved = await client.put(
+        f"{ROOT}/configuration",
+        headers=headers,
+        json={
+            "purchase_model": original["purchase"]["model"],
+            "policy_version": original["policy_version"],
+            "cloud_processing_reviewed": True,
+        },
+    )
+    assert approved.status_code == 200 and approved.json()["purchase"]["available"], approved.text
+    saved = await client.put(
+        f"{ROOT}/configuration",
+        headers=headers,
+        json={
+            "report_model": "",
+            "meal_model": "",
+            "consultation_model": "",
+            "meal_plan_model": "",
+            "diet_analysis_model": "",
+            "quality_review_model": original["purchase"]["model"],
+            "purchase_model": original["purchase"]["model"],
+            "policy_version": original["policy_version"],
+            "cloud_processing_reviewed": True,
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    readback = await client.get(f"{ROOT}/configuration", headers=headers)
+    assert readback.status_code == 200, readback.text
+    assert readback.json()["purchase"] == approved.json()["purchase"]
+    assert readback.json()["quality_review"]["model"] == original["purchase"]["model"]
+    async with pg_manager.get_async_session_context() as session:
+        record = await session.scalar(select(ConfigOption).where(ConfigOption.key == "health_vision_opts"))
+        assert record.value["purchase_model"] == original["purchase"]["model"]
+        assert record.value["approved_purchase_processor"] == original["purchase"]["processor"]
+        assert record.value["quality_review_model"] == original["purchase"]["model"]
+        assert record.updated_by == users[2]["uid"]
 
 
 @ISOLATED

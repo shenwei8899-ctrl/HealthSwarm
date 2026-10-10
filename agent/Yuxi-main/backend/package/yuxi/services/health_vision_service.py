@@ -808,9 +808,14 @@ class HealthVisionService:
                     await repo.draft(confirmation.draft_id, uid, kind)
                 except HealthVisionError:
                     continue
-                result.append(
-                    {"id": record.id, "snapshot": record.snapshot, "created_at": format_utc_datetime(record.created_at)}
-                )
+                item = {
+                    "id": record.id,
+                    "snapshot": record.snapshot,
+                    "created_at": format_utc_datetime(record.created_at),
+                }
+                if kind == "meal":
+                    item["source_version"] = confirmation.draft_version
+                result.append(item)
             return result
 
     async def foods(self, query: str):

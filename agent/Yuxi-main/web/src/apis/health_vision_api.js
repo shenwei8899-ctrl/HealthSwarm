@@ -28,6 +28,12 @@ export const healthVisionApi = {
     apiPost(`${root}/members/${id}/consultations`, data, idempotent(data)),
   createMealPlanner: (id, data) =>
     apiPost(`${root}/members/${id}/meal-planner`, data, idempotent(data)),
+  createDietAnalyst: (id, data) =>
+    apiPost(`${root}/members/${id}/diet-analyst`, data, idempotent(data)),
+  createFeedbackConversation: (id, data) =>
+    apiPost(`${root}/diet-logs/${id}/feedback-conversation`, data, idempotent(data)),
+  dietAnalysis: (id, data) => apiPost(`${root}/members/${id}/diet-analysis`, data),
+  dietPeriodAnalysis: (id, data) => apiPost(`${root}/members/${id}/diet-period-analysis`, data),
   createSafeMealPlanner: (id, data) =>
     apiPost(`${root}/members/${id}/safe-meal-plan-conversations`, data, idempotent(data)),
   createFamilyMealPlanner: (id, data) =>
