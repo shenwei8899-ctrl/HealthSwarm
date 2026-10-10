@@ -86,6 +86,7 @@
                   <td>{{ sourceLabels[record.source] || record.source }}</td>
                   <td>v{{ record.version }}<a-tag v-if="record.voided_at">已作废</a-tag></td>
                   <td>
+                    <a-button type="link" @click="detailRecord = record">详情</a-button>
                     <template v-if="canWrite && !record.voided_at">
                       <a-button type="link" @click="openCorrection(record)">更正</a-button>
                       <a-button type="link" danger @click="openVoid(record)">作废</a-button>
@@ -109,6 +110,18 @@
         </template>
       </a-spin>
     </template>
+    <a-drawer v-model:open="detailOpen" title="健康指标记录详情" width="min(480px, 100vw)">
+      <template v-if="detailRecord">
+        <p>测量时间：{{ formatTime(detailRecord.measured_at) }}</p>
+        <p>实测值：{{ recordValue(detailRecord) }}</p>
+        <p>条件：{{ conditionLabels[detailRecord.condition] || '未注明' }}</p>
+        <p>来源：{{ sourceLabels[detailRecord.source] || detailRecord.source }}</p>
+        <p>录入人：{{ detailRecord.created_by }}</p>
+        <p>版本：v{{ detailRecord.version }}</p>
+        <p class="record-note">当前备注：{{ detailRecord.note || '无备注' }}</p>
+        <p v-if="detailRecord.voided_at">作废说明：{{ detailRecord.void_reason }}</p>
+      </template>
+    </a-drawer>
     <a-modal
       v-model:open="dialogOpen"
       :title="correcting ? '更正测量记录' : '记录健康指标'"
@@ -236,6 +249,13 @@ const voidOpen = ref(false),
 const records = ref([]),
   loading = ref(false),
   error = ref('')
+const detailRecord = ref(null)
+const detailOpen = computed({
+  get: () => !!detailRecord.value,
+  set: (open) => {
+    if (!open) detailRecord.value = null
+  }
+})
 const dialogOpen = ref(false),
   saving = ref(false),
   saveError = ref(''),
@@ -292,6 +312,7 @@ function recordValue(record) {
 }
 async function load() {
   const current = ++generation
+  detailRecord.value = null
   records.value = []
   trend.value = []
   total.value = 0
@@ -346,6 +367,7 @@ watch(
   () => props.member,
   (next, previous) => {
     if (previous?.allowed_fields.some((key) => !next.allowed_fields.includes(key))) {
+      detailRecord.value = null
       generation++
       records.value = []
       trend.value = []
@@ -373,6 +395,7 @@ watch(
 )
 onBeforeUnmount(() => {
   generation++
+  detailRecord.value = null
   records.value = []
   draft.values = {}
   draft.note = ''

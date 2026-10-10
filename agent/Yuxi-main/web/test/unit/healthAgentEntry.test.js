@@ -4,7 +4,10 @@ import test from 'node:test'
 import { computed, ref } from 'vue'
 import { isHealthAgentId } from '../../src/utils/healthVision.js'
 
-const source = readFileSync(new URL('../../src/views/AgentView.vue', import.meta.url), 'utf8')
+const source = readFileSync(
+  new URL('../../src/views/AgentView.vue', import.meta.url),
+  'utf8'
+).replace(/\r\n/g, '\n')
 
 test('已有健康线程可发送；切到空白新对话后必须重新选择健康成员', () => {
   const block = source.slice(

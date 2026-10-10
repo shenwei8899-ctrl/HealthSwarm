@@ -23,7 +23,7 @@ from yuxi.utils import logger
 from yuxi.utils.singleton import SingletonMeta
 
 AGENT_RUN_TERMINAL_STATUS_SQL = ", ".join(f"'{status}'" for status in AGENT_RUN_TERMINAL_STATUSES)
-BUSINESS_SCHEMA_VERSION = 11
+BUSINESS_SCHEMA_VERSION = 12
 KNOWLEDGE_SCHEMA_VERSION = 2
 HEALTH_SCHEMA_VERSION = 23
 SCHEMA_VERSION_TABLE = "yuxi_schema_migrations"

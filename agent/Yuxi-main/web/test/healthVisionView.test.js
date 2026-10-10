@@ -711,7 +711,7 @@ test('食品搜索使用后端 q 参数，不忽略含特殊字符的中文查�
   const apiSource = (
     await readFile(new URL('../src/apis/health_vision_api.js', import.meta.url), 'utf8')
   )
-    .replace(/^import.*\n/, '')
+    .replace(/^import.*\r?\n/, '')
     .replace('export const healthVisionApi', 'const healthVisionApi')
   const noop = () => {}
   const api = new Function(
@@ -797,7 +797,7 @@ test('单页重识别 API 同时发送版本和幂等头，不附带私有文件
   const apiSource = (
     await readFile(new URL('../src/apis/health_vision_api.js', import.meta.url), 'utf8')
   )
-    .replace(/^import.*\n/, '')
+    .replace(/^import.*\r?\n/, '')
     .replace('export const healthVisionApi', 'const healthVisionApi')
   const noop = () => {}
   const api = new Function(

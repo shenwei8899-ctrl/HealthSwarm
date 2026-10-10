@@ -21,6 +21,18 @@
     >
     <a-spin :spinning="loading">
       <template v-if="stats">
+        <section class="family-tasks" aria-label="家庭档案待办">
+          <h3>需要处理的事项</h3>
+          <a-empty
+            v-if="!stats.tasks?.length"
+            description="当前授权范围内暂无待办"
+            :image="false"
+          />
+          <div v-for="task in stats.tasks || []" :key="task.member_id + task.code" class="task-row">
+            <span>{{ task.member_name }} · {{ task.label }}</span>
+            <a-button type="link" @click="emit('navigate', task)">前往处理</a-button>
+          </div>
+        </section>
         <div class="statistics-strip">
           <div>
             <span>家庭成员</span><strong>{{ stats.member_count }}<small> 人</small></strong>
@@ -44,7 +56,7 @@
           label="每天新增的健康指标记录条数，仅代表记录行为"
         />
         <p class="muted">
-          记录条数表示有效实测记录。基础档案已确认指基础字段齐全、当前版本经本人确认，并在当前访问范围内；不代表个体化营养任务已就绪。
+          记录条数表示有效实测记录。基础档案已确认指基础字段齐全、当前版本经本人或有效监护人确认，并在当前访问范围内；不代表个体化营养任务已就绪。
         </p>
         <div class="metric-counts">
           <span v-for="(count, key) in stats.metric_counts" :key="key"
@@ -65,6 +77,7 @@ import { onBeforeUnmount, ref, watch } from 'vue'
 import { familyApi } from '@/apis/family_api'
 import { metricDefinitions, formatTime } from '@/utils/familyArchives'
 import FamilyChart from './FamilyChart.vue'
+const emit = defineEmits(['navigate'])
 const props = defineProps({
   familyId: { type: String, required: true },
   revision: { type: Number, default: 0 }
@@ -96,6 +109,18 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped lang="less">
+.family-tasks {
+  margin: 20px 0;
+  padding: 16px;
+  border: 1px solid var(--gray-200);
+  border-radius: 8px;
+}
+.task-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
 .statistics-strip {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

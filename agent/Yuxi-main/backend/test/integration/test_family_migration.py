@@ -8,7 +8,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from yuxi import storage_migration
-from yuxi.storage.postgres.manager import HEALTH_SCHEMA_VERSION, PostgresManager
+from yuxi.storage.postgres.manager import BUSINESS_SCHEMA_VERSION, HEALTH_SCHEMA_VERSION, PostgresManager
 from yuxi.storage.postgres.models_business import Agent, Base, User, FamilyArchive, FamilyMember
 from yuxi.storage.postgres.models_health import HEALTH_TABLES
 from yuxi.storage_migrations.v071_workdirs import V071WorkdirMigrationPlan
@@ -28,7 +28,9 @@ async def no_file_migration(*_args, **_kwargs):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("old_version,fail_after_schema", [(7, False), (8, False), (9, False), (10, False), (10, True)])
+@pytest.mark.parametrize(
+    "old_version,fail_after_schema", [(7, False), (8, False), (9, False), (10, False), (11, False), (10, True)]
+)
 async def test_supported_upgrade_preserves_data_and_is_repeatable(
     monkeypatch, tmp_path, old_version, fail_after_schema
 ):
@@ -49,7 +51,7 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
     old_tables = [
         table
         for table in Base.metadata.sorted_tables
-        if table not in HEALTH_TABLES and (old_version in (8, 10) or not table.name.startswith("family_"))
+        if table not in HEALTH_TABLES and (old_version in (8, 10, 11) or not table.name.startswith("family_"))
     ]
     try:
         async with engine.begin() as conn:
@@ -57,7 +59,7 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
         async with manager.get_async_session_context() as db:
             db.add(User(uid="old-user", username="保留的合成用户", password_hash="synthetic-only", role="user"))
             await db.flush()
-            if old_version in (8, 10):
+            if old_version in (8, 10, 11):
                 db.add(FamilyArchive(id="old-family", owner_uid="old-user", name="保留家庭"))
                 await db.flush()
                 db.add(
@@ -91,6 +93,21 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
                     await conn.execute(text(f"ALTER TABLE family_members DROP COLUMN {column}"))
                 for column in ("voided_at", "voided_by", "void_reason"):
                     await conn.execute(text(f"ALTER TABLE family_measurements DROP COLUMN {column}"))
+        if old_version in (8, 10, 11):
+            async with engine.begin() as conn:
+                for column in ("settings", "version"):
+                    await conn.execute(text(f"ALTER TABLE family_archives DROP COLUMN {column}"))
+                for column in (
+                    "guardian_uid",
+                    "guardian_status",
+                    "guardian_relationship",
+                    "guardian_birth_date",
+                    "guardian_version",
+                    "guardian_expires_at",
+                    "guardian_reviewed_by",
+                    "guardian_reviewed_at",
+                ):
+                    await conn.execute(text(f"ALTER TABLE family_members DROP COLUMN {column}"))
         await manager.create_schema_version_table()
         await manager.record_schema_version("business", old_version)
         await manager.record_schema_version("knowledge", 2)
@@ -141,7 +158,7 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
             config = await conn.scalar(text("SELECT config_json FROM agents WHERE slug = 'old-agent'"))
             assert config["context"]["subagents"] == ([] if old_version >= 9 else "all")
             assert config["context"]["tools"] == ([] if old_version >= 9 else "all")
-            if old_version in (8, 10):
+            if old_version in (8, 10, 11):
                 assert await conn.scalar(text("SELECT profile FROM family_members WHERE id = 'old-member'")) == {
                     "height_cm": 170
                 }
@@ -151,8 +168,13 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
                 ]
                 assert await conn.scalar(
                     text("SELECT grant_edit_fields FROM family_members WHERE id = 'old-member'")
-                ) == ["height_cm", "weight"]
+                ) == (["height_cm", "weight"] if old_version in (8, 10) else [])
                 assert await conn.scalar(text("SELECT is_active FROM family_members WHERE id = 'old-member'")) is True
+                assert (
+                    await conn.scalar(text("SELECT guardian_status FROM family_members WHERE id = 'old-member'"))
+                    is None
+                )
+                assert await conn.scalar(text("SELECT settings FROM family_archives WHERE id = 'old-family'")) == {}
                 await conn.execute(
                     text("UPDATE family_members SET grant_edit_fields = '[]'::jsonb WHERE id = 'old-member'")
                 )
@@ -162,13 +184,17 @@ async def test_supported_upgrade_preserves_data_and_is_repeatable(
             )
         await storage_migration.upgrade_family_archives(manager)
         await storage_migration.main()
-        if old_version in (8, 10):
+        if old_version in (8, 10, 11):
             async with engine.connect() as conn:
                 assert (
                     await conn.scalar(text("SELECT grant_edit_fields FROM family_members WHERE id = 'old-member'"))
                     == []
                 )
-        assert await manager.get_schema_versions() == {"business": 11, "knowledge": 2, "health": HEALTH_SCHEMA_VERSION}
+        assert await manager.get_schema_versions() == {
+            "business": BUSINESS_SCHEMA_VERSION,
+            "knowledge": 2,
+            "health": HEALTH_SCHEMA_VERSION,
+        }
     finally:
         await engine.dispose()
         async with bootstrap.begin() as conn:

@@ -59,8 +59,14 @@ async def family_client(monkeypatch):
         dept = Department(name="合成测试部门")
         db.add(dept)
         await db.flush()
-        for uid in ("owner", "member", "stranger"):
-            user = User(uid=uid, username=uid, password_hash="test-only", role="user", department_id=dept.id)
+        for uid in ("owner", "member", "stranger", "reviewer"):
+            user = User(
+                uid=uid,
+                username=uid,
+                password_hash="test-only",
+                role="admin" if uid == "reviewer" else "user",
+                department_id=dept.id,
+            )
             db.add(user)
             await db.flush()
             TEST_TOKENS[uid] = AuthUtils.create_access_token({"sub": str(user.id)})
@@ -100,6 +106,276 @@ async def family_client(monkeypatch):
 def headers(uid="owner"):
     """构造仅供集成测试的认证身份。"""
     return {"Authorization": f"Bearer {TEST_TOKENS[uid]}"}
+
+
+async def guardian_application(client):
+    """申请阶段不得开放儿童健康字段。"""
+    family = await create_family(client)
+    fid = family["id"]
+    owner = next(m for m in family["members"] if m["is_self"])
+    response = await client.put(
+        f"/api/family/{fid}/members/{owner['id']}",
+        headers=headers(),
+        json={"expected_version": 1, "profile": {"birth_date": "1985-01-01"}},
+    )
+    assert response.status_code == 200
+    child = (
+        await client.post(
+            f"/api/family/{fid}/members", headers=headers(), json={"name": "合成儿童", "relationship": "儿子"}
+        )
+    ).json()
+    path = f"/api/family/{fid}/members/{child['id']}"
+    response = await client.post(
+        path + "/guardian",
+        headers=headers(),
+        json={
+            "expected_version": 1,
+            "relationship": "父亲",
+            "birth_date": "2020-01-01",
+            "attested": True,
+            "expires_at": (datetime.now(UTC) + timedelta(days=180)).isoformat(),
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["profile"] == {} and response.json()["allowed_fields"] == []
+    return fid, child["id"], path, response.json()["guardian"]["version"]
+
+
+async def approve_guardian(client, path, version):
+    """独立管理员确认资料，批准由实际数据库事实回读。"""
+    response = await client.put(
+        path + "/guardian/review",
+        headers=headers("reviewer"),
+        json={"expected_version": version, "approved": True, "verified": True},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["version"]
+
+
+async def test_guardian_requires_independent_review_and_keeps_versions(family_client):
+    """普通账号、自审、未审批及旧版本不能绕过监护边界。"""
+    client, sessions = family_client
+    fid, mid, path, version = await guardian_application(client)
+    body = {"expected_version": version, "approved": True, "verified": True}
+    assert (await client.get("/api/family/guardian/requests", headers=headers())).status_code == 403
+    queue = await client.get("/api/family/guardian/requests", headers=headers("reviewer"))
+    assert queue.status_code == 200
+    request = next(row for row in queue.json() if row["member_id"] == mid)
+    assert request["applicant_uid"] == "owner" and request["applicant_name"] == "owner"
+    assert "profile" not in request
+    assert (await client.put(path + "/guardian/review", headers=headers(), json=body)).status_code == 403
+    assert (
+        await client.put(path, headers=headers(), json={"expected_version": 1, "profile": {"height_cm": 118}})
+    ).status_code == 403
+    async with sessions() as db:
+        owner = await db.scalar(select(User).where(User.uid == "owner"))
+        owner.role = "admin"
+        await db.commit()
+    assert (await client.put(path + "/guardian/review", headers=headers(), json=body)).status_code == 403
+    new_guardian_version = await approve_guardian(client, path, version)
+    assert (await client.put(path + "/guardian/review", headers=headers("reviewer"), json=body)).status_code == 409
+    family = (await client.get(f"/api/family/{fid}", headers=headers())).json()
+    child = next(m for m in family["members"] if m["id"] == mid)
+    assert child["is_guardian"] and child["profile"]["birth_date"] == "2020-01-01"
+    assert child["guardian"]["version"] == new_guardian_version
+    saved = await client.put(
+        path,
+        headers=headers(),
+        json={
+            "expected_version": child["version"],
+            "profile": {
+                "sex": "male",
+                "height_cm": 118,
+                "activity_level": "moderate",
+                "goal": "规律用餐",
+                "allergens": [],
+                "health_goals": [{"description": "按时吃早餐", "review_date": "2020-01-01"}],
+                "medication_records": [{"description": "需核对药名", "status": "current"}],
+            },
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    confirmed = await client.post(
+        path + "/confirm", headers=headers(), json={"expected_version": saved.json()["version"]}
+    )
+    assert confirmed.status_code == 200 and confirmed.json()["ready"]
+    stale = await client.put(
+        path, headers=headers(), json={"expected_version": child["version"], "profile": {"goal": "旧版本"}}
+    )
+    assert stale.status_code == 409
+    stat = (await client.get(f"/api/family/{fid}/statistics", headers=headers())).json()
+    codes = {t["code"] for t in stat["tasks"] if t["member_id"] == mid}
+    assert {"goal_review", "medication_incomplete", "measurements_missing"} <= codes
+    assert (await client.get(path + "/measurements", headers=headers("stranger"))).status_code == 404
+    revoke = await client.post(
+        path + "/guardian/revoke", headers=headers(), json={"expected_version": new_guardian_version}
+    )
+    assert revoke.status_code == 200 and revoke.json()["allowed_fields"] == []
+    assert (await client.get(path + "/measurements", headers=headers())).status_code == 403
+    final = (await client.get(f"/api/family/{fid}/statistics", headers=headers())).json()
+    assert {t["code"] for t in final["tasks"] if t["member_id"] == mid} == {"access_pending"}
+    async with sessions() as db:
+        stored = await db.get(FamilyMember, mid)
+        assert stored.profile["height_cm"] == 118 and stored.guardian_status == "revoked"
+    request = {
+        "expected_version": revoke.json()["guardian"]["version"],
+        "relationship": "父亲",
+        "birth_date": "2020-01-02",
+        "attested": True,
+        "expires_at": (datetime.now(UTC) + timedelta(days=180)).isoformat(),
+    }
+    mismatch = await client.post(path + "/guardian", headers=headers(), json=request)
+    assert mismatch.status_code == 422, mismatch.text
+    request["birth_date"] = "2020-01-01"
+    reapplied = await client.post(path + "/guardian", headers=headers(), json=request)
+    assert reapplied.status_code == 200, reapplied.text
+    assert reapplied.json()["guardian"]["status"] == "pending"
+    assert not reapplied.json()["is_guardian"] and reapplied.json()["allowed_fields"] == []
+
+
+@pytest.mark.parametrize("change", ["expiry", "adult", "identity", "applicant_minor"])
+async def test_guardian_access_expires_or_identity_changes(family_client, change):
+    """到期、成年及身份日期变化都立即清除监护访问。"""
+    client, sessions = family_client
+    fid, mid, path, version = await guardian_application(client)
+    await approve_guardian(client, path, version)
+    async with sessions() as db:
+        child = await db.get(FamilyMember, mid)
+        if change == "applicant_minor":
+            owner = await db.scalar(
+                select(FamilyMember).where(FamilyMember.family_id == fid, FamilyMember.subject_uid == "owner")
+            )
+            owner_id, owner_version = owner.id, owner.version
+        elif change == "expiry":
+            child.guardian_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
+        else:
+            child.profile = {**child.profile, "birth_date": "2000-01-01" if change == "adult" else "2020-01-02"}
+        await db.commit()
+    if change == "applicant_minor":
+        response = await client.put(
+            f"/api/family/{fid}/members/{owner_id}",
+            headers=headers(),
+            json={"expected_version": owner_version, "profile": {"birth_date": "2020-01-01"}},
+        )
+        assert response.status_code == 200
+    family = (await client.get(f"/api/family/{fid}", headers=headers())).json()
+    child = next(m for m in family["members"] if m["id"] == mid)
+    assert child["profile"] == {} and child["is_guardian"] is False
+    assert (await client.post(path + "/confirm", headers=headers(), json={"expected_version": 2})).status_code == 403
+
+
+async def test_family_settings_are_owner_only_and_versioned(family_client):
+    """正式改名、共同安排和结构化资料保留版本且拒绝越权。"""
+    client, sessions = family_client
+    family = await create_family(client)
+    fid = family["id"]
+    mid = await invite_member(client, fid)
+    body = {"expected_version": 1, "name": "新的合成家庭", "settings": {"cook": "家庭成员", "daily_budget": 100}}
+    assert (await client.put(f"/api/family/{fid}", headers=headers("member"), json=body)).status_code == 403
+    response = await client.put(f"/api/family/{fid}", headers=headers(), json=body)
+    assert response.status_code == 200 and response.json()["version"] == 2
+    assert (await client.put(f"/api/family/{fid}", headers=headers(), json=body)).status_code == 409
+    profile = {
+        "medication_records": [{"description": "药名待核对", "status": "current", "dose": None}],
+        "allergy_records": [],
+        "meal_habits": {"weekday": "学校午餐"},
+    }
+    member = next(
+        m
+        for m in (await client.get(f"/api/family/{fid}", headers=headers("member"))).json()["members"]
+        if m["id"] == mid
+    )
+    response = await client.put(
+        f"/api/family/{fid}/members/{mid}",
+        headers=headers("member"),
+        json={"expected_version": member["version"], "profile": profile},
+    )
+    assert response.status_code == 200 and response.json()["profile"]["allergy_records"] == []
+    assert (
+        await client.put(
+            f"/api/family/{fid}/members/{mid}",
+            headers=headers(),
+            json={"expected_version": response.json()["version"], "profile": profile},
+        )
+    ).status_code == 403
+
+
+async def test_child_identity_change_and_change_back_does_not_restore_guardian(family_client):
+    """儿童本人改回旧生日也不能恢复已失效的审核权限。"""
+    client, _ = family_client
+    fid, mid, path, version = await guardian_application(client)
+    await approve_guardian(client, path, version)
+    invitation = (await client.post(path + "/invite", headers=headers())).json()
+    joined = await client.post("/api/family/join", headers=headers("member"), json={"code": invitation["code"]})
+    assert joined.status_code == 200
+    child = next(m for m in joined.json()["members"] if m["id"] == mid)
+    for birth in ("2000-01-01", "2020-01-01"):
+        changed = await client.put(
+            path,
+            headers=headers("member"),
+            json={"expected_version": child["version"], "profile": {"birth_date": birth}},
+        )
+        assert changed.status_code == 200, changed.text
+        child = changed.json()
+    current = (await client.get(f"/api/family/{fid}", headers=headers())).json()
+    ward = next(m for m in current["members"] if m["id"] == mid)
+    assert ward["guardian"]["status"] == "revoked" and ward["allowed_fields"] == []
+    assert (
+        await client.put(
+            path, headers=headers(), json={"expected_version": child["version"], "profile": {"goal": "未经重新审核"}}
+        )
+    ).status_code == 403
+
+
+@pytest.mark.parametrize("change", ["expiry", "adult", "identity"])
+async def test_invalid_pending_request_cannot_be_approved_but_can_be_rejected(family_client, change):
+    """失效、跨成年生日与不一致申请须可被独立审核者拒绝。"""
+    client, sessions = family_client
+    _, mid, path, version = await guardian_application(client)
+    async with sessions() as db:
+        child = await db.get(FamilyMember, mid)
+        if change == "expiry":
+            child.guardian_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
+        elif change == "adult":
+            child.guardian_birth_date = datetime.now(UTC).date().replace(year=datetime.now(UTC).year - 18)
+        else:
+            child.profile = {"birth_date": "2021-01-01"}
+        await db.commit()
+    body = {"expected_version": version, "approved": True, "verified": True}
+    assert (await client.put(path + "/guardian/review", headers=headers("reviewer"), json=body)).status_code == 409
+    rejected = await client.put(
+        path + "/guardian/review", headers=headers("reviewer"), json={**body, "approved": False}
+    )
+    assert rejected.status_code == 200 and rejected.json()["status"] == "rejected"
+
+
+async def test_height_measurement_is_persisted_separately_and_authorized(family_client):
+    """身高创建、更正、读取及授权独立于基础身高与档案版本。"""
+    client, sessions = family_client
+    family = await create_family(client)
+    fid, mid = family["id"], await invite_member(client, family["id"])
+    path = f"/api/family/{fid}/members/{mid}"
+    profile = await client.put(
+        path, headers=headers("member"), json={"expected_version": 2, "profile": {"height_cm": 170}}
+    )
+    assert profile.status_code == 200
+    record = measurement_payload(kind="height", values={"height": 171})
+    created = await client.post(path + "/measurements", headers=headers("member"), json=record)
+    assert created.status_code == 200 and created.json()["unit"] == "cm"
+    assert (await client.get(path + "/measurements?kind=height", headers=headers())).status_code == 403
+    await grant(client, fid, mid, ["height"])
+    corrected = await client.put(
+        path + f"/measurements/{record['id']}",
+        headers=headers(),
+        json={"expected_version": 1, "values": {"height": 172}, "note": "复测更正身高"},
+    )
+    assert corrected.status_code == 200 and corrected.json()["version"] == 2
+    current = (await client.get(path + "/measurements?kind=height", headers=headers())).json()
+    assert current["items"][0]["values"] == {"height": 172}
+    assert current["items"][0]["previous"][0]["values"] == {"height": 171}
+    async with sessions() as db:
+        member = await db.get(FamilyMember, mid)
+        assert member.profile["height_cm"] == 170 and member.version == profile.json()["version"]
 
 
 async def create_family(client):

@@ -681,7 +681,7 @@ test('API封装忠实发送分页、原导入整包和目标版本，规则代�
     'apiDelete',
     'apiRequest',
     'buildQuery',
-    `${text.replace(/^import.*\n/, '').replace('export const', 'const')}\nreturn healthVisionApi`
+    `${text.replace(/^import.*\r?\n/, '').replace('export const', 'const')}\nreturn healthVisionApi`
   )(
     (path) => path,
     (path, body, options) => ({ path, body, options }),

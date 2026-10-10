@@ -7,6 +7,12 @@ export const familyApi = {
   list: () => apiGet('/api/family'),
   create: (name) => apiPost('/api/family', { name }),
   get: (fid) => apiGet(`/api/family/${encodeURIComponent(fid)}`),
+  updateFamily: (fid, payload) => apiPut(`/api/family/${encodeURIComponent(fid)}`, payload),
+  requestGuardian: (fid, mid, payload) => apiPost(memberPath(fid, mid) + '/guardian', payload),
+  revokeGuardian: (fid, mid, version) =>
+    apiPost(memberPath(fid, mid) + '/guardian/revoke', { expected_version: version }),
+  guardianRequests: () => apiGet('/api/family/guardian/requests'),
+  reviewGuardian: (fid, mid, payload) => apiPut(memberPath(fid, mid) + '/guardian/review', payload),
   addMember: (fid, payload) => apiPost(`/api/family/${encodeURIComponent(fid)}/members`, payload),
   updateProfile: (fid, mid, payload) => apiPut(memberPath(fid, mid), payload),
   confirm: (fid, mid, expectedVersion) =>

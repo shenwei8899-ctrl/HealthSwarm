@@ -10,7 +10,14 @@ export const profileLabels = {
   doctor_instructions: '医嘱',
   allergens: '过敏原',
   avoidances: '忌口',
-  preferences: '口味偏好'
+  preferences: '口味偏好',
+  health_goals: '行为目标与复盘',
+  condition_records: '病史与症状记录',
+  medication_records: '结构化用药记录',
+  instruction_records: '医嘱来源与有效期',
+  allergy_records: '过敏反应与来源',
+  meal_habits: '用餐安排',
+  lifestyle: '活动与生活阶段'
 }
 export const metricDefinitions = {
   weight: { label: '体重', unit: 'kg', fields: { weight: '体重' } },
@@ -24,7 +31,8 @@ export const metricDefinitions = {
     label: '血脂四项',
     unit: 'mmol/L',
     fields: { tc: '总胆固醇', tg: '甘油三酯', hdl: '高密度脂蛋白', ldl: '低密度脂蛋白' }
-  }
+  },
+  height: { label: '身高', unit: 'cm', fields: { height: '身高' } }
 }
 export const conditionLabels = { fasting: '空腹', after_meal_2h: '餐后2小时', random: '随机' }
 export const sexLabels = { female: '女', male: '男', unspecified: '不填写' }
@@ -33,6 +41,113 @@ export const activityLabels = {
   light: '轻度活动',
   moderate: '中度活动',
   high: '高活动量'
+}
+
+const factFields = [
+  { key: 'description', label: '内容', type: 'text' },
+  { key: 'source', label: '资料来源', type: 'text' },
+  { key: 'recorded_on', label: '记录日期', type: 'date' },
+  { key: 'reviewed_on', label: '最近核对日期', type: 'date' }
+]
+export const structuredDefinitions = {
+  health_goals: {
+    array: true,
+    fields: [
+      ...factFields,
+      { key: 'start_date', label: '开始日期', type: 'date' },
+      { key: 'review_date', label: '复盘日期', type: 'date' },
+      {
+        key: 'status',
+        label: '状态',
+        options: { active: '进行中', completed: '已完成', paused: '已暂停' }
+      }
+    ]
+  },
+  condition_records: {
+    array: true,
+    fields: [
+      ...factFields,
+      {
+        key: 'status',
+        label: '状态',
+        options: {
+          symptom: '自述症状',
+          diagnosed: '已有确诊资料',
+          resolved: '已结束',
+          unknown: '待核对'
+        }
+      }
+    ]
+  },
+  medication_records: {
+    array: true,
+    fields: [
+      ...factFields,
+      { key: 'dose', label: '剂量', type: 'text' },
+      { key: 'frequency', label: '频次', type: 'text' },
+      { key: 'start_date', label: '开始日期', type: 'date' },
+      {
+        key: 'status',
+        label: '状态',
+        options: { current: '正在使用', stopped: '已停用', unknown: '待核对' }
+      }
+    ]
+  },
+  instruction_records: {
+    array: true,
+    fields: [...factFields, { key: 'valid_until', label: '有效期至', type: 'date' }]
+  },
+  allergy_records: {
+    array: true,
+    fields: [
+      ...factFields,
+      { key: 'reaction', label: '反应描述', type: 'text' },
+      {
+        key: 'status',
+        label: '确认情况',
+        options: { reported: '本人自述', confirmed: '已有确认资料', unknown: '待核对' }
+      }
+    ]
+  },
+  meal_habits: {
+    fields: [
+      { key: 'weekday', label: '工作日 / 上学日用餐', type: 'text' },
+      { key: 'weekend', label: '周末用餐', type: 'text' },
+      { key: 'chewing_swallowing', label: '咀嚼和吞咽情况', type: 'text' }
+    ]
+  },
+  lifestyle: {
+    fields: [
+      { key: 'activity_schedule', label: '活动与训练安排', type: 'text' },
+      { key: 'sleep_schedule', label: '作息安排', type: 'text' },
+      { key: 'special_stage', label: '特殊生活阶段（如妊娠、哺乳）', type: 'text' }
+    ]
+  }
+}
+
+/** 结构化事实使用字段标签展示，不把对象隐式转成字符串。 */
+export function structuredText(key, value) {
+  if (value === null || value === undefined) return '未填写'
+  const definition = structuredDefinitions[key]
+  const records = definition.array ? value : [value]
+  if (!records.length) return '已确认无'
+  return (
+    records
+      .map((record) =>
+        definition.fields
+          .filter(
+            (field) =>
+              record[field.key] !== null &&
+              record[field.key] !== undefined &&
+              record[field.key] !== ''
+          )
+          .map(
+            (field) => `${field.label}：${field.options?.[record[field.key]] || record[field.key]}`
+          )
+          .join('；')
+      )
+      .join('\n') || '未填写'
+  )
 }
 
 export function profileChanges(draft, allowed) {
@@ -44,8 +159,20 @@ export function profileStatus(member) {
   if (!member.allowed_fields?.length) return '待授权'
   if (member.missing_fields?.length) return '待补充'
   if (member.ready) return '基础档案已确认'
-  if (member.confirmed === false) return '待本人确认'
+  if (member.confirmed === false) return member.is_guardian ? '待本人或监护人确认' : '待本人确认'
   return '部分字段可见'
+}
+
+/** 出生日期仅从当前授权投影读取，年龄按北京时间计算。 */
+export function memberAge(member, now = Date.now()) {
+  const born = member.profile?.birth_date
+  if (!born) return null
+  const today = shanghaiDate(now),
+    age =
+      Number(today.slice(0, 4)) -
+      Number(born.slice(0, 4)) -
+      (today.slice(5) < born.slice(5) ? 1 : 0)
+  return age >= 0 ? age : null
 }
 
 export function shanghaiDate(value) {
@@ -143,6 +270,7 @@ export function scrubFamilyAccess(family, now = Date.now(), unknownAccess = fals
         confirmed: null,
         confirmed_at: null,
         ready: false,
+        is_guardian: false,
         authorization: member.authorization
           ? { ...member.authorization, fields: [], edit_fields: [] }
           : null

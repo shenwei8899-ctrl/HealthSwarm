@@ -29,6 +29,7 @@ def source_context(monkeypatch):
         id="source",
         is_active=True,
         subject_uid="subject",
+        guardian_uid=None,
         profile={
             "sex": "female",
             "birth_date": "1990-01-01",

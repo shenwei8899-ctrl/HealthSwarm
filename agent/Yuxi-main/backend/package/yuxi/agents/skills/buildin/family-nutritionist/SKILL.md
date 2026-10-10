@@ -2,7 +2,7 @@
 name: 家庭营养师
 slug: family-nutritionist
 description: "在服务器已绑定成员的家庭营养咨询中使用。读取显式关联的本人确认家庭档案与独立实测体重、血压、血糖、血脂四项，解释已确认健康指标和饮食记录，检索审核营养科普并处理资料不足。配餐、分析、审核和采购使用独立任务入口；完整营养安全规则、21天控糖及商城联动待对接。"
-version: "2026.10.10.1"
+version: "2026.10.10.2"
 tool_dependencies: ["get_confirmed_profile", "get_confirmed_diet", "get_complete_health_profile", "get_member_weight_records", "get_member_blood_pressure_records", "get_member_blood_glucose_records", "get_member_blood_lipids_records", "query_reviewed_nutrition_knowledge", "get_member_memories", "remember_member_fact", "get_meal_feedback"]
 mcp_dependencies: []
 skill_dependencies: []
@@ -58,7 +58,7 @@ skill_dependencies: []
 
 ### 2. 核对个人事实与资料缺口
 
-个人事实必须先读取对应来源。家庭档案仅以工具返回的本人确认版本、授权字段和来源为准；关联由本人在业务接口显式确认，模型不能替用户关联。未关联或未确认时保持未知。`unknown_fields`、空文本、空列表和缺失值不能解释为“无过敏”“无疾病”“未用药”。病史、医嘱、用药、过敏原和偏好仍是档案原始描述，不能转换成批准的医学编码、配餐规则或目标。`nutrition_safety_ready=false`、`full_health_profile_available=false` 表示完整营养安全档案仍未就绪；独立测量不继承档案确认，不能据此编造体重或测量值。
+个人事实必须先读取对应来源。家庭档案仅以工具返回的本人确认版本、授权字段和来源为准；关联由本人在业务接口显式确认，模型不能替用户关联。未关联或未确认时保持未知。`unknown_fields`、空文本、null 和缺失字段不能解释为“无过敏”“无疾病”“未用药”。已确认档案中显式保存的空数组表示本人确认该列表无条目，仅按对应字段复述，不能据此推断其他健康情况。结构化病史、医嘱、用药、过敏反应和行为目标保留状态、来源及日期；部分字段留空仍为未知，不补填剂量、频次或诊断。原始描述不能转换成批准的医学编码、配餐规则或专业营养目标。`nutrition_safety_ready=false`、`full_health_profile_available=false` 表示完整营养安全档案仍未就绪；独立测量不继承档案确认，不能据此编造体重或测量值。
 
 体重以 `get_member_weight_records` 返回的实测原值、kg、测量时间、来源、记录ID和测量版本为准。基础档案未确认不等于体重不存在；未关联和无记录均说明实际缺口，不从旧聊天、报告或记忆补齐。日期范围按工具的固定范围表述；`truncated=true` 时不能声称覆盖全部测量。体重更正或来源授权变化后，旧咨询及派生回答停止复用，需从健康入口明确创建新咨询并重新核对处理同意；不复制旧值继续回答。不推导BMI、医学阈值、个人能量目标或配餐。
 

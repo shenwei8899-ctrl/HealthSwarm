@@ -4,6 +4,7 @@ import math
 from datetime import date, datetime, timedelta, UTC
 from typing import Literal
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -20,15 +21,167 @@ PROFILE_FIELDS = {
     "allergens",
     "avoidances",
     "preferences",
+    "health_goals",
+    "condition_records",
+    "medication_records",
+    "instruction_records",
+    "allergy_records",
+    "meal_habits",
+    "lifestyle",
 }
 REQUIRED_PROFILE_FIELDS = ("sex", "birth_date", "height_cm", "activity_level", "goal")
+STRUCTURED_PROFILE_FIELDS = {
+    "health_goals",
+    "condition_records",
+    "medication_records",
+    "instruction_records",
+    "allergy_records",
+    "meal_habits",
+    "lifestyle",
+}
 METRIC_FIELDS = {
     "weight": ("weight",),
     "blood_pressure": ("systolic", "diastolic"),
     "blood_glucose": ("glucose",),
     "blood_lipids": ("tc", "tg", "hdl", "ldl"),
+    "height": ("height",),
 }
-METRIC_UNITS = {"weight": "kg", "blood_pressure": "mmHg", "blood_glucose": "mmol/L", "blood_lipids": "mmol/L"}
+METRIC_UNITS = {
+    "weight": "kg",
+    "blood_pressure": "mmHg",
+    "blood_glucose": "mmol/L",
+    "blood_lipids": "mmol/L",
+    "height": "cm",
+}
+
+
+class FactRecord(BaseModel):
+    """用户录入的事实及来源，不自动产生诊断或专业规则。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    description: str = Field(min_length=1, max_length=500)
+    source: str | None = Field(default=None, max_length=200)
+    recorded_on: date | None = None
+    reviewed_on: date | None = None
+
+
+class HealthGoal(FactRecord):
+    """可复盘的用户行为目标，与专业批准的营养目标分开。"""
+
+    start_date: date | None = None
+    review_date: date | None = None
+    status: Literal["active", "completed", "paused"] = "active"
+
+    @model_validator(mode="after")
+    def check_dates(self):
+        """复盘不能早于目标开始。"""
+        if self.start_date and self.review_date and self.review_date < self.start_date:
+            raise ValueError("复盘日期不能早于开始日期")
+        return self
+
+
+class ConditionRecord(FactRecord):
+    """区分自述症状和已有确诊资料。"""
+
+    status: Literal["symptom", "diagnosed", "resolved", "unknown"] = "unknown"
+
+
+class MedicationRecord(FactRecord):
+    """保留药物名称、剂量和频次的未知项。"""
+
+    dose: str | None = Field(default=None, max_length=100)
+    frequency: str | None = Field(default=None, max_length=100)
+    start_date: date | None = None
+    status: Literal["current", "stopped", "unknown"] = "unknown"
+
+
+class InstructionRecord(FactRecord):
+    """来源和有效日期明确的医嘱资料。"""
+
+    valid_until: date | None = None
+
+
+class AllergyRecord(FactRecord):
+    """过敏原、反应和确认来源，与普通忌口分开。"""
+
+    reaction: str | None = Field(default=None, max_length=300)
+    status: Literal["reported", "confirmed", "unknown"] = "reported"
+
+
+class MealHabits(BaseModel):
+    """学校、工作和居家用餐安排。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    weekday: str | None = Field(default=None, max_length=500)
+    weekend: str | None = Field(default=None, max_length=500)
+    chewing_swallowing: str | None = Field(default=None, max_length=300)
+
+
+class Lifestyle(BaseModel):
+    """与用餐有关的活动及特殊阶段自述。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    activity_schedule: str | None = Field(default=None, max_length=500)
+    sleep_schedule: str | None = Field(default=None, max_length=300)
+    special_stage: str | None = Field(default=None, max_length=300)
+
+
+class HouseholdSettings(BaseModel):
+    """共同生活偏好，不承载成员的私有健康信息。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    cook: str | None = Field(default=None, max_length=100)
+    shopper: str | None = Field(default=None, max_length=100)
+    weekday_meals: str | None = Field(default=None, max_length=500)
+    weekend_meals: str | None = Field(default=None, max_length=500)
+    cooking_minutes: int | None = Field(default=None, ge=1, le=1440)
+    daily_budget: float | None = Field(default=None, gt=0, le=100000, allow_inf_nan=False)
+    shared_preferences: str | None = Field(default=None, max_length=500)
+
+
+class FamilyUpdate(BaseModel):
+    """改名和共同生活设置使用同一个明确版本。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    expected_version: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=80)
+    settings: HouseholdSettings
+
+
+class GuardianRequest(BaseModel):
+    """申请人明确声明监护关系，审核前不开放资料。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    expected_version: int = Field(ge=1)
+    relationship: Literal["父亲", "母亲", "法定监护人"]
+    birth_date: date
+    attested: Literal[True]
+    expires_at: datetime
+
+    @model_validator(mode="after")
+    def check_expiry(self):
+        """监护授权期限最长一年且必须带时区。"""
+        now = datetime.now(UTC)
+        today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        age = (
+            today.year
+            - self.birth_date.year
+            - ((today.month, today.day) < (self.birth_date.month, self.birth_date.day))
+        )
+        if self.birth_date > today or age >= 18:
+            raise ValueError("监护申请仅支持未成年成员")
+        if self.expires_at.tzinfo is None or not now < self.expires_at <= now + timedelta(days=366):
+            raise ValueError("监护期限须为带时区的未来时间，最长一年")
+        return self
+
+
+class GuardianReview(BaseModel):
+    """独立管理员核对资料后审核申请。"""
+
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+    approved: bool
+    verified: Literal[True]
 
 
 class FamilyInput(BaseModel):
@@ -59,6 +212,13 @@ class ProfileInput(BaseModel):
     allergens: list[str] | None = Field(default=None, max_length=50)
     avoidances: list[str] | None = Field(default=None, max_length=50)
     preferences: str | None = Field(default=None, max_length=500)
+    health_goals: list[HealthGoal] | None = Field(default=None, max_length=30)
+    condition_records: list[ConditionRecord] | None = Field(default=None, max_length=50)
+    medication_records: list[MedicationRecord] | None = Field(default=None, max_length=50)
+    instruction_records: list[InstructionRecord] | None = Field(default=None, max_length=50)
+    allergy_records: list[AllergyRecord] | None = Field(default=None, max_length=50)
+    meal_habits: MealHabits | None = None
+    lifestyle: Lifestyle | None = None
 
     @model_validator(mode="after")
     def check_birth_date(self):
@@ -104,8 +264,8 @@ class AuthorizationInput(BaseModel):
     """由本人授权字段、用途和期限。"""
 
     model_config = ConfigDict(extra="forbid")
-    fields: list[str] = Field(max_length=15)
-    edit_fields: list[str] = Field(default_factory=list, max_length=15)
+    fields: list[str] = Field(max_length=30)
+    edit_fields: list[str] = Field(default_factory=list, max_length=30)
     purpose: Literal["family_nutrition"] = "family_nutrition"
     expires_at: datetime
 
@@ -135,7 +295,7 @@ class MeasurementInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     id: UUID
-    kind: Literal["weight", "blood_pressure", "blood_glucose", "blood_lipids"]
+    kind: Literal["weight", "blood_pressure", "blood_glucose", "blood_lipids", "height"]
     values: dict[str, float]
     measured_at: datetime
     source: str = Field(default="manual", min_length=1, max_length=100)
@@ -175,7 +335,7 @@ class MeasurementQuery(BaseModel):
     """指标查询的自然日范围、分页和条件。"""
 
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["weight", "blood_pressure", "blood_glucose", "blood_lipids"] | None = None
+    kind: Literal["weight", "blood_pressure", "blood_glucose", "blood_lipids", "height"] | None = None
     days: int = Field(default=30, ge=1, le=366)
     condition: Literal["fasting", "after_meal_2h", "random"] | None = None
     from_date: date | None = None

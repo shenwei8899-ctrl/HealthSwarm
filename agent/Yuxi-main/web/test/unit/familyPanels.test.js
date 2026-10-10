@@ -6,7 +6,12 @@ import * as vue from 'vue'
 import * as fields from '../../src/utils/familyArchives.js'
 
 // 执行正式 SFC 的 setup 与 Vue watcher，API 延迟仅控制外部响应顺序。
-function panel(name, initialProps, familyApi) {
+function panel(
+  name,
+  initialProps,
+  familyApi,
+  user = vue.reactive({ uid: 'owner', isAdmin: false })
+) {
   const source = readFileSync(
     new URL(`../../src/components/family/${name}.vue`, import.meta.url),
     'utf8'
@@ -25,8 +30,12 @@ function panel(name, initialProps, familyApi) {
     watch: vue.watch,
     ...fields,
     familyApi,
+    useUserStore: () => user,
     Plus: null,
     FamilyChart: null,
+    FamilyStructuredField: null,
+    FamilyGuardianPanel: null,
+    useRouter: () => ({ push() {} }),
     message: { success() {}, error() {}, info() {} },
     onBeforeUnmount: (callback) => cleanups.push(callback),
     downloadFamilyJson: (...args) => downloads.push(args)
@@ -207,6 +216,83 @@ test('正式授权面板：撤销邀请后迟到生成响应不重新展示失�
     await pending
     assert.equal(p.state.inviteOpen.value, false)
     assert.equal(p.state.invitation.value, null)
+  } finally {
+    p.close()
+  }
+})
+
+test('家庭设置：真实响应式设置可编辑，保留原版本，失权后清理在途状态', async () => {
+  const write = deferred(),
+    calls = []
+  const p = panel(
+    'FamilySettingsPanel',
+    {
+      family: { id: 'f', name: '家庭', version: 1, is_owner: true, settings: { cook: '原做饭人' } }
+    },
+    {
+      updateFamily: (...args) => {
+        calls.push(args)
+        return write.promise
+      }
+    }
+  )
+  try {
+    p.state.openEditor()
+    p.state.draft.cook = '新做饭人'
+    assert.equal(p.props.family.settings.cook, '原做饭人')
+    p.props.family = { ...p.props.family, version: 2, settings: { cook: '远端做饭人' } }
+    await vue.nextTick()
+    const saving = p.state.save()
+    assert.equal(calls[0][1].expected_version, 1)
+    p.props.family = { ...p.props.family, is_owner: false }
+    await vue.nextTick()
+    write.resolve({ version: 3 })
+    await saving
+    assert.equal(p.state.editing.value, false)
+    assert.deepEqual(Object.keys(p.state.draft), [])
+    assert.deepEqual(p.emitted, [])
+  } finally {
+    p.close()
+  }
+})
+
+test('结构化编辑：修改响应式列表不改变原档案，未知与明确无分别提交', () => {
+  const p = panel(
+    'FamilyStructuredField',
+    { fieldKey: 'medication_records', modelValue: [{ description: '原记录', dose: null }] },
+    {}
+  )
+  try {
+    p.state.update(0, 'dose', '自述剂量')
+    assert.equal(p.props.modelValue[0].dose, null)
+    assert.equal(p.emitted[0][1][0].dose, '自述剂量')
+    p.state.setState('none')
+    p.state.setState('unknown')
+    assert.deepEqual(p.emitted[1][1], [])
+    assert.equal(p.emitted[2][1], null)
+  } finally {
+    p.close()
+  }
+})
+
+test('监护审核：按真实管理员权限加载，失权后迟到队列不可回填', async () => {
+  const read = deferred(),
+    user = vue.reactive({ uid: 'reviewer', isAdmin: true })
+  const p = panel(
+    'FamilyGuardianPanel',
+    { family: { id: 'f', members: [] } },
+    { guardianRequests: () => read.promise },
+    user
+  )
+  try {
+    assert.equal(p.state.isAdmin.value, true)
+    user.isAdmin = false
+    await vue.nextTick()
+    read.resolve([{ member_name: '不再可见的申请' }])
+    await vue.nextTick()
+    await vue.nextTick()
+    assert.equal(p.state.isAdmin.value, false)
+    assert.deepEqual(p.state.requests.value, [])
   } finally {
     p.close()
   }

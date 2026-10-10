@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises'
 const source = (
   await readFile(new URL('../src/apis/health_vision_api.js', import.meta.url), 'utf8')
 )
-  .replace(/^import.*\n/gm, '')
+  .replace(/^import.*\r?\n/gm, '')
   .replace('export const healthVisionApi', 'const healthVisionApi')
 
 function api() {

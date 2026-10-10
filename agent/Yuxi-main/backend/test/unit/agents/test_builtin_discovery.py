@@ -259,7 +259,7 @@ def test_shipping_skills_keep_required_dependencies():
         "preview_safe_plan_regeneration",
     ]
     assert found["family-nutritionist"]["name"] == "家庭营养师"
-    assert found["family-nutritionist"]["version"] == "2026.10.10.1"
+    assert found["family-nutritionist"]["version"] == "2026.10.10.2"
     assert found["family-nutritionist"]["tool_dependencies"] == [
         "get_confirmed_profile",
         "get_confirmed_diet",

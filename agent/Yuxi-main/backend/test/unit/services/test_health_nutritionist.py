@@ -75,7 +75,7 @@ def test_fixed_skill_snapshot_records_published_identity_and_exact_content(monke
     assert build_skill_manifest_entries({"skills": ["family-nutritionist"]}, snapshot) == [
         {
             "slug": "family-nutritionist",
-            "version": "2026.10.10.1",
+            "version": "2026.10.10.2",
             "content_hash": spec["content_hash"],
             "preload_content_hash": hashlib.sha256(content.encode()).hexdigest(),
         }

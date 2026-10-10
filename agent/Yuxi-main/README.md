@@ -1,6 +1,6 @@
-![Yuxi：可私有部署的多租户知识智能体平台](https://xerrors.oss-cn-shanghai.aliyuncs.com/posts/2026/08/20260818-151118-mac-1787037059154-8c08f48c.png)
+![HealthSwarm：可私有部署的多租户知识智能体平台](https://xerrors.oss-cn-shanghai.aliyuncs.com/posts/2026/08/20260818-151118-mac-1787037059154-8c08f48c.png)
 
-**Yuxi = Cloud Agents + Knowledge RAG**，Yuxi 是一个可私有部署的多租户知识智能体平台。自定义智能体，权限可控，沉淀企业轨迹。它把知识库检索、知识图谱、LangGraph 多智能体编排、MCP/Skills、沙盒工具和权限管理放进同一个工作区。让每个用户都拥有一个云端 Codex。
+**HealthSwarm = Cloud Agents + Knowledge RAG**，HealthSwarm 基于 Yuxi，是一个可私有部署的多租户知识智能体平台。自定义智能体，权限可控，沉淀企业轨迹。它把知识库检索、知识图谱、LangGraph 多智能体编排、MCP/Skills、沙盒工具和权限管理放进同一个工作区。让每个用户都拥有一个云端 Codex。
 
 [项目主页](https://xerrors.github.io/Yuxi/) · [快速开始](https://xerrors.github.io/Yuxi/intro/quick-start) · [演示视频](https://www.bilibili.com/video/BV1erE26iEgv/) · [版本记录](https://github.com/xerrors/Yuxi/releases) · [English](README.en.md)
 
@@ -34,7 +34,7 @@ Yuxi 是面向需要企业自部署的多用户 Agent 产品，且需要自己�
 
 ## 快速启动
 
-语析（Yuxi）完全基于 Docker 启动，服务和中间件主要包括：LangGraph、Vue、FastAPI、Milvus、Neo4j、PostgreSQL、MinerU、PaddleOCR。
+HealthSwarm 完全基于 Docker 启动，服务和中间件主要包括：LangGraph、Vue、FastAPI、Milvus、Neo4j、PostgreSQL、MinerU、PaddleOCR。
 
 ### 前置条件
 

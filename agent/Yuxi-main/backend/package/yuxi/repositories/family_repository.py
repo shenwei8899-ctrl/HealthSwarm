@@ -7,6 +7,7 @@ from yuxi.storage.postgres.models_business import (
     FamilyMeasurement,
     FamilyMember,
     FamilyProfileRevision,
+    User,
 )
 
 
@@ -38,6 +39,22 @@ class FamilyRepository:
     async def owned_family(self, uid):
         """读取用户唯一管理的家庭。"""
         return await self.db.scalar(select(FamilyArchive).where(FamilyArchive.owner_uid == uid))
+
+    async def pending_guardians(self):
+        """审核队列只查询有效待审关系。"""
+        return (
+            await self.db.execute(
+                select(FamilyArchive, FamilyMember, User.username)
+                .join(FamilyMember, FamilyMember.family_id == FamilyArchive.id)
+                .join(User, User.uid == FamilyMember.guardian_uid)
+                .where(FamilyMember.guardian_status == "pending", FamilyMember.is_active.is_(True))
+            )
+        ).all()
+
+    async def guardian_review_context(self, fid, mid):
+        """独立审核入口以家庭行锁串行化，不借用家庭管理员权限。"""
+        family = await self.db.scalar(select(FamilyArchive).where(FamilyArchive.id == fid).with_for_update())
+        return family, await self.member(fid, mid) if family else None
 
     async def members(self, fid):
         """按稳定顺序读取成员。"""

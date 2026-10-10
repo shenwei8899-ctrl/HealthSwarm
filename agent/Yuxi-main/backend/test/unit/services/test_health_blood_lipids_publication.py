@@ -324,7 +324,7 @@ async def test_actual_graph_binds_and_executes_fixed_blood_lipids_tool(monkeypat
     read.assert_awaited_once_with(context)
     assert tool_lists and all("get_member_blood_lipids_records" in tools for tools in tool_lists)
     assert all(set(tools) == set(health_consultation_service.HEALTH_TOOL_NAMES) for tools in tool_lists)
-    assert system_prompts and all('version: "2026.10.10.1"' in prompt for prompt in system_prompts)
+    assert system_prompts and all('version: "2026.10.10.2"' in prompt for prompt in system_prompts)
     tool_result = next(message for message in result["messages"] if message.type == "tool")
     assert tool_result.name == "get_member_blood_lipids_records"
     assert json.loads(tool_result.content) == read.return_value

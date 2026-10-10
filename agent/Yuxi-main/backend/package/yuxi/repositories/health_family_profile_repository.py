@@ -9,7 +9,12 @@ from sqlalchemy.dialects.postgresql import insert
 
 from yuxi.repositories.family_repository import FamilyRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
-from yuxi.services.family_schemas import PROFILE_FIELDS, REQUIRED_PROFILE_FIELDS, validate_metric_values
+from yuxi.services.family_schemas import (
+    PROFILE_FIELDS,
+    REQUIRED_PROFILE_FIELDS,
+    STRUCTURED_PROFILE_FIELDS,
+    validate_metric_values,
+)
 from yuxi.services.family_service import authorized_fields
 from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.health_vision_types import HealthVisionError
@@ -237,6 +242,7 @@ class HealthFamilyProfileRepository:
             return result
         family, source = await self.source(uid, link, lock=lock)
         allowed = authorized_fields(family, source, uid) & PROFILE_FIELDS
+        allowed -= STRUCTURED_PROFILE_FIELDS - (source.profile or {}).keys()
         missing = sorted(key for key in REQUIRED_PROFILE_FIELDS if (source.profile or {}).get(key) in (None, "", []))
         if source.confirmed_version != source.version:
             return {**result, "code": "profile_unconfirmed"}
@@ -250,7 +256,7 @@ class HealthFamilyProfileRepository:
             profile=profile,
             confirmed_version=source.version,
             allowed_fields=sorted(allowed),
-            unknown_fields=sorted(key for key, value in profile.items() if value in (None, "", [])),
+            unknown_fields=sorted(key for key, value in profile.items() if value in (None, "")),
             source={"family_id": link.family_id, "source_member_id": source.id, "version": source.version},
             unsupported=["nutrition_safety_codes", "approved_personal_targets", "independent_measurements"],
         )

@@ -21,6 +21,7 @@ def family_schema_upgrade(monkeypatch):
         return None
 
     monkeypatch.setattr(storage_migration, "upgrade_family_archives", upgrade)
+    monkeypatch.setattr(storage_migration, "upgrade_family_care", upgrade)
 
 
 class _Session:

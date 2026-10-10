@@ -41,6 +41,7 @@ from yuxi.storage_migrations.v072_runtime_identity import (
     runtime_storage_requires_quiescence,
 )
 from yuxi.storage_migrations.v011_family import upgrade_family_archives
+from yuxi.storage_migrations.v012_family_care import upgrade_family_care
 
 _QUIESCENCE_TOKEN_ENV = "YUXI_STORAGE_MIGRATION_QUIESCENCE_TOKEN"
 _QUIESCENCE_FILE_ENV = "YUXI_STORAGE_MIGRATION_QUIESCENCE_FILE"
@@ -70,7 +71,7 @@ async def main() -> None:
                 "business",
                 business_version,
                 BUSINESS_SCHEMA_VERSION,
-                upgrade_from=(2, 7, 8, 9, 10),
+                upgrade_from=(2, 7, 8, 9, 10, 11),
             )
             knowledge_version = versions.get("knowledge")
             _require_supported_version(
@@ -106,6 +107,7 @@ async def main() -> None:
 
             if business_version != BUSINESS_SCHEMA_VERSION:
                 await upgrade_family_archives(pg_manager)
+                await upgrade_family_care(pg_manager)
 
             if knowledge_version is None:
                 await pg_manager.create_knowledge_tables()
