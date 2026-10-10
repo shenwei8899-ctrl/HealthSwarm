@@ -75,6 +75,20 @@ test_agent_bubble_sort_run_creates_expected_artifacts
 
 ## 常用命令
 
+### 餐单列表分页验证
+
+餐单列表的 unit 验证参数传递、页切片和当前授权拒绝；integration 使用 shipping 路由、真实 TCP 与独立 PostgreSQL schema，按预先确定的 61 份合成餐单核对跨页顺序、相同更新时间的次排序、账号和成员隔离、主成员及家庭参与者撤权。每次 GET 前后比较全 schema 的行内容及 `xmin`，清理后核对 schema 已从 catalog 移除。数据库须为独立测试环境；未配置 PostgreSQL 时的 skip 不能算验收通过。
+
+```bash
+docker compose exec -T -u root api uv run --no-sync --group test pytest test/unit/services/test_health_meal_plan_pagination.py test/unit/services/test_health_meal_planner.py test/unit/services/test_health_family_meal_plan.py -q
+docker compose exec -T -u root api uv run --no-sync --group test pytest test/integration/services/test_health_meal_plan_pagination_http.py -q
+docker compose exec -T web pnpm run test:unit
+docker compose exec -T web pnpm run lint:check
+docker compose exec -T web pnpm run build
+```
+
+实际浏览器在已有后台核对首页 50 份、末页 11 份、前后翻页、刷新、空成员和撤权清理；迟到读取、保存后重置首页和网络失败分支另由编译组件 unit 验证。偏移分页不承诺并发修改期间的固定快照，客户端行为见[餐单分页参考](../advanced/health-meal-plan-pagination.md)。此查询没有新增 Worker 或模型执行路径。
+
 先启动开发环境：
 
 ```bash

@@ -392,11 +392,16 @@ async def read_meal_plan(uid, plan_id):
         }
 
 
-async def list_meal_plans(uid, member_id):
-    """按账号成员列出有界的当前餐单。"""
+async def list_meal_plans(uid, member_id, *, limit=50, offset=0):
+    """投影当前账号成员的一页餐单，额外一行只用于判断后续页。"""
     async with pg_manager.get_async_session_context() as session:
-        rows = await HealthMealPlanRepository(session).list_plans(uid, member_id)
-        return {"plans": [plan_result(row) for row in rows[:50]], "truncated": len(rows) > 50}
+        rows = await HealthMealPlanRepository(session).list_plans(uid, member_id, limit=limit, offset=offset)
+        truncated = len(rows) > limit
+        return {
+            "plans": [plan_result(row) for row in rows[:limit]],
+            "truncated": truncated,
+            "next_offset": offset + limit if truncated else None,
+        }
 
 
 def require_single_member_plan(plan):

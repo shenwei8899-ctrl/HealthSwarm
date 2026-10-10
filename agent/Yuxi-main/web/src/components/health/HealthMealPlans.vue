@@ -40,7 +40,10 @@ const recipeQuery = ref('')
 const recipesLoading = ref(false)
 const recipesError = ref('')
 const plans = ref([])
-const truncated = ref(false)
+const pageSize = 50
+const pageOffset = ref(0)
+const nextOffset = ref(null)
+const pageNumber = computed(() => Math.floor(pageOffset.value / pageSize) + 1)
 const loading = ref(false)
 const working = ref(false)
 const error = ref('')
@@ -135,7 +138,8 @@ function clearPrivateState() {
   epoch++
   clearTimeout(timer)
   plans.value = []
-  truncated.value = false
+  pageOffset.value = 0
+  nextOffset.value = null
   loading.value = false
   error.value = ''
   preview.value = null
@@ -164,11 +168,14 @@ function clearPrivateState() {
   safeBusy.value = false
 }
 
-/** 成员列表与选中详情各有读取代次，迟到响应不能覆盖新选择。 */
-async function reload() {
+/** 列表与详情各有读取代次，翻页不改变已选餐单的版本事实。 */
+async function readPage(offset, refreshDetail = false) {
   const ticket = epoch,
-    sequence = ++listSequence
+    sequence = ++listSequence,
+    memberId = props.memberId
+  pageOffset.value = offset
   plans.value = []
+  nextOffset.value = null
   loading.value = true
   error.value = ''
   if (!canRead.value) {
@@ -176,21 +183,37 @@ async function reload() {
     return
   }
   try {
-    const result = await api.mealPlans(props.memberId)
-    if (!active(ticket) || sequence !== listSequence) return
+    const result = await api.mealPlans(memberId, pageSize, offset)
+    if (!active(ticket) || sequence !== listSequence || memberId !== props.memberId) return
     plans.value = result.plans
-    truncated.value = result.truncated
-    if (current.value && selectedId.value && !locked.value) await selectPlan(selectedId.value)
+    nextOffset.value = result.next_offset ?? null
+    if (refreshDetail && current.value && selectedId.value && !locked.value)
+      await selectPlan(selectedId.value)
   } catch (exc) {
-    if (active(ticket) && sequence === listSequence) {
+    if (active(ticket) && sequence === listSequence && memberId === props.memberId) {
       if ([403, 404].includes(exc.status)) {
         clearPrivateState()
         error.value = '成员授权已变化，已清除旧餐单，请重新确认授权。'
       } else error.value = failure(exc)
     }
   } finally {
-    if (active(ticket) && sequence === listSequence) loading.value = false
+    if (active(ticket) && sequence === listSequence && memberId === props.memberId)
+      loading.value = false
   }
+}
+/** 显式刷新和业务保存后从首页重新读取，并核对已选详情。 */
+function reload() {
+  return readPage(0, true)
+}
+/** 已加载页才能向前翻页，避免并发读取或越过首页。 */
+function previousPage() {
+  if (!canRead.value || locked.value || loading.value || pageOffset.value === 0) return
+  return readPage(Math.max(0, pageOffset.value - pageSize))
+}
+/** 下一页位置使用服务端回执，读取期间不重复提交。 */
+function nextPage() {
+  if (!canRead.value || locked.value || loading.value || nextOffset.value === null) return
+  return readPage(nextOffset.value)
 }
 async function loadRecipes() {
   const ticket = epoch,
@@ -568,13 +591,12 @@ watch(
   () => {
     clearPrivateState()
     void reload()
-  }
+  },
+  { flush: 'sync' }
 )
 watch(
   () => JSON.stringify(props.members.map(({ id, scopes }) => [id, scopes])),
   () => {
-    if (!currentIsFamily.value && !displayedIsFamily.value && !(working.value && selectedId.value))
-      return
     clearPrivateState()
     void reload()
   },
@@ -722,26 +744,42 @@ onBeforeUnmount(() => {
       <section class="panel">
         <div class="heading">
           <h2>已保存的餐单草稿</h2>
-          <a-button :loading="loading" :disabled="locked" @click="reload">刷新餐单</a-button>
+          <a-button :loading="loading" :disabled="locked || loading" @click="reload">刷新餐单</a-button>
         </div>
         <a-select
           aria-label="已保存餐单"
-          :value="selectedId || undefined"
+          :value="plans.some((p) => p.plan_id === selectedId) ? selectedId : undefined"
           :options="
             plans.map((p) => ({
               value: p.plan_id,
               label: `${p.plan_date} · 草稿 · 版本 ${p.version}`
             }))
           "
-          :disabled="locked"
-          placeholder="选择餐单查看详情"
+          :disabled="locked || loading"
+          placeholder="选择本页餐单查看详情"
           style="width: 100%"
           @change="selectPlan"
         /><a-empty
           v-if="!plans.length && !loading && !error"
-          description="暂无已保存餐单。生成或手动预览后可保存。"
+          :description="
+            pageOffset === 0
+              ? '暂无已保存餐单。生成或手动预览后可保存。'
+              : '本页暂无餐单，可返回上一页或刷新餐单。'
+          "
         />
-        <p v-if="truncated" class="muted">当前展示最近 50 份餐单。</p>
+        <div class="actions" aria-label="餐单翻页">
+          <a-button :disabled="locked || loading || pageOffset === 0" @click="previousPage"
+            >上一页</a-button
+          >
+          <span class="muted" role="status"
+            >第 {{ pageNumber }} 页 · {{
+              loading ? '正在读取…' : error && !plans.length ? '读取失败' : `本页 ${plans.length} 份`
+            }}</span
+          >
+          <a-button :disabled="locked || loading || nextOffset === null" @click="nextPage"
+            >下一页</a-button
+          >
+        </div>
       </section>
       <section v-if="displayed" class="panel">
         <div class="heading">

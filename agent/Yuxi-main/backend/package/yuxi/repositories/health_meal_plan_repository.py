@@ -98,8 +98,8 @@ class HealthMealPlanRepository:
             )
         return rows
 
-    async def list_plans(self, uid, member_id):
-        """列表有界，账号与成员共同决定可见范围。"""
+    async def list_plans(self, uid, member_id, *, limit=50, offset=0):
+        """按稳定顺序读取一页及后续标记行，并重验全部参与者授权。"""
         await HealthVisionRepository(self.session).authorize(member_id, uid, "diet_edit")
         rows = list(
             (
@@ -107,7 +107,8 @@ class HealthMealPlanRepository:
                     select(HealthMealPlan)
                     .where(HealthMealPlan.actor_uid == uid, HealthMealPlan.member_id == member_id)
                     .order_by(HealthMealPlan.updated_at.desc(), HealthMealPlan.id)
-                    .limit(51)
+                    .limit(limit + 1)
+                    .offset(offset)
                 )
             ).all()
         )

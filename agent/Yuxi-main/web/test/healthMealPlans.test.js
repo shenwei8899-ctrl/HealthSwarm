@@ -50,7 +50,7 @@ function panel(api = {}, agentApi = {}) {
     'useRouter',
     'api',
     'agentApi',
-    `${script}\nreturn { reload, loadRecipes, selectPlan, makePreview, save, openSwap, submitSwap, closeSwap, generate, checkGeneration, stopGeneration, preview, current, historyVersion, saveAttempt, swapAttempt, swap, plans, error, working, polling, generation, generationStatus, consent, date, notes, meals, questions, recipes, recipesError, displayed, displayedIsFamily, currentIsFamily, canPreview, canGenerate, approval, approvalLoading, approvalError, approvalLabels, invalidationLabels, openProfile, safeBusy, safeSaved, safeInvalidated, locked }`
+    `${script}\nreturn { reload, readPage, previousPage, nextPage, pageOffset, nextOffset, pageNumber, loading, selectedId, loadRecipes, selectPlan, makePreview, save, openSwap, submitSwap, closeSwap, generate, checkGeneration, stopGeneration, preview, current, historyVersion, saveAttempt, swapAttempt, swap, plans, error, working, polling, generation, generationStatus, consent, date, notes, meals, questions, recipes, recipesError, displayed, displayedIsFamily, currentIsFamily, canPreview, canGenerate, approval, approvalLoading, approvalError, approvalLabels, invalidationLabels, openProfile, safeBusy, safeSaved, safeInvalidated, locked }`
   )
   const state = scope.run(() =>
     factory(
@@ -88,7 +88,272 @@ function panel(api = {}, agentApi = {}) {
     }
   }
 }
-const empty = { mealPlans: async () => ({ plans: [], truncated: false }) }
+const empty = { mealPlans: async () => ({ plans: [], truncated: false, next_offset: null }) }
+
+/** 编译真实列表模板，核对分页状态投影与按钮边界。 */
+async function listView(state) {
+  const template = parse(source).descriptor.template.content
+  const start = template.lastIndexOf('<section class="panel">', template.indexOf('已保存的餐单草稿'))
+  const end = template.indexOf('</section>', start) + '</section>'.length
+  const compiled = compileTemplate({
+    source: template.slice(start, end),
+    filename: 'HealthMealPlans.vue',
+    id: 'meal-pagination-test',
+    compilerOptions: { mode: 'function' }
+  })
+  assert.deepEqual(compiled.errors, [])
+  const buttons = [], selectors = [], emptyDescriptions = []
+  const app = Vue.createSSRApp({
+    render: new Function('Vue', compiled.code)(Vue),
+    setup: () => state
+  })
+  app.component('AButton', {
+    props: ['disabled', 'loading'],
+    setup: (props, { attrs, slots }) => {
+      const label = slots.default().map((vnode) => vnode.children).join('').trim()
+      buttons.push({ label, disabled: props.disabled, click: attrs.onClick })
+      return () => Vue.h('button', { disabled: props.disabled }, label)
+    }
+  })
+  app.component('ASelect', {
+    props: ['value', 'options', 'disabled'],
+    setup: (props) => {
+      selectors.push(props)
+      return () => Vue.h('ul', props.options.map((option) => Vue.h('li', option.label)))
+    }
+  })
+  app.component('AEmpty', {
+    props: ['description'],
+    setup: (props) => {
+      emptyDescriptions.push(props.description)
+      return () => Vue.h('p', props.description)
+    }
+  })
+  return { html: await renderToString(app), buttons, selectors, emptyDescriptions }
+}
+
+test('餐单前后翻页读取服务端偏移并呈现真实本页；翻页保留当前和历史详情', async () => {
+  const requests = []
+  let detailReads = 0
+  const state = panel({
+    mealPlans: async (member, limit, offset) => {
+      requests.push([member, limit, offset])
+      return {
+        plans: [snapshot({ plan_id: `page-${offset}`, plan_date: offset ? '2026-09-01' : '2026-10-06' })],
+        truncated: offset === 0,
+        next_offset: offset === 0 ? 50 : null
+      }
+    },
+    mealPlan: async () => {
+      detailReads++
+      return snapshot({ plan_id: 'page-0', version: 3 })
+    }
+  })
+  try {
+    await state.reload()
+    let view = await listView(state)
+    assert.match(view.html, /第 1 页 · 本页 1 份/)
+    assert.equal(view.buttons.find((button) => button.label === '上一页').disabled, true)
+    state.error.value = '其他操作未确认'
+    assert.match((await listView(state)).html, /第 1 页 · 本页 1 份/)
+    state.error.value = ''
+    await view.buttons.find((button) => button.label === '下一页').click()
+    view = await listView(state)
+    assert.match(view.html, /2026-09-01/)
+    assert.doesNotMatch(view.html, /2026-10-06/)
+    assert.match(view.html, /第 2 页 · 本页 1 份/)
+    assert.equal(view.buttons.find((button) => button.label === '下一页').disabled, true)
+    await state.nextPage()
+    assert.equal(requests.length, 2, '末页不能发送越界读取')
+    await view.buttons.find((button) => button.label === '上一页').click()
+    await state.selectPlan('page-0')
+    const selected = state.current.value
+    state.historyVersion.value = { version: 1, snapshot: snapshot() }
+    const historical = state.historyVersion.value
+    await state.nextPage()
+    view = await listView(state)
+    assert.strictEqual(state.current.value, selected)
+    assert.strictEqual(state.historyVersion.value, historical)
+    assert.equal(state.selectedId.value, 'page-0')
+    assert.equal(view.selectors[0].value, undefined, '不在本页的选中餐单不能显示内部ID')
+    assert.equal(detailReads, 1, '普通翻页不能改变所选餐单版本')
+    assert.deepEqual(requests, [['a', 50, 0], ['a', 50, 50], ['a', 50, 0], ['a', 50, 50]])
+  } finally {
+    state.dispose()
+  }
+})
+
+test('餐单翻页加载和失败清除旧页，禁止连续点击，上一页与刷新可恢复', async () => {
+  let rejectPage
+  let requests = 0
+  const state = panel({
+    mealPlans: async (_member, _limit, offset) => {
+      requests++
+      if (offset === 50) return new Promise((_, reject) => { rejectPage = reject })
+      return { plans: [snapshot({ plan_id: 'first' })], truncated: true, next_offset: 50 }
+    }
+  })
+  try {
+    await state.reload()
+    const pending = state.nextPage()
+    let view = await listView(state)
+    assert.deepEqual(state.plans.value, [])
+    assert.equal(state.nextOffset.value, null)
+    assert.match(view.html, /第 2 页 · 正在读取/)
+    assert.equal(view.selectors[0].disabled, true)
+    assert.ok(view.buttons.every((button) => button.disabled))
+    await state.nextPage()
+    await state.previousPage()
+    assert.equal(requests, 2, '加载期间不能重复翻页')
+    rejectPage(Error('offline'))
+    await pending
+    view = await listView(state)
+    assert.deepEqual(state.plans.value, [])
+    assert.match(view.html, /第 2 页 · 读取失败/)
+    assert.equal(view.buttons.find((button) => button.label === '下一页').disabled, true)
+    assert.equal(view.buttons.find((button) => button.label === '上一页').disabled, false)
+    await state.previousPage()
+    assert.match((await listView(state)).html, /第 1 页 · 本页 1 份/)
+    const retry = state.nextPage()
+    await state.reload()
+    rejectPage(Error('stale offline'))
+    await retry
+    assert.match((await listView(state)).html, /第 1 页 · 本页 1 份/)
+  } finally {
+    state.dispose()
+  }
+})
+
+test('空末页能返回，刷新始终从首页读取并重新核对选中详情', async () => {
+  const requests = []
+  let detailReads = 0
+  const state = panel({
+    mealPlans: async (_member, _limit, offset) => {
+      requests.push(offset)
+      return { plans: [], truncated: false, next_offset: null }
+    },
+    mealPlan: async () => snapshot({ plan_id: 'selected', version: ++detailReads })
+  })
+  try {
+    await state.readPage(50)
+    const view = await listView(state)
+    assert.deepEqual(view.emptyDescriptions, ['本页暂无餐单，可返回上一页或刷新餐单。'])
+    assert.equal(view.buttons.find((button) => button.label === '上一页').disabled, false)
+    await state.selectPlan('selected')
+    await state.reload()
+    assert.equal(state.pageOffset.value, 0)
+    assert.equal(state.current.value.version, 2)
+    assert.deepEqual(requests, [50, 0])
+    assert.match((await listView(state)).html, /暂无已保存餐单/)
+  } finally {
+    state.dispose()
+  }
+})
+
+test('迟到的页成功和失败都不能覆盖较新首页，成员切换与scope变化同步重置分页', async () => {
+  for (const change of ['refresh', 'member', 'scope', 'family-scope']) {
+    for (const outcome of ['resolve', 'reject']) {
+      let finish
+      const requests = []
+      const state = panel({
+        mealPlans: (member, limit, offset) => {
+          requests.push([member, limit, offset])
+          if (offset === 50) return new Promise((resolve, reject) => { finish = { resolve, reject } })
+          return Promise.resolve({ plans: [snapshot({ plan_id: `current-${member}` })], next_offset: 50 })
+        }
+      })
+      try {
+        await state.reload()
+        const late = state.nextPage()
+        if (change === 'refresh') await state.reload()
+        else if (change === 'member') state.props.memberId = 'b'
+        else if (change === 'scope') state.props.scopes = ['diet_edit']
+        else state.props.members = [{ id: 'b', scopes: ['diet_edit'] }]
+        assert.equal(state.pageOffset.value, 0, `${change}同步回到首页`)
+        if (outcome === 'resolve') finish.resolve({ plans: [snapshot({ plan_id: 'late-private' })], next_offset: 100 })
+        else finish.reject({ status: 403 })
+        await late
+        await nextTick()
+        assert.equal(state.plans.value[0].plan_id, change === 'member' ? 'current-b' : 'current-a')
+        assert.equal(state.nextOffset.value, 50)
+        assert.equal(state.error.value, '')
+        assert.equal(state.loading.value, false)
+        assert.equal(requests.at(-1)[2], 0)
+        assert.doesNotMatch((await listView(state)).html, /late-private/)
+      } finally {
+        state.dispose()
+      }
+    }
+  }
+})
+
+test('后续页撤权同步清除列表、当前和历史详情，撤去读取scope后不继续请求', async () => {
+  for (const status of [403, 404]) {
+    let requests = 0
+    const state = panel({
+      mealPlans: async (_member, _limit, offset) => {
+        requests++
+        if (offset) throw { status }
+        return { plans: [snapshot({ plan_id: 'private' })], next_offset: 50 }
+      },
+      mealPlan: async () => snapshot({ plan_id: 'private', version: 1 })
+    })
+    try {
+      await state.reload()
+      await state.selectPlan('private')
+      state.historyVersion.value = { snapshot: snapshot() }
+      await state.nextPage()
+      assert.deepEqual(state.plans.value, [])
+      assert.equal(state.displayed.value, null)
+      assert.equal(state.selectedId.value, '')
+      assert.equal(state.pageOffset.value, 0)
+      assert.equal(state.nextOffset.value, null)
+      assert.equal(state.loading.value, false)
+      assert.match(state.error.value, /授权/)
+      state.props.scopes = []
+      await nextTick()
+      await state.nextPage()
+      assert.equal(requests, 2)
+    } finally {
+      state.dispose()
+    }
+  }
+})
+
+test('普通保存、换菜及AI保存均从后续页回到首页并读取服务端详情', async () => {
+  for (const operation of ['save', 'swap', 'safe-save']) {
+    const requests = []
+    const state = panel({
+      mealPlans: async (_member, _limit, offset) => {
+        requests.push(offset)
+        return { plans: [snapshot({ plan_id: 'saved', version: 2 })], next_offset: null }
+      },
+      mealPlan: async () => snapshot({ plan_id: 'saved', version: 2 }),
+      saveMealPlan: async () => snapshot({ plan_id: 'saved', version: 1 }),
+      swapMealPlan: async () => snapshot({ plan_id: 'saved', version: 1 }),
+      recipes: async () => []
+    })
+    try {
+      await state.readPage(50)
+      if (operation === 'save') {
+        state.preview.value = snapshot()
+        await state.save()
+      } else if (operation === 'swap') {
+        await state.selectPlan('saved')
+        state.openSwap('lunch', { dish_index: 0, name: '合成菜' })
+        state.swap.value.replacement.recipe_version_id = 'synthetic-recipe'
+        state.swap.value.reason = '合成换菜'
+        await state.submitSwap()
+      } else await state.safeSaved({ plan_id: 'saved', version: 1 })
+      assert.equal(state.pageOffset.value, 0)
+      assert.equal(state.current.value.version, 2)
+      assert.deepEqual(requests, [50, 0])
+      assert.match((await listView(state)).html, /第 1 页 · 本页 1 份/)
+    } finally {
+      state.dispose()
+    }
+  }
+})
 
 test('家庭详情按成员投影识别，不把家庭原计划交给单成员普通换菜', async () => {
   let writes = 0
@@ -1041,7 +1306,7 @@ test('刷新发现权限撤回，清除此前餐单和历史快照', async () =>
   state.dispose()
 })
 
-test('健康 API 在真实方法边界携带餐单幂等与版本头', async () => {
+test('健康 API 在真实方法边界携带餐单分页参数、幂等与版本头', async () => {
   const text = await readFile(new URL('../src/apis/health_vision_api.js', import.meta.url), 'utf8')
   const calls = []
   const fn =
@@ -1058,11 +1323,17 @@ test('健康 API 在真实方法边界携带餐单幂等与版本头', async () 
     'buildQuery',
     `${text.replace(/^import.*\r?\n/, '').replace('export const', 'const')}\nreturn healthVisionApi`
   )
-  const api = factory(fn('GET'), fn('POST'), fn('PUT'), fn('DELETE'), fn('REQUEST'), () => '')
+  const api = factory(fn('GET'), fn('POST'), fn('PUT'), fn('DELETE'), fn('REQUEST'),
+    (params) => new URLSearchParams(params).toString())
   api.saveMealPlan('member', { preview_id: 'preview', client_request_id: 'key' })
   api.swapMealPlan('plan', { version: 3, client_request_id: 'swap' })
   assert.equal(calls[0].args[0], '/api/health/v1/members/member/meal-plans')
   assert.equal(calls[0].args[2].headers['Idempotency-Key'], 'key')
   assert.equal(calls[1].args[2].headers['If-Match'], '"3"')
   assert.equal(calls[1].args[2].headers['Idempotency-Key'], 'swap')
+  api.mealPlans('member')
+  api.mealPlans('member', 20, 40)
+  assert.equal(calls[2].method, 'GET')
+  assert.equal(calls[2].args[0], '/api/health/v1/members/member/meal-plans?limit=50&offset=0')
+  assert.equal(calls[3].args[0], '/api/health/v1/members/member/meal-plans?limit=20&offset=40')
 })

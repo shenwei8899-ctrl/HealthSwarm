@@ -545,9 +545,14 @@ async def save_initial_meal_plan(
 
 
 @health_vision.get("/members/{member_id}/meal-plans")
-async def member_plans(member_id: UUID, user: User = Depends(get_required_user)):
-    """读取当前账号维护的成员餐单草稿。"""
-    return await list_meal_plans(str(user.uid), str(member_id))
+async def member_plans(
+    member_id: UUID,
+    limit: int = Query(default=50, ge=1, le=50),
+    offset: int = Query(default=0, ge=0, le=2147483647),
+    user: User = Depends(get_required_user),
+):
+    """校验页大小和数据库偏移范围，读取账号私有的成员餐单草稿。"""
+    return await list_meal_plans(str(user.uid), str(member_id), limit=limit, offset=offset)
 
 
 @health_vision.post("/members/{member_id}/next-day-proposals", status_code=201)

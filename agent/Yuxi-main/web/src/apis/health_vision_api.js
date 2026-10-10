@@ -39,7 +39,8 @@ export const healthVisionApi = {
   createFamilyMealPlanner: (id, data) =>
     apiPost(`${root}/members/${id}/family-meal-planner`, data, idempotent(data)),
   previewMealPlan: (id, data) => apiPost(`${root}/members/${id}/meal-plan-previews`, data),
-  mealPlans: (id) => apiGet(`${root}/members/${id}/meal-plans`),
+  mealPlans: (id, limit = 50, offset = 0) =>
+    apiGet(`${root}/members/${id}/meal-plans?${buildQuery({ limit, offset })}`),
   mealPlan: (id) => apiGet(`${root}/meal-plans/${id}`),
   mealPlanApproval: (id, version) =>
     apiGet(`${root}/meal-plans/${id}/approval-state?${buildQuery({ version })}`),

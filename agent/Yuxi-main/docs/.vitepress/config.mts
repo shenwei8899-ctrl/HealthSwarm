@@ -105,6 +105,7 @@ export default defineConfig({
           { text: '按用户统计模型用量', link: '/advanced/model-usage-tracking' },
           { text: '家庭营养 Agent 运维', link: '/advanced/health-agent-operations' },
           { text: '成员任务入口状态', link: '/advanced/health-member-capabilities' },
+          { text: '成员餐单列表分页', link: '/advanced/health-meal-plan-pagination' },
           { text: '饮食分析与餐后反馈', link: '/advanced/health-diet-analysis' },
           { text: '品牌自定义', link: '/advanced/branding' }
         ]
