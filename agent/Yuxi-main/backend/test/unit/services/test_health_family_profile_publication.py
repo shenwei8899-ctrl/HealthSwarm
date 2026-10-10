@@ -47,7 +47,7 @@ async def test_profile_checkpoint_requires_exact_json_hash_before_receipt_lookup
 @pytest.mark.asyncio
 @pytest.mark.parametrize("interrupt", [False, True])
 async def test_derived_run_partial_uses_thread_dependency_and_discards_private_body(monkeypatch, interrupt):
-    """当前Run没有新工具读取时，线程依赖仍阻止普通错误历史携带旧档案。"""
+    """所有咨询失败均不发布，来源回执不再成为错误正文许可。"""
     session = SimpleNamespace(
         scalar=AsyncMock(return_value="prior-profile-run"), commit=AsyncMock(), rollback=AsyncMock()
     )
@@ -70,14 +70,13 @@ async def test_derived_run_partial_uses_thread_dependency_and_discards_private_b
         worker_id="worker",
         interrupt_run=interrupt,
     )
-    session.scalar.assert_awaited_once()
-    query = str(session.scalar.await_args.args[0])
-    assert "conversation_id" in query and "health_family_profile_use" in query
+    session.scalar.assert_not_awaited()
     if interrupt:
         assert output.id == 42
         kwargs = conv.add_message_by_thread_id.await_args.kwargs
         assert kwargs["content"] == "" and "合成敏感档案正文" not in str(kwargs["extra_metadata"])
         repo.set_terminal_status.assert_awaited_once()
+        assert repo.set_terminal_status.await_args.kwargs["error_message"] == "咨询已中断"
     else:
         assert output is None
         conv.add_message_by_thread_id.assert_not_awaited()

@@ -9,7 +9,7 @@ import os
 from copy import deepcopy
 from datetime import timedelta
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -1658,3 +1658,62 @@ async def test_private_upload_real_worker_fails_closed_and_generic_tasks_denied(
     assert (await client.delete(f"{ROOT}/uploads/{upload_id}", headers=headers)).status_code == 200
     assert (await client.get(f"{ROOT}/uploads/{upload_id}/preview", headers=headers)).status_code == 404
     assert (await client.get(f"{ROOT}/vision-tasks/{task.id}", headers=headers)).status_code == 410
+
+
+async def test_statistics_provider_usage_pg_known_zero_missing_and_access(health_http):
+    """真实HTTP从同成员有效源读取用量事实，缺报告与失败账单不补零。"""
+    client, users = health_http
+    owner, other, admin = users
+    member = await create_member(client, owner["headers"])
+    upload_id = await statistics_upload(client, owner["headers"], member, "meal")
+    calls = [
+        {"input_tokens": 7, "output_tokens": 11, "total_tokens": 18},
+        {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        None,
+        {"input_tokens": 7, "output_tokens": 11, "total_tokens": 999},
+    ]
+    async with pg_manager.get_async_session_context() as session:
+        for call in calls:
+            _, task_id = await statistics_job(session, owner["uid"], member, upload_id, number=3, kind="meal")
+            task = await session.get(TaskRecord, task_id)
+            task.result = {
+                "provider_usage": {"schema_version": 1, "scope": "successful_attempt_model_calls", "calls": [call]},
+                "private": "must-not-project",
+            }
+        await statistics_job(session, owner["uid"], member, upload_id, number=3, kind="meal")
+        _, failed_id = await statistics_job(session, owner["uid"], member, upload_id, number=1, kind="meal")
+        failed = await session.get(TaskRecord, failed_id)
+        failed.result = {
+            "provider_usage": {
+                "schema_version": 1,
+                "scope": "successful_attempt_model_calls",
+                "calls": [{"input_tokens": 100, "output_tokens": 200, "total_tokens": 300}],
+            }
+        }
+    url = f"{ROOT}/members/{member}/vision-statistics?kind=meal"
+    response = await client.get(url, headers=owner["headers"])
+    assert response.status_code == 200
+    assert response.json()["provider_usage"] == {
+        "scope": "successful_attempt_model_calls",
+        "receipt_task_count": 4,
+        "unknown_task_count": 2,
+        "reported_call_count": 2,
+        "missing_call_count": 2,
+        "reported_tokens": {"input_tokens": 7, "output_tokens": 11, "total_tokens": 18},
+        "complete": False,
+        "billing_complete": False,
+    }
+    assert "must-not-project" not in response.text and response.json()["cost"]["amount"] is None
+    for actor in (other, admin):
+        denied = await client.get(url, headers=actor["headers"])
+        assert denied.status_code == 404
+        assert denied.json()["code"] == "not_found" and denied.headers["cache-control"] == "no-store"
+        assert str(UUID(denied.json()["trace_id"])) == denied.json()["trace_id"]
+        assert "provider_usage" not in denied.text
+    assert (
+        await client.get(f"{ROOT}/members/{member}/vision-statistics?kind=report", headers=owner["headers"])
+    ).json()["provider_usage"]["reported_tokens"]["total_tokens"] is None
+    assert (await client.delete(f"{ROOT}/uploads/{upload_id}", headers=owner["headers"])).status_code == 200
+    emptied = (await client.get(url, headers=owner["headers"])).json()["provider_usage"]
+    assert emptied["receipt_task_count"] == 0 and emptied["reported_tokens"]["total_tokens"] is None
+    assert not emptied["complete"]

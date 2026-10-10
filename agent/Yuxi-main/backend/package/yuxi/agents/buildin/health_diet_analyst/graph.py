@@ -13,6 +13,7 @@ from yuxi.agents.toolkits.diet_analyst import (
     list_analysis_meals,
     analyze_confirmed_meal,
     analyze_confirmed_period,
+    get_bound_personal_targets,
     get_selected_meal_feedback,
     record_selected_meal_feedback,
 )
@@ -34,10 +35,10 @@ class DietAnalysisResultMiddleware(AgentMiddleware):
 
 
 class HealthDietAnalystAgent(BaseAgent):
-    """单餐与周期事实分析，个人目标及趋势判读等待批准规则。"""
+    """确认记录事实与显式当前目标并列，历史达标及趋势等待专业规则。"""
 
     name = "饮食分析师"
-    description = "分析已确认单餐与日、7日、30日记录、反馈和缺失；个人目标及趋势方向尚未评估。"
+    description = "分析确认单餐与1/7/30日记录事实和缺失，可只读用户明确绑定的当前目标；不判历史达标或趋势。"
 
     async def _stream_input_with_state(self, graph_input, *, context, **kwargs):
         """模型原始文字不作为分析结果发布。"""
@@ -47,21 +48,25 @@ class HealthDietAnalystAgent(BaseAgent):
                     yield mode, payload
 
     async def get_graph(self, *, context, **kwargs):
-        """PG选餐模式与普通分析分别装配两个写读工具或三个只读工具。"""
+        """PG反馈模式两工具，普通分析三工具，绑定目标分析四个只读工具。"""
         from yuxi.services.health_consultation_service import require_consultation_attempt
         from yuxi.services.health_dialog_feedback_service import is_feedback_conversation
+        from yuxi.services.health_agent_personal_target_service import is_personal_target_conversation
 
         if not getattr(context, "_runtime_prepared", False):
             raise ValueError("构图需要已准备的 Context")
         await require_consultation_attempt(context)
         feedback_mode = await is_feedback_conversation(context)
+        tools = (
+            [get_selected_meal_feedback, record_selected_meal_feedback]
+            if feedback_mode
+            else [list_analysis_meals, analyze_confirmed_meal, analyze_confirmed_period]
+        )
+        if not feedback_mode and await is_personal_target_conversation(context):
+            tools.append(get_bound_personal_targets)
         return create_agent(
             model=load_chat_model(fully_specified_name=context.model, session_id=context.thread_id),
-            tools=(
-                [get_selected_meal_feedback, record_selected_meal_feedback]
-                if feedback_mode
-                else [list_analysis_meals, analyze_confirmed_meal, analyze_confirmed_period]
-            ),
+            tools=tools,
             system_prompt=context.system_prompt,
             middleware=[
                 SteerMiddleware(),

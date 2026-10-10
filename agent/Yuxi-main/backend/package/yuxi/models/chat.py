@@ -15,6 +15,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import Field, SecretStr
 
 from yuxi import get_version
+from yuxi.models.execution_budget import model_execution_budget_options
 from yuxi.models.providers.cache import USER_UID_SIGNATURE_SECRET_ENV, ModelInfo, model_cache
 from yuxi.utils import get_docker_safe_url, logger
 
@@ -33,6 +34,8 @@ def load_chat_model(
     """加载模型：绑定 OpenCode 会话路由，登记需要在每次发送时签名的用户 UID。"""
     fully_specified_name = resolve_chat_model_spec(fully_specified_name)
     info = _require_chat_model_info(fully_specified_name)
+
+    kwargs.update(model_execution_budget_options())
 
     api_key = info.api_key
     base_url = get_docker_safe_url(info.base_url)

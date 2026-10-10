@@ -8,6 +8,7 @@ import os
 import time
 import uuid
 from contextlib import aclosing
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -19,6 +20,11 @@ from yuxi.agents.backends.sandbox.provider import get_sandbox_provider
 from yuxi.agents.callbacks.model_request_timing import FirstModelRequestRecorder
 from yuxi.agents.mcp.service import ensure_builtin_mcp_servers_in_db
 from yuxi.config import get_int_env
+from yuxi.models.execution_budget import (
+    ModelExecutionBudgetExceeded,
+    bind_model_execution_deadline,
+    reset_model_execution_deadline,
+)
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
 from yuxi.services.agent_request_queue_service import (
     dispatch_next_request,
@@ -75,6 +81,10 @@ RUN_DURABLE_CANCEL_POLL_SECONDS = 1.0
 RUN_LEASE_SECONDS = 120
 RUN_HEARTBEAT_SECONDS = 30
 SUPPORTED_RUN_TYPES = {"chat", "resume", "subagent"}
+HEALTH_EXECUTION_AGENT_SLUGS = frozenset(
+    {"health-consultation", "health-meal-planner", "health-diet-analyst", "health-quality", "health-purchase"}
+)
+HEALTH_EXECUTION_CLEANUP_MARGIN_SECONDS = 30
 WORKER_ID = f"worker-{uuid.uuid4().hex}"
 _RECONCILIATION_TASK_KEY = "agent_run_reconciliation_task"
 _TASK_RECONCILIATION_TASK_KEY = "durable_task_reconciliation_task"
@@ -83,6 +93,14 @@ _TASK_RECONCILIATION_TASK_KEY = "durable_task_reconciliation_task"
 def worker_max_jobs() -> int:
     """读取单个 ARQ worker 的并发任务上限。"""
     return get_int_env("ARQ_MAX_JOBS", 10)
+
+
+def health_execution_timeout_seconds(job_timeout: int) -> int:
+    """健康部署预算必须在外层ARQ超时前为关闭和结算留出时间。"""
+    seconds = get_int_env("YUXI_HEALTH_RUN_TIMEOUT_SECONDS", 300)
+    if seconds > job_timeout - HEALTH_EXECUTION_CLEANUP_MARGIN_SECONDS:
+        raise ValueError("YUXI_HEALTH_RUN_TIMEOUT_SECONDS必须小于等于YUXI_JOB_TIMEOUT_SECONDS减30秒")
+    return seconds
 
 
 class RetryableRunError(RetryJob):
@@ -95,6 +113,37 @@ class RuntimeCleanupPendingError(RetryJob):
 
 class NonRetryableRunError(Exception):
     """Error type that should not trigger ARQ retry."""
+
+
+class HealthRunExecutionBudgetExceeded(NonRetryableRunError):
+    """同一个健康Run从首次执行开始的总预算已耗尽。"""
+
+
+@dataclass
+class _HealthExecutionScope:
+    timeout: asyncio.Timeout
+    model_token: Token
+    owner_token: Token | None = None
+
+    async def close(self, cancellation: asyncio.CancelledError | None = None) -> bool:
+        """关闭SDK预算，并由asyncio取消计数判断真实取消是否仅来自本计时器。"""
+        if self.owner_token is None:
+            return False
+        owner_token, self.owner_token = self.owner_token, None
+        _HEALTH_EXECUTION_SCOPE.reset(owner_token)
+        reset_model_execution_deadline(self.model_token)
+        try:
+            await self.timeout.__aexit__(
+                type(cancellation) if cancellation is not None else None,
+                cancellation,
+                cancellation.__traceback__ if cancellation is not None else None,
+            )
+        except TimeoutError:
+            return True
+        return False
+
+
+_HEALTH_EXECUTION_SCOPE: ContextVar[_HealthExecutionScope | None] = ContextVar("health_execution_scope", default=None)
 
 
 async def _validate_run_workdir_binding(run: AgentRun) -> AuthorizedWorkdir:
@@ -437,6 +486,26 @@ async def _run_attempt_finished(run_id: str, worker_id: str) -> bool:
         )
 
 
+async def _current_attempt_has_published_completion(run_id: str, worker_id: str) -> bool:
+    """慢收尾不能丢失当前attempt已原子发布的完成事件，旧Owner终态不补发。"""
+    if not await _run_attempt_finished(run_id, worker_id):
+        return False
+    async with pg_manager.get_async_session_context() as db:
+        run = await db.get(AgentRun, run_id)
+        if run is None or run.status != "completed" or run.output_message_id is None:
+            return False
+        message = await db.get(Message, run.output_message_id)
+        return (
+            message is not None
+            and message.run_id == run.id
+            and message.request_id == run.request_id
+            and message.conversation_id == run.conversation_id
+            and message.role == "assistant"
+            and message.message_type == "text"
+            and message.delivery_status == "complete"
+        )
+
+
 async def release_run_lease_for_retry(run_id: str, worker_id: str) -> bool:
     """释放当前 attempt 的 lease，允许下一次 ARQ attempt 使用新 token。"""
     cancelled_descendants: list[tuple[str, str]] = []
@@ -459,6 +528,7 @@ async def mark_run_terminal(
     token_usage: dict | None = None,
     worker_id: str | None = None,
 ):
+    await _close_health_execution_scope()
     cancelled_descendants: list[tuple[str, str]] = []
     async with pg_manager.get_async_session_context() as db:
         repo = AgentRunRepository(db)
@@ -736,9 +806,10 @@ async def _finish_run(
     error_message: str | None = None,
     publish_end: bool = True,
 ) -> TerminalTransition:
+    await _close_health_execution_scope()
     run = await _get_run(run_id)
     token_usage = {"available": False}
-    if thread_id:
+    if thread_id and error_type != "health_execution_timeout":
         state_token_usage = await _read_run_token_usage_from_state(
             run_id=run_id,
             thread_id=thread_id,
@@ -771,13 +842,14 @@ async def _finish_user_cancel(
     worker_id: str,
     writer: ChunkedEventWriter,
     run: AgentRun,
+    read_token_usage: bool = True,
 ) -> TerminalTransition:
     """在 PostgreSQL 已确认取消后，由当前 owner 写入 cancelled。"""
 
     await _flush_writer_best_effort(writer)
     cancel_chunk = {"status": "interrupted", "message": "对话已取消", "request_id": request_id}
     state_token_usage = None
-    if current_user is not None:
+    if current_user is not None and read_token_usage:
         state_token_usage = await _read_run_token_usage_from_state(
             run_id=run_id,
             thread_id=thread_id,
@@ -888,10 +960,22 @@ async def process_agent_run(ctx, run_id: str):
         max_chars=LOADING_FLUSH_MAX_CHARS,
     )
     model_request_recorder = FirstModelRequestRecorder()
+    execution_scope = None
     try:
+        if agent_slug in HEALTH_EXECUTION_AGENT_SLUGS:
+            await run_ctx.start()
         if await _is_cancel_requested(run_id):
             run_ctx.cancel_event.set()
             raise asyncio.CancelledError(f"run {run_id} cancelled before execution")
+
+        if agent_slug in HEALTH_EXECUTION_AGENT_SLUGS:
+            claimed_run = await _get_run(run_id)
+            if claimed_run is None or claimed_run.started_at is None:
+                raise NonRetryableRunError("已领取健康Run缺少持久首次执行时间")
+            run = claimed_run
+            execution_scope = await _start_health_execution_scope(
+                run.started_at, WorkerSettings.health_execution_timeout
+            )
 
         if not isinstance(run.input_payload, dict):
             await mark_run_terminal(
@@ -1008,6 +1092,8 @@ async def process_agent_run(ctx, run_id: str):
                 worker_id=worker_id,
                 workdir_binding=workdir_binding,
             )
+        except (HealthRunExecutionBudgetExceeded, ModelExecutionBudgetExceeded):
+            raise
         except Exception as manifest_error:
             if await _is_cancel_requested(run_id):
                 raise asyncio.CancelledError(f"run {run_id} cancelled during preparation")
@@ -1156,7 +1242,11 @@ async def process_agent_run(ctx, run_id: str):
                         if target_thread_id != thread_id:
                             continue
 
+                        if execution_scope is not None and status in {"finished", "error", "interrupted"}:
+                            await chunks.aclose()
+
                         if status == "finished":
+                            await _close_health_execution_scope()
                             if chunk.get("terminal_committed") is True:
                                 committed_run = await _get_run(run_id)
                                 if committed_run is not None:
@@ -1290,6 +1380,7 @@ async def process_agent_run(ctx, run_id: str):
             )
 
     except asyncio.CancelledError as cancellation:
+        budget_expired = await _close_health_execution_scope(cancellation)
         await model_request_recorder.persist(run_id=run_id, worker_id=worker_id)
         await _flush_writer_best_effort(writer)
         if run_ctx.lease_lost:
@@ -1304,8 +1395,21 @@ async def process_agent_run(ctx, run_id: str):
                 worker_id=worker_id,
                 writer=writer,
                 run=run,
+                read_token_usage=not budget_expired,
             )
             logger.info(f"Run user cancellation settled: run={run_id}, changed={transition.changed}")
+            return
+
+        if budget_expired:
+            await _finish_health_execution_timeout(
+                run_id=run_id,
+                request_id=request_id,
+                thread_id=thread_id,
+                current_user=user,
+                worker_id=worker_id,
+                writer=writer,
+                run=run,
+            )
             return
 
         try:
@@ -1329,8 +1433,10 @@ async def process_agent_run(ctx, run_id: str):
             logger.warning(f"Infrastructure cancellation could not release AgentRun lease: run={run_id}")
         raise
     except RuntimeCleanupPendingError:
+        await _close_health_execution_scope()
         raise
     except ExceptionGroup as e:
+        await _close_health_execution_scope()
         await _flush_writer_best_effort(writer)
         message = str(e)
         logger.error(f"Run failed {run_id}: {message}")
@@ -1362,7 +1468,33 @@ async def process_agent_run(ctx, run_id: str):
             await _append_end_event(run_id, "failed", thread_id=thread_id, payload={"chunk": error_chunk})
         return
     except Exception as e:
+        await _close_health_execution_scope()
         await _flush_writer_best_effort(writer)
+        if isinstance(e, (HealthRunExecutionBudgetExceeded, ModelExecutionBudgetExceeded)):
+            if run_ctx.lease_lost:
+                return
+            if await _confirmed_user_cancel(run_id):
+                await _finish_user_cancel(
+                    run_id=run_id,
+                    request_id=request_id,
+                    thread_id=thread_id,
+                    current_user=user,
+                    worker_id=worker_id,
+                    writer=writer,
+                    run=run,
+                    read_token_usage=False,
+                )
+                return
+            await _finish_health_execution_timeout(
+                run_id=run_id,
+                request_id=request_id,
+                thread_id=thread_id,
+                current_user=user,
+                worker_id=worker_id,
+                writer=writer,
+                run=run,
+            )
+            return
         if _is_retryable_exception(e):
             job_try = _job_try(ctx)
             logger.warning(f"Run retryable failure {run_id} (try={job_try}): {e}")
@@ -1469,6 +1601,7 @@ async def process_agent_run(ctx, run_id: str):
             await _append_end_event(run_id, "failed", thread_id=thread_id, payload={"chunk": error_chunk})
         return
     finally:
+        await _close_health_execution_scope()
         await run_ctx.close()
         try:
             final_run = await _get_run(run_id)
@@ -1486,6 +1619,77 @@ async def process_agent_run(ctx, run_id: str):
                 agent_slug=agent_slug,
                 thread_id=thread_id,
             )
+
+
+async def _start_health_execution_scope(started_at: datetime, seconds: float) -> _HealthExecutionScope:
+    """首次PG起点转剩余monotonic预算，重试等待继续消耗总时间。"""
+    remaining = seconds - (utc_now_naive() - started_at).total_seconds()
+    if remaining <= 0:
+        raise HealthRunExecutionBudgetExceeded("健康Agent执行预算已耗尽")
+    timeout = asyncio.timeout(remaining)
+    await timeout.__aenter__()
+    scope = _HealthExecutionScope(
+        timeout=timeout,
+        model_token=bind_model_execution_deadline(time.monotonic() + remaining),
+    )
+    scope.owner_token = _HEALTH_EXECUTION_SCOPE.set(scope)
+    return scope
+
+
+async def _close_health_execution_scope(cancellation: asyncio.CancelledError | None = None) -> bool:
+    """只关闭当前attempt拥有的健康计时器，保留asyncio的取消归属判定。"""
+    scope = _HEALTH_EXECUTION_SCOPE.get()
+    if scope is not None:
+        return await scope.close(cancellation)
+    return False
+
+
+async def _finish_health_execution_timeout(
+    *, run_id, request_id, thread_id, current_user, worker_id, writer, run
+) -> None:
+    """不重试或读取checkpoint用量，沿既有Owner结算预算失败。"""
+    message = "健康Agent执行预算已耗尽，请重新提交新的任务"
+    chunk = {
+        "status": "error",
+        "error_type": "health_execution_timeout",
+        "error_message": message,
+        "request_id": request_id,
+        "retryable": False,
+    }
+    transition = await _finish_run(
+        run_id,
+        "failed",
+        thread_id=thread_id,
+        chunk=chunk,
+        error_type=chunk["error_type"],
+        error_message=message,
+        current_user=current_user,
+        worker_id=worker_id,
+        publish_end=False,
+    )
+    if not transition.changed and transition.status == "cancel_requested":
+        await _finish_user_cancel(
+            run_id=run_id,
+            request_id=request_id,
+            thread_id=thread_id,
+            current_user=current_user,
+            worker_id=worker_id,
+            writer=writer,
+            run=run,
+            read_token_usage=False,
+        )
+        return
+    if (
+        not transition.changed
+        and transition.status == "completed"
+        and await _current_attempt_has_published_completion(run_id, worker_id)
+    ):
+        finished_chunk = {"status": "finished", "request_id": request_id, "terminal_committed": True}
+        await _append_end_event(run_id, "completed", thread_id=thread_id, payload={"chunk": finished_chunk})
+        return
+    if transition.changed:
+        await _append_run_event_best_effort(run_id, "error", {"chunk": chunk, "retryable": False}, thread_id=thread_id)
+        await _append_end_event(run_id, transition.status, thread_id=thread_id, payload={"chunk": chunk})
 
 
 async def _load_input_message(message_id: int | None) -> Message | None:
@@ -1629,6 +1833,7 @@ class WorkerSettings:
     # 单任务最长执行时间（秒），可配置：超长图谱构建/深度检索场景需调大，
     # 避免长任务被 arq 取消并误标为 cancelled。
     job_timeout = int(os.getenv("YUXI_JOB_TIMEOUT_SECONDS", "3600"))
+    health_execution_timeout = health_execution_timeout_seconds(job_timeout)
     keep_result = 60
     health_check_interval = WORKER_HEALTH_INTERVAL_SECONDS
     health_check_key = WORKER_HEALTH_KEY

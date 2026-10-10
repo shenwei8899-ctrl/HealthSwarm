@@ -102,9 +102,22 @@ async def test_private_history_cannot_become_generic_when_original_safe_selectio
         safe_planner_selection=None,
         family_planner_selection=None,
         initial_planner_selection=None,
+        personal_target_selection=None,
     )
+
+    async def scalar(statement):
+        """独立目标依赖无行，safe依赖按本例真实谓词返回。"""
+        if "personal_target_selection_hash" in statement.compile().params.values():
+            assert "agent_runs.conversation_id" in str(statement)
+            assert binding.conversation_id in statement.compile().params.values()
+            return None
+        if "FROM health_consultation JOIN conversations" in str(statement):
+            return binding
+        assert "health_safe_planner_preview" in str(statement)
+        return had_safe_history
+
     session = SimpleNamespace(
-        scalar=AsyncMock(side_effect=[binding, had_safe_history]),
+        scalar=AsyncMock(side_effect=scalar),
         get=AsyncMock(return_value=SimpleNamespace(agent_id="health-meal-planner")),
     )
     member_authorize = AsyncMock()

@@ -771,7 +771,16 @@ async def get_agent_run_result(*, run_id: str, current_uid: str, db: AsyncSessio
         }
 
     output_message = None
-    if run.conversation_id is not None:
+    if run.agent_slug == "health-consultation":
+        if run.status == "completed":
+            from yuxi.services.health_evidence_service import read_public_consultation_answer
+            from yuxi.services.health_vision_types import HealthVisionError
+
+            try:
+                output_message = await read_public_consultation_answer(db, run, str(current_uid))
+            except HealthVisionError as exc:
+                raise HTTPException(status_code=exc.status, detail={"code": exc.code, "message": exc.message}) from exc
+    elif run.conversation_id is not None:
         output_message = await AgentRunOutputRepository(db).get_output_message(
             run_id=run.id,
             conversation_id=run.conversation_id,

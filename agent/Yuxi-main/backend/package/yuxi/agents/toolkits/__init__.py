@@ -1,7 +1,7 @@
 # toolkits 包
 
 # 触发各模块的 @tool 装饰器执行，自动注册工具
-from . import buildin, debug, health, meal_planner, safe_meal_planner, diet_analyst, quality
+from . import buildin, debug, health, meal_planner, safe_meal_planner, diet_analyst, quality, purchase
 from .kbs import get_common_kb_tools
 
 # 工具获取函数
@@ -28,4 +28,5 @@ __all__ = [
     "safe_meal_planner",
     "diet_analyst",
     "quality",
+    "purchase",
 ]

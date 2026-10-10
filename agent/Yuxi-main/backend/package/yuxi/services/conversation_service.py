@@ -9,7 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.models.utils import parse_assistant_message_body
 from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.agent_run_repository import AgentRunRepository
-from yuxi.repositories.conversation_repository import INVOCATION_CONVERSATION_SOURCES, ConversationRepository
+from yuxi.repositories.conversation_repository import (
+    INVOCATION_CONVERSATION_SOURCES,
+    MESSAGE_SEARCH_SNIPPETS_PER_THREAD,
+    ConversationRepository,
+)
 from yuxi.repositories.project_repository import ProjectRepository
 from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
 from yuxi.services.health_vision_types import HealthVisionError
@@ -22,6 +26,7 @@ from yuxi.services.workdir_service import (
     workdir_binding_from_project,
 )
 from yuxi.storage.postgres.models_business import (
+    AUDIT_MESSAGE_TYPES,
     AGENT_RUN_TERMINAL_STATUSES,
     AgentRun,
     User,
@@ -284,30 +289,36 @@ async def search_threads_view(
         return {"items": [], "has_more": False, "limit": limit, "offset": offset}
 
     conv_repo = ConversationRepository(db)
-    search_items, has_more = await conv_repo.search_conversations_by_message_content(
-        uid=str(current_uid),
-        agent_id=agent_id,
-        query=normalized_query,
-        limit=limit,
-        offset=offset,
-        exclude_sources=INVOCATION_CONVERSATION_SOURCES,
-    )
+    if agent_id in (None, "health-consultation"):
+        search_items, has_more = await _search_with_public_consultations(
+            conv_repo, db, str(current_uid), normalized_query, agent_id=agent_id, limit=limit, offset=offset
+        )
+    else:
+        search_items, has_more = await conv_repo.search_conversations_by_message_content(
+            uid=str(current_uid),
+            agent_id=agent_id,
+            query=normalized_query,
+            limit=limit,
+            offset=offset,
+            exclude_sources=INVOCATION_CONVERSATION_SOURCES,
+        )
 
     items = []
     for item in search_items:
         conv = item["conversation"]
         try:
-            if conv.agent_id in HEALTH_AGENT_BACKENDS:
+            if agent_id not in (None, "health-consultation") and conv.agent_id in HEALTH_AGENT_BACKENDS:
                 await require_user_conversation(conv_repo, conv.thread_id, str(current_uid))
         except HTTPException:
             continue
+        snippet_rows = item.get("snippets", [])
         snippets = [
             {
                 "message_id": snippet.get("message_id"),
                 "content": snippet.get("content") or "",
                 "created_at": format_utc_datetime(snippet.get("created_at")),
             }
-            for snippet in item.get("snippets", [])
+            for snippet in snippet_rows
         ]
         items.append(
             {
@@ -315,14 +326,17 @@ async def search_threads_view(
                 "thread_id": conv.thread_id,
                 "uid": conv.uid,
                 "agent_id": conv.agent_id,
+                "workdir_path": await resolve_conversation_workdir_path(conversation=conv, uid=str(current_uid), db=db),
                 "title": conv.title,
                 "is_pinned": bool(conv.is_pinned),
                 "created_at": format_utc_datetime(conv.created_at),
                 "updated_at": format_utc_datetime(conv.updated_at),
                 "metadata": conv.extra_metadata or {},
                 "matched_count": item.get("matched_count", 0),
-                "message_id": item.get("message_id"),
-                "latest_match_at": format_utc_datetime(item.get("latest_match_at")),
+                "message_id": snippet_rows[0]["message_id"] if snippet_rows else None,
+                "latest_match_at": format_utc_datetime(snippet_rows[0]["created_at"])
+                if snippet_rows
+                else format_utc_datetime(item.get("latest_match_at")),
                 "snippets": snippets,
             }
         )
@@ -425,6 +439,13 @@ async def get_thread_history_view(
     ]
 
     runs = await conv_repo.list_agent_runs_for_history(conversation.id)
+    if conversation.agent_id == "health-consultation":
+        run_map = {run.id: run for run in runs}
+        public_messages = []
+        for message in messages:
+            if await _consultation_message_is_public(db, message, str(current_uid), run=run_map.get(message.run_id)):
+                public_messages.append(message)
+        messages = public_messages
     run_created_at = {run.id: run.created_at for run in runs}
     latest_run = next((run for run in reversed(runs) if run.run_type in {"chat", "resume"}), None)
     thread = await _serialize_thread(
@@ -522,6 +543,95 @@ async def get_thread_history_view(
         ],
         "history": history,
     }
+
+
+async def _search_with_public_consultations(conv_repo, db, uid, query, *, agent_id, limit, offset):
+    """先校验完整咨询匹配，再统计、限制摘要及按公开时间分页。"""
+    visible_items = []
+    page_end = offset + limit + 1
+    if agent_id is None:
+        raw_offset = 0
+        while len(visible_items) < page_end:
+            candidates, raw_has_more = await conv_repo.search_conversations_by_message_content(
+                uid=uid,
+                query=query,
+                limit=50,
+                offset=raw_offset,
+                exclude_sources=INVOCATION_CONVERSATION_SOURCES,
+                exclude_agent_ids=("health-consultation",),
+            )
+            for item in candidates:
+                conversation = item["conversation"]
+                if conversation.agent_id in HEALTH_AGENT_BACKENDS:
+                    try:
+                        await require_user_conversation(conv_repo, conversation.thread_id, uid)
+                    except HTTPException:
+                        continue
+                visible_items.append(item)
+                if len(visible_items) == page_end:
+                    break
+            if not raw_has_more:
+                break
+            raw_offset += len(candidates)
+
+    authorized_threads = {}
+    consultation_items = {}
+    async for conversation, message in conv_repo.iter_consultation_search_matches(
+        uid=uid, query=query, exclude_sources=INVOCATION_CONVERSATION_SOURCES
+    ):
+        if conversation.id not in authorized_threads:
+            try:
+                await require_user_conversation(conv_repo, conversation.thread_id, uid)
+                authorized_threads[conversation.id] = True
+            except HTTPException:
+                authorized_threads[conversation.id] = False
+        if not authorized_threads[conversation.id] or not await _consultation_message_is_public(db, message, uid):
+            continue
+        item = consultation_items.setdefault(
+            conversation.id,
+            {
+                "conversation": conversation,
+                "matched_count": 0,
+                "latest_match_at": message.created_at,
+                "message_id": message.id,
+                "snippets": [],
+            },
+        )
+        item["matched_count"] += 1
+        if len(item["snippets"]) < MESSAGE_SEARCH_SNIPPETS_PER_THREAD:
+            item["snippets"].append(
+                {
+                    "message_id": message.id,
+                    "content": conv_repo._build_message_search_snippet(message.content, query),
+                    "created_at": message.created_at,
+                }
+            )
+    visible_items.extend(consultation_items.values())
+    visible_items.sort(
+        key=lambda item: (item["latest_match_at"], item["conversation"].updated_at, item["conversation"].id),
+        reverse=True,
+    )
+    return visible_items[offset : offset + limit], len(visible_items) > offset + limit
+
+
+async def _consultation_message_is_public(db, message, uid, *, run=None):
+    """公开咨询历史只含用户输入与当前有效的权威最终答复。"""
+    if message.message_type in AUDIT_MESSAGE_TYPES:
+        return False
+    if message.role == "user":
+        return message.delivery_status not in {"queued", "cancelled", "rejected"}
+    if message.role != "assistant" or not message.run_id:
+        return False
+    run = run or await db.get(AgentRun, message.run_id)
+    if run is None or run.output_message_id != message.id or run.conversation_id != message.conversation_id:
+        return False
+    from yuxi.services.health_evidence_service import read_public_consultation_answer
+
+    try:
+        answer = await read_public_consultation_answer(db, run, uid)
+    except HealthVisionError:
+        return False
+    return answer.id == message.id
 
 
 def _thread_status(run_id: str | None, run_status: str | None, last_viewed_run_id: str | None) -> str:

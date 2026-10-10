@@ -153,7 +153,7 @@ class HealthVisionService:
                 if info.api_key
             ],
         }
-        for kind in ("report", "meal", "consultation", "meal_plan", "diet_analysis", "quality_review"):
+        for kind in ("report", "meal", "consultation", "meal_plan", "diet_analysis", "quality_review", "purchase"):
             spec = values.get(f"{kind}_model") or ""
             info = await current_health_model_info(session, spec) if spec else None
             reason = None
@@ -184,7 +184,7 @@ class HealthVisionService:
         model_cache.refresh()
         approved = {
             f"approved_{kind}_processor": ""
-            for kind in ("report", "meal", "consultation", "meal_plan", "diet_analysis", "quality_review")
+            for kind in ("report", "meal", "consultation", "meal_plan", "diet_analysis", "quality_review", "purchase")
         }
         for kind, spec in (
             ("report", data.report_model),
@@ -193,6 +193,7 @@ class HealthVisionService:
             ("meal_plan", data.meal_plan_model),
             ("diet_analysis", data.diet_analysis_model),
             ("quality_review", data.quality_review_model),
+            ("purchase", data.purchase_model),
         ):
             if not spec:
                 continue
@@ -227,6 +228,7 @@ class HealthVisionService:
                     "meal_plan_model": data.meal_plan_model,
                     "diet_analysis_model": data.diet_analysis_model,
                     "quality_review_model": data.quality_review_model,
+                    "purchase_model": data.purchase_model,
                     "policy_version": data.policy_version,
                     **approved,
                 },

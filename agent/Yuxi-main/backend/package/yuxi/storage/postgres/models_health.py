@@ -157,6 +157,22 @@ class HealthConsultation(Base):
     family_planner_selection = Column(JSON_VALUE)
     initial_planner_selection = Column(JSON_VALUE)
     safe_planner_selection = Column(JSON_VALUE)
+    purchase_selection = Column(JSON_VALUE)
+    personal_target_selection = Column(JSON_VALUE)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
+class HealthPurchasePreview(Base):
+    """用户固定库存和当前采用来源的同Run不可变采购回执。"""
+
+    __tablename__ = "health_purchase_preview"
+    id = Column(String(36), primary_key=True)
+    actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
+    conversation_id = Column(
+        Integer, ForeignKey("health_consultation.conversation_id", ondelete="CASCADE"), nullable=False
+    )
+    run_id = Column(String(64), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, unique=True)
+    snapshot = Column(JSON_VALUE, nullable=False)
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
@@ -816,6 +832,7 @@ HEALTH_TABLES = [
         HealthBloodLipidsUse,
         HealthProcessingConsent,
         HealthConsultation,
+        HealthPurchasePreview,
         HealthSafePlannerPreview,
         HealthFamilyPlannerPreview,
         PrivateUpload,

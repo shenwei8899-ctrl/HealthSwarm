@@ -152,7 +152,7 @@ def validate_request(authorization, body):
     users = [item for item in messages if item.get("role") == "user"]
     marker = (
         re.fullmatch(
-            r"HEALTH_CONSULTATION_E2E:([0-9a-f]{32}):(one|two|evidence|invalid_evidence|memory|read_memory|derived_memory|update_memory|empty_memory|feedback|derived_feedback|edited_feedback|empty_feedback|feedback_gate|mixed_feedback|neutral|profile|profile_updated|derived_profile|profile_gate|derived_profile_gate|weight_read|weight_updated|weight_missing|weight_gate|weight_derived_gate|bp_read|bp_updated|bp_missing|bp_not_linked|bp_gate|bp_derived_gate|glucose_read|glucose_updated|glucose_missing|glucose_not_linked|glucose_gate|glucose_derived_gate|lipids_read|lipids_updated|lipids_missing|lipids_not_linked|lipids_gate|lipids_derived_gate)(?:\n我以后(?:不吃|会吃)香菜)?",
+            r"HEALTH_CONSULTATION_E2E:([0-9a-f]{32}):(one|two|evidence|invalid_evidence|lexical|lexical_rebuilt|memory|read_memory|derived_memory|update_memory|empty_memory|feedback|derived_feedback|edited_feedback|empty_feedback|feedback_gate|mixed_feedback|neutral|profile|profile_updated|derived_profile|profile_gate|derived_profile_gate|weight_read|weight_updated|weight_missing|weight_gate|weight_derived_gate|bp_read|bp_updated|bp_missing|bp_not_linked|bp_gate|bp_derived_gate|glucose_read|glucose_updated|glucose_missing|glucose_not_linked|glucose_gate|glucose_derived_gate|lipids_read|lipids_updated|lipids_missing|lipids_not_linked|lipids_gate|lipids_derived_gate)(?:\n我以后(?:不吃|会吃)香菜)?",
             str(users[-1]["content"]),
         )
         if users
@@ -673,6 +673,33 @@ def validate_request(authorization, body):
         if result != {"memories": [], "truncated": False}:
             raise ValueError("revoked_memory_recalled")
         return token, step, call_id, True, []
+    if results and step in {"lexical", "lexical_rebuilt"}:
+        result = json.loads(results[-1]["content"])
+        citations = result.get("citations", [])
+        keys, version = ({"first", "second"}, "v1") if step == "lexical" else ({"first"}, "v2")
+        if (
+            result.get("status") != "ok"
+            or len(citations) != len(keys)
+            or result.get("query") != f"lexical{token} 膳食纤维 饮水"
+        ):
+            raise ValueError("independent_lexical_gold_required")
+        seen = set()
+        for citation in citations:
+            key = str(citation.get("source_ref", "")).rsplit("/", 1)[-1]
+            if (
+                key not in keys
+                or key in seen
+                or citation.get("source_ref") != f"synthetic://lexical/{token}/{key}"
+                or citation.get("title") != f"合成词法{key}"
+                or citation.get("content") != f"lexical{token} 膳食纤维示例。另一段另提饮水，{key}。"
+                or citation.get("source_version") != version
+                or citation.get("scope") != "general_education"
+                or not re.fullmatch(r"[0-9a-f-]{36}", str(citation.get("citation_id", "")))
+                or not re.fullmatch(r"[0-9a-f-]{36}", str(citation.get("evidence_id", "")))
+            ):
+                raise ValueError("unexpected_lexical_source")
+            seen.add(key)
+        return token, step, call_id, True, [citation["citation_id"] for citation in citations]
     if results and step in {"evidence", "invalid_evidence"}:
         result = json.loads(results[-1]["content"])
         citations = result.get("citations", [])
@@ -792,6 +819,8 @@ class HealthReplayHandler(BaseHTTPRequestHandler):
                 "content": (
                     "合成科普说明 [证据:00000000-0000-0000-0000-000000000000]"
                     if step == "invalid_evidence"
+                    else "合成词法科普 " + " ".join(f"[证据:{identity}]" for identity in record_ids)
+                    if step in {"lexical", "lexical_rebuilt"}
                     else f"合成科普说明 [证据:{record_ids[0]}]"
                     if step == "evidence"
                     else "合成读取：合成单餐偏咸"
@@ -847,6 +876,11 @@ class HealthReplayHandler(BaseHTTPRequestHandler):
                         "type": "function",
                         "function": (
                             {
+                                "name": "query_reviewed_nutrition_knowledge",
+                                "arguments": json.dumps({"query": f"lexical{token} 膳食纤维 饮水"}),
+                            }
+                            if step in {"lexical", "lexical_rebuilt"}
+                            else {
                                 "name": "query_reviewed_nutrition_knowledge",
                                 "arguments": json.dumps({"query": "合成营养证据"}),
                             }

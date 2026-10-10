@@ -1,4 +1,4 @@
-"""真实 health20→21 正式迁移保留旧事实，并在 DDL 前拒绝未来版本。"""
+"""真实 health20→当前版本正式迁移保留旧事实，并在 DDL 前拒绝未来版本。"""
 
 from datetime import date, datetime
 from uuid import uuid4
@@ -87,7 +87,6 @@ async def test_formal_schema20_upgrade_preserves_old_facts_and_repeats(monkeypat
                 assert (
                     await session.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'"))
                     == HEALTH_SCHEMA_VERSION
-                    == 21
                 )
                 assert await preserved_schema20_facts(session) == before
                 assert await session.scalar(text("SELECT safe_planner_selection FROM health_consultation")) is None
@@ -137,8 +136,8 @@ async def test_formal_schema20_upgrade_preserves_old_facts_and_repeats(monkeypat
         await _drop_isolated_schema(schema, admin, engine)
 
 
-async def test_formal_schema21_rejects_future22_before_safe_planner_ddl(monkeypatch, tmp_path):
-    """未来22标记在健康 DDL 前拒绝，旧事实与缺失的新表、新列均保持。"""
+async def test_formal_current_schema_rejects_future_before_safe_planner_ddl(monkeypatch, tmp_path):
+    """未来版本标记在健康 DDL 前拒绝，旧事实与缺失的新表、新列均保持。"""
     schema, admin, engine, manager = await _create_isolated_manager("pytest_safe_planner_future")
     try:
         sessions, _ids = await prepare_schema20(manager, engine)
@@ -155,7 +154,6 @@ async def test_formal_schema21_rejects_future22_before_safe_planner_ddl(monkeypa
             assert (
                 await session.scalar(text("SELECT version FROM yuxi_schema_migrations WHERE domain='health'"))
                 == HEALTH_SCHEMA_VERSION + 1
-                == 22
             )
             assert await preserved_schema20_facts(session) == before
     finally:

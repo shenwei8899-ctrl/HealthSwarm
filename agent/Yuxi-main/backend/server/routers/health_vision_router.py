@@ -1,10 +1,11 @@
 """健康识图 HTTP 适配层，权限与事务由用例服务执行。"""
 
+import json
 from typing import Literal
 from datetime import date
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Path, Query, UploadFile
 from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 
@@ -20,9 +21,14 @@ from yuxi.services.health_memory_types import MemoryPatch, MemoryRevoke
 from yuxi.services.health_agent_roles import health_agent_roles
 from yuxi.services.health_meal_feedback_types import MealFeedbackChange, MealFeedbackRevoke, FeedbackConversationInput
 from yuxi.services.health_meal_feedback_service import meal_feedback, change_meal_feedback
-from yuxi.repositories.health_consultation_repository import PLANNER_SLUG, ANALYST_SLUG
+from yuxi.repositories.health_consultation_repository import PLANNER_SLUG, ANALYST_SLUG, PURCHASE_SLUG
+from yuxi.services.health_purchase_types import PurchaseInput, PurchaseSelection
+from yuxi.services.health_purchase_service import purchase_requirements
 from yuxi.services.health_diet_analysis_types import DietAnalysisPeriod, DietAnalysisSelection
 from yuxi.services.health_diet_analysis_service import read_diet_analysis, read_period_analysis
+from yuxi.services.health_agent_personal_target_types import TargetAwareAnalystInput
+from yuxi.services.health_next_day_agent_service import create_agent_next_day_proposal
+from yuxi.services.health_next_day_agent_types import AgentNextDayProposalInput
 from yuxi.services.health_meal_plan_types import (
     MealPlanSpec,
     MealPlanSave,
@@ -56,8 +62,8 @@ from yuxi.services.health_meal_plan_service import (
     read_meal_plan,
     list_meal_plans,
 )
-from yuxi.services.health_evidence_service import publish_evidence, revoke_evidence
-from yuxi.services.health_evidence_types import NutritionEvidenceInput
+from yuxi.services.health_evidence_service import publish_evidence, revoke_evidence, read_consultation_citations
+from yuxi.services.health_evidence_types import NutritionEvidenceInput, NutritionCitationsResult
 from yuxi.services.health_quality_types import (
     ProfileImport,
     RulesImport,
@@ -110,6 +116,8 @@ from yuxi.services.health_quality_service import (
     create_quality_conversation,
 )
 from yuxi.services.health_vision_statistics import vision_statistics
+from yuxi.services.health_task_service import create_health_task_entry, read_health_task
+from yuxi.services.health_task_types import HealthTaskEntryInput, HealthTaskEntryResult, HealthTaskResult
 from yuxi.services.health_vision_types import (
     ConfirmInput,
     ConsentInput,
@@ -129,6 +137,7 @@ from yuxi.services.health_vision_types import (
     VisionTaskInput,
 )
 from yuxi.storage.postgres.models_business import User
+from yuxi.utils.logging_config import logger
 
 
 class HealthRoute(APIRoute):
@@ -142,13 +151,28 @@ class HealthRoute(APIRoute):
             try:
                 return await handler(request)
             except HealthVisionError as exc:
+                trace_id = str(uuid4())
+                logger.warning(
+                    "health_business_error {}",
+                    json.dumps(
+                        {
+                            "trace_id": trace_id,
+                            "method": request.method,
+                            "route": self.path,
+                            "status": exc.status,
+                            "code": exc.code,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
                 return JSONResponse(
                     status_code=exc.status,
+                    headers={"Cache-Control": "no-store"},
                     content={
                         "detail": exc.message,
                         "code": exc.code,
                         "message": exc.message,
-                        "trace_id": str(uuid4()),
+                        "trace_id": trace_id,
                         "retryable": exc.status in {429, 503},
                     },
                 )
@@ -157,6 +181,38 @@ class HealthRoute(APIRoute):
 
 
 health_vision = APIRouter(prefix="/health/v1", tags=["health-vision"], route_class=HealthRoute)
+
+
+@health_vision.get("/consultation-runs/{run_id}/citations", response_model=NutritionCitationsResult)
+async def consultation_citations(run_id: str, response: Response, user: User = Depends(get_required_user)):
+    """读取权威咨询答复实际采用且仍有效的引用。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await read_consultation_citations(str(user.uid), run_id)
+
+
+@health_vision.post("/members/{member_id}/task-entries", response_model=HealthTaskEntryResult)
+async def health_task_entry(
+    member_id: UUID,
+    data: HealthTaskEntryInput,
+    response: Response,
+    request_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(get_required_user),
+):
+    """按用户明确任务与选定来源创建固定角色入口。"""
+    response.headers["Cache-Control"] = "no-store"
+    require_request_key(data.root.client_request_id, request_key)
+    return await create_health_task_entry(str(user.uid), str(member_id), data)
+
+
+@health_vision.get("/tasks/{request_id}", response_model=HealthTaskResult)
+async def health_task_read(
+    response: Response,
+    request_id: str = Path(min_length=1, max_length=64),
+    user: User = Depends(get_required_user),
+):
+    """读取现有Request与当前Run的受权业务投影。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await read_health_task(str(user.uid), request_id)
 
 
 def require_request_key(request_id: UUID, header: str | None):
@@ -276,9 +332,35 @@ async def create_safe_planner(member_id: UUID, data: SafePlannerInput, user: Use
 
 
 @health_vision.post("/members/{member_id}/diet-analyst", status_code=201)
-async def create_analyst(member_id: UUID, data: ConsultationInput, user: User = Depends(get_required_user)):
+async def create_analyst(member_id: UUID, data: TargetAwareAnalystInput, user: User = Depends(get_required_user)):
     """创建固定成员分析线程，调用模型须独立用途审批与同意。"""
-    return await create_consultation(str(user.uid), str(member_id), data, agent_slug=ANALYST_SLUG)
+    return await create_consultation(
+        str(user.uid), str(member_id), data, agent_slug=ANALYST_SLUG, target_selection=data.target_selection
+    )
+
+
+@health_vision.post("/members/{member_id}/purchase-requirements")
+async def read_purchase_requirements(member_id: UUID, data: PurchaseSelection, user: User = Depends(get_required_user)):
+    """按当前有效采用版本计算采购食材需求，不调用模型。"""
+    return await purchase_requirements(str(user.uid), str(member_id), data)
+
+
+@health_vision.post("/members/{member_id}/purchase-conversations", status_code=201)
+async def create_purchase_conversation(
+    member_id: UUID,
+    data: PurchaseInput,
+    request_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(get_required_user),
+):
+    """用户固定采用与库存选择；模型运行使用独立采购用途。"""
+    require_request_key(data.client_request_id, request_key)
+    return await create_consultation(
+        str(user.uid),
+        str(member_id),
+        ConsultationInput(client_request_id=data.client_request_id),
+        agent_slug=PURCHASE_SLUG,
+        purchase_selection=data.model_dump(mode="json", exclude={"client_request_id"}),
+    )
 
 
 @health_vision.post("/diet-logs/{record_id}/feedback-conversation", status_code=201)
@@ -463,6 +545,19 @@ async def member_plans(member_id: UUID, user: User = Depends(get_required_user))
 async def next_day_proposal(member_id: UUID, data: NextDayProposalInput, user=Depends(get_required_user)):
     """登记明确的次日预览，不保存正式计划。"""
     return await create_next_day_proposal(str(user.uid), str(member_id), data)
+
+
+@health_vision.post("/members/{member_id}/meal-planner-runs/{run_id}/next-day-proposals", status_code=201)
+async def agent_next_day_proposal(
+    member_id: UUID,
+    data: AgentNextDayProposalInput,
+    response: Response,
+    run_id: str = Path(min_length=1, max_length=64),
+    user: User = Depends(get_required_user),
+):
+    """由用户将当前配餐运行的权威次日预览登记为待确认提案。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await create_agent_next_day_proposal(str(user.uid), str(member_id), run_id, data)
 
 
 @health_vision.get("/next-day-proposals/{proposal_id}")

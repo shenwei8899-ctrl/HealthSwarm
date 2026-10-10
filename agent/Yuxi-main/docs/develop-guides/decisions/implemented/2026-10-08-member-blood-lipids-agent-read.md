@@ -45,4 +45,4 @@ Owner：backend/package/yuxi/repositories/health_blood_lipids_repository.py
 
 本地默认和隔离合成数据库在完整备份后通过正式migrator升级为健康Schema20，API和Worker恢复健康；生产迁移未执行。体重、血压、血糖与血脂各自保留独立事实与引用，完整营养安全就绪状态维持未完成。
 
-本决定接续[本人实测血糖](2026-10-08-member-blood-glucose-agent-read.md)，复用正式家庭分页及共享测量来源流程；当前内置Skill版本2026.10.08.6，完整营养师、配餐及控糖角色维持各自部分完成或TODO。
+本决定接续[本人实测血糖](2026-10-08-member-blood-glucose-agent-read.md)，复用正式家庭分页及共享测量来源流程；内置Skill版本由[发布源码](https://github.com/shenwei8899-ctrl/HealthSwarm/blob/main/agent/Yuxi-main/backend/package/yuxi/agents/skills/buildin/family-nutritionist/SKILL.md)维护，完整营养师、配餐及控糖角色维持各自部分完成或TODO。

@@ -99,12 +99,50 @@ class HealthDietAnalysisRepository:
                     raise ValueError("工具结果缺少来源")
             except (KeyError, TypeError, ValueError, AttributeError):
                 raise HealthVisionError("source_invalidated", "历史单餐分析来源无法核对，请重新进入分析", 410) from None
+            if message.message_type != TOOL_AUDIT_MESSAGE_TYPE:
+                from yuxi.services.health_agent_personal_target_service import attach_current_personal_targets
+
+                expected = attach_current_personal_targets(binding, {})
+                if payload.get("current_personal_targets") != expected.get("current_personal_targets") or (
+                    "current_personal_targets" in payload
+                ) != ("current_personal_targets" in expected):
+                    raise HealthVisionError("source_invalidated", "历史分析的当前个人目标无法核对", 410)
+                payload = {key: value for key, value in payload.items() if key != "current_personal_targets"}
             await self.validate_payload(
                 uid,
                 binding.member_id,
                 payload,
                 period_required=(message.extra_metadata or {}).get("tool_name") == "analyze_confirmed_period",
             )
+        from yuxi.services.health_agent_personal_target_service import validate_personal_target_tool_payload
+
+        target_audits = await self.session.execute(
+            select(Message, AgentRun)
+            .join(AgentRun, AgentRun.id == Message.run_id)
+            .where(
+                or_(
+                    AgentRun.conversation_id == binding.conversation_id,
+                    Message.conversation_id == binding.conversation_id,
+                ),
+                Message.message_type == TOOL_AUDIT_MESSAGE_TYPE,
+                Message.execution_status == "completed",
+                Message.extra_metadata["tool_name"].as_string() == "get_bound_personal_targets",
+            )
+        )
+        for message, run in target_audits:
+            try:
+                if (
+                    run.uid != uid
+                    or run.agent_slug != "health-diet-analyst"
+                    or run.conversation_id != binding.conversation_id
+                    or message.conversation_id != binding.conversation_id
+                    or message.request_id != run.request_id
+                ):
+                    raise ValueError("工具执行不属于当前线程")
+                payload = json.loads(message.content)
+            except (TypeError, ValueError):
+                raise HealthVisionError("source_invalidated", "历史个人目标工具来源无法核对", 410) from None
+            await validate_personal_target_tool_payload(self.session, binding, payload)
 
     async def validate_payload(self, uid, member_id, payload, *, period_required=False):
         """PG历史与即时checkpoint共同核对记录、反馈版本及完整周期投影。"""
@@ -115,6 +153,8 @@ class HealthDietAnalysisRepository:
         )
 
         try:
+            if "current_personal_targets" in payload:
+                raise ValueError("分析工具不能附加个人目标")
             refs = payload.get("records", [])
             if not isinstance(refs, list):
                 raise ValueError("无效来源")

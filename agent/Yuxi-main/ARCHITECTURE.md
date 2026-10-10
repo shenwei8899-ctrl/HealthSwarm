@@ -35,7 +35,7 @@ Yuxi 是一个面向 RAG、知识图谱和多智能体工作流的知识库平�
 - `server/utils/lifespan.py` 管理数据库、内置模型/MCP/Skills、知识库、Redis、沙盒和 LangGraph checkpoint；通用 Task 只由独立 ARQ worker 执行。
 - `server/worker_main.py` 是 ARQ worker 入口，实际执行设置位于 `yuxi.services.run_worker`。
 
-Yuxi 只交付完整知识能力路径。API 始终注册 `external_kb`、`knowledge`、`evaluation`、`graph`、知识域 Dashboard 与 `/workspace/knowledge/*` 路由，并注册 `knowledge-base` Skill 和知识库工具；系统 discovery 始终向 Web 与 CLI 宣告知识能力。`storage-migrator` 创建并迁移 business、knowledge 与 health schema，API 与 worker 启动时要求三个域都兼容。当前健康域版本为 21，兼容版本由 `storage/postgres/manager.py` 的版本常量拥有；单成员安全改版预览的绑定与发布取舍见[对应决策](docs/develop-guides/decisions/implemented/2026-10-09-single-member-safe-planner-agent.md)。聊天附件仍只在真实解析动作发生时惰性加载 parser。
+Yuxi 只交付完整知识能力路径。API 始终注册 `external_kb`、`knowledge`、`evaluation`、`graph`、知识域 Dashboard 与 `/workspace/knowledge/*` 路由，并注册 `knowledge-base` Skill 和知识库工具；系统 discovery 始终向 Web 与 CLI 宣告知识能力。`storage-migrator` 创建并迁移 business、knowledge 与 health schema，API 与 worker 启动时要求三个域都兼容。当前健康域版本为 23，兼容版本由 `storage/postgres/manager.py` 的版本常量拥有；单成员安全改版预览的绑定与发布取舍见[对应决策](docs/develop-guides/decisions/implemented/2026-10-09-single-member-safe-planner-agent.md)。聊天附件仍只在真实解析动作发生时惰性加载 parser。
 
 ### `backend/package/yuxi`
 
@@ -51,6 +51,16 @@ Yuxi 只交付完整知识能力路径。API 始终注册 `external_kb`、`knowl
 - `models` 封装 chat、embedding 和 rerank 模型适配；`models/providers` 使用 PostgreSQL 保存模型供应商，并通过 Redis 缓存向 API 和 worker 提供一致视图。
 - `config` 区分系统级配置和用户级配置。PostgreSQL 持久化系统配置和用户配置；Redis 只保存带版本失效的短缓存，旧 `base.toml` 只作为一次性迁移来源。
 - `utils` 只放跨领域且足够通用的日志、时间、SSE 和轻量工具；`filepreview.py` 提供不依赖存储、领域或 HTTP 的格式识别、文本渲染和 Office 转换原语。
+
+### 家庭营养业务入口
+
+健康业务路由由 service 固定成员、用途、模型、Skill 和工具。统一任务入口将明确任务类型映射到既有健康 Conversation，随后沿用 AgentRunRequest、AgentRun 和最终 Message；业务状态由对应结果 Owner 投影，统一入口不增加第二套执行状态。绑定个人目标只引用当前授权档案和已发布规则，咨询引证只公开同一完成消息实际采用且仍有效的证据。接口和边界分别见[任务投影决定](docs/develop-guides/decisions/implemented/2026-10-10-health-task-projection.md)、[个人目标决定](docs/develop-guides/decisions/implemented/2026-10-10-health-agent-personal-targets.md)和[引证决定](docs/develop-guides/decisions/implemented/2026-10-10-health-consultation-citations.md)。
+
+采购 Agent 从当前有效的专业采用读取可食需求，输出程序计算的采购预览；独立采购用途的审批与逐成员同意由服务端验证。普通配餐的明日预览可由用户明确登记为待确认提议，登记复用既有业务事务 Owner，正式餐单、采用和实际饮食分别维护。业务写入和权限边界见[采购决定](docs/develop-guides/decisions/implemented/2026-10-10-health-purchase-agent.md)与[次日提议决定](docs/develop-guides/decisions/implemented/2026-10-10-health-agent-next-day-proposal.md)；错误追踪、用量事实和隔离回放查找方式见[运维参考](docs/advanced/health-agent-operations.md)。
+
+五个固定健康角色共享从 Run 首次执行起计的总预算，恢复和重试保留原起点；模型 SDK 仅使用剩余时限。咨询失败发布由聊天持久化 Owner 拒绝普通正文，显式中断仅保存固定错误投影。执行与发布分别见[预算决定](docs/develop-guides/decisions/implemented/2026-10-10-health-run-execution-budget.md)和[失败发布决定](docs/develop-guides/decisions/implemented/2026-10-10-health-consultation-partial-publication.md)。
+
+审核科普检索在有界后台计算中使用当前 PostgreSQL 片段构建本地词法索引；索引只返回来源 proof，正文仍由 repository fresh 锁读。咨询最终发布在 Message、输出指针与 completed 的 owning 事务中重验并持有实际引用来源的共享锁；已完成答复的 result、history、state 消息与搜索投影继续校验实际采用来源。检索、发布及读取边界见[审核科普索引决定](docs/develop-guides/decisions/implemented/2026-10-10-health-evidence-lexical-index.md)。
 
 ### 后台任务
 

@@ -172,6 +172,72 @@ docker compose @healthCompose stop api worker sandbox-provisioner minio redis po
 
 应观察 57 项通过，包含四种保持旧投影的排队撤销。饮食用例回读上传摘要、实际视觉请求、Task 终态及清空的 owner/lease、原始识别对象、草稿修订、计算快照与唯一日记；未同意、旧计算确认和跨账号读取均拒绝。协议重放 guard 有独立负控。任务收敛失败仍撤销合成审批；外层 fixture 遇到本轮非终态或残留租约 Task 时拒绝删除账号、PG 及图片对象，保留诊断事实。普通开发槽位明确跳过合成 E2E。范围及手算 oracle 见[饮食验收决策](./decisions/implemented/2026-10-04-health-meal-e2e.md)，审批与外呼配置核对见[健康模型配置决定](./decisions/implemented/2026-10-04-health-model-authority.md)。真实模型识别、专业规则及食品授权需要另行验收。
 
+## 有效采用餐单采购验证
+
+采购从已正式采用的个人或家庭餐单读取食材可食需求，用用户明确确认的同食品版本、同烹饪状态库存计算净量。单元测试核对独立手算、未知和零的语义及固定模型输出协议；独立PG schema验证正式21→22升级、幂等及旧事实保留。权限、独立用途、运行回执与外部边界由[采购决定](./decisions/implemented/2026-10-10-health-purchase-agent.md)解释。
+
+```powershell
+docker compose exec -T api timeout -k 5s 240s uv run --no-sync --group test pytest test/unit/services/test_health_purchase.py test/unit/services/test_health_nutritionist.py test/integration/services/test_health_purchase_schema.py test/integration/services/test_health_safe_planner_schema.py -q --tb=short -o cache_dir=/tmp/health-purchase-unit-schema
+```
+
+真实HTTP与Worker验证复用前述专用健康槽位及`$healthCompose`，要求当前schema、API和Worker就绪且没有其他活动用例。fixture核对隔离标记及独立数据库，自动启动8776本地重放；通过真实配置接口审批该合成采购处理方，逐成员取得`purchase`同意。相同处理方的`meal_plan`审批和同意仅用于用途不能复用的负控。fixture恢复全部用途关闭，删除本轮provider并停止精确重放进程。普通环境明确跳过需要该装配的用例。
+
+```powershell
+docker compose @healthCompose exec -T -e HEALTH_CONSULTATION_E2E_ISOLATED=true -e TEST_BASE_URL=http://localhost:5050 api timeout -k 5s 180s uv run --no-sync --group test pytest test/integration/services/test_health_purchase_http.py test/e2e/test_health_purchase_e2e.py -q --tb=short -o cache_dir=/tmp/health-purchase-http-worker
+```
+
+必须核对个人300−40=260g、家庭360−40=320g、并发幂等、当前Request与Run、固定Skill和工具manifest、同Run唯一PG回执及权威Message。正常、重复和问题输出完成；非法字段、伪造及前Run回执不能发布。工具回执形成后撤用途同意、撤采用、专业源版本变化或家庭第二成员撤权，迟到模型答复均不能成为Message。测试结束回查所属资源、provider和重放进程归零、审批关闭；全局配置的管理员审计标记保留。历史执行结果见采购决定，当前数量以实际收集和终态为准。生产采购模型审批、SKU/包装/毛重换算、价格、交易及会计费用另行对接验收。
+
+## 目标绑定、次日提议与任务投影验证
+
+个人目标只绑定当前已发布规则与档案版本；分析记录窗口和当前目标的适用时间分别报告。用户登记次日提议核对同一完成 Request、Run、最终 Message 与普通预览，活跃 Run 必须快速拒绝并释放成员锁。统一任务投影沿用已有执行链路，分别读取执行状态与当前授权下的业务结果。验收边界由[个人目标决定](./decisions/implemented/2026-10-10-health-agent-personal-targets.md)、[次日提议决定](./decisions/implemented/2026-10-10-health-agent-next-day-proposal.md)和[任务投影决定](./decisions/implemented/2026-10-10-health-task-projection.md)拥有。
+
+```powershell
+docker compose exec -T api uv run --no-sync --group test pytest test/unit/services/test_health_agent_personal_targets.py test/unit/services/test_health_next_day_agent.py test/unit/services/test_health_task_projection.py test/unit/services/test_health_consultation_citations.py test/unit/services/test_health_route_trace.py test/unit/services/test_health_vision_usage.py -q
+```
+
+真实接口及 Worker 用例复用前述独立健康槽位。各 fixture 拥有当前配置恢复、合成身份和结果清理；需要回放的 Worker 用例启动其对应 support 回放服务，同一槽位串行运行。目标撤回、来源变化、最终消息错绑、非法字段、缺失选择和不支持的任务必须显式失败或返回补充状态；失败或依赖未就绪不能产生正式业务写入。正式升级的私有 PG schema 测试核对 22→当前版本、幂等升级、历史空绑定和未来版本拒绝，版本值以迁移 Owner 为准。
+
+## 隔离固定图发布门禁
+
+从 Yuxi 目录运行 Bash 门禁，使用已构建的项目镜像及 Docker Compose。隔离 Compose 的 `YUXI_TEST_API_IMAGE`、`YUXI_TEST_PROVISIONER_IMAGE` 和 `YUXI_TEST_MINIO_IMAGE` 指定三个已构建镜像的标签；使用不同于隔离配置默认值的标签时先设置这三个环境变量，门禁不构建或下载镜像：
+
+```bash
+bash scripts/ci_health_agent_replay.sh
+```
+
+脚本建立全新的 `health-agent-ci` 项目，拒绝接管已有同名容器；独立标记和真实数据库名通过保护后，顺序执行咨询、审核科普检索、配餐、分析、专业审核、采购、目标、次日提议的 Worker 和 PG 负控，以及来源撤回后的搜索计数、摘要和公开线程分页。每阶段必须实际收集用例、零跳过且退出成功；最终结果、同 Run 回执、授权撤销、非法输出和活跃 Run 锁拒绝均由各领域 oracle 核对。脚本在结束时清理本轮专属容器和卷，测试回执留在被忽略的 `backend/test/.tmp/`。API 与 Worker 沿用服务 UID，独立测试 CLI 以 root 写入挂载的回执目录。
+
+该命令验证合成协议、装配和持久链路。真实模型质量、专业内容、生产费用及外部接口仍须分别验收。HealthSwarm 的工作流模板位于 Yuxi 子目录，远端仓库根自动 CI 入口待维护者配置；本地门禁通过与远端工作流通过分别记录。
+
+## 审核科普索引、引用发布与正文读取
+
+受限科普检索使用当前 PostgreSQL 片段重建本地词法索引；容量、取消、fresh 来源、同 Run 引用及普通 Agent 兼容分别在语义 Owner 处验证。合成 gold 与 Recall/F1 只验证工程检索，不替代专业语料或医学评估，范围见[检索决定](decisions/implemented/2026-10-10-health-evidence-lexical-index.md)。
+
+```powershell
+docker compose exec -T api uv run --no-sync --group test pytest test/unit/services/test_health_evidence_index.py test/unit/services/test_health_evidence_index_publication.py test/unit/services/test_health_evidence_publication.py test/unit/services/test_health_evidence_read_boundary.py test/unit/services/test_health_evidence_search_visibility.py test/unit/services/test_health_consultation_citations.py -q
+```
+
+真实 PG 与 HTTP 验证复用专用健康槽位及 `$healthCompose`，同一槽位不并发修改审批配置。下列用例调用真实检索、图校验与最终 save Owner；两 Session 分别更新和读取来源，核对 owning publication 持有的共享锁、提交或回滚结果。Completed 答复随后撤回实际采用来源，核对 result、history、state 消息投影和 search，保留相邻有效 Run 与未采用来源，并复验专用引用和 Task 的错误状态。
+
+```powershell
+docker compose @healthCompose exec -T -u root api uv run --no-sync --group test pytest test/integration/services/test_health_evidence_lexical_http.py test/integration/services/test_health_evidence_final_publication_http.py test/integration/services/test_health_evidence_search_visibility_http.py -q
+```
+
+固定图发布门禁另执行检索 Worker 用例，使用预先声明的合成 gold 核对最终同 Run 引用、当前来源、撤回及新版本重建。所有用例结束后回读所属 PG/Redis 资源、审批及 provider 基线恢复、精确 helper 进程和 readiness；重新创建 adapter 证明无持久缓存，不作为实际进程重启或生产 SLO 的验收。
+
+## 健康 Run 预算与咨询失败发布
+
+五个固定健康角色的预算从 Run 首次执行起计，同一 Run 的重试不能重置起点。先运行预算、取消竞争及咨询失败发布的相关单测：
+
+```powershell
+docker compose exec -T api uv run --no-sync --group test pytest test/unit/services/test_run_worker.py test/unit/services/test_health_consultation_partial_publication.py -q --tb=short
+```
+
+SDK 的剩余时限与单次 HTTP 发送由 `test/integration/services/test_health_model_execution_budget_http.py` 验证。真实三秒实验须在健康隔离 Compose 后追加 `backend/test/support/health_run_budget_e2e.compose.yml`，启动所属预算回放，执行 `test/e2e/test_health_run_execution_budget_e2e.py`；其中双 attempt 用例需要暂停隔离 Worker，必须在 finally 恢复。完成后去掉预算覆盖层，以原隔离配置重建 API 和 Worker，核对默认预算、ready、所属队列、PG 终态与清理。该覆盖层不用于主服务或固定图 CI。
+
+咨询失败验收核对同 Run/Request 的 failed 状态、空最终指针以及没有普通回答正文；显式 interrupt 仅保留固定错误投影。恢复正常隔离配置后，再执行 `test/e2e/test_health_nutritionist_e2e.py`，核对有效答案和无效引用两条发布路径。使用量缺失保持未知，合成回放不证明实际供应商质量或专业判断。
+
 ## 多页报告与健康链路联合合成 E2E
 
 多页报告验收面向后台维护者，复用健康专用槽位并叠加 `backend/test/support/health_report_e2e.compose.yml`。临时证书只在该测试槽位受信任，OCR 和字段模型使用同一个本地 HTTPS 重放进程；原开发和部署环境不加载覆盖层。测试 runner 直接调用真实解析客户端做公共 CA 拒绝负控，独立 worker 完成两页 PDF、失败页重识别及人工确认。重放返回像素框和匹配输入元数据，第二页使用包含身份、表头、指标及注入行的 HTML 表格；字段协议只接受预定归一化框及脱敏后的指标行。坐标规则与验证边界见[坐标验收决策](./decisions/implemented/2026-10-04-health-report-coordinates.md)，行与列语义见[表格验收决策](./decisions/implemented/2026-10-04-health-report-tables.md)。合成样本只证明装配与协议回归，范围见[报告验收决策](./decisions/implemented/2026-10-04-health-report-e2e.md)。

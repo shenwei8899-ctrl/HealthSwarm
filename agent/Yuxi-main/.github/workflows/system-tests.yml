@@ -17,6 +17,7 @@ on:
       - 'scripts/ci_prepare_system_tests_env.sh'
       - 'scripts/ci_build_topology_images.sh'
       - 'scripts/migrate-storage.sh'
+      - 'scripts/ci_health_agent_replay.sh'
       - '.github/workflows/system-tests.yml'
   push:
     tags: ['v[0-9]*']
@@ -36,6 +37,7 @@ on:
       - 'scripts/ci_prepare_system_tests_env.sh'
       - 'scripts/ci_build_topology_images.sh'
       - 'scripts/migrate-storage.sh'
+      - 'scripts/ci_health_agent_replay.sh'
       - '.github/workflows/system-tests.yml'
   workflow_dispatch:
 
@@ -335,6 +337,9 @@ jobs:
             test/integration/api/test_skill_artifact_authorization.py -q
       - name: Verify real Sandbox storage isolation and shared projections
         run: docker compose exec -T api uv run --no-sync --no-dev pytest test/integration/services/test_project_workdir_provisioner.py -q
+      - name: Verify isolated health Agent Worker paths
+        timeout-minutes: 15
+        run: bash scripts/ci_health_agent_replay.sh
       - name: Runtime logs on failure
         if: failure() || cancelled()
         run: docker compose logs api worker sandbox-provisioner --tail 300

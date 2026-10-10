@@ -297,6 +297,7 @@ class HealthVisionRepository:
                         TaskRecord.created_at,
                         TaskRecord.started_at,
                         TaskRecord.completed_at,
+                        TaskRecord.result,
                     )
                     .join(TaskRecord, TaskRecord.id == VisionJob.task_id)
                     .where(

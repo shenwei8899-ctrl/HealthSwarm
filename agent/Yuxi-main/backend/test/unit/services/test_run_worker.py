@@ -6,6 +6,7 @@ import importlib
 import os
 import subprocess
 import sys
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -1756,3 +1757,299 @@ async def test_cancel_during_manifest_preparation_settles_without_waiting_for_le
     await run_worker.process_agent_run({"job_try": 1}, run.id)
     finish.assert_awaited_once()
     assert finish.call_args.kwargs["run_id"] == run.id
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "inf", "NaN", "3.5"])
+def test_health_budget_rejects_non_positive_or_non_integer_deployment_policy(monkeypatch, raw):
+    monkeypatch.setenv("YUXI_HEALTH_RUN_TIMEOUT_SECONDS", raw)
+    with pytest.raises(RuntimeError):
+        run_worker.health_execution_timeout_seconds(3600)
+
+
+def test_health_budget_reserves_arq_cleanup_time_without_changing_nonhealth_timeout(monkeypatch):
+    monkeypatch.setenv("YUXI_HEALTH_RUN_TIMEOUT_SECONDS", "300")
+    assert run_worker.health_execution_timeout_seconds(330) == 300
+    with pytest.raises(ValueError, match="减30秒"):
+        run_worker.health_execution_timeout_seconds(329)
+    monkeypatch.setenv("YUXI_HEALTH_RUN_TIMEOUT_SECONDS", "3")
+    assert run_worker.health_execution_timeout_seconds(33) == 3
+
+
+@pytest.mark.parametrize("slug", sorted(run_worker.HEALTH_EXECUTION_AGENT_SLUGS))
+@pytest.mark.parametrize("phase", ["input", "prepare", "model_or_tool"])
+async def test_health_deadline_closes_execution_before_failed_and_skips_checkpoint(monkeypatch, slug, phase):
+    """实际内部计时器覆盖第一个长await与完整执行链，结算不再读取checkpoint。"""
+    from yuxi.models.execution_budget import model_execution_budget_options
+
+    run = _build_run()
+    run.agent_slug = slug
+    run.started_at = run_worker.utc_now_naive()
+    _patch_common(monkeypatch, run)
+    monkeypatch.setattr(run_worker.WorkerSettings, "health_execution_timeout", 0.025)
+    started = AsyncMock()
+    monkeypatch.setattr(run_worker.RunContext, "start", started)
+    closed = []
+    original_prepare = run_worker.prepare_and_record_run_execution
+    original_input = run_worker._load_input_message
+
+    async def prepare(**kwargs):
+        if phase == "prepare":
+            try:
+                await asyncio.sleep(10)
+            finally:
+                closed.append("prepare")
+        return await original_prepare(**kwargs)
+
+    async def load_input(message_id):
+        assert started.await_count >= 1, "长await前已经启动heartbeat"
+        if phase == "input":
+            try:
+                await asyncio.sleep(10)
+            finally:
+                closed.append("input")
+        return await original_input(message_id)
+
+    async def stream():
+        try:
+            await asyncio.sleep(10)
+            yield b"{}"
+        finally:
+            closed.append("model_or_tool")
+
+    async def terminal(_run_id, status, **kwargs):
+        assert closed == [phase]
+        assert model_execution_budget_options() == {}, "结算前已停止timer和SDK预算"
+        assert status == "failed" and kwargs["error_type"] == "health_execution_timeout"
+        assert kwargs["token_usage"] == {"available": False}
+        return run_worker.TerminalTransition(status="failed", changed=True)
+
+    monkeypatch.setattr(run_worker, "_load_input_message", load_input)
+    monkeypatch.setattr(run_worker, "prepare_and_record_run_execution", prepare)
+    monkeypatch.setattr(run_worker, "stream_agent_chat", lambda **kwargs: stream())
+    monkeypatch.setattr(run_worker, "mark_run_terminal", terminal)
+    monkeypatch.setattr(
+        run_worker, "_read_run_token_usage_from_state", AsyncMock(side_effect=AssertionError("no state"))
+    )
+    monkeypatch.setattr(run_worker, "release_run_lease_for_retry", AsyncMock(side_effect=AssertionError("no retry")))
+    events = AsyncMock()
+    monkeypatch.setattr(run_worker, "append_run_event", events)
+    await run_worker.process_agent_run({"job_try": 1}, run.id)
+    assert closed == [phase]
+    assert any(call.args[1] == "end" and call.args[2]["status"] == "failed" for call in events.call_args_list)
+    assert model_execution_budget_options() == {}
+
+
+async def test_health_retry_uses_post_claim_persisted_first_start_and_refuses_expired_run(monkeypatch):
+    """首attempt旧对象无起点，领取后必须重读而非用本次now开新预算。"""
+    from copy import copy
+
+    run = _build_run()
+    run.agent_slug = "health-consultation"
+    run.started_at = None
+    _patch_common(monkeypatch, run)
+    fresh = copy(run)
+    fresh.started_at = run_worker.utc_now_naive() - timedelta(seconds=10)
+    claimed = False
+
+    async def get_run(_run_id):
+        return fresh if claimed else run
+
+    async def claim(*args):
+        nonlocal claimed
+        claimed = True
+        return True
+
+    monkeypatch.setattr(run_worker, "_get_run", get_run)
+    monkeypatch.setattr(run_worker, "mark_run_running", claim)
+    monkeypatch.setattr(run_worker.WorkerSettings, "health_execution_timeout", 1)
+    monkeypatch.setattr(
+        run_worker, "prepare_and_record_run_execution", AsyncMock(side_effect=AssertionError("expired"))
+    )
+    terminal = AsyncMock(return_value=run_worker.TerminalTransition(status="failed", changed=True))
+    monkeypatch.setattr(run_worker, "mark_run_terminal", terminal)
+    monkeypatch.setattr(run_worker, "append_run_event", AsyncMock())
+    await run_worker.process_agent_run({"job_try": 1}, run.id)
+    assert terminal.call_args.kwargs["error_type"] == "health_execution_timeout"
+    assert fresh.started_at != run.started_at and run.started_at is None
+
+
+@pytest.mark.parametrize("outcome", ["cancelled", "lease_lost", "already_completed"])
+async def test_health_deadline_keeps_cancel_lease_and_committed_terminal_distinct(monkeypatch, outcome):
+    run = _build_run()
+    run.agent_slug = "health-consultation"
+    run.started_at = run_worker.utc_now_naive()
+    _patch_common(monkeypatch, run)
+    monkeypatch.setattr(run_worker.WorkerSettings, "health_execution_timeout", 0.025)
+    cancelled = False
+
+    async def consume(stream, context):
+        nonlocal cancelled
+        if outcome == "cancelled":
+            cancelled = True
+        if outcome == "lease_lost":
+            context.lease_lost = True
+        await asyncio.sleep(10)
+        yield b"{}"
+
+    monkeypatch.setattr(run_worker, "_consume_stream_with_cancel", consume)
+    monkeypatch.setattr(run_worker, "_confirmed_user_cancel", AsyncMock(side_effect=lambda _run_id: cancelled))
+    cancel = AsyncMock(return_value=run_worker.TerminalTransition(status="cancelled", changed=True))
+    monkeypatch.setattr(run_worker, "_finish_user_cancel", cancel)
+    terminal = AsyncMock(return_value=run_worker.TerminalTransition(status="completed", changed=False))
+    monkeypatch.setattr(run_worker, "mark_run_terminal", terminal)
+    monkeypatch.setattr(run_worker, "_current_attempt_has_published_completion", AsyncMock(return_value=False))
+    events = AsyncMock()
+    monkeypatch.setattr(run_worker, "append_run_event", events)
+    await run_worker.process_agent_run({"job_try": 1}, run.id)
+    assert cancel.await_count == (1 if outcome == "cancelled" else 0)
+    assert terminal.await_count == (1 if outcome == "already_completed" else 0)
+    assert not any(call.args[1] in {"error", "end"} for call in events.call_args_list)
+
+
+@pytest.mark.parametrize("exception", [asyncio.CancelledError("shutdown"), TimeoutError("provider")])
+async def test_health_budget_does_not_reclassify_external_cancel_or_provider_timeout(monkeypatch, exception):
+    run = _build_run()
+    run.agent_slug = "health-consultation"
+    run.started_at = run_worker.utc_now_naive()
+    _patch_common(monkeypatch, run)
+    monkeypatch.setattr(run_worker, "append_run_event", AsyncMock())
+    monkeypatch.setattr(run_worker, "mark_run_terminal", AsyncMock(side_effect=AssertionError("no failed")))
+    monkeypatch.setattr(run_worker, "_consume_stream_with_cancel", lambda *args: _RaisingAsyncIter(exception))
+    release = AsyncMock(return_value=True)
+    monkeypatch.setattr(run_worker, "release_run_lease_for_retry", release)
+    expected = asyncio.CancelledError if isinstance(exception, asyncio.CancelledError) else run_worker.RetryableRunError
+    with pytest.raises(expected):
+        await run_worker.process_agent_run({"job_try": 1}, run.id)
+    release.assert_awaited_once()
+
+
+@pytest.mark.parametrize("slow_close", [False, True])
+async def test_health_normal_completion_drains_graph_before_stopping_timer(monkeypatch, slow_close):
+    from yuxi.models.execution_budget import model_execution_budget_options
+
+    run = _build_run()
+    run.agent_slug = "health-consultation"
+    run.started_at = run_worker.utc_now_naive()
+    _patch_common(monkeypatch, run)
+    monkeypatch.setattr(run_worker.WorkerSettings, "health_execution_timeout", 0.025 if slow_close else 1)
+    closed = []
+
+    async def stream():
+        try:
+            yield b'{"status":"finished"}\n'
+        finally:
+            assert model_execution_budget_options()["timeout"] > 0
+            if slow_close:
+                await asyncio.sleep(0.06)
+            closed.append(True)
+
+    async def terminal(_run_id, status, **kwargs):
+        assert closed == [True] and model_execution_budget_options() == {}
+        assert status == ("failed" if slow_close else "completed")
+        if slow_close:
+            assert kwargs["error_type"] == "health_execution_timeout"
+        return run_worker.TerminalTransition(status=status, changed=True)
+
+    monkeypatch.setattr(run_worker, "stream_agent_chat", lambda **kwargs: stream())
+    monkeypatch.setattr(run_worker, "mark_run_terminal", terminal)
+    monkeypatch.setattr(run_worker, "append_run_event", AsyncMock())
+    await run_worker.process_agent_run({"job_try": 1}, run.id)
+    assert closed == [True]
+
+
+async def test_health_external_task_cancel_with_slow_drain_crossing_deadline_stays_infrastructure(monkeypatch):
+    """外部取消在先、关闭跨预算在后时，asyncio取消计数不能被expired布尔覆盖。"""
+    from yuxi.models.execution_budget import model_execution_budget_options
+
+    run = _build_run()
+    run.agent_slug = "health-consultation"
+    run.started_at = run_worker.utc_now_naive()
+    _patch_common(monkeypatch, run)
+    monkeypatch.setattr(run_worker.WorkerSettings, "health_execution_timeout", 1)
+    started, closed = asyncio.Event(), []
+
+    async def stream():
+        try:
+            started.set()
+            await asyncio.sleep(10)
+            yield b"{}"
+        finally:
+            await asyncio.sleep(1.1)
+            closed.append(True)
+
+    async def release(*args):
+        assert closed == [True] and model_execution_budget_options() == {}
+        return True
+
+    monkeypatch.setattr(run_worker, "stream_agent_chat", lambda **kwargs: stream())
+    monkeypatch.setattr(run_worker, "mark_run_terminal", AsyncMock(side_effect=AssertionError("not budget failed")))
+    released = AsyncMock(side_effect=release)
+    monkeypatch.setattr(run_worker, "release_run_lease_for_retry", released)
+    task = asyncio.create_task(run_worker.process_agent_run({"job_try": 1}, run.id))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    task.cancel("infrastructure-first")
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    released.assert_awaited_once()
+    assert closed == [True] and model_execution_budget_options() == {}
+
+
+async def test_health_deadline_cancel_committed_between_precheck_and_terminal_settles_immediately(monkeypatch):
+    """事务拒绝failed并返回cancel_requested时，现有取消Owner必须继续收尾。"""
+    run = _build_run()
+    run.agent_slug = "health-consultation"
+    run.started_at = run_worker.utc_now_naive() - timedelta(seconds=10)
+    _patch_common(monkeypatch, run)
+    monkeypatch.setattr(run_worker.WorkerSettings, "health_execution_timeout", 1)
+    terminal = AsyncMock(return_value=run_worker.TerminalTransition(status="cancel_requested", changed=False))
+    monkeypatch.setattr(run_worker, "mark_run_terminal", terminal)
+    cancel = AsyncMock(return_value=run_worker.TerminalTransition(status="cancelled", changed=True))
+    monkeypatch.setattr(run_worker, "_finish_user_cancel", cancel)
+    monkeypatch.setattr(run_worker, "_confirmed_user_cancel", AsyncMock(return_value=False))
+    monkeypatch.setattr(run_worker, "_read_run_token_usage_from_state", AsyncMock(side_effect=AssertionError("budget")))
+    events = AsyncMock()
+    monkeypatch.setattr(run_worker, "append_run_event", events)
+    await run_worker.process_agent_run({"job_try": 1}, run.id)
+    assert terminal.call_args.kwargs["error_type"] == "health_execution_timeout"
+    cancel.assert_awaited_once()
+    assert cancel.call_args.kwargs["read_token_usage"] is False
+    assert not any(call.args[1] in {"error", "end"} for call in events.call_args_list)
+
+
+@pytest.mark.parametrize("current_owner", [True, False])
+async def test_health_completed_publication_then_slow_drain_emits_only_verified_current_attempt_end(
+    monkeypatch, current_owner
+):
+    """completed已提交后finally跨deadline，只给当前权威输出补发真实完成end。"""
+    run = _build_run()
+    run.agent_slug = "health-consultation"
+    run.started_at = run_worker.utc_now_naive()
+    _patch_common(monkeypatch, run)
+    monkeypatch.setattr(run_worker.WorkerSettings, "health_execution_timeout", 1)
+    closed = []
+
+    async def stream():
+        try:
+            run.status, run.output_message_id = "completed", 77
+            yield b'{"status":"finished","terminal_committed":true}\n'
+        finally:
+            await asyncio.sleep(1.1)
+            closed.append(True)
+
+    async def terminal(*args, **kwargs):
+        assert closed == [True] and run.status == "completed" and run.output_message_id == 77
+        return run_worker.TerminalTransition(status="completed", changed=False)
+
+    monkeypatch.setattr(run_worker, "stream_agent_chat", lambda **kwargs: stream())
+    monkeypatch.setattr(run_worker, "mark_run_terminal", terminal)
+    monkeypatch.setattr(run_worker, "_current_attempt_has_published_completion", AsyncMock(return_value=current_owner))
+    monkeypatch.setattr(run_worker, "dispatch_next_request", AsyncMock())
+    events = AsyncMock()
+    monkeypatch.setattr(run_worker, "append_run_event", events)
+    await run_worker.process_agent_run({"job_try": 1}, run.id)
+    assert closed == [True]
+    ends = [call.args[2] for call in events.call_args_list if call.args[1] == "end"]
+    assert len(ends) == int(current_owner)
+    if current_owner:
+        assert ends[0]["status"] == "completed" and ends[0]["chunk"]["terminal_committed"] is True
+    assert not any(call.args[1] == "error" for call in events.call_args_list)

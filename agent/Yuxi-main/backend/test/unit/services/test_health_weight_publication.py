@@ -67,7 +67,7 @@ def checkpoint_guard(monkeypatch):
 
     context = tool_runtime().context
     snapshot = {"processor": "approved", "policy_version": "policy", "model": context.model}
-    run = SimpleNamespace(input_payload={"health_processing": snapshot})
+    run = SimpleNamespace(agent_slug="health-consultation", input_payload={"health_processing": snapshot})
     binding = SimpleNamespace(member_id="bound-self", conversation_id=7)
     attempt = AsyncMock(return_value=run)
     require = AsyncMock(return_value=(binding, snapshot))
@@ -153,7 +153,7 @@ async def test_weight_tool_error_feedback_is_not_parsed_as_successful_source(che
 async def test_weight_derived_partial_discards_private_body_and_metadata(
     monkeypatch, interrupt, has_weight_dependency, dependency_kind
 ):
-    """只有前轮独立测量依赖也阻断私有正文；去除对应EXISTS分支使负控变红。"""
+    """有无正式测量依赖的咨询均不发布错误正文，中断只存固定空消息。"""
 
     async def dependency_run(statement):
         """仅当本次查询确实包含当前测量表，才返回该表的历史回执。"""
@@ -190,16 +190,9 @@ async def test_weight_derived_partial_discards_private_body_and_metadata(
         interrupt_run=interrupt,
     )
 
-    session.scalar.assert_awaited_once()
-    query = session.scalar.await_args.args[0]
-    sql = str(query)
-    assert "health_weight_use.run_id = agent_runs.id" in sql and "EXISTS" in sql and " OR " in sql
-    assert "health_blood_pressure_use.run_id = agent_runs.id" in sql
-    assert "health_blood_glucose_use.run_id = agent_runs.id" in sql
-    assert "health_blood_lipids_use.run_id = agent_runs.id" in sql
-    assert "agent_runs.conversation_id" in sql and 7 in query.compile().params.values()
+    session.scalar.assert_not_awaited()
     session.rollback.assert_not_awaited()
-    if has_weight_dependency and not interrupt:
+    if not interrupt:
         assert output is None
         conv.add_message_by_thread_id.assert_not_awaited()
         repo.set_output_message.assert_not_awaited()
@@ -208,21 +201,15 @@ async def test_weight_derived_partial_discards_private_body_and_metadata(
 
     assert output is saved
     written = conv.add_message_by_thread_id.await_args.kwargs
-    if has_weight_dependency:
-        assert written["content"] == ""
-        assert written["extra_metadata"] == {
-            "error_type": "interrupted",
-            "is_error": True,
-            "error_message": "咨询已中断",
-        }
-        assert private not in str(written)
-    else:
-        assert written["content"] == private
-        assert written["extra_metadata"]["private_trace"] == private
+    assert written["content"] == ""
+    assert written["extra_metadata"] == {
+        "error_type": "interrupted",
+        "is_error": True,
+        "error_message": "咨询已中断",
+    }
+    assert private not in str(written)
     assert written["run_id"] == "derived-run" and written["request_id"] == "request"
     repo.set_output_message.assert_awaited_once_with("derived-run", 42, worker_id="worker")
     session.commit.assert_awaited_once()
-    if interrupt:
-        assert repo.set_terminal_status.await_args.kwargs["status"] == "interrupted"
-    else:
-        repo.set_terminal_status.assert_not_awaited()
+    assert repo.set_terminal_status.await_args.kwargs["status"] == "interrupted"
+    assert repo.set_terminal_status.await_args.kwargs["error_message"] == "咨询已中断"

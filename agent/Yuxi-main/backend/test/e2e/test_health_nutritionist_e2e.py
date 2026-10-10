@@ -14,6 +14,7 @@ from test.e2e.test_health_consultation_e2e import (
     drain_requests,
     isolated_health,  # noqa: F401
 )
+from test.integration.services.test_health_task_http import verified_task_cleanup  # noqa: F401
 from test.integration.services.test_health_vision_http import ROOT, create_member, health_http  # noqa: F401
 from yuxi.repositories.health_evidence_repository import HealthEvidenceRepository
 from yuxi.services.health_vision_types import HealthVisionError
@@ -83,6 +84,10 @@ async def test_reviewed_evidence_worker_citations_and_revoked_history(isolated_h
         "get_confirmed_profile",
         "get_confirmed_diet",
         "get_complete_health_profile",
+        "get_member_weight_records",
+        "get_member_blood_pressure_records",
+        "get_member_blood_glucose_records",
+        "get_member_blood_lipids_records",
         "query_reviewed_nutrition_knowledge",
         "get_member_memories",
         "remember_member_fact",
@@ -152,6 +157,28 @@ async def test_reviewed_evidence_worker_citations_and_revoked_history(isolated_h
                 wrong_binding = SimpleNamespace(conversation_id=binding.conversation_id, member_id=wrong_member)
                 with pytest.raises(HealthVisionError, match="citation_invalid"):
                     await repo.validate_citations([citation.id], wrong_binding, wrong_uid, run_id=wrong_run)
+        citation_result = await client.get(f"{ROOT}/consultation-runs/{run_id}/citations", headers=headers)
+        assert citation_result.status_code == 200, citation_result.text
+        citation_data = citation_result.json()
+        assert citation_data["status"] == "cited" and citation_data["agent_run_id"] == run_id
+        assert citation_data["request_id"] == request_id and citation_data["member_id"] == member_id
+        assert citation_data["thread_id"] == thread_id and citation_data["final_message_id"] == output.id
+        assert citation_data["citations"] == [
+            {
+                "citation_id": citation.id,
+                "evidence_id": evidence_id,
+                "title": source["title"],
+                "content": source["content"],
+                "source_ref": source["source_ref"],
+                "source_version": source["source_version"],
+                "reviewed_at": citation_data["citations"][0]["reviewed_at"],
+                "scope": "general_education",
+            }
+        ]
+        assert "output" not in citation_data
+        for actor in (users[1], users[2]):
+            denied = await client.get(f"{ROOT}/consultation-runs/{run_id}/citations", headers=actor["headers"])
+            assert denied.status_code == 404 and source["content"] not in denied.text
         bad_key = str(uuid4())
         bad_bound = await client.post(
             f"{ROOT}/members/{member_id}/consultations",
@@ -176,6 +203,8 @@ async def test_reviewed_evidence_worker_citations_and_revoked_history(isolated_h
         await collect_sse(client, headers, bad_run_id)
         bad_result = await client.get(f"/api/agent/runs/{bad_run_id}/result", headers=headers)
         assert bad_result.json()["status"] == "failed", bad_result.text
+        bad_citations = await client.get(f"{ROOT}/consultation-runs/{bad_run_id}/citations", headers=headers)
+        assert bad_citations.status_code == 409 and bad_citations.json()["code"] == "answer_not_completed"
         async with pg_manager.get_async_session_context() as session:
             bad_run = await session.get(AgentRun, bad_run_id)
             assert "citation_invalid" in bad_run.error_message
@@ -185,13 +214,26 @@ async def test_reviewed_evidence_worker_citations_and_revoked_history(isolated_h
                 )
                 is not None
             )
-            partial = await session.get(Message, bad_run.output_message_id)
-            assert partial.run_id == bad_run_id and partial.extra_metadata["is_error"] is True
-            assert partial.id == bad_result.json()["final_message_id"]
+            assert bad_run.output_message_id is None and bad_result.json()["final_message_id"] is None
+            assert not list(
+                await session.scalars(
+                    select(Message).where(
+                        Message.run_id == bad_run_id, Message.role == "assistant", Message.message_type == "text"
+                    )
+                )
+            )
+            assert list(
+                await session.scalars(
+                    select(Message).where(Message.run_id == bad_run_id, Message.message_type == "model_audit")
+                )
+            ), "失败模型过程仍须保留受访问控制的私有审计"
         denied_revoke = await client.delete(f"{ROOT}/nutrition-evidence/{evidence_id}", headers=headers)
         assert denied_revoke.status_code == 403
         revoked = await client.delete(f"{ROOT}/nutrition-evidence/{evidence_id}", headers=admin)
         assert revoked.status_code == 200
+        withdrawn = await client.get(f"{ROOT}/consultation-runs/{run_id}/citations", headers=headers)
+        assert withdrawn.status_code == 410 and withdrawn.json()["code"] == "source_invalidated"
+        assert source["content"] not in withdrawn.text and "合成科普说明" not in withdrawn.text
         async with pg_manager.get_async_session_context() as session:
             assert (await session.get(NutritionEvidence, evidence_id)).revoked_at is not None
             with pytest.raises(HealthVisionError, match="source_invalidated"):

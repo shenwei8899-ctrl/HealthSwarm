@@ -16,12 +16,15 @@ ANALYST_SLUG = "health-diet-analyst"
 ANALYST_BACKEND = "HealthDietAnalystAgent"
 QUALITY_SLUG = "health-quality"
 QUALITY_BACKEND = "HealthQualityAgent"
-STRUCTURED_HEALTH_AGENTS = frozenset((PLANNER_SLUG, ANALYST_SLUG, QUALITY_SLUG))
+PURCHASE_SLUG = "health-purchase"
+PURCHASE_BACKEND = "HealthPurchaseAgent"
+STRUCTURED_HEALTH_AGENTS = frozenset((PLANNER_SLUG, ANALYST_SLUG, QUALITY_SLUG, PURCHASE_SLUG))
 HEALTH_AGENT_BACKENDS = {
     CONSULTATION_SLUG: CONSULTATION_BACKEND,
     PLANNER_SLUG: PLANNER_BACKEND,
     ANALYST_SLUG: ANALYST_BACKEND,
     QUALITY_SLUG: QUALITY_BACKEND,
+    PURCHASE_SLUG: PURCHASE_BACKEND,
 }
 
 
@@ -95,6 +98,30 @@ class HealthConsultationRepository:
         if binding is None:
             raise HealthVisionError("not_found", "专属咨询不存在或无权访问", 404)
         conversation = await self.session.get(Conversation, binding.conversation_id)
+        target_selection = getattr(binding, "personal_target_selection", None)
+        if target_selection is not None and (
+            conversation.agent_id != ANALYST_SLUG
+            or any(
+                getattr(binding, field, None) is not None
+                for field in (
+                    "family_planner_selection",
+                    "initial_planner_selection",
+                    "safe_planner_selection",
+                    "purchase_selection",
+                )
+            )
+        ):
+            raise HealthVisionError("source_invalidated", "个人目标选择不属于唯一普通分析模式", 410)
+        await self.validate_personal_target_runs(binding)
+        if conversation.agent_id == PURCHASE_SLUG or getattr(binding, "purchase_selection", None) is not None:
+            from yuxi.services.health_purchase_service import authorize_purchase_binding, validate_purchase_history
+
+            if conversation.agent_id != PURCHASE_SLUG:
+                raise HealthVisionError("source_invalidated", "采购选择不属于采购线程", 410)
+            await authorize_purchase_binding(self.session, binding)
+            if preview_history:
+                await validate_purchase_history(self.session, binding)
+            return binding
         if preview_history and getattr(binding, "safe_planner_selection", None) is None:
             had_safe_history = await self.session.scalar(
                 select(
@@ -168,6 +195,12 @@ class HealthConsultationRepository:
 
             feedback_repo = HealthDialogFeedbackRepository(self.session)
             selection = await feedback_repo.selection(binding)
+            if target_selection is not None:
+                from yuxi.services.health_agent_personal_target_service import authorize_personal_target_binding
+
+                if selection is not None:
+                    raise HealthVisionError("source_invalidated", "反馈模式不能沿用个人目标选择", 410)
+                await authorize_personal_target_binding(self.session, binding)
             if selection is not None:
                 await feedback_repo.validate_history(uid, binding, selection)
             else:
@@ -177,6 +210,26 @@ class HealthConsultationRepository:
 
             await HealthQualityRepository(self.session).validate_history(uid, binding)
         return binding
+
+    async def validate_personal_target_runs(self, binding):
+        """整线程的派生Run始终依赖固定选择，省略目标工具也不能移除依赖。"""
+        from yuxi.services.health_nutrition_service import input_fingerprint
+
+        selected = getattr(binding, "personal_target_selection", None)
+        target_hash = AgentRun.input_payload["health_processing"]["personal_target_selection_hash"].as_string()
+        condition = target_hash.is_not(None)
+        if selected is not None:
+            condition = or_(
+                target_hash.is_(None),
+                target_hash != input_fingerprint(selected),
+                AgentRun.uid != binding.actor_uid,
+                AgentRun.agent_slug != ANALYST_SLUG,
+            )
+        invalid = await self.session.scalar(
+            select(AgentRun.id).where(AgentRun.conversation_id == binding.conversation_id, condition).limit(1)
+        )
+        if invalid is not None:
+            raise HealthVisionError("source_invalidated", "分析运行的固定个人目标选择已丢失或变更", 410)
 
     async def require_attempt(self, context, *, lock=False):
         """工具与模型调用须属于当前有效 worker attempt，不接受模型身份参数。"""

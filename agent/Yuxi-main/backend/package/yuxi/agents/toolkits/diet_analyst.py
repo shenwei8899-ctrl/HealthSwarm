@@ -46,6 +46,14 @@ async def analyze_confirmed_period(period_days: int, end_date, runtime: ToolRunt
     return await read_period_analysis(None, None, period, context=runtime.context)
 
 
+@tool(category="health", display_name="当前明确绑定的批准个人目标", args_schema=HealthReadInput)
+async def get_bound_personal_targets(runtime: ToolRuntime) -> dict:
+    """只读用户明确绑定的当前目标；不计算记录窗口差额、达标或趋势。"""
+    from yuxi.services.health_agent_personal_target_service import bound_personal_targets
+
+    return await bound_personal_targets(runtime.context)
+
+
 @tool(category="health", display_name="用户所选餐次反馈上下文", args_schema=HealthReadInput)
 async def get_selected_meal_feedback(runtime: ToolRuntime) -> dict:
     """读取用户明确选择的餐次及当前反馈版本。"""

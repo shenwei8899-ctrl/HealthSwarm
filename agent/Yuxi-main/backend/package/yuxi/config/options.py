@@ -236,6 +236,7 @@ health_vision_opts = Option(
             {"key": "meal_plan_model", "label": "基础配餐模型", "type": "model"},
             {"key": "diet_analysis_model", "label": "饮食分析模型", "type": "model"},
             {"key": "quality_review_model", "label": "质量检查模型", "type": "model"},
+            {"key": "purchase_model", "label": "采购需求模型", "type": "model"},
             {"key": "policy_version", "label": "已审批处理政策版本", "type": "text"},
             {"key": "approved_report_processor", "label": "报告处理配置审批指纹", "type": "text"},
             {"key": "approved_meal_processor", "label": "饮食处理配置审批指纹", "type": "text"},
@@ -243,6 +244,7 @@ health_vision_opts = Option(
             {"key": "approved_meal_plan_processor", "label": "配餐处理配置审批指纹", "type": "text"},
             {"key": "approved_diet_analysis_processor", "label": "分析处理配置审批指纹", "type": "text"},
             {"key": "approved_quality_review_processor", "label": "质量检查处理配置审批指纹", "type": "text"},
+            {"key": "approved_purchase_processor", "label": "采购处理配置审批指纹", "type": "text"},
         ],
     },
 )

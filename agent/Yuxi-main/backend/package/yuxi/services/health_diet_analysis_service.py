@@ -57,7 +57,7 @@ def analyze_confirmed_meal(record, confirmation):
         findings.append("存在食物、份量或营养缺失；未知值保持空，不以零代替，也不按已知部分判断整餐达标。")
     if nutrition["estimated"]:
         findings.append("本餐含估算份量或配方营养，确认记录不代表精确实测。")
-    findings.append("个人目标和专业规则尚未接入，本结果不判断营养是否达标或疾病适用性。")
+    findings.append("本次确认记录未应用个人目标，不判断营养是否达标或疾病适用性。")
     return {
         **ANALYSIS_BOUNDARY,
         "result_type": "diet_analysis",
@@ -177,7 +177,7 @@ def analyze_confirmed_period(member_id, period, sources, feedback, invalidated=0
             "status": "rules_not_ready",
             "direction": None,
             "rule_version": None,
-            "reason": "趋势分类、最低样本及个人目标尚未批准；当前仅展示统计事实。",
+            "reason": "趋势分类、最低样本与历史目标适用规则尚未批准；当前仅展示统计事实。",
         },
         "findings": [
             "记录总和仅代表已确认记录；已知部分之和单列，不填补缺失值或未记录天数。",
@@ -290,19 +290,26 @@ async def analyst_final_result(context, text):
         raise HealthVisionError("analyst_output_invalid", "普通分析不能发布反馈结果", 422)
     if await is_feedback_conversation(context):
         return await feedback_final_result(context, text)
-    if answer.questions:
-        async with pg_manager.get_async_session_context() as session:
-            await require_analyst_run(session, context)
-        return {
-            "result_type": "diet_analysis",
-            "status": "needs_input",
-            "questions": answer.questions,
-            **ANALYSIS_BOUNDARY,
-        }
-    if answer.period_days is not None:
-        period = DietAnalysisPeriod(period_days=answer.period_days, end_date=answer.end_date)
-        return await read_period_analysis(None, None, period, context=context)
-    return await read_diet_analysis(None, None, answer, context=context)
+    from yuxi.services.health_agent_personal_target_service import attach_current_personal_targets
+
+    async with pg_manager.get_async_session_context() as session:
+        binding = await require_analyst_run(session, context)
+        if answer.questions:
+            result = {
+                "result_type": "diet_analysis",
+                "status": "needs_input",
+                "questions": answer.questions,
+                **ANALYSIS_BOUNDARY,
+            }
+        elif answer.period_days is not None:
+            period = DietAnalysisPeriod(period_days=answer.period_days, end_date=answer.end_date)
+            result = await period_analysis_in_session(session, context.uid, binding.member_id, period)
+        else:
+            record, confirmation = await HealthDietAnalysisRepository(session).source(
+                context.uid, binding.member_id, str(answer.record_id), answer.source_version
+            )
+            result = analyze_confirmed_meal(record, confirmation)
+        return attach_current_personal_targets(binding, result)
 
 
 async def validate_analyst_publication(session, run, content):
@@ -355,5 +362,8 @@ async def validate_analyst_publication(session, run, content):
             authoritative = analyze_confirmed_meal(record, confirmation)
     except (KeyError, IndexError, TypeError, ValueError):
         raise HealthVisionError("analyst_output_invalid", "最终分析无法核对", 422) from None
+    from yuxi.services.health_agent_personal_target_service import attach_current_personal_targets
+
+    authoritative = attach_current_personal_targets(binding, authoritative)
     if payload != authoritative:
         raise HealthVisionError("analyst_output_invalid", "最终分析与当前确认快照不一致", 422)

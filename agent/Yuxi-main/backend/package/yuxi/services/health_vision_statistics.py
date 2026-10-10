@@ -5,6 +5,7 @@ from datetime import timedelta
 from math import ceil
 
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
+from yuxi.services.health_vision_usage import summarize_vision_usage
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.utils.datetime_utils import format_utc_datetime, utc_now_naive
 
@@ -120,4 +121,5 @@ def summarize_vision_statistics(tasks: list, reviews: list, kind: str) -> dict:
             "portion_sources": dict(portions),
         },
         "cost": {"amount": None, "reason": "缺少供应商计费账本及批准单价，费用未知"},
+        "provider_usage": summarize_vision_usage(tasks),
     }

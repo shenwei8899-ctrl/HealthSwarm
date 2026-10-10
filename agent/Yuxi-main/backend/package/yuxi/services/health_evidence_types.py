@@ -1,11 +1,39 @@
 """审核证据发布契约；只支持通用科普，不授权个人临床方案。"""
 
 from datetime import datetime
+from typing import Literal
+from uuid import UUID
 
 from pydantic import Field, model_validator
 
 from yuxi.services.health_vision_types import HealthDTO
 from yuxi.utils.datetime_utils import utc_now_naive
+
+
+class NutritionCitation(HealthDTO):
+    """只投影最终答复实际采用的审核科普片段及来源。"""
+
+    citation_id: UUID
+    evidence_id: UUID
+    title: str
+    content: str
+    source_ref: str
+    source_version: str
+    reviewed_at: datetime
+    scope: Literal["general_education"]
+
+
+class NutritionCitationsResult(HealthDTO):
+    """当前授权下的同Run引用结果，不携带咨询正文或工具审计。"""
+
+    result_type: Literal["nutrition_citations"] = "nutrition_citations"
+    status: Literal["cited", "not_cited"]
+    agent_run_id: str
+    request_id: str | None
+    thread_id: UUID
+    member_id: UUID
+    final_message_id: int
+    citations: list[NutritionCitation]
 
 
 class NutritionEvidenceInput(HealthDTO):

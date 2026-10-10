@@ -1,5 +1,9 @@
 # 与仓库根 docker-compose.yml 合并；模型重放在 api 内监听 8766。
 services:
+  postgres:
+    healthcheck:
+      # initdb 的临时服务只开放Unix socket；迁移器需要真实TCP就绪。
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-health_consultation_e2e} || exit 1"]
   api:
     image: ${YUXI_TEST_API_IMAGE:-yuxi-api:0.7.3}
     ports: !override
@@ -10,6 +14,8 @@ services:
     image: ${YUXI_TEST_API_IMAGE:-yuxi-api:0.7.3}
   sandbox-provisioner:
     image: ${YUXI_TEST_PROVISIONER_IMAGE:-yuxi-sandbox-provisioner:0.7.3}
+  minio:
+    image: ${YUXI_TEST_MINIO_IMAGE:-yuxi-minio:RELEASE.2023-03-20T20-16-18Z}
 networks:
   app-network:
     internal: true

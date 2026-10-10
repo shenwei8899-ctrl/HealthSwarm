@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from langchain_core.messages import AIMessage, ToolMessage
 
 from test.e2e.test_health_consultation_e2e import isolated_health, collect_sse, drain_requests  # noqa: F401
@@ -22,7 +22,13 @@ from yuxi.repositories.conversation_repository import ConversationRepository
 from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_business import TOOL_AUDIT_MESSAGE_TYPE, AgentRun, AgentRunRequest, Message
+from yuxi.storage.postgres.models_business import (
+    AUDIT_MESSAGE_TYPES,
+    TOOL_AUDIT_MESSAGE_TYPE,
+    AgentRun,
+    AgentRunRequest,
+    Message,
+)
 from yuxi.storage.postgres.models_health import DietLog, VisionDraft
 from yuxi.utils.datetime_utils import utc_now_naive
 
@@ -224,7 +230,13 @@ async def test_analysis_withdrawal_blocks_publication_and_all_successful_audits(
             persisted = await session.get(AgentRun, run_id)
             assert persisted.status == "running" and persisted.output_message_id is None
             assert (
-                await session.scalar(select(Message).where(Message.run_id == run_id, Message.role == "assistant"))
+                await session.scalar(
+                    select(Message).where(
+                        Message.run_id == run_id,
+                        Message.role == "assistant",
+                        or_(Message.message_type.is_(None), Message.message_type.notin_(AUDIT_MESSAGE_TYPES)),
+                    )
+                )
                 is None
             )
     finally:
@@ -327,8 +339,23 @@ async def test_analysis_worker_independent_consent_and_authoritative_result(isol
             )
             async with pg_manager.get_async_session_context() as session:
                 run = await session.get(AgentRun, run_id)
-                message = await session.get(Message, run.output_message_id)
-                assert message.run_id == run_id and message.id == result.json()["final_message_id"]
+                message = await session.get(Message, run.output_message_id) if run.output_message_id else None
+                if mode in {"valid", "questions", "period"}:
+                    assert message is not None
+                    assert message.run_id == run_id and message.id == result.json()["final_message_id"]
+                else:
+                    assert run.output_message_id is None and message is None
+                    assert result.json()["final_message_id"] is None and not result.json()["output"]
+                    assert (
+                        await session.scalar(
+                            select(Message).where(
+                                Message.run_id == run_id,
+                                Message.role == "assistant",
+                                or_(Message.message_type.is_(None), Message.message_type.notin_(AUDIT_MESSAGE_TYPES)),
+                            )
+                        )
+                        is None
+                    )
                 if mode == "valid":
                     valid_run = run_id
                     final = json.loads(message.content)

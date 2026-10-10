@@ -68,7 +68,11 @@ async def test_actual_model_entry_rejects_changed_body_with_real_source_identity
     monkeypatch.setattr(
         service.HealthConsultationRepository,
         "require_attempt",
-        AsyncMock(return_value=SimpleNamespace(input_payload={"health_processing": {"approved": True}})),
+        AsyncMock(
+            return_value=SimpleNamespace(
+                agent_slug="health-consultation", input_payload={"health_processing": {"approved": True}}
+            )
+        ),
     )
     monkeypatch.setattr(service, "require_consultation", AsyncMock(return_value=(binding, {})))
     monkeypatch.setattr(

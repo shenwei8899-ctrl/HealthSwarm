@@ -133,7 +133,11 @@ def checkpoint_guard(monkeypatch):
     monkeypatch.setattr(
         HealthConsultationRepository,
         "require_attempt",
-        AsyncMock(return_value=SimpleNamespace(input_payload={"health_processing": snapshot})),
+        AsyncMock(
+            return_value=SimpleNamespace(
+                agent_slug="health-consultation", input_payload={"health_processing": snapshot}
+            )
+        ),
     )
     monkeypatch.setattr(
         health_consultation_service, "require_consultation", AsyncMock(return_value=(binding, snapshot))
@@ -196,10 +200,24 @@ async def test_blood_lipids_error_checkpoint_is_not_forwarded_as_verified_source
 async def test_derived_consultation_without_new_tool_and_final_publication_recheck_lipids(monkeypatch):
     """整线程血脂引用在只读与最终发布锁边界重验，派生轮不读工具也拒绝更正来源。"""
     binding = SimpleNamespace(
-        member_id="health-self", conversation_id=7, initial_planner_selection=None, family_planner_selection=None
+        member_id="health-self",
+        conversation_id=7,
+        initial_planner_selection=None,
+        family_planner_selection=None,
+        personal_target_selection=None,
     )
     conversation = SimpleNamespace(agent_id="health-consultation")
-    session = SimpleNamespace(scalar=AsyncMock(return_value=binding), get=AsyncMock(return_value=conversation))
+
+    async def scalar(statement):
+        """绑定查询返回当前行；精确目标依赖查询没有匹配Run。"""
+        if "personal_target_selection_hash" in statement.compile().params.values():
+            assert "agent_runs.conversation_id" in str(statement)
+            assert binding.conversation_id in statement.compile().params.values()
+            return None
+        assert "FROM health_consultation JOIN conversations" in str(statement)
+        return binding
+
+    session = SimpleNamespace(scalar=AsyncMock(side_effect=scalar), get=AsyncMock(return_value=conversation))
     monkeypatch.setattr(health_consultation_service.HealthVisionRepository, "authorize", AsyncMock())
     guards = [AsyncMock() for _ in range(5)]
     for repository, guard in zip(
@@ -231,7 +249,10 @@ async def test_derived_consultation_without_new_tool_and_final_publication_reche
     monkeypatch.setattr(health_consultation_service.pg_manager, "get_async_session_context", transaction)
     monkeypatch.setattr(health_consultation_service, "require_consultation", require)
     run = SimpleNamespace(
-        uid="actor", conversation_thread_id="thread", input_payload={"health_processing": {"processor": "approved"}}
+        uid="actor",
+        agent_slug="health-consultation",
+        conversation_thread_id="thread",
+        input_payload={"health_processing": {"processor": "approved"}},
     )
     monkeypatch.setattr(HealthConsultationRepository, "require_attempt", AsyncMock(return_value=run))
     guards[-1].side_effect = HealthVisionError("blood_lipids_source_changed", "合成LDL更正", 410)
@@ -303,7 +324,7 @@ async def test_actual_graph_binds_and_executes_fixed_blood_lipids_tool(monkeypat
     read.assert_awaited_once_with(context)
     assert tool_lists and all("get_member_blood_lipids_records" in tools for tools in tool_lists)
     assert all(set(tools) == set(health_consultation_service.HEALTH_TOOL_NAMES) for tools in tool_lists)
-    assert system_prompts and all('version: "2026.10.08.6"' in prompt for prompt in system_prompts)
+    assert system_prompts and all('version: "2026.10.10.1"' in prompt for prompt in system_prompts)
     tool_result = next(message for message in result["messages"] if message.type == "tool")
     assert tool_result.name == "get_member_blood_lipids_records"
     assert json.loads(tool_result.content) == read.return_value

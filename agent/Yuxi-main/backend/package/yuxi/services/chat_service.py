@@ -17,6 +17,7 @@ from yuxi.repositories.health_consultation_repository import (
     PLANNER_SLUG,
     ANALYST_SLUG,
     QUALITY_SLUG,
+    PURCHASE_SLUG,
     STRUCTURED_HEALTH_AGENTS,
 )
 import asyncio
@@ -56,7 +57,7 @@ from yuxi.services.subagent_run_service import serialize_subagent_run_state
 from yuxi.services.tool_message_audit_service import ToolMessageAuditCollector
 from yuxi.services.workdir_service import resolve_conversation_workdir_path
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_business import MODEL_AUDIT_MESSAGE_TYPE, Agent, AgentRun, Conversation, User
+from yuxi.storage.postgres.models_business import MODEL_AUDIT_MESSAGE_TYPE, Agent, Conversation, User
 from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.utils.logging_config import logger
 from yuxi.utils.question_utils import (
@@ -570,33 +571,11 @@ async def save_partial_message(
             if locked_run.agent_slug in STRUCTURED_HEALTH_AGENTS and not interrupt_run:
                 return None  # 结构化角色的失败由Run错误表达，未经核验的正文不进入普通历史。
             if locked_run.agent_slug == "health-consultation":
-                from sqlalchemy import exists, or_, select
-                from yuxi.storage.postgres.models_health import (
-                    HealthFamilyProfileUse,
-                    HealthWeightUse,
-                    HealthBloodPressureUse,
-                    HealthBloodGlucoseUse,
-                    HealthBloodLipidsUse,
-                )
-
-                if await conv_repo.db.scalar(
-                    select(AgentRun.id)
-                    .where(
-                        AgentRun.conversation_id == locked_run.conversation_id,
-                        or_(
-                            exists().where(HealthFamilyProfileUse.run_id == AgentRun.id),
-                            exists().where(HealthWeightUse.run_id == AgentRun.id),
-                            exists().where(HealthBloodPressureUse.run_id == AgentRun.id),
-                            exists().where(HealthBloodGlucoseUse.run_id == AgentRun.id),
-                            exists().where(HealthBloodLipidsUse.run_id == AgentRun.id),
-                        ),
-                    )
-                    .limit(1)
-                ):
-                    if not interrupt_run:
-                        return None  # 使用正式来源的失败只保留私有审计，发布须走来源复核。
-                    content = ""
-                    extra_metadata = {"error_type": error_type, "is_error": True, "error_message": "咨询已中断"}
+                if not interrupt_run:
+                    return None  # 所有咨询失败正文均未经过完成发布校验，只保留受控Run错误与私有审计。
+                content = ""
+                error_type, error_message = "interrupted", "咨询已中断"
+                extra_metadata = {"error_type": error_type, "is_error": True, "error_message": error_message}
 
         message = await conv_repo.add_message_by_thread_id(
             thread_id=thread_id,
@@ -852,6 +831,10 @@ async def save_messages_from_langgraph_state(
                     from yuxi.services.health_family_profile_service import validate_profile_publication
 
                     await validate_profile_publication(conv_repo.db, locked_run)
+                    if complete_run:
+                        from yuxi.services.health_evidence_service import validate_evidence_publication
+
+                        await validate_evidence_publication(conv_repo.db, locked_run, last_ai_message.content)
                 if complete_run and locked_run.agent_slug == PLANNER_SLUG:
                     from yuxi.services.health_family_planner_service import validate_family_planner_publication
 
@@ -870,6 +853,10 @@ async def save_messages_from_langgraph_state(
                     from yuxi.services.health_quality_service import validate_quality_publication
 
                     await validate_quality_publication(conv_repo.db, locked_run, last_ai_message.content)
+                if complete_run and locked_run.agent_slug == PURCHASE_SLUG:
+                    from yuxi.services.health_purchase_service import validate_purchase_publication
+
+                    await validate_purchase_publication(conv_repo.db, locked_run, last_ai_message.content)
                 has_tool_calls = bool((last_ai_message.extra_metadata or {}).get("tool_calls"))
                 should_publish = (
                     last_ai_message.message_type != MODEL_AUDIT_MESSAGE_TYPE
@@ -1690,7 +1677,16 @@ async def get_agent_state_view(
                         logger.error(f"子智能体运行记录格式异常: thread_id={thread_id}, run_id={latest_run.id}, {exc}")
                         raise HTTPException(status_code=500, detail="子智能体运行记录格式异常") from exc
         if include_messages:
-            response["messages"] = _serialize_state_messages(values)
+            if conversation.agent_id == "health-consultation":
+                from yuxi.services.conversation_service import get_thread_history_view
+
+                public_history = await get_thread_history_view(thread_id=thread_id, current_uid=current_uid, db=db)
+                response["messages"] = [
+                    {"id": str(message["id"]), "type": message["type"], "content": message["content"]}
+                    for message in public_history["history"]
+                ]
+            else:
+                response["messages"] = _serialize_state_messages(values)
         return response
 
     # 子智能体线程在创建时必然同时写入子对话与线程关系（见 SubagentRunService.start），

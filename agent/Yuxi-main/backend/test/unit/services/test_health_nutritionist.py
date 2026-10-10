@@ -45,8 +45,17 @@ def test_fixed_skills_and_roles_do_not_publish_unimplemented_agents():
     assert roles["health-profile"]["owner"] == "健康档案服务"
     assert roles["health-meal-planner"]["status"] == "partial"
     assert roles["health-meal-planner"]["entry_agent"] == "health-meal-planner"
-    for name in ("health-purchase", "health-glucose"):
-        assert roles[name]["status"] == "not_implemented" and "entry_agent" not in roles[name]
+    purchase = roles["health-purchase"]
+    assert purchase["status"] == "partial" and purchase["entry_agent"] == "health-purchase"
+    assert purchase["skills"] == ["family-purchase"]
+    assert "明确同状态库存扣减" in purchase["implemented_scope"] and "当前Run权威回执" in purchase["implemented_scope"]
+    assert purchase["missing"] == [
+        "采购生产用途审批",
+        "商品毛重与跨状态换算",
+        "SKU及包装映射",
+        "库存配送价格及商城交易接口",
+    ]
+    assert roles["health-glucose"]["status"] == "not_implemented" and "entry_agent" not in roles["health-glucose"]
 
 
 def test_fixed_skill_snapshot_records_published_identity_and_exact_content(monkeypatch):
@@ -66,7 +75,7 @@ def test_fixed_skill_snapshot_records_published_identity_and_exact_content(monke
     assert build_skill_manifest_entries({"skills": ["family-nutritionist"]}, snapshot) == [
         {
             "slug": "family-nutritionist",
-            "version": "2026.10.08.6",
+            "version": "2026.10.10.1",
             "content_hash": spec["content_hash"],
             "preload_content_hash": hashlib.sha256(content.encode()).hexdigest(),
         }

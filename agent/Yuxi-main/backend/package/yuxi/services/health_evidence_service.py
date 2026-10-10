@@ -8,13 +8,81 @@ from uuid import uuid4
 from langchain_core.messages import HumanMessage, ToolMessage
 from sqlalchemy import select
 
-from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
+from yuxi.repositories.agent_run_repository import AgentRunRepository
+from yuxi.repositories.health_consultation_repository import CONSULTATION_SLUG, HealthConsultationRepository
 from yuxi.repositories.health_evidence_repository import HealthEvidenceRepository
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import User
 from yuxi.storage.postgres.models_health import NutritionEvidence, NutritionEvidenceCitation
 from yuxi.utils.datetime_utils import utc_now_naive
+
+
+async def read_consultation_citations(uid, run_id):
+    """重验当前成员授权与完成答复，只公开该答复实际采用的本Run引用。"""
+    async with pg_manager.get_async_session_context() as session:
+        run = await AgentRunRepository(session).get_run_for_user(run_id, uid)
+        if run is None or run.agent_slug != CONSULTATION_SLUG:
+            raise HealthVisionError("not_found", "专属咨询运行不存在或无权访问", 404)
+        if run.status != "completed":
+            raise HealthVisionError("answer_not_completed", "仅已完成的咨询答复可读取引用", 409)
+        binding = await HealthConsultationRepository(session).authorize(
+            uid, run.conversation_thread_id, lock=True, preview_history=True
+        )
+        if binding.conversation_id != run.conversation_id or binding.actor_uid != uid:
+            raise HealthVisionError("not_found", "专属咨询运行与成员绑定不符", 404)
+        repo = HealthEvidenceRepository(session)
+        answer = await repo.final_answer(run)
+        ids = answer_citation_ids(answer.content)
+        citations = await repo.validate_citations(ids, binding, uid, run_id=run.id)
+        return {
+            "result_type": "nutrition_citations",
+            "status": "cited" if ids else "not_cited",
+            "agent_run_id": run.id,
+            "request_id": run.request_id,
+            "thread_id": run.conversation_thread_id,
+            "member_id": binding.member_id,
+            "final_message_id": answer.id,
+            "citations": [citations[citation_id] for citation_id in ids],
+        }
+
+
+async def validate_evidence_publication(session, run, content):
+    """最终发布事务锁住实际采用的当前来源，图校验不能替代提交边界。"""
+    from yuxi.services.health_consultation_service import require_consultation
+
+    snapshot = (run.input_payload or {}).get("health_processing")
+    if not snapshot:
+        raise HealthVisionError("policy_changed", "咨询缺少处理审批快照", 409)
+    binding, _ = await require_consultation(session, run.uid, run.conversation_thread_id, expected=snapshot, lock=True)
+    if binding.conversation_id != run.conversation_id or binding.actor_uid != run.uid:
+        raise HealthVisionError("citation_invalid", "引用与当前咨询线程不符", 409)
+    ids = answer_citation_ids(content)
+    if not ids:
+        retrieved = await session.scalar(
+            select(NutritionEvidenceCitation.id).where(NutritionEvidenceCitation.run_id == run.id).limit(1)
+        )
+        if retrieved is not None:
+            raise HealthVisionError("citation_invalid", "答复缺少有效的本轮证据引用", 409)
+        return
+    await HealthEvidenceRepository(session).validate_citations(ids, binding, run.uid, run_id=run.id, lock=True)
+
+
+async def read_public_consultation_answer(session, run, uid, *, binding=None):
+    """正文读取只校验权威最终回答实际采用的同Run来源，不扩大模型用途。"""
+    if run.agent_slug != CONSULTATION_SLUG or run.uid != uid or run.status != "completed":
+        raise HealthVisionError("answer_unavailable", "咨询缺少可公开的最终答复", 409)
+    if binding is None:
+        binding = await HealthConsultationRepository(session).authorize(
+            uid, run.conversation_thread_id, lock=True, preview_history=True
+        )
+    if binding.conversation_id != run.conversation_id or binding.actor_uid != uid:
+        raise HealthVisionError("not_found", "咨询运行与当前成员绑定不符", 404)
+    repo = HealthEvidenceRepository(session)
+    answer = await repo.final_answer(run)
+    ids = answer_citation_ids(answer.content)
+    await repo.validate_citations(ids, binding, uid, run_id=run.id, lock=True)
+    return answer
 
 
 async def require_evidence_admin(session, uid):
@@ -65,6 +133,8 @@ async def search_nutrition_evidence(context, query):
             session, context.uid, context.thread_id, context.model, expected=snapshot, lock=True
         )
         sources = await HealthEvidenceRepository(session).search(query)
+        # 后台纯索引结束后再次核对当前 attempt；取消或接管不能继续创建引用。
+        await HealthConsultationRepository(session).require_attempt(context)
         results = []
         for source in sources:
             if hashlib.sha256(source.content.encode()).hexdigest() != source.content_hash:
@@ -104,10 +174,8 @@ async def validate_nutrition_answer(context, content, messages):
                 retrieved = retrieved or bool(json.loads(message.content)["citations"])
             except (ValueError, TypeError, KeyError):
                 raise HealthVisionError("citation_invalid", "本次检索结果无法校验", 409) from None
-    if not isinstance(content, str):
-        raise HealthVisionError("answer_invalid", "营养咨询答复必须为文本", 409)
-    ids = re.findall(r"\[证据:([0-9a-f-]{36})\]", content)
-    if content.count("[证据:") != len(ids) or (retrieved and not ids):
+    ids = answer_citation_ids(content)
+    if retrieved and not ids:
         raise HealthVisionError("citation_invalid", "答复缺少有效的本轮证据引用", 409)
     if not ids:
         return
@@ -120,3 +188,13 @@ async def validate_nutrition_answer(context, content, messages):
             session, context.uid, context.thread_id, context.model, expected=snapshot, lock=True
         )
         await HealthEvidenceRepository(session).validate_citations(ids, binding, context.uid, run_id=run.id)
+
+
+def answer_citation_ids(content):
+    """按正文顺序取得规范UUID，格式异常拒绝，重复引用只保留一次。"""
+    if not isinstance(content, str):
+        raise HealthVisionError("answer_invalid", "营养咨询答复必须为文本", 409)
+    ids = re.findall(r"\[证据:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\]", content)
+    if content.count("[证据:") != len(ids):
+        raise HealthVisionError("citation_invalid", "答复包含无法校验的证据引用", 409)
+    return list(dict.fromkeys(ids))

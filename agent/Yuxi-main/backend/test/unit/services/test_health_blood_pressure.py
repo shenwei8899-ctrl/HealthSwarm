@@ -265,10 +265,24 @@ async def test_blood_pressure_checkpoint_guard_selects_own_repository(checkpoint
 async def test_consultation_and_final_publication_recheck_both_measurement_dependencies(monkeypatch):
     """真实authorize编排在只读和发布锁边界分别重验体重、血压和档案。"""
     binding = SimpleNamespace(
-        member_id="health-self", conversation_id=7, initial_planner_selection=None, family_planner_selection=None
+        member_id="health-self",
+        conversation_id=7,
+        initial_planner_selection=None,
+        family_planner_selection=None,
+        personal_target_selection=None,
     )
     conversation = SimpleNamespace(agent_id="health-consultation")
-    session = SimpleNamespace(scalar=AsyncMock(return_value=binding), get=AsyncMock(return_value=conversation))
+
+    async def scalar(statement):
+        """绑定查询返回当前行；精确目标依赖查询没有匹配Run。"""
+        if "personal_target_selection_hash" in statement.compile().params.values():
+            assert "agent_runs.conversation_id" in str(statement)
+            assert binding.conversation_id in statement.compile().params.values()
+            return None
+        assert "FROM health_consultation JOIN conversations" in str(statement)
+        return binding
+
+    session = SimpleNamespace(scalar=AsyncMock(side_effect=scalar), get=AsyncMock(return_value=conversation))
     monkeypatch.setattr(boundary.HealthVisionRepository, "authorize", AsyncMock())
     profile, weight, bp = AsyncMock(), AsyncMock(), AsyncMock()
     monkeypatch.setattr(HealthFamilyProfileRepository, "validate_history", profile)

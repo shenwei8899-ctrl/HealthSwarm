@@ -6,6 +6,7 @@ CONSULTATION_SKILLS = ("family-nutritionist",)
 PLANNER_SKILLS = ("family-meal-planner",)
 ANALYST_SKILLS = ("family-diet-analyst",)
 QUALITY_SKILLS = ("family-quality-review",)
+PURCHASE_SKILLS = ("family-purchase",)
 
 
 def consultation_skill_snapshot(skills=CONSULTATION_SKILLS):
@@ -57,9 +58,9 @@ def health_agent_roles():
                 "entry_agent": "health-consultation",
                 "skills": list(CONSULTATION_SKILLS),
                 "implemented_scope": (
-                    "成员咨询、本人确认家庭档案及独立体重/血压/血糖/血脂四项与确认记录读取、审核科普引用、成员自述记忆与每日消息摘要"
+                    "成员咨询、本人确认家庭档案及独立体重/血压/血糖/血脂四项与确认记录读取、审核科普本地检索与当前来源引用、成员自述记忆与每日消息摘要"
                 ),
-                "missing": ["完整营养安全档案联调", "审核知识数据", "次日餐次提议"],
+                "missing": ["完整营养安全档案联调", "审核知识数据", "咨询与配餐的跨用途协调契约"],
             },
             {
                 "role": "health-meal-planner",
@@ -69,7 +70,8 @@ def health_agent_roles():
                 "skills": list(PLANNER_SKILLS),
                 "implemented_scope": (
                     "单成员三餐草稿、发布菜谱营养计算、显式保存、换菜重算及版本历史；"
-                    "次日预览提议登记、当前专业批准的正式采用、明确替代/取消及来源失效；"
+                    "次日预览提议登记、用户明确选择当前普通配餐Run/Request/最终消息的次日提议桥接；"
+                    "当前专业批准的正式采用、明确替代/取消及来源失效；"
                     "批准类型与营养差异的三候选、单菜安全换菜及新版本检查收据；"
                     "批准目录的整份三餐共同修复预览与用户确认重生成后端；"
                     "当前批准个人目标、本人明确选定实测体重的版本来源、家庭逐餐参与和逐人份量/质量检查；"
@@ -88,7 +90,7 @@ def health_agent_roles():
                     "21天安全重算",
                     "按批准专业来源初次配餐Agent页面",
                     "未付采购和做法联动",
-                    "日终及Agent次日提议联动",
+                    "自动日终触发及家庭/初始/安全模式的次日提议契约",
                     "次日提议/采用页面及小程序",
                 ],
             },
@@ -100,12 +102,13 @@ def health_agent_roles():
                 "skills": list(ANALYST_SKILLS),
                 "implemented_scope": (
                     "有效确认单餐与1/7/30天饮食及反馈事实分析、逐日覆盖与来源版本、营养缺失和已知和分离；"
-                    "用户选餐后的本轮原文反馈写入、幂等修订及消息/Run来源"
+                    "用户选餐后的本轮原文反馈写入、幂等修订及消息/Run来源；"
+                    "用户明确绑定的当前批准个人目标只读独立投影，不应用于记录窗口"
                 ),
                 "missing": [
                     "批准的趋势评判规则",
-                    "持久派生刷新",
-                    "个人目标与专业规则",
+                    "自动派生刷新触发及保留契约",
+                    "生产批准的专业规则与目标数据、历史目标适用及专业判读规则",
                     "分析及选餐反馈页面",
                     "真实模型质量验收",
                 ],
@@ -119,8 +122,13 @@ def health_agent_roles():
             {
                 "role": "health-purchase",
                 "name": "采购助手",
-                "status": "not_implemented",
-                "missing": ["餐单汇总", "库存扣减", "采购清单", "商城映射"],
+                "status": "partial",
+                "entry_agent": "health-purchase",
+                "skills": list(PURCHASE_SKILLS),
+                "implemented_scope": (
+                    "当前有效采用的个人及家庭食材可食克数汇总、用户明确同状态库存扣减、独立采购用途及当前Run权威回执"
+                ),
+                "missing": ["采购生产用途审批", "商品毛重与跨状态换算", "SKU及包装映射", "库存配送价格及商城交易接口"],
             },
             {
                 "role": "health-quality",
@@ -135,10 +143,11 @@ def health_agent_roles():
                     "家庭逐人目标/配料/覆盖范围的质量与专业状态、安全共同改版及末次检查原子提交；"
                     "家庭正式采用的全部来源门禁、共同失效与逐成员读取；"
                     "参与调整的新成员质量检查及当前/历史成员统一授权；"
-                    "本人选定实测体重与专业投影重验，更正/作废同事务失效旧审核和采用"
+                    "本人选定实测体重与专业投影重验，更正/作废同事务失效旧审核和采用；"
+                    "采购消费者使用当前有效采用及全员专业来源门禁"
                 ),
                 "missing": [
-                    "21天/采购消费者接入",
+                    "21天消费者接入",
                     "审核页面",
                     "专业生产规则及真实模型验收",
                 ],

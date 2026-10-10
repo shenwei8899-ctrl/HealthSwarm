@@ -62,7 +62,7 @@ class GrantInput(HealthDTO):
 
 
 class ConsentInput(HealthDTO):
-    purpose: Literal["report", "meal", "consultation", "meal_plan", "diet_analysis", "quality_review"]
+    purpose: Literal["report", "meal", "consultation", "meal_plan", "diet_analysis", "quality_review", "purchase"]
     accepted: bool
     processor: str = Field(min_length=1, max_length=160)
     policy_version: str = Field(min_length=1, max_length=80)
@@ -428,6 +428,7 @@ class VisionConfigurationInput(HealthDTO):
     meal_plan_model: str = Field(default="", max_length=160)
     diet_analysis_model: str = Field(default="", max_length=160)
     quality_review_model: str = Field(default="", max_length=160)
+    purchase_model: str = Field(default="", max_length=160)
     policy_version: str = Field(default="", max_length=80)
     cloud_processing_reviewed: bool = False
 

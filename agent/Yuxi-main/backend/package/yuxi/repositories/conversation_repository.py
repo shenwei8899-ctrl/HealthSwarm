@@ -5,6 +5,7 @@
 from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS, STRUCTURED_HEALTH_AGENTS
 import json
 import uuid as uuid_lib
+from collections.abc import AsyncIterator
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -444,6 +445,11 @@ class ConversationRepository:
             .options(
                 load_only(
                     AgentRun.id,
+                    AgentRun.uid,
+                    AgentRun.agent_slug,
+                    AgentRun.conversation_id,
+                    AgentRun.conversation_thread_id,
+                    AgentRun.output_message_id,
                     AgentRun.request_id,
                     AgentRun.run_type,
                     AgentRun.created_by_run_id,
@@ -550,6 +556,7 @@ class ConversationRepository:
         limit: int = 20,
         offset: int = 0,
         exclude_sources: tuple[str, ...] = (),
+        exclude_agent_ids: tuple[str, ...] = (),
     ) -> tuple[list[dict], bool]:
         normalized_query = str(query or "").strip()
         if not normalized_query:
@@ -561,6 +568,8 @@ class ConversationRepository:
         ]
         if agent_id:
             conversation_conditions.append(Conversation.agent_id == agent_id)
+        if exclude_agent_ids:
+            conversation_conditions.append(Conversation.agent_id.notin_(exclude_agent_ids))
         conversation_conditions.extend(self._exclude_source_conditions(exclude_sources))
 
         message_conditions = self._message_search_conditions(normalized_query)
@@ -616,6 +625,29 @@ class ConversationRepository:
             )
 
         return items, has_more
+
+    async def iter_consultation_search_matches(
+        self, *, uid: str, query: str, exclude_sources: tuple[str, ...] = ()
+    ) -> AsyncIterator[tuple[Conversation, Message]]:
+        """分批读取咨询搜索候选，公开性校验由 service 在计数和分页前执行。"""
+        result = await self.db.stream(
+            select(Conversation, Message)
+            .join(Message, Message.conversation_id == Conversation.id)
+            .where(
+                Conversation.uid == str(uid),
+                Conversation.status == "active",
+                Conversation.agent_id == "health-consultation",
+                *self._exclude_source_conditions(exclude_sources),
+                *self._message_search_conditions(query),
+            )
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .execution_options(yield_per=100, populate_existing=True)
+        )
+        try:
+            async for conversation, message in result:
+                yield conversation, message
+        finally:
+            await result.close()
 
     async def search_memory_messages(self, *, uid: str, query: str, limit: int = 5) -> dict:
         """搜索当前用户可见的普通主 Agent 历史消息。"""

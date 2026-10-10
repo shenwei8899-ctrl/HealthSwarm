@@ -71,36 +71,44 @@ async def proposal_result(session, uid, row):
 async def create_next_day_proposal(uid, member_id, data):
     """只登记今天提出的明日预览，不创建餐单或采用记录。"""
     async with pg_manager.get_async_session_context() as session:
-        repo = HealthPlanAdoptionRepository(session)
-        await repo.lock_request(uid, str(data.client_request_id), proposal=True)
-        preview = await HealthMealPlanRepository(session).preview(uid, str(data.preview_id), lock=True)
-        require_single_member_plan(preview)
-        if preview.member_id != member_id:
-            raise HealthVisionError("not_found", "预览不属于此成员", 404)
-        fingerprint = input_fingerprint({"member_id": member_id, **data.model_dump(mode="json")})
-        existing = await repo.receipt(uid, str(data.client_request_id), proposal=True)
-        if existing is not None:
-            if existing.fingerprint != fingerprint:
-                raise HealthVisionError("request_conflict", "同一请求不能改变次日提议", 409)
-            return await proposal_result(session, uid, existing)
-        spec = MealPlanSpec.model_validate(preview.spec)
-        if data.source_date != business_date() or spec.plan_date != data.source_date + timedelta(days=1):
-            raise HealthVisionError("proposal_date_invalid", "次日提议须以北京时间今天为来源、明天为计划日", 409)
-        row = HealthNextDayProposal(
-            id=str(uuid4()),
-            actor_uid=uid,
-            member_id=member_id,
-            preview_id=preview.id,
-            source_date=data.source_date,
-            plan_date=spec.plan_date,
-            request_id=str(data.client_request_id),
-            fingerprint=fingerprint,
-            source_hash=await proposal_source(session, preview),
-            snapshot=deepcopy(preview.snapshot),
-        )
-        session.add(row)
-        await session.flush()
-        return await proposal_result(session, uid, row)
+        return await create_next_day_proposal_in_session(session, uid, member_id, data)
+
+
+async def create_next_day_proposal_in_session(session, uid, member_id, data, *, agent_origin=None):
+    """桥接来源校验与登记共用事务，保留手工登记原有幂等指纹。"""
+    repo = HealthPlanAdoptionRepository(session)
+    await repo.lock_request(uid, str(data.client_request_id), proposal=True)
+    preview = await HealthMealPlanRepository(session).preview(uid, str(data.preview_id), lock=True)
+    require_single_member_plan(preview)
+    if preview.member_id != member_id:
+        raise HealthVisionError("not_found", "预览不属于此成员", 404)
+    fingerprint_input = {"member_id": member_id, **data.model_dump(mode="json")}
+    if agent_origin is not None:
+        fingerprint_input["agent_origin"] = agent_origin
+    fingerprint = input_fingerprint(fingerprint_input)
+    existing = await repo.receipt(uid, str(data.client_request_id), proposal=True)
+    if existing is not None:
+        if existing.fingerprint != fingerprint:
+            raise HealthVisionError("request_conflict", "同一请求不能改变次日提议", 409)
+        return await proposal_result(session, uid, existing)
+    spec = MealPlanSpec.model_validate(preview.spec)
+    if data.source_date != business_date() or spec.plan_date != data.source_date + timedelta(days=1):
+        raise HealthVisionError("proposal_date_invalid", "次日提议须以北京时间今天为来源、明天为计划日", 409)
+    row = HealthNextDayProposal(
+        id=str(uuid4()),
+        actor_uid=uid,
+        member_id=member_id,
+        preview_id=preview.id,
+        source_date=data.source_date,
+        plan_date=spec.plan_date,
+        request_id=str(data.client_request_id),
+        fingerprint=fingerprint,
+        source_hash=await proposal_source(session, preview),
+        snapshot=deepcopy(preview.snapshot),
+    )
+    session.add(row)
+    await session.flush()
+    return await proposal_result(session, uid, row)
 
 
 async def read_next_day_proposal(uid, proposal_id):

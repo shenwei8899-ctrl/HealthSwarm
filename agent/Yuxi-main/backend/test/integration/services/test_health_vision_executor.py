@@ -19,7 +19,14 @@ from yuxi.models.providers.cache import ModelInfo, model_cache
 from yuxi.repositories.task_repository import TaskRepository
 from yuxi.services import health_vision_service as service_module, health_vision_tasks as tasks_module
 from yuxi.services.health_vision_service import HealthVisionService, PRIVATE_BUCKET, processor_identity
-from yuxi.services.health_vision_types import ConfirmInput, DraftPatch, HealthVisionError, MemberInput, ReportPayload
+from yuxi.services.health_vision_types import (
+    MEAL_PROMPT_VERSION,
+    ConfirmInput,
+    DraftPatch,
+    HealthVisionError,
+    MemberInput,
+    ReportPayload,
+)
 from yuxi.services.task_service import Tasker, process_task
 from yuxi.storage.minio import get_minio_client
 from yuxi.storage.postgres.models_business import (
@@ -28,11 +35,8 @@ from yuxi.storage.postgres.models_business import (
     User,
     TaskRecord,
     ModelProvider,
-    Project,
-    Conversation,
 )
 from yuxi.storage.postgres.models_health import (
-    HEALTH_TABLES,
     FoodRecord,
     HealthGrant,
     HealthObservation,
@@ -53,18 +57,7 @@ async def test_report_retry_checkpoint_binding_and_revocation(durable_task_schem
     """真实 PG 证明重试只复制同归属快照，撤权后不创建新任务。"""
     manager = durable_task_schema
     async with manager.async_engine.begin() as connection:
-        await connection.run_sync(
-            lambda conn: Base.metadata.create_all(
-                conn,
-                tables=[
-                    Department.__table__,
-                    User.__table__,
-                    Project.__table__,
-                    Conversation.__table__,
-                    *HEALTH_TABLES,
-                ],
-            )
-        )
+        await connection.run_sync(Base.metadata.create_all)
     monkeypatch.setattr(service_module, "pg_manager", manager)
     service = HealthVisionService()
     config = {
@@ -183,13 +176,7 @@ async def test_health_schema_upgrade_keeps_v1_food_and_is_idempotent(durable_tas
         await connection.run_sync(
             lambda conn: Base.metadata.create_all(
                 conn,
-                tables=[
-                    Department.__table__,
-                    User.__table__,
-                    Project.__table__,
-                    Conversation.__table__,
-                    *[table for table in HEALTH_TABLES if table not in new_tables],
-                ],
+                tables=[table for table in Base.metadata.sorted_tables if table not in new_tables],
             )
         )
         assert "health_recipe_version" not in await connection.run_sync(lambda conn: inspect(conn).get_table_names())
@@ -226,14 +213,14 @@ async def test_health_schema_upgrade_keeps_v1_food_and_is_idempotent(durable_tas
 
 
 @pytest.mark.parametrize(
-    "kind,outcome,model_change",
+    "kind,outcome,model_change,usage_case",
     [
-        (kind, outcome, None)
+        (kind, outcome, None, "reported")
         for kind in ("meal", "report")
         for outcome in ("success", "cancel", "revoke", "source_delete", "source_delete_retry", "expired_lease")
     ]
     + [
-        ("report", outcome, None)
+        ("report", outcome, None, "reported")
         for outcome in (
             "poll_revoke",
             "poll_consent",
@@ -245,7 +232,8 @@ async def test_health_schema_upgrade_keeps_v1_food_and_is_idempotent(durable_tas
             "page_consent",
         )
     ]
-    + [("meal", "success", change) for change in ("disabled", "credentials", "endpoint", "type")],
+    + [("meal", "success", change, "reported") for change in ("disabled", "credentials", "endpoint", "type")]
+    + [(kind, "success", None, usage) for kind in ("meal", "report") for usage in ("missing", "invalid", "zero")],
 )
 async def test_executor_result_binding_and_orphan_cleanup(
     durable_task_schema,  # noqa: F811
@@ -254,23 +242,12 @@ async def test_executor_result_binding_and_orphan_cleanup(
     outcome,
     kind,
     model_change,
+    usage_case,
 ):
     """仅模型外部响应使用确定性替身，执行器、授权、事务、lease 和对象存储均真实。"""
     manager = durable_task_schema
     async with manager.async_engine.begin() as connection:
-        await connection.run_sync(
-            lambda conn: Base.metadata.create_all(
-                conn,
-                tables=[
-                    Department.__table__,
-                    User.__table__,
-                    Project.__table__,
-                    Conversation.__table__,
-                    ModelProvider.__table__,
-                    *HEALTH_TABLES,
-                ],
-            )
-        )
+        await connection.run_sync(Base.metadata.create_all)
     monkeypatch.setattr(service_module, "pg_manager", manager)
     monkeypatch.setattr(tasks_module, "pg_manager", manager)
     info = ModelInfo(
@@ -300,6 +277,12 @@ async def test_executor_result_binding_and_orphan_cleanup(
         "policy_version": "synthetic-policy",
         f"approved_{kind}_processor": processor,
     }
+    usage = {
+        "reported": {"input_tokens": 7, "output_tokens": 11, "total_tokens": 18},
+        "missing": None,
+        "invalid": {"input_tokens": 7, "output_tokens": 11, "total_tokens": 999},
+        "zero": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+    }[usage_case]
 
     async def ocr_options(*_args):
         """只提供合成解析参数，无真实外呼或配置副作用。"""
@@ -358,7 +341,7 @@ async def test_executor_result_binding_and_orphan_cleanup(
                     "block_id": blocks[0]["block_id"],
                 }
             ]
-        }, {"model": info.model_id}
+        }, {"model": info.model_id, "usage": usage}
 
     monkeypatch.setattr(tasks_module, "resolve_ocr_task_params", ocr_options)
     monkeypatch.setattr(tasks_module, "parse_report_page", report_response)
@@ -374,7 +357,10 @@ async def test_executor_result_binding_and_orphan_cleanup(
     async def model_response(_spec, images, context):
         """图像候选替身无营养值，不声称真实视觉模型效果。"""
         assert len(images) == 1 and images[0].startswith(b"\x89PNG")
-        return {"items": [{"item_id": str(uuid4()), "name": "合成候选食物"}], "metadata": {"model": info.model_id}}
+        return {
+            "items": [{"item_id": str(uuid4()), "name": "合成候选食物"}],
+            "metadata": {"model": info.model_id, "usage": usage, "private": "must-not-publish"},
+        }
 
     monkeypatch.setattr(tasks_module, "recognize_meal", model_response)
     before_result = outcome in {"poll_revoke", "poll_consent", "download_expired_lease"}
@@ -429,6 +415,7 @@ async def test_executor_result_binding_and_orphan_cleanup(
                     "model": info.spec,
                     "processor": processor,
                     "policy_version": "synthetic-policy",
+                    "prompt_version": MEAL_PROMPT_VERSION if kind == "meal" else "health-vision-v1",
                     "meal_type": "lunch",
                     "eaten_at": "2026-10-04T12:00:00+08:00",
                     "provider_jobs": [
@@ -571,7 +558,16 @@ async def test_executor_result_binding_and_orphan_cleanup(
             if not model_change and (outcome == "success" or outcome in {"partial_first", "partial_last"}):
                 assert record.status == "success" and len(drafts) == 1
                 assert drafts[0].review_status == "pending_confirmation"
-                assert record.result == {"result_id": drafts[0].id}
+                expected_usage = usage if usage_case in {"reported", "zero"} else None
+                assert record.result == {
+                    "result_id": drafts[0].id,
+                    "provider_usage": {
+                        "schema_version": 1,
+                        "scope": "successful_attempt_model_calls",
+                        "calls": [expected_usage],
+                    },
+                }
+                assert "must-not-publish" not in json.dumps(record.result)
                 if kind == "meal":
                     assert drafts[0].payload["items"][0]["grams"] is None
                 else:
@@ -583,6 +579,7 @@ async def test_executor_result_binding_and_orphan_cleanup(
                 assert await storage.adownload_file(PRIVATE_BUCKET, result_keys[0])
             else:
                 assert record.status == ("cancelled" if outcome == "cancel" else "failed") and drafts == []
+                assert record.result is None
                 for key in result_keys:
                     with pytest.raises(S3Error) as error:
                         await asyncio.to_thread(storage.client.stat_object, PRIVATE_BUCKET, key)

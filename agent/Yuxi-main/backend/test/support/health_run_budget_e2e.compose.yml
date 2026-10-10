@@ -1,0 +1,9 @@
+# 仅独立 health_consultation_e2e 合成槽位执行短预算专项，主服务不得使用。
+# 同时传入原 docker-compose.yml 与 health_consultation_e2e.compose.yml。
+services:
+  api:
+    environment:
+      YUXI_HEALTH_RUN_TIMEOUT_SECONDS: "3"
+  worker:
+    environment:
+      YUXI_HEALTH_RUN_TIMEOUT_SECONDS: "3"
