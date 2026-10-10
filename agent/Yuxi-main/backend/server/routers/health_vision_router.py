@@ -118,6 +118,8 @@ from yuxi.services.health_quality_service import (
 from yuxi.services.health_vision_statistics import vision_statistics
 from yuxi.services.health_task_service import create_health_task_entry, read_health_task
 from yuxi.services.health_task_types import HealthTaskEntryInput, HealthTaskEntryResult, HealthTaskResult
+from yuxi.services.health_capability_service import member_capabilities
+from yuxi.services.health_capability_types import MemberCapabilities
 from yuxi.services.health_vision_types import (
     ConfirmInput,
     ConsentInput,
@@ -213,6 +215,13 @@ async def health_task_read(
     """读取现有Request与当前Run的受权业务投影。"""
     response.headers["Cache-Control"] = "no-store"
     return await read_health_task(str(user.uid), request_id)
+
+
+@health_vision.get("/members/{member_id}/capabilities", response_model=MemberCapabilities)
+async def health_member_capabilities(member_id: UUID, response: Response, user: User = Depends(get_required_user)):
+    """读取当前账号的成员任务提示，实际任务执行仍重验来源与权限。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await member_capabilities(str(user.uid), str(member_id))
 
 
 def require_request_key(request_id: UUID, header: str | None):

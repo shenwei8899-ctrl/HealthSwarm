@@ -60,6 +60,71 @@ async def test_health_approval_boundaries_refresh_before_reading_model_view(monk
     assert events == ["refresh"]
 
 
+@pytest.mark.parametrize(
+    "case,kind,expected",
+    [
+        ("ready", "consultation", None),
+        ("policy", "consultation", "policy_not_approved"),
+        ("model", "consultation", "model_unavailable"),
+        ("meal_version", "meal", "meal_model_version_required"),
+        ("ocr_credentials", "report", "ocr_credentials_missing"),
+        ("ocr_config", "report", "ocr_not_configured"),
+        ("processor", "consultation", "processor_approval_changed"),
+    ],
+)
+async def test_configuration_exposes_stable_reason_without_changing_availability(monkeypatch, case, kind, expected):
+    """用途Owner的每个原有失败分支都产生稳定机器原因，保留中文提示。"""
+    info = SimpleNamespace(
+        api_key="synthetic",
+        model_id=service_module.MEAL_MODEL_ID,
+    )
+    kinds = ("report", "meal", "consultation", "meal_plan", "diet_analysis", "quality_review", "purchase")
+    values = {
+        "policy_version": "synthetic-policy",
+        **{f"{purpose}_model": "synthetic:fixed" for purpose in kinds},
+        **{f"approved_{purpose}_processor": "approved-synthetic" for purpose in kinds},
+    }
+    if case == "policy":
+        values["policy_version"] = ""
+    if case == "processor":
+        values["approved_consultation_processor"] = "old-approval"
+    if case == "meal_version":
+        info.model_id = "floating-alias"
+    monkeypatch.setattr(
+        service_module, "model_cache", SimpleNamespace(refresh=Mock(), get_all_specs=Mock(return_value=[]))
+    )
+    monkeypatch.setattr(service_module, "health_vision_opts", SimpleNamespace(get=AsyncMock(return_value=values)))
+    monkeypatch.setattr(
+        service_module, "current_health_model_info", AsyncMock(return_value=None if case == "model" else info)
+    )
+    monkeypatch.setattr(service_module, "processor_identity", Mock(return_value="approved-synthetic"))
+    monkeypatch.setattr(
+        service_module,
+        "resolve_ocr_task_params",
+        AsyncMock(
+            return_value={"_ocr_processor_kwargs": {"api_token": "" if case == "ocr_credentials" else "synthetic"}},
+            side_effect=ValueError("synthetic") if case == "ocr_config" else None,
+        ),
+    )
+    result = await service_module.HealthVisionService().configuration(SimpleNamespace(scalar=AsyncMock(return_value=0)))
+    assert result[kind]["reason_code"] == expected
+    assert result[kind]["available"] is (expected is None)
+    assert (
+        result[kind]["reason"]
+        == {
+            None: None,
+            "policy_not_approved": "尚未审批云处理政策",
+            "model_unavailable": "请先配置并启用模型供应商及识别模型",
+            "meal_model_version_required": f"饮食模型须使用已冻结版本 {service_module.MEAL_MODEL_ID}",
+            "ocr_credentials_missing": "请在 OCR 配置中填写 PaddleOCR 凭据",
+            "ocr_not_configured": "PaddleOCR 未配置",
+            "processor_approval_changed": "供应商端点或请求配置已变化，请重新审批服务配置并取得用途同意",
+        }[expected]
+    )
+    assert result[kind]["model"] == "synthetic:fixed"
+    assert result[kind]["processor"] == "approved-synthetic"
+
+
 def meal(food_id=None, **kwargs):
     """固定就餐时区和独立的手算参数。"""
     item = {

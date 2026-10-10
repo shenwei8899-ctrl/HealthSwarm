@@ -157,12 +157,16 @@ class HealthVisionService:
             spec = values.get(f"{kind}_model") or ""
             info = await current_health_model_info(session, spec) if spec else None
             reason = None
+            reason_code = None
             if not result["policy_version"]:
                 reason = "尚未审批云处理政策"
+                reason_code = "policy_not_approved"
             elif info is None or not info.api_key:
                 reason = "请先配置并启用模型供应商及识别模型"
+                reason_code = "model_unavailable"
             elif kind == "meal" and info.model_id != MEAL_MODEL_ID:
                 reason = f"饮食模型须使用已冻结版本 {MEAL_MODEL_ID}"
+                reason_code = "meal_model_version_required"
             ocr_kwargs = {}
             if kind == "report":
                 try:
@@ -170,12 +174,21 @@ class HealthVisionService:
                     ocr_kwargs = params["_ocr_processor_kwargs"]
                     if not params["_ocr_processor_kwargs"].get("api_token"):
                         reason = "请在 OCR 配置中填写 PaddleOCR 凭据"
+                        reason_code = "ocr_credentials_missing"
                 except ValueError:
                     reason = "PaddleOCR 未配置"
+                    reason_code = "ocr_not_configured"
             processor = processor_identity(kind, info, ocr_kwargs)
             if reason is None and values.get(f"approved_{kind}_processor") != processor:
                 reason = "供应商端点或请求配置已变化，请重新审批服务配置并取得用途同意"
-            result[kind] = {"available": reason is None, "reason": reason, "model": spec, "processor": processor}
+                reason_code = "processor_approval_changed"
+            result[kind] = {
+                "available": reason is None,
+                "reason": reason,
+                "reason_code": reason_code,
+                "model": spec,
+                "processor": processor,
+            }
         result["food_count"] = int(await session.scalar(select(func.count()).select_from(FoodRecord)) or 0)
         return result
 

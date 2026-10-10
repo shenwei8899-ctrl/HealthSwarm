@@ -53,6 +53,27 @@ class HealthVisionRepository:
             ).all()
         )
 
+    async def visible_member_scopes(self, member_id: str, uid: str):
+        """能力读取先证明有效账号与非空合法授权，不设管理员旁路。"""
+        row = (
+            await self.session.execute(
+                select(User, HealthGrant.scopes)
+                .join(HealthGrant, HealthGrant.actor_uid == User.uid)
+                .join(FamilyMember, FamilyMember.id == HealthGrant.member_id)
+                .where(
+                    User.uid == uid,
+                    User.is_deleted == 0,
+                    FamilyMember.id == member_id,
+                    HealthGrant.revoked_at.is_(None),
+                )
+            )
+        ).one_or_none()
+        if row is not None:
+            user, scopes = row
+            if isinstance(scopes, list) and scopes and all(isinstance(s, str) and s in HEALTH_SCOPES for s in scopes):
+                return user, set(scopes)
+        raise HealthVisionError("not_found", "资源不存在或无权访问", 404)
+
     async def authorize_plan_members(self, anchor_id, uid, spec, scopes, *, lock=False):
         """所有参与者按ID持锁授权，不以入口成员替代其他成员。"""
         ids = plan_member_ids(anchor_id, spec)
@@ -237,6 +258,10 @@ class HealthVisionRepository:
                 )
             ).all()
         )
+
+    async def has_published_recipes(self):
+        """发布目录存在性不证明任何菜谱适用于当前成员。"""
+        return await self.session.scalar(select(RecipeVersion.id).limit(1)) is not None
 
     async def portions(self, food_id: str | None, recipe_version_id: str | None):
         """返回与指定不可变版本关联的参考规格。"""
