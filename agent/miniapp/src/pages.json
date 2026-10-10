@@ -2,7 +2,8 @@
   "pages": [
     { "path": "pages/login/index", "style": { "navigationStyle": "custom", "navigationBarTitleText": "账号登录" } },
     { "path": "pages/members/index", "style": { "navigationStyle": "custom", "navigationBarTitleText": "本人成员接入" } },
-    { "path": "pages/consultation/index", "style": { "navigationStyle": "custom", "navigationBarTitleText": "本人营养咨询" } }
+    { "path": "pages/consultation/index", "style": { "navigationStyle": "custom", "navigationBarTitleText": "本人营养咨询" } },
+    { "path": "pages/meal-plans/index", "style": { "navigationStyle": "custom", "navigationBarTitleText": "本人餐单草稿" } }
   ],
   "globalStyle": {
     "navigationBarTextStyle": "black",

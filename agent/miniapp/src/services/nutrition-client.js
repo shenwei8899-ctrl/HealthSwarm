@@ -114,6 +114,59 @@ export function createNutritionClient({ request, storage, apiBase = '/api' }) {
     return authenticatedRequest(`/health/v1/members/${pathId(healthId)}/family-profile`)
   }
 
+  /** 普通餐单直接使用业务接口，不触发模型或专业审批。 */
+  function listMealPlans(memberId) {
+    return authenticatedRequest(`/health/v1/members/${pathId(memberId)}/meal-plans`)
+  }
+
+  function readMealPlan(planId) {
+    return authenticatedRequest(`/health/v1/meal-plans/${pathId(planId)}`)
+  }
+
+  function listPublishedRecipes(query = '') {
+    if (typeof query !== 'string' || query.length > 120) {
+      return Promise.reject(new NutritionClientError(422, 'invalid_recipe_query', '菜谱查询须为不超过120字的文本'))
+    }
+    return authenticatedRequest(`/health/v1/recipes?q=${encodeURIComponent(query)}`)
+  }
+
+  function listRecipePortions(recipeVersionId) {
+    return authenticatedRequest(`/health/v1/portion-references?recipe_version_id=${pathId(recipeVersionId)}`)
+  }
+
+  function previewMealPlan(memberId, spec) {
+    return authenticatedRequest(`/health/v1/members/${pathId(memberId)}/meal-plan-previews`, {
+      method: 'POST', data: mealPlanSpecProjection(spec),
+    })
+  }
+
+  function saveMealPlan(memberId, data) {
+    const key = pathId(data?.client_request_id, false)
+    return authenticatedRequest(`/health/v1/members/${pathId(memberId)}/meal-plans`, {
+      method: 'POST', data: { preview_id: pathId(data?.preview_id, false), client_request_id: key }, requestKey: key,
+    })
+  }
+
+  function swapMealPlan(planId, data) {
+    if (!Number.isSafeInteger(data?.version) || data.version < 1
+      || !Number.isInteger(data.dish_index) || data.dish_index < 0 || data.dish_index > 9
+      || typeof data.reason !== 'string' || data.reason.length < 1 || data.reason.length > 500) {
+      throw invalidMealPlanInput()
+    }
+    const key = pathId(data.client_request_id, false)
+    const payload = {
+      version: data.version,
+      meal_type: mealType(data.meal_type),
+      dish_index: data.dish_index,
+      replacement: plannedDishProjection(data.replacement),
+      reason: data.reason,
+      client_request_id: key,
+    }
+    return authenticatedRequest(`/health/v1/meal-plans/${pathId(planId)}/swap`, {
+      method: 'POST', data: payload, requestKey: key, matchVersion: payload.version,
+    })
+  }
+
   /** 读取当前审批的处理方与用途，不接收客户端模型配置。 */
   function readConsultationConfiguration() {
     return authenticatedRequest('/health/v1/configuration')
@@ -190,7 +243,7 @@ export function createNutritionClient({ request, storage, apiBase = '/api' }) {
     return send(path, { ...options, token: session.access_token, expectedRevision: revision })
   }
 
-  function send(path, { method = 'GET', data, token, contentType = 'application/json', expectedRevision, requestKey }) {
+  function send(path, { method = 'GET', data, token, contentType = 'application/json', expectedRevision, requestKey, matchVersion }) {
     return new Promise((resolve, reject) => {
       const stale = () => revision !== expectedRevision
       const staleError = () => new NutritionClientError(0, 'stale_session', '账号会话已变更，请重新操作')
@@ -203,6 +256,7 @@ export function createNutritionClient({ request, storage, apiBase = '/api' }) {
       const header = { 'Content-Type': contentType }
       if (token) header.Authorization = `Bearer ${token}`
       if (requestKey) header['Idempotency-Key'] = requestKey
+      if (matchVersion !== undefined) header['If-Match'] = `"${matchVersion}"`
       try {
         request({
           url: `${base}${path}`,
@@ -297,6 +351,13 @@ export function createNutritionClient({ request, storage, apiBase = '/api' }) {
     readProfileLink,
     linkProfile,
     readFamilyProfile,
+    listMealPlans,
+    readMealPlan,
+    listPublishedRecipes,
+    listRecipePortions,
+    previewMealPlan,
+    saveMealPlan,
+    swapMealPlan,
     readConsultationConfiguration,
     setConsultationConsent,
     createDailyConsultation,
@@ -310,6 +371,54 @@ export function createNutritionClient({ request, storage, apiBase = '/api' }) {
     readAgentRunResult,
     readThreadActiveRun,
   }
+}
+
+/** 只复制业务DTO字段；服务端仍拥有日期、份量精度及发布版本校验。 */
+function mealPlanSpecProjection(spec) {
+  if (typeof spec?.plan_date !== 'string' || !spec.plan_date
+    || !Array.isArray(spec.meals) || spec.meals.length !== 3) {
+    throw invalidMealPlanInput()
+  }
+  const meals = spec.meals.map((meal) => {
+    if (!Array.isArray(meal?.dishes) || meal.dishes.length < 1 || meal.dishes.length > 10) {
+      throw invalidMealPlanInput()
+    }
+    return { meal_type: mealType(meal.meal_type), dishes: meal.dishes.map(plannedDishProjection) }
+  })
+  if (new Set(meals.map((meal) => meal.meal_type)).size !== 3) throw invalidMealPlanInput()
+  return { plan_date: spec.plan_date, meals }
+}
+
+/** 计划量保留原始数值文本，不计算营养，也不接受嵌套健康对象。 */
+function plannedDishProjection(dish) {
+  const result = { recipe_version_id: pathId(dish?.recipe_version_id, false) }
+  for (const key of ['grams', 'portion_count']) {
+    const value = dish[key]
+    if (value === undefined) continue
+    if (value !== null && (typeof value !== 'string' && typeof value !== 'number'
+      || typeof value === 'string' && !value.trim() || !Number.isFinite(Number(value)) || Number(value) <= 0)) {
+      throw invalidMealPlanInput()
+    }
+    result[key] = value
+  }
+  if (dish.portion_reference_id !== undefined) {
+    result.portion_reference_id = dish.portion_reference_id === null ? null : pathId(dish.portion_reference_id, false)
+  }
+  if (result.portion_reference_id
+    ? result.grams != null || result.portion_count == null
+    : result.portion_count != null) {
+    throw invalidMealPlanInput()
+  }
+  return result
+}
+
+function mealType(value) {
+  if (!['breakfast', 'lunch', 'dinner'].includes(value)) throw invalidMealPlanInput()
+  return value
+}
+
+function invalidMealPlanInput() {
+  return new NutritionClientError(422, 'invalid_meal_plan_input', '请核对三餐、菜谱版本、计划份量及换菜信息')
 }
 
 function sessionProjection(data) {

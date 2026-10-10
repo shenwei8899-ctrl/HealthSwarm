@@ -149,9 +149,13 @@ async function associate() {
   }
 }
 
-function logout() { clearData(); account.value = null; client.logout(); uni.reLaunch({ url: '/pages/login/index' }) }
+// 会话订阅统一清理与跳转，避免退出按钮再发起一次并发 reLaunch。
+function logout() { client.logout() }
 function openConsultation() {
   if (canConsult.value) uni.navigateTo({ url: `/pages/consultation/index?member_id=${encodeURIComponent(healthId.value)}` })
+}
+function openMealPlans() {
+  if (canConsult.value) uni.navigateTo({ url: `/pages/meal-plans/index?member_id=${encodeURIComponent(healthId.value)}` })
 }
 onShow(() => { visible = true; reload() })
 onHide(() => { visible = false; clearData(); account.value = null })
@@ -192,6 +196,7 @@ onUnload(() => { unsubscribe(); clearData(); account.value = null })
           <text v-else class="body-copy">此健康成员尚未关联家庭档案。</text>
           <view v-if="profile" class="result-row"><text class="result-label">基础档案状态</text><text>{{ profile.description }}</text><text v-if="profile.confirmed_version !== null">本人确认版本：{{ profile.confirmed_version }}</text></view>
           <button v-if="canConsult" class="primary-button" @click="openConsultation">进入本人营养咨询</button>
+          <button v-if="canConsult" class="secondary-button" @click="openMealPlans">查看与安排本人餐单</button>
         </template>
       </view>
       <view v-if="healthId && linkKnown && !link?.source_member_id" class="card access-card">
