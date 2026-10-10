@@ -322,6 +322,31 @@ def test_publish_requires_approved_nutrient_codes_and_cloud_approval():
         VisionConfigurationInput(meal_model="provider/model")
 
 
+@pytest.mark.parametrize(
+    ("policy_version", "cloud_processing_reviewed"),
+    [("", False), ("synthetic-policy-v1", False), ("", True)],
+)
+def test_purchase_only_model_requires_policy_and_explicit_cloud_approval(policy_version, cloud_processing_reviewed):
+    """仅配置采购模型也不能绕过敏感数据云处理审批。"""
+    with pytest.raises(ValidationError, match="启用前须确认处理政策与费用限额已经审批"):
+        VisionConfigurationInput(
+            purchase_model="synthetic:purchase-fixed",
+            policy_version=policy_version,
+            cloud_processing_reviewed=cloud_processing_reviewed,
+        )
+
+
+def test_approved_purchase_model_and_explicit_disable_remain_valid():
+    """明确批准允许配置采购，清空全部模型无需新增云审批。"""
+    data = VisionConfigurationInput(
+        purchase_model="synthetic:purchase-fixed",
+        policy_version="synthetic-policy-v1",
+        cloud_processing_reviewed=True,
+    )
+    assert data.purchase_model == "synthetic:purchase-fixed"
+    assert VisionConfigurationInput(purchase_model="").purchase_model == ""
+
+
 def test_confirmed_stale_and_expired_drafts_not_editable():
     record = SimpleNamespace(review_status="pending_confirmation", version=2, created_at=utc_now_naive())
     with pytest.raises(HealthVisionError, match="version_conflict"):

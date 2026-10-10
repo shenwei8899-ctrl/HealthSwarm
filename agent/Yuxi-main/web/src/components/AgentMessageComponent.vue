@@ -42,8 +42,9 @@
       />
 
       <!-- 消息内容 -->
+      <HealthDietAnalysisResult v-if="dietAnalysisResult" :result="dietAnalysisResult" />
       <MarkdownPreview
-        v-if="parsedData.content"
+        v-else-if="parsedData.content"
         :key="message.id"
         :content="parsedData.content"
         code-copy
@@ -137,6 +138,8 @@ import { inferImageMimeTypeFromBase64, normalizeAttachmentPreviews } from '@/uti
 import { buildMentionDisplayLabels } from '@/utils/mention_utils'
 import FileTypeIcon from '@/components/common/FileTypeIcon.vue'
 import { enrichTaskToolCalls } from '@/components/ToolCallingResult/toolRegistry'
+import HealthDietAnalysisResult from '@/components/health/HealthDietAnalysisResult.vue'
+import { publishedDietAnalysisResult } from '@/utils/healthDietAnalysisResult'
 
 const props = defineProps({
   // 消息角色：'user'|'assistant'|'sent'|'received'
@@ -144,6 +147,8 @@ const props = defineProps({
     type: Object,
     required: true
   },
+  agentSlug: { type: String, default: '' },
+  run: { type: Object, default: null },
   // 是否正在处理中
   isProcessing: {
     type: Boolean,
@@ -314,6 +319,9 @@ const parsedData = computed(() => {
     reasoning_content: reasoningContent
   }
 })
+const dietAnalysisResult = computed(() =>
+  publishedDietAnalysisResult(props.message, props.run, props.agentSlug, props.isProcessing)
+)
 </script>
 
 <style lang="less" scoped>

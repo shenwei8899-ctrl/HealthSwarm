@@ -12,6 +12,7 @@
         <ThreadMessageList
           v-if="hasRenderableMessages || (!loading && !error)"
           :messages="displayMessages"
+          :agent-slug="threadAgentSlug"
           :runs="runs"
           :ongoing-messages="streamedMessages"
           :is-processing="streamActive"
@@ -42,6 +43,7 @@ const RUN_TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'inte
 const loading = ref(false)
 const error = ref('')
 const messages = ref([])
+const threadAgentSlug = ref('')
 const runs = ref([])
 const currentRunId = ref('')
 const currentRunStatus = ref('')
@@ -162,6 +164,7 @@ const loadThread = async () => {
         ? (await agentApi.getAgentRun(props.runId, { signal: controller.signal })).run
         : selectedRun
     if (!isCurrent()) return
+    threadAgentSlug.value = history.thread?.agent_id || ''
     currentRunId.value = run?.run_id || run?.id || props.runId || ''
     currentRunStatus.value = normalizeRunStatus(run?.status)
     runs.value = props.runId ? threadRuns.filter((item) => item.run_id === props.runId) : threadRuns
@@ -254,6 +257,7 @@ watch([() => props.threadId, () => props.runId], () => {
   resetStreamState()
   lastEventId.value = '0-0'
   messages.value = []
+  threadAgentSlug.value = ''
   loadThread()
 })
 watch(

@@ -12,7 +12,7 @@ from yuxi.storage.postgres.models_health import DietLog, VisionDraft
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
-async def confirm_analysis_meal(client, headers, admin, member, *, eaten_at="2026-10-07T12:00:00+08:00"):
+async def confirm_analysis_meal(client, headers, admin, member, *, eaten_at="2026-10-07T12:00:00+08:00", revised=False):
     """独立手算：150g乘0.4，200kcal/100g得120kcal；钠未知。"""
     food = await client.post(
         f"{ROOT}/foods",
@@ -59,13 +59,49 @@ async def confirm_analysis_meal(client, headers, admin, member, *, eaten_at="202
     )
     assert draft.status_code == 201, draft.text
     path = f"{ROOT}/meal-drafts/{draft.json()['id']}"
-    calculation = await client.post(f"{path}/calculate", headers=headers, json={"version": 1})
+    version = 1
+    if revised:
+        changed = await client.patch(
+            path,
+            headers={**headers, "If-Match": '"1"'},
+            json={"version": 1, "reason": "合成确认版本回归", "meal": draft.json()["payload"]},
+        )
+        assert changed.status_code == 200 and changed.json()["version"] == 2, changed.text
+        version = 2
+    calculation = await client.post(f"{path}/calculate", headers=headers, json={"version": version})
     assert calculation.status_code == 200, calculation.text
-    data, key = confirmation(calculation_id=calculation.json()["calculation_id"], accept_incomplete=True)
+    data, key = confirmation(
+        version=version, calculation_id=calculation.json()["calculation_id"], accept_incomplete=True
+    )
     accepted = await client.post(f"{path}/confirm", headers={**headers, **key}, json=data)
     assert accepted.status_code == 200, accepted.text
     records = (await client.get(f"{ROOT}/members/{member}/diet-logs", headers=headers)).json()
     return records[0], draft.json()["id"]
+
+
+async def test_diet_log_list_exposes_actual_confirmation_version_for_analysis_and_feedback(health_http):  # noqa: F811
+    """真实更正后确认版本为2，列表选择可直接分析与绑定反馈且旧版本拒绝。"""
+    client, users = health_http
+    owner, admin = users[0]["headers"], users[2]["headers"]
+    member = await create_member(client, owner)
+    record, _ = await confirm_analysis_meal(client, owner, admin, member, revised=True)
+    assert record["source_version"] == 2
+    selection = {"record_id": record["id"], "source_version": record["source_version"]}
+    analysis = await client.post(f"{ROOT}/members/{member}/diet-analysis", headers=owner, json=selection)
+    assert analysis.status_code == 200 and analysis.json()["source"]["source_version"] == 2, analysis.text
+    feedback_url = f"{ROOT}/diet-logs/{record['id']}/feedback-conversation"
+    bound = await client.post(
+        feedback_url,
+        headers=owner,
+        json={"client_request_id": str(uuid4()), "source_version": record["source_version"]},
+    )
+    assert bound.status_code == 201 and bound.json()["feedback_selection"] == selection, bound.text
+    stale = await client.post(
+        feedback_url, headers=owner, json={"client_request_id": str(uuid4()), "source_version": 1}
+    )
+    assert stale.status_code == 409 and stale.json()["code"] == "version_conflict", stale.text
+    denied = await client.get(f"{ROOT}/members/{member}/diet-logs", headers=users[1]["headers"])
+    assert denied.status_code == 404 and record["id"] not in denied.text
 
 
 async def test_analysis_uses_confirmed_snapshot_and_blocks_foreign_retracted_or_stale_sources(health_http):  # noqa: F811

@@ -395,7 +395,10 @@ provide('settingsModal', {
     class="app-layout"
     :class="{
       'sidebar-collapsed': sidebarCollapsed,
-      'family-layout': route.matched.some((record) => record.name === 'family')
+      'family-layout': route.matched.some((record) => record.name === 'family'),
+      'health-agent-layout': route.matched.some((record) =>
+        ['HealthVision', 'AgentMain'].includes(record.name)
+      )
     }"
   >
     <button
@@ -632,6 +635,12 @@ provide('settingsModal', {
 }
 
 @media (max-width: 650px) {
+  .app-layout.health-agent-layout {
+    min-width: 0;
+    > #app-router-view {
+      min-width: 0;
+    }
+  }
   .app-layout.family-layout {
     box-sizing: border-box;
     padding-left: @sidebar-collapsed-width;

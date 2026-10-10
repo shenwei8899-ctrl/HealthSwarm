@@ -90,6 +90,8 @@
                   <AgentMessageComponent
                     v-if="displayItem.type === 'message'"
                     :message="displayItem.message"
+                    :agent-slug="currentThread?.agent_id || currentAgentId"
+                    :run="getMessageRun(displayItem.message)"
                     :is-processing="isDisplayMessageProcessing(row.conv, displayItem)"
                     :show-refs="showMsgRefs(displayItem.message, row.conv)"
                     :hide-tool-calls="true"
@@ -1396,8 +1398,8 @@ watch(
 const DRAFT_MODEL_KEY = '__draft__'
 const selectedModelByThread = reactive({})
 // 健康角色不能沿用普通聊天默认模型或旧会话覆盖，由后端核对当前审批配置。
-const isHealthRole = computed(
-  () => isHealthAgentId(currentThread.value?.agent_id || currentAgentId.value)
+const isHealthRole = computed(() =>
+  isHealthAgentId(currentThread.value?.agent_id || currentAgentId.value)
 )
 const savedToolApprovalMode = ref(readToolApprovalModePreference())
 const agentDefaultModel = computed(
@@ -2527,12 +2529,7 @@ const createClientRequestId = () => {
   return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
-const buildOptimisticHumanMessage = ({
-  requestId,
-  text,
-  imageContents = [],
-  attachments = []
-}) => {
+const buildOptimisticHumanMessage = ({ requestId, text, imageContents = [], attachments = [] }) => {
   const message = {
     id: requestId,
     role: 'user',

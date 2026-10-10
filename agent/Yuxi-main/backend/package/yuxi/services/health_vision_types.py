@@ -442,6 +442,7 @@ class VisionConfigurationInput(HealthDTO):
             or self.meal_plan_model
             or self.diet_analysis_model
             or self.quality_review_model
+            or self.purchase_model
         )
         if configured and (not self.policy_version or not self.cloud_processing_reviewed):
             raise ValueError("启用前须确认处理政策与费用限额已经审批")

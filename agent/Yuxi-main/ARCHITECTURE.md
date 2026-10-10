@@ -60,6 +60,8 @@ Yuxi 只交付完整知识能力路径。API 始终注册 `external_kb`、`knowl
 
 五个固定健康角色共享从 Run 首次执行起计的总预算，恢复和重试保留原起点；模型 SDK 仅使用剩余时限。咨询失败发布由聊天持久化 Owner 拒绝普通正文，显式中断仅保存固定错误投影。执行与发布分别见[预算决定](docs/develop-guides/decisions/implemented/2026-10-10-health-run-execution-budget.md)和[失败发布决定](docs/develop-guides/decisions/implemented/2026-10-10-health-consultation-partial-publication.md)。
 
+健康后台通过业务接口初始化绑定成员的饮食分析与固定选餐反馈会话，复用既有 Request、Run 和恢复链路。饮食列表公开实际确认版本；聊天卡片只呈现同一完成 Run 最终消息的统计事实或反馈收据。入口、配置及展示边界见[后台分析入口决定](docs/develop-guides/decisions/implemented/2026-10-10-health-analysis-web-entry.md)。
+
 审核科普检索在有界后台计算中使用当前 PostgreSQL 片段构建本地词法索引；索引只返回来源 proof，正文仍由 repository fresh 锁读。咨询最终发布在 Message、输出指针与 completed 的 owning 事务中重验并持有实际引用来源的共享锁；已完成答复的 result、history、state 消息与搜索投影继续校验实际采用来源。检索、发布及读取边界见[审核科普索引决定](docs/develop-guides/decisions/implemented/2026-10-10-health-evidence-lexical-index.md)。
 
 ### 后台任务

@@ -15,6 +15,7 @@ const settings = reactive({
   meal_plan_model: '',
   diet_analysis_model: '',
   quality_review_model: '',
+  purchase_model: '',
   policy_version: '',
   cloud_processing_reviewed: false
 })
@@ -38,6 +39,7 @@ watch(
     settings.meal_plan_model = value.meal_plan?.model || ''
     settings.diet_analysis_model = value.diet_analysis?.model || ''
     settings.quality_review_model = value.quality_review?.model || ''
+    settings.purchase_model = value.purchase?.model || ''
     settings.policy_version = value.policy_version
     settings.cloud_processing_reviewed = false
   },
@@ -146,7 +148,8 @@ async function publishFood() {
         v-for="(label, key) in {
           meal_plan_model: '配餐师模型',
           diet_analysis_model: '饮食分析模型',
-          quality_review_model: '质量复核模型'
+          quality_review_model: '质量复核模型',
+          purchase_model: '采购模型'
         }"
         :key="key"
         >{{ label
