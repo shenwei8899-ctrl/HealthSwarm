@@ -2,6 +2,10 @@ import assert from 'node:assert/strict'
 import path from 'node:path'
 import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { readFileSync } from 'node:fs'
+import { compileScript, parse } from 'vue/compiler-sfc'
+import { createPinia, setActivePinia } from 'pinia'
+import { reactive, isProxy } from 'vue'
 
 import { createServer } from 'vite'
 
@@ -12,7 +16,10 @@ let useAgentRequestQueue
 let useAgentRunStream
 let dispatchRunEventChunks
 let useAgentStreamHandler
+let useAgentThreadState
 let MessageProcessor
+let ErrorHandler
+let useUserStore
 let getConversationDisplayItems
 let groupConversationContinuations
 
@@ -25,6 +32,8 @@ before(async () => {
   }
   server = await createServer({ root: webRoot, server: { middlewareMode: true } })
   ;({ agentApi } = await server.ssrLoadModule('/src/apis/index.js'))
+  ;({ ErrorHandler } = await server.ssrLoadModule('/src/utils/errorHandler.js'))
+  ;({ useUserStore } = await server.ssrLoadModule('/src/stores/user.js'))
   ;({ useAgentRequestQueue } = await server.ssrLoadModule(
     '/src/composables/useAgentRequestQueue.js'
   ))
@@ -34,6 +43,7 @@ before(async () => {
   ;({ useAgentStreamHandler } = await server.ssrLoadModule(
     '/src/composables/useAgentStreamHandler.js'
   ))
+  ;({ useAgentThreadState } = await server.ssrLoadModule('/src/composables/useAgentThreadState.js'))
   ;({ default: MessageProcessor } = await server.ssrLoadModule('/src/utils/messageProcessor.js'))
   ;({ getConversationDisplayItems } = await server.ssrLoadModule('/src/utils/messageGrouping.js'))
   ;({ groupConversationContinuations } = await server.ssrLoadModule(
@@ -45,6 +55,774 @@ after(async () => {
   await server?.close()
   delete globalThis.localStorage
 })
+
+/** 只保留与 Request 恢复有关的线程投影。 */
+function recoveryThread() {
+  return {
+    activeRunId: null,
+    isStreaming: false,
+    pendingRequestId: null,
+    replyLoadingVisible: false,
+    queuedRequests: [{ request_id: 'request-recovery', status: 'queued' }],
+    requestStreams: {},
+    onGoingConv: { msgChunks: {} }
+  }
+}
+
+/** 构造同请求同线程的数据库状态，不借用相邻 Run。 */
+const recoveryRequest = (status = 'dispatched') => ({
+  request: {
+    request_id: 'request-recovery', thread_id: 'thread-recovery', status,
+    dispatched_run_id: status === 'dispatched' ? 'run-recovery' : null
+  }
+})
+
+/** 等待当前异步帧完成，不推进恢复退避计时器。 */
+async function settleRecovery() {
+  for (let i = 0; i < 12; i++) await Promise.resolve()
+}
+
+for (const failure of ['eof', 'network']) {
+  test(`Request ${failure} 后回读同请求的 PG 派发结果，不重新提交`, async (t) => {
+    const ts = recoveryThread(), starts = [], reads = []
+    t.mock.method(agentApi, 'streamRequestEvents', async () => {
+      if (failure === 'network') throw new TypeError('offline')
+      return new Response('')
+    })
+    t.mock.method(agentApi, 'getRequest', async (id) => {
+      reads.push(id)
+      return recoveryRequest()
+    })
+    t.mock.method(agentApi, 'createAgentRun', () => assert.fail('恢复不得重新提交正文'))
+    const queue = useAgentRequestQueue({
+      getThreadState: () => ts,
+      resetOnGoingConv: () => {},
+      startRunStream: (...args) => starts.push(args)
+    })
+    await queue.startRequestStream('thread-recovery', 'request-recovery')
+    assert.deepEqual(reads, ['request-recovery'])
+    assert.deepEqual(starts, [['thread-recovery', 'run-recovery', '0-0', { requestId: 'request-recovery' }]])
+    assert.deepEqual(ts.queuedRequests, [])
+    assert.equal(ts.requestStreams['request-recovery'], undefined)
+  })
+}
+
+test('Request 仍排队时退避后重订阅，派发只交接一次', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const ts = recoveryThread(), starts = []
+  let subscriptions = 0, reads = 0
+  t.mock.method(agentApi, 'streamRequestEvents', async () => {
+    subscriptions++
+    return new Response(subscriptions === 1 ? '' : 'event: run_created\ndata: {"request_id":"request-recovery","run_id":"run-recovery"}\n\n')
+  })
+  t.mock.method(agentApi, 'getRequest', async () => { reads++; return recoveryRequest('queued') })
+  const queue = useAgentRequestQueue({
+    getThreadState: () => ts, resetOnGoingConv: () => {}, startRunStream: (...args) => starts.push(args)
+  })
+  const pending = queue.startRequestStream('thread-recovery', 'request-recovery')
+  await settleRecovery()
+  assert.equal(reads, 1)
+  t.mock.timers.tick(499)
+  await settleRecovery()
+  assert.equal(subscriptions, 1)
+  t.mock.timers.tick(1)
+  await pending
+  assert.equal(subscriptions, 2)
+  assert.equal(starts.length, 1)
+  assert.equal(ts.requestStreams['request-recovery'], undefined)
+})
+
+for (const status of ['failed', 'cancelled', 'rejected']) {
+  test(`排队请求 ${status} 不清理另一个 active Run`, async (t) => {
+    const ts = recoveryThread()
+    Object.assign(ts, { activeRunId: 'run-active', isStreaming: true, pendingRequestId: 'request-active', replyLoadingVisible: true })
+    ts.onGoingConv.msgChunks = { 'request-active': [{ content: 'current' }], 'request-recovery': [{ content: 'queued' }] }
+    t.mock.method(agentApi, 'streamRequestEvents', async () => new Response(`event: ${status}\ndata: {"request_id":"request-recovery"}\n\n`))
+    t.mock.method(agentApi, 'getRequest', () => assert.fail('已收到终态不再次恢复'))
+    const queue = useAgentRequestQueue({ getThreadState: () => ts })
+    await queue.startRequestStream('thread-recovery', 'request-recovery')
+    assert.equal(ts.activeRunId, 'run-active')
+    assert.equal(ts.isStreaming, true)
+    assert.equal(ts.pendingRequestId, 'request-active')
+    assert.equal(ts.replyLoadingVisible, true)
+    assert.deepEqual(ts.onGoingConv.msgChunks['request-active'], [{ content: 'current' }])
+    assert.equal(ts.onGoingConv.msgChunks['request-recovery'], undefined)
+  })
+}
+
+for (const status of [401, 403, 404, 409, 410]) {
+  test(`恢复查询 ${status} 后停止订阅并清除该请求私有投影`, async (t) => {
+    t.mock.method(ErrorHandler, 'handleError', () => {})
+    const ts = recoveryThread()
+    ts.onGoingConv.msgChunks['request-recovery'] = [{ content: 'private queued text' }]
+    t.mock.method(agentApi, 'streamRequestEvents', async () => new Response(''))
+    t.mock.method(agentApi, 'getRequest', async () => { throw Object.assign(new Error('unavailable'), { status }) })
+    const queue = useAgentRequestQueue({ getThreadState: () => ts })
+    await queue.startRequestStream('thread-recovery', 'request-recovery')
+    assert.deepEqual(ts.queuedRequests, [])
+    assert.deepEqual(ts.onGoingConv.msgChunks, {})
+    assert.equal(ts.requestStreams['request-recovery'], undefined)
+    assert.equal(agentApi.streamRequestEvents.mock.callCount(), 1)
+  })
+}
+
+for (const field of ['request_id', 'thread_id']) {
+  test(`PG 恢复的 ${field} 错绑时不订阅相邻 Run`, async (t) => {
+    t.mock.method(ErrorHandler, 'handleError', () => {})
+    const ts = recoveryThread(), starts = [], errors = []
+    t.mock.method(agentApi, 'streamRequestEvents', async () => new Response(''))
+    t.mock.method(agentApi, 'getRequest', async () => {
+      const data = recoveryRequest()
+      data.request[field] = 'neighbor'
+      return data
+    })
+    const queue = useAgentRequestQueue({ getThreadState: () => ts, resetOnGoingConv: () => {}, startRunStream: (...args) => starts.push(args), onStreamError: (...args) => errors.push(args) })
+    await queue.startRequestStream('thread-recovery', 'request-recovery')
+    assert.deepEqual(starts, [])
+    assert.deepEqual(errors, [['thread-recovery', 'request-recovery', 'error']])
+    assert.deepEqual(ts.queuedRequests, [])
+    assert.equal(ts.requestStreams['request-recovery'], undefined)
+  })
+}
+
+test('实际认证 GET 的 403 Error.status 可停止恢复并清除原请求', async (t) => {
+  setActivePinia(createPinia())
+  const user = useUserStore(), ts = recoveryThread(), requests = []
+  user.token = 'synthetic-test-session'
+  t.after(() => user.$dispose())
+  t.mock.method(console, 'error', () => {})
+  const notices = []
+  t.mock.method(ErrorHandler, 'handleError', error => notices.push(error))
+  t.mock.method(agentApi, 'streamRequestEvents', async () => new Response(''))
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    requests.push([url, options.method, !!options.headers.Authorization])
+    return new Response(JSON.stringify({ detail: { code: 'not_found', message: '当前成员不可读取' } }), {
+      status: 403, headers: { 'Content-Type': 'application/json' }
+    })
+  })
+  const queue = useAgentRequestQueue({ getThreadState: () => ts })
+  await queue.startRequestStream('thread-recovery', 'request-recovery')
+  assert.deepEqual(requests, [['/api/agent/requests/request-recovery', 'GET', true]])
+  assert.equal(notices[0].status, 403)
+  assert.equal(notices[0].response.status, 403)
+  assert.deepEqual(ts.queuedRequests, [])
+  assert.equal(ts.requestStreams['request-recovery'], undefined)
+})
+
+test('连续连接失败只尝试六次，保留原请求并提示手动恢复', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const ts = recoveryThread(), notices = []
+  t.mock.method(ErrorHandler, 'handleError', error => notices.push(error.message))
+  t.mock.method(agentApi, 'streamRequestEvents', async () => { throw new TypeError('offline') })
+  t.mock.method(agentApi, 'getRequest', async () => recoveryRequest('queued'))
+  t.mock.method(agentApi, 'createAgentRun', () => assert.fail('不能重提'))
+  const queue = useAgentRequestQueue({ getThreadState: () => ts })
+  const pending = queue.startRequestStream('thread-recovery', 'request-recovery')
+  await settleRecovery()
+  for (const delay of [500, 1000, 2000, 4000, 5000]) {
+    const calls = agentApi.streamRequestEvents.mock.callCount()
+    t.mock.timers.tick(delay - 1)
+    await settleRecovery()
+    assert.equal(agentApi.streamRequestEvents.mock.callCount(), calls)
+    t.mock.timers.tick(1)
+    await settleRecovery()
+  }
+  await pending
+  assert.equal(agentApi.streamRequestEvents.mock.callCount(), 6)
+  assert.equal(agentApi.getRequest.mock.callCount(), 6)
+  assert.deepEqual(ts.queuedRequests, [{ request_id: 'request-recovery', status: 'queued' }])
+  assert.equal(ts.requestStreams['request-recovery'], undefined)
+  assert.match(notices[0], /重新进入会话恢复原请求/)
+  t.mock.timers.tick(100000)
+  await settleRecovery()
+  assert.equal(agentApi.streamRequestEvents.mock.callCount(), 6)
+})
+
+test('成功 queued 帧重置失败计数，继续恢复且不突破退避上限', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const ts = recoveryThread(), starts = []
+  let subscriptions = 0
+  t.mock.method(agentApi, 'streamRequestEvents', async () => {
+    subscriptions++
+    return new Response(subscriptions <= 5 ? '' : subscriptions === 6
+      ? 'event: queued\ndata: {"position":2}\n\n'
+      : 'event: run_created\ndata: {"run_id":"run-recovery"}\n\n')
+  })
+  t.mock.method(agentApi, 'getRequest', async () => recoveryRequest('queued'))
+  t.mock.method(ErrorHandler, 'handleError', error => assert.fail(error.message))
+  const queue = useAgentRequestQueue({ getThreadState: () => ts, resetOnGoingConv: () => {}, startRunStream: (...args) => starts.push(args) })
+  const pending = queue.startRequestStream('thread-recovery', 'request-recovery')
+  await settleRecovery()
+  for (const delay of [500, 1000, 2000, 4000, 5000]) {
+    t.mock.timers.tick(delay)
+    await settleRecovery()
+  }
+  assert.equal(subscriptions, 6)
+  assert.equal(ts.queuedRequests[0].queue_position, 2)
+  t.mock.timers.tick(499)
+  await settleRecovery()
+  assert.equal(subscriptions, 6)
+  t.mock.timers.tick(1)
+  await pending
+  assert.equal(subscriptions, 7)
+  assert.equal(starts.length, 1)
+})
+
+test('停止订阅会清除退避定时器，不再回读或重连', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  t.mock.method(globalThis, 'clearTimeout')
+  const ts = recoveryThread()
+  t.mock.method(agentApi, 'streamRequestEvents', async () => new Response(''))
+  t.mock.method(agentApi, 'getRequest', async () => recoveryRequest('queued'))
+  const queue = useAgentRequestQueue({ getThreadState: () => ts })
+  const pending = queue.startRequestStream('thread-recovery', 'request-recovery')
+  await settleRecovery()
+  const entry = ts.requestStreams['request-recovery']
+  assert.notEqual(entry.reconnectTimer, null)
+  const timer = entry.reconnectTimer
+  queue.stopAllRequestStreams('thread-recovery')
+  await pending
+  assert.equal(entry.reconnectTimer, null)
+  assert.ok(clearTimeout.mock.calls.some(call => call.arguments[0] === timer))
+  assert.equal(entry.controller.signal.aborted, true)
+  t.mock.timers.tick(100000)
+  await settleRecovery()
+  assert.equal(agentApi.streamRequestEvents.mock.callCount(), 1)
+  assert.equal(agentApi.getRequest.mock.callCount(), 1)
+})
+
+for (const stale of ['abort', 'replacement']) {
+  test(`${stale} 后迟到的 PG 恢复响应不能启动旧 Run 或清理新投影`, async (t) => {
+    const ts = recoveryThread(), late = Promise.withResolvers(), starts = []
+    t.mock.method(agentApi, 'streamRequestEvents', async () => new Response(''))
+    t.mock.method(agentApi, 'getRequest', () => late.promise)
+    const queue = useAgentRequestQueue({ getThreadState: () => ts, resetOnGoingConv: () => {}, startRunStream: (...args) => starts.push(args) })
+    const pending = queue.startRequestStream('thread-recovery', 'request-recovery')
+    await settleRecovery()
+    assert.equal(agentApi.getRequest.mock.callCount(), 1)
+    let replacement
+    if (stale === 'abort') queue.stopAllRequestStreams('thread-recovery')
+    else {
+      replacement = { controller: new AbortController() }
+      ts.requestStreams['request-recovery'] = replacement
+    }
+    ts.queuedRequests = [{ request_id: 'new-request', status: 'queued' }]
+    late.resolve(recoveryRequest())
+    await pending
+    assert.deepEqual(ts.queuedRequests, [{ request_id: 'new-request', status: 'queued' }])
+    assert.deepEqual(starts, [])
+    assert.equal(ts.pendingRequestId, null)
+    assert.equal(ts.requestStreams['request-recovery'], replacement)
+  })
+}
+
+/** 从真实组件编译 AST 取恢复动作，证明实际装配顺序。 */
+function chatRecoveryAction(name, deps) {
+  const source = readFileSync(new URL('../../src/components/AgentChatComponent.vue', import.meta.url), 'utf8')
+  const { descriptor } = parse(source)
+  const { scriptSetupAst } = compileScript(descriptor, { id: 'request-recovery-order' })
+  const node = scriptSetupAst.find(node => node.type === 'VariableDeclaration' && node.declarations.some(item => item.id.name === name))
+  assert.ok(node, name)
+  return new Function(...Object.keys(deps), descriptor.scriptSetup.content.slice(node.start, node.end) + `; return ${name}`)(...Object.values(deps))
+}
+
+for (const action of ['resumeCurrentRunForVisiblePage', 'selectChat']) {
+  test(`${action} 在 Run 流结束前已恢复排队 Request`, async () => {
+    const running = Promise.withResolvers(), calls = []
+    const deps = {
+      currentChatId: { value: 'thread-recovery' }, currentThreadId: { value: 'thread-recovery' },
+      currentAgentId: { value: 'health-consultation' }, threadCreationInFlight: { value: false },
+      threads: { value: [{ id: 'thread-recovery', agent_id: 'health-consultation' }] }, props: { singleMode: true },
+      AgentValidator: { validateAgentIdWithError: () => true }, handleValidationError: assert.fail,
+      withConfigNoticeSync: async callback => callback(), setCurrentThreadId: () => {}, syncThreadConfigSnapshot: () => {},
+      chatUIStore: {}, fetchThreadMessages: async () => {}, chatThreadsStore: { markThreadViewed: () => {} },
+      nextTick: async () => {}, scrollController: { scrollToBottomStaticForce: async () => {} },
+      handleAgentStateRefresh: async () => {}, handleChatError: assert.fail,
+      resolveAgentSlugForThread: () => 'health-consultation',
+      resumeActiveRunForThread: () => { calls.push('run'); return running.promise },
+      resumeQueuedRequests: async () => calls.push('requests'), restorePendingInterruptForThread: () => calls.push('interrupt')
+    }
+    const pending = chatRecoveryAction(action, deps)('thread-recovery')
+    await settleRecovery()
+    assert.deepEqual(calls, ['run', 'requests'])
+    running.resolve()
+    await pending
+    assert.deepEqual(calls, ['run', 'requests', 'interrupt'])
+  })
+}
+
+for (const recovery of ['snapshot', 'active', 'active-interrupted', 'open-interrupted']) {
+  test(`${recovery} Run 恢复重放保留已并发订阅的 Request`, async (t) => {
+    const active = Promise.withResolvers(), requestSignals = []
+    const state = useAgentThreadState({ chatState: reactive({ threadStates: {} }), getCurrentThreadId: () => 'thread-recovery' })
+    const ts = state.getThreadState('thread-recovery')
+    ts.queuedRequests = [{ request_id: 'request-recovery', status: 'queued' }]
+    if (recovery === 'snapshot') localStorage.setItem('active_run:thread-recovery', JSON.stringify({ run_id: 'run-active', created_at: Date.now() }))
+    if (recovery === 'open-interrupted') {
+      ts.activeRunId = 'run-active'
+      ts.runStreamAbortController = new AbortController()
+    }
+    const response = signal => new Response(new ReadableStream({ start(controller) {
+      signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true })
+    } }))
+    t.mock.method(agentApi, 'streamRequestEvents', async (_id, { signal }) => { requestSignals.push(signal); return response(signal) })
+    t.mock.method(agentApi, 'streamAgentRunEvents', async (_id, _cursor, { signal }) => response(signal))
+    t.mock.method(agentApi, 'listThreadQueuedRequests', async () => ({ requests: ts.queuedRequests }))
+    t.mock.method(agentApi, recovery === 'snapshot' || recovery === 'open-interrupted' ? 'getAgentRun' : 'getThreadActiveRun', () => active.promise)
+    const runStream = useAgentRunStream({
+      getThreadState: state.getThreadState, currentAgentId: { value: 'health-consultation' },
+      resetOnGoingConv: state.resetOnGoingConv, handleStreamChunk: () => {},
+      fetchThreadMessages: async () => {}, fetchAgentState: async () => {}, onScrollToBottom: () => {}
+    })
+    const queue = useAgentRequestQueue({ getThreadState: state.getThreadState, resetOnGoingConv: state.resetOnGoingConv, startRunStream: runStream.startRunStream })
+    const pending = runStream.resumeActiveRunForThread('thread-recovery')
+    try {
+      await queue.resumeQueuedRequests('thread-recovery', 'health-consultation')
+      active.resolve({ run: { id: 'run-active', status: recovery.includes('interrupted') ? 'interrupted' : 'pending' } })
+      await settleRecovery()
+      assert.equal(ts.activeRunId, 'run-active')
+      assert.equal(requestSignals.length, 1)
+      assert.equal(requestSignals[0].aborted, false)
+      assert.ok(ts.requestStreams['request-recovery'])
+    } finally {
+      runStream.stopRunStreamSubscription('thread-recovery')
+      queue.stopAllRequestStreams('thread-recovery')
+      await pending
+      localStorage.removeItem('active_run:thread-recovery')
+    }
+  })
+}
+
+for (const recovery of ['snapshot', 'snapshot-steering', 'active', 'open-interrupted']) {
+  test(`${recovery} 迟到 Run 恢复查询不能覆盖 Request 刚派发的新 Run`, async (t) => {
+    const late = Promise.withResolvers(), streams = []
+    const ts = recoveryThread()
+    if (recovery.startsWith('snapshot')) localStorage.setItem('active_run:thread-recovery', JSON.stringify({ run_id: 'run-old', created_at: Date.now() }))
+    if (recovery === 'open-interrupted') {
+      ts.activeRunId = 'run-old'
+      ts.runStreamAbortController = new AbortController()
+    }
+    t.mock.method(agentApi, recovery === 'active' ? 'getThreadActiveRun' : 'getAgentRun', (id) => id === 'run-new'
+      ? { run: { id, conversation_thread_id: 'thread-recovery', request_id: 'request-recovery', status: 'pending' } }
+      : recovery === 'snapshot-steering'
+        ? { run: { id: 'run-old', status: 'running', run_type: 'chat', request_id: 'request-old' } } : late.promise)
+    if (recovery === 'snapshot-steering') t.mock.method(agentApi, 'getRequest', () => late.promise)
+    t.mock.method(agentApi, 'streamAgentRunEvents', async (id, _cursor, { signal }) => {
+      streams.push({ id, signal })
+      return new Response(new ReadableStream({ start(controller) {
+        signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true })
+      } }))
+    })
+    t.mock.method(agentApi, 'streamRequestEvents', async () => new Response('event: run_created\ndata: {"run_id":"run-new"}\n\n'))
+    const runStream = useAgentRunStream({
+      getThreadState: () => ts, currentAgentId: { value: 'health-consultation' },
+      resetOnGoingConv: () => {}, handleStreamChunk: () => {},
+      fetchThreadMessages: async () => {}, fetchAgentState: async () => {}, onScrollToBottom: () => {}
+    })
+    const queue = useAgentRequestQueue({ getThreadState: () => ts, resetOnGoingConv: () => {}, startRunStream: runStream.startRunStream })
+    const pending = runStream.resumeActiveRunForThread('thread-recovery')
+    try {
+      if (recovery === 'snapshot-steering') await settleRecovery()
+      await queue.startRequestStream('thread-recovery', 'request-recovery')
+      late.resolve(recovery === 'snapshot-steering' ? { request: { source: 'chat' } }
+        : { run: { id: 'run-old', status: recovery === 'open-interrupted' ? 'interrupted' : 'pending' } })
+      await settleRecovery()
+      assert.equal(ts.activeRunId, 'run-new')
+      assert.deepEqual(streams.map(stream => stream.id), ['run-new'])
+      assert.equal(streams[0].signal.aborted, false)
+    } finally {
+      runStream.stopRunStreamSubscription('thread-recovery')
+      queue.stopAllRequestStreams('thread-recovery')
+      await pending
+      localStorage.removeItem('active_run:thread-recovery')
+    }
+  })
+}
+
+test('Run 恢复查询返回前线程已清理，新线程对象不接收旧结果', async (t) => {
+  const old = recoveryThread(), fresh = recoveryThread(), late = Promise.withResolvers()
+  let current = old
+  t.mock.method(agentApi, 'getThreadActiveRun', () => late.promise)
+  t.mock.method(agentApi, 'streamAgentRunEvents', () => assert.fail('新线程对象不能订阅旧查询结果'))
+  const runStream = useAgentRunStream({ getThreadState: () => current, resetOnGoingConv: () => assert.fail('不能清理新线程') })
+  const pending = runStream.resumeActiveRunForThread('thread-recovery')
+  current = fresh
+  late.resolve({ run: { id: 'run-old', status: 'pending' } })
+  await pending
+  assert.equal(fresh.activeRunId, null)
+  assert.equal(old.activeRunId, null)
+})
+
+for (const recovery of ['queued', 'eof', 'late']) {
+  test(`Vue reactive 线程的 ${recovery} Request 订阅使用真实代理 owner`, async (t) => {
+    const state = useAgentThreadState({ chatState: reactive({ threadStates: {} }), getCurrentThreadId: () => 'thread-recovery' })
+    const ts = state.getThreadState('thread-recovery'), starts = [], late = Promise.withResolvers()
+    ts.queuedRequests = [{ request_id: 'request-recovery', status: 'queued' }]
+    let signal
+    t.mock.method(agentApi, 'streamRequestEvents', async (_id, options) => {
+      signal = options.signal
+      if (recovery !== 'queued') return new Response('')
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(new TextEncoder().encode('event: queued\ndata: {"request_id":"request-recovery","position":2}\n\n'))
+        signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true })
+      } }))
+    })
+    t.mock.method(agentApi, 'getRequest', () => recovery === 'late' ? late.promise : recoveryRequest())
+    const queue = useAgentRequestQueue({ getThreadState: state.getThreadState, resetOnGoingConv: state.resetOnGoingConv, startRunStream: (...args) => starts.push(args) })
+    const pending = queue.startRequestStream('thread-recovery', 'request-recovery')
+    try {
+      await settleRecovery()
+      assert.equal(isProxy(ts), true)
+      assert.equal(agentApi.streamRequestEvents.mock.callCount(), 1)
+      if (recovery === 'queued') {
+        assert.equal(isProxy(ts.requestStreams['request-recovery']), true)
+        assert.equal(ts.queuedRequests[0].queue_position, 2)
+        assert.equal(signal.aborted, false)
+      } else if (recovery === 'eof') {
+        await pending
+        assert.equal(agentApi.getRequest.mock.callCount(), 1)
+        assert.deepEqual(starts, [['thread-recovery', 'run-recovery', '0-0', { requestId: 'request-recovery' }]])
+        assert.equal(ts.pendingRequestId, 'request-recovery')
+      } else {
+        assert.equal(agentApi.getRequest.mock.callCount(), 1)
+        queue.stopAllRequestStreams('thread-recovery')
+        ts.queuedRequests = [{ request_id: 'new-request', status: 'queued' }]
+        late.resolve(recoveryRequest())
+        await pending
+        assert.deepEqual(starts, [])
+        assert.deepEqual(ts.queuedRequests, [{ request_id: 'new-request', status: 'queued' }])
+      }
+    } finally {
+      queue.stopAllRequestStreams('thread-recovery')
+      late.resolve(recoveryRequest())
+      await pending
+    }
+  })
+}
+
+for (const connection of ['live', 'stopped']) {
+  test(`同 Run ${connection} 重复交接保持游标与已消费正文`, async (t) => {
+    const state = useAgentThreadState({ chatState: reactive({ threadStates: {} }), getCurrentThreadId: () => 'thread-review' })
+    const ts = state.getThreadState('thread-review'), streams = [], running = []
+    ts.queuedRequests = [{ request_id: 'request-review', status: 'queued' }]
+    t.mock.method(agentApi, 'streamRequestEvents', async () => new Response('event: run_created\ndata: {"request_id":"request-review","run_id":"run-review"}\n\n'))
+    t.mock.method(agentApi, 'streamAgentRunEvents', async (id, cursor, { signal }) => {
+      streams.push({ id, cursor, signal })
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(new TextEncoder().encode('id: 1-1\nevent: chunk\ndata: {"run_id":"run-review","request_id":"request-review","thread_id":"thread-review","payload":{"chunk":{"status":"loading","stream_event":{"type":"message_delta","message_id":"message-review","content":"hello"}}}}\n\n'))
+        signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true })
+      } }))
+    })
+    const handler = useAgentStreamHandler({ getThreadState: state.getThreadState })
+    const runStream = useAgentRunStream({
+      getThreadState: state.getThreadState, currentAgentId: { value: 'health-consultation' },
+      resetOnGoingConv: state.resetOnGoingConv, handleStreamChunk: handler.handleStreamChunk,
+      fetchThreadMessages: async () => {}, fetchAgentState: async () => {}, onScrollToBottom: () => {}
+    })
+    const queue = useAgentRequestQueue({
+      getThreadState: state.getThreadState, resetOnGoingConv: state.resetOnGoingConv,
+      startRunStream: (...args) => { const pending = runStream.startRunStream(...args); running.push(pending); return pending }
+    })
+    const pending = queue.startRequestStream('thread-review', 'request-review')
+    try {
+      await settleRecovery()
+      assert.equal(isProxy(ts), true)
+      assert.equal(agentApi.streamRequestEvents.mock.callCount(), 1)
+      assert.deepEqual(streams.map(({ id, cursor }) => [id, cursor]), [['run-review', '0-0']])
+      assert.deepEqual(ts.onGoingConv.msgChunks['message-review'].map(chunk => chunk.content), ['hello'])
+      assert.equal(ts.runLastSeq, '1-1')
+      const owner = ts.runStreamAbortController
+      if (connection === 'stopped') {
+        runStream.stopRunStreamSubscription('thread-review')
+        await running[0]
+        assert.equal(ts.runStreamAbortController, null)
+      }
+      await pending
+      ts.queuedRequests = [{ request_id: 'request-review', status: 'queued' }]
+      await queue.startRequestStream('thread-review', 'request-review')
+      await settleRecovery()
+      assert.equal(agentApi.streamRequestEvents.mock.callCount(), 2)
+      assert.deepEqual(ts.onGoingConv.msgChunks['message-review'].map(chunk => chunk.content), ['hello'])
+      assert.equal(ts.activeRunId, 'run-review')
+      assert.equal(ts.runLastSeq, '1-1')
+      assert.deepEqual(ts.queuedRequests, [])
+      if (connection === 'live') {
+        assert.equal(streams.length, 1)
+        assert.equal(ts.runStreamAbortController, owner)
+        assert.equal(streams[0].signal.aborted, false)
+      } else {
+        assert.deepEqual(streams.map(({ id, cursor }) => [id, cursor]), [['run-review', '0-0'], ['run-review', '1-1']])
+        assert.equal(streams[1].signal.aborted, false)
+      }
+    } finally {
+      await pending
+      queue.stopAllRequestStreams('thread-review')
+      runStream.stopRunStreamSubscription('thread-review')
+      await Promise.all(running)
+      localStorage.removeItem('active_run:thread-review')
+    }
+  })
+}
+
+for (const recovery of ['known', 'parallel-empty']) {
+  test(`${recovery} 两 Request 的迟到旧队列快照不能复活旧 Run 或重复当前正文`, async (t) => {
+    const state = useAgentThreadState({ chatState: reactive({ threadStates: {} }), getCurrentThreadId: () => 'thread-review' })
+    const ts = state.getThreadState('thread-review'), initial = Promise.withResolvers(), stale = Promise.withResolvers(), second = Promise.withResolvers()
+    const requests = [{ request_id: 'request-one', status: 'queued' }, { request_id: 'request-two', status: 'queued' }]
+    const streams = [], running = [], resumes = []
+    let queueReads = 0
+    ts.queuedRequests = recovery === 'known' ? requests : []
+    t.mock.method(agentApi, 'listThreadQueuedRequests', () => {
+      queueReads++
+      return recovery === 'parallel-empty' && queueReads === 1 ? initial.promise : stale.promise
+    })
+    t.mock.method(agentApi, 'streamRequestEvents', async (requestId) => {
+      if (requestId === 'request-two') await second.promise
+      return new Response(`event: run_created\ndata: ${JSON.stringify({ request_id: requestId, run_id: requestId === 'request-one' ? 'run-one' : 'run-two' })}\n\n`)
+    })
+    t.mock.method(agentApi, 'streamAgentRunEvents', async (id, cursor, { signal }) => {
+      streams.push({ id, cursor, signal })
+      return new Response(new ReadableStream({ start(controller) {
+        const frame = id === 'run-one'
+          ? 'id: 1-2\nevent: end\ndata: {"run_id":"run-one","payload":{"status":"completed"}}\n\n'
+          : 'id: 1-1\nevent: chunk\ndata: {"run_id":"run-two","request_id":"request-two","thread_id":"thread-review","payload":{"chunk":{"status":"loading","stream_event":{"type":"message_delta","message_id":"message-two","content":"hello"}}}}\n\n'
+        controller.enqueue(new TextEncoder().encode(frame))
+        signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true })
+      } }))
+    })
+    const handler = useAgentStreamHandler({ getThreadState: state.getThreadState })
+    const runStream = useAgentRunStream({
+      getThreadState: state.getThreadState, currentAgentId: { value: 'health-consultation' },
+      resetOnGoingConv: state.resetOnGoingConv, handleStreamChunk: handler.handleStreamChunk,
+      fetchThreadMessages: async () => {}, fetchAgentState: async () => {}, onScrollToBottom: () => {}
+    })
+    const queue = useAgentRequestQueue({
+      getThreadState: state.getThreadState, resetOnGoingConv: state.resetOnGoingConv,
+      startRunStream: (...args) => { const pending = runStream.startRunStream(...args); running.push(pending); return pending }
+    })
+    resumes.push(queue.resumeQueuedRequests('thread-review', 'health-consultation'))
+    if (recovery === 'parallel-empty') {
+      resumes.push(queue.resumeQueuedRequests('thread-review', 'health-consultation'))
+      initial.resolve({ requests })
+      await resumes[0]
+    }
+    try {
+      await settleRecovery()
+      assert.equal(isProxy(ts), true)
+      assert.equal(queueReads, recovery === 'known' ? 1 : 2)
+      assert.equal(ts.activeRunId, null)
+      assert.deepEqual(streams.map(({ id, cursor }) => [id, cursor]), [['run-one', '0-0']])
+      second.resolve()
+      await settleRecovery()
+      assert.equal(ts.activeRunId, 'run-two')
+      assert.deepEqual(ts.onGoingConv.msgChunks['message-two'].map(chunk => chunk.content), ['hello'])
+      const owner = ts.runStreamAbortController
+      stale.resolve({ requests })
+      await Promise.all(resumes)
+      await settleRecovery()
+      assert.deepEqual(ts.onGoingConv.msgChunks['message-two'].map(chunk => chunk.content), ['hello'])
+      assert.deepEqual(streams.map(({ id, cursor }) => [id, cursor]), [['run-one', '0-0'], ['run-two', '0-0']])
+      assert.equal(agentApi.streamRequestEvents.mock.callCount(), 2)
+      assert.equal(ts.activeRunId, 'run-two')
+      assert.equal(ts.runStreamAbortController, owner)
+      assert.equal(owner.signal.aborted, false)
+      assert.deepEqual(ts.queuedRequests, [])
+    } finally {
+      initial.resolve({ requests: [] })
+      stale.resolve({ requests: [] })
+      second.resolve()
+      await Promise.all(resumes)
+      queue.stopAllRequestStreams('thread-review')
+      runStream.stopRunStreamSubscription('thread-review')
+      await Promise.all(running)
+      localStorage.removeItem('active_run:thread-review')
+    }
+  })
+}
+
+test('队列快照返回前线程对象已替换，不回写旧线程或新线程', async (t) => {
+  const chatState = reactive({ threadStates: {} }), list = Promise.withResolvers()
+  const state = useAgentThreadState({ chatState, getCurrentThreadId: () => 'thread-review' })
+  const old = state.getThreadState('thread-review')
+  old.queuedRequests = [{ request_id: 'old-local', status: 'queued' }]
+  t.mock.method(agentApi, 'listThreadQueuedRequests', () => list.promise)
+  const queue = useAgentRequestQueue({ getThreadState: state.getThreadState })
+  const pending = queue.syncQueuedRequests('thread-review', 'health-consultation')
+  state.cleanupThreadState('thread-review')
+  const fresh = state.getThreadState('thread-review')
+  fresh.queuedRequests = [{ request_id: 'new-local', status: 'queued' }]
+  list.resolve({ requests: [{ request_id: 'old-server', status: 'queued' }] })
+  await pending
+  assert.notEqual(old, fresh)
+  assert.deepEqual(old.queuedRequests, [{ request_id: 'old-local', status: 'queued' }])
+  assert.deepEqual(fresh.queuedRequests, [{ request_id: 'new-local', status: 'queued' }])
+})
+
+for (const local of ['sending-push', 'accepted-replacement']) {
+  test(`队列读取期间 ${local} 新本地请求保持原有合并语义`, async (t) => {
+    const state = useAgentThreadState({ chatState: reactive({ threadStates: {} }), getCurrentThreadId: () => 'thread-review' })
+    const ts = state.getThreadState('thread-review'), list = Promise.withResolvers()
+    t.mock.method(agentApi, 'listThreadQueuedRequests', () => list.promise)
+    const queue = useAgentRequestQueue({ getThreadState: state.getThreadState })
+    const pending = queue.syncQueuedRequests('thread-review', 'health-consultation')
+    const localRequest = { request_id: 'new-local', status: local === 'sending-push' ? 'sending' : 'queued' }
+    if (local === 'sending-push') ts.queuedRequests.push(localRequest)
+    else ts.queuedRequests = [localRequest]
+    list.resolve({ requests: [{ request_id: 'server-queued', status: 'queued' }] })
+    await pending
+    assert.deepEqual(ts.queuedRequests, local === 'sending-push'
+      ? [{ request_id: 'server-queued', status: 'queued' }, localRequest]
+      : [localRequest])
+  })
+}
+
+for (const outcome of ['eof-completed', 'eof-failed', 'eof-cancelled', 'eof-interrupted', 'sse-completed', 'sse-interrupted', 'pending', 'running', 'finalized', 'reconnected', 'owner', 'abort', 'replacement', 'thread-replaced', 'id', 'thread', 'request', 'reject', 'transient', 'exhausted', 'sse-transient', 'sse-exhausted', 'network']) {
+  test(`跨 Run ${outcome} 派发查询保持实际 consumer 的当前 owner 与正文`, async (t) => {
+    const recovers = ['transient', 'sse-transient', 'network'].includes(outcome)
+    const exhausts = ['exhausted', 'sse-exhausted'].includes(outcome)
+    if (recovers || exhausts) t.mock.timers.enable({ apis: ['setTimeout'] })
+    const state = useAgentThreadState({ chatState: reactive({ threadStates: {} }), getCurrentThreadId: () => 'thread-review' })
+    let ts = state.getThreadState('thread-review'), eventController, replacement
+    let oldSubscriptions = 0
+    const requestRead = Promise.withResolvers(), runRead = Promise.withResolvers(), running = [], streams = [], reads = [], notices = [], errors = []
+    ts.queuedRequests = [{ request_id: 'request-old', status: 'queued' }, { request_id: 'request-new', status: 'queued' }]
+    t.mock.method(ErrorHandler, 'handleError', error => notices.push(error))
+    t.mock.method(agentApi, 'getRequest', () => requestRead.promise)
+    t.mock.method(agentApi, 'getAgentRun', async (id) => {
+      reads.push(id)
+      if (id === 'run-old' && reads.length > 1 && recovers) return { run: { id, conversation_thread_id: 'thread-review', request_id: 'request-old', status: 'running' } }
+      if (id === 'run-old' && reads.length > 1 && exhausts) throw Object.assign(new Error('临时候选查询故障'), { status: 500 })
+      return id === 'run-old' ? runRead.promise : { run: { id, conversation_thread_id: 'thread-review', request_id: 'request-third', status: 'pending' } }
+    })
+    t.mock.method(agentApi, 'streamRequestEvents', async (id, { signal }) => {
+      if (id === 'request-old') {
+        oldSubscriptions++
+        if (!outcome.startsWith('sse-')) return new Response('')
+        if (oldSubscriptions > 1) return new Response('event: run_created\ndata: {"request_id":"request-old","run_id":"run-old"}\n\n')
+        return new Response(new ReadableStream({ start(controller) {
+          eventController = controller
+          signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true })
+        } }))
+      }
+      return new Response(`event: run_created\ndata: ${JSON.stringify({ request_id: id, run_id: id === 'request-new' ? 'run-new' : 'run-third' })}\n\n`)
+    })
+    t.mock.method(agentApi, 'streamAgentRunEvents', async (id, cursor, { signal }) => {
+      const stream = { id, cursor, signal }
+      streams.push(stream)
+      return new Response(new ReadableStream({ start(controller) {
+        stream.controller = controller
+        const frame = id === 'run-old' && !['pending', 'running', 'finalized', 'reconnected'].includes(outcome) && !recovers
+          ? 'id: 1-2\nevent: end\ndata: {"run_id":"run-old","payload":{"status":"completed"}}\n\n'
+          : `id: 1-1\nevent: chunk\ndata: ${JSON.stringify({ run_id: id, request_id: id.replace('run-', 'request-'), thread_id: 'thread-review', payload: { chunk: { status: 'loading', stream_event: { type: 'message_delta', message_id: id.replace('run-', 'message-'), content: id.replace('run-', 'hello-') } } } })}\n\n`
+        controller.enqueue(new TextEncoder().encode(frame))
+        signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true })
+      } }))
+    })
+    const handler = useAgentStreamHandler({ getThreadState: state.getThreadState })
+    const runStream = useAgentRunStream({
+      getThreadState: state.getThreadState, currentAgentId: { value: 'health-consultation' },
+      resetOnGoingConv: state.resetOnGoingConv, handleStreamChunk: handler.handleStreamChunk,
+      fetchThreadMessages: async () => {}, fetchAgentState: async () => {}, onScrollToBottom: () => {}
+    })
+    const queue = useAgentRequestQueue({
+      getThreadState: state.getThreadState, resetOnGoingConv: state.resetOnGoingConv,
+      startRunStream: (...args) => { const pending = runStream.startRunStream(...args); running.push(pending); return pending },
+      onStreamError: (...args) => errors.push(args)
+    })
+    const oldRequest = queue.startRequestStream('thread-review', 'request-old')
+    try {
+      await settleRecovery()
+      await queue.startRequestStream('thread-review', 'request-new')
+      await settleRecovery()
+      const originalOwner = ts.runStreamAbortController
+      assert.equal(ts.activeRunId, 'run-new')
+      assert.deepEqual(ts.onGoingConv.msgChunks['message-new'].map(chunk => chunk.content), ['hello-new'])
+      if (outcome.startsWith('sse-')) {
+        eventController.enqueue(new TextEncoder().encode('event: run_created\ndata: {"request_id":"request-old","run_id":"run-old"}\n\n'))
+        eventController.close()
+      }
+      else requestRead.resolve({ request: { request_id: 'request-old', thread_id: 'thread-review', status: 'dispatched', dispatched_run_id: 'run-old' } })
+      await settleRecovery()
+      assert.equal(ts.activeRunId, 'run-new')
+      assert.equal(ts.pendingRequestId, 'request-new')
+      assert.equal(ts.runStreamAbortController, originalOwner)
+      assert.deepEqual(reads, ['run-old'])
+      if (outcome === 'finalized') {
+        streams[0].controller.enqueue(new TextEncoder().encode('id: 1-2\nevent: end\ndata: {"run_id":"run-new","payload":{"status":"completed"}}\n\n'))
+        await settleRecovery()
+        assert.equal(ts.activeRunId, null)
+      } else if (outcome === 'reconnected') {
+        running.push(runStream.startRunStream('thread-review', 'run-new', '1-1'))
+        await settleRecovery()
+        assert.equal(ts.activeRunId, 'run-new')
+        assert.notEqual(ts.runStreamAbortController, originalOwner)
+      } else if (outcome === 'owner' || outcome === 'thread-replaced') {
+        if (outcome === 'thread-replaced') {
+          state.cleanupThreadState('thread-review')
+          ts = state.getThreadState('thread-review')
+        }
+        await queue.startRequestStream('thread-review', 'request-third')
+        await settleRecovery()
+        assert.equal(ts.activeRunId, 'run-third')
+      } else if (outcome === 'abort') queue.stopAllRequestStreams('thread-review')
+      else if (outcome === 'replacement') {
+        ts.requestStreams['request-old'] = { controller: new AbortController() }
+        replacement = ts.requestStreams['request-old']
+      }
+      const fact = { run: { id: 'run-old', conversation_thread_id: 'thread-review', request_id: 'request-old', status: outcome.includes('-') ? outcome.split('-').at(-1) : outcome === 'running' ? 'running' : 'pending' } }
+      if (outcome === 'id') fact.run.id = 'neighbor-run'
+      if (outcome === 'thread') fact.run.conversation_thread_id = 'neighbor-thread'
+      if (outcome === 'request') fact.run.request_id = 'neighbor-request'
+      if (outcome === 'network') runRead.reject(new TypeError('候选运行查询断网'))
+      else if (recovers || exhausts) runRead.reject(Object.assign(new Error('临时候选查询故障'), { status: 500 }))
+      else if (outcome === 'reject') runRead.reject(Object.assign(new Error('候选 Run 不可读取'), { status: 403 }))
+      else runRead.resolve(fact)
+      if (recovers || exhausts) {
+        await settleRecovery()
+        assert.equal(ts.queuedRequests.some(request => request.request_id === 'request-old'), true)
+        assert.equal(ts.requestStreams['request-old'].status, 'queued')
+        assert.deepEqual(errors, [])
+        assert.deepEqual(notices, [])
+        for (const delay of recovers ? [500] : [500, 1000, 2000, 4000, 5000]) {
+          t.mock.timers.tick(delay)
+          await settleRecovery()
+        }
+        assert.equal(reads.filter(id => id === 'run-old').length, recovers ? 2 : 6)
+      }
+      await oldRequest
+      await settleRecovery()
+      const accepts = ['pending', 'running', 'finalized', 'reconnected'].includes(outcome) || recovers
+      const active = accepts ? 'run-old' : ['owner', 'thread-replaced'].includes(outcome) ? 'run-third' : 'run-new'
+      assert.equal(ts.activeRunId, active)
+      assert.equal(ts.isStreaming, true)
+      assert.equal(ts.pendingRequestId, active.replace('run-', 'request-'))
+      assert.deepEqual(ts.onGoingConv.msgChunks[active.replace('run-', 'message-')].map(chunk => chunk.content), [active.replace('run-', 'hello-')])
+      assert.deepEqual(streams.map(stream => stream.id), outcome === 'reconnected' ? ['run-new', 'run-new', 'run-old'] : accepts ? ['run-new', 'run-old'] : ['owner', 'thread-replaced'].includes(outcome) ? ['run-new', 'run-third'] : ['run-new'])
+      assert.equal(streams.at(-1).signal.aborted, false)
+      assert.equal(ts.requestStreams['request-old'], replacement)
+      assert.deepEqual(errors, ['id', 'thread', 'request', 'reject'].includes(outcome) ? [['thread-review', 'request-old', 'error']] : [])
+      assert.equal(notices.length, ['id', 'thread', 'request', 'reject'].includes(outcome) || exhausts ? 1 : 0)
+      if (outcome === 'reject') assert.equal(notices[0].status, 403)
+      if (exhausts) {
+        assert.match(notices[0].message, /重新进入会话恢复原请求/)
+        assert.equal(agentApi.streamRequestEvents.mock.callCount(), 7)
+        assert.equal(agentApi.getRequest.mock.callCount(), outcome.startsWith('sse-') ? 0 : 6)
+        assert.deepEqual(ts.queuedRequests, [{ request_id: 'request-old', status: 'queued' }])
+        t.mock.timers.tick(100000)
+        await settleRecovery()
+        assert.equal(reads.filter(id => id === 'run-old').length, 6)
+      }
+    } finally {
+      requestRead.resolve({ request: { request_id: 'request-old', thread_id: 'thread-review', status: 'cancelled' } })
+      runRead.resolve({ run: { id: 'run-old', conversation_thread_id: 'thread-review', request_id: 'request-old', status: 'completed' } })
+      queue.stopAllRequestStreams('thread-review')
+      runStream.stopRunStreamSubscription('thread-review')
+      await oldRequest
+      await Promise.all(running)
+      localStorage.removeItem('active_run:thread-review')
+    }
+  })
+}
 
 test('审批前后的工具和思考跨关联 Run 连续展示，正文仍独立', () => {
   const runs = [
@@ -477,9 +1255,11 @@ test('恢复队列在同步后重新读取线程状态并启动当前请求流',
     assert.deepEqual(streamStarts, [
       ['thread-1', 'run-for-request-latest', '0-0', { requestId: 'request-latest' }]
     ])
+    // 迟到同步不再回写已被替换的线程，恢复动作仍订阅当前线程的队列。
     assert.deepEqual(staleThreadState.queuedRequests, [
-      { request_id: 'request-from-sync', status: 'queued' }
+      { request_id: 'request-stale', status: 'queued' }
     ])
+    assert.deepEqual(latestThreadState.queuedRequests, [])
     assert.equal(latestThreadState.requestStreams['request-latest'], undefined)
   } finally {
     agentApi.listThreadQueuedRequests = originalListThreadQueuedRequests
@@ -534,7 +1314,8 @@ test('run_created 立即完成状态交接并订阅新 Run SSE', async () => {
   }
 })
 
-test('run_created 先到达时保留旧 Run 已渲染的内容', async () => {
+test('run_created 先到达时保留旧 Run 已渲染的内容', async (t) => {
+  t.mock.method(agentApi, 'getAgentRun', async (id) => ({ run: { id, conversation_thread_id: 'thread-1', request_id: 'request-2', status: 'pending' } }))
   const oldMessages = { 'old-message': [{ id: 'old-message', content: '旧回复' }] }
   const threadState = {
     activeRunId: 'run-1',
@@ -568,7 +1349,8 @@ test('run_created 先到达时保留旧 Run 已渲染的内容', async () => {
   }
 })
 
-test('replacement Run SSE 的增量 chunk 会连续进入前端渲染处理', async () => {
+test('replacement Run SSE 的增量 chunk 会连续进入前端渲染处理', async (t) => {
+  t.mock.method(agentApi, 'getAgentRun', async (id) => ({ run: { id, conversation_thread_id: 'thread-1', request_id: 'request-2', status: 'pending' } }))
   const oldMessages = { 'old-message': [{ id: 'old-message', content: '旧回复' }] }
   const threadState = {
     activeRunId: 'run-1',

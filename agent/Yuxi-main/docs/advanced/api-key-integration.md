@@ -123,11 +123,11 @@ curl --no-buffer --fail "$BASE_URL<stream_url>" \
   -H 'Accept: text/event-stream'
 ```
 
-每个事件包含 `event`、`data` 和 `id`：
+事件包含 `event` 和 `data`；Redis 事件另带 `id`：
 
 - `event` 是事件类型；常见过程事件包括消息、工具和状态更新，`end` 表示该 Run 的终止事件，`error` 表示流中的错误事件；
 - `data` 是 JSON envelope，包含 `run_id`、`thread_id` 和事件载荷；
-- `id` 是 Redis Stream 游标；
+- `id` 是 Redis Stream 游标；Request 当前状态事件和数据库补发的 Run 结束事件没有 `id`，不推进已有游标；
 - 以 `:` 开头的行是 heartbeat，客户端应忽略；
 - 收到 `end` 或 `error` 后停止等待新的输出，并用同一 `run_id` 读取最终结果；
 - 断线重连时可以发送 `Last-Event-ID`，也可以在 URL 中使用 `after_seq`；

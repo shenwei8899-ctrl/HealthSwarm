@@ -466,11 +466,19 @@ export function useAgentRunStream({
     if (!threadId) return
     const ts = getThreadState(threadId)
     if (!ts) return
+    const expectedActiveRunId = ts.activeRunId
+    const expectedController = ts.runStreamAbortController
+    /** Request 并发派发后，旧恢复查询不能覆盖新的 Run 订阅。 */
+    const isCurrentRecovery = () =>
+      getThreadState(threadId) === ts &&
+      ts.activeRunId === expectedActiveRunId &&
+      ts.runStreamAbortController === expectedController
 
     if (ts.runStreamAbortController) {
       if (!ts.activeRunId) return
       try {
         const runRes = await agentApi.getAgentRun(ts.activeRunId)
+        if (!isCurrentRecovery()) return
         const run = runRes?.run
         if (run?.status === RUN_INTERRUPTED_STATUS) {
           stopRunStreamSubscription(threadId)
@@ -478,7 +486,7 @@ export function useAgentRunStream({
           if (hasPendingInterruptForRun(ts, run.id)) {
             await preserveInterruptedRun(threadId, run, snapshot)
           } else {
-            resetOnGoingConv(threadId)
+            resetOnGoingConv(threadId, { preserveRequestStreams: true })
             await startRunStream(threadId, run.id, '0-0')
           }
         } else if (run && RUN_TERMINAL_STATUSES.has(run.status)) {
@@ -501,6 +509,7 @@ export function useAgentRunStream({
       } else {
         try {
           const runRes = await agentApi.getAgentRun(snapshot.run_id)
+          if (!isCurrentRecovery()) return
           const run = runRes?.run
           if (run?.status === RUN_INTERRUPTED_STATUS) {
             // 仅当本地仍持有该中断时才据快照恢复；否则不能仅凭快照重放旧中断
@@ -510,42 +519,47 @@ export function useAgentRunStream({
               return
             }
           } else if (run && !RUN_TERMINAL_STATUSES.has(run.status)) {
+            const steerable = await resolveRunSteerable(run)
+            if (!isCurrentRecovery()) return
             const afterSeq = resolveRunResumeAfterSeq({
               snapshot,
               threadState: ts
             })
             if (afterSeq === '0-0') {
-              resetOnGoingConv(threadId)
+              resetOnGoingConv(threadId, { preserveRequestStreams: true })
             }
             await startRunStream(threadId, run.id, afterSeq, {
-              steerable: await resolveRunSteerable(run)
+              steerable
             })
             return
           }
         } catch {
           // ignore
         }
+        if (!isCurrentRecovery()) return
         clearActiveRunSnapshot(threadId)
       }
     }
 
-    const expectedActiveRunId = ts.activeRunId
     try {
       const active = await agentApi.getThreadActiveRun(threadId)
+      if (!isCurrentRecovery()) return
       const run = active?.run
       if (run?.status === RUN_INTERRUPTED_STATUS) {
         if (hasPendingInterruptForRun(ts, run.id)) {
           await preserveInterruptedRun(threadId, run)
           return
         }
-        resetOnGoingConv(threadId)
+        const steerable = await resolveRunSteerable(run)
+        if (!isCurrentRecovery()) return
+        resetOnGoingConv(threadId, { preserveRequestStreams: true })
         await startRunStream(threadId, run.id, '0-0', {
-          steerable: await resolveRunSteerable(run)
+          steerable
         })
         return
       }
       if (run && !RUN_TERMINAL_STATUSES.has(run.status)) {
-        resetOnGoingConv(threadId)
+        resetOnGoingConv(threadId, { preserveRequestStreams: true })
         await startRunStream(threadId, run.id, '0-0')
         return
       }
@@ -553,6 +567,7 @@ export function useAgentRunStream({
       console.warn('Failed to load active run for thread:', threadId, e)
     }
 
+    if (!isCurrentRecovery()) return
     finalizeRunStream(threadId, null, new Set([threadId]), {
       delay: 0,
       expectedActiveRunId

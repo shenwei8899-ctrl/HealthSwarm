@@ -172,6 +172,25 @@ docker compose @healthCompose stop api worker sandbox-provisioner minio redis po
 
 应观察 23 项通过；真实链路将模型首次响应暂停，核对第二条 Request 排队，再释放并回读各自 SSE、Run / Attempt / Message、manifest 与 PostgreSQL checkpoint。未绑定或未同意的请求不得创建业务行。停止后保留专用卷；不要使用 `down -v` 删除已有数据。审批配置恢复为空，成功用例只精确清理自身的随机测试账号和 thread。测试失败时先检查所属 Run 是否收敛，不直接删除活动 worker 的数据。固定合成模型不证明真实供应商质量、医学准确性或专业知识库验收，范围见[端到端决策](./decisions/implemented/2026-10-04-health-consultation-e2e.md)。
 
+## 健康 Agent 任务恢复验证
+
+恢复合同见[任务恢复参考](../advanced/health-task-recovery.md)。真实 Request 断线、Run 游标和 Task GET 组合只在上一节的专用槽位执行，沿用 `$healthCompose`，同一槽位串行且没有其他活动测试。此用例自己拥有 8766 回放进程；端口被其他服务占用时明确失败，完成后停止精确进程。
+
+```powershell
+docker compose @healthCompose exec -T -u root api uv run --no-sync --group test pytest test/e2e/test_health_task_recovery_e2e.py -q --tb=short --show-capture=no
+```
+
+用例主动关闭排队和运行 SSE，保存真实 Redis ID；重订阅从当前 Request 得到确切 Run，分别验证 `after_seq`、优先 `Last-Event-ID`、重复无 ID 终态及删除所属 Redis 流后的 PG 兜底。最终回读三条 Request、两条 Run、每 Run 唯一 Attempt 和同 Request/Run 的唯一最终 Message，恢复读取不新增执行。错游标回零的负控按重复帧被消费 oracle 拒绝；服务端允许从头读取，不将该案例解释成服务器拒绝非法游标。跨账号、撤授权、撤用途同意、错绑 Run 和空最终指针分别核对固定拒读状态。
+
+追问、失败与来源失效复用 `test/e2e/test_health_task_e2e.py` 的 `meal_preview` 参数和 `test/integration/services/test_health_task_http.py`。运行前按对应既有 fixture 准备 8766 与 8768 回放，完成后核对所属 PG/Redis 清理、配置及供应商基线恢复；固定回放不证明真实模型或专业批准。前端使用以下命令验证真实响应式线程状态、有限重连、取消保留另一 Run、停止后的 timer 释放以及旧 Run 查询迟到的交接。
+
+```bash
+cd web
+node --test --test-concurrency=1 test/unit/agentRequestQueue.test.js test/healthDietAnalysisApi.test.js test/unit/runStreamResume.test.js
+```
+
+浏览器验收使用本轮合成账号和真实隔离 API/Worker，通过仅本地一次性断流代理在收到 `queued` 后关闭同 Request 连接，再核对实际 Request GET、重订阅、Run 交接及最终同 Request 的 PG 结果。代理不进入部署或源码装配，日志只记录方法、ID、状态及游标；完成后删除凭据和所属合成数据。正式小程序、真机及健康业务卡片的展示单独验收；现有路由初始化期间禁止发送新输入的交互限制仍保留。
+
 ## 饮食识图与咨询联合合成 E2E
 
 饮食验收复用上一节的专用槽位。视觉重放只接受一到三张人工定义的纯色 PNG，返回没有份量及营养数值的固定食品候选。用户纠错、份量和个人食用比例经版本化计算后，正式确认生成私有日记。两个重放服务分别监听不同端口，实际 worker 连续执行饮食和咨询，覆盖配置切换后的跨进程读取。

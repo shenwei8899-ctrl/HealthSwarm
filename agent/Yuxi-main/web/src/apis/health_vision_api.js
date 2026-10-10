@@ -108,6 +108,8 @@ export const healthVisionApi = {
     apiGet(`${root}/members/${memberId}/vision-statistics?${buildQuery({ kind })}`),
   cancel: (id) => apiPost(`${root}/vision-tasks/${id}/cancel`),
   task: (id) => apiGet(`${root}/vision-tasks/${id}`),
+  /** 读取同一 Agent Request 当前授权下的执行与业务结果。 */
+  agentTask: (requestId) => apiGet(`${root}/tasks/${encodeURIComponent(requestId)}`),
   retry: (id, data) => apiPost(`${root}/vision-tasks/${id}/retry`, data, idempotent(data)),
   reprocessReport: (data) =>
     apiPost(`${root}/report-page-tasks`, data, {

@@ -3173,8 +3173,10 @@ const resumeCurrentRunForVisiblePage = async () => {
   if (!threadId) return
 
   try {
-    await resumeActiveRunForThread(threadId)
-    await resumeQueuedRequests(threadId, resolveAgentSlugForThread(threadId))
+    await Promise.all([
+      resumeActiveRunForThread(threadId),
+      resumeQueuedRequests(threadId, resolveAgentSlugForThread(threadId))
+    ])
     restorePendingInterruptForThread(threadId)
   } catch (error) {
     console.warn('Failed to resume current run after page became visible:', error)
@@ -3258,8 +3260,10 @@ const selectChat = async (chatId) => {
   // await fetchAgentState(targetAgentId, chatId)
   await handleAgentStateRefresh(chatId)
   syncThreadConfigSnapshot(chatId, { overwrite: false })
-  await resumeActiveRunForThread(chatId)
-  await resumeQueuedRequests(chatId, resolveAgentSlugForThread(chatId))
+  await Promise.all([
+    resumeActiveRunForThread(chatId),
+    resumeQueuedRequests(chatId, resolveAgentSlugForThread(chatId))
+  ])
   restorePendingInterruptForThread(chatId)
   await scrollController.scrollToBottomStaticForce()
   return true

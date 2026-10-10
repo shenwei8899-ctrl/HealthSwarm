@@ -8,6 +8,20 @@ const source = (
   .replace(/^import.*\r?\n/gm, '')
   .replace('export const healthVisionApi', 'const healthVisionApi')
 
+test('Agent 任务查询沿用认证 GET，图像任务查询保持原入口', async () => {
+  const reads = []
+  const api = new Function(
+    'apiGet', 'apiPost', 'apiPut', 'apiDelete', 'apiRequest', 'buildQuery',
+    `${source}\nreturn healthVisionApi`
+  )(
+    async (...args) => { reads.push(args); return { request_id: 'request-1' } },
+    () => assert.fail('查询不能提交任务'), () => {}, () => {}, () => {}, () => ''
+  )
+  assert.deepEqual(await api.agentTask('request-1'), { request_id: 'request-1' })
+  await api.task('vision-1')
+  assert.deepEqual(reads, [['/api/health/v1/tasks/request-1'], ['/api/health/v1/vision-tasks/vision-1']])
+})
+
 test('分析与选餐反馈使用认证API边界，绑定传当前确认版本且保持幂等键', async () => {
   const calls = []
   const api = new Function(
