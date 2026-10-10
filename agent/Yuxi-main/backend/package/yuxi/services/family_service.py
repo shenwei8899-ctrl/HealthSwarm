@@ -25,6 +25,22 @@ from yuxi.utils.auth_utils import AuthUtils
 DISPLAY_ZONE = ZoneInfo("Asia/Shanghai")
 
 
+def guardian_active(member, uid, now=None):
+    """独立审核、有效期限和未成年状态共同决定监护权限。"""
+    return bool(
+        member.is_active
+        and member.guardian_uid == uid
+        and member.guardian_status == "approved"
+        and member.guardian_reviewed_by
+        and member.guardian_reviewed_by != uid
+        and member.guardian_expires_at
+        and member.guardian_expires_at > (now or utc_now_naive())
+        and member.guardian_birth_date
+        and (member.profile or {}).get("birth_date") == member.guardian_birth_date.isoformat()
+        and not is_adult(member)
+    )
+
+
 def is_adult(member):
     """一期按本人填写的出生日期限制成年成员授权；不替代身份核验。"""
     born = (member.profile or {}).get("birth_date")
@@ -39,7 +55,7 @@ def authorized_fields(family, member, uid, now=None, *, write=False):
     """在有效关系与授权中分别计算查看和代维护范围。"""
     if not member.is_active:
         return set()
-    if member.subject_uid == uid:
+    if member.subject_uid == uid or guardian_active(member, uid, now):
         return PROFILE_FIELDS | METRIC_FIELDS.keys()
     now = now or utc_now_naive()
     if (
@@ -68,8 +84,17 @@ def member_view(family, member, uid):
         "relationship": member.relationship,
         "is_active": member.is_active,
         "relationship_version": member.relationship_version,
+        "is_guardian": guardian_active(member, uid),
+        "guardian": {
+            "status": member.guardian_status,
+            "relationship": member.guardian_relationship,
+            "version": member.guardian_version,
+            "expires_at": format_utc_datetime(member.guardian_expires_at),
+            "reviewed_at": format_utc_datetime(member.guardian_reviewed_at),
+            "is_applicant": member.guardian_uid == uid,
+        },
         "is_self": member.subject_uid == uid,
-        "claimed": member.subject_uid is not None,
+        "claimed": member.subject_uid is not None or guardian_active(member, uid),
         "profile": profile,
         "allowed_fields": sorted(allowed),
         "editable_fields": sorted(editable),
@@ -84,10 +109,12 @@ def member_view(family, member, uid):
         "authorization": {
             "fields": sorted(allowed) if member.subject_uid != uid else sorted(member.grant_fields or []),
             "edit_fields": sorted(editable) if member.subject_uid != uid else sorted(member.grant_edit_fields or []),
-            "expires_at": format_utc_datetime(member.grant_expires_at),
-            "purpose": member.grant_purpose,
+            "expires_at": format_utc_datetime(
+                member.guardian_expires_at if guardian_active(member, uid) else member.grant_expires_at
+            ),
+            "purpose": "family_nutrition" if guardian_active(member, uid) else member.grant_purpose,
         }
-        if member.subject_uid == uid or family.owner_uid == uid
+        if member.subject_uid == uid or family.owner_uid == uid or guardian_active(member, uid)
         else None,
     }
 
@@ -153,6 +180,8 @@ class FamilyService:
         result = {
             "id": fid,
             "name": family.name,
+            "settings": family.settings or {},
+            "version": family.version,
             "is_owner": family.owner_uid == self.uid,
             "members": [member_view(family, member, self.uid) for member in members if member.is_active],
             "inactive_members": [member_view(family, member, self.uid) for member in members if not member.is_active]
@@ -160,6 +189,118 @@ class FamilyService:
             else [],
         }
         await self.repo.audit(fid, None, self.uid, "profiles.read")
+        await self.db.commit()
+        return result
+
+    async def update_family(self, fid, payload):
+        """家庭管理员按版本维护名称及共同生活信息。"""
+        family, _ = await self.context(fid)
+        if family.owner_uid != self.uid:
+            raise HTTPException(403, "仅家庭管理员可维护家庭设置")
+        if family.version != payload.expected_version:
+            raise HTTPException(409, "家庭设置已更新，请重新核对")
+        settings = payload.settings.model_dump(mode="json")
+        if family.name != payload.name or family.settings != settings:
+            family.name, family.settings = payload.name, settings
+            family.version += 1
+            await self.repo.audit(fid, None, self.uid, "family.update", family.version)
+        await self.db.commit()
+        return await self.family(fid)
+
+    async def request_guardian(self, fid, mid, payload):
+        """成年家庭成员申请监护，申请本身不开放任何健康字段。"""
+        family, member = await self.context(fid, mid)
+        applicant = await self.repo.subject_member(fid, self.uid)
+        if not applicant or not applicant.is_active or not is_adult(applicant):
+            raise HTTPException(403, "请先认领并填写成年本人档案")
+        if member.subject_uid == self.uid or member.guardian_status in {"pending", "approved"}:
+            raise HTTPException(409, "当前成员已有待审核或有效监护关系，请先撤销")
+        if member.guardian_version != payload.expected_version:
+            raise HTTPException(409, "监护申请已更新")
+        born = (member.profile or {}).get("birth_date")
+        if (member.subject_uid and not born) or (born and (born != payload.birth_date.isoformat() or is_adult(member))):
+            raise HTTPException(422, "成员已有出生日期须与申请一致；已认领成员须由本人先填写")
+        member.guardian_uid, member.guardian_status = self.uid, "pending"
+        member.guardian_relationship, member.guardian_birth_date = payload.relationship, payload.birth_date
+        member.guardian_expires_at = payload.expires_at.astimezone(UTC).replace(tzinfo=None)
+        member.guardian_reviewed_by, member.guardian_reviewed_at = None, None
+        member.guardian_version += 1
+        await self.repo.audit(fid, mid, self.uid, "guardian.request", member.guardian_version)
+        result = member_view(family, member, self.uid)
+        await self.db.commit()
+        return result
+
+    async def guardian_requests(self):
+        """独立管理员只读取审核所需身份元信息，不返回健康档案。"""
+        rows = await self.repo.pending_guardians()
+        return [
+            {
+                "family_id": family.id,
+                "family_name": family.name,
+                "member_id": member.id,
+                "member_name": member.name,
+                "applicant_uid": member.guardian_uid,
+                "applicant_name": applicant_name,
+                "relationship": member.guardian_relationship,
+                "birth_date": member.guardian_birth_date.isoformat(),
+                "version": member.guardian_version,
+                "expires_at": format_utc_datetime(member.guardian_expires_at),
+                "can_review": member.guardian_uid != self.uid,
+            }
+            for family, member, applicant_name in rows
+        ]
+
+    async def review_guardian(self, fid, mid, payload):
+        """独立审核者核对监护资料后批准；禁止申请人自审。"""
+        family, member = await self.repo.guardian_review_context(fid, mid)
+        if not family or not member or not member.is_active:
+            raise HTTPException(404, "监护申请不存在")
+        if member.guardian_uid == self.uid:
+            raise HTTPException(403, "不能审核自己的监护申请")
+        if member.guardian_status != "pending" or member.guardian_version != payload.expected_version:
+            raise HTTPException(409, "申请已变更或已处理")
+        if payload.approved:
+            if not member.guardian_expires_at or member.guardian_expires_at <= utc_now_naive():
+                raise HTTPException(409, "监护申请已过期")
+            today = datetime.now(DISPLAY_ZONE).date()
+            birth = member.guardian_birth_date
+            if not birth or today.year - birth.year - ((today.month, today.day) < (birth.month, birth.day)) >= 18:
+                raise HTTPException(409, "成员已成年，请重新核对授权")
+            applicant = await self.repo.subject_member(fid, member.guardian_uid)
+            if not applicant or not applicant.is_active or not is_adult(applicant):
+                raise HTTPException(409, "申请人的成年成员关系已失效")
+            born = (member.profile or {}).get("birth_date")
+            if born and (born != member.guardian_birth_date.isoformat() or is_adult(member)):
+                raise HTTPException(409, "成员身份资料已变化，请重新申请")
+            if not born:
+                if member.subject_uid:
+                    raise HTTPException(409, "已认领成员须先补充本人出生日期")
+                member.profile = {**(member.profile or {}), "birth_date": member.guardian_birth_date.isoformat()}
+                member.version += 1
+                member.confirmed_at = None
+                self.db.add(
+                    FamilyProfileRevision(
+                        member_id=mid, version=member.version, profile=member.profile, actor_uid=self.uid
+                    )
+                )
+        member.guardian_status = "approved" if payload.approved else "rejected"
+        member.guardian_reviewed_by, member.guardian_reviewed_at = self.uid, utc_now_naive()
+        member.guardian_version += 1
+        await self.repo.audit(fid, mid, self.uid, "guardian.review", member.guardian_version)
+        await self.db.commit()
+        return {"status": member.guardian_status, "version": member.guardian_version}
+
+    async def revoke_guardian(self, fid, mid, expected_version):
+        """申请人或儿童本人撤销监护，重新申请需重新独立审核。"""
+        family, member = await self.context(fid, mid)
+        if self.uid not in {member.guardian_uid, member.subject_uid}:
+            raise HTTPException(403, "仅申请人或成员本人可撤销监护关系")
+        if member.guardian_version != expected_version:
+            raise HTTPException(409, "监护关系已更新")
+        member.guardian_status = "revoked"
+        member.guardian_version += 1
+        await self.repo.audit(fid, mid, self.uid, "guardian.revoke", member.guardian_version)
+        result = member_view(family, member, self.uid)
         await self.db.commit()
         return result
 
@@ -236,6 +377,14 @@ class FamilyService:
             member.relationship_version += 1
             member.grant_fields, member.grant_edit_fields = [], []
             member.grant_expires_at, member.grant_purpose = None, None
+            member.guardian_status = "revoked" if member.guardian_uid else None
+            member.guardian_version += 1
+            if not payload.is_active:
+                for ward in await self.repo.members(fid):
+                    if ward.guardian_uid == member.subject_uid and ward.guardian_status in {"pending", "approved"}:
+                        ward.guardian_status = "revoked"
+                        ward.guardian_version += 1
+                        await self.repo.audit(fid, ward.id, self.uid, "guardian.revoke", ward.guardian_version)
             member.invite_hash, member.invite_expires_at = None, None
             action = "member.restore" if payload.is_active else "member.deactivate" if is_owner else "member.leave"
             await self.repo.audit(fid, mid, self.uid, action, member.relationship_version)
@@ -321,7 +470,11 @@ class FamilyService:
     async def update_profile(self, fid, mid, payload):
         """按授予字段和当前版本修改，保存新的完整快照。"""
         family, member = await self.context(fid, mid)
-        changes = payload.profile.model_dump(mode="json", exclude_unset=True)
+        changes = {
+            key: value
+            for key, value in payload.profile.model_dump(mode="json").items()
+            if key in payload.profile.model_fields_set
+        }
         if not changes:
             raise HTTPException(422, "没有档案变更")
         self.require_fields(family, member, changes, write=True)
@@ -332,6 +485,16 @@ class FamilyService:
             await self.db.commit()
             return result
         member.profile = {**(member.profile or {}), **changes}
+        if "birth_date" in changes and member.guardian_status in {"pending", "approved"}:
+            member.guardian_status = "revoked"
+            member.guardian_version += 1
+            await self.repo.audit(fid, mid, self.uid, "guardian.revoke", member.guardian_version)
+        if "birth_date" in changes and member.subject_uid and not is_adult(member):
+            for ward in await self.repo.members(fid):
+                if ward.guardian_uid == member.subject_uid and ward.guardian_status in {"pending", "approved"}:
+                    ward.guardian_status = "revoked"
+                    ward.guardian_version += 1
+                    await self.repo.audit(fid, ward.id, self.uid, "guardian.revoke", ward.guardian_version)
         member.version += 1
         member.confirmed_at = None
         member.updated_at = utc_now_naive()
@@ -344,10 +507,10 @@ class FamilyService:
         return result
 
     async def confirm(self, fid, mid, expected_version):
-        """本人核对当前档案，不用管理员身份代替本人确认。"""
+        """本人或有效监护人核对当前档案，管理员身份不授予确认权限。"""
         family, member = await self.context(fid, mid)
-        if member.subject_uid != self.uid:
-            raise HTTPException(403, "档案确认须由本人完成")
+        if member.subject_uid != self.uid and not guardian_active(member, self.uid):
+            raise HTTPException(403, "档案确认须由本人或有效监护人完成")
         self.require_version(member, expected_version)
         if member.confirmed_version != member.version:
             member.confirmed_version = member.version
@@ -580,6 +743,46 @@ class FamilyService:
             "as_of": format_utc_datetime(utc_now_naive()),
             "timezone": "Asia/Shanghai",
         }
+        tasks = []
+        now = utc_now_naive()
+        for row in members:
+            view = member_view(family, row, self.uid)
+
+            def task(code, label, tab="profiles"):
+                tasks.append({"member_id": row.id, "member_name": row.name, "code": code, "label": label, "tab": tab})
+
+            if not view["allowed_fields"]:
+                task("access_pending", "认领、授权或申请监护", "authorization")
+                continue
+            if view["missing_fields"]:
+                task("profile_incomplete", "补充基础资料")
+            elif view["confirmed"] is False:
+                task("profile_unconfirmed", "确认当前档案")
+            if view["unknown_fields"]:
+                task("facts_unknown", "核对尚未填写的健康资料")
+            expiry = row.guardian_expires_at if view["is_guardian"] else row.grant_expires_at
+            if expiry and now < expiry <= now + timedelta(days=7):
+                task("access_expiring", "授权将在7天内到期", "authorization")
+            allowed_metrics = visible[row.id] & METRIC_FIELDS.keys()
+            if allowed_metrics:
+                recent, _ = await self.repo.measurement_page([row.id], allowed_metrics, limit=1)
+                if not recent:
+                    task("measurements_missing", "添加首条健康指标", "metrics")
+                elif recent[0].measured_at < now - timedelta(days=30):
+                    task("measurements_old", "已有30天未更新健康指标", "metrics")
+            today_text = today.isoformat()
+            for goal in view["profile"].get("health_goals") or []:
+                if goal.get("status") == "active" and goal.get("review_date") and goal["review_date"] <= today_text:
+                    task("goal_review", "复盘到期的行为目标")
+                    break
+            for medication in view["profile"].get("medication_records") or []:
+                if medication.get("status") == "current" and (
+                    not medication.get("dose") or not medication.get("frequency")
+                ):
+                    task("medication_incomplete", "核对用药剂量与频次")
+                    break
+        result["tasks"] = tasks
+        result["readiness_scope"] = "basic_profile"
         await self.repo.audit(fid, None, self.uid, "statistics.read")
         await self.db.commit()
         return result

@@ -5,10 +5,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.utils.auth_middleware import get_db, get_required_user
+from server.utils.auth_middleware import get_admin_user, get_db, get_required_user
 from yuxi.services.family_schemas import (
     AuthorizationInput,
     FamilyInput,
+    FamilyUpdate,
+    GuardianRequest,
+    GuardianReview,
     JoinInput,
     MeasurementInput,
     MeasurementQuery,
@@ -59,6 +62,36 @@ async def join_family(payload: JoinInput, service=Depends(family_service)):
 async def get_family(fid: str, service=Depends(family_service)):
     """读取当前授权范围的家庭档案。"""
     return await service.family(fid)
+
+
+@family.get("/guardian/requests", dependencies=[Depends(get_admin_user)])
+async def guardian_requests(service=Depends(family_service)):
+    """独立管理员的监护审核队列。"""
+    return await service.guardian_requests()
+
+
+@family.put("/{fid}")
+async def update_family(fid: str, payload: FamilyUpdate, service=Depends(family_service)):
+    """按版本维护家庭名称和共同生活信息。"""
+    return await service.update_family(fid, payload)
+
+
+@family.post("/{fid}/members/{mid}/guardian")
+async def request_guardian(fid: str, mid: str, payload: GuardianRequest, service=Depends(family_service)):
+    """申请监护，审核前无健康资料权限。"""
+    return await service.request_guardian(fid, mid, payload)
+
+
+@family.put("/{fid}/members/{mid}/guardian/review", dependencies=[Depends(get_admin_user)])
+async def review_guardian(fid: str, mid: str, payload: GuardianReview, service=Depends(family_service)):
+    """独立管理员确认核对资料后审核。"""
+    return await service.review_guardian(fid, mid, payload)
+
+
+@family.post("/{fid}/members/{mid}/guardian/revoke")
+async def revoke_guardian(fid: str, mid: str, payload: VersionInput, service=Depends(family_service)):
+    """撤销当前监护关系。"""
+    return await service.revoke_guardian(fid, mid, payload.expected_version)
 
 
 @family.post("/{fid}/members")

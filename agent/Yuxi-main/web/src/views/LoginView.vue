@@ -20,7 +20,9 @@
         <div class="brand-container" @click="goHome" style="cursor: pointer">
           <img v-if="brandLogo" :src="brandLogo" alt="logo" class="brand-logo" />
           <h1 class="brand-text">
-            <span v-if="brandOrgName" class="brand-org">{{ brandOrgName }}</span>
+            <span v-if="brandOrgName && brandName !== brandOrgName" class="brand-org">
+              {{ brandOrgName }}
+            </span>
             <span v-if="brandOrgName && brandName !== brandOrgName" class="brand-separator"></span>
             <span class="brand-main">{{ brandName }}</span>
           </h1>
@@ -314,7 +316,7 @@ const brandOrgName = computed(() => {
 })
 const brandName = computed(() => {
   const orgName = brandOrgName.value
-  const brandNameRaw = infoStore.branding?.name?.trim() || 'Yuxi'
+  const brandNameRaw = infoStore.branding?.name?.trim() || 'HealthSwarm'
 
   if (orgName && brandNameRaw && orgName !== brandNameRaw) {
     return brandNameRaw

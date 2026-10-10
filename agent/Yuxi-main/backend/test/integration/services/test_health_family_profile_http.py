@@ -300,6 +300,9 @@ async def test_confirmed_profile_preserves_raw_unknowns_without_safety_or_proces
     result = response.json()
     assert result["status"] == "ready" and result["confirmed_version"] == 2
     assert result["profile"] == SYNTHETIC_PROFILE
+    assert "health_goals" not in result["allowed_fields"]
+    assert "allergens" not in result["unknown_fields"]
+    assert "avoidances" not in result["unknown_fields"]
     assert result["nutrition_safety_ready"] is False and result["full_health_profile_available"] is False
     assert "population_code" not in result["profile"] and "conditions" not in result["profile"]
     async with sessions() as session:
@@ -422,6 +425,86 @@ async def recorded_profile_use(sessions, member_id, uid):
         await repository.record_use(run, payload)
         await session.commit()
         return SimpleNamespace(conversation_id=conversation.id, member_id=member_id, actor_uid=uid), payload
+
+
+@pytest.mark.parametrize("explicit_none", [False, True])
+async def test_legacy_projection_and_unknown_semantics_have_explicit_history_boundary(
+    family_profile_http, explicit_none
+):
+    """无空数组旧来源继续核对，旧错误未知语义拒用，新咨询正常。"""
+    from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
+    from yuxi.storage.postgres.models_health import HealthFamilyProfileUse
+
+    client, sessions, identities = family_profile_http
+    member_id, source = await linked_self(client, identities["self"])
+    if not explicit_none:
+        path = f"/api/family/{source['family_id']}/members/{source['source_member_id']}"
+        changed = await client.put(
+            path,
+            headers=identities["self"],
+            json={"expected_version": 2, "profile": {"allergens": ["合成过敏原"], "avoidances": ["合成忌口"]}},
+        )
+        assert changed.status_code == 200
+        assert (
+            await client.post(
+                path + "/confirm", headers=identities["self"], json={"expected_version": changed.json()["version"]}
+            )
+        ).status_code == 200
+    binding, payload = await recorded_profile_use(sessions, member_id, "self")
+    assert set(payload["profile"]) == set(SYNTHETIC_PROFILE)
+    assert set(payload["allowed_fields"]) == set(SYNTHETIC_PROFILE)
+    legacy = {
+        **payload,
+        "unknown_fields": ["allergens", "avoidances", "medications"] if explicit_none else ["medications"],
+    }
+    legacy["source_hash"] = HealthFamilyProfileRepository.payload_hash(legacy)
+    async with sessions() as session:
+        use = await session.scalar(select(HealthFamilyProfileUse).where(HealthFamilyProfileUse.member_id == member_id))
+        use.payload_hash = legacy["source_hash"]
+        await session.commit()
+    async with sessions() as session:
+        repo = HealthFamilyProfileRepository(session)
+        if explicit_none:
+            with pytest.raises(HealthVisionError, match="profile_source_changed"):
+                await repo.validate_history("self", binding)
+            with pytest.raises(HealthVisionError, match="profile_source_changed"):
+                await repo.validate_tool_payload("self", binding, legacy)
+        else:
+            assert legacy == payload
+            await repo.validate_history("self", binding)
+            await repo.validate_tool_payload("self", binding, legacy)
+    fresh, current = await recorded_profile_use(sessions, member_id, "self")
+    async with sessions() as session:
+        repo = HealthFamilyProfileRepository(session)
+        await repo.validate_history("self", fresh)
+        await repo.validate_tool_payload("self", fresh, current)
+
+
+async def test_structured_facts_enter_consultation_only_after_reconfirmation(family_profile_http):
+    """结构化事实保持未知项、明确无及专业状态，不复用改版前来源。"""
+    from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
+
+    client, sessions, identities = family_profile_http
+    member_id, source = await linked_self(client, identities["self"])
+    binding, _ = await recorded_profile_use(sessions, member_id, "self")
+    path = f"/api/family/{source['family_id']}/members/{source['source_member_id']}"
+    facts = {"medication_records": [{"description": "药名待核对", "status": "current"}], "allergy_records": []}
+    changed = await client.put(path, headers=identities["self"], json={"expected_version": 2, "profile": facts})
+    assert changed.status_code == 200
+    profile_path = f"{ROOT}/members/{member_id}/family-profile"
+    assert (await client.get(profile_path, headers=identities["self"])).json()["profile"] is None
+    assert (
+        await client.post(
+            path + "/confirm", headers=identities["self"], json={"expected_version": changed.json()["version"]}
+        )
+    ).status_code == 200
+    current = (await client.get(profile_path, headers=identities["self"])).json()
+    assert current["profile"]["medication_records"][0]["dose"] is None
+    assert current["profile"]["allergy_records"] == [] and "allergy_records" not in current["unknown_fields"]
+    assert current["nutrition_safety_ready"] is False
+    async with sessions() as session:
+        with pytest.raises(HealthVisionError, match="profile_source_changed"):
+            await HealthFamilyProfileRepository(session).validate_history("self", binding)
 
 
 async def test_run_history_rechecks_profile_version_and_current_health_permission(family_profile_http):

@@ -9,8 +9,11 @@
       </div>
       <div class="button-group">
         <a-button v-if="editableKeys.length" @click="openEditor">编辑档案</a-button>
-        <a-button v-if="member.is_self && !member.confirmed" :loading="saving" @click="confirm"
-          >确认当前档案</a-button
+        <a-button
+          v-if="(member.is_self || member.is_guardian) && !member.confirmed"
+          :loading="saving"
+          @click="confirm"
+          >{{ member.is_guardian ? '监护人确认档案' : '确认当前档案' }}</a-button
         >
       </div>
     </div>
@@ -23,7 +26,7 @@
     />
     <a-empty
       v-if="!visibleKeys.length"
-      description="健康档案尚未授权。成员本人认领并授权后才可查看。"
+      description="健康档案尚未授权。成员本人认领并授权，或完成独立监护审核后才可查看。"
     />
     <dl v-else class="profile-grid">
       <div v-for="key in visibleKeys" :key="key">
@@ -32,6 +35,9 @@
       </div>
     </dl>
     <div v-if="visibleKeys.length" class="section-footer">
+      <a-button v-if="member.is_self" type="link" @click="router.push('/health-vision')"
+        >关联本人档案与营养咨询</a-button
+      >
       <a-button type="link" @click="showHistory">查看变更记录</a-button>
       <a-button type="link" @click="exportProfile">导出当前可见档案</a-button>
       <span class="muted">未填写与明确“无”分别保留</span>
@@ -42,12 +48,13 @@
       :confirm-loading="saving"
       @ok="save"
       :width="680"
+      :body-style="{ maxHeight: '65vh', overflowY: 'auto', paddingRight: '8px' }"
     >
       <a-alert
         class="form-note"
         type="info"
         show-icon
-        message="仅维护当前授权字段。保存后形成新版本，由本人重新确认。"
+        message="仅维护当前授权字段。保存后形成新版本，由本人或有效监护人重新确认。"
       />
       <a-form layout="vertical" :model="draft" name="family-profile">
         <a-alert
@@ -65,8 +72,13 @@
             :name="key"
             :label="profileLabels[key]"
           >
+            <FamilyStructuredField
+              v-if="structuredDefinitions[key]"
+              :field-key="key"
+              v-model="draft[key]"
+            />
             <a-select
-              v-if="key === 'sex'"
+              v-else-if="key === 'sex'"
               v-model:value="draft[key]"
               allow-clear
               :options="Object.entries(sexLabels).map(([value, label]) => ({ value, label }))"
@@ -117,7 +129,7 @@
         <section v-for="revision in history" :key="revision.version" class="revision">
           <h3>v{{ revision.version }} · {{ formatTime(revision.created_at) }}</h3>
           <p class="muted">
-            {{ revision.actor }} · 本人确认：{{ formatTime(revision.confirmed_at) }}
+            {{ revision.actor }} · 档案确认：{{ formatTime(revision.confirmed_at) }}
           </p>
           <p v-for="(change, key) in revision.changes" :key="key">
             {{ profileLabels[key] }}：{{ display(key, change.before) }} →
@@ -138,6 +150,8 @@
 </template>
 
 <script setup>
+import { useRouter } from 'vue-router'
+import FamilyStructuredField from './FamilyStructuredField.vue'
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { familyApi } from '@/apis/family_api'
@@ -151,7 +165,9 @@ import {
   listState,
   downloadFamilyJson,
   profileStatus,
-  formatTime
+  formatTime,
+  structuredDefinitions,
+  structuredText
 } from '@/utils/familyArchives'
 
 const props = defineProps({
@@ -159,6 +175,7 @@ const props = defineProps({
   member: { type: Object, required: true }
 })
 const emit = defineEmits(['changed'])
+const router = useRouter()
 const visibleKeys = computed(() =>
   Object.keys(profileLabels).filter((key) => props.member.allowed_fields.includes(key))
 )
@@ -170,7 +187,7 @@ const baseVersion = ref(0),
   listEditing = reactive({})
 const listStates = [
   { value: 'unknown', label: '未知 / 未填写' },
-  { value: 'none', label: '本人确认无' },
+  { value: 'none', label: '已确认无' },
   { value: 'known', label: '有，逐项填写' }
 ]
 const editing = ref(false),
@@ -214,6 +231,7 @@ onBeforeUnmount(() => {
 })
 function display(key, value) {
   if (value === null || value === undefined || value === '') return '未填写'
+  if (structuredDefinitions[key]) return structuredText(key, value)
   if (Array.isArray(value)) return value.length ? value.join('、') : '已确认无'
   return { sex: sexLabels, activity_level: activityLabels }[key]?.[value] ?? value
 }
@@ -337,6 +355,7 @@ function setListItems(key, values) {
     font-size: 13px;
   }
   dd {
+    white-space: pre-line;
     margin-top: 4px;
     overflow-wrap: anywhere;
   }

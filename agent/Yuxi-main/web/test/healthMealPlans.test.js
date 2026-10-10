@@ -385,7 +385,7 @@ test('健康 API 在真实方法边界携带餐单幂等与版本头', async () 
     'apiDelete',
     'apiRequest',
     'buildQuery',
-    `${text.replace(/^import.*\n/, '').replace('export const', 'const')}\nreturn healthVisionApi`
+    `${text.replace(/^import.*\r?\n/, '').replace('export const', 'const')}\nreturn healthVisionApi`
   )
   const api = factory(fn('GET'), fn('POST'), fn('PUT'), fn('DELETE'), fn('REQUEST'), () => '')
   api.saveMealPlan('member', { preview_id: 'preview', client_request_id: 'key' })

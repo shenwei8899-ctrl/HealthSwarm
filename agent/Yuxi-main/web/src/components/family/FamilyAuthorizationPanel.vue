@@ -1,5 +1,6 @@
 <template>
   <section>
+    <FamilyGuardianPanel ref="guardianPanel" :family="family" @changed="emit('changed')" />
     <div class="section-heading">
       <div>
         <h2>成员授权管理</h2>
@@ -34,10 +35,10 @@
               >{{
                 member.is_self
                   ? '本人数据'
-                  : !member.claimed
-                    ? '等待本人认领'
-                    : member.allowed_fields.length
-                      ? member.allowed_fields.map(label).join('、')
+                  : member.allowed_fields.length
+                    ? member.allowed_fields.map(label).join('、')
+                    : !member.claimed
+                      ? '等待本人认领'
                       : '待授权或已失效'
               }}
               <p v-if="!member.is_self && member.editable_fields.length" class="muted">
@@ -65,7 +66,9 @@
                 @click="invite(member)"
                 >生成邀请</a-button
               >
-              <span v-else class="muted">由成员本人管理</span>
+              <span v-else class="muted">{{
+                member.is_guardian ? '当前由监护人代维护' : '由成员本人管理'
+              }}</span>
               <div v-if="family.is_owner || member.is_self" class="button-group">
                 <a-button v-if="member.is_active" type="link" @click="editRelationship(member)"
                   >编辑关系</a-button
@@ -162,6 +165,7 @@
 </template>
 
 <script setup>
+import FamilyGuardianPanel from './FamilyGuardianPanel.vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { familyApi } from '@/apis/family_api'
@@ -183,7 +187,10 @@ const relationshipOpen = ref(false),
   relationName = ref(''),
   relationType = ref(''),
   relationMember = ref(null)
-defineExpose({ hasDraft: computed(() => editing.value || relationshipOpen.value) })
+const guardianPanel = ref(null)
+defineExpose({
+  hasDraft: computed(() => editing.value || relationshipOpen.value || guardianPanel.value?.hasDraft)
+})
 const allFields = computed(() =>
   Object.entries(profileLabels)
     .map(([value, label]) => ({ value, label }))

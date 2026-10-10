@@ -10,6 +10,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
+    Date,
     Float,
     ForeignKey,
     ForeignKeyConstraint,
@@ -37,6 +38,8 @@ class FamilyArchive(Base):
     id = Column(String(36), primary_key=True)
     owner_uid = Column(String, ForeignKey("users.uid"), nullable=False, unique=True)
     name = Column(String(80), nullable=False)
+    settings = Column(JSON_VALUE, nullable=False, default=dict)
+    version = Column(Integer, nullable=False, default=1)
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
@@ -52,6 +55,14 @@ class FamilyMember(Base):
     relationship = Column(String(30), nullable=False)
     is_active = Column(Boolean, nullable=False, default=True)
     relationship_version = Column(Integer, nullable=False, default=1)
+    guardian_uid = Column(String, ForeignKey("users.uid"), nullable=True)
+    guardian_status = Column(String(20), nullable=True)
+    guardian_relationship = Column(String(30), nullable=True)
+    guardian_birth_date = Column(Date, nullable=True)
+    guardian_version = Column(Integer, nullable=False, default=1)
+    guardian_expires_at = Column(DateTime, nullable=True)
+    guardian_reviewed_by = Column(String, ForeignKey("users.uid"), nullable=True)
+    guardian_reviewed_at = Column(DateTime, nullable=True)
     profile = Column(JSON_VALUE, nullable=False, default=dict)
     version = Column(Integer, nullable=False, default=1)
     confirmed_version = Column(Integer, nullable=True)

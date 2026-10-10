@@ -60,6 +60,13 @@
             v-if="activeTab === 'statistics'"
             :family-id="family.id"
             :revision="revision"
+            @navigate="navigateTask"
+          />
+          <FamilySettingsPanel
+            v-else-if="activeTab === 'settings'"
+            ref="settingsPanel"
+            :family="family"
+            @changed="load"
           />
           <FamilyAuthorizationPanel
             ref="authorizationPanel"
@@ -91,6 +98,7 @@
                   >{{ item.name }}<span v-if="item.is_self" class="self-label">本人</span></span
                 >
                 <span class="muted">{{ item.relationship }}</span>
+                <span v-if="memberAge(item) !== null" class="muted">{{ memberAge(item) }} 岁</span>
                 <span class="member-status" :class="{ pending: !item.ready }">{{
                   profileStatus(item)
                 }}</span>
@@ -150,15 +158,17 @@
           ><a-select
             v-model:value="relationship"
             :options="
-              ['配偶', '父亲', '母亲', '其他成年成员'].map((value) => ({
-                value,
-                label: value
-              }))
+              ['配偶', '父亲', '母亲', '弟弟', '妹妹', '儿子', '女儿', '其他成年成员', '儿童'].map(
+                (value) => ({
+                  value,
+                  label: value
+                })
+              )
             "
         /></a-form-item>
       </a-form>
       <p class="muted">
-        先添加成员关系，再前往“授权管理”生成邀请，由成员本人登录认领。认领前不能代录健康信息。
+        成年成员由本人认领并授权；儿童可在“授权管理”申请监护，经独立审核后代维护。
       </p>
       <a-alert v-if="formError" type="error" :message="formError" show-icon />
     </a-modal>
@@ -184,7 +194,8 @@ import { Empty, Modal, message } from 'ant-design-vue'
 import { Plus, RefreshCw, ShieldCheck, Users } from '@lucide/vue'
 import { useUserStore } from '@/stores/user'
 import { familyApi } from '@/apis/family_api'
-import { profileStatus, scrubFamilyAccess } from '@/utils/familyArchives'
+import { memberAge, profileStatus, scrubFamilyAccess } from '@/utils/familyArchives'
+import FamilySettingsPanel from '@/components/family/FamilySettingsPanel.vue'
 import PageHeader from '@/components/shared/PageHeader.vue'
 import FamilyProfilePanel from '@/components/family/FamilyProfilePanel.vue'
 import FamilyMetricsPanel from '@/components/family/FamilyMetricsPanel.vue'
@@ -198,7 +209,8 @@ const tabs = [
   { key: 'profiles', label: '成员档案' },
   { key: 'metrics', label: '健康指标' },
   { key: 'statistics', label: '统计概览' },
-  { key: 'authorization', label: '授权管理' }
+  { key: 'authorization', label: '授权管理' },
+  { key: 'settings', label: '家庭设置' }
 ]
 const tabFromRoute = () =>
   tabs.some((item) => item.key === route.query.tab) ? route.query.tab : 'profiles'
@@ -224,11 +236,13 @@ const member = computed(() => family.value?.members.find((row) => row.id === mem
 const profilePanel = ref(null),
   metricsPanel = ref(null),
   authorizationPanel = ref(null)
+const settingsPanel = ref(null)
 const hasDraft = computed(
   () =>
     profilePanel.value?.hasDraft ||
     metricsPanel.value?.hasDraft ||
-    authorizationPanel.value?.hasDraft
+    authorizationPanel.value?.hasDraft ||
+    settingsPanel.value?.hasDraft
 )
 const searchedMembers = computed(
   () => family.value?.members.filter((row) => row.name.includes(search.value.trim())) || []
@@ -261,6 +275,10 @@ function changeTab(item) {
   activeTab.value = tabFromRoute()
   router.replace({ path: '/family', query: { tab: item.key } })
 }
+function navigateTask(task) {
+  memberId.value = task.member_id
+  router.replace({ path: '/family', query: { tab: task.tab, member: task.member_id } })
+}
 function allowDiscard() {
   if (!hasDraft.value) return true
   return new Promise((resolve) =>
@@ -275,7 +293,10 @@ function allowDiscard() {
   )
 }
 async function selectMember(id) {
-  if (id !== memberId.value && (await allowDiscard())) memberId.value = id
+  if (id !== memberId.value && (await allowDiscard())) {
+    memberId.value = id
+    router.replace({ path: '/family', query: { tab: activeTab.value, member: id } })
+  }
 }
 async function selectFamily(id) {
   const previous = family.value?.id || ''
@@ -328,7 +349,9 @@ async function loadFamily() {
       family.value = result
     }
     revision.value++
-    if (!result.members.some((row) => row.id === memberId.value))
+    if (result.members.some((row) => row.id === route.query.member))
+      memberId.value = route.query.member
+    else if (!result.members.some((row) => row.id === memberId.value))
       memberId.value = result.members.find((row) => row.is_self)?.id || result.members[0]?.id || ''
     clearTimeout(expiryTimer)
     const expiration = result.members
@@ -392,7 +415,7 @@ async function addMember() {
     memberName.value = ''
     await loadFamily()
     memberId.value = result.id
-    message.success('已添加成员，请邀请本人认领')
+    message.success('已添加成员，可邀请本人认领或申请儿童监护')
   } catch (cause) {
     formError.value = cause.message
   } finally {
