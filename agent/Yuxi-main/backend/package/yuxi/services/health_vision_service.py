@@ -508,31 +508,34 @@ class HealthVisionService:
                 "report_view",
             )
             await repo.authorize(member_id, uid, scope)
-            result = []
-            for job, task in await repo.list_jobs(member_id):
-                try:
-                    await repo.authorize(member_id, uid, "report_view" if job.kind == "report" else "diet_edit")
-                    await repo.active_uploads(job)
-                except HealthVisionError:
-                    continue
-                result.append(
-                    self._serialize_job(
-                        job, task, await session.get(VisionDraft, job.result_id) if job.result_id else None
-                    )
-                )
-            drafts = []
-            for draft in await repo.list_drafts(member_id):
-                try:
-                    await repo.authorize(member_id, uid, "report_view" if draft.kind == "report" else "diet_edit")
-                except HealthVisionError:
-                    continue
-                if draft.job_id:
-                    try:
-                        await repo.active_uploads(await session.get(VisionJob, draft.job_id))
-                    except HealthVisionError:
-                        continue
-                drafts.append(serialize_draft(draft))
-            return {"jobs": result, "drafts": drafts}
+            return {
+                "jobs": await self._visible_jobs(session, repo, uid, await repo.list_jobs(member_id)),
+                "drafts": await self._visible_drafts(session, repo, uid, await repo.list_drafts(member_id)),
+            }
+
+    async def jobs_page(
+        self,
+        uid: str,
+        member_id: str,
+        kind: str,
+        *,
+        jobs_limit: int = 20,
+        jobs_offset: int = 0,
+        drafts_limit: int = 20,
+        drafts_offset: int = 0,
+    ):
+        """用途先授权；两个原始窗口独立分页，空可见页仍能继续。"""
+        async with pg_manager.get_async_session_context() as session:
+            repo = HealthVisionRepository(session)
+            await repo.authorize(member_id, uid, "report_view" if kind == "report" else "diet_edit")
+            jobs = await repo.list_jobs(member_id, kind=kind, limit=jobs_limit + 1, offset=jobs_offset)
+            drafts = await repo.list_drafts(member_id, kind=kind, limit=drafts_limit + 1, offset=drafts_offset)
+            return {
+                "jobs": await self._visible_jobs(session, repo, uid, jobs[:jobs_limit]),
+                "drafts": await self._visible_drafts(session, repo, uid, drafts[:drafts_limit]),
+                "jobs_next_offset": jobs_offset + jobs_limit if len(jobs) > jobs_limit else None,
+                "drafts_next_offset": drafts_offset + drafts_limit if len(drafts) > drafts_limit else None,
+            }
 
     async def get_job(self, uid: str, task_id: str):
         """每次轮询重新授权，不信任客户端已知任务 ID。"""
@@ -1006,6 +1009,33 @@ class HealthVisionService:
                 "recipe_estimated",
             )
         }
+
+    async def _visible_jobs(self, session, repo, uid, rows):
+        """复用逐任务授权与有效源检查，不公开失效图片的派生状态。"""
+        result = []
+        for job, task in rows:
+            try:
+                await repo.authorize(job.member_id, uid, "report_view" if job.kind == "report" else "diet_edit")
+                await repo.active_uploads(job)
+            except HealthVisionError:
+                continue
+            result.append(
+                self._serialize_job(job, task, await session.get(VisionDraft, job.result_id) if job.result_id else None)
+            )
+        return result
+
+    async def _visible_drafts(self, session, repo, uid, rows):
+        """人工草稿可见；识图草稿仍须保留当前有效源。"""
+        result = []
+        for draft in rows:
+            try:
+                await repo.authorize(draft.member_id, uid, "report_view" if draft.kind == "report" else "diet_edit")
+                if draft.job_id:
+                    await repo.active_uploads(await session.get(VisionJob, draft.job_id))
+            except HealthVisionError:
+                continue
+            result.append(serialize_draft(draft))
+        return result
 
     async def _visible_records(self, session, repo, uid, rows, kind):
         """复用正式记录来源检查，不将失效图片快照暴露给列表。"""

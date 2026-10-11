@@ -75,6 +75,20 @@ test_agent_bubble_sort_run_creates_expected_artifacts
 
 ## 常用命令
 
+### OCR任务与草稿分页验证
+
+定向unit核对种类筛选先于分页、两侧原始窗口和稳定排序；真实TCP/PG integration使用独立schema及超过旧50条上限的合成任务、草稿，比较每次GET前后全schema行内容及xmin，并回读清理结果。覆盖两个offset独立、逐用途授权、管理员无旁路、实际图片元数据由有效转删除、空中间页继续，以及旧vision结构和参数边界。
+
+```bash
+docker compose exec -T api uv run --no-sync --group test pytest test/unit/services/test_health_vision_list_pagination.py -q
+docker compose exec -T api uv run --no-sync --group test pytest test/integration/services/test_health_vision_list_pagination_http.py -q
+docker compose exec -T web pnpm run test:unit
+docker compose exec -T web pnpm run lint:check
+docker compose exec -T web pnpm run build
+```
+
+负控恢复授权、两侧lookahead、来源过滤、kind、offset及ID排序的目标缺陷，变异仅作用测试进程函数副本；生产Owner保持不变。前端验证两侧独立翻页、成员/用途/卸载后的迟到响应、撤权清理、错误重试及轮询保留页码和草稿编辑。实际浏览器使用持久化合成候选验证跨50条历史、显式打开草稿、空成员、错误恢复、浅/深色及窄屏。协议见[OCR分页参考](../advanced/health-vision-list-pagination.md)；合成候选不表示OCR、Worker、营养计算或模型质量验收。
+
 ### 饮食记录分页验证
 
 定向unit检查原始窗口、稳定排序、授权与失效来源；真实HTTP使用独立PG schema和121条合成确认快照，跨越原100条限制，并核对每次GET前后所有表内容及xmin。授权撤回、其他成员、管理员无旁路、非法参数和实际图片元数据删除分别校验；源删除后的空中间页仍能继续。合成查询快照不代表营养计算或专业验收。

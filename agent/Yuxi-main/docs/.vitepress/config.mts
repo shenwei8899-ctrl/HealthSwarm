@@ -107,6 +107,7 @@ export default defineConfig({
           { text: '成员任务入口状态', link: '/advanced/health-member-capabilities' },
           { text: '成员餐单列表分页', link: '/advanced/health-meal-plan-pagination' },
           { text: '已确认饮食记录分页', link: '/advanced/health-diet-log-pagination' },
+          { text: 'OCR任务与草稿分页', link: '/advanced/health-vision-list-pagination' },
           { text: '家庭营养任务恢复', link: '/advanced/health-task-recovery' },
           { text: '饮食分析与餐后反馈', link: '/advanced/health-diet-analysis' },
           { text: '品牌自定义', link: '/advanced/branding' }

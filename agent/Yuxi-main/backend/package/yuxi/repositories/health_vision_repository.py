@@ -197,27 +197,30 @@ class HealthVisionRepository:
             )
         )
 
-    async def list_jobs(self, member_id: str):
+    async def list_jobs(self, member_id: str, *, kind: str | None = None, limit: int = 50, offset: int = 0):
         """最近任务与 Task 真实状态关联。"""
+        stmt = (
+            select(VisionJob, TaskRecord)
+            .join(TaskRecord, TaskRecord.id == VisionJob.task_id)
+            .where(VisionJob.member_id == member_id)
+        )
+        if kind is not None:
+            stmt = stmt.where(VisionJob.kind == kind)
         return (
             await self.session.execute(
-                select(VisionJob, TaskRecord)
-                .join(TaskRecord, TaskRecord.id == VisionJob.task_id)
-                .where(VisionJob.member_id == member_id)
-                .order_by(VisionJob.created_at.desc())
-                .limit(50)
+                stmt.order_by(VisionJob.created_at.desc(), VisionJob.id.asc()).limit(limit).offset(offset)
             )
         ).all()
 
-    async def list_drafts(self, member_id: str):
+    async def list_drafts(self, member_id: str, *, kind: str | None = None, limit: int = 50, offset: int = 0):
         """提供可刷新恢复的草稿列表。"""
+        stmt = select(VisionDraft).where(VisionDraft.member_id == member_id)
+        if kind is not None:
+            stmt = stmt.where(VisionDraft.kind == kind)
         return list(
             (
                 await self.session.scalars(
-                    select(VisionDraft)
-                    .where(VisionDraft.member_id == member_id)
-                    .order_by(VisionDraft.created_at.desc())
-                    .limit(50)
+                    stmt.order_by(VisionDraft.created_at.desc(), VisionDraft.id.asc()).limit(limit).offset(offset)
                 )
             ).all()
         )

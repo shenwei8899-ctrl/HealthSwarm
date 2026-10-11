@@ -68,6 +68,44 @@ class DietLogPage(HealthDTO):
     next_offset: int | None
 
 
+class VisionJobSummary(HealthDTO):
+    """任务状态只投影既有 Task 事实，不公开内部输入和错误正文。"""
+
+    task_id: str
+    kind: Literal["report", "meal"]
+    execution_status: str
+    phase: str
+    progress: float
+    cancel_requested: bool
+    result_id: str | None
+    review_status: str
+    error_code: str | None
+    created_at: str
+
+
+class VisionDraftRecord(HealthDTO):
+    """保留识图草稿的复核版本和候选内容。"""
+
+    id: str
+    member_id: str
+    kind: Literal["report", "meal"]
+    version: int
+    review_status: str
+    payload: dict
+    model_version: str | None
+    parser_version: str | None
+    created_at: str
+
+
+class VisionListPage(HealthDTO):
+    """任务、草稿分别按入库窗口前进，失效源可形成空中间页。"""
+
+    jobs: list[VisionJobSummary]
+    drafts: list[VisionDraftRecord]
+    jobs_next_offset: int | None
+    drafts_next_offset: int | None
+
+
 class GrantInput(HealthDTO):
     actor_uid: str = Field(min_length=1, max_length=100)
     scopes: list[

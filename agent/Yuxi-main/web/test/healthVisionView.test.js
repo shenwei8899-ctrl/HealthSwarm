@@ -64,7 +64,11 @@ function workbench(api, options = {}) {
       (fn) => unmount.push(fn),
       () => ({ isAdmin: true }),
       () => ({ push: api.navigate || noop }),
-      { list: async () => ({ jobs: [], drafts: [] }), records: async () => [], ...api },
+      {
+        visionPage: async () => ({ jobs: [], drafts: [], jobs_next_offset: null, drafts_next_offset: null }),
+        records: async () => [],
+        ...api
+      },
       { error: noop, warning: noop, success: noop },
       { confirm: options.confirm || noop },
       ...Object.values(helpers)
@@ -363,11 +367,12 @@ test('实际重试按钮模板不依赖组件 crypto，发送 UUID 后刷新任�
   const refreshed = []
   const state = workbench({
     retry: async (...args) => requests.push(args),
-    list: async (id) => {
+    visionPage: async (id) => {
       refreshed.push(id)
       return { jobs: [], drafts: [] }
     }
   })
+  state.members.value = [{ id: 'synthetic-member', scopes: ['report_view', 'diet_edit'] }]
   state.memberId.value = 'synthetic-member'
   await nextTick()
   await new Promise(setImmediate)
@@ -409,11 +414,15 @@ test('识别重试未知响应与回读失败均复用父任务请求键，确�
       failRead = requests.length === 2
       return { task_id: 'same-retry-task' }
     },
-    list: async () => {
+    visionPage: async () => {
       if (failRead) throw new Error('synthetic list unavailable')
       return { jobs: [], drafts: [] }
     }
   })
+  state.members.value = [
+    { id: 'member-a', scopes: ['report_view', 'diet_edit'] },
+    { id: 'member-b', scopes: ['report_view', 'diet_edit'] }
+  ]
   state.memberId.value = 'member-a'
   await nextTick()
   await new Promise(setImmediate)
@@ -450,7 +459,7 @@ test('识别重试的迟到成员列表不释放未知父任务键', async () =>
       requests.push(data.client_request_id)
       return { task_id: 'same-child' }
     },
-    list: async () => {
+    visionPage: async () => {
       if (deferRead) {
         deferRead = false
         readStarted()
@@ -461,6 +470,10 @@ test('识别重试的迟到成员列表不释放未知父任务键', async () =>
       return { jobs: [], drafts: [] }
     }
   })
+  state.members.value = [
+    { id: 'member-a', scopes: ['report_view', 'diet_edit'] },
+    { id: 'member-b', scopes: ['report_view', 'diet_edit'] }
+  ]
   state.memberId.value = 'member-a'
   await nextTick()
   await new Promise(setImmediate)
@@ -669,6 +682,7 @@ test('人工录入响应等待时禁止切换用途，不能回填到错误页�
         resolveDraft = resolve
       })
   })
+  state.members.value = [{ id: 'synthetic-member', scopes: ['report_view', 'diet_edit'] }]
   state.memberId.value = 'synthetic-member'
   await nextTick()
   await new Promise(setImmediate)

@@ -61,6 +61,16 @@ const loading = ref(true)
 const pageError = ref('')
 const jobs = ref([])
 const drafts = ref([])
+const pageSize = 20
+const jobsOffset = ref(0)
+const draftsOffset = ref(0)
+const jobsNextOffset = ref(null)
+const draftsNextOffset = ref(null)
+const jobsPage = computed(() => Math.floor(jobsOffset.value / pageSize) + 1)
+const draftsPage = computed(() => Math.floor(draftsOffset.value / pageSize) + 1)
+const visionLoading = ref(false)
+const visionBackground = ref(false)
+const visionError = ref('')
 const records = ref({ report: [], meal: [] })
 const files = ref([])
 const uploads = ref([])
@@ -96,6 +106,11 @@ const scopeLabels = {
 }
 const member = computed(() => members.value.find((item) => item.id === memberId.value))
 const purpose = computed(() => (tab.value === 'meal' ? 'meal' : 'report'))
+const canReadVision = computed(
+  () =>
+    !!memberId.value &&
+    !!member.value?.scopes.includes(purpose.value === 'report' ? 'report_view' : 'diet_edit')
+)
 const tabs = computed(() => [
   { key: 'report', label: '健康报告' },
   { key: 'profile', label: '本人档案' },
@@ -129,6 +144,8 @@ const statusLabels = {
 const reviewLabels = { pending_confirmation: '待复核', confirmed: '已确认', invalidated: '已失效' }
 let timer = null
 let memberSequence = 0
+let listSequence = 0
+let detailSequence = 0
 let disposed = false
 
 /** 加载真实就绪状态，禁止用样例数据伪装云识别。 */
@@ -148,20 +165,135 @@ async function initialize() {
   }
 }
 
-/** 轮询只覆盖列表，不覆盖用户正在修改的草稿。 */
-async function refresh() {
-  if (!memberId.value) return
+/** 当前成员、用途、授权及操作者共同保护异步私有响应。 */
+function visionContext() {
+  const id = memberId.value
+  const kind = purpose.value
+  const sequence = memberSequence
+  const actor = userStore.uid
+  return () =>
+    !disposed &&
+    id === memberId.value &&
+    kind === purpose.value &&
+    sequence === memberSequence &&
+    actor === userStore.uid &&
+    canReadVision.value
+}
+
+/** 授权或来源失效时撤销旧响应及当前私有复核内容。 */
+function clearVisionPrivate() {
+  memberSequence++
+  listSequence++
+  detailSequence++
+  jobs.value = []
+  drafts.value = []
+  jobsNextOffset.value = null
+  draftsNextOffset.value = null
+  visionLoading.value = false
+  visionBackground.value = false
+  selected.value = null
+  dirty.value = false
+  calculation.value = null
+  reviewed.value = false
+  cloudConsent.value = false
+  files.value = []
+  uploads.value = []
+  taskRequest.value = null
+  confirmationRequest.value = null
+  reprocessRequest.value = null
+  records.value = { report: [], meal: [] }
+  clearPreparedPreview()
+  confirmationModal?.destroy()
+  confirmationModal = null
+  confirming.value = false
+}
+
+/** 读取当前双页；列表更新不重读或覆盖用户正在修改的草稿。 */
+async function readVisionPage(jobsTarget = jobsOffset.value, draftsTarget = draftsOffset.value, background = false) {
+  const ticket = ++listSequence
+  const context = visionContext()
+  const current = () => ticket === listSequence && context()
+  jobsOffset.value = jobsTarget
+  draftsOffset.value = draftsTarget
+  if (!background) {
+    jobs.value = []
+    drafts.value = []
+    jobsNextOffset.value = null
+    draftsNextOffset.value = null
+  }
+  visionError.value = ''
+  visionLoading.value = false
+  visionBackground.value = background
+  if (!canReadVision.value || disposed) return false
+  const id = memberId.value
+  const kind = purpose.value
+  visionLoading.value = true
+  try {
+    const list = await api.visionPage(id, kind, pageSize, jobsTarget, pageSize, draftsTarget)
+    if (!current()) return false
+    jobs.value = list.jobs
+    drafts.value = list.drafts
+    jobsNextOffset.value = list.jobs_next_offset
+    draftsNextOffset.value = list.drafts_next_offset
+    return true
+  } catch (error) {
+    if (!current()) return false
+    jobs.value = []
+    drafts.value = []
+    jobsNextOffset.value = null
+    draftsNextOffset.value = null
+    if ([403, 404].includes(error.status)) {
+      clearVisionPrivate()
+      visionError.value = '成员授权或来源已变化，已清除旧结果，请重新核对后重试。'
+    } else visionError.value = '读取列表失败，请重试本页。'
+    return false
+  } finally {
+    if (current()) {
+      visionLoading.value = false
+      visionBackground.value = false
+    }
+  }
+}
+
+/** 轮询及业务回读保留位置；显式刷新与新建成功回到两侧首页。 */
+async function refresh(resetPages = false, background = false) {
+  if (!memberId.value || disposed) return false
   const id = memberId.value
   const sequence = memberSequence
-  const [list, reportRecords, mealRecords] = await Promise.all([
-    api.list(id),
-    member.value?.scopes.includes('report_view') ? api.records(id, 'report') : [],
-    member.value?.scopes.includes('diet_edit') ? api.records(id, 'meal') : []
-  ])
-  if (disposed || id !== memberId.value || sequence !== memberSequence) return
-  jobs.value = list.jobs
-  drafts.value = list.drafts
-  records.value = { report: reportRecords, meal: mealRecords }
+  const actor = userStore.uid
+  const ticket = listSequence + 1
+  const current = () =>
+    !disposed && id === memberId.value && sequence === memberSequence && actor === userStore.uid && ticket === listSequence
+  try {
+    const [loaded, reportRecords, mealRecords] = await Promise.all([
+      readVisionPage(resetPages ? 0 : jobsOffset.value, resetPages ? 0 : draftsOffset.value, background),
+      member.value?.scopes.includes('report_view') ? api.records(id, 'report') : [],
+      member.value?.scopes.includes('diet_edit') ? api.records(id, 'meal') : []
+    ])
+    if (!current()) return false
+    records.value = { report: reportRecords, meal: mealRecords }
+    return loaded
+  } catch (error) {
+    if (!current()) return false
+    if ([403, 404].includes(error.status)) clearVisionPrivate()
+    message.error(error.message)
+    return false
+  }
+}
+
+/** 一侧翻页只改变自己的位置，另一侧仍读取当前页。 */
+async function turnVisionPage(kind, next) {
+  if (busy.value || confirming.value || visionLoading.value || !canReadVision.value) return
+  const offset = kind === 'jobs' ? jobsOffset.value : draftsOffset.value
+  const following = kind === 'jobs' ? jobsNextOffset.value : draftsNextOffset.value
+  if ((next && following === null) || (!next && offset === 0)) return
+  const target = next ? following : Math.max(0, offset - pageSize)
+  await perform(() =>
+    readVisionPage(
+      kind === 'jobs' ? target : jobsOffset.value,
+      kind === 'drafts' ? target : draftsOffset.value
+    )
+  )
 }
 
 async function perform(action) {
@@ -281,8 +413,6 @@ watch(memberId, () => {
   taskRequest.value = null
   confirmationRequest.value = null
   memberSequence++
-  jobs.value = []
-  drafts.value = []
   records.value = { report: [], meal: [] }
   selected.value = null
   files.value = []
@@ -291,7 +421,6 @@ watch(memberId, () => {
   calculation.value = null
   dirty.value = false
   reviewed.value = false
-  if (memberId.value) void perform(refresh)
 })
 watch(tab, () => {
   clearPreparedPreview()
@@ -308,6 +437,16 @@ watch(tab, () => {
   dirty.value = false
   reviewed.value = false
 })
+watch(
+  () => [memberId.value, purpose.value, canReadVision.value, userStore.uid],
+  () => {
+    clearVisionPrivate()
+    jobsOffset.value = 0
+    draftsOffset.value = 0
+    visionError.value = ''
+    if (memberId.value) void refresh(true)
+  }
+)
 watch([mealType, eatenAt], () => {
   taskRequest.value = null
 })
@@ -319,20 +458,20 @@ onMounted(async () => {
   timer = setInterval(() => {
     if (
       !busy.value &&
+      !confirming.value &&
+      !visionLoading.value &&
       document.visibilityState === 'visible' &&
-      jobs.value.some((item) => ['pending', 'running'].includes(item.execution_status))
+      ['report', 'meal'].includes(tab.value) &&
+      canReadVision.value
     )
-      void perform(refresh)
+      void refresh(false, true)
   }, 3000)
 })
 onBeforeUnmount(() => {
   disposed = true
-  memberSequence++
+  clearVisionPrivate()
   resetConsultation()
-  clearPreparedPreview()
   retryRequests.clear()
-  confirmationModal?.destroy()
-  confirmationModal = null
   if (timer) clearInterval(timer)
 })
 
@@ -456,7 +595,7 @@ async function startRecognition() {
     uploads.value = []
     clearPreparedPreview()
     if (uploadInput.value) uploadInput.value.value = ''
-    await refresh()
+    await refresh(true)
     message.success('识别任务已提交，完成后请打开草稿复核')
   })
 }
@@ -464,8 +603,9 @@ async function startRecognition() {
 async function manualDraft() {
   if (!memberId.value) return message.warning('请先创建或选择健康成员')
   await perform(async () => {
+    const current = visionContext()
     const kind = purpose.value
-    selected.value = await api.manual({
+    const result = await api.manual({
       member_id: memberId.value,
       kind,
       ...(kind === 'report'
@@ -484,18 +624,34 @@ async function manualDraft() {
             }
           })
     })
+    if (!current()) return
+    selected.value = result
     dirty.value = false
     confirmationRequest.value = null
     calculation.value = null
     reviewed.value = false
-    await refresh()
+    await refresh(true)
   })
 }
 
 async function openDraft(id) {
+  if (busy.value || confirming.value || !canReadVision.value) return
   if (dirty.value && !window.confirm('尚有未保存修改，确定放弃并重新打开草稿吗？')) return
+  const ticket = ++detailSequence
+  const context = visionContext()
+  const current = () => ticket === detailSequence && context()
+  const kind = purpose.value
   await perform(async () => {
-    selected.value = await api.draft(purpose.value, id)
+    let result
+    try {
+      result = await api.draft(kind, id)
+    } catch (error) {
+      if (!current()) return
+      if ([403, 404].includes(error.status)) clearVisionPrivate()
+      throw error
+    }
+    if (!current()) return
+    selected.value = result
     confirmationRequest.value = null
     reprocessRequest.value = null
     dirty.value = false
@@ -521,24 +677,31 @@ function addResult() {
 }
 
 async function saveDraft() {
-  if (!dirty.value) return
+  if (!dirty.value) return true
+  const current = visionContext()
   const draft = selected.value
-  selected.value = await api.patch(draft.kind, draft.id, {
+  const result = await api.patch(draft.kind, draft.id, {
     version: draft.version,
     reason: editReason.value,
     [draft.kind]: draft.payload
   })
+  if (!current()) return false
+  selected.value = result
   dirty.value = false
   confirmationRequest.value = null
   calculation.value = null
   reviewed.value = false
   await refresh()
+  return current()
 }
 
 async function calculate() {
   await perform(async () => {
-    await saveDraft()
-    calculation.value = await api.calculate(selected.value.id, selected.value.version)
+    if (!(await saveDraft()) || !selected.value) return
+    const current = visionContext()
+    const result = await api.calculate(selected.value.id, selected.value.version)
+    if (!current()) return
+    calculation.value = result
     confirmationRequest.value = null
     acceptIncomplete.value = false
   })
@@ -702,8 +865,9 @@ async function retryJob(job) {
     }
     await api.retry(job.task_id, request)
     if (disposed || sequence !== memberSequence || id !== memberId.value) return
-    await refresh()
+    const loaded = await refresh()
     if (disposed || sequence !== memberSequence || id !== memberId.value) return
+    if (!loaded) return
     retryRequests.delete(job.task_id)
   })
 }
@@ -744,7 +908,7 @@ async function retryJob(job) {
           ><a-button :disabled="busy" @click="memberModal = true"
             ><Plus :size="14" /> 新建成员</a-button
           ><a-button v-if="member?.is_owner" @click="grantModal = true">成员授权</a-button
-          ><a-button :disabled="busy || !memberId" @click="perform(refresh)"
+          ><a-button :disabled="busy || confirming || !memberId" @click="perform(() => refresh(true))"
             ><RefreshCw :size="14" /> 刷新</a-button
           ><a-tooltip
             :title="
@@ -983,7 +1147,46 @@ async function retryJob(job) {
           <div class="history-grid">
             <section class="panel">
               <h2>识别任务</h2>
-              <a-empty v-if="!scopedJobs.length" description="暂无任务；提交后在这里查看真实进度" />
+              <p class="page-help">按创建时间从新到旧，每页最多20条；失效来源不展示。</p>
+              <div class="vision-paging" aria-label="识别任务分页">
+                <a-button
+                  size="small"
+                  :disabled="busy || confirming || visionLoading || !canReadVision || jobsOffset === 0"
+                  @click="turnVisionPage('jobs', false)"
+                  >上一页</a-button
+                >
+                <span aria-live="polite">第 {{ jobsPage }} 页 · {{ scopedJobs.length }} 条</span>
+                <a-button
+                  size="small"
+                  :disabled="busy || confirming || visionLoading || !canReadVision || jobsNextOffset === null"
+                  @click="turnVisionPage('jobs', true)"
+                  >下一页</a-button
+                >
+              </div>
+              <a-alert
+                v-if="!canReadVision"
+                type="warning"
+                message="请先选择具有本用途查看权限的成员。"
+                show-icon
+              />
+              <a-spin v-else-if="visionLoading && !visionBackground" tip="正在读取识别任务" />
+              <a-alert v-else-if="visionError" type="error" :message="visionError" show-icon>
+                <template #action>
+                  <a-button size="small" :disabled="busy || confirming" @click="perform(refresh)"
+                    >重试本页</a-button
+                  >
+                </template>
+              </a-alert>
+              <a-empty
+                v-else-if="!scopedJobs.length"
+                :description="
+                  jobsNextOffset !== null
+                    ? '本页来源已失效，可继续查看下一页'
+                    : jobsOffset === 0
+                      ? '暂无任务；提交后在这里查看真实进度'
+                      : '本页暂无任务，可返回上一页或刷新到第一页'
+                "
+              />
               <div v-for="job in scopedJobs" :key="job.task_id" class="history-row">
                 <div>
                   <strong>{{ statusLabels[job.execution_status] || job.execution_status }}</strong
@@ -999,7 +1202,7 @@ async function retryJob(job) {
                   >
                 </div>
                 <div class="row-actions">
-                  <a-button v-if="job.result_id" size="small" @click="openDraft(job.result_id)"
+                  <a-button v-if="job.result_id" size="small" :disabled="busy || confirming" @click="openDraft(job.result_id)"
                     >打开草稿</a-button
                   ><a-button
                     v-if="['pending', 'running'].includes(job.execution_status)"
@@ -1026,7 +1229,46 @@ async function retryJob(job) {
             </section>
             <section class="panel">
               <h2>复核草稿</h2>
-              <a-empty v-if="!scopedDrafts.length" description="识别完成或人工录入后产生草稿" />
+              <p class="page-help">草稿分页独立于任务；翻页保留正在复核的内容。</p>
+              <div class="vision-paging" aria-label="复核草稿分页">
+                <a-button
+                  size="small"
+                  :disabled="busy || confirming || visionLoading || !canReadVision || draftsOffset === 0"
+                  @click="turnVisionPage('drafts', false)"
+                  >上一页</a-button
+                >
+                <span aria-live="polite">第 {{ draftsPage }} 页 · {{ scopedDrafts.length }} 条</span>
+                <a-button
+                  size="small"
+                  :disabled="busy || confirming || visionLoading || !canReadVision || draftsNextOffset === null"
+                  @click="turnVisionPage('drafts', true)"
+                  >下一页</a-button
+                >
+              </div>
+              <a-alert
+                v-if="!canReadVision"
+                type="warning"
+                message="请先选择具有本用途查看权限的成员。"
+                show-icon
+              />
+              <a-spin v-else-if="visionLoading && !visionBackground" tip="正在读取复核草稿" />
+              <a-alert v-else-if="visionError" type="error" :message="visionError" show-icon>
+                <template #action>
+                  <a-button size="small" :disabled="busy || confirming" @click="perform(refresh)"
+                    >重试本页</a-button
+                  >
+                </template>
+              </a-alert>
+              <a-empty
+                v-else-if="!scopedDrafts.length"
+                :description="
+                  draftsNextOffset !== null
+                    ? '本页来源已失效，可继续查看下一页'
+                    : draftsOffset === 0
+                      ? '识别完成或人工录入后产生草稿'
+                      : '本页暂无草稿，可返回上一页或刷新到第一页'
+                "
+              />
               <div v-for="draft in scopedDrafts" :key="draft.id" class="history-row">
                 <div>
                   <strong>{{ reviewLabels[draft.review_status] || draft.review_status }}</strong
@@ -1035,7 +1277,7 @@ async function retryJob(job) {
                     {{ new Date(draft.created_at).toLocaleString() }}</small
                   >
                 </div>
-                <a-button size="small" @click="openDraft(draft.id)">{{
+                <a-button size="small" :disabled="busy || confirming" @click="openDraft(draft.id)">{{
                   draft.review_status === 'confirmed' ? '查看快照' : '复核'
                 }}</a-button>
               </div>
@@ -1416,6 +1658,22 @@ input[type='datetime-local'] {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
+}
+.page-help {
+  color: var(--gray-600);
+  font-size: 12px;
+  margin: 0 0 12px;
+}
+.vision-paging {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  span {
+    color: var(--gray-600);
+    font-size: 12px;
+  }
 }
 .history-row {
   padding: 14px 0;

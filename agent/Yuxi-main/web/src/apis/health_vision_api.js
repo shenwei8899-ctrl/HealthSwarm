@@ -104,6 +104,16 @@ export const healthVisionApi = {
       idempotent(data)
     ),
   list: (memberId) => apiGet(`${root}/members/${memberId}/vision`),
+  visionPage: (memberId, kind, jobsLimit = 20, jobsOffset = 0, draftsLimit = 20, draftsOffset = 0) =>
+    apiGet(
+      `${root}/members/${memberId}/vision/page?${buildQuery({
+        kind,
+        jobs_limit: jobsLimit,
+        jobs_offset: jobsOffset,
+        drafts_limit: draftsLimit,
+        drafts_offset: draftsOffset
+      })}`
+    ),
   statistics: (memberId, kind) =>
     apiGet(`${root}/members/${memberId}/vision-statistics?${buildQuery({ kind })}`),
   cancel: (id) => apiPost(`${root}/vision-tasks/${id}/cancel`),

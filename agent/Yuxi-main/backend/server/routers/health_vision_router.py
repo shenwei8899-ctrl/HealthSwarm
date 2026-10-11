@@ -11,7 +11,7 @@ from fastapi.routing import APIRoute
 
 from server.utils.auth_middleware import get_admin_user, get_required_user
 from yuxi.services.health_vision_service import health_vision_service as service
-from yuxi.services.health_vision_types import DietLogPage
+from yuxi.services.health_vision_types import DietLogPage, VisionListPage
 from yuxi.services.health_consultation_service import create_consultation, create_daily_consultation, list_consultations
 from yuxi.services.health_family_planner_types import FamilyPlannerInput
 from yuxi.services.health_initial_meal_plan_types import InitialPlannerInput
@@ -974,6 +974,30 @@ async def report_page_task(
 async def jobs(member_id: UUID, user: User = Depends(get_required_user)):
     """恢复任务与未确认草稿。"""
     return await service.jobs(user.uid, str(member_id))
+
+
+@health_vision.get("/members/{member_id}/vision/page", response_model=VisionListPage)
+async def vision_page(
+    member_id: UUID,
+    kind: Literal["report", "meal"],
+    response: Response,
+    jobs_limit: int = Query(20, ge=1, le=50),
+    jobs_offset: int = Query(0, ge=0, le=2147483647),
+    drafts_limit: int = Query(20, ge=1, le=50),
+    drafts_offset: int = Query(0, ge=0, le=2147483647),
+    user: User = Depends(get_required_user),
+):
+    """按用途读取任务与草稿的独立分页，游标按入库行推进。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await service.jobs_page(
+        user.uid,
+        str(member_id),
+        kind,
+        jobs_limit=jobs_limit,
+        jobs_offset=jobs_offset,
+        drafts_limit=drafts_limit,
+        drafts_offset=drafts_offset,
+    )
 
 
 @health_vision.get("/members/{member_id}/vision-statistics")
