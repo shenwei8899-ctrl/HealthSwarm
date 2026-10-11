@@ -128,6 +128,34 @@ class ConsultationInput(HealthDTO):
     client_request_id: UUID
 
 
+class ConsultationResult(HealthDTO):
+    """普通咨询创建只返回固定角色，反馈选择保持为空。"""
+
+    thread_id: UUID
+    member_id: UUID
+    agent_slug: Literal["health-consultation"]
+    business_date: date | None
+    feedback_selection: None
+
+
+class ConsultationListItem(HealthDTO):
+    """咨询列表仅公开线程元信息，不包含正文或反馈选择。"""
+
+    thread_id: UUID
+    member_id: UUID
+    agent_slug: Literal["health-consultation"]
+    business_date: date | None
+    created_at: str
+
+
+class ConsultationListResult(HealthDTO):
+    """咨询分页保留末页的空偏移和实际元信息数组。"""
+
+    items: list[ConsultationListItem]
+    has_more: bool
+    next_offset: int | None
+
+
 class VisionTaskInput(HealthDTO):
     member_id: UUID
     upload_ids: list[UUID] = Field(min_length=1, max_length=20)

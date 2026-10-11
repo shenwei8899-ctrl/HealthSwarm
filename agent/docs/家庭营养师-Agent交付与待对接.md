@@ -83,8 +83,11 @@
 
 ### 6. 同事小程序与真机：待定
 
-- **提供方与必需契约：**页面 Owner 接入显式 `task_type`/选择、`client_request_id` 与实际 `request_id`/`run_id` 的区分、用途同意版本、结果分类、SSE 游标及断线查询兜底；预览、次日提议、保存、采用分别确认。平台/客户端确认微信身份映射、AppID、HTTPS 环境、上传权限和真机网络条件；需要语音时另定供应商及用途契约。
-- **当前接口状态：**受控 [HTTP 路由](../Yuxi-main/backend/server/routers/health_vision_router.py)、Task/引用/次日 DTO 已可对接；引用入口为 `GET /api/health/v1/consultation-runs/{run_id}/citations`。缺选择、错误来源、409/410、取消及追问需客户端分别呈现。完整小程序页面与真实微信身份/设备验收尚待同事交付。
-- **验收触发：**实际客户端和联调环境到位后，用合成账号完成真机正常、重复点击、断网恢复、跨账号拒绝、取消/撤权、来源变化和用户确认测试；回读同 Request/Run 的 PG 最终业务结果。页面建设不扩入 B 的 Agent 实现范围。
+- **提供方与必需契约：**页面 Owner 区分家庭档案的 `source_member_id` 与健康业务的 `member_id`，本人明确确认身份后通过[本人关联 service](../Yuxi-main/backend/package/yuxi/services/health_family_profile_service.py)建立映射。家庭创建和基础档案确认不自动创建健康业务成员或授予健康用途权限。页面接入显式任务选择、用途同意版本、`client_request_id` 与实际 `request_id`/`run_id`、结果分类及恢复查询；预览、次日提议、保存、采用分别确认。
+- **当前服务端契约：**任务入口、运行结果与业务结果分类由 [Task DTO](../Yuxi-main/backend/package/yuxi/services/health_task_types.py)拥有，客户端按[任务恢复参考](../Yuxi-main/docs/advanced/health-task-recovery.md)消费 Request 与 Run，处理缺选择、409/410、取消、追问和专业等待。本人关联读写、普通咨询创建和列表的四个成功响应在 OpenAPI 声明类型，分别由本人关联及[普通咨询响应 DTO](../Yuxi-main/backend/package/yuxi/services/health_vision_types.py)拥有。未关联保留空来源且不增加家庭字段；普通创建保留空反馈选择，列表仅含元信息和分页。当前授权和幂等由既有服务负责，模型用途同意在实际执行边界独立校验。
+- **App 接入状态：**`1358318` 交付 App 的微信登录服务适配和账号家庭页面，默认仍为 mock。真实模式仅开放登录及账号家庭页；[服务注册](../../App/src/services/index.js)只注册登录，其余未适配方法返回 `ADAPTER_NOT_READY`。聊天、菜单、记忆、图片、报告、饮食记录及交易仍含本地演示逻辑，页面 Owner 需完成各页全部数据来源的适配后，再按[路由守卫](../../App/src/services/navigation.js)放行。
+- **微信后台与部署待办：**主检出的 [auth 路由](../Yuxi-main/backend/server/routers/auth_router.py)仍无 `/api/auth/wechat/*`，现有 Yuxi 账号密码登录不代表微信 code 身份验证已完成。主检出的 [business schema](../Yuxi-main/backend/package/yuxi/storage/postgres/manager.py)为 12；[App README](../../App/README.md)记录的独立微信后台拟升级至 13，尚未合入主服务。微信后台负责人负责合入、正式迁移和部署，平台与客户端确认实际 AppID、公开 HTTPS 合法域名及会话身份映射。
+- **请求封装待对齐：**普通咨询创建等包含 `client_request_id` 且调用 `require_request_key` 的指定写入，按[HTTP 路由](../Yuxi-main/backend/server/routers/health_vision_router.py)要求 `Idempotency-Key` 与该字段相同；本人关联等其他入口按各自请求 DTO 与路由发送。调用 `require_match` 的版本编辑显式带 `If-Match: "<version>"`。健康业务错误使用顶层 `code`、`message`、`trace_id`、`retryable` 及 `detail`；[App request](../../App/src/services/request.js)当前只提供认证头、读取 `detail.code` 与请求 ID 响应头，需由页面 Owner 补充请求头和错误解析。认证错误由[认证依赖](../Yuxi-main/backend/server/utils/auth_middleware.py)返回；FastAPI 请求校验错误和健康业务错误均可使用 422，客户端按实际载荷区分。
+- **验收触发：**实际客户端和联调环境到位后，用合成账号完成微信开发者工具及真机登录、上传、重复点击、断网恢复、跨账号拒绝、取消/撤权、来源变化和用户确认测试；回读同 Request/Run 的 PG 最终业务结果。实际 AppID/AppSecret、合法域名、iOS/Android 真机和真实供应商尚待验收；需要语音时另定供应商及用途契约。页面建设由同事负责，B 继续维护 Agent 服务端协议与受控业务入口。
 
 交接关闭条件：提供方确认字段、错误状态、版本及幂等契约，B 完成真实接口与 Worker 联调并回读最终持久化结果；未运行的专业、生产模型、商城或真机验收继续保持待定。

@@ -17,6 +17,23 @@ class FamilyProfileLinkInput(HealthDTO):
     confirmed_identity: Literal[True]
 
 
+class FamilyProfileUnlinkedResult(HealthDTO):
+    """本人尚未关联时保留空来源，不增加家庭字段。"""
+
+    member_id: UUID
+    source_member_id: None
+    scope: Literal["self_confirmed_profile"]
+
+
+class FamilyProfileLinkResult(HealthDTO):
+    """已关联的本人来源同时公开健康、家庭和原档案 ID。"""
+
+    member_id: UUID
+    source_member_id: UUID
+    family_id: UUID
+    scope: Literal["self_confirmed_profile"]
+
+
 async def link_family_profile(uid, member_id, data):
     """关联用例拥有事务，成功返回即可安全重放。"""
     async with pg_manager.get_async_session_context() as session:

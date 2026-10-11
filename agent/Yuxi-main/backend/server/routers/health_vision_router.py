@@ -77,6 +77,8 @@ from yuxi.services.health_personal_target_service import read_personal_targets
 from yuxi.services.health_profile_import_service import read_profile_import_context
 from yuxi.services.health_family_profile_service import (
     FamilyProfileLinkInput,
+    FamilyProfileLinkResult,
+    FamilyProfileUnlinkedResult,
     link_family_profile,
     read_family_profile,
 )
@@ -127,6 +129,8 @@ from yuxi.services.health_vision_types import (
     ConfirmInput,
     ConsentInput,
     ConsultationInput,
+    ConsultationListResult,
+    ConsultationResult,
     DraftInput,
     DraftPatch,
     FoodInput,
@@ -246,13 +250,15 @@ def require_match(version: int, header: str | None):
         raise HealthVisionError("version_conflict", "If-Match 必须为当前草稿版本", 409)
 
 
-@health_vision.post("/members/{member_id}/family-profile-link")
+@health_vision.post("/members/{member_id}/family-profile-link", response_model=FamilyProfileLinkResult)
 async def family_profile_link(member_id: UUID, data: FamilyProfileLinkInput, user: User = Depends(get_required_user)):
     """本人显式连接已认领的正式档案和健康对象。"""
     return await link_family_profile(user.uid, str(member_id), data)
 
 
-@health_vision.get("/members/{member_id}/family-profile-link")
+@health_vision.get(
+    "/members/{member_id}/family-profile-link", response_model=FamilyProfileUnlinkedResult | FamilyProfileLinkResult
+)
 async def family_profile_link_read(member_id: UUID, response: Response, user: User = Depends(get_required_user)):
     """回读本人关联事实，重验当前健康及档案访问权。"""
     response.headers["Cache-Control"] = "no-store"
@@ -872,7 +878,7 @@ async def consent(member_id: UUID, data: ConsentInput, user: User = Depends(get_
     return await service.consent(user.uid, str(member_id), data)
 
 
-@health_vision.get("/members/{member_id}/consultations")
+@health_vision.get("/members/{member_id}/consultations", response_model=ConsultationListResult)
 async def consultation_list(
     member_id: UUID,
     limit: int = Query(default=20, ge=1, le=50),
@@ -883,7 +889,7 @@ async def consultation_list(
     return await list_consultations(user.uid, str(member_id), limit=limit, offset=offset)
 
 
-@health_vision.post("/members/{member_id}/consultations", status_code=201)
+@health_vision.post("/members/{member_id}/consultations", status_code=201, response_model=ConsultationResult)
 async def consultation(
     member_id: UUID,
     data: ConsultationInput,

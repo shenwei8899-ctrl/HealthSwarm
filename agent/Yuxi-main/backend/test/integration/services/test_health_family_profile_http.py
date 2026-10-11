@@ -2,8 +2,10 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime
 import os
 import socket
+from typing import Annotated
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -11,6 +13,7 @@ from fastapi import FastAPI
 import httpx
 import pytest
 import pytest_asyncio
+from pydantic import Field, PlainSerializer, create_model
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import uvicorn
@@ -23,6 +26,7 @@ from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import (
     AgentRun,
+    Agent,
     Base,
     Conversation,
     Department,
@@ -120,6 +124,7 @@ async def family_profile_http(monkeypatch):
     server = uvicorn.Server(uvicorn.Config(app, log_level="error", lifespan="off"))
     task = asyncio.create_task(server.serve(sockets=[listener]))
     try:
+        _apply_response_contract_mutation(app)
         for _ in range(100):
             if server.started:
                 break
@@ -136,6 +141,9 @@ async def family_profile_http(monkeypatch):
         await engine.dispose()
         async with bootstrap.begin() as connection:
             await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+            assert not await connection.scalar(
+                text("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname=:schema)"), {"schema": schema}
+            ), "本轮独立测试 schema 必须清理"
         await bootstrap.dispose()
 
 
@@ -187,21 +195,169 @@ async def test_link_is_explicit_idempotent_and_persists_one_source(family_profil
     assert unlinked.status_code == 200 and unlinked.json()["status"] == "not_ready", unlinked.text
     assert unlinked.json()["profile"] is None
     path = f"{ROOT}/members/{member_id}/family-profile-link"
-    first = await client.post(path, headers=headers, json=source)
-    assert first.status_code in {200, 201}, first.text
-    assert (await client.post(path, headers=headers, json=source)).json() == first.json()
-    current = await client.get(path, headers=headers)
-    assert current.status_code == 200, current.text
-    assert current.json() == {
+    unlinked_link = await client.get(path, headers=headers)
+    assert unlinked_link.status_code == 200, unlinked_link.text
+    assert unlinked_link.json() == {
+        "member_id": member_id,
+        "source_member_id": None,
+        "scope": "self_confirmed_profile",
+    }, "unlinked_link_wire_contract"
+    expected = {
         "member_id": member_id,
         "source_member_id": source["source_member_id"],
         "family_id": source["family_id"],
         "scope": "self_confirmed_profile",
     }
+    first = await client.post(path, headers=headers, json=source)
+    assert first.status_code in {200, 201}, first.text
+    assert first.json() == expected, "linked_post_wire_contract"
+    assert (await client.post(path, headers=headers, json=source)).json() == first.json()
+    current = await client.get(path, headers=headers)
+    assert current.status_code == 200, current.text
+    assert current.json() == expected, "linked_get_wire_contract"
     async with sessions() as session:
         rows = (await session.scalars(select(HealthFamilyProfileLink))).all()
         assert len(rows) == 1 and rows[0].member_id == member_id
         assert rows[0].source_member_id == source["source_member_id"]
+        assert rows[0].family_id == source["family_id"] and rows[0].actor_uid == "self"
+
+
+async def test_ordinary_consultation_contract_authorization_and_idempotency(family_profile_http):
+    """普通咨询的原始 null、UTC 文本及分页来自真实事务与当前授权。"""
+    from yuxi.storage.postgres.models_business import AgentRunRequest, Message
+    from yuxi.storage.postgres.models_health import (
+        HealthConsultation,
+        HealthDailyConversation,
+        HealthFeedbackConversation,
+    )
+
+    client, sessions, identities = family_profile_http
+    headers = identities["self"]
+    member_id = await create_health_member(client, headers)
+    path = f"{ROOT}/members/{member_id}/consultations"
+    request_ids = [str(uuid4()), str(uuid4())]
+    async with sessions() as session:
+        session.add(
+            Agent(
+                slug="health-consultation",
+                backend_id="HealthConsultationAgent",
+                name="合成咨询契约角色",
+                share_config={
+                    "version": 2,
+                    "read_scope": {"access_level": "global", "department_ids": [], "user_uids": []},
+                    "manage_scope": None,
+                },
+            )
+        )
+        await session.commit()
+
+    responses = []
+    for request_id in request_ids:
+        request_headers = {**headers, "Idempotency-Key": request_id}
+        payload = {"client_request_id": request_id}
+        created = await client.post(path, headers=request_headers, json=payload)
+        assert created.status_code == 201, created.text
+        result = created.json()
+        assert result == {
+            "thread_id": result["thread_id"],
+            "member_id": member_id,
+            "agent_slug": "health-consultation",
+            "business_date": None,
+            "feedback_selection": None,
+        }, "consultation_post_wire_contract"
+        retry = await client.post(path, headers=request_headers, json=payload)
+        assert retry.status_code == 201 and retry.json() == result, retry.text
+        responses.append(result)
+
+    # 固定数据库事实，UTC 文本 oracle 不调用生产格式化函数。
+    timestamps = [datetime(2026, 10, 10, 3, 4, 5, 123456), datetime(2026, 10, 11, 3, 4, 5, 654321)]
+    async with sessions() as session:
+        bindings = (
+            await session.scalars(select(HealthConsultation).order_by(HealthConsultation.conversation_id))
+        ).all()
+        assert len(bindings) == 2
+        for binding, request_id, result, created_at in zip(bindings, request_ids, responses, timestamps, strict=True):
+            conversation = await session.get(Conversation, binding.conversation_id)
+            project = await session.get(Project, conversation.project_id)
+            assert binding.actor_uid == conversation.uid == project.uid == "self"
+            assert binding.member_id == member_id and binding.request_id == request_id
+            assert conversation.thread_id == result["thread_id"] and conversation.agent_id == "health-consultation"
+            conversation.created_at = created_at
+        for model in (
+            HealthDailyConversation,
+            HealthFeedbackConversation,
+            HealthProcessingConsent,
+            AgentRunRequest,
+            AgentRun,
+            Message,
+        ):
+            assert await session.scalar(select(func.count()).select_from(model)) == 0
+        assert await session.scalar(select(func.count()).select_from(Project)) == 2
+        assert await session.scalar(select(func.count()).select_from(Conversation)) == 2
+        await session.commit()
+
+    expected_items = [
+        {
+            "thread_id": responses[1]["thread_id"],
+            "member_id": member_id,
+            "agent_slug": "health-consultation",
+            "business_date": None,
+            "created_at": "2026-10-11T03:04:05.654321Z",
+        },
+        {
+            "thread_id": responses[0]["thread_id"],
+            "member_id": member_id,
+            "agent_slug": "health-consultation",
+            "business_date": None,
+            "created_at": "2026-10-10T03:04:05.123456Z",
+        },
+    ]
+    for offset in range(3):
+        page = await client.get(path, headers=headers, params={"limit": 1, "offset": offset})
+        assert page.status_code == 200, page.text
+        body = page.json()
+        assert body["items"] == expected_items[offset : offset + 1], "consultation_list_item_wire_contract"
+        assert body == {
+            "items": expected_items[offset : offset + 1],
+            "has_more": offset == 0,
+            "next_offset": 1 if offset == 0 else None,
+        }, "consultation_list_page_wire_contract"
+
+    # 错误请求头、跨账号、同键换成员及撤权都经过正式路由，最后独立回读无新增咨询。
+    wrong_key = await client.post(path, headers=headers, json={"client_request_id": str(uuid4())})
+    assert wrong_key.status_code == 422 and wrong_key.json()["code"] == "request_key_mismatch"
+    for uid in ("other", "admin"):
+        assert (await client.get(path, headers=identities[uid])).status_code == 404
+        request_id = str(uuid4())
+        denied = await client.post(
+            path,
+            headers={**identities[uid], "Idempotency-Key": request_id},
+            json={"client_request_id": request_id},
+        )
+        assert denied.status_code == 404, denied.text
+    assert (await client.get(path)).status_code == 401
+    second_member = await create_health_member(client, headers)
+    conflicting = await client.post(
+        f"{ROOT}/members/{second_member}/consultations",
+        headers={**headers, "Idempotency-Key": request_ids[0]},
+        json={"client_request_id": request_ids[0]},
+    )
+    assert conflicting.status_code == 409 and conflicting.json()["code"] == "request_conflict"
+    revoked = await client.put(
+        f"{ROOT}/members/{member_id}/grants", headers=headers, json={"actor_uid": "self", "scopes": ["ai_use"]}
+    )
+    assert revoked.status_code == 200, revoked.text
+    assert (await client.get(path, headers=headers)).status_code == 404
+    denied_retry = await client.post(
+        path,
+        headers={**headers, "Idempotency-Key": request_ids[0]},
+        json={"client_request_id": request_ids[0]},
+    )
+    assert denied_retry.status_code == 404, denied_retry.text
+    async with sessions() as session:
+        assert await session.scalar(select(func.count()).select_from(HealthConsultation)) == 2
+        assert await session.scalar(select(func.count()).select_from(Conversation)) == 2
+        assert await session.scalar(select(func.count()).select_from(Project)) == 2
 
 
 @pytest.mark.parametrize("linked", [False, True])
@@ -690,3 +846,83 @@ async def test_conversation_locked_history_avoids_member_and_family_lock_inversi
                 await asyncio.gather(owner_task, return_exceptions=True)
     async with sessions() as observer:
         assert await observer.scalar(select(func.count()).select_from(FamilyAudit)) == original_audits + 1
+
+
+def _apply_response_contract_mutation(app):
+    """负控只重建测试进程路由的错误 DTO，不修改生产源文件。"""
+    mutation = os.getenv("HEALTH_MEMBER_CONTRACT_MUTATION")
+    if not mutation:
+        return
+    from server.routers.health_vision_router import health_vision
+    from yuxi.services.health_family_profile_service import FamilyProfileLinkResult, FamilyProfileUnlinkedResult
+    from yuxi.services.health_vision_types import ConsultationListItem, ConsultationListResult, ConsultationResult
+
+    def omit_field(model, field):
+        """错误 DTO 隐藏本应存在的字段，同时保持其他运行边界。"""
+        return create_model(
+            "Faulty" + model.__name__,
+            __base__=model,
+            **{field: (model.model_fields[field].annotation, Field(exclude=True))},
+        )
+
+    link_path = f"{ROOT}/members/{{member_id}}/family-profile-link"
+    consultation_path = f"{ROOT}/members/{{member_id}}/consultations"
+    if mutation == "unlinked_family_id":
+        faulty = create_model("FaultyUnlinked", __base__=FamilyProfileUnlinkedResult, family_id=(None, None))
+        path, method, model = link_path, "GET", faulty | FamilyProfileLinkResult
+    elif mutation == "unlinked_source_null":
+        path, method, model = (
+            link_path,
+            "GET",
+            omit_field(FamilyProfileUnlinkedResult, "source_member_id") | FamilyProfileLinkResult,
+        )
+    elif mutation in {"linked_get_family_id", "linked_post_family_id"}:
+        method = "GET" if mutation == "linked_get_family_id" else "POST"
+        faulty = omit_field(FamilyProfileLinkResult, "family_id")
+        path, model = link_path, FamilyProfileUnlinkedResult | faulty if method == "GET" else faulty
+    elif mutation in {"consultation_business_date", "consultation_feedback_selection"}:
+        field = mutation.removeprefix("consultation_")
+        path, method, model = consultation_path, "POST", omit_field(ConsultationResult, field)
+    elif mutation == "consultation_next_offset":
+        model = create_model(
+            "FaultyConsultationTail",
+            __base__=ConsultationListResult,
+            next_offset=(
+                Annotated[int | None, PlainSerializer(lambda value: 0 if value is None else value, return_type=int)],
+                ...,
+            ),
+        )
+        path, method = consultation_path, "GET"
+    elif mutation in {"consultation_list_business_date", "consultation_created_at"}:
+        if mutation == "consultation_list_business_date":
+            item = omit_field(ConsultationListItem, "business_date")
+        else:
+            item = create_model(
+                "FaultyConsultationTime",
+                __base__=ConsultationListItem,
+                created_at=(
+                    Annotated[str, PlainSerializer(lambda value: value.replace("Z", "+00:00"), return_type=str)],
+                    ...,
+                ),
+            )
+        model = create_model("FaultyConsultationList", __base__=ConsultationListResult, items=(list[item], ...))
+        path, method = consultation_path, "GET"
+    else:
+        raise AssertionError(f"未知响应负控: {mutation}")
+    for route in health_vision.routes:
+        if "/api" + route.path == path and method in route.methods:
+            app.router.routes.insert(
+                0,
+                type(route)(
+                    path,
+                    endpoint=route.endpoint,
+                    response_model=model,
+                    status_code=route.status_code,
+                    methods=route.methods,
+                    dependencies=route.dependencies,
+                    response_class=route.response_class,
+                    name=route.name,
+                ),
+            )
+            return
+    raise AssertionError(f"未找到负控目标路由: {method} {path}")
