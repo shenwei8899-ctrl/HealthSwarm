@@ -1,3 +1,4 @@
+import { scopedStorage } from '../services/storage.js'
 import { createPlan } from './demo.js'
 
 export const DIABETES_CASE_ID = 'diabetes-family-dinner'
@@ -18,17 +19,17 @@ export function createDiabetesCaseProfile() {
   }
 }
 
-export function getActiveHealthCase() { return uni.getStorageSync('active-health-case-v1') || null }
+export function getActiveHealthCase() { return scopedStorage.getStorageSync('active-health-case-v1') || null }
 export function getActiveHealthCaseId() { return getActiveHealthCase()?.id || '' }
 export function updateActiveHealthCaseProfile(profile) {
   const active = getActiveHealthCase()
-  if (active) uni.setStorageSync('active-health-case-v1', { ...active, profile: JSON.parse(JSON.stringify(profile)) })
+  if (active) scopedStorage.setStorageSync('active-health-case-v1', { ...active, profile: JSON.parse(JSON.stringify(profile)) })
 }
 export function activateDiabetesCase() {
-  uni.setStorageSync('active-health-case-v1', { id: DIABETES_CASE_ID, profile: createDiabetesCaseProfile(), activatedAt: new Date().toISOString() })
-  uni.setStorageSync('meal-records-health-case-v1', [])
+  scopedStorage.setStorageSync('active-health-case-v1', { id: DIABETES_CASE_ID, profile: createDiabetesCaseProfile(), activatedAt: new Date().toISOString() })
+  scopedStorage.setStorageSync('meal-records-health-case-v1', [])
 }
-export function deactivateHealthCase() { uni.setStorageSync('active-health-case-v1', null) }
+export function deactivateHealthCase() { scopedStorage.setStorageSync('active-health-case-v1', null) }
 
 export function createDiabetesCasePlan(profile, meal = '晚餐') {
   const planningProfile = JSON.parse(JSON.stringify(profile))

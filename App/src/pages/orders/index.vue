@@ -1,20 +1,27 @@
 <script setup>
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed, ref } from 'vue'
-import { onShow } from '@dcloudio/uni-app'
+import { onShow,onUnload } from '@dcloudio/uni-app'
 import { backHome } from '../../utils/profile.js'
-import { getOrders, orderStatus } from '../../utils/orders.js'
+import { orderStatus } from '../../utils/orders.js'
 import { mealToRoute } from '../../utils/meal-flow.js'
 
-const orders = ref([])
+import { service } from '../../services/index.js'
+import { storageContext as storageScope } from '../../services/storage.js'
+import { afterSales } from '../../utils/order-actions.js'
+const orders = ref([]),loading=ref(false),error=ref('')
+let loadVersion=0
+const complete=order=>['delivered','cancelled'].includes(order.status)&&!afterSales(order).some(entry=>!['已完成','已撤销','已拒绝'].includes(entry.status))
 const tab = ref('all')
 const tabs = [
   { id: 'all', label: '全部' },
   { id: 'delivery', label: '进行中' },
   { id: 'complete', label: '已完成' },
 ]
-const filtered = computed(() => orders.value.filter(order => tab.value === 'all' || (tab.value === 'delivery' ? ['pending','paid','partial','paused','refund_pending'].includes(order.status) : ['delivered','cancelled'].includes(order.status))))
-onShow(() => { orders.value = getOrders() })
+const filtered = computed(() => orders.value.filter(order => tab.value === 'all' || (tab.value === 'delivery' ? !complete(order) : complete(order))))
+async function load(){const version=++loadVersion,scope=storageScope();loading.value=true;error.value='';try{const result=await service.orders();if(version===loadVersion&&scope===storageScope())orders.value=result}catch(e){if(version===loadVersion&&scope===storageScope())error.value=e.message||'订单读取失败，请重试'}finally{if(version===loadVersion)loading.value=false}}
+onShow(load)
+onUnload(()=>loadVersion++)
 function total(order) { return (order.totalCents / 100).toFixed(2) }
 function detail(order, mode = '') { uni.navigateTo({ url: '/pages/orders/detail?id=' + encodeURIComponent(order.id) + (mode ? '&mode=' + mode : '') }) }
 function reorder(order) { uni.navigateTo({ url: '/pages/shop/index?meal=' + mealToRoute(order.meal) + '&reorder=' + encodeURIComponent(order.id) + (order.caseId ? '&case=diabetes' : '') }) }
@@ -32,6 +39,7 @@ function nutritionist() { uni.reLaunch({ url: '/pages/chat/index' }) }
     <view class="order-tabs">
       <button v-for="item in tabs" :key="item.id" :class="{ active: tab === item.id }" @click="tab = item.id">{{ item.label }}</button>
     </view>
+    <text v-if="loading" class="safe-note">正在读取订单…</text><view v-if="error" class="card"><text class="inline-error">{{error}}</text><button class="secondary-button" @click="load">重试</button></view>
     <view v-if="filtered.length" class="order-list">
       <view v-for="order in filtered" :key="order.id" class="order-card card" @click="detail(order)">
         <view class="order-head"><view><text>{{order.sourcePlanId?'21天 AI专属计划':'普通食材订单'}}</text><text class="small">{{ order.displayTime }} · {{ order.id }}</text></view><text class="status">{{ orderStatus(order).label }}</text></view>
@@ -48,7 +56,7 @@ function nutritionist() { uni.reLaunch({ url: '/pages/chat/index' }) }
         </view>
       </view>
     </view>
-    <view v-else class="empty-card card">
+    <view v-if="!loading&&!error&&!filtered.length" class="empty-card card">
       <view class="empty-mark">▤</view><text class="section-title">这里还没有订单</text><text>从 AI 推荐的食材包完成一次模拟购买，订单会出现在这里。</text><button class="primary-button" @click="nutritionist">返回营养师</button>
     </view>
     <view class="demo-footer">演示订单仅在本次原型体验中保存，不会扣款、发货或创建真实售后工单。</view>

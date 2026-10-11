@@ -1,10 +1,11 @@
 <script setup>
+import { scopedStorage } from '../../services/storage.js'
 import AppNavBar from '../../components/AppNavBar.vue'
 import { ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { backHome } from '../../utils/profile.js'
 const history=ref([]),active=ref(null)
-onShow(()=>{const keys=uni.getStorageInfoSync().keys||[];history.value=keys.filter(k=>/^chat-\d{4}-\d{2}-\d{2}$/.test(k)).map(key=>({date:key.slice(5),messages:uni.getStorageSync(key)||[]})).filter(h=>h.messages.length).sort((a,b)=>b.date.localeCompare(a.date))})
+onShow(()=>{const keys=scopedStorage.getStorageInfoSync().keys||[];history.value=keys.filter(k=>/^chat-\d{4}-\d{2}-\d{2}$/.test(k)).map(key=>({date:key.slice(5),messages:scopedStorage.getStorageSync(key)||[]})).filter(h=>h.messages.length).sort((a,b)=>b.date.localeCompare(a.date))})
 function back(){active.value?active.value=null:backHome()}
 </script>
 <template><view class="screen"><AppNavBar><view class="nav-row"><button class="icon-button" @click="back">‹</button><text class="nav-title">{{active?active.date:'历史记录'}}</text><text></text></view></AppNavBar><view v-if="!active" class="page-heading"><text class="display-title">每天的对话，都在这里</text><text class="subtitle">按北京时间归档的 AI 对话。饮食事实请查看饮食记录。</text></view><template v-if="!active"><view v-if="!history.length" class="card empty"><text class="section-title">还没有对话历史</text><text class="demo-label">回到首页，与家庭营养师聊聊今天想吃什么。</text><button class="primary-button" @click="backHome">开始聊天</button></view><button v-for="day in history" :key="day.date" class="history-row card" @click="active=day"><view><text>{{day.date}}</text><text>{{day.messages.find(m=>m.role==='user')?.text||'餐后交流'}}</text></view><text>›</text></button></template><template v-else><text class="demo-label">已保存对话 · 测试数据</text><view v-for="(message,index) in active.messages" :key="index" class="history-message card" :class="message.role"><text>{{message.role==='user'?'我':'家庭营养师'}}</text><text>{{message.text}}</text></view></template></view></template>

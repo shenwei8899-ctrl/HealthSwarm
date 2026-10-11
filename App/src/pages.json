@@ -7,6 +7,7 @@
         "navigationBarTitleText": "家庭营养师"
       }
     },
+    {"path":"pages/account/index","style":{"navigationStyle":"custom","navigationBarTitleText":"账号与家庭"}},
     {
       "path": "pages/profile/member",
       "style": {

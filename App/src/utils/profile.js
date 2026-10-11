@@ -1,3 +1,5 @@
+import { isMockMode } from '../services/config.js'
+import { scopedStorage } from '../services/storage.js'
 import { getActiveHealthCase, updateActiveHealthCaseProfile } from './health-cases.js'
 import { clearMealSwaps } from './meal-customization.js'
 
@@ -37,7 +39,8 @@ export function normalizeProfile(profile) {
 export function getProfile() {
   const activeCase = getActiveHealthCase()
   if (activeCase?.profile) return normalizeProfile(activeCase.profile)
-  const stored = uni.getStorageSync('family-profile-v2')
+  const stored = scopedStorage.getStorageSync('family-profile-v2')
+  if(!isMockMode)return normalizeProfile(stored || {householdName:'',usageMode:'个人使用',members:[],defaultDiners:[],goals:[],tastes:[],memories:[]})
   return normalizeProfile(stored || {
     householdName: '我的家', usageMode: '家庭使用', sharedDinerCount: 3, goals: ['吃得均衡'], tastes: ['家常'], allergies: ['无已知过敏'], memories: [],
     members: JSON.parse(JSON.stringify(DEMO_MEMBERS)),
@@ -48,23 +51,23 @@ export function saveProfile(profile) {
   const normalized = normalizeProfile(profile)
   normalized.revision = Date.now()
   if (getActiveHealthCase()) updateActiveHealthCaseProfile(normalized)
-  else uni.setStorageSync('family-profile-v2', JSON.parse(JSON.stringify(normalized)))
+  else scopedStorage.setStorageSync('family-profile-v2', JSON.parse(JSON.stringify(normalized)))
 }
-export function getRecords() { return uni.getStorageSync(getActiveHealthCase() ? 'meal-records-health-case-v1' : 'meal-records-v1') || [] }
+export function getRecords() { return scopedStorage.getStorageSync(getActiveHealthCase() ? 'meal-records-health-case-v1' : 'meal-records-v1') || [] }
 export function saveRecord(record) {
   const records = getRecords()
   if (!records.some(item => item.id === record.id)) records.push(record)
-  uni.setStorageSync(getActiveHealthCase() ? 'meal-records-health-case-v1' : 'meal-records-v1', records)
+  scopedStorage.setStorageSync(getActiveHealthCase() ? 'meal-records-health-case-v1' : 'meal-records-v1', records)
 }
-export function updateRecord(id,patch){const records=getRecords().map(r=>r.id===id?{...r,...patch}:r);uni.setStorageSync(getActiveHealthCase()?'meal-records-health-case-v1':'meal-records-v1',records)}
+export function updateRecord(id,patch){const records=getRecords().map(r=>r.id===id?{...r,...patch}:r);scopedStorage.setStorageSync(getActiveHealthCase()?'meal-records-health-case-v1':'meal-records-v1',records)}
 export function resetProfileData() {
-  uni.setStorageSync('family-profile-v2', null)
-  uni.setStorageSync('meal-records-v1', [])
-  uni.setStorageSync('meal-records-health-case-v1', [])
-  uni.setStorageSync('active-health-case-v1', null)
+  scopedStorage.setStorageSync('family-profile-v2', null)
+  scopedStorage.setStorageSync('meal-records-v1', [])
+  scopedStorage.setStorageSync('meal-records-health-case-v1', [])
+  scopedStorage.setStorageSync('active-health-case-v1', null)
   clearMealSwaps()
-  uni.setStorageSync('meal-session-v3', {})
-  uni.setStorageSync('family-invites-v1', {})
+  scopedStorage.setStorageSync('meal-session-v3', {})
+  scopedStorage.setStorageSync('family-invites-v1', {})
 }
 export function backHome() {
   if (getCurrentPages().length > 1) uni.navigateBack()

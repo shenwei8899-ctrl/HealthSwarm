@@ -1,9 +1,11 @@
 <script setup>
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed, ref } from 'vue'
-import { onLoad, onBackPress } from '@dcloudio/uni-app'
+import { onLoad, onBackPress,onUnload } from '@dcloudio/uni-app'
 import FlowRibbon from '../../components/FlowRibbon.vue'
 import { getProfile, saveRecord, backHome } from '../../utils/profile.js'
+import { mockDelay } from '../../services/mock-control.js'
+import { storageContext as storageScope } from '../../services/storage.js'
 import { photoEstimate } from '../../utils/demo.js'
 import { DIABETES_CASE_ID, getActiveHealthCaseId } from '../../utils/health-cases.js'
 import { todayPlan,mealProfile } from '../../utils/meal-state.js'
@@ -19,7 +21,9 @@ const caseId = ref('')
 const isDiabetesCase = computed(() => caseId.value === DIABETES_CASE_ID)
 const meal = ref('晚餐')
 const imagePath = ref('')
-const status = ref('idle')
+const status = ref('idle'),analysisError=ref('')
+let analysisVersion=0,disposed=false
+onUnload(()=>{disposed=true;analysisVersion++})
 const portion = ref('不确定')
 const grams = ref(null)
 const personalDishes = ref(['杂粮饭','西兰花','香煎鸡腿'])
@@ -63,7 +67,7 @@ const confirmedIntake = computed(() => captureScope.value === '家庭共享桌�
 const emptyEstimate = { kcal: null, low: null, high: null, protein: null, carbs: null, fat: null, sugars: null }
 onLoad(options => {
   meal.value = mealFromRoute(options.meal)
-  const ids=(options.members?options.members.split(',').map(Number):mealProfile(profile,meal.value).defaultDiners).filter(id=>profile.members.some(m=>m.id===id))
+  const ids=(options.members?options.members.split(',').map(id=>profile.members.find(m=>String(m.id)===id)?.id):mealProfile(profile,meal.value).defaultDiners).filter(id=>profile.members.some(m=>m.id===id))
   if(ids.length){memberIds.value=ids;memberId.value=ids[0];if(ids.length>1)captureScope.value='家庭共享桌菜'}
   caseId.value = options.case === 'diabetes' || getActiveHealthCaseId() === DIABETES_CASE_ID ? DIABETES_CASE_ID : ''
   if (caseId.value === DIABETES_CASE_ID) {
@@ -77,21 +81,16 @@ onBackPress(() => {
   return true
 })
 function chooseImage(source) {
-  uni.chooseImage({ count: 1, sourceType: [source],
-    success(res) {
-      imagePath.value = res.tempFilePaths[0]
-      sourceMode.value = '拍照分析'
-      portionsConfirmed.value = false
-      analyze()
-    },
-    fail() { uni.showToast({ title: '未选择图片，可从相册选择或体验演示', icon: 'none' }) },
-  })
+ return new Promise(resolve=>uni.chooseImage({count:1,sourceType:[source],success:async(res)=>{
+  if(disposed){resolve();return}imagePath.value=res.tempFilePaths[0];sourceMode.value='拍照分析';portionsConfirmed.value=false;await analyze();resolve()
+ },fail(){uni.showToast({title:'未选择图片，可从相册选择或体验演示',icon:'none'});resolve()}}))
 }
-function analyze() {
-  if (status.value === 'analyzing') return
-  status.value = 'analyzing'
-  setTimeout(() => { status.value = 'result' }, 600)
+async function analyze(){
+ const version=++analysisVersion,scope=storageScope();status.value='analyzing';analysisError.value=''
+ try{await mockDelay('photo',600);if(!disposed&&version===analysisVersion&&scope===storageScope())status.value='result'}
+ catch(e){if(!disposed&&version===analysisVersion&&scope===storageScope()){status.value='error';analysisError.value=e.message||'分析失败，请重试'}}
 }
+
 function select(field) {
   const choices = field === 'meal' ? ['早餐','午餐','晚餐','加餐'] : profile.members.map(m => m.name)
   uni.showActionSheet({ itemList: choices, success({ tapIndex }) {
@@ -149,7 +148,7 @@ function applyPortions() {
   } catch (error) { portionError.value = error.message }
 }
 function confirmRecord(destination) {
-  if (saving.value) return
+  if (saving.value || status.value !== 'result') return
   if (!saved.value && !portionsConfirmed.value) { openPortions(); return }
   saving.value = true
   if(!saved.value){
@@ -168,7 +167,7 @@ function confirmRecord(destination) {
   const url=destination==='chat'?'/pages/chat/index?recordId='+recordId+(isDiabetesCase.value?'&caseFeedback=diabetes':''):'/pages/records/index'
   uni.redirectTo({url,fail:()=>{saving.value=false;uni.showToast({title:'记录已保存，打开失败可重试',icon:'none'})}})
 }
-function correction(){uni.showModal({title:'纠正识别结果（演示）',editable:true,placeholderText:'用顿号分隔菜名',content:recognizedDishes.value.join('、'),confirmText:'确认事实修正',success:r=>{if(!r.confirm||!r.content?.trim())return;recognizedDishes.value=[...new Set(r.content.split(/[、，,]/).map(t=>t.trim()).filter(Boolean))];personalDishes.value=personalDishes.value.filter(d=>recognizedDishes.value.includes(d));Object.keys(familyIntake.value).forEach(id=>familyIntake.value[id].dishes=familyIntake.value[id].dishes.filter(d=>recognizedDishes.value.includes(d)));portionsConfirmed.value=false;uni.showToast({title:'示例菜品已更新，请核对份量',icon:'none'})}})}
+function correction(){uni.showModal({title:'纠正识别结果（演示）',editable:true,placeholderText:'用顿号分隔菜名',content:recognizedDishes.value.join('、'),confirmText:'确认修正',success:r=>{if(!r.confirm||!r.content?.trim())return;recognizedDishes.value=[...new Set(r.content.split(/[、，,]/).map(t=>t.trim()).filter(Boolean))];personalDishes.value=personalDishes.value.filter(d=>recognizedDishes.value.includes(d));Object.keys(familyIntake.value).forEach(id=>familyIntake.value[id].dishes=familyIntake.value[id].dishes.filter(d=>recognizedDishes.value.includes(d)));portionsConfirmed.value=false;uni.showToast({title:'示例菜品已更新，请核对份量',icon:'none'})}})}
 function fromMenu(){const p=todayPlan(profile,meal.value);recognizedDishes.value=p.dishes.map(d=>d.name);personalDishes.value=[...recognizedDishes.value];sourceMode.value='当天食谱选菜';imagePath.value='';Object.keys(familyIntake.value).forEach(id=>familyIntake.value[id]={dishes:[],portion:'不确定',grams:null,noneConfirmed:false});portionsConfirmed.value=false;analyze()}
 function manualEntry() {
   uni.showModal({ title: '手动填写菜品', editable: true, placeholderText: '例如：杂粮饭、西兰花', success: result => {
@@ -197,7 +196,7 @@ function help() {
 
     <view class="scan-status" :class="{ processing: status === 'analyzing' }">
       <view class="status-dot"></view>
-      <text>{{ status === 'idle' ? '拍照或从相册选择，开始记录这一餐' : status === 'analyzing' ? '正在展示分析流程…' : sourceMode === '拍照分析' ? '演示菜品已展示 · 非真实照片识别' : sourceMode + ' · 请确认实际份量' }}</text>
+      <text>{{ status === 'error' ? '分析未完成，请重试或手动填写' : status === 'idle' ? '拍照或从相册选择，开始记录这一餐' : status === 'analyzing' ? '正在展示分析流程…' : sourceMode === '拍照分析' ? '演示菜品已展示 · 非真实照片识别' : sourceMode + ' · 请确认实际份量' }}</text>
     </view>
     <view class="photo-preview">
       <image v-if="imagePath" :src="imagePath" mode="aspectFill" />
@@ -229,6 +228,7 @@ function help() {
 
     <view v-else-if="status === 'analyzing'" class="analyzing-card card"><text class="section-title">先看菜品，再确认份量</text><text>正在展示示例流程，请稍候</text></view>
 
+    <view v-else-if="status==='error'" class="card analyzing-card"><text class="inline-error">{{analysisError}}</text><button class="primary-button" @click="analyze">重试分析</button><button class="secondary-button" @click="manualEntry">改为手动填写</button><text class="demo-label">已保留所选照片，未生成识别结果。</text></view>
     <view v-else class="result-state">
       <view class="foods-card card">
         <view class="foods-heading"><view><text class="field-title">{{ sourceMode==='拍照分析'?'识别出的菜品':'本餐菜品' }}</text><text class="small">{{ meal }} · {{ captureScope }}</text></view><button class="adjust-button" @click="openPortions">调整份量</button></view>

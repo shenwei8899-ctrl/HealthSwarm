@@ -3,7 +3,7 @@ import AppNavBar from '../../components/AppNavBar.vue'
 import { computed,ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { getProfile,backHome } from '../../utils/profile.js'
-import { mockService } from '../../services/mock.js'
+import { service as mockService } from '../../services/index.js'
 const id=ref(''),memberId=ref(''),profile=ref(getProfile()),shared=ref(false),busy=ref(false)
 const member=computed(()=>profile.value.members.find(m=>String(m.id)===memberId.value)),report=computed(()=>member.value?.reports?.find(r=>r.id===id.value))
 const canShare=computed(()=>member.value?.claimedBy&&(member.value.claimedBy===profile.value.viewerAccount||member.value.relation==='本人'&&(!profile.value.viewerAccount||profile.value.viewerAccount==='creator')))

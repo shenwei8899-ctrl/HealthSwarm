@@ -4,7 +4,7 @@ import AppNavBar from '../../components/AppNavBar.vue'
 import { computed,ref } from 'vue'
 import { onLoad,onShow } from '@dcloudio/uni-app'
 import { getProfile,backHome } from '../../utils/profile.js'
-import { mockService } from '../../services/mock.js'
+import { service as mockService } from '../../services/index.js'
 const id=ref(''),profile=ref(getProfile()),busy=ref(false)
 const member=computed(()=>profile.value.members.find(m=>String(m.id)===id.value))
 onLoad(o=>id.value=String(o.member||''));onShow(()=>profile.value=getProfile())

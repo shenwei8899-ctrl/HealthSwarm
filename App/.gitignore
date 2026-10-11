@@ -5,5 +5,7 @@ unpackage/
 .idea/
 .DS_Store
 *.log
+.env.local
+.env.*.local
 .codex/
 

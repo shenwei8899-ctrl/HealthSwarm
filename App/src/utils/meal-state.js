@@ -1,3 +1,4 @@
+import { scopedStorage } from '../services/storage.js'
 import { getProfile } from './profile.js'
 import { createPlan, subtotal } from './demo.js'
 import { getOrders } from './orders.js'
@@ -6,8 +7,8 @@ import { applyMealCustomization, getMealSwap } from './meal-customization.js'
 import { ingredientConflicts } from './health.js'
 
 export function localDate(date = new Date()) { const shanghai=new Date(date.getTime()+8*60*60*1000);return `${shanghai.getUTCFullYear()}-${String(shanghai.getUTCMonth()+1).padStart(2,'0')}-${String(shanghai.getUTCDate()).padStart(2,'0')}` }
-const read = () => uni.getStorageSync('meal-session-v3') || {}
-const write = value => uni.setStorageSync('meal-session-v3',JSON.parse(JSON.stringify(value)))
+const read = () => scopedStorage.getStorageSync('meal-session-v3') || {}
+const write = value => scopedStorage.setStorageSync('meal-session-v3',JSON.parse(JSON.stringify(value)))
 const profileSignature = profile => JSON.stringify({members:profile.members,defaultDiners:profile.defaultDiners,usageMode:profile.usageMode,goals:profile.goals,tastes:profile.tastes})
 export function mealProfile(profile, meal, date=localDate()) {
   const saved=read()[date]?.[meal]?.members

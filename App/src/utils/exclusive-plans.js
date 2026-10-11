@@ -1,4 +1,6 @@
+import { scopedStorage } from '../services/storage.js'
 import { bundleImage as planImage } from './meal-bundles.js'
+import { subtotal } from './demo.js'
 import { createPlan } from './demo.js'
 import { getProfile } from './profile.js'
 
@@ -41,7 +43,7 @@ export const EXCLUSIVE_PLANS = [
 export function getExclusivePlan(id) { return EXCLUSIVE_PLANS.find(plan => plan.id === id) || EXCLUSIVE_PLANS[0] }
 export function adaptExclusivePlan(template, profile=getProfile()) {
   const tier={balanced:'标准型',fiber:'经济型',protein:'品质型'}[template.id]
-  const regeneration=uni.getStorageSync('exclusive-generation')||0
+  const regeneration=scopedStorage.getStorageSync('exclusive-generation')||0
   const variants=[0,1].map(day=>['早餐','午餐','晚餐'].map(meal=>{
     const plan=createPlan(profile,meal)
     if((day+regeneration)%2===1) plan.dishes=plan.dishes.map(d=>d.name==='香菇青菜'?{...d,name:'清炒上海青',detail:d.detail.replace(/ · 香菇 \d+g/,'')}:d)
@@ -56,9 +58,11 @@ export function adaptExclusivePlan(template, profile=getProfile()) {
   variants[0].flatMap(p=>p.products).forEach(p=>{const existing=totals.get(p.id);if(existing)existing.need+=p.need;else totals.set(p.id,{...p})})
   const specs={fiber:'家庭基础规格',balanced:'常规精选规格',protein:'品质精选规格'}[template.id]
   const products=[...totals.values()].map(p=>({name:p.name,count:Math.ceil(p.need/p.pack)+' 包 · '+p.pack+p.unit,cents:p.priceCents*Math.ceil(p.need/p.pack),image:template.image}))
-  return {...template,name:tier,tag:tier,subtitle:specs+' · '+(regeneration?'更新后的':'')+'21 天三餐方案',days,products,fixturePlans:variants,blocked,specs,generation:regeneration}
+  const dayCost=plans=>{const map=new Map();plans.flatMap(p=>p.products).forEach(p=>{const previous=map.get(p.id);if(previous)previous.need+=p.need;else map.set(p.id,{...p})});const items=[...map.values()].map(p=>({...p,quantity:Math.ceil(p.need/p.pack)}));return subtotal(items,items.map(p=>p.id))}
+  const estimateCents=dayCost(variants[0]),totalEstimateCents=Array.from({length:21},(_,i)=>dayCost(variants[i%variants.length])).reduce((a,b)=>a+b,0)
+  return {...template,estimateCents,totalEstimateCents,name:tier,tag:tier,subtitle:specs+' · '+(regeneration?'更新后的':'')+'21 天三餐方案',days,products,fixturePlans:variants,blocked,specs,generation:regeneration}
 }
-export function regenerateExclusivePlans(){uni.setStorageSync('exclusive-generation',(uni.getStorageSync('exclusive-generation')||0)+1)}
+export function regenerateExclusivePlans(){scopedStorage.setStorageSync('exclusive-generation',(scopedStorage.getStorageSync('exclusive-generation')||0)+1)}
 
 function isoDate(date) {
   const year = date.getFullYear()
@@ -80,7 +84,11 @@ export function createDeliveryBatches(plan, startDate = defaultPlanStartDate(), 
     const date = new Date(start)
     date.setDate(start.getDate() + index)
     const template = plan.days[index % plan.days.length]
+    const products=plan.fixturePlans?.[index%plan.fixturePlans.length]?.flatMap(p=>p.products)||[]
+    const map=new Map();products.forEach(p=>{if(map.has(p.id))map.get(p.id).need+=p.need;else map.set(p.id,{...p})})
+    const items=[...map.values()].map(p=>({...p,quantity:Math.ceil(p.need/p.pack)}))
     return {
+      batchId:plan.id+'-batch-'+(index+1),items,fulfillmentStatus:'preparing',
       index: index + 1,
       date: isoDate(date),
       label: `${date.getMonth() + 1}月${date.getDate()}日`,

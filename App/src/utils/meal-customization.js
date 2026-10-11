@@ -1,3 +1,4 @@
+import { scopedStorage } from '../services/storage.js'
 const SWAP_KEY = 'meal-dish-swaps-v1'
 import { ingredientConflicts } from './health.js'
 
@@ -51,11 +52,11 @@ export const DINNER_FISH_SWAPS = [
 
 function readSwaps() {
   if (typeof uni === 'undefined') return {}
-  return uni.getStorageSync(SWAP_KEY) || {}
+  return scopedStorage.getStorageSync(SWAP_KEY) || {}
 }
 
 function writeSwaps(swaps) {
-  if (typeof uni !== 'undefined') uni.setStorageSync(SWAP_KEY, JSON.parse(JSON.stringify(swaps)))
+  if (typeof uni !== 'undefined') scopedStorage.setStorageSync(SWAP_KEY, JSON.parse(JSON.stringify(swaps)))
 }
 
 export function getDishSwapOptions(meal, dishName, members = []) {

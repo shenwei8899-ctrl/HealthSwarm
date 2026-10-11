@@ -1,8 +1,10 @@
 <script setup>
+import { scopedStorage,storageContext as storageScope } from '../../services/storage.js'
+import { mockDelay } from '../../services/mock-control.js'
 import AppIcon from '../../components/AppIcon.vue'
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed, nextTick, ref, watch } from 'vue'
-import { onLoad, onShow } from '@dcloudio/uni-app'
+import { onLoad, onShow,onUnload } from '@dcloudio/uni-app'
 import FlowRibbon from '../../components/FlowRibbon.vue'
 import MealBundleRecommendations from '../../components/MealBundleRecommendations.vue'
 import { getProfile, getRecords, updateRecord } from '../../utils/profile.js'
@@ -20,8 +22,13 @@ const profile = ref(getProfile())
 const records = ref(getRecords())
 const input = ref('')
 const thinking = ref(false)
-const messages = ref(uni.getStorageSync('chat-'+localDate())||[])
-watch(messages,value=>uni.setStorageSync('chat-'+localDate(),JSON.parse(JSON.stringify(value))),{deep:true})
+const chatDate=ref(localDate()),replyError=ref(''),lastRequest=ref('')
+let requestVersion=0,disposed=false
+const replyTimers=[]
+onUnload(()=>{disposed=true;requestVersion++;replyTimers.forEach(clearTimeout)})
+function scheduleReply(work,delay){const scope=storageScope();replyTimers.push(setTimeout(()=>{if(!disposed&&scope===storageScope())work()},delay))}
+const messages = ref(scopedStorage.getStorageSync('chat-'+chatDate.value)||[])
+watch(messages,value=>scopedStorage.setStorageSync('chat-'+chatDate.value,JSON.parse(JSON.stringify(value))),{deep:true})
 const scrollTarget = ref('')
 const caseId = ref(getActiveHealthCaseId())
 const caseFeedback = ref(false)
@@ -41,10 +48,11 @@ const hasActivePaidPlan=computed(()=>{planRevision.value;return Boolean(activePl
 const prompts = computed(() => ['今晚全家吃什么？', '给我安排明天早餐', '看看我的饮食记录', '糖尿病家庭怎么吃？'])
 onLoad(options => {
   caseFeedback.value = options.caseFeedback === 'diabetes'
-  if (options.recordId) setTimeout(() => { messages.value.push({ role:'assistant', recordId:options.recordId, text:'这餐吃下来怎么样？有什么想告诉我的吗？你可以用文字或语音补充。' }); scrollToLatestReply() }, 280)
-  if (options.startCase === 'diabetes') setTimeout(() => ask(DIABETES_CASE_QUESTION), 380)
+  if (options.recordId) scheduleReply(() => { messages.value.push({ role:'assistant', recordId:options.recordId, text:'这餐吃下来怎么样？有什么想告诉我的吗？你可以用文字或语音补充。' }); scrollToLatestReply() }, 280)
+  if (options.startCase === 'diabetes') scheduleReply(() => ask(DIABETES_CASE_QUESTION), 380)
 })
 onShow(() => {
+  if(chatDate.value!==localDate()){requestVersion++;thinking.value=false;replyError.value='';chatDate.value=localDate();messages.value=scopedStorage.getStorageSync('chat-'+chatDate.value)||[]}
   const nextProfile = getProfile()
   planRevision.value++
   profile.value = nextProfile
@@ -58,14 +66,18 @@ onShow(() => {
     })
   }
 })
-function ask(text) {
+async function ask(text, retry=false) {
   const content = typeof text === 'string' ? text : input.value.trim()
   if (!content || thinking.value) return
-  messages.value.push({ role: 'user', text: content })
+  if(!retry)messages.value.push({ role: 'user', text: content })
+  lastRequest.value=content;replyError.value=''
+  const version=++requestVersion,scope=storageScope()
   scrollToLatestReply()
   input.value = ''
   thinking.value = true
-  setTimeout(() => {
+  try {
+    await mockDelay('chat',450)
+    if(disposed||version!==requestVersion||scope!==storageScope())return
     if (/头晕|出汗|手抖|疑似低血糖|低血糖怎么办/.test(content)) {
       messages.value.push({ role: 'assistant', safety: true, text: '这可能是低血糖等需要及时处理的情况。请立即停止当前菜单和购买操作；如果能够安全测量，请尽快测血糖，并按医生事先给出的处理方案处理。若意识不清、无法吞咽、症状严重或持续不缓解，请立即联系急救或就近就医。不要给意识不清的人喂食或喂水。' })
       thinking.value = false
@@ -113,8 +125,10 @@ function ask(text) {
     messages.value.push({ role: 'assistant', ...response })
     thinking.value = false
     scrollToLatestReply()
-  }, 450)
+  } catch(e){if(!disposed&&version===requestVersion&&scope===storageScope())replyError.value=e.message||'回复未完成，请重试'}
+  finally{if(version===requestVersion)thinking.value=false}
 }
+function retryReply(){if(lastRequest.value)return ask(lastRequest.value,true)}
 function answerCaseChoice(choice, message) {
   if (message?.caseChoiceAnswered) return
   if (message) message.caseChoiceAnswered = true
@@ -181,6 +195,7 @@ function undoProcessed(message){if(message.memoryId){forget(message.memoryId);pr
     <view class="message-list"><view v-if="!messages.length" class="welcome-message"><view class="welcome-symbol"><AppIcon name="chat" :size="54"/></view><text class="welcome-title">今天，想怎么吃？</text><text>你好，{{nameList}}。告诉我你想吃什么，
 我们一起安排适合家人的三餐。</text></view>
       <view v-for="(message,index) in messages" :id="'message-'+index" :key="index" class="message-group"><view class="message-row" :class="message.role"><view v-if="message.role==='assistant'" class="ai-avatar"><AppIcon name="chat" :size="28"/></view><view class="bubble" :class="{'safety-bubble':message.safety}"><text class="bubble-copy">{{message.text}}</text><view v-if="message.quickReplies&&!message.caseChoiceAnswered" class="case-quick-replies"><button v-for="choice in message.quickReplies" :key="choice" @click="answerCaseChoice(choice,message)">{{choice}}</button></view><view v-if="message.caseActions" class="case-actions"><button v-for="action in message.caseActions" :key="action.type" @click="handleCaseAction(action.type)">{{action.label}}</button></view><button v-if="message.action" class="message-action" :class="{'menu-link':message.action==='plan'}" @click="openAction(message)">{{message.action==='plan'?'查看'+message.meal+'菜单':message.action==='profile'?'前往“我的”':'拍照记一餐'}} →</button></view></view><MealBundleRecommendations v-if="message.bundles" :bundles="message.bundles" :meal="message.meal" @open="openShop(message,$event)" @all="openShop(message)"/><view v-if="message.processed" class="processing-result card"><text class="eyebrow">本次处理结果</text><text>{{message.resultText}}</text><view v-if="message.processed!=='undone'"><button @click="openProcessed(message)">{{message.processed==='memory'?'查看记忆':'查看反馈'}}</button><button @click="undoProcessed(message)">撤回</button></view></view></view>
+      <view v-if="replyError" class="error-panel"><text class="inline-error">{{replyError}}</text><button :disabled="thinking" @click="retryReply">重新获取回复</button></view>
       <view v-if="thinking" class="message-row"><view class="ai-avatar"><AppIcon name="chat" :size="28"/></view><view class="bubble thinking">正在整理本餐建议…</view></view>
     </view><view class="quick-prompts"><button v-for="prompt in prompts" :key="prompt" @click="ask(prompt)">{{prompt}}</button></view>
     <view v-if="inlineTodayOpen" class="inline-today card"><view><text class="section-title">今日饮食计划</text><button @click="inlineTodayOpen=false">收起</button></view><button v-for="item in dailyPlans" :key="item.route" @click="openDailyMeal(item)"><text>{{item.name}}</text><text>{{item.summary}}</text><text>›</text></button></view><view class="conversation-spacer"></view>
@@ -197,5 +212,7 @@ function undoProcessed(message){if(message.memoryId){forget(message.memoryId);pr
 </view>
 </template>
 <style scoped>
+.error-panel{padding:24rpx;border-radius:20rpx;background:#fff2ee;margin:24rpx 0}.error-panel button{color:#246b50;min-height:80rpx}
+
 .chat-screen{height:100vh;display:flex;flex-direction:column;background:#fff;padding-bottom:calc(env(safe-area-inset-bottom) + 12rpx)}.chat-nav{flex-shrink:0}.history-button,.me-button{width:72rpx;height:80rpx;display:flex;align-items:center;justify-content:center}.assistant-title{text-align:center;display:flex;flex-direction:column;gap:4rpx;min-width:0}.assistant-title>text:first-child{font-size:32rpx;font-weight:600}.nav-subtitle{font-size:21rpx;color:#767680}.conversation{flex:1;min-height:0}.today-card{margin-top:20rpx;padding:28rpx;border-radius:30rpx;background:#f5f5f7}.today-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12rpx}.today-top .section-title{font-size:34rpx}.test-badge{font-size:20rpx;color:#767680;white-space:nowrap}.today-meals{margin-top:16rpx}.daily-meal-row{padding:20rpx 0;border-top:1rpx solid #e5e5ea}.daily-meal-row:first-child{border:0}.meal-card-head{display:flex;justify-content:space-between;align-items:center}.meal-name{font-size:29rpx;font-weight:600}.diner-capsule{display:flex;gap:8rpx;align-items:center;justify-content:center;min-height:84rpx;padding:0 20rpx;border:1rpx solid #e0e0e5;background:#fff;border-radius:999rpx;font-size:24rpx;color:#246b50}.meal-summary{display:block;font-size:26rpx;margin-top:4rpx;line-height:1.5}.meal-foot{display:flex;justify-content:space-between;align-items:center;gap:12rpx}.meal-source{font-size:21rpx;color:#767680}.meal-link{font-size:24rpx;min-height:72rpx;color:#246b50}.daily-buy{display:flex;gap:16rpx;margin-left:auto!important;align-items:center;background:#1d1d1f;color:white;border-radius:18rpx;padding:16rpx 24rpx;min-height:80rpx;font-size:26rpx}.welcome-message{display:flex;flex-direction:column;align-items:center;text-align:center;padding:56rpx 16rpx 36rpx;gap:20rpx}.welcome-symbol{height:96rpx;width:96rpx;border-radius:30rpx;background:#eaf2ed;color:#246b50;display:flex;align-items:center;justify-content:center}.welcome-title{font-size:40rpx;font-weight:600}.welcome-message>text:last-child{font-size:27rpx;color:#63636b;line-height:1.7;white-space:pre-line}.message-list{padding-top:20rpx}.message-row{display:flex;align-items:flex-start;gap:14rpx;margin:24rpx 0}.message-row.user{justify-content:flex-end;padding-left:60rpx}.ai-avatar{width:52rpx;height:52rpx;display:flex;align-items:center;justify-content:center;border-radius:18rpx;background:#eaf2ed;color:#246b50;flex-shrink:0}.bubble{max-width:570rpx;padding:24rpx;border-radius:4rpx 24rpx 24rpx;background:#f5f5f7;font-size:28rpx;line-height:1.75}.bubble-copy{white-space:pre-line}.user .bubble{border-radius:24rpx 4rpx 24rpx 24rpx;background:#eaf2ed}.safety-bubble{background:#fff2ee;color:#a3392c}.message-action{display:block;padding:18rpx 0;font-size:27rpx;color:#246b50;min-height:80rpx;text-align:left}.processing-result{margin:0 0 22rpx 66rpx;padding:24rpx;font-size:26rpx;line-height:1.6}.processing-result>text{display:block}.processing-result>view{display:flex;gap:28rpx}.processing-result button{color:#246b50;min-height:80rpx}.processing-result button:last-child{color:#a3392c}.quick-prompts{display:flex;flex-direction:column;gap:14rpx;padding:16rpx 0 32rpx}.quick-prompts button{width:100%;box-sizing:border-box}.quick-prompts button,.case-quick-replies button,.case-actions button{min-height:80rpx;padding:16rpx 22rpx;border:1rpx solid #e5e5ea;border-radius:18rpx;font-size:26rpx;text-align:left;background:#fff}.inline-today{padding:24rpx}.inline-today>view,.inline-today>button{display:flex;justify-content:space-between;gap:20rpx;width:100%;font-size:26rpx}.inline-today>button{padding:24rpx 0;border-top:1rpx solid #e5e5ea}.inline-today>view{margin-bottom:20rpx}.conversation-spacer{height:32rpx}.composer-wrap{padding-top:14rpx;background:#fff;border-top:1rpx solid #f0f0f3}.tool-strip{width:calc(100% + 32rpx);white-space:nowrap;margin-bottom:16rpx}.tool-row{display:inline-flex;gap:12rpx;padding-right:32rpx;align-items:center}.tool-chip{display:inline-flex;align-items:center;gap:8rpx;min-height:76rpx;padding:12rpx 18rpx;border:1rpx solid #e5e5ea;border-radius:18rpx;background:#fff;color:#3c3c43;font-size:23rpx}.tool-divider{display:none}.tool-chip,.tool-divider { flex-shrink: 0; }.composer{display:flex;align-items:center;gap:12rpx;padding:12rpx;border:1rpx solid #dedee3;border-radius:24rpx;background:#fafafa}.composer input{flex:1;min-width:0;height:68rpx;font-size:29rpx}.camera-button,.voice-button,.send-button{width:68rpx;height:68rpx;display:flex;align-items:center;justify-content:center;color:#63636b;flex-shrink:0}.send-button{border-radius:50%;background:#1d1d1f;color:#fff}.composer-wrap .safe-note{font-size:20rpx;margin-top:12rpx}.feedback-card{padding:28rpx;margin:24rpx 0}.feedback-card>text{display:block;margin-top:12rpx;font-size:28rpx}.community-head{display:flex;justify-content:space-between}.community-head button{font-size:40rpx;min-height:80rpx}.qr-placeholder{width:320rpx;height:320rpx;background:#f5f5f7;margin:36rpx auto;display:flex;align-items:center;justify-content:center;color:#767680;font-size:26rpx;border-radius:24rpx}.update-note{display:block;padding:24rpx;background:#eaf2ed;margin:24rpx 0;border-radius:22rpx;font-size:26rpx;line-height:1.6}
 </style>

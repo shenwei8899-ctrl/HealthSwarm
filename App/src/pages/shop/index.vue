@@ -1,12 +1,15 @@
 <script setup>
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed, ref } from 'vue'
-import { onLoad,onShow } from '@dcloudio/uni-app'
+import { onLoad,onShow,onUnload } from '@dcloudio/uni-app'
 import FlowRibbon from '../../components/FlowRibbon.vue'
 import DinerPicker from '../../components/DinerPicker.vue'
 import MealNotes from '../../components/MealNotes.vue'
 import { getProfile,backHome } from '../../utils/profile.js'
-import { mockService } from '../../services/mock.js'
+import { service as mockService } from '../../services/index.js'
+import { createCheckoutQuote,validateCheckoutQuote,checkoutFingerprint } from '../../utils/checkout-state.js'
+import { storageContext as storageScope } from '../../services/storage.js'
+import { mockDelay } from '../../services/mock-control.js'
 import { subtotal } from '../../utils/demo.js'
 import { createMealBundles } from '../../utils/meal-bundles.js'
 import { createDeliveryBatches,getExclusivePlan,adaptExclusivePlan } from '../../utils/exclusive-plans.js'
@@ -32,36 +35,84 @@ const selectedProducts=computed(()=>products.value.filter(p=>selected.value.incl
 const productsSubtotalCents=computed(()=>subtotal(products.value,selected.value))
 const totalCents=computed(()=>sourcePlan.value&&deliveryBatches.value.length?sourcePlan.value.totalEstimateCents:productsSubtotalCents.value)
 const total=computed(()=>(totalCents.value/100).toFixed(2))
-let knownProducts=[],quoteSignature=''
+let knownProducts=[],quote=null,disposed=false,menuVersion=0,retryMenu=null
+const menuUpdating=ref(false),menuError=ref('')
+const paying=ref(false),payError=ref(''),paymentState=ref('idle'),paidTotal=ref('')
+onUnload(()=>{disposed=true;menuVersion++})
+function quoteInput(){return {scope:storageScope(),profileVersion:profile.value.revision||0,members:plan.value.members.map(m=>m.id),dishes:plan.value.dishes,products:selectedProducts.value,address:address.value,meal:meal.value,included:included.value,sourcePlan:sourcePlanId.value,generation:sourcePlan.value?.generation,start:planStartDate.value,batches:deliveryBatchCount.value,totalCents:totalCents.value}}
+function choosePaymentResult(){return new Promise((resolve,reject)=>uni.showActionSheet({itemList:['测试：支付成功','测试：取消支付','测试：支付失败','测试：结果待确认'],success:({tapIndex})=>resolve(['success','cancel','failure','unknown'][tapIndex]),fail:e=>/cancel/i.test(e.errMsg||'')?resolve('cancel'):reject(new Error('支付窗口未能打开，请重试'))}))}
+
 function refreshSelection(){
  selected.value=daily.value?procurement.value.selectedIds:selectedFor(meal.value,products.value)
  knownProducts=products.value.map(p=>[p.id,p.quantity])
 }
 onLoad(options=>{meal.value=mealFromRoute(options.meal);daily.value=options.daily==='1';bundleId.value=options.bundle||'';sourcePlanId.value=options.source==='exclusive-plan'?(options.plan||'balanced'):'';planStartDate.value=options.start||'';deliveryBatchCount.value=Number(options.batches||0);refreshSelection();const reorder=options.reorder?getOrder(options.reorder):null;if(reorder){selected.value=products.value.filter(p=>reorder.items.some(i=>i.id===p.id)).map(p=>p.id);saveSelection(meal.value,products.value,selected.value);}if(options.checkout==='1'||options.verify==='1')checkout()})
-onShow(()=>{address.value=mockService.selectedAddress();profile.value=getProfile();revision.value++;const previous=JSON.stringify(knownProducts);refreshSelection();if(orderOpen.value&&!paid.value&&previous!==JSON.stringify(knownProducts)){orderOpen.value=false;updateNote.value='菜品或成员已变化，报价已重新计算，请重新核对结算。'}})
-function toggle(id){const i=selected.value.indexOf(id);i<0?selected.value.push(id):selected.value.splice(i,1);saveSelection(daily.value?'今日采购':meal.value,products.value,selected.value);if(daily.value){for(const p of procurement.value.plans){const ids=selectedFor(p.meal,p.products);const index=ids.indexOf(id);if(selected.value.includes(id)&&index<0)ids.push(id);else if(!selected.value.includes(id)&&index>=0)ids.splice(index,1);saveSelection(p.meal,p.products,ids)}}}
-function toggleMeal(value){const i=included.value.indexOf(value);i<0?included.value.push(value):included.value.splice(i,1);revision.value++;refreshSelection()}
-function checkout(){if(blockers.value.length||sourcePlan.value?.blocked.length)return;if(!selected.value.length)return uni.showToast({title:'请至少选择一件食材',icon:'none'});paid.value=false;quoteSignature=JSON.stringify(selectedProducts.value);orderOpen.value=true}
-function pay(){
- if(!address.value){uni.showToast({title:"请选择配送地址",icon:"none"});return}
-
- profile.value=getProfile();revision.value++
- if(blockers.value.length || sourcePlan.value?.blocked.length){orderOpen.value=false;return}
- if(quoteSignature!==JSON.stringify(selectedProducts.value)){refreshSelection();orderOpen.value=false;updateNote.value='报价已变化，请重新核对后再支付。';return}
- if(!paidOrderId.value){
- const plans=daily.value?procurement.value.plans:[plan.value]
- const guides=sourcePlan.value?deliveryBatches.value.map(b=>({index:b.index,guides:b.meals.map(m=>createCookingGuide(plan.value,sourcePlan.value,{batchIndex:b.index,meal:m.type}))})):daily.value?[{index:1,guides:plans.map(p=>createCookingGuide(p))}]:[]
- const order=createDemoOrder({addressSnapshot:address.value,items:selectedProducts.value,totalCents:totalCents.value,meal:daily.value?'今日三餐':meal.value,sourcePlanId:sourcePlanId.value,planName:sourcePlan.value?.name||'',bundleId:bundleId.value,deliveryBatches:deliveryBatches.value,cookingGuide:createCookingGuide(plan.value,sourcePlan.value),cookingGuides:guides})
- paidOrderId.value=order.id
- }paid.value=true
+onShow(()=>{address.value=mockService.selectedAddress();profile.value=getProfile();revision.value++;refreshSelection();if(orderOpen.value&&!paid.value&&quote&&quote.signature!==checkoutFingerprint(quoteInput())){orderOpen.value=false;updateNote.value='成员、菜品、地址或报价已变化，请重新核对结算。'}})
+function toggle(id){if(paying.value)return;const i=selected.value.indexOf(id);i<0?selected.value.push(id):selected.value.splice(i,1);saveSelection(daily.value?'今日采购':meal.value,products.value,selected.value);if(daily.value){for(const p of procurement.value.plans){const ids=selectedFor(p.meal,p.products);const index=ids.indexOf(id);if(selected.value.includes(id)&&index<0)ids.push(id);else if(!selected.value.includes(id)&&index>=0)ids.splice(index,1);saveSelection(p.meal,p.products,ids)}}}
+function toggleMeal(value){if(paying.value)return;const i=included.value.indexOf(value);i<0?included.value.push(value):included.value.splice(i,1);revision.value++;refreshSelection()}
+function checkout(){
+ if(paying.value||menuUpdating.value||menuError.value||blockers.value.length||sourcePlan.value?.blocked.length)return
+ if(!selected.value.length)return uni.showToast({title:'请至少选择一件食材',icon:'none'})
+ if(paymentState.value==='unknown'){orderOpen.value=true;return}
+ paid.value=false;paidOrderId.value='';paymentState.value='idle';payError.value='';quote=createCheckoutQuote(quoteInput());orderOpen.value=true
 }
+async function pay(){
+ if(paying.value||menuUpdating.value||menuError.value||paymentState.value==='unknown')return
+ if(!address.value){payError.value='请选择配送地址';return}
+ const scope=storageScope();paying.value=true;payError.value=''
+ try{
+   profile.value=getProfile();revision.value++
+   if(blockers.value.length||sourcePlan.value?.blocked.length)throw new Error('饮食限制已变化，请重新检查菜单')
+   validateCheckoutQuote(quote,quoteInput())
+   const result=await choosePaymentResult()
+   if(disposed||scope!==storageScope())return
+   validateCheckoutQuote(quote,quoteInput())
+   if(result==='cancel'&&!paidOrderId.value){paymentState.value='cancelled';payError.value='已取消支付，可以继续核对后重试';return}
+   if(!paidOrderId.value){
+     const plans=daily.value?procurement.value.plans:[plan.value]
+     const guides=sourcePlan.value?deliveryBatches.value.map(batch=>({index:batch.index,guides:batch.meals.map(meal=>createCookingGuide(plan.value,sourcePlan.value,{batchIndex:batch.index,meal:meal.type}))})):daily.value?[{index:1,guides:plans.map(p=>createCookingGuide(p))}]:[]
+     const order=await mockService.createOrder({clientRequestId:quote.clientRequestId,addressSnapshot:address.value,items:selectedProducts.value,totalCents:totalCents.value,meal:daily.value?'今日三餐':meal.value,sourcePlanId:sourcePlanId.value,planName:sourcePlan.value?.name||'',bundleId:bundleId.value,deliveryBatches:deliveryBatches.value,cookingGuide:createCookingGuide(plan.value,sourcePlan.value),cookingGuides:guides})
+     if(disposed||scope!==storageScope())return
+     paidOrderId.value=order.id;paidTotal.value=(order.totalCents/100).toFixed(2)
+   }
+   // If a payment call times out after order creation, query first instead of repeating payment.
+   paymentState.value='unknown'
+   const order=await mockService.payOrder(paidOrderId.value,result)
+   if(disposed||scope!==storageScope())return
+   applyPayment(order)
+ }catch(e){if(!disposed&&scope===storageScope())payError.value=e.message||'支付未完成，请查询订单结果'}
+ finally{paying.value=false}
+}
+function applyPayment(order){
+ if(!order)throw new Error('订单结果暂不可用，请重试查询')
+ paymentState.value=order.paymentStatus||'unknown';paid.value=paymentState.value==='paid'
+ if(paid.value)paidTotal.value=(order.totalCents/100).toFixed(2)
+ payError.value=paid.value?'':paymentState.value==='unknown'?'支付结果待确认，请查询订单，勿重复支付':paymentState.value==='failed'?'支付失败，可重试同一订单':paymentState.value==='cancelled'?'已取消支付，可重试同一订单':'订单尚未确认支付'
+}
+async function queryPayment(){
+ if(paying.value||!paidOrderId.value)return;const scope=storageScope();paying.value=true;payError.value=''
+ try{const order=await mockService.paymentResult(paidOrderId.value);if(!disposed&&scope===storageScope())applyPayment(order)}catch(e){if(scope===storageScope())payError.value=e.message||'查询失败，请重试'}finally{paying.value=false}
+}
+
 function viewOrder(){uni.navigateTo({url:'/pages/orders/detail?id='+encodeURIComponent(paidOrderId.value)})}
 function nutritionist(){uni.reLaunch({url:'/pages/chat/index'})}
 function openDish(dish){uni.navigateTo({url:'/pages/recipe/index?meal='+mealToRoute(meal.value)+'&dish='+encodeURIComponent(dish.name)+(plan.value.paid?'&id='+plan.value.orderId+'&batch='+plan.value.batchIndex:'' )})}
 function changeDiners(){dinersOpen.value=true}
-function confirmDiners(ids){const before=plan.value;const previous=[...selected.value];saveSelection(meal.value,products.value,previous);setMealMembers(profile.value,meal.value,ids);revision.value++;refreshSelection();updateNote.value=changeResult(before,plan.value,previous);dinersOpen.value=false;if(orderOpen.value&&!paid.value)orderOpen.value=false}
+async function updateMenu(work,retry){
+ const version=++menuVersion,scope=storageScope();menuUpdating.value=true;menuError.value='';retryMenu=retry;orderOpen.value=false;quote=null
+ try{await mockDelay('menu');if(disposed||version!==menuVersion||scope!==storageScope())return;work()}
+ catch(e){if(!disposed&&version===menuVersion&&scope===storageScope())menuError.value=e.message||'更新失败，请重试'}
+ finally{if(version===menuVersion)menuUpdating.value=false}
+}
+function retryMenuUpdate(){if(retryMenu&&!menuUpdating.value)return retryMenu()}
+async function confirmDiners(ids){
+ if(paying.value)return;const before=plan.value,previous=[...selected.value],targetMeal=meal.value
+ return updateMenu(()=>{saveSelection(targetMeal,products.value,previous);setMealMembers(profile.value,targetMeal,ids);revision.value++;refreshSelection();updateNote.value=changeResult(before,plan.value,previous);dinersOpen.value=false},()=>confirmDiners(ids))
+}
 function canSwapDish(dish){return !plan.value.paid&&getDishSwapOptions(meal.value,dish.name,plan.value.members).length>0}
-function switchDish(dish){const options=getDishSwapOptions(meal.value,dish.name,plan.value.members);if(!options.length)return;uni.showActionSheet({itemList:options.map(o=>o.name+' · '+o.direction),success:({tapIndex})=>{saveSelection(meal.value,products.value,selected.value);saveMealSwap(meal.value,options[tapIndex]);revision.value++;refreshSelection();updateNote.value='菜品、营养、做法、食材包装数量与预计金额已同步更新。'}})}
+function applySwap(option){const targetMeal=meal.value;return updateMenu(()=>{saveSelection(targetMeal,products.value,selected.value);saveMealSwap(targetMeal,option);revision.value++;refreshSelection();updateNote.value='菜品、营养、做法、食材包装数量与预计金额已同步更新。'},()=>applySwap(option))}
+function switchDish(dish){if(paying.value||menuUpdating.value)return;const options=getDishSwapOptions(meal.value,dish.name,plan.value.members);if(!options.length)return;uni.showActionSheet({itemList:options.map(o=>o.name+' · '+o.direction),success:({tapIndex})=>applySwap(options[tapIndex]),fail:e=>{if(!/cancel/i.test(e.errMsg||'')){retryMenu=()=>switchDish(dish);menuError.value='换菜窗口未能打开，请重试'}}})}
+
 function editProfile(){uni.navigateTo({url:'/pages/profile/index'})}
 </script>
 <template>
@@ -73,15 +124,16 @@ function editProfile(){uni.navigateTo({url:'/pages/profile/index'})}
     </view>
     <template v-else>
       <view class="shop-head"><text class="eyebrow">{{ isDiabetesCase ? '虚拟糖尿病家庭案例 · 一桌共享菜单' : sourcePlan ? 'AI专属计划 · 首批采购' : '本餐安排与购买清单 · 同一页面' }}</text><text class="display-title">{{daily?'把今天三餐，一次备齐':sourcePlan?'核对计划，准备开始':meal+'安排与购买'}}</text><text class="shop-desc">{{ isDiabetesCase ? '已按三人共享晚餐汇总菜品与食材。商品与价格均为演示；爸爸的实际主食份量仍需按专业要求确认。' : sourcePlan ? sourcePlan.name + '已自动检查已知饮食限制并安排' + (deliveryBatches.length || 21) + '次配送确认。这里演示首批食材采购。' : '先看本餐菜品与做法，再直接勾选需要购买的整包装食材。' }}</text></view>
-      <view v-if="!daily" class="meal-summary-card"><view class="summary-title"><view><text class="eyebrow">本餐基本信息</text><text>{{meal}} · {{plan.count}} 人用餐</text></view></view><button class="diner-control" @click="changeDiners"><view><text>本餐就餐者</text><text>{{plan.members.map(m=>m.name).join('、')}}</text></view><text>更改 ›</text></button><MealNotes :plan="plan"/></view>
+      <view v-if="!daily" class="meal-summary-card"><view class="summary-title"><view><text class="eyebrow">本餐基本信息</text><text>{{meal}} · {{plan.count}} 人用餐</text></view></view><button class="diner-control" @click="changeDiners"><text class="diner-names">就餐者：{{plan.members.map(m=>m.name).join('、')}}</text><text class="diner-change">更改 &gt;</text></button><MealNotes :plan="plan"/></view>
       <view v-else class="card daily-meals"><text class="section-title">选择今日需要采购的餐次</text><button v-for="m in DAILY_MEALS" :key="m.name" @click="toggleMeal(m.name)">{{included.includes(m.name)?'✓':'○'}} {{m.name}}</button><text class="demo-label">跨餐合并同一食材与 SKU 后计算包装数量；仍需核对商品、地址和金额后结算。</text></view>
+      <text v-if="menuUpdating" class="safe-note">正在复核成员、菜单和报价…</text><view v-if="menuError" class="card"><text class="inline-error">{{menuError}}</text><button :disabled="menuUpdating" @click="retryMenuUpdate">重试更新</button></view>
       <text v-if="updateNote" class="update-note">{{updateNote}}</text>
       <view v-if="bundle" class="bundle-card">
         <view class="bundle-top"><view><text>{{ bundle.name }}</text><text class="small">按 {{ plan.count }} 位成员的菜单需求匹配 · 示例商品</text></view><view class="bundle-badge">单包</view></view>
         <image v-if="bundle" class="selected-bundle-image" :src="bundle.image" mode="aspectFill" />
       </view>
       <view v-if="!daily" class="section-head"><text class="section-title">本餐全部菜品</text><text>点击查看独立做法页</text></view>
-      <view v-if="!daily" class="dish-list"><view v-for="dish in plan.dishes" :key="dish.name" class="dish-card card"><button class="dish-main" @click="openDish(dish)"><view class="dish-visual" :style="{background:dish.color}">{{dish.icon}}</view><view><text>{{dish.name}}</text><text>{{dish.detail}}</text><text>{{dish.kcal?'约 '+dish.kcal+' kcal · ':''}}查看做法与注意事项</text></view><text>›</text></button><button v-if="canSwapDish(dish)" class="swap-button" @click="switchDish(dish)">换一换</button></view></view>
+      <view v-if="!daily" class="dish-list"><view v-for="dish in plan.dishes" :key="dish.name" class="dish-card card"><button class="dish-main" @click="openDish(dish)"><view class="dish-visual" :style="{background:dish.color}">{{dish.icon}}</view><view><text>{{dish.name}}</text><text>{{dish.detail}}</text><text>{{dish.kcal?'约 '+dish.kcal+' kcal · ':''}}查看做法与注意事项</text></view><text>›</text></button><button v-if="canSwapDish(dish)" class="swap-button" :disabled="menuUpdating||paying" @click="switchDish(dish)">换一换</button></view></view>
       <view class="section-head ingredient-head"><view><text class="section-title">{{daily?'今日所需食材和购买清单':'本餐所需食材和购买清单'}}</text><text>包装数量按本餐人数计算</text></view><text>已选 {{ selected.length }} 项</text></view>
       <view class="product-list">
         <view v-for="product in products" :key="product.id" class="product-card card" @click="toggle(product.id)">
@@ -92,12 +144,12 @@ function editProfile(){uni.navigateTo({url:'/pages/profile/index'})}
         </view>
       </view>
       <view class="safety-card"><view class="shield">i</view><view><text>结算前核对采购内容</text><text class="small">商品、包装数量、配送地址和价格。饮食限制已在推荐前自动检查。当前为购买流程演示，不会生成真实订单或扣款。</text></view></view>
-      <view class="bottom-bar"><view><text>已选 {{selected.length}} 项</text><text class="strong">¥{{ total }}</text><text class="small">示例合计</text></view><button v-if="!plan.paid && (!daily || procurement.plans.every(p=>!p.paid))" class="primary-button" @click="checkout">去结算／直接购买 →</button></view>
+      <view class="bottom-bar"><view><text>已选 {{selected.length}} 项</text><text class="strong">¥{{ total }}</text><text class="small">示例合计</text></view><button v-if="!plan.paid && (!daily || procurement.plans.every(p=>!p.paid))" class="primary-button" :disabled="menuUpdating||paying||Boolean(menuError)" @click="checkout">去结算／直接购买 →</button></view>
     </template>
     <DinerPicker :open="dinersOpen" :members="profile.members" :selected="plan.members.map(m=>m.id)" :meal="meal" @close="dinersOpen=false" @confirm="confirmDiners"/>
     <view v-if="orderOpen" class="sheet-mask"><view class="sheet order-sheet">
       <template v-if="!paid">
-        <view class="order-title"><view><text class="eyebrow">演示订单</text><text class="section-title">确认订单</text></view><button @click="orderOpen = false">×</button></view>
+        <view class="order-title"><view><text class="eyebrow">演示订单</text><text class="section-title">确认订单</text></view><button :disabled="paying" @click="orderOpen = false">×</button></view>
         <view class="delivery-card" @click="chooseAddress">
           <view class="delivery-icon">⌂</view>
           <view><text>{{address?address.name+' · '+address.phone:'请选择配送地址'}}</text><text>{{address?address.region+' '+address.detail:'点击选择或新增测试地址'}}</text></view>
@@ -110,13 +162,13 @@ function editProfile(){uni.navigateTo({url:'/pages/profile/index'})}
         <view v-if="deliveryBatches.length" class="delivery-time"><text>计划配送</text><text>{{ deliveryBatches.length }} 次 · {{ planStartDate }} 生效 ›</text></view>
         <view class="price-lines"><view><text>首批三餐商品价（测试）</text><text>¥{{ sourcePlan ? (sourcePlan.estimateCents / 100).toFixed(2) : (productsSubtotalCents / 100).toFixed(2) }}</text></view><view v-if="sourcePlan"><text>21批商品价（测试）</text><text>¥{{ total }}</text></view><view><text>计划服务费</text><text>¥0.00 · 待定稿</text></view><view><text>配送费</text><text>¥0.00 · 待定稿</text></view><view class="pay-total"><text>一次支付（测试）</text><text>¥{{ total }}</text></view></view>
         <text class="demo-label">此页面仅演示“直接购买”的完整操作，不会调用真实支付。测试地址与模拟订单仅保存在本机。</text>
-        <button class="primary-button" @click="pay">模拟支付 ¥{{ total }}</button>
-        <button class="secondary-button" @click="orderOpen = false">返回调整商品</button>
+        <text v-if="payError" class="inline-error">{{payError}}</text><button v-if="paymentState==='unknown'" class="primary-button" :disabled="paying" @click="queryPayment">{{paying?'正在查询…':'查询支付结果'}}</button><button v-else class="primary-button" :disabled="paying" @click="pay">{{paying?'正在处理…':'模拟支付 ¥'+total}}</button><button v-if="paidOrderId" class="secondary-button" :disabled="paying" @click="viewOrder">查看当前订单</button>
+        <button class="secondary-button" :disabled="paying" @click="orderOpen = false">返回调整商品</button>
       </template>
       <template v-else>
         <view class="success-mark">✓</view>
         <text class="section-title success-title">购买成功 · 演示订单</text>
-        <text class="demo-label success-copy">已模拟支付 ¥{{ total }}，订单当前为“待配送”。本原型不会产生真实配送。</text>
+        <text class="demo-label success-copy">已模拟支付 ¥{{ paidTotal }}，订单当前为“待配送”。本原型不会产生真实配送。</text>
         <view class="status-track"><view class="done"><text>1</text><text>已模拟支付</text></view><view></view><view><text>2</text><text>商家备货</text></view><view></view><view><text>3</text><text>配送完成</text></view></view>
         <button class="primary-button" @click="viewOrder">查看订单 →</button>
         <button class="secondary-button" @click="nutritionist">返回营养师</button>
@@ -128,7 +180,7 @@ function editProfile(){uni.navigateTo({url:'/pages/profile/index'})}
 .daily-meals{margin-top:28rpx;padding:26rpx;display:flex;flex-direction:column;gap:20rpx}.daily-meals button{padding:20rpx;border:1rpx solid #d3dfcc;border-radius:18rpx;color:#246b50;text-align:left;font-size:26rpx}.update-note{display:block;padding:22rpx;margin-top:20rpx;background:#e6efdc;border-radius:22rpx;font-size:22rpx;line-height:1.7}
 .selected-bundle-image { display: block; width: 100%; height: 260rpx; margin-top: 24rpx; border-radius: 22rpx; }
 .shop-screen { padding-bottom: calc(env(safe-area-inset-bottom) + 190rpx); }.shop-flow { margin-top: 20rpx; }.shop-head { margin-top: 54rpx; }.shop-head .display-title { display: block; font-size: 52rpx; }.shop-desc { display: block; margin-top: 22rpx; color: #65776f; font-size: 24rpx; line-height: 1.75; }
-.meal-summary-card{margin-top:30rpx;padding:26rpx;border-radius:30rpx;background:#246b50;color:white;box-shadow:0 18rpx 40rpx rgba(31,107,82,.18)}.summary-title{display:flex;align-items:flex-start;justify-content:space-between}.summary-title>view{display:flex;flex-direction:column;gap:8rpx}.summary-title .eyebrow{color:#e0eee5}.summary-title>view text:last-child{font-family:inherit;font-size:32rpx;font-weight:800}.summary-title>text:last-child{padding:8rpx 12rpx;border-radius:999rpx;background:rgba(255,255,255,.14);font-size:18rpx}.nutrition-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:10rpx;margin-top:22rpx}.nutrition-strip>view{display:flex;flex-direction:column;gap:5rpx;padding:16rpx;border-radius:18rpx;background:rgba(255,255,255,.11)}.nutrition-strip text:first-child{font-size:23rpx;font-weight:900}.nutrition-strip text:last-child{color:#d2e6d7;font-size:17rpx}.diner-control{width:100%;display:flex;align-items:center;justify-content:space-between;margin-top:14rpx;padding:18rpx 20rpx;border-radius:20rpx;background:#ffffff;color:#1d1d1f;text-align:left}.diner-control>view{display:flex;flex-direction:column;gap:5rpx}.diner-control view text:first-child{color:#71827a;font-size:17rpx}.diner-control view text:last-child{font-size:21rpx;font-weight:900}.diner-control>text:last-child{color:#246b50;font-size:19rpx;font-weight:800}
+.meal-summary-card{margin-top:30rpx;padding:26rpx;border-radius:30rpx;background:#246b50;color:white;box-shadow:0 18rpx 40rpx rgba(31,107,82,.18)}.summary-title{display:flex;align-items:flex-start;justify-content:space-between}.summary-title>view{display:flex;flex-direction:column;gap:8rpx}.summary-title .eyebrow{color:#e0eee5}.summary-title>view text:last-child{font-family:inherit;font-size:32rpx;font-weight:800}.summary-title>text:last-child{padding:8rpx 12rpx;border-radius:999rpx;background:rgba(255,255,255,.14);font-size:18rpx}.nutrition-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:10rpx;margin-top:22rpx}.nutrition-strip>view{display:flex;flex-direction:column;gap:5rpx;padding:16rpx;border-radius:18rpx;background:rgba(255,255,255,.11)}.nutrition-strip text:first-child{font-size:23rpx;font-weight:900}.nutrition-strip text:last-child{color:#d2e6d7;font-size:17rpx}.diner-control{width:100%;display:flex;align-items:center;justify-content:space-between;gap:20rpx;margin-top:20rpx;padding:6rpx 0;min-height:60rpx;border-radius:0;background:transparent;color:#fff;text-align:left;font-size:24rpx;line-height:1.7}.diner-control::after{border:0}.diner-names{min-width:0;overflow-wrap:anywhere}.diner-change{color:#d2f19e;font-weight:700;white-space:nowrap;flex-shrink:0}
 .bundle-card { margin-top: 32rpx; padding: 28rpx; overflow: hidden; border-radius: 34rpx; background: #246b50; color: white; box-shadow: 0 20rpx 45rpx rgba(31,107,82,.2); }.bundle-top { display: flex; align-items: flex-start; justify-content: space-between; }.bundle-top view:first-child { display: flex; flex-direction: column; gap: 10rpx; }.bundle-top text { font-family:inherit; font-size: 34rpx; font-weight: 700; }.bundle-top .small { color: #cde0d2; font-size: 20rpx; }.bundle-badge { padding: 10rpx 14rpx; border-radius: 999rpx; background: #e0eee5; color: #1d1d1f; font-size: 18rpx; font-weight: 700; }.bundle-visual { display: flex; align-items: center; justify-content: space-around; height: 150rpx; margin-top: 24rpx; border-radius: 26rpx; background: #f0eadc; font-size: 52rpx; }.bundle-visual text:last-child { width: 70rpx; height: 70rpx; display: flex; align-items: center; justify-content: center; border: 2rpx dashed #8aa092; border-radius: 50%; color: #577165; font-size: 28rpx; }
 .section-head { display: flex; align-items: flex-end; justify-content: space-between; margin: 46rpx 0 18rpx; }.section-head > text:last-child { color: #71827a; font-size: 21rpx; }.ingredient-head>view{display:flex;flex-direction:column;gap:6rpx}.ingredient-head>view text:last-child{color:#71827a;font-size:18rpx}.dish-list{display:flex;flex-direction:column;gap:13rpx}.dish-card{width:100%;display:flex;align-items:center;gap:10rpx;padding:12rpx}.dish-main{min-width:0;flex:1;display:flex;align-items:center;gap:16rpx;text-align:left}.dish-visual{width:94rpx;height:82rpx;display:flex;align-items:center;justify-content:center;flex:0 0 auto;border-radius:21rpx;font-size:42rpx}.dish-main>view:nth-child(2){min-width:0;flex:1;display:flex;flex-direction:column;gap:6rpx}.dish-main>view:nth-child(2) text:first-child{font-size:25rpx;font-weight:900}.dish-main>view:nth-child(2) text:nth-child(2){color:#71827a;font-size:18rpx}.dish-main>view:nth-child(2) text:last-child{color:#246b50;font-size:18rpx;font-weight:800}.dish-main>text:last-child{color:#7b8b84;font-size:34rpx}.swap-button{flex:0 0 auto;min-height:58rpx;padding:0 13rpx;border:1rpx solid #99b6a8;border-radius:17rpx;background:#f4f8ef;color:#246b50;font-size:18rpx;font-weight:800}.product-list { display: flex; flex-direction: column; gap: 14rpx; }.product-card { display: flex; align-items: center; gap: 16rpx; padding: 18rpx; }.select-box { width: 34rpx; height: 34rpx; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; border: 1rpx solid #91a098; border-radius: 10rpx; color: white; font-size: 20rpx; }.select-box.selected { border-color: #246b50; background: #246b50; }.product-image { width: 82rpx; height: 82rpx; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 22rpx; background: #edf1df; font-size: 42rpx; }.product-copy { flex: 1; display: flex; flex-direction: column; gap: 6rpx; }.product-copy > text { font-size: 25rpx; font-weight: 700; }.product-copy .small { color: #75867e; font-size: 19rpx; }.product-copy .em { color: #246b50; font-size: 18rpx; font-style: normal; }.price { color: #b44d35; font-family:inherit; font-size: 26rpx; font-weight: 700; }
 .supplier-link{width:100%;margin-top:24rpx;color:#14563f;font-size:20rpx;font-weight:900;text-align:center}.verify-intro{display:block;margin:18rpx 0;color:#6b7c74;font-size:19rpx;line-height:1.55}.member-check{display:flex;align-items:center;justify-content:space-between;padding:16rpx 0;border-bottom:1rpx solid rgba(24,54,46,.08)}.member-check>view{display:flex;flex-direction:column;gap:5rpx}.member-check>view text:first-child{font-size:21rpx;font-weight:900}.member-check>view text:not(:first-child){color:#74847d;font-size:17rpx}.member-check>text:last-child{color:#246b50;font-size:17rpx;font-weight:800}.ingredient-review,.conflict,.unknown{display:flex;flex-direction:column;gap:7rpx;margin-top:16rpx;padding:17rpx;border-radius:17rpx;background:#edf2e5}.ingredient-review text:first-child,.conflict text:first-child,.unknown text:first-child{font-size:20rpx;font-weight:900}.ingredient-review text:not(:first-child),.conflict text:not(:first-child),.unknown text:not(:first-child){color:#687970;font-size:18rpx;line-height:1.5}.conflict{background:#f1d6cc;color:#8a4333}.unknown{background:#f3ead6;color:#735e35}.verify-sheet .primary-button{margin-top:19rpx}.verify-sheet .primary-button[disabled]{opacity:.45}.verify-sheet .secondary-button{margin-top:10rpx}

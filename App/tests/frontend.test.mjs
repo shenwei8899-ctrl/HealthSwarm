@@ -1,3 +1,5 @@
+import { canOrderAction,currentAfterSale,afterSales,batchItems } from '../src/utils/order-actions.js'
+import { storageContext as storageScope } from '../src/services/storage.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { normalizeProfile,saveProfile,getProfile,saveRecord,getRecords } from '../src/utils/profile.js'
@@ -23,7 +25,7 @@ test('family dialogue updates claimed member with provenance and reversible stat
 test('record correction keeps its ID and advances version without creating a second record',async()=>{setup();saveRecord({id:'record-1',version:1,meal:'晚餐',dishes:['鱼']});await mockService.correctRecord('record-1',{id:'different',dishes:['豆腐']});assert.equal(getRecords().length,1);assert.equal(getRecords()[0].id,'record-1');assert.equal(getRecords()[0].version,2);assert.deepEqual(getRecords()[0].dishes,['豆腐'])})
 test('member feedback excludes unconfirmed shared food and gaps are not zeros',()=>{const records=[{id:1,createdAt:'2026-10-06T04:00:00Z',meal:'午餐',dishes:['番茄','鱼'],captureScope:'家庭共享桌菜',memberIntake:[{memberId:1,dishes:['鱼'],portion:'一般'},{memberId:2,dishes:['番茄'],portion:'少量'}]}];const own=confirmedFor(records,1),mom=confirmedFor(records,2);assert.deepEqual(own[0].dishes,['鱼']);assert.equal(confirmedFor(records,3).length,0);const end=new Date('2026-10-06T12:00:00+08:00');assert.equal(vegetableTrend(own,7,end).at(-1).ratio,0);assert.equal(vegetableTrend(mom,7,end).at(-1).ratio,1);assert.equal(vegetableTrend(own,7,end)[0].ratio,null)})
 
-function receiptPage({ batches = false, modalFailure = false } = {}) {
+async function receiptPage({ batches = false, modalFailure = false } = {}) {
   setup()
   const created = createDemoOrder({ items: [], totalCents: 7420, meal: '午餐',
     sourcePlanId: batches ? 'test-plan' : '',
@@ -39,51 +41,51 @@ function receiptPage({ batches = false, modalFailure = false } = {}) {
     showToast(options) { calls.toast = options },
   })
   let show
-  const deps = { ref, computed, getOrder, updateOrder, orderStatus,
+  const deps = { ref, computed, getOrder, updateOrder, orderStatus, service:mockService,storageScope,canOrderAction,currentAfterSale,afterSales,batchItems,onUnload() {},
     onLoad(callback) { callback({id:created.id}) },
     onShow(callback) { show = callback },
   }
   const script = readFileSync(new URL('../src/pages/orders/detail.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const page = new Function('deps', `const {${Object.keys(deps).join(',')}} = deps;\n${script}\nreturn { order, delivered, confirmReceived, selectBatch }`)(deps)
-  show()
+  await show()
   return { ...page, calls, show, id:created.id }
 }
 
-test('receipt opens a WeChat-compatible modal and only confirmation persists delivery',()=>{
-  const page = receiptPage()
+test('receipt opens a WeChat-compatible modal and only confirmation persists delivery',async()=>{
+  const page = await receiptPage()
   page.confirmReceived()
-  page.calls.modal.success({confirm:false})
+  await page.calls.modal.success({confirm:false})
   assert.equal(getOrder(page.id).status,'paid')
   assert.equal(page.delivered.value,false)
   page.confirmReceived()
-  page.calls.modal.success({confirm:true})
+  await page.calls.modal.success({confirm:true})
   assert.equal(getOrder(page.id).status,'delivered')
   assert.ok(getOrder(page.id).deliveredAt)
-  page.show()
+  await page.show()
   assert.equal(page.delivered.value,true)
 })
 
-test('batch receipt affects only the selected batch and completes after all batches arrive',()=>{
-  const page = receiptPage({batches:true})
+test('batch receipt affects only the selected batch and completes after all batches arrive',async()=>{
+  const page = await receiptPage({batches:true})
   page.selectBatch(2)
   page.confirmReceived()
-  page.calls.modal.success({confirm:true})
+  await page.calls.modal.success({confirm:true})
   assert.deepEqual(getOrder(page.id).receivedBatchIndices,[2])
   assert.equal(getOrder(page.id).status,'partial')
   assert.equal(page.delivered.value,true)
   page.selectBatch(1)
   assert.equal(page.delivered.value,false)
   page.confirmReceived()
-  page.calls.modal.success({confirm:false})
+  await page.calls.modal.success({confirm:false})
   assert.deepEqual(getOrder(page.id).receivedBatchIndices,[2])
   page.confirmReceived()
-  page.calls.modal.success({confirm:true})
+  await page.calls.modal.success({confirm:true})
   assert.deepEqual(getOrder(page.id).receivedBatchIndices,[1,2])
   assert.equal(getOrder(page.id).status,'delivered')
 })
 
-test('receipt modal failure gives feedback and leaves the order unreceived',()=>{
-  const page = receiptPage({modalFailure:true})
+test('receipt modal failure gives feedback and leaves the order unreceived',async()=>{
+  const page = await receiptPage({modalFailure:true})
   page.confirmReceived()
   assert.equal(page.calls.toast.title,'收货确认窗口未能打开，请重试')
   assert.equal(page.calls.toast.icon,'none')
@@ -102,7 +104,7 @@ function scanPage(members = '1') {
     redirectTo(options) { calls.redirects.push(options); options.fail() },
   })
   const deps = {
-    ref, computed, getProfile, saveRecord, backHome() {}, photoEstimate,
+    ref, computed, getProfile, saveRecord, backHome() {}, photoEstimate,storageScope,mockDelay:async()=>{},onUnload() {},
     DIABETES_CASE_ID, getActiveHealthCaseId, todayPlan, mealProfile,
     ingredientConflicts, memberNotes, mealFromRoute,
     portionOptions, oilOptions, createPortionDraft, confirmPortionDraft, intakeSummary,
@@ -114,7 +116,9 @@ function scanPage(members = '1') {
   // reproducing the popup/save logic in a separate test implementation.
   const script = readFileSync(new URL('../src/pages/scan/index.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const exposed = 'portion, grams, oil, imagePath, status, portionDraft, portionDialogOpen, portionsConfirmed, estimate, draftEstimate, confirmedIntake, recognizedDishes, openPortions, closePortions, applyPortions, chooseImage, confirmRecord, correction, markNotEaten, toggleDraftDish, select, goBack'
-  return { ...new Function('deps',`const {${Object.keys(deps).join(',')}} = deps;\n${script}\nreturn {${exposed}}`)(deps), calls }
+  const page=new Function('deps',`const {${Object.keys(deps).join(',')}} = deps;\n${script}\nreturn {${exposed}}`)(deps)
+  page.status.value='result' // Start the portion-handler cases with an already displayed meal.
+  return {...page,calls}
 }
 
 test('cancel and page back discard portion popup edits and keep the confirmed meal',()=>{
@@ -185,9 +189,9 @@ test('optional grams are validated without percentage requirements and unknown p
   assert.equal(page.estimate.value,null)
 })
 
-test('photo selection keeps the original photo and both save destinations retry one record',()=>{
+test('photo selection keeps the original photo and both save destinations retry one record',async()=>{
   const page=scanPage()
-  page.chooseImage('album')
+  await page.chooseImage('album')
   assert.deepEqual(page.calls.image.sourceType,['album'])
   assert.equal(page.status.value,'result')
   assert.equal(page.imagePath.value,'/tmp/selected-meal.jpg')
@@ -205,9 +209,9 @@ test('photo selection keeps the original photo and both save destinations retry 
   assert.equal(page.calls.redirects[1].url,'/pages/records/index')
 })
 
-test('dish correction keeps the original photo and requires confirmation of the changed food list',()=>{
+test('dish correction keeps the original photo and requires confirmation of the changed food list',async()=>{
   const page=scanPage()
-  page.chooseImage('camera')
+  await page.chooseImage('camera')
   page.openPortions()
   page.portionDraft.value.people[0].portion='一般'
   page.applyPortions()

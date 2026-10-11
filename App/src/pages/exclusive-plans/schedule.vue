@@ -2,7 +2,7 @@
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed, ref } from 'vue'
 import { onLoad,onShow } from '@dcloudio/uni-app'
-import { mockService } from '../../services/mock.js'
+import { service as mockService } from '../../services/index.js'
 import { backHome } from '../../utils/profile.js'
 import { createDeliveryBatches, defaultPlanStartDate, getExclusivePlan,adaptExclusivePlan } from '../../utils/exclusive-plans.js'
 
