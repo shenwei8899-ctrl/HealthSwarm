@@ -1,7 +1,6 @@
 <script setup>
-import HealthMealFeedback from '@/components/health/HealthMealFeedback.vue'
+import HealthDietRecords from '@/components/health/HealthDietRecords.vue'
 import HealthDietAnalysis from '@/components/health/HealthDietAnalysis.vue'
-import HealthFeedbackConversation from '@/components/health/HealthFeedbackConversation.vue'
 import HealthFamilyProfile from '@/components/health/HealthFamilyProfile.vue'
 import HealthProfessionalProfile from '@/components/health/HealthProfessionalProfile.vue'
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
@@ -1150,29 +1149,12 @@ async function retryJob(job) {
               >
             </div>
           </section>
-          <section class="panel">
-            <h2>已确认饮食日记</h2>
-            <a-empty v-if="!records.meal.length" description="待确认草稿不进入饮食日记" />
-            <div v-for="record in records.meal" :key="record.id" class="record">
-              <strong
-                >{{ mealLabels[record.snapshot.meal.meal_type] }} ·
-                {{ new Date(record.snapshot.meal.eaten_at).toLocaleString() }}</strong
-              ><a-tag v-if="record.snapshot.nutrition.estimated" color="orange">估算</a-tag>
-              <p v-for="([label, unit], key) in nutrientLabels" :key="key">
-                {{ label }}：{{ nutrientText(record.snapshot.nutrition.totals[key], unit) }}
-              </p>
-              <small>计算版本：{{ record.snapshot.nutrition.calculation_version }}</small>
-              <HealthMealFeedback :record="record" />
-              <HealthFeedbackConversation
-                :key="`feedback-${memberId}-${record.id}`"
-                :member-id="memberId"
-                :scopes="member?.scopes || []"
-                :configuration="config"
-                :record="record"
-                :disabled="busy || confirming"
-              />
-            </div>
-          </section>
+          <HealthDietRecords
+            :member-id="memberId"
+            :scopes="member?.scopes || []"
+            :configuration="config"
+            :disabled="busy || confirming"
+          />
         </div>
       </template>
     </main>

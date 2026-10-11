@@ -814,22 +814,19 @@ class HealthVisionService:
         async with pg_manager.get_async_session_context() as session:
             repo = HealthVisionRepository(session)
             await repo.authorize(member_id, uid, "report_view" if kind == "report" else "diet_edit")
-            result = []
-            for record in await repo.list_records(member_id, kind):
-                confirmation = await session.get(VisionConfirmation, record.confirmation_id)
-                try:
-                    await repo.draft(confirmation.draft_id, uid, kind)
-                except HealthVisionError:
-                    continue
-                item = {
-                    "id": record.id,
-                    "snapshot": record.snapshot,
-                    "created_at": format_utc_datetime(record.created_at),
-                }
-                if kind == "meal":
-                    item["source_version"] = confirmation.draft_version
-                result.append(item)
-            return result
+            rows = await repo.list_records(member_id, kind)
+            return await self._visible_records(session, repo, uid, rows, kind)
+
+    async def diet_log_page(self, uid: str, member_id: str, *, limit: int = 20, offset: int = 0):
+        """按入库记录定位分页；失效来源不展示，空页仍可继续。"""
+        async with pg_manager.get_async_session_context() as session:
+            repo = HealthVisionRepository(session)
+            await repo.authorize(member_id, uid, "diet_edit")
+            rows = await repo.list_records(member_id, "meal", limit=limit + 1, offset=offset)
+            return {
+                "records": await self._visible_records(session, repo, uid, rows[:limit], "meal"),
+                "next_offset": offset + limit if len(rows) > limit else None,
+            }
 
     async def foods(self, query: str):
         """提供已发布食品供人工映射。"""
@@ -1009,6 +1006,25 @@ class HealthVisionService:
                 "recipe_estimated",
             )
         }
+
+    async def _visible_records(self, session, repo, uid, rows, kind):
+        """复用正式记录来源检查，不将失效图片快照暴露给列表。"""
+        result = []
+        for record in rows:
+            confirmation = await session.get(VisionConfirmation, record.confirmation_id)
+            try:
+                await repo.draft(confirmation.draft_id, uid, kind)
+            except HealthVisionError:
+                continue
+            item = {
+                "id": record.id,
+                "snapshot": record.snapshot,
+                "created_at": format_utc_datetime(record.created_at),
+            }
+            if kind == "meal":
+                item["source_version"] = confirmation.draft_version
+            result.append(item)
+        return result
 
 
 health_vision_service = HealthVisionService()

@@ -222,13 +222,17 @@ class HealthVisionRepository:
             ).all()
         )
 
-    async def list_records(self, member_id: str, kind: str):
+    async def list_records(self, member_id: str, kind: str, *, limit: int = 100, offset: int = 0):
         """仅返回已提交的正式业务快照。"""
         model = HealthObservation if kind == "report" else DietLog
         return list(
             (
                 await self.session.scalars(
-                    select(model).where(model.member_id == member_id).order_by(model.created_at.desc()).limit(100)
+                    select(model)
+                    .where(model.member_id == member_id)
+                    .order_by(model.created_at.desc(), model.id.asc())
+                    .limit(limit)
+                    .offset(offset)
                 )
             ).all()
         )

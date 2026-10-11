@@ -11,6 +11,7 @@ from fastapi.routing import APIRoute
 
 from server.utils.auth_middleware import get_admin_user, get_required_user
 from yuxi.services.health_vision_service import health_vision_service as service
+from yuxi.services.health_vision_types import DietLogPage
 from yuxi.services.health_consultation_service import create_consultation, create_daily_consultation, list_consultations
 from yuxi.services.health_family_planner_types import FamilyPlannerInput
 from yuxi.services.health_initial_meal_plan_types import InitialPlannerInput
@@ -1093,6 +1094,19 @@ async def observations(member_id: UUID, user: User = Depends(get_required_user))
 async def diet_logs(member_id: UUID, user: User = Depends(get_required_user)):
     """读取已确认饮食日记。"""
     return await service.records(user.uid, str(member_id), "meal")
+
+
+@health_vision.get("/members/{member_id}/diet-logs/page", response_model=DietLogPage)
+async def diet_log_page(
+    member_id: UUID,
+    response: Response,
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0, le=2147483647),
+    user: User = Depends(get_required_user),
+):
+    """读取正式饮食记录分页；游标按入库行数推进，空页也可能有后续页。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await service.diet_log_page(user.uid, str(member_id), limit=limit, offset=offset)
 
 
 @health_vision.get("/foods")

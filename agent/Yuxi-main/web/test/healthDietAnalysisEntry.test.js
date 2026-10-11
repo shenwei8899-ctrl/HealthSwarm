@@ -5,6 +5,10 @@ import * as Vue from 'vue'
 import { parse, compileTemplate } from 'vue/compiler-sfc'
 
 const view = await readFile(new URL('../src/views/HealthVisionView.vue', import.meta.url), 'utf8')
+const dietRecords = await readFile(
+  new URL('../src/components/health/HealthDietRecords.vue', import.meta.url),
+  'utf8'
+)
 const feedback = await readFile(
   new URL('../src/components/health/HealthFeedbackConversation.vue', import.meta.url),
   'utf8'
@@ -69,20 +73,19 @@ test('健康识图页饮食分析分区传同一成员授权、当前配置及�
 test('已确认饮食记录保留手动反馈并装配同一餐的独立反馈对话', () => {
   const context = {
     memberId: 'member-a',
-    member: { scopes: ['diet_edit', 'ai_use'] },
-    config: {},
+    scopes: ['diet_edit', 'ai_use'],
+    configuration: {},
     record: { id: 'meal-a', source_version: 3 },
-    busy: false,
-    confirming: false
+    disabled: false
   }
-  const fragment = `${view.match(/<HealthMealFeedback[\s\S]*?\/>/)[0]}${view.match(/<HealthFeedbackConversation[\s\S]*?\/>/)[0]}`
+  const fragment = `${dietRecords.match(/<HealthMealFeedback[\s\S]*?\/>/)[0]}${dietRecords.match(/<HealthFeedbackConversation[\s\S]*?\/>/)[0]}`
   const tree = renderer(fragment, 'HealthVisionView.vue')(context, [])
   assert.equal(nodes(tree, 'HealthMealFeedback')[0].props.record, context.record)
   const entry = nodes(tree, 'HealthFeedbackConversation')[0]
   assert.equal(entry.props.record, context.record)
   assert.equal(entry.props['member-id'], 'member-a')
-  assert.deepEqual(entry.props.scopes, context.member.scopes)
-  assert.equal(entry.props.configuration, context.config)
+  assert.deepEqual(entry.props.scopes, context.scopes)
+  assert.equal(entry.props.configuration, context.configuration)
 })
 
 test('反馈对话按钮打开专属模式，提交中阻止关闭，关闭后销毁旧同意和私有状态', () => {

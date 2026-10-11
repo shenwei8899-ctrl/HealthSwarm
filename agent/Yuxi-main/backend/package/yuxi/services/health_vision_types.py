@@ -52,6 +52,22 @@ class MemberInput(HealthDTO):
     authorized: Literal[True]
 
 
+class DietLogRecord(HealthDTO):
+    """确认事务保存的饮食快照及源版本。"""
+
+    id: str
+    snapshot: dict
+    created_at: str
+    source_version: int
+
+
+class DietLogPage(HealthDTO):
+    """游标指向入库行；过滤失效来源后可见记录可能不足一页。"""
+
+    records: list[DietLogRecord]
+    next_offset: int | None
+
+
 class GrantInput(HealthDTO):
     actor_uid: str = Field(min_length=1, max_length=100)
     scopes: list[

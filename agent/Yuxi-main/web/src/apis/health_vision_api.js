@@ -127,6 +127,8 @@ export const healthVisionApi = {
   confirm: (kind, id, data) => apiPost(`${draftPath(kind, id)}/confirm`, data, idempotent(data)),
   records: (memberId, kind) =>
     apiGet(`${root}/members/${memberId}/${kind === 'report' ? 'observations' : 'diet-logs'}`),
+  dietLogPage: (memberId, limit = 20, offset = 0) =>
+    apiGet(`${root}/members/${memberId}/diet-logs/page?${buildQuery({ limit, offset })}`),
   mealFeedback: (id) => apiGet(`${root}/diet-logs/${id}/feedback`),
   saveMealFeedback: (id, data) =>
     apiPut(`${root}/diet-logs/${id}/feedback`, data, {

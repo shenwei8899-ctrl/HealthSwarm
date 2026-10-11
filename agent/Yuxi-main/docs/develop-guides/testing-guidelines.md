@@ -75,6 +75,20 @@ test_agent_bubble_sort_run_creates_expected_artifacts
 
 ## 常用命令
 
+### 饮食记录分页验证
+
+定向unit检查原始窗口、稳定排序、授权与失效来源；真实HTTP使用独立PG schema和121条合成确认快照，跨越原100条限制，并核对每次GET前后所有表内容及xmin。授权撤回、其他成员、管理员无旁路、非法参数和实际图片元数据删除分别校验；源删除后的空中间页仍能继续。合成查询快照不代表营养计算或专业验收。
+
+```bash
+docker compose exec -T api uv run --no-sync --group test pytest test/unit/services/test_health_diet_log_pagination.py -q
+docker compose exec -T api uv run --no-sync --group test pytest test/integration/services/test_health_diet_log_pagination_http.py -q
+docker compose exec -T web pnpm run test:unit
+docker compose exec -T web pnpm run lint:check
+docker compose exec -T web pnpm run build
+```
+
+后端负控设置HEALTH_DIET_PAGINATION_MUTATION为authorization、lookahead、source、offset或order，定向unit应在对应拒绝、快照或SQL断言失败；变异仅作用测试进程函数副本。前端unit验证当前页清理、成员/授权/卸载及迟到响应。真实浏览器核对分页与单餐反馈入口，协议见[饮食分页参考](../advanced/health-diet-log-pagination.md)。本只读查询不新增Worker和模型路径。
+
 ### 餐单列表分页验证
 
 餐单列表的 unit 验证参数传递、页切片和当前授权拒绝；integration 使用 shipping 路由、真实 TCP 与独立 PostgreSQL schema，按预先确定的 61 份合成餐单核对跨页顺序、相同更新时间的次排序、账号和成员隔离、主成员及家庭参与者撤权。每次 GET 前后比较全 schema 的行内容及 `xmin`，清理后核对 schema 已从 catalog 移除。数据库须为独立测试环境；未配置 PostgreSQL 时的 skip 不能算验收通过。
