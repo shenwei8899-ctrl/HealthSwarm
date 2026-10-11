@@ -5,7 +5,7 @@ from datetime import datetime, UTC
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select, text, update, or_, and_
+from sqlalchemy import select, text, update, or_, and_, func
 from yuxi.services.health_family_meal_plan_types import plan_member_ids
 
 from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
@@ -117,6 +117,27 @@ class HealthQualityRepository:
             .where(HealthRuleSnapshot.rule_code == rule_code)
             .order_by(HealthRuleSnapshot.version.desc())
             .limit(1)
+        )
+
+    async def has_current_rules(self):
+        """仅检查每个规则最新版本的有效目录，不选择成员适用规则。"""
+        latest = (
+            select(HealthRuleSnapshot.rule_code, func.max(HealthRuleSnapshot.version).label("version"))
+            .group_by(HealthRuleSnapshot.rule_code)
+            .subquery()
+        )
+        return (
+            await self.session.scalar(
+                select(HealthRuleSnapshot.id)
+                .join(
+                    latest,
+                    (HealthRuleSnapshot.rule_code == latest.c.rule_code)
+                    & (HealthRuleSnapshot.version == latest.c.version),
+                )
+                .where(HealthRuleSnapshot.revoked_at.is_(None), HealthRuleSnapshot.valid_until > utc_now_naive())
+                .limit(1)
+            )
+            is not None
         )
 
     async def latest_plan_review(self, uid, plan_id, version):

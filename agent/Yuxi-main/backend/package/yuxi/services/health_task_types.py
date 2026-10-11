@@ -124,7 +124,10 @@ class HealthTaskEntryResult(HealthDTO):
     agent_slug: str | None = None
     request_submit_url: Literal["/api/agent/runs"] | None = None
     questions: list[str] = Field(default_factory=list)
-    reason_code: Literal["selection_required", "external_contract_required"] | None = None
+    reason_code: (
+        Literal["selection_required", "external_contract_required", "runtime_dependency_unavailable"] | None
+    ) = None
+    missing_dependencies: list[Literal["postgres", "redis", "worker"]] = Field(default_factory=list)
 
 
 class HealthTaskNeedsInput(HealthDTO):

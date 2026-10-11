@@ -2,6 +2,10 @@
 
 面向维护健康业务接口和 Worker 的平台管理员。本文说明执行预算、业务错误追踪、识图用量统计和健康图回放的查找范围。运行状态、lease 和恢复机制由 [Agent 运行](../mechanisms/agent-runtime.md) 与 [测试规范](../develop-guides/testing-guidelines.md)解释。
 
+## 排查入口不可用
+
+平台 `GET /api/system/ready` 检查核心接流量条件。已授权成员的用途和存储、角色版本及业务目录缺项使用[成员业务就绪诊断](./health-member-capabilities.md#按业务依赖降级入口)；先读取具体入口原因，再恢复对应配置、Worker、存储或外部专业来源。诊断不调用云模型；恢复依赖后重新查询，并以实际业务操作结果为准。正式小程序须消费入口状态和允许动作，生产告警及外部模型质量另行验收。
+
 ## 用客户端追踪标识定位错误
 
 健康接口的受控业务错误返回 `code`、`trace_id`、`retryable`，并使用 `Cache-Control: no-store`。在 API 日志中查找同一 `trace_id` 对应的 `health_business_error` JSON。该记录包含 HTTP 方法、路由模板、状态码与稳定业务代码；路由模板保留 `{member_id}` 等占位符。

@@ -22,6 +22,12 @@ THREAD = str(uuid4())
 TARGET = {"rule_code": "synthetic.target.v1", "rule_version": 1, "profile_version": 1}
 
 
+@pytest.fixture(autouse=True)
+def healthy_task_runtime(monkeypatch):
+    """本文件隔离已另验的运行依赖，保留任务分派和结果Owner验证。"""
+    monkeypatch.setattr(service, "health_task_runtime_blockers", AsyncMock(return_value=[]))
+
+
 def purchase_choice(*, confirmed=False):
     """明确采用选择保留未知库存，不伪造零库存。"""
     return {

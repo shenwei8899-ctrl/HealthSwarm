@@ -12,7 +12,7 @@ from datetime import timedelta
 from io import BytesIO
 from urllib.parse import quote, urlsplit
 
-from urllib3 import BaseHTTPResponse
+from urllib3 import BaseHTTPResponse, PoolManager, Timeout
 from yuxi.utils import logger
 
 from minio import Minio
@@ -65,6 +65,22 @@ class MinIOClient:
         "parsed": "knowledgebases",
         "images": "kb-images",
     }
+
+    async def probe_access(self, timeout: float) -> None:
+        """用有界签名只读请求探测当前凭据，不创建桶或返回桶名。"""
+        endpoint = self.endpoint.split("://")[-1].rstrip("/")
+        transport = PoolManager(timeout=Timeout(connect=timeout, read=timeout), retries=False)
+        probe = Minio(
+            endpoint,
+            access_key=self.access_key,
+            secret_key=self.secret_key,
+            secure=False,
+            http_client=transport,
+        )
+        try:
+            await asyncio.to_thread(probe.list_buckets)
+        finally:
+            transport.clear()
 
     def __init__(self):
         """初始化 MinIO 客户端"""

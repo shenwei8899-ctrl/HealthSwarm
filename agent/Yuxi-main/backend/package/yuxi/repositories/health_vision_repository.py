@@ -263,6 +263,10 @@ class HealthVisionRepository:
         """发布目录存在性不证明任何菜谱适用于当前成员。"""
         return await self.session.scalar(select(RecipeVersion.id).limit(1)) is not None
 
+    async def has_published_nutrition(self):
+        """只表达已发布营养目录存在，不证明所选食材和份量可计算。"""
+        return await self.session.scalar(select(FoodRecord.id).limit(1)) is not None
+
     async def portions(self, food_id: str | None, recipe_version_id: str | None):
         """返回与指定不可变版本关联的参考规格。"""
         condition = (

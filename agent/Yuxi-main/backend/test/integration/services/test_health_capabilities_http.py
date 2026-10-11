@@ -250,6 +250,105 @@ async def test_no_professional_profile_keeps_three_basic_entries_and_five_select
     assert_no_query_writes(before, await query_snapshot(users))
 
 
+async def test_readiness_runtime_and_catalogue_are_authorized_readonly_facts(capability_runtime):
+    """真实核心和存储探针、目录与成员门禁共同返回，不产生线程或审计。"""
+    client, users, config, _body, _provider = capability_runtime
+    member = await create_member(client, users[0]["headers"])
+    await consent_to(client, users[0], member, config, PURPOSES)
+    before = await query_snapshot(users)
+    response = await client.get(f"{ROOT}/members/{member}/readiness", headers=users[0]["headers"])
+    assert response.status_code == 200, response.text
+    assert response.headers["Cache-Control"] == "no-store"
+    result = response.json()
+    assert set(result) == {"capabilities", "runtime", "catalogue", "entries", "role_versions"}
+    assert set(result["role_versions"]) == set(SKILLS)
+    assert all(value["status"] == "available" for value in result["role_versions"].values())
+    assert result["runtime"] == {
+        key: {"status": "available"} for key in ("postgres", "redis", "worker", "object_storage")
+    }
+    entries = {entry["entry_type"]: entry for entry in result["entries"]}
+    assert entries["consultation"]["status"] == "available"
+    assert entries["manual_report"]["status"] == entries["manual_meal"]["status"] == "available"
+    assert "profile_projection" in entries["initial_meal_preview"]["missing_dependencies"]
+    assert entries["initial_meal_preview"]["status"] == "unavailable"
+    assert entries["meal_photo"]["reason_code"] == "configuration_unavailable"
+    assert entries["meal_photo"]["allowed_actions"] == ["manual_meal"]
+    public = response.text
+    assert "synthetic-capabilities-no-model-call" not in public and _provider not in public
+    assert_no_query_writes(before, await query_snapshot(users))
+
+    rejected = [
+        await client.get(f"{ROOT}/members/{target}/readiness", headers=actor["headers"])
+        for target, actor in ((member, users[1]), (member, users[2]), (str(uuid4()), users[0]))
+    ]
+    assert all(item.status_code == 404 and item.json()["code"] == "not_found" for item in rejected)
+    assert_no_query_writes(before, await query_snapshot(users))
+
+
+async def test_readiness_revoked_member_never_exposes_manual_path(capability_runtime):
+    """人工路径同样服从成员当前授权，管理员身份不提供替代权限。"""
+    client, users, _config, _body, _provider = capability_runtime
+    member = await create_member(client, users[0]["headers"])
+    await client.put(
+        f"{ROOT}/members/{member}/grants",
+        headers=users[0]["headers"],
+        json={"actor_uid": users[0]["uid"], "scopes": ["diet_edit"]},
+    )
+    before = await query_snapshot(users)
+    response = await client.get(f"{ROOT}/members/{member}/readiness", headers=users[0]["headers"])
+    assert response.status_code == 200, response.text
+    result = response.json()
+    entries = {entry["entry_type"]: entry for entry in result["entries"]}
+    assert entries["manual_meal"]["status"] == "available" and entries["manual_report"]["status"] == "unavailable"
+    assert entries["report_photo"]["allowed_actions"] == []
+    assert result["capabilities"]["dependencies"]["profile_projection"]["status"] == "not_authorized"
+    assert_no_query_writes(before, await query_snapshot(users))
+    async with pg_manager.get_async_session_context() as session:
+        grant = await session.get(HealthGrant, (member, users[0]["uid"]))
+        grant.revoked_at = utc_now_naive()
+    before = await query_snapshot(users)
+    denied = await client.get(f"{ROOT}/members/{member}/readiness", headers=users[0]["headers"])
+    assert denied.status_code == 404 and denied.json()["code"] == "not_found"
+    assert_no_query_writes(before, await query_snapshot(users))
+
+
+@pytest.mark.skipif(
+    os.getenv("HEALTH_READINESS_FAULT") not in {"worker", "object_storage"},
+    reason="仅在独立槽位显式停用Worker或MinIO的故障验收运行",
+)
+async def test_readiness_real_dependency_failure_does_not_create_task(capability_runtime):
+    """真实故障通过HTTP返回诊断，PG证明无线程/Request/Run等写入。"""
+    client, users, config, _body, _provider = capability_runtime
+    member = await create_member(client, users[0]["headers"])
+    await consent_to(client, users[0], member, config, PURPOSES)
+    failed = os.environ["HEALTH_READINESS_FAULT"]
+    before = await query_snapshot(users)
+    response = await client.get(f"{ROOT}/members/{member}/readiness", headers=users[0]["headers"])
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["runtime"][failed] == {"status": "unavailable"}
+    assert result["runtime"]["postgres"] == result["runtime"]["redis"] == {"status": "available"}
+    entries = {entry["entry_type"]: entry for entry in result["entries"]}
+    assert entries["manual_report"]["status"] == entries["manual_meal"]["status"] == "available"
+    assert entries["consultation"]["status"] == ("available" if failed == "object_storage" else "unavailable")
+    assert entries["meal_photo"]["missing_dependencies"] == [failed]
+    assert entries["meal_photo"]["allowed_actions"] == ["manual_meal"]
+    if failed == "worker":
+        key = str(uuid4())
+        blocked = await client.post(
+            f"{ROOT}/members/{member}/task-entries",
+            headers={**users[0]["headers"], "Idempotency-Key": key},
+            json={"task_type": "consultation", "client_request_id": key},
+        )
+        assert blocked.status_code == 200, blocked.text
+        receipt = blocked.json()
+        assert receipt["entry_status"] == "dependency_not_ready" and receipt["thread_id"] is None
+        assert receipt["reason_code"] == "runtime_dependency_unavailable" and receipt["missing_dependencies"] == [
+            "worker"
+        ]
+    assert_no_query_writes(before, await query_snapshot(users))
+
+
 async def test_same_processor_different_purpose_consent_does_not_open_other_tasks(capability_runtime):
     """所有用途有相同处理方，仍只能按用途同意通过各自门禁。"""
     client, users, config, _body, _provider = capability_runtime

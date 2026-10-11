@@ -29,3 +29,15 @@
 `dependencies.profile_projection` 仅在具备 `profile_view` 时读取当前最高安全来源，返回状态、原因和版本；未授权时返回 `not_authorized`。该投影不表达完整专业健康档案已经交付，也不返回指标、档案内容或证明。`published_recipes` 只表示已发布菜谱目录存在记录，不能判断专业适用性；`rules` 保持待明确选择的状态。
 
 该 GET 只读取入口事实，不创建项目、会话、Request、Run、预览、审核或采用，不写健康访问审计，也不触发来源失效修复。本接口使用的 `HealthGrant` 和 `HealthProcessingConsent` 没有期限字段，客户端仍须遵循各业务服务的当前授权检查。实现与验证边界见[只读汇总决定](../develop-guides/decisions/implemented/2026-10-10-health-member-capabilities.md)；运行排障见[家庭营养 Agent 运维](./health-agent-operations.md)。
+
+## 按业务依赖降级入口
+
+客户端调用 `GET /api/health/v1/members/{member_id}/readiness`，读取同一成员的 `capabilities`、`runtime`、`catalogue`、`role_versions` 和 `entries`。认证、成员可见性及 `no-store` 规则相同。`entries` 提供任务、照片识别与人工录入的独立状态，`missing_dependencies` 列出当前阻断依赖，`configuration_reason_code` 区分照片用途的模型或 OCR 缺项；具体协议由[诊断 DTO](https://github.com/shenwei8899-ctrl/HealthSwarm/blob/main/agent/Yuxi-main/backend/package/yuxi/services/health_readiness_types.py)拥有。
+
+`runtime` 复用平台 PostgreSQL、Redis 和兼容 Worker 的探针，增加对象存储签名只读访问检查。核心探针沿用一秒短缓存；对象存储使用当前配置、有界连接与读取超时，不创建桶或写入对象。探针成功只证明当前只读访问，上传、执行和结果发布仍由实际操作确认。数据库不可用时无法证明成员可见性，使用平台 ready 排障，不返回成员目录摘要。
+
+普通咨询和确认事实分析保持各自条件；对象存储故障只影响照片入口。配餐目录缺失或专业方案缺安全投影、有效规则时，相关入口返回 `unavailable`。`catalogue` 的营养、最新有效规则和已映射审核知识布尔值仅表示目录存在；明确选择、适用范围、内容完整性、营养重算和当前版本仍由业务 Owner 校验。审核知识目录为空时，普通咨询仍可追问和读取已授权事实，正式知识引用按实际检索结果返回。
+
+`role_versions` 核对内置 Skill 发布源码与 PostgreSQL 登记的版本和内容哈希；不一致时只标记对应角色的 `role_version` 缺项。该摘要不证明全部 Worker 已部署相同版本。用户需要明确选定来源的入口保持 `needs_input`，客户端按 `complete_selection` 引导完成选择。
+
+客户端隐藏或禁用 `unavailable` 入口，并仅展示 `allowed_actions` 给出的人工报告、人工饮食、补充选择或重试。人工路径依赖自己的成员授权及数据库，不能通过开放聊天替代缺失的专业能力。健康任务创建在运行依赖不可用时返回 `dependency_not_ready`、`runtime_dependency_unavailable` 和 `missing_dependencies`，不创建线程；已创建线程的提交、执行和结果发布继续使用现有门禁。诊断是当前快照，客户端必须处理操作时返回的新错误。决定与验证见[业务就绪诊断](../develop-guides/decisions/implemented/2026-10-11-health-business-readiness.md)。

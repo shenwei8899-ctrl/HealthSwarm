@@ -30,6 +30,7 @@ from yuxi.services.health_quality_types import QualityCheckInput
 from yuxi.services.health_purchase_service import validate_purchase_publication
 from yuxi.services.health_purchase_types import PurchaseInput
 from yuxi.services.health_safe_planner_service import validate_safe_planner_publication
+from yuxi.services.health_readiness_service import health_task_runtime_blockers
 from yuxi.services.health_task_types import (
     HealthTaskEntryInput,
     HealthTaskEntryResult,
@@ -71,6 +72,15 @@ async def create_health_task_entry(uid: str, member_id: str, data: HealthTaskEnt
             entry_status="needs_input",
             reason_code="selection_required",
             questions=["请明确选择本任务的对象、当前版本和批准来源。"],
+        )
+
+    missing_runtime = await health_task_runtime_blockers(uid, member_id)
+    if missing_runtime:
+        return HealthTaskEntryResult(
+            **base,
+            entry_status="dependency_not_ready",
+            reason_code="runtime_dependency_unavailable",
+            missing_dependencies=missing_runtime,
         )
 
     if chosen.task_type == "purchase_requirements":

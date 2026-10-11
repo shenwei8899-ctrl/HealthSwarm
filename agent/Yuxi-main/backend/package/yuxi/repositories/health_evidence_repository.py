@@ -25,6 +25,17 @@ class HealthEvidenceRepository:
         """共享调用用例的事务。"""
         self.session = session
 
+    async def has_current_sources(self):
+        """映射后的审核片段目录存在性，不替代检索命中和引用版本校验。"""
+        return (
+            await self.session.scalar(
+                select(NutritionEvidence.id)
+                .where(NutritionEvidence.revoked_at.is_(None), NutritionEvidence.valid_until > utc_now_naive())
+                .limit(1)
+            )
+            is not None
+        )
+
     async def final_answer(self, run):
         """新增引用入口只认当前权威指针，拒绝历史猜测与审计消息。"""
         if run.output_message_id is None or run.conversation_id is None:

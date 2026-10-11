@@ -120,6 +120,8 @@ from yuxi.services.health_task_service import create_health_task_entry, read_hea
 from yuxi.services.health_task_types import HealthTaskEntryInput, HealthTaskEntryResult, HealthTaskResult
 from yuxi.services.health_capability_service import member_capabilities
 from yuxi.services.health_capability_types import MemberCapabilities
+from yuxi.services.health_readiness_service import member_readiness
+from yuxi.services.health_readiness_types import HealthMemberReadiness
 from yuxi.services.health_vision_types import (
     ConfirmInput,
     ConsentInput,
@@ -222,6 +224,13 @@ async def health_member_capabilities(member_id: UUID, response: Response, user: 
     """读取当前账号的成员任务提示，实际任务执行仍重验来源与权限。"""
     response.headers["Cache-Control"] = "no-store"
     return await member_capabilities(str(user.uid), str(member_id))
+
+
+@health_vision.get("/members/{member_id}/readiness", response_model=HealthMemberReadiness)
+async def health_member_readiness(member_id: UUID, response: Response, user: User = Depends(get_required_user)):
+    """读取业务入口及其依赖缺项，只提供当前授权允许的人工路径。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await member_readiness(str(user.uid), str(member_id))
 
 
 def require_request_key(request_id: UUID, header: str | None):
