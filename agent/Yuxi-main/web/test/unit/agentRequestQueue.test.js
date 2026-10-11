@@ -332,19 +332,20 @@ for (const action of ['resumeCurrentRunForVisiblePage', 'selectChat']) {
     const deps = {
       currentChatId: { value: 'thread-recovery' }, currentThreadId: { value: 'thread-recovery' },
       currentAgentId: { value: 'health-consultation' }, threadCreationInFlight: { value: false },
+      threadSelectionVersion: 0, userStore: { uid: 'synthetic-user', isLoggedIn: true }, initializedThreadId: { value: '' },
       threads: { value: [{ id: 'thread-recovery', agent_id: 'health-consultation' }] }, props: { singleMode: true },
       AgentValidator: { validateAgentIdWithError: () => true }, handleValidationError: assert.fail,
       withConfigNoticeSync: async callback => callback(), setCurrentThreadId: () => {}, syncThreadConfigSnapshot: () => {},
       chatUIStore: {}, fetchThreadMessages: async () => {}, chatThreadsStore: { markThreadViewed: () => {} },
       nextTick: async () => {}, scrollController: { scrollToBottomStaticForce: async () => {} },
-      handleAgentStateRefresh: async () => {}, handleChatError: assert.fail,
+      handleAgentStateRefresh: async () => {}, fetchAgentState: async () => {}, fetchThreadAttachments: async () => {}, handleChatError: assert.fail,
       resolveAgentSlugForThread: () => 'health-consultation',
-      resumeActiveRunForThread: () => { calls.push('run'); return running.promise },
+      resumeActiveRunForThread: (_id, options) => { calls.push('run'); return options?.background ? undefined : running.promise },
       resumeQueuedRequests: async () => calls.push('requests'), restorePendingInterruptForThread: () => calls.push('interrupt')
     }
     const pending = chatRecoveryAction(action, deps)('thread-recovery')
     await settleRecovery()
-    assert.deepEqual(calls, ['run', 'requests'])
+    assert.deepEqual(calls, action === 'selectChat' ? ['run', 'requests', 'interrupt'] : ['run', 'requests'])
     running.resolve()
     await pending
     assert.deepEqual(calls, ['run', 'requests', 'interrupt'])

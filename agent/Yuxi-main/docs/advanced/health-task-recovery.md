@@ -63,6 +63,8 @@ SSE 已建连后的错误可以通过 `event:error` 返回，也可以使连接�
 
 Yuxi 的聊天页同时恢复活跃 Run 和排队 Request。队列流遇到 EOF 或暂时故障时，先通过既有 Request GET 查询当前 PostgreSQL 状态，再重新订阅同一 Request；连续失败按 500 毫秒起步、上限 5 秒的退避重连，最多重连五次，收到有效排队帧后清除连续失败次数。拒读、错绑 ID、切换线程或组件销毁时停止该恢复。取消或拒绝一个排队请求保持另一活跃 Run 的进度。
 
+重新打开运行中的会话时，先读取当前线程的 Agent、配置、历史、状态、附件以及活跃 Run 和排队 Request，再解除输入锁；持续 Run SSE 在后台继续，不等待执行完成。用户可以在同一线程追加排队问题，沿用服务端 FIFO。初始化读取失败时拒绝当前线程就绪，由页面既有恢复入口处理；AgentView 返回新对话草稿，健康角色仍须重新完成成员绑定。切换线程、账号或销毁组件后，旧读取不得解除当前选择的锁或覆盖其内容；任务结束后的历史与状态刷新也受此约束，包含后续排队请求派发的 Run。新增线程在服务端创建成功且创建上下文仍匹配后即可发送，附件先创建线程也使用同一入口。
+
 Run 恢复期间保留同线程的 Request 订阅；迟到的旧 Run 查询不得覆盖新任务。队列、运行及线程状态分别由现有 [Request consumer](https://github.com/shenwei8899-ctrl/HealthSwarm/blob/main/agent/Yuxi-main/web/src/composables/useAgentRequestQueue.js)、[Run consumer](https://github.com/shenwei8899-ctrl/HealthSwarm/blob/main/agent/Yuxi-main/web/src/composables/useAgentRunStream.js) 和线程 composable 拥有。健康接口封装的 `healthVisionApi.agentTask(requestId)` 查询本页健康 Agent Task；`healthVisionApi.task(taskId)` 继续查询图片识别 Task。
 
 读取排队列表期间，若同一队列已被派发、终止、取消或另一同步替换，丢弃迟到快照，避免复活旧请求并切回已结束的 Run。同 Run 重复交接保持已有存活连接；连接已停止时沿该 Run 的已消费游标恢复，避免从零追加已有过程正文。

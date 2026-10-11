@@ -189,7 +189,14 @@ cd web
 node --test --test-concurrency=1 test/unit/agentRequestQueue.test.js test/healthDietAnalysisApi.test.js test/unit/runStreamResume.test.js
 ```
 
-浏览器验收使用本轮合成账号和真实隔离 API/Worker，通过仅本地一次性断流代理在收到 `queued` 后关闭同 Request 连接，再核对实际 Request GET、重订阅、Run 交接及最终同 Request 的 PG 结果。代理不进入部署或源码装配，日志只记录方法、ID、状态及游标；完成后删除凭据和所属合成数据。正式小程序、真机及健康业务卡片的展示单独验收；现有路由初始化期间禁止发送新输入的交互限制仍保留。
+浏览器断流验收使用本轮合成账号和真实隔离 API/Worker，通过仅本地一次性断流代理在收到 `queued` 后关闭同 Request 连接，再核对实际 Request GET、重订阅、Run 交接及最终同 Request 的 PG 结果。代理不进入部署或源码装配，日志只记录方法、ID、状态及游标；完成后删除凭据和所属合成数据。正式小程序、真机及健康业务卡片的展示单独验收。
+
+恢复会话的输入初始化另外验证：用本地合成回放 gate 保持第一条真实 Worker Run 为 running，重新进入该线程；在有限的线程与 PG 状态读取完成后追加第二条问题并取消第三条排队请求。释放 gate 后核对两条完成 Request 各自唯一的 Run、Attempt、权威 Message，取消项没有 Run。实际组件测试覆盖 A→B→A、账号与销毁、迟到 Agent/历史/状态/附件、初始读取失败及新建线程；移除对应新增保护的内存负控必须命中目标断言。gate 及凭据仅存在于隔离测试装配，完成后核对本轮所属 PG、Redis、工作区与配置恢复。
+
+```bash
+cd web
+node --test --test-concurrency=1 test/unit/restoredChatInput.test.js test/unit/conversationModelBinding.test.js test/unit/runStreamResume.test.js test/unit/agentRequestQueue.test.js
+```
 
 ## 饮食识图与咨询联合合成 E2E
 

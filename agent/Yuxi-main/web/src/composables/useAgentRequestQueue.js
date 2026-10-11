@@ -56,13 +56,18 @@ export function useAgentRequestQueue({
   }
 
   /** 仅接收同线程、同队列投影发起的快照，避免迟到读复活已派发请求。 */
-  const syncQueuedRequests = async (threadId, agentSlug) => {
+  const syncQueuedRequests = async (
+    threadId,
+    agentSlug,
+    { isCurrent = () => true, required = false } = {}
+  ) => {
     const ts = getThreadState(threadId)
     if (!ts) return
     const queuedAtRead = ts.queuedRequests
     try {
       const resp = await agentApi.listThreadQueuedRequests(threadId, agentSlug)
-      if (getThreadState(threadId) !== ts || ts.queuedRequests !== queuedAtRead) return
+      if (!isCurrent() || getThreadState(threadId) !== ts || ts.queuedRequests !== queuedAtRead)
+        return
       const requests = resp?.requests || []
       const knownIds = new Set(requests.map((request) => request.request_id))
       ts.queuedRequests = [
@@ -79,6 +84,7 @@ export function useAgentRequestQueue({
       ]
       ts.queueSnapshot = resp?.queue || { ...IDLE_QUEUE_SNAPSHOT }
     } catch (e) {
+      if (required) throw e
       console.warn('Failed to sync queued requests:', e)
     }
   }
@@ -93,10 +99,15 @@ export function useAgentRequestQueue({
   }
 
   /** 同步前保留本地请求，同步后订阅服务端新增项。 */
-  const resumeQueuedRequests = async (threadId, agentSlug) => {
-    if (!threadId || !agentSlug) return
+  const resumeQueuedRequests = async (
+    threadId,
+    agentSlug,
+    { isCurrent = () => true, required = false } = {}
+  ) => {
+    if (!threadId || !agentSlug || !isCurrent()) return
     subscribeQueuedRequests(threadId)
-    await syncQueuedRequests(threadId, agentSlug)
+    await syncQueuedRequests(threadId, agentSlug, { isCurrent, required })
+    if (!isCurrent()) return
     subscribeQueuedRequests(threadId)
   }
 

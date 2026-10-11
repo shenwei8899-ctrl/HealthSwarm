@@ -43,7 +43,7 @@ test('发送当前展示模型并在请求被接受后同步 Conversation metada
 
   assert.match(
     sendBlock,
-    /const modelSpec = isHealthRole\.value \? null : currentModelSpec\.value \|\| null/
+    /const modelSpec = healthRole \? null : currentModelSpec\.value \|\| null/
   )
   assert.match(sendBlock, /model_spec: modelSpec/)
   assert.match(sendBlock, /status !== 'rejected' && modelSpec/)
@@ -71,7 +71,7 @@ test('健康绑定会话发送 null 由后台选批准模型，不沿用系统�
   const requestModel = new Function(
     'isHealthRole',
     'currentModelSpec',
-    `${declaration}\nreturn modelSpec`
+    `const healthRole = isHealthRole.value;\n${declaration}\nreturn modelSpec`
   )
   const wrongDefault = ref('synthetic-wrong-system/default')
   for (const slug of [
@@ -98,7 +98,7 @@ test('健康咨询首条消息不调用普通标题模型，固定标题不变�
     source.indexOf('const handleDirectSteer')
   )
   const titleBlock = send.slice(
-    send.indexOf('  if (!isHealthRole.value &&'),
+    send.indexOf('  if (!healthRole &&'),
     send.indexOf('  const requestId = createClientRequestId()')
   )
   assert.ok(titleBlock.includes('agentApi.generateTitle'), '执行真实首次发送标题路径')
@@ -112,7 +112,7 @@ test('健康咨询首条消息不调用普通标题模型，固定标题不变�
     'agentApi',
     'configStore',
     'chatThreadsStore',
-    titleBlock
+    `const healthRole = isHealthRole.value;\n${titleBlock}`
   )
   const args = [
     ref({ 'synthetic-thread': [] }),
@@ -147,7 +147,7 @@ test('路由选择即使已预写当前线程也会加载消息', () => {
     routeSelectionBlock,
     /if \(currentThreadId\.value === threadId\) \{\s*return true\s*\}/
   )
-  assert.match(routeSelectionBlock, /await selectChat\(threadId\)/)
+  assert.match(routeSelectionBlock, /return await selectChat\(threadId, selectionVersion\)/)
 })
 
 test('路由同步和初始化未完成时页面禁用发送，直接调用发送处理也停止', async () => {
@@ -167,6 +167,8 @@ test('路由同步和初始化未完成时页面禁用发送，直接调用发�
     'currentAgent',
     'sendCooldownActive',
     'props',
+    'currentChatId',
+    'initializedThreadId',
     'isWaitingForUserAction',
     'startSendCooldown',
     `${sendGuard}\nstartSendCooldown()`
@@ -204,6 +206,8 @@ test('路由同步和初始化未完成时页面禁用发送，直接调用发�
         ref({ id: 'health-consultation' }),
         ref(false),
         { sendDisabled: received },
+        ref('health-thread'),
+        ref('health-thread'),
         ref(false),
         () => {
           started = true

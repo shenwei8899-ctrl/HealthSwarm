@@ -158,6 +158,7 @@ const router = useRouter()
 const { agents, selectedAgentId, isLoadingConfig } = storeToRefs(agentStore)
 
 const syncingRouteThread = ref(false)
+let routeThreadSyncVersion = 0
 
 const getRouteThreadId = () => {
   const value = route.params.thread_id
@@ -184,21 +185,27 @@ const syncSelectedThreadFromRoute = async () => {
   if (!chatComponent?.selectThreadFromRoute) return
 
   const threadId = getRouteThreadId()
+  const syncVersion = ++routeThreadSyncVersion
+  const isCurrentSync = () =>
+    syncVersion === routeThreadSyncVersion && getRouteThreadId() === threadId
   syncingRouteThread.value = true
   try {
     if (!threadId && !agentStore.isInitialized) {
       await agentStore.initialize()
     }
+    if (!isCurrentSync()) return
 
     const ok = await chatComponent.selectThreadFromRoute(threadId)
+    if (!isCurrentSync()) return
     if (ok === null) return
     if (threadId && !ok) {
       await router.replace({ name: 'AgentComp' })
     }
   } catch (error) {
+    if (!isCurrentSync()) return
     handleChatError(error, 'load')
   } finally {
-    syncingRouteThread.value = false
+    if (isCurrentSync()) syncingRouteThread.value = false
   }
 }
 

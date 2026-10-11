@@ -43,7 +43,7 @@
 
 任务输入、结果分类、安全错误、七用途模型可用原因和平台 readiness 分别由当前 DTO、配置服务和系统就绪接口拥有。当前成员及任务依赖的能力汇总见[能力 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-member-capabilities.md)，饮食、草稿和任务列表的当前授权分页合同见[分页 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-meal-plan-pagination.md)。这些接口交付与正式客户端消费验收分别记录。
 
-排队 Request 重订阅、Run 游标恢复及 Task GET 兜底沿用既有事实 Owner，接入步骤见[任务恢复参考](../Yuxi-main/docs/advanced/health-task-recovery.md)。Yuxi 聊天页补齐断流后的当前状态回读、有限重连和 Run/Request 并行恢复；正式小程序仍需对接健康结果卡片、业务结果失效、追问、取消和专业等待的具体展示并完成真机验收，该范围由同事负责。
+排队 Request 重订阅、Run 游标恢复及 Task GET 兜底沿用既有事实 Owner，接入步骤见[任务恢复参考](../Yuxi-main/docs/advanced/health-task-recovery.md)。Yuxi 聊天页补齐断流后的当前状态回读、有限重连和 Run/Request 并行恢复；恢复运行中的线程在完成当前绑定及初始状态读取后可以追加排队问题，持续 SSE 不占用输入初始化锁。正式小程序仍需对接健康结果卡片、业务结果失效、追问、取消和专业等待的具体展示并完成真机验收，该范围由同事负责。
 
 ## 待对接清单
 

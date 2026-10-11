@@ -977,6 +977,16 @@ const { agents, selectedAgentId, agentConfig, configurableItems, availableKnowle
   storeToRefs(agentStore)
 const { threads, currentThreadId, currentThread, threadCreationInFlight } =
   storeToRefs(chatThreadsStore)
+const initializedThreadId = ref('')
+let threadSelectionVersion = 0
+
+/** HTTP 读取只发布到发起时的选择与账号，包含后续排队 Run 的刷新。 */
+const captureThreadSelection = () => {
+  const selectionVersion = threadSelectionVersion
+  const uid = userStore.uid
+  return () =>
+    selectionVersion === threadSelectionVersion && userStore.uid === uid && userStore.isLoggedIn
+}
 
 // ==================== LOCAL CHAT & UI STATE ====================
 // 输入草稿按线程保存：初始按当前线程还原，后续输入实时写入对应线程
@@ -2505,6 +2515,7 @@ const isSendButtonDisabled = computed(() => {
   return (
     sendCooldownActive.value ||
     props.sendDisabled ||
+    (currentChatId.value && initializedThreadId.value !== currentChatId.value) ||
     isWaitingForUserAction.value ||
     (!userInput.value && !isProcessing.value) ||
     !currentAgent.value
@@ -2813,6 +2824,7 @@ onDeactivated(() => {
 })
 
 onUnmounted(() => {
+  threadSelectionVersion += 1
   stopReplyElapsedTimer({ reset: true })
   if (typeof document !== 'undefined') {
     document.removeEventListener('visibilitychange', handlePageVisibilityChange)
@@ -2868,8 +2880,9 @@ const createThread = async (agentId, title = '新的对话', projectId = '', req
 }
 
 // 获取线程消息
-const fetchThreadMessages = async ({ agentId, threadId, delay = 0 }) => {
+const fetchThreadMessages = async ({ agentId, threadId, delay = 0, isCurrent = () => true }) => {
   if (!threadId || !agentId) return
+  const selectionIsCurrent = captureThreadSelection()
 
   // 如果指定了延迟，等待指定时间（用于确保后端数据库事务提交）
   if (delay > 0) {
@@ -2878,11 +2891,14 @@ const fetchThreadMessages = async ({ agentId, threadId, delay = 0 }) => {
 
   try {
     const response = await agentApi.getAgentHistory(threadId)
+    if (!isCurrent() || !selectionIsCurrent()) return false
     const history = response.history || []
     threadMessages.value[threadId] = history
     threadRuns.value[threadId] = response.runs
     chatThreadsStore.upsertThread(response.thread)
+    return true
   } catch (error) {
+    if (!isCurrent() || !selectionIsCurrent()) return false
     handleChatError(error, 'load')
     throw error
   }
@@ -2896,14 +2912,21 @@ const promoteDraftSelection = (selectionByThread, threadId) => {
   delete selectionByThread[DRAFT_MODEL_KEY]
 }
 
-const fetchThreadAttachments = async (threadId) => {
+const fetchThreadAttachments = async (
+  threadId,
+  { isCurrent = () => true, required = false } = {}
+) => {
   if (!threadId) return
+  const selectionIsCurrent = captureThreadSelection()
   try {
     const response = await threadApi.getThreadAttachments(threadId)
+    if (!isCurrent() || !selectionIsCurrent()) return
     threadAttachmentsMap.value[threadId] = Array.isArray(response?.attachments)
       ? response.attachments
       : []
   } catch (error) {
+    if (!isCurrent() || !selectionIsCurrent()) return
+    if (required) throw error
     console.warn('Failed to fetch thread attachments:', error)
     threadAttachmentsMap.value[threadId] = []
   }
@@ -2922,8 +2945,13 @@ const invalidateAgentStateRequest = (threadId) => {
   threadState.agentStateRequestVersion = (threadState.agentStateRequestVersion || 0) + 1
 }
 
-const fetchAgentState = async (agentId, threadId, { required = false } = {}) => {
+const fetchAgentState = async (
+  agentId,
+  threadId,
+  { required = false, failOnError = false, isCurrent = () => true } = {}
+) => {
   if (!threadId) return false
+  const selectionIsCurrent = captureThreadSelection()
   const targetState = getThreadState(threadId)
   if (!targetState) return false
   const requestVersion = (targetState.agentStateRequestVersion || 0) + 1
@@ -2932,7 +2960,13 @@ const fetchAgentState = async (agentId, threadId, { required = false } = {}) => 
   try {
     const res = await agentApi.getAgentState(threadId)
     const latestState = getThreadState(threadId)
-    if (!latestState || latestState.agentStateRequestVersion !== requestVersion) return false
+    if (
+      !isCurrent() ||
+      !selectionIsCurrent() ||
+      !latestState ||
+      latestState.agentStateRequestVersion !== requestVersion
+    )
+      return false
 
     latestState.agentState = res.agent_state || null
     const pendingInterrupt = extractPendingInterrupt(res.interrupt, threadId)
@@ -2954,7 +2988,8 @@ const fetchAgentState = async (agentId, threadId, { required = false } = {}) => 
     }
     return true
   } catch (error) {
-    if (required) throw error
+    if (!isCurrent() || !selectionIsCurrent()) return false
+    if (required || failOnError) throw error
     return false
   }
 }
@@ -2989,6 +3024,7 @@ const createActiveThread = async (title = '新的对话') => {
     if (!accepted) throw new Error('新对话上下文已变化，请重新发送或添加附件')
 
     threadCreationRequestId.value = ''
+    initializedThreadId.value = thread.id
     setCurrentThreadId(thread.id, { force: true })
     return thread.id
   } finally {
@@ -3196,7 +3232,7 @@ const getFirstNonPinnedChat = (chatList) => {
   return chatList.find((chat) => !chat.is_pinned) || chatList[0]
 }
 
-const selectChat = async (chatId) => {
+const selectChat = async (chatId, selectionVersion = ++threadSelectionVersion) => {
   if (threadCreationInFlight.value) {
     message.info('正在创建新对话，请稍候')
     return false
@@ -3204,14 +3240,20 @@ const selectChat = async (chatId) => {
   const targetChat = threads.value.find((chat) => chat.id === chatId) || null
   const targetAgentId = targetChat?.agent_id || currentAgentId.value
   const previousThreadId = currentThreadId.value
+  const userId = userStore.uid
+  const isLatestSelection = () =>
+    selectionVersion === threadSelectionVersion && userStore.uid === userId && userStore.isLoggedIn
+  const isCurrentSelection = () => isLatestSelection() && currentThreadId.value === chatId
 
   if (!targetAgentId) {
     handleValidationError('选择对话失败：缺少智能体信息')
-    return
+    return false
   }
 
   if (!AgentValidator.validateAgentIdWithError(targetAgentId, '选择对话', handleValidationError))
-    return
+    return false
+
+  initializedThreadId.value = ''
 
   // 中断之前线程的流式输出（如果存在）
   if (previousThreadId && previousThreadId !== chatId) {
@@ -3234,46 +3276,78 @@ const selectChat = async (chatId) => {
         targetChat?.agent_id &&
         targetChat.agent_id !== currentAgentId.value
       ) {
+        // 详情可以迟到，只有当前选择才把已缓存配置写入共享 Agent Store。
+        await agentStore.fetchAgentDetail(targetChat.agent_id)
+        if (!isCurrentSelection()) return
         await agentStore.selectAgent(targetChat.agent_id)
       }
 
+      if (!isCurrentSelection()) return
       syncThreadConfigSnapshot(chatId)
     })
   } catch (error) {
+    if (!isCurrentSelection()) return null
     setCurrentThreadId(previousThreadId)
     handleChatError(error, 'load')
-    return
+    return false
   }
+
+  if (!isCurrentSelection()) return null
 
   chatUIStore.isLoadingMessages = true
   try {
-    await fetchThreadMessages({ agentId: targetAgentId, threadId: chatId })
+    await fetchThreadMessages({
+      agentId: targetAgentId,
+      threadId: chatId,
+      isCurrent: isCurrentSelection
+    })
+    if (!isCurrentSelection()) return null
     void chatThreadsStore.markThreadViewed(chatId)
   } catch (error) {
+    if (!isCurrentSelection()) return null
     handleChatError(error, 'load')
+    return false
   } finally {
-    chatUIStore.isLoadingMessages = false
+    if (isCurrentSelection()) chatUIStore.isLoadingMessages = false
   }
 
   await nextTick()
+  if (!isCurrentSelection()) return null
   await scrollController.scrollToBottomStaticForce()
-  // await fetchAgentState(targetAgentId, chatId)
-  await handleAgentStateRefresh(chatId)
-  syncThreadConfigSnapshot(chatId, { overwrite: false })
-  await Promise.all([
-    resumeActiveRunForThread(chatId),
-    resumeQueuedRequests(chatId, resolveAgentSlugForThread(chatId))
-  ])
+  try {
+    await Promise.all([
+      fetchAgentState(targetAgentId, chatId, { failOnError: true, isCurrent: isCurrentSelection }),
+      fetchThreadAttachments(chatId, { required: true, isCurrent: isCurrentSelection })
+    ])
+    if (!isCurrentSelection()) return null
+    syncThreadConfigSnapshot(chatId, { overwrite: false })
+    await Promise.all([
+      resumeActiveRunForThread(chatId, { background: true, isCurrent: isCurrentSelection }),
+      resumeQueuedRequests(chatId, targetAgentId, { required: true, isCurrent: isCurrentSelection })
+    ])
+  } catch (error) {
+    if (!isCurrentSelection()) return null
+    handleChatError(error, 'load')
+    return false
+  }
+  if (!isCurrentSelection()) return null
   restorePendingInterruptForThread(chatId)
   await scrollController.scrollToBottomStaticForce()
+  if (!isCurrentSelection()) return null
+  initializedThreadId.value = chatId
   return true
 }
 
 const selectThreadFromRoute = async (threadId) => {
   if (threadCreationInFlight.value) return null
+  const selectionVersion = ++threadSelectionVersion
+  const userId = userStore.uid
+  const isCurrentSelection = () =>
+    selectionVersion === threadSelectionVersion && userStore.uid === userId && userStore.isLoggedIn
   if (!agentStore.isInitialized) {
     await initAll()
   }
+  if (!isCurrentSelection()) return null
 
   if (!threadId) {
     const previousThreadId = currentThreadId.value
@@ -3284,20 +3358,21 @@ const selectThreadFromRoute = async (threadId) => {
     }
     resetAgentPanelState()
     setCurrentThreadId(null)
+    initializedThreadId.value = ''
     return true
   }
 
   if (!threads.value.length || !threads.value.find((thread) => thread.id === threadId)) {
     await loadChatsList()
   }
+  if (!isCurrentSelection()) return null
 
   const targetThread = threads.value.find((thread) => thread.id === threadId)
   if (!targetThread) {
     return false
   }
 
-  await selectChat(threadId)
-  return true
+  return await selectChat(threadId, selectionVersion)
 }
 
 const handleSendMessage = async ({ images = [], queuePolicy = 'enqueue' } = {}) => {
@@ -3308,6 +3383,7 @@ const handleSendMessage = async ({ images = [], queuePolicy = 'enqueue' } = {}) 
     !currentAgent.value ||
     sendCooldownActive.value ||
     props.sendDisabled ||
+    (currentChatId.value && initializedThreadId.value !== currentChatId.value) ||
     isWaitingForUserAction.value
   )
     return
@@ -3328,9 +3404,12 @@ const handleSendMessage = async ({ images = [], queuePolicy = 'enqueue' } = {}) 
     // 该线程由草稿发送创建，清理新建对话草稿，避免已发送文本再次还原
     threadDraftSession.clearDraftThread()
   }
+  const agentSlug = resolveAgentSlugForThread(threadId)
+  const healthRole = isHealthRole.value
   // 普通对话提交展示模型；健康专属咨询由后端选择批准模型，避免系统默认值覆盖。
-  const modelSpec = isHealthRole.value ? null : currentModelSpec.value || null
+  const modelSpec = healthRole ? null : currentModelSpec.value || null
   const toolApprovalMode = currentToolApprovalMode.value
+  const pendingAttachments = [...currentPendingThreadAttachments.value]
 
   userInput.value = ''
 
@@ -3345,13 +3424,12 @@ const handleSendMessage = async ({ images = [], queuePolicy = 'enqueue' } = {}) 
     hideApprovalState()
   }
 
-  const pendingAttachments = [...currentPendingThreadAttachments.value]
   const pendingAttachmentFileIds = pendingAttachments
     .map((attachment) => attachment.file_id)
     .filter(Boolean)
 
   // 健康会话保留服务器固定标题，不能把首条健康问题发送到普通标题模型。
-  if (!isHealthRole.value && (threadMessages.value[threadId] || []).length === 0) {
+  if (!healthRole && (threadMessages.value[threadId] || []).length === 0) {
     const autoTitle = text.replace(/\s+/g, ' ').trim().slice(0, 2000)
     if (autoTitle) {
       void (async () => {
@@ -3400,7 +3478,7 @@ const handleSendMessage = async ({ images = [], queuePolicy = 'enqueue' } = {}) 
   try {
     const runResp = await agentApi.createAgentRun({
       query: text,
-      agent_slug: currentAgentId.value,
+      agent_slug: agentSlug,
       thread_id: threadId,
       meta: {
         request_id: requestId,
