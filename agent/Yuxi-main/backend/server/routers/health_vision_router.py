@@ -135,6 +135,10 @@ from yuxi.services.health_vision_types import (
     DraftPatch,
     FoodInput,
     GrantInput,
+    HealthGrantResult,
+    HealthMemberCreateResult,
+    HealthMemberSummary,
+    HealthProcessingConsentResult,
     HealthDTO,
     HealthVisionError,
     MemberInput,
@@ -854,25 +858,25 @@ async def configure(data: VisionConfigurationInput, user: User = Depends(get_adm
     return await service.configure(user.uid, data)
 
 
-@health_vision.get("/members")
+@health_vision.get("/members", response_model=list[HealthMemberSummary])
 async def members(user: User = Depends(get_required_user)):
     """列出当前账号的授权成员。"""
     return await service.members(user.uid)
 
 
-@health_vision.post("/members", status_code=201)
+@health_vision.post("/members", status_code=201, response_model=HealthMemberCreateResult)
 async def create_member(data: MemberInput, user: User = Depends(get_required_user)):
     """创建明确获得代理依据的成员档案。"""
     return await service.create_member(user.uid, data)
 
 
-@health_vision.put("/members/{member_id}/grants")
+@health_vision.put("/members/{member_id}/grants", response_model=HealthGrantResult)
 async def grant(member_id: UUID, data: GrantInput, user: User = Depends(get_required_user)):
     """授予或撤回成员访问范围。"""
     return await service.grant(user.uid, str(member_id), data)
 
 
-@health_vision.post("/members/{member_id}/processing-consents")
+@health_vision.post("/members/{member_id}/processing-consents", response_model=HealthProcessingConsentResult)
 async def consent(member_id: UUID, data: ConsentInput, user: User = Depends(get_required_user)):
     """按用途和政策记录处理同意或撤回。"""
     return await service.consent(user.uid, str(member_id), data)

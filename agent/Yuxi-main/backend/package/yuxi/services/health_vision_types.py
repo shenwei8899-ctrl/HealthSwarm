@@ -52,6 +52,22 @@ class MemberInput(HealthDTO):
     authorized: Literal[True]
 
 
+class HealthMemberSummary(HealthDTO):
+    """成员列表保留当前账号的归属和授权摘要。"""
+
+    id: UUID
+    display_name: str
+    relationship_label: str
+    is_owner: bool
+    scopes: list[str]
+
+
+class HealthMemberCreateResult(HealthDTO):
+    """建档只公开新健康成员 ID。"""
+
+    id: UUID
+
+
 class DietLogRecord(HealthDTO):
     """确认事务保存的饮食快照及源版本。"""
 
@@ -115,11 +131,23 @@ class GrantInput(HealthDTO):
     ]
 
 
+class HealthGrantResult(HealthDTO):
+    """授权事务成功时固定返回已保存。"""
+
+    saved: Literal[True]
+
+
 class ConsentInput(HealthDTO):
     purpose: Literal["report", "meal", "consultation", "meal_plan", "diet_analysis", "quality_review", "purchase"]
     accepted: bool
     processor: str = Field(min_length=1, max_length=160)
     policy_version: str = Field(min_length=1, max_length=80)
+
+
+class HealthProcessingConsentResult(HealthDTO):
+    """明确返回本次用途同意或撤回的布尔值。"""
+
+    accepted: bool
 
 
 class ConsultationInput(HealthDTO):
