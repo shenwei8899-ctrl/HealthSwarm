@@ -51,9 +51,11 @@ async def test_actual_model_entry_rejects_changed_body_with_real_source_identity
         reviewed_at=timestamp,
         valid_until=datetime(2099, 1, 1),
         revoked_at=None,
+        reviewed_scope=None,
+        scope_hash=None,
     )
     source.content_hash = hashlib.sha256(source.content.encode()).hexdigest()
-    citation = SimpleNamespace(id="synthetic-citation", content_hash=source.content_hash)
+    citation = SimpleNamespace(id="synthetic-citation", content_hash=source.content_hash, scope_hash=None)
     session = SimpleNamespace(get=AsyncMock(), execute=AsyncMock(return_value=[(citation, source)]))
     session.get.side_effect = lambda model, identity: (
         record if model in (HealthObservation, DietLog) else SimpleNamespace(draft_id="synthetic-draft")

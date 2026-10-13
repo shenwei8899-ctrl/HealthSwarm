@@ -5,6 +5,9 @@ from yuxi.agents.buildin.health_meal_planner.graph import HealthMealPlannerAgent
 from yuxi.agents.buildin.health_diet_analyst.graph import HealthDietAnalystAgent
 from yuxi.agents.buildin.health_quality.graph import HealthQualityAgent
 from yuxi.agents.buildin.health_purchase.graph import HealthPurchaseAgent
+from yuxi.agents.buildin.health_blood_glucose.graph import HealthBloodGlucoseAgent
+from yuxi.agents.buildin.health_blood_lipids.graph import HealthBloodLipidsAgent
+from yuxi.agents.buildin.health_blood_pressure.graph import HealthBloodPressureAgent
 from yuxi.agents.buildin.subagent.graph import SubAgentBackend
 
 BUILTIN_BACKENDS: dict[str, type[BaseAgent]] = {
@@ -15,6 +18,9 @@ BUILTIN_BACKENDS: dict[str, type[BaseAgent]] = {
     "HealthDietAnalystAgent": HealthDietAnalystAgent,
     "HealthQualityAgent": HealthQualityAgent,
     "HealthPurchaseAgent": HealthPurchaseAgent,
+    "HealthBloodGlucoseAgent": HealthBloodGlucoseAgent,
+    "HealthBloodLipidsAgent": HealthBloodLipidsAgent,
+    "HealthBloodPressureAgent": HealthBloodPressureAgent,
 }
 
 

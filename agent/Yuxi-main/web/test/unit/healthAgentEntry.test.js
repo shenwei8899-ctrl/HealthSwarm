@@ -46,6 +46,9 @@ test('普通智能体选择把所有健康角色引导到成员入口，普通�
     'health-meal-planner',
     'health-diet-analyst',
     'health-quality',
+    'health-blood-glucose',
+    'health-blood-lipids',
+    'health-blood-pressure',
     'default-chatbot'
   ]) {
     const selected = [],
@@ -88,6 +91,9 @@ test('健康角色路由查询不能创建草稿，跳转后清理不能覆盖�
     'health-meal-planner',
     'health-diet-analyst',
     'health-quality',
+    'health-blood-glucose',
+    'health-blood-lipids',
+    'health-blood-pressure',
     'default-chatbot'
   ]) {
     const calls = []

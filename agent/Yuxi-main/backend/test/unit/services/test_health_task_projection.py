@@ -43,6 +43,9 @@ def purchase_choice(*, confirmed=False):
     "kind",
     [
         "consultation",
+        "blood_glucose_review",
+        "blood_lipids_review",
+        "blood_pressure_review",
         "meal_preview",
         "initial_meal_preview",
         "family_meal_revision",

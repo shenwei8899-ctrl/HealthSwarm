@@ -2,7 +2,11 @@
 对话域持久化 Repository（Async）
 """
 
-from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS, STRUCTURED_HEALTH_AGENTS
+from yuxi.repositories.health_consultation_repository import (
+    EDUCATION_HEALTH_AGENTS,
+    HEALTH_AGENT_BACKENDS,
+    STRUCTURED_HEALTH_AGENTS,
+)
 import json
 import uuid as uuid_lib
 from collections.abc import AsyncIterator
@@ -627,7 +631,7 @@ class ConversationRepository:
         return items, has_more
 
     async def iter_consultation_search_matches(
-        self, *, uid: str, query: str, exclude_sources: tuple[str, ...] = ()
+        self, *, uid: str, query: str, agent_id: str | None = None, exclude_sources: tuple[str, ...] = ()
     ) -> AsyncIterator[tuple[Conversation, Message]]:
         """分批读取咨询搜索候选，公开性校验由 service 在计数和分页前执行。"""
         result = await self.db.stream(
@@ -636,7 +640,7 @@ class ConversationRepository:
             .where(
                 Conversation.uid == str(uid),
                 Conversation.status == "active",
-                Conversation.agent_id == "health-consultation",
+                Conversation.agent_id.in_((agent_id,) if agent_id is not None else EDUCATION_HEALTH_AGENTS),
                 *self._exclude_source_conditions(exclude_sources),
                 *self._message_search_conditions(query),
             )

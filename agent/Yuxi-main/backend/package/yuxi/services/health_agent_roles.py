@@ -7,6 +7,14 @@ PLANNER_SKILLS = ("family-meal-planner",)
 ANALYST_SKILLS = ("family-diet-analyst",)
 QUALITY_SKILLS = ("family-quality-review",)
 PURCHASE_SKILLS = ("family-purchase",)
+BLOOD_GLUCOSE_SKILLS = ("family-blood-glucose",)
+BLOOD_LIPIDS_SKILLS = ("family-blood-lipids",)
+BLOOD_PRESSURE_SKILLS = ("family-blood-pressure",)
+INDICATOR_AGENT_SKILLS = {
+    "health-blood-glucose": BLOOD_GLUCOSE_SKILLS,
+    "health-blood-lipids": BLOOD_LIPIDS_SKILLS,
+    "health-blood-pressure": BLOOD_PRESSURE_SKILLS,
+}
 
 
 def consultation_skill_snapshot(skills=CONSULTATION_SKILLS):
@@ -115,9 +123,30 @@ def health_agent_roles():
             },
             {
                 "role": "health-glucose",
-                "name": "控糖管理",
-                "status": "not_implemented",
+                "name": "血糖记录助手",
+                "status": "partial",
+                "entry_agent": "health-blood-glucose",
+                "skills": list(BLOOD_GLUCOSE_SKILLS),
+                "implemented_scope": "独立固定成员咨询、本人实测血糖回顾、测量条件追问、审核知识解释与来源重验",
                 "missing": ["21天计划", "打卡反馈", "审核控糖规则"],
+            },
+            {
+                "role": "health-blood-lipids",
+                "name": "血脂记录助手",
+                "status": "partial",
+                "entry_agent": "health-blood-lipids",
+                "skills": list(BLOOD_LIPIDS_SKILLS),
+                "implemented_scope": "独立固定成员咨询、本人同条血脂四项回顾、资料追问、审核知识解释与来源重验",
+                "missing": ["审核知识生产数据", "真实模型质量验收"],
+            },
+            {
+                "role": "health-blood-pressure",
+                "name": "血压记录助手",
+                "status": "partial",
+                "entry_agent": "health-blood-pressure",
+                "skills": list(BLOOD_PRESSURE_SKILLS),
+                "implemented_scope": "独立固定成员咨询、本人成对血压回顾、资料追问、审核知识解释与来源重验",
+                "missing": ["审核知识生产数据", "真实模型质量验收"],
             },
             {
                 "role": "health-purchase",

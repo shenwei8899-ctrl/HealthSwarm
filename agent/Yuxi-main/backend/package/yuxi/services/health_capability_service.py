@@ -4,6 +4,9 @@ from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.health_consultation_repository import (
     ANALYST_SLUG,
     CONSULTATION_SLUG,
+    GLUCOSE_SLUG,
+    LIPIDS_SLUG,
+    PRESSURE_SLUG,
     HEALTH_AGENT_BACKENDS,
     PLANNER_SLUG,
     PURCHASE_SLUG,
@@ -18,6 +21,7 @@ from yuxi.services.health_agent_roles import (
     PLANNER_SKILLS,
     PURCHASE_SKILLS,
     QUALITY_SKILLS,
+    INDICATOR_AGENT_SKILLS,
 )
 from yuxi.services.health_capability_types import (
     HealthCapabilityDependencies,
@@ -39,6 +43,7 @@ async def member_capabilities(uid: str, member_id: str) -> MemberCapabilities:
         agents, skills, purposes = {}, {}, {}
         tasks = []
         ordinary_scopes = ("ai_use", "report_view", "diet_edit")
+        indicator_scopes = ("ai_use", "profile_view")
         professional_scopes = ("ai_use", "diet_edit", "profile_view")
         selection_fields = {
             "initial_meal_preview": ("kind", "plan_date", "rule_code", "rule_version", "profile_versions", "meals"),
@@ -49,6 +54,21 @@ async def member_capabilities(uid: str, member_id: str) -> MemberCapabilities:
         }
         entries = (
             ("consultation", CONSULTATION_SLUG, CONSULTATION_SKILLS, "consultation", ordinary_scopes),
+            (
+                "blood_glucose_review",
+                GLUCOSE_SLUG,
+                INDICATOR_AGENT_SKILLS[GLUCOSE_SLUG],
+                "consultation",
+                indicator_scopes,
+            ),
+            ("blood_lipids_review", LIPIDS_SLUG, INDICATOR_AGENT_SKILLS[LIPIDS_SLUG], "consultation", indicator_scopes),
+            (
+                "blood_pressure_review",
+                PRESSURE_SLUG,
+                INDICATOR_AGENT_SKILLS[PRESSURE_SLUG],
+                "consultation",
+                indicator_scopes,
+            ),
             ("meal_preview", PLANNER_SLUG, PLANNER_SKILLS, "meal_plan", ordinary_scopes),
             ("diet_analysis", ANALYST_SLUG, ANALYST_SKILLS, "diet_analysis", ("ai_use", "diet_edit")),
             ("initial_meal_preview", PLANNER_SLUG, PLANNER_SKILLS, "meal_plan", professional_scopes),
@@ -75,6 +95,13 @@ async def member_capabilities(uid: str, member_id: str) -> MemberCapabilities:
                 capability.reason_code = "missing_scopes"
                 tasks.append(capability)
                 continue
+
+            if slug in INDICATOR_AGENT_SKILLS:
+                member = await health.authorize(member_id, uid, "profile_view")
+                if member.owner_uid != uid or member.relationship_label != "本人":
+                    capability.reason_code = "self_member_required"
+                    tasks.append(capability)
+                    continue
 
             if slug not in agents:
                 agent = await AgentRepository(session).get_visible_by_slug(slug=slug, user=user, kind="main")

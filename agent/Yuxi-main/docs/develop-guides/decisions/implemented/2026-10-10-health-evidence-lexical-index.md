@@ -16,6 +16,8 @@ Owner：backend/package/yuxi/repositories/health_evidence_repository.py
 
 ### 实现方案
 
+来源的当前领域和适用类别由[审核范围决定](2026-10-13-health-evidence-reviewed-scope.md)补充：真实 Run 角色决定进入索引的片段范围，引用另绑定范围摘要。本文拥有词法索引、有界计算、来源 proof 和既有公开读取机制。
+
 知识工具仍只接受短关键词，账号、成员、用途和执行 lease 由 consultation Owner 固定。repository（`backend/package/yuxi/repositories/health_evidence_repository.py`） 读取 PostgreSQL 当前未撤回、未过期的审核科普片段，本地 adapter（`backend/package/yuxi/services/health_evidence_index.py`） 使用已声明的 scikit-learn `TfidfVectorizer` 建立短生命周期字符 `char_wb` 1–3 稀疏索引。Unicode 词法项均须出现，再按 TF-IDF 相关度与稳定 ID 排序返回最多五个命中；单字及零分合法候选保留稳定排序。已批准片段本身就是 chunk，不再次分块，不调用 embedding，不开放模型选择通用知识库。
 
 adapter 只返回 ID、版本和 hash。命中后 repository 按稳定来源 ID 顺序 fresh `FOR SHARE` 锁读，使用 `populate_existing` 避免 identity map 旧值，核对版本、hash、真实正文摘要、标题快照、撤回和 UTC 有效期。标题不在既有正文 hash 内，单独比较快照防止仅标题变化后的旧命中。缺 proof 或不符返回 `source_invalidated`，不发布索引正文；service（`backend/package/yuxi/services/health_evidence_service.py`） 在纯计算结束后重验当前 attempt，再创建同 Run 引用。

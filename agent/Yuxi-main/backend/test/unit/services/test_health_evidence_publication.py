@@ -30,8 +30,8 @@ def controlled_publication_mutation(monkeypatch):
         original = service.validate_evidence_publication
         old, new = (
             (
-                "await HealthEvidenceRepository(session).validate_citations"
-                "(ids, binding, run.uid, run_id=run.id, lock=True)",
+                "await HealthEvidenceRepository(session).validate_citations(\n"
+                "        ids, binding, run.uid, agent_slug=run.agent_slug, run_id=run.id, lock=True\n    )",
                 "return None",
             )
             if mode == "publication_gate"
@@ -45,7 +45,14 @@ def controlled_publication_mutation(monkeypatch):
         old, new = (
             (".execution_options(populate_existing=True)", ".execution_options()")
             if mode.endswith("fresh")
-            else (".with_for_update(read=True)", ".execution_options()")
+            else (
+                (
+                    ".with_for_update(read=True)"
+                    if mode == "search_share"
+                    else ".with_for_update(read=True, of=(NutritionEvidence, NutritionEvidenceCitation))"
+                ),
+                ".execution_options()",
+            )
         )
         expected = 1
     else:
@@ -66,6 +73,7 @@ def controlled_publication_mutation(monkeypatch):
 async def test_final_publication_refuses_unproved_final_body(monkeypatch, case):
     run = SimpleNamespace(
         id="run",
+        agent_slug="health-consultation",
         uid="actor",
         conversation_thread_id="thread",
         conversation_id=7,
@@ -97,6 +105,7 @@ async def test_final_publication_refuses_unproved_final_body(monkeypatch, case):
 async def test_final_publication_rechecks_only_adopted_same_run_with_lock(monkeypatch):
     run = SimpleNamespace(
         id="run",
+        agent_slug="health-consultation",
         uid="actor",
         conversation_thread_id="thread",
         conversation_id=7,
@@ -112,7 +121,9 @@ async def test_final_publication_rechecks_only_adopted_same_run_with_lock(monkey
     require.assert_awaited_once_with(
         session, "actor", "thread", expected=run.input_payload["health_processing"], lock=True
     )
-    validate.assert_awaited_once_with([REFERENCE], binding, "actor", run_id="run", lock=True)
+    validate.assert_awaited_once_with(
+        [REFERENCE], binding, "actor", agent_slug="health-consultation", run_id="run", lock=True
+    )
     session.scalar.assert_not_awaited()
 
 
@@ -120,6 +131,7 @@ async def test_final_publication_rechecks_only_adopted_same_run_with_lock(monkey
 async def test_no_knowledge_retrieval_allows_plain_consultation(monkeypatch):
     run = SimpleNamespace(
         id="run",
+        agent_slug="health-consultation",
         uid="actor",
         conversation_thread_id="thread",
         conversation_id=7,
@@ -134,7 +146,9 @@ async def test_no_knowledge_retrieval_allows_plain_consultation(monkeypatch):
 @pytest.mark.asyncio
 async def test_publication_proof_uses_share_lock_fresh_instances_and_stable_source_order():
     content = "合成科普"
-    citation = SimpleNamespace(id=REFERENCE, run_id="run", content_hash=hashlib.sha256(content.encode()).hexdigest())
+    citation = SimpleNamespace(
+        id=REFERENCE, run_id="run", content_hash=hashlib.sha256(content.encode()).hexdigest(), scope_hash=None
+    )
     source = SimpleNamespace(
         id="source",
         title="合成科普",
@@ -145,10 +159,14 @@ async def test_publication_proof_uses_share_lock_fresh_instances_and_stable_sour
         content_hash=citation.content_hash,
         valid_until=utc_now_naive() + timedelta(days=1),
         revoked_at=None,
+        reviewed_scope=None,
+        scope_hash=None,
     )
     session = SimpleNamespace(execute=AsyncMock(return_value=[(citation, source)]))
     binding = SimpleNamespace(conversation_id=7, member_id="member")
-    await HealthEvidenceRepository(session).validate_citations([REFERENCE], binding, "actor", run_id="run", lock=True)
+    await HealthEvidenceRepository(session).validate_citations(
+        [REFERENCE], binding, "actor", agent_slug="health-consultation", run_id="run", lock=True
+    )
     statement = session.execute.await_args.args[0]
     sql = str(statement.compile(dialect=dialect()))
     assert "FOR SHARE" in sql and "ORDER BY nutrition_evidence.id, nutrition_evidence_citation.id" in sql
@@ -161,6 +179,7 @@ async def test_final_publication_propagates_current_source_or_same_run_proof_fai
     """发布不能吞掉当前权威来源拒绝并继续提交正文。"""
     run = SimpleNamespace(
         id="run",
+        agent_slug="health-consultation",
         uid="actor",
         conversation_thread_id="thread",
         conversation_id=7,
@@ -174,7 +193,9 @@ async def test_final_publication_propagates_current_source_or_same_run_proof_fai
     monkeypatch.setattr(HealthEvidenceRepository, "validate_citations", proof)
     with pytest.raises(HealthVisionError, match=code):
         await service.validate_evidence_publication(object(), run, f"候选正文[证据:{REFERENCE}]")
-    proof.assert_awaited_once_with([REFERENCE], binding, "actor", run_id="run", lock=True)
+    proof.assert_awaited_once_with(
+        [REFERENCE], binding, "actor", agent_slug="health-consultation", run_id="run", lock=True
+    )
 
 
 @pytest.mark.asyncio
@@ -183,7 +204,7 @@ async def test_locked_citation_proof_rejects_current_invalid_source_or_other_run
     """实际Repository拒绝撤回、过期、内容变化以及他Run引用。"""
     content = "当前合成知识"
     digest = hashlib.sha256(content.encode()).hexdigest()
-    citation = SimpleNamespace(id=REFERENCE, run_id="run", content_hash=digest)
+    citation = SimpleNamespace(id=REFERENCE, run_id="run", content_hash=digest, scope_hash=None)
     source = SimpleNamespace(
         id="source",
         title="合成科普",
@@ -194,6 +215,8 @@ async def test_locked_citation_proof_rejects_current_invalid_source_or_other_run
         content_hash=digest,
         valid_until=utc_now_naive() + timedelta(days=1),
         revoked_at=None,
+        reviewed_scope=None,
+        scope_hash=None,
     )
     if case == "revoked":
         source.revoked_at = utc_now_naive()
@@ -209,7 +232,7 @@ async def test_locked_citation_proof_rejects_current_invalid_source_or_other_run
     binding = SimpleNamespace(conversation_id=7, member_id="member")
     with pytest.raises(HealthVisionError, match="citation_invalid" if case == "other_run" else "source_invalidated"):
         await HealthEvidenceRepository(session).validate_citations(
-            [REFERENCE], binding, "actor", run_id="run", lock=True
+            [REFERENCE], binding, "actor", agent_slug="health-consultation", run_id="run", lock=True
         )
     statement = session.execute.await_args.args[0]
     compiled = statement.compile(dialect=dialect())
@@ -231,14 +254,16 @@ async def test_index_hit_reloads_current_source_with_share_lock_before_projectio
         content_hash=digest,
         valid_until=utc_now_naive() + timedelta(days=1),
         revoked_at=None,
+        reviewed_scope=None,
+        scope_hash=None,
     )
     session = SimpleNamespace(
-        execute=AsyncMock(return_value=[("source", "v1", digest, "合成科普", content)]),
+        execute=AsyncMock(return_value=[("source", "v1", digest, "合成科普", content, None)]),
         scalars=AsyncMock(return_value=[source]),
     )
     index = AsyncMock(return_value=[SimpleNamespace(evidence_id="source", source_version="v1", content_hash=digest)])
     monkeypatch.setattr(repository, "search_evidence_index", index)
-    assert await HealthEvidenceRepository(session).search("知识") == [source]
+    assert await HealthEvidenceRepository(session).search("知识", agent_slug="health-consultation") == [source]
     statement = session.scalars.await_args.args[0]
     sql = str(statement.compile(dialect=dialect()))
     assert "FOR SHARE" in sql and "ORDER BY nutrition_evidence.id" in sql

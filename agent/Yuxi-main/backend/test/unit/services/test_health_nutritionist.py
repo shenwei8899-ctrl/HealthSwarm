@@ -39,7 +39,7 @@ def test_fixed_skills_and_roles_do_not_publish_unimplemented_agents():
     catalog = health_agent_roles()
     assert catalog["full_health_profile_available"] is False
     roles = {role["role"]: role for role in catalog["roles"]}
-    assert len(roles) == 7
+    assert len(roles) == 9
     assert roles["health-nutritionist"]["entry_agent"] == "health-consultation"
     assert roles["health-nutritionist"]["skills"] == ["family-nutritionist"]
     assert roles["health-profile"]["owner"] == "健康档案服务"
@@ -55,7 +55,11 @@ def test_fixed_skills_and_roles_do_not_publish_unimplemented_agents():
         "SKU及包装映射",
         "库存配送价格及商城交易接口",
     ]
-    assert roles["health-glucose"]["status"] == "not_implemented" and "entry_agent" not in roles["health-glucose"]
+    assert roles["health-glucose"]["status"] == "partial"
+    assert roles["health-glucose"]["entry_agent"] == "health-blood-glucose"
+    assert roles["health-glucose"]["missing"] == ["21天计划", "打卡反馈", "审核控糖规则"]
+    for slug in ("health-blood-lipids", "health-blood-pressure"):
+        assert roles[slug]["status"] == "partial" and roles[slug]["entry_agent"] == slug
 
 
 def test_fixed_skill_snapshot_records_published_identity_and_exact_content(monkeypatch):

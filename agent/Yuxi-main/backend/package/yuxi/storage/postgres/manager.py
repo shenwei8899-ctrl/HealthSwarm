@@ -25,7 +25,7 @@ from yuxi.utils.singleton import SingletonMeta
 AGENT_RUN_TERMINAL_STATUS_SQL = ", ".join(f"'{status}'" for status in AGENT_RUN_TERMINAL_STATUSES)
 BUSINESS_SCHEMA_VERSION = 12
 KNOWLEDGE_SCHEMA_VERSION = 2
-HEALTH_SCHEMA_VERSION = 23
+HEALTH_SCHEMA_VERSION = 24
 SCHEMA_VERSION_TABLE = "yuxi_schema_migrations"
 AGENT_RUN_LEASE_SCHEMA_STATEMENTS = (
     "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS worker_id VARCHAR(128)",
@@ -568,6 +568,12 @@ class PostgresManager(metaclass=SingletonMeta):
         self._check_initialized()
         async with self.async_engine.begin() as conn:
             await conn.run_sync(lambda connection: BusinessBase.metadata.create_all(connection, tables=HEALTH_TABLES))
+            for statement in (
+                "ALTER TABLE nutrition_evidence ADD COLUMN IF NOT EXISTS reviewed_scope JSONB",
+                "ALTER TABLE nutrition_evidence ADD COLUMN IF NOT EXISTS scope_hash VARCHAR(64)",
+                "ALTER TABLE nutrition_evidence_citation ADD COLUMN IF NOT EXISTS scope_hash VARCHAR(64)",
+            ):
+                await conn.execute(text(statement))
             await conn.execute(
                 text("ALTER TABLE health_consultation ADD COLUMN IF NOT EXISTS family_planner_selection JSONB")
             )

@@ -13,6 +13,9 @@ from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.conversation_repository import ConversationRepository
 from yuxi.repositories.health_consultation_repository import (
     CONSULTATION_SLUG,
+    GLUCOSE_SLUG,
+    LIPIDS_SLUG,
+    PRESSURE_SLUG,
     HEALTH_AGENT_BACKENDS,
     PLANNER_SLUG,
     ANALYST_SLUG,
@@ -28,6 +31,7 @@ from yuxi.services.health_agent_roles import (
     ANALYST_SKILLS,
     QUALITY_SKILLS,
     PURCHASE_SKILLS,
+    INDICATOR_AGENT_SKILLS,
     consultation_skill_prompt,
     consultation_skill_snapshot,
 )
@@ -83,6 +87,22 @@ QUALITY_SKILL_SNAPSHOT = consultation_skill_snapshot(QUALITY_SKILLS)
 QUALITY_PROMPT = QUALITY_SKILL_SNAPSHOT["preloaded_skill_contents"]["family-quality-review"]
 PURCHASE_SKILL_SNAPSHOT = consultation_skill_snapshot(PURCHASE_SKILLS)
 PURCHASE_PROMPT = PURCHASE_SKILL_SNAPSHOT["preloaded_skill_contents"]["family-purchase"]
+INDICATOR_SKILL_SNAPSHOTS = {
+    slug: consultation_skill_snapshot(skills) for slug, skills in INDICATOR_AGENT_SKILLS.items()
+}
+BLOOD_GLUCOSE_PROMPT = INDICATOR_SKILL_SNAPSHOTS[GLUCOSE_SLUG]["preloaded_skill_contents"]["family-blood-glucose"]
+BLOOD_LIPIDS_PROMPT = INDICATOR_SKILL_SNAPSHOTS[LIPIDS_SLUG]["preloaded_skill_contents"]["family-blood-lipids"]
+BLOOD_PRESSURE_PROMPT = INDICATOR_SKILL_SNAPSHOTS[PRESSURE_SLUG]["preloaded_skill_contents"]["family-blood-pressure"]
+INDICATOR_PROMPTS = {
+    GLUCOSE_SLUG: BLOOD_GLUCOSE_PROMPT,
+    LIPIDS_SLUG: BLOOD_LIPIDS_PROMPT,
+    PRESSURE_SLUG: BLOOD_PRESSURE_PROMPT,
+}
+INDICATOR_TOOLS = {
+    GLUCOSE_SLUG: ("get_member_blood_glucose_records", "query_reviewed_nutrition_knowledge"),
+    LIPIDS_SLUG: ("get_member_blood_lipids_records", "query_reviewed_nutrition_knowledge"),
+    PRESSURE_SLUG: ("get_member_blood_pressure_records", "query_reviewed_nutrition_knowledge"),
+}
 
 
 async def list_consultations(uid, member_id, *, limit=20, offset=0):
@@ -163,6 +183,8 @@ async def create_consultation(
     async with pg_manager.get_async_session_context() as session:
         repo = HealthConsultationRepository(session)
         await repo.lock_request(uid, request_id)
+        if agent_slug in INDICATOR_AGENT_SKILLS:
+            await repo.authorize_indicator_member(uid, member_id, lock=True)
         binding = await repo.find_request(uid, request_id)
         old_family = getattr(binding, "family_planner_selection", None)
         old_initial = getattr(binding, "initial_planner_selection", None)
@@ -235,7 +257,7 @@ async def create_consultation(
                 raise HealthVisionError("request_conflict", "同一幂等键不能改变家庭选择", 409)
             current = await family_planner_context_in_session(session, uid, member_id, selected)
             family_binding = {"selection": chosen, "source_hash": input_fingerprint(current["sources"])}
-        else:
+        elif agent_slug not in INDICATOR_AGENT_SKILLS:
             await HealthVisionRepository(session).authorize(member_id, uid, "ai_use", lock=True)
             scopes = (
                 ("diet_edit", "profile_view")
@@ -309,9 +331,14 @@ async def create_consultation(
             conversation = await ConversationRepository(session).add_conversation(
                 uid=uid,
                 agent_id=agent_slug,
-                title={PLANNER_SLUG: "基础配餐师", ANALYST_SLUG: "饮食分析师", QUALITY_SLUG: "质量检查师"}.get(
-                    agent_slug, "成员专属营养咨询"
-                ),
+                title={
+                    PLANNER_SLUG: "基础配餐师",
+                    ANALYST_SLUG: "饮食分析师",
+                    QUALITY_SLUG: "质量检查师",
+                    GLUCOSE_SLUG: "血糖记录助手",
+                    LIPIDS_SLUG: "血脂记录助手",
+                    PRESSURE_SLUG: "血压记录助手",
+                }.get(agent_slug, "成员专属营养咨询"),
                 thread_id=str(uuid4()),
                 project_id=project.id,
             )
@@ -396,6 +423,7 @@ async def require_consultation(
         ANALYST_SLUG: ANALYST_SKILLS,
         QUALITY_SLUG: QUALITY_SKILLS,
         PURCHASE_SLUG: PURCHASE_SKILLS,
+        **INDICATOR_AGENT_SKILLS,
     }.get(conversation.agent_id, CONSULTATION_SKILLS)
     configuration = await health_vision_service.configuration(session)
     approved = configuration[purpose]
@@ -665,7 +693,9 @@ async def require_consultation_attempt(context, messages=None):
                         raise ValueError("引用标识无效")
                 except (KeyError, TypeError, ValueError):
                     raise HealthVisionError("consultation_history_invalid", "历史营养证据无法核对", 409) from None
-                await HealthEvidenceRepository(session).validate_tool_payload(payload, binding, context.uid)
+                await HealthEvidenceRepository(session).validate_tool_payload(
+                    payload, binding, context.uid, agent_slug=run.agent_slug
+                )
                 continue
             if (
                 not isinstance(message, ToolMessage)
@@ -787,7 +817,11 @@ async def prepare_consultation_context(context, db, run):
         raise HealthVisionError("policy_changed", "咨询运行缺少处理审批快照", 409)
     binding, approved = await require_consultation(db, context.uid, context.thread_id, context.model, expected=snapshot)
     context.model = approved["model"]
-    if run.agent_slug == PURCHASE_SLUG:
+    if run.agent_slug in INDICATOR_AGENT_SKILLS:
+        skill_snapshot = INDICATOR_SKILL_SNAPSHOTS[run.agent_slug]
+        skills, prompt = INDICATOR_AGENT_SKILLS[run.agent_slug], INDICATOR_PROMPTS[run.agent_slug]
+        tools = list(INDICATOR_TOOLS[run.agent_slug])
+    elif run.agent_slug == PURCHASE_SLUG:
         from yuxi.services.health_purchase_types import PURCHASE_TOOLS
 
         skill_snapshot, skills, prompt = PURCHASE_SKILL_SNAPSHOT, PURCHASE_SKILLS, PURCHASE_PROMPT

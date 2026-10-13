@@ -65,6 +65,9 @@ export function isHealthAgentId(id) {
     'health-consultation',
     'health-meal-planner',
     'health-diet-analyst',
-    'health-quality'
+    'health-quality',
+    'health-blood-glucose',
+    'health-blood-lipids',
+    'health-blood-pressure'
   ].includes(id)
 }

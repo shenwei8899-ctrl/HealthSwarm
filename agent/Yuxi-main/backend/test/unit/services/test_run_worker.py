@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import importlib
+import inspect
 import os
 import subprocess
 import sys
 from datetime import timedelta
-from types import SimpleNamespace
+from types import FunctionType, SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -15,6 +16,23 @@ import yuxi.services.run_worker as run_worker
 from arq.worker import RetryJob
 from yuxi.config import options as config_options
 from yuxi.services import task_service
+
+
+@pytest.fixture(autouse=True)
+def controlled_health_timing_mutation(monkeypatch):
+    """显式负控仅撤掉测试进程的首输出分流 guard，不改源码或运行服务。"""
+    if os.getenv("HEALTH_PUBLICATION_MUTATION") not in {"timing", "matrix"}:
+        return
+    source = inspect.getsource(run_worker.process_agent_run)
+    old = 'chunk.get("status") == "health_progress"'
+    assert source.count(old) == 1
+    original = run_worker.process_agent_run
+    scope = dict(original.__globals__)
+    exec(compile(source.replace(old, "False"), "<controlled_publication_mutation:timing>", "exec"), scope)
+    compiled = scope["process_agent_run"]
+    mutated = FunctionType(compiled.__code__, original.__globals__, original.__name__, compiled.__defaults__)
+    mutated.__kwdefaults__ = compiled.__kwdefaults__
+    monkeypatch.setattr(run_worker, "process_agent_run", mutated)
 
 
 @pytest.fixture(autouse=True)
@@ -1384,6 +1402,42 @@ def test_model_output_detection_accepts_text_reasoning_and_tool_calls_only():
     assert not run_worker._contains_model_output({"status": "metadata", "run_id": "run-1"})
     assert not run_worker._contains_model_output({"stream_event": {"type": "message_delta", "content": ""}})
     assert not run_worker._contains_model_output({"stream_event": {"type": "tool_call_delta", "args_delta": ""}})
+
+
+@pytest.mark.parametrize("model_output", [False, True])
+async def test_health_progress_marks_first_model_output_only_when_actual_candidate_starts(monkeypatch, model_output):
+    """真实 worker 分流必须识别安全标记，固定等待进度不提前记首 token。"""
+    run = _build_run()
+    run.agent_slug = "health-blood-glucose"
+    run.started_at = run_worker.utc_now_naive()
+    _patch_common(monkeypatch, run)
+    timing = AsyncMock()
+    monkeypatch.setattr(run_worker, "_record_run_timing_best_effort", timing)
+    monkeypatch.setattr(run_worker, "append_run_event", AsyncMock())
+    monkeypatch.setattr(
+        run_worker,
+        "mark_run_terminal",
+        AsyncMock(return_value=run_worker.TerminalTransition(status="completed", changed=True)),
+    )
+
+    async def stream():
+        """消费等待进度后仍无首输出；重复模型标记只能记录一次。"""
+        yield b'{"status":"health_progress","phase":"running","thread_id":"thread-1"}\n'
+        assert not any(call.args[2] == "first_output" for call in timing.await_args_list)
+        if model_output:
+            for _ in range(2):
+                yield (
+                    b'{"status":"health_progress","phase":"running",'
+                    b'"model_output_started":true,"thread_id":"thread-1"}\n'
+                )
+        yield b'{"status":"finished","thread_id":"thread-1"}\n'
+
+    monkeypatch.setattr(run_worker, "stream_agent_chat", lambda **kwargs: stream())
+    await run_worker.process_agent_run({"job_try": 1}, run.id)
+    first_outputs = [call for call in timing.await_args_list if call.args[2] == "first_output"]
+    assert len(first_outputs) == int(model_output)
+    if first_outputs:
+        assert first_outputs[0].kwargs["observed_at"] >= run.started_at
 
 
 @pytest.mark.asyncio

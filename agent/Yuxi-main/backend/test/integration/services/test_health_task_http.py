@@ -1,6 +1,7 @@
 """真实HTTP/PG核对明确角色入口、零持久缺选择及当前执行关联。"""
 
 import json
+import asyncio
 from pathlib import Path
 from uuid import uuid4
 
@@ -230,6 +231,9 @@ async def test_basic_entries_fix_roles_and_do_not_create_requests(health_http): 
     member = await create_member(client, owner["headers"])
     for task_type, slug in (
         ("consultation", "health-consultation"),
+        ("blood_glucose_review", "health-blood-glucose"),
+        ("blood_lipids_review", "health-blood-lipids"),
+        ("blood_pressure_review", "health-blood-pressure"),
         ("meal_preview", "health-meal-planner"),
         ("diet_analysis", "health-diet-analyst"),
     ):
@@ -256,6 +260,30 @@ async def test_basic_entries_fix_roles_and_do_not_create_requests(health_http): 
         )
         assert mismatch.status_code == 409 and mismatch.json()["code"] == "request_conflict", mismatch.text
         assert (await client.get(f"{ROOT}/tasks/{key}", headers=owner["headers"])).status_code == 404
+
+
+@pytest.mark.parametrize("task_type", ["blood_glucose_review", "blood_lipids_review", "blood_pressure_review"])
+async def test_cross_role_same_key_serializes_without_deadlock(health_http, task_type):  # noqa: F811
+    """真实请求与成员锁顺序一致，竞争同键仅生成一个固定角色线程。"""
+    client, users = health_http
+    owner = users[0]
+    member = await create_member(client, owner["headers"])
+    key = str(uuid4())
+    responses = await asyncio.gather(
+        entry(client, owner["headers"], member, "consultation", key=key),
+        entry(client, owner["headers"], member, task_type, key=key),
+    )
+    assert sorted(response.status_code for response in responses) == [200, 409], [
+        response.text for response in responses
+    ]
+    success = next(response.json() for response in responses if response.status_code == 200)
+    conflict = next(response.json() for response in responses if response.status_code == 409)
+    assert success["entry_status"] == "ready" and conflict["code"] == "request_conflict"
+    async with pg_manager.get_async_session_context() as session:
+        rows = list(await session.scalars(select(HealthConsultation).where(HealthConsultation.request_id == key)))
+        assert len(rows) == 1
+        conversation = await session.get(Conversation, rows[0].conversation_id)
+        assert conversation.thread_id == success["thread_id"] and conversation.agent_id == success["agent_slug"]
 
 
 async def test_pending_failed_and_neighbor_run_projection_does_not_read_output(health_http):  # noqa: F811

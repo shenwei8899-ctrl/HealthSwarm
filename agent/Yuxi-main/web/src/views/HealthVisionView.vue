@@ -1,6 +1,7 @@
 <script setup>
 import HealthDietRecords from '@/components/health/HealthDietRecords.vue'
 import HealthDietAnalysis from '@/components/health/HealthDietAnalysis.vue'
+import HealthIndicatorAgents from '@/components/health/HealthIndicatorAgents.vue'
 import HealthFamilyProfile from '@/components/health/HealthFamilyProfile.vue'
 import HealthProfessionalProfile from '@/components/health/HealthProfessionalProfile.vue'
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
@@ -117,6 +118,7 @@ const tabs = computed(() => [
   { key: 'meal', label: '饮食照片' },
   { key: 'plans', label: '餐单草稿' },
   { key: 'analysis', label: '饮食分析' },
+  { key: 'indicators', label: '指标助手' },
   { key: 'records', label: '已确认记录' },
   { key: 'memory', label: '营养师记忆与历史' },
   ...(userStore.isAdmin ? [{ key: 'settings', label: '服务与食品数据' }] : [])
@@ -968,6 +970,14 @@ async function retryJob(job) {
           :scopes="member?.scopes || []"
           :configuration="config"
           :records="records.meal"
+          :disabled="busy || confirming"
+        />
+        <HealthIndicatorAgents
+          v-else-if="tab === 'indicators'"
+          :key="`indicators-${memberId}`"
+          :member-id="memberId"
+          :scopes="member?.scopes || []"
+          :configuration="config"
           :disabled="busy || confirming"
         />
         <template v-else-if="tab === 'report' || tab === 'meal'">

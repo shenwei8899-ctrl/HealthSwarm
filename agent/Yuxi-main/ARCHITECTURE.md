@@ -35,7 +35,7 @@ Yuxi 是一个面向 RAG、知识图谱和多智能体工作流的知识库平�
 - `server/utils/lifespan.py` 管理数据库、内置模型/MCP/Skills、知识库、Redis、沙盒和 LangGraph checkpoint；通用 Task 只由独立 ARQ worker 执行。
 - `server/worker_main.py` 是 ARQ worker 入口，实际执行设置位于 `yuxi.services.run_worker`。
 
-Yuxi 只交付完整知识能力路径。API 始终注册 `external_kb`、`knowledge`、`evaluation`、`graph`、知识域 Dashboard 与 `/workspace/knowledge/*` 路由，并注册 `knowledge-base` Skill 和知识库工具；系统 discovery 始终向 Web 与 CLI 宣告知识能力。`storage-migrator` 创建并迁移 business、knowledge 与 health schema，API 与 worker 启动时要求三个域都兼容。当前健康域版本为 23，兼容版本由 `storage/postgres/manager.py` 的版本常量拥有；单成员安全改版预览的绑定与发布取舍见[对应决策](docs/develop-guides/decisions/implemented/2026-10-09-single-member-safe-planner-agent.md)。聊天附件仍只在真实解析动作发生时惰性加载 parser。
+Yuxi 只交付完整知识能力路径。API 始终注册 `external_kb`、`knowledge`、`evaluation`、`graph`、知识域 Dashboard 与 `/workspace/knowledge/*` 路由，并注册 `knowledge-base` Skill 和知识库工具；系统 discovery 始终向 Web 与 CLI 宣告知识能力。`storage-migrator` 创建并迁移 business、knowledge 与 health schema，API 与 worker 启动时要求三个域都兼容。当前健康域版本为 24，兼容版本由 `storage/postgres/manager.py` 的版本常量拥有；单成员安全改版预览的绑定与发布取舍见[对应决策](docs/develop-guides/decisions/implemented/2026-10-09-single-member-safe-planner-agent.md)。聊天附件仍只在真实解析动作发生时惰性加载 parser。
 
 ### `backend/package/yuxi`
 
@@ -62,7 +62,7 @@ Yuxi 只交付完整知识能力路径。API 始终注册 `external_kb`、`knowl
 
 健康后台通过业务接口初始化绑定成员的饮食分析与固定选餐反馈会话，复用既有 Request、Run 和恢复链路。饮食列表公开实际确认版本；聊天卡片只呈现同一完成 Run 最终消息的统计事实或反馈收据。入口、配置及展示边界见[后台分析入口决定](docs/develop-guides/decisions/implemented/2026-10-10-health-analysis-web-entry.md)。
 
-审核科普检索在有界后台计算中使用当前 PostgreSQL 片段构建本地词法索引；索引只返回来源 proof，正文仍由 repository fresh 锁读。咨询最终发布在 Message、输出指针与 completed 的 owning 事务中重验并持有实际引用来源的共享锁；已完成答复的 result、history、state 消息与搜索投影继续校验实际采用来源。检索、发布及读取边界见[审核科普索引决定](docs/develop-guides/decisions/implemented/2026-10-10-health-evidence-lexical-index.md)。
+审核科普检索在有界后台计算中使用当前 PostgreSQL 片段构建本地词法索引；索引只返回来源 proof，正文仍由 repository fresh 锁读。真实 Run 角色决定领域，当前教育流程只使用明确登记的通用科普且无排除条件的资料；未登记范围的历史资料保留原普通咨询语义。引用保存范围摘要，检索、发布及当前结果、历史与 checkpoint 均复核当前范围及来源。咨询最终发布在 Message、输出指针与 completed 的 owning 事务中重验并持有实际引用来源的共享锁；已完成答复的 result、history、state 消息与搜索投影继续校验实际采用来源。词法检索和范围边界分别见[审核科普索引决定](docs/develop-guides/decisions/implemented/2026-10-10-health-evidence-lexical-index.md)与[审核范围决定](docs/develop-guides/decisions/implemented/2026-10-13-health-evidence-reviewed-scope.md)。
 
 ### 后台任务
 

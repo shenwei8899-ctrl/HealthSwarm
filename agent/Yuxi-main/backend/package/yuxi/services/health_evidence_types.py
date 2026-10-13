@@ -1,13 +1,37 @@
 """审核证据发布契约；只支持通用科普，不授权个人临床方案。"""
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field, model_serializer, model_validator
 
 from yuxi.services.health_vision_types import HealthDTO
 from yuxi.utils.datetime_utils import utc_now_naive
+
+
+class ReviewedKnowledgeScope(HealthDTO):
+    """专业发布者登记的使用范围，不推导个人临床适用性。"""
+
+    domains: list[Literal["nutrition", "blood_glucose", "blood_lipids", "blood_pressure"]] = Field(
+        min_length=1, max_length=4
+    )
+    population_category: Literal["general_education", "professional_selection_required"]
+    population_description: str = Field(min_length=1, max_length=1000)
+    exclusion_conditions: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(max_length=20)
+    license_ref: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def canonical_domains(self):
+        """显式领域必须唯一，统一顺序以稳定版本摘要。"""
+        if len(set(self.domains)) != len(self.domains):
+            raise ValueError("审核领域不可重复")
+        if not self.population_description.strip() or not self.license_ref.strip():
+            raise ValueError("人群说明与许可依据不能为空白")
+        if any(not item.strip() for item in self.exclusion_conditions):
+            raise ValueError("排除条件不能为空白")
+        self.domains = sorted(self.domains)
+        return self
 
 
 class NutritionCitation(HealthDTO):
@@ -21,6 +45,17 @@ class NutritionCitation(HealthDTO):
     source_version: str
     reviewed_at: datetime
     scope: Literal["general_education"]
+    reviewed_scope: ReviewedKnowledgeScope | None = None
+    scope_hash: str | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_registered_scope(self, handler):
+        """旧引用保留原协议形状，不删除其它结果的显式空字段。"""
+        data = handler(self)
+        if self.reviewed_scope is None:
+            data.pop("reviewed_scope", None)
+            data.pop("scope_hash", None)
+        return data
 
 
 class NutritionCitationsResult(HealthDTO):
@@ -47,6 +82,7 @@ class NutritionEvidenceInput(HealthDTO):
     reviewed_by: str = Field(min_length=1, max_length=100)
     reviewed_at: datetime
     valid_until: datetime
+    reviewed_scope: ReviewedKnowledgeScope | None = None
 
     @model_validator(mode="after")
     def review_dates(self):

@@ -20,7 +20,7 @@ def capability_sources(monkeypatch):
     health = SimpleNamespace(
         visible_member_scopes=AsyncMock(return_value=(user, HEALTH_SCOPES)),
         require_consent=AsyncMock(),
-        authorize=AsyncMock(),
+        authorize=AsyncMock(return_value=SimpleNamespace(owner_uid="synthetic-actor", relationship_label="本人")),
         has_published_recipes=AsyncMock(return_value=False),
     )
     agents = {slug: SimpleNamespace(backend_id=backend) for slug, backend in HEALTH_AGENT_BACKENDS.items()}
@@ -35,6 +35,9 @@ def capability_sources(monkeypatch):
             "family-diet-analyst",
             "family-quality-review",
             "family-purchase",
+            "family-blood-glucose",
+            "family-blood-lipids",
+            "family-blood-pressure",
         )
     }
     skill_repository = SimpleNamespace(get_by_slug=AsyncMock(side_effect=lambda slug: skills[slug]))
@@ -97,6 +100,9 @@ async def test_missing_professional_sources_keep_ordinary_available_and_selectio
     tasks = {task.task_type: task for task in result.tasks}
     assert {task_type for task_type, task in tasks.items() if task.status == "available"} == {
         "consultation",
+        "blood_glucose_review",
+        "blood_lipids_review",
+        "blood_pressure_review",
         "meal_preview",
         "diet_analysis",
     }
@@ -113,9 +119,12 @@ async def test_missing_professional_sources_keep_ordinary_available_and_selectio
         "multi_day_plan",
         "automatic_family_coordination",
     }
-    assert len(tasks) == 11
+    assert len(tasks) == 14
     assert {task_type: (task.purpose, task.required_inputs) for task_type, task in tasks.items()} == {
         "consultation": ("consultation", []),
+        "blood_glucose_review": ("consultation", []),
+        "blood_lipids_review": ("consultation", []),
+        "blood_pressure_review": ("consultation", []),
         "meal_preview": ("meal_plan", []),
         "diet_analysis": ("diet_analysis", ["interaction.confirmed_meal_or_period"]),
         "initial_meal_preview": (
@@ -316,6 +325,9 @@ async def test_ready_profile_does_not_skip_selection_and_revoked_latest_is_prese
     }
     assert {task.task_type for task in revoked.tasks if task.status == "available"} == {
         "consultation",
+        "blood_glucose_review",
+        "blood_lipids_review",
+        "blood_pressure_review",
         "meal_preview",
         "diet_analysis",
     }

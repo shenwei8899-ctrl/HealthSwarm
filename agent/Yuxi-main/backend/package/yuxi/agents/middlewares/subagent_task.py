@@ -218,7 +218,7 @@ class YuxiSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 "thread_id": run.conversation_thread_id,
                 "subagent_slug": run.agent_slug,
                 "error": run.error_message,
-                "progress": await get_agent_run_progress(run.id),
+                "progress": await get_agent_run_progress(run.id, agent_slug=run.agent_slug),
                 **subagent_service.subagent_run_urls(run.id),
             }
             if result:

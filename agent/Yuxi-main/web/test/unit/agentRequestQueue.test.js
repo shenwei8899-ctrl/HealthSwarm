@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { createPinia, setActivePinia } from 'pinia'
-import { reactive, isProxy } from 'vue'
+import { reactive, isProxy, ref } from 'vue'
 
 import { createServer } from 'vite'
 
@@ -1963,4 +1963,117 @@ for (const action of ['resumeQueuedRequests', 'continueQueue', 'steerRequest']) 
         agentApi.continueThreadQueue, agentApi.steerRequest] = originals
     }
   })
+}
+
+for (const agentId of [
+  'health-consultation',
+  'health-blood-glucose',
+  'health-blood-lipids',
+  'health-blood-pressure'
+]) {
+  for (const terminal of ['end', 'eof', 'failed']) {
+    test(`健康校验后发布 ${agentId} ${terminal} 无正文流仍等待并从历史取得最终结果`, { timeout: 10000 }, async (t) => {
+      const threadId = `validated-${agentId}-${terminal}`
+      const runId = `run-${threadId}`
+      const requestId = `request-${threadId}`
+      const state = useAgentThreadState({
+        chatState: { threadStates: {} },
+        getCurrentThreadId: () => threadId
+      })
+      const ts = state.getThreadState(threadId)
+      const userMessage = { id: requestId, type: 'human', content: '回顾我的记录' }
+      ts.onGoingConv.msgChunks[requestId] = [userMessage]
+      const finalMessage = {
+        id: `output-${threadId}`,
+        type: 'ai',
+        content: '已核对来源的记录回顾',
+        run_id: runId
+      }
+      let controller
+      let committed = false
+      const history = []
+      const reads = []
+      const refreshed = Promise.withResolvers()
+      const enqueue = (event, payload, seq) => controller.enqueue(new TextEncoder().encode(
+        `id: ${seq}\nevent: ${event}\ndata: ${JSON.stringify({
+          run_id: runId, request_id: requestId, thread_id: threadId, payload
+        })}\n\n`
+      ))
+      t.mock.method(agentApi, 'streamAgentRunEvents', async (_runId, _cursor, { signal }) => new Response(new ReadableStream({
+        start(value) {
+          controller = value
+          signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true })
+          enqueue('custom', { name: 'yuxi.init', chunk: { status: 'init' } }, '1-0')
+          enqueue('custom', {
+            name: 'yuxi.health_progress',
+            chunk: { status: 'health_progress', phase: 'running', message: '正在回顾记录与审核知识' }
+          }, '1-1')
+        }
+      })))
+      t.mock.method(agentApi, 'createAgentRun', () => assert.fail('终态恢复不得重新提交请求'))
+      t.mock.method(agentApi, 'getAgentRun', async (id) => {
+        assert.equal(id, runId)
+        assert.equal(committed, true)
+        return { run: { id, status: 'completed' } }
+      })
+      const handler = useAgentStreamHandler({ getThreadState: state.getThreadState, currentAgentId: ref(agentId) })
+      const runStream = useAgentRunStream({
+        getThreadState: state.getThreadState,
+        currentAgentId: ref(agentId),
+        handleStreamChunk: handler.handleStreamChunk,
+        fetchThreadMessages: async ({ agentId: selectedAgentId, threadId: selectedThreadId }) => {
+          assert.equal(committed, true, '仅终态后回读权威历史')
+          assert.equal(selectedAgentId, agentId)
+          assert.equal(selectedThreadId, threadId)
+          reads.push(selectedThreadId)
+          history.push(userMessage, ...(terminal === 'failed' ? [] : [finalMessage]))
+          return true
+        },
+        fetchAgentState: async () => {},
+        resetOnGoingConv: state.resetOnGoingConv,
+        onScrollToBottom: () => {},
+        onTerminalDetected: () => refreshed.resolve()
+      })
+      const pending = runStream.startRunStream(threadId, runId)
+      try {
+        await settleRecovery()
+        assert.equal(ts.replyLoadingVisible, true)
+        assert.equal(ts.isStreaming, true)
+        assert.equal(ts.activeRunId, runId)
+        assert.deepEqual(Object.values(ts.onGoingConv.msgChunks).flat().map((message) => message.type), ['human'])
+        assert.deepEqual(history, [])
+        assert.deepEqual(reads, [])
+
+        enqueue('custom', {
+          name: 'yuxi.health_progress',
+          chunk: { status: 'health_progress', phase: 'validating', message: '正在校验答复来源与引用' }
+        }, '1-2')
+        await settleRecovery()
+        assert.equal(ts.replyLoadingVisible, true)
+        assert.deepEqual(Object.values(ts.onGoingConv.msgChunks).flat().map((message) => message.type), ['human'])
+
+        committed = true
+        if (terminal !== 'eof') {
+          enqueue('end', {
+            status: terminal === 'failed' ? 'failed' : 'completed'
+          }, '1-3')
+        }
+        controller.close()
+        await pending
+        await refreshed.promise
+        assert.equal(ts.replyLoadingVisible, false)
+        assert.equal(ts.isStreaming, false)
+        assert.equal(ts.activeRunId, null)
+        assert.deepEqual(ts.onGoingConv.msgChunks, {})
+        assert.deepEqual(reads, [threadId])
+        assert.deepEqual(history.filter((message) => message.type === 'ai'), terminal === 'failed' ? [] : [finalMessage])
+        assert.equal(agentApi.getAgentRun.mock.callCount(), terminal === 'eof' ? 1 : 0)
+        assert.equal(localStorage.getItem(`active_run:${threadId}`), null)
+      } finally {
+        runStream.stopRunStreamSubscription(threadId)
+        await pending
+        localStorage.removeItem(`active_run:${threadId}`)
+      }
+    })
+  }
 }

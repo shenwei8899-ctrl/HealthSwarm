@@ -20,7 +20,7 @@ def controlled_mutation(monkeypatch):
     if os.getenv("HEALTH_PARTIAL_MUTATION") != "disabled_consultation_guard":
         return
     source = inspect.getsource(chat_service.save_partial_message)
-    original = 'if locked_run.agent_slug == "health-consultation":'
+    original = "if locked_run.agent_slug in EDUCATION_HEALTH_AGENTS:"
     assert source.count(original) == 1
 
     async def mutated(*args, **kwargs):
@@ -74,10 +74,13 @@ async def save(conv, *, interrupt=False, worker="current-worker", request="curre
 
 @pytest.mark.parametrize("has_use", [False, True], ids=["bare", "has_formal_use"])
 @pytest.mark.parametrize("interrupt", [False, True], ids=["partial_failure", "explicit_interrupt"])
+@pytest.mark.parametrize(
+    "slug", ["health-consultation", "health-blood-glucose", "health-blood-lipids", "health-blood-pressure"]
+)
 async def test_consultation_partial_bare_and_formal_source_use_share_closed_publication_boundary(
-    monkeypatch, has_use, interrupt
+    monkeypatch, has_use, interrupt, slug
 ):
-    session, conv, repo, message = scaffold(monkeypatch, has_use=has_use)
+    session, conv, repo, message = scaffold(monkeypatch, has_use=has_use, slug=slug)
     output = await save(conv, interrupt=interrupt)
     repo.lock_output_persistence.assert_awaited_once_with(
         "current-run",

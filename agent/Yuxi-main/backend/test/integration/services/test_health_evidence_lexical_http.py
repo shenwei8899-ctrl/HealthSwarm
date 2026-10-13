@@ -43,7 +43,10 @@ async def test_published_sources_rebuild_after_revoke_expire_and_new_version(hea
     first, _ = await publish(client, users[2]["headers"], token, "first")
     second, _ = await publish(client, users[2]["headers"], token, "second")
     async with pg_manager.get_async_session_context() as session:
-        assert {source.id for source in await HealthEvidenceRepository(session).search(query)} == {first, second}
+        assert {
+            source.id
+            for source in await HealthEvidenceRepository(session).search(query, agent_slug="health-consultation")
+        } == {first, second}
     denied = await client.delete(f"{ROOT}/nutrition-evidence/{first}", headers=users[0]["headers"])
     assert denied.status_code == 403
     assert (await client.delete(f"{ROOT}/nutrition-evidence/{first}", headers=users[2]["headers"])).status_code == 200
@@ -51,12 +54,12 @@ async def test_published_sources_rebuild_after_revoke_expire_and_new_version(hea
         (await session.get(NutritionEvidence, second)).valid_until = utc_now_naive() - timedelta(seconds=1)
     async with pg_manager.get_async_session_context() as session:
         repository = HealthEvidenceRepository(session)
-        assert await repository.search(query) == []
+        assert await repository.search(query, agent_slug="health-consultation") == []
         # 同一 Owner 新建 adapter（进程重启时同样无恢复状态）结果一致。
-        assert await HealthEvidenceRepository(session).search(query) == []
+        assert await HealthEvidenceRepository(session).search(query, agent_slug="health-consultation") == []
     restored, body = await publish(client, users[2]["headers"], token, "first", version="v2")
     async with pg_manager.get_async_session_context() as session:
-        sources = await HealthEvidenceRepository(session).search(query)
+        sources = await HealthEvidenceRepository(session).search(query, agent_slug="health-consultation")
         assert [(source.id, source.source_version, source.content) for source in sources] == [
             (restored, "v2", body["content"])
         ]
@@ -98,7 +101,9 @@ async def test_index_hit_rechecks_fresh_locked_row_despite_identity_map(health_h
         old = await session.get(NutritionEvidence, identity)
         assert old.content == body["content"] and old.source_version == "v1"
         with pytest.raises(HealthVisionError) as failure:
-            await HealthEvidenceRepository(session).search(f"lexical{token} 膳食纤维 饮水")
+            await HealthEvidenceRepository(session).search(
+                f"lexical{token} 膳食纤维 饮水", agent_slug="health-consultation"
+            )
         assert (failure.value.code, failure.value.status) == ("source_invalidated", 410)
         assert body["content"] not in str(failure.value)
         if mutation == "revoked":
@@ -130,7 +135,9 @@ async def test_forged_index_hit_cannot_publish_without_exact_current_proof(healt
     monkeypatch.setattr(repository_module, "search_evidence_index", forged_hit)
     async with pg_manager.get_async_session_context() as session:
         with pytest.raises(HealthVisionError) as failure:
-            await HealthEvidenceRepository(session).search(f"lexical{token} 膳食纤维 饮水")
+            await HealthEvidenceRepository(session).search(
+                f"lexical{token} 膳食纤维 饮水", agent_slug="health-consultation"
+            )
         assert (failure.value.code, failure.value.status) == ("source_invalidated", 410)
 
 
@@ -150,5 +157,7 @@ async def test_pg_corpus_capacity_detects_extra_row_or_long_body_before_compute(
     monkeypatch.setattr(index_module, "_rank_documents", lambda *_: pytest.fail("容量超界不得提交矩阵计算"))
     async with pg_manager.get_async_session_context() as session:
         with pytest.raises(HealthVisionError) as failure:
-            await HealthEvidenceRepository(session).search(f"lexical{token} 膳食纤维 饮水")
+            await HealthEvidenceRepository(session).search(
+                f"lexical{token} 膳食纤维 饮水", agent_slug="health-consultation"
+            )
         assert (failure.value.code, failure.value.status) == ("evidence_index_capacity_exceeded", 503)

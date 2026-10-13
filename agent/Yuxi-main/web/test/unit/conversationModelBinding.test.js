@@ -78,7 +78,10 @@ test('健康绑定会话发送 null 由后台选批准模型，不沿用系统�
     'health-consultation',
     'health-meal-planner',
     'health-diet-analyst',
-    'health-quality'
+    'health-quality',
+    'health-blood-glucose',
+    'health-blood-lipids',
+    'health-blood-pressure'
   ]) {
     currentThread.value = { agent_id: slug }
     assert.equal(requestModel(isHealthConsultation, wrongDefault), null)

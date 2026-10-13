@@ -510,7 +510,8 @@ async def test_subagent_status_returns_terminal_result(monkeypatch) -> None:
         captured["get_agent_run_result"] = {"run_id": run_id, "current_uid": current_uid, "db": db}
         return {"status": "completed", "output": "final result"}
 
-    async def fake_get_agent_run_progress(run_id: str):
+    async def fake_get_agent_run_progress(run_id: str, *, agent_slug: str):
+        assert agent_slug == "worker"
         captured["get_agent_run_progress"] = run_id
         return {
             "last_seq": "3-0",
@@ -566,7 +567,8 @@ async def test_subagent_status_returns_progress_for_running_run(monkeypatch) -> 
     async def fake_get_agent_run_result(**kwargs):
         raise AssertionError(f"running status should not load terminal result: {kwargs}")
 
-    async def fake_get_agent_run_progress(run_id: str):
+    async def fake_get_agent_run_progress(run_id: str, *, agent_slug: str):
+        assert agent_slug == "worker"
         captured["get_agent_run_progress"] = run_id
         return {
             "last_seq": "9-0",

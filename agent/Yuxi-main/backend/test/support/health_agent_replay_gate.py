@@ -36,6 +36,10 @@ def run_gate():
     """只管理本进程启动的协议回放，不停止API、Worker或其他进程。"""
     asyncio.run(verify_isolation())
     cases = [
+        (None, None, "integration/services/test_health_reviewed_scope_http.py"),
+        (None, 8780, "e2e/test_health_reviewed_scope_e2e.py"),
+        (None, 8779, "e2e/test_health_validated_publication_e2e.py"),
+        (None, 8778, "e2e/test_health_indicator_agents_e2e.py"),
         ("health_consultation_replay_server.py", 8766, "e2e/test_health_nutritionist_e2e.py"),
         ("health_consultation_replay_server.py", 8766, "e2e/test_health_evidence_lexical_e2e.py"),
         ("health_meal_planner_replay_server.py", 8768, "e2e/test_health_meal_planner_e2e.py"),

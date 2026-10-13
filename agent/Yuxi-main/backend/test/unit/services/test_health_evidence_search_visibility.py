@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy.dialects.postgresql import dialect
 
 from yuxi.repositories.conversation_repository import ConversationRepository
+from yuxi.repositories.health_consultation_repository import EDUCATION_HEALTH_AGENTS
 from yuxi.services import conversation_service as service
 from yuxi.utils.datetime_utils import format_utc_datetime
 
@@ -201,7 +202,12 @@ async def test_four_latest_invalid_answers_do_not_hide_oldest_public_match(monke
     assert result["has_more"] is False
     assert public.await_count == 5 and auth.await_count == 1
     assert repo.iterator_calls == [
-        {"uid": "actor", "query": "营养", "exclude_sources": ("agent_call", "agent_evaluation")}
+        {
+            "uid": "actor",
+            "query": "营养",
+            "agent_id": "health-consultation",
+            "exclude_sources": ("agent_call", "agent_evaluation"),
+        }
     ]
     repo.search.assert_not_awaited()
 
@@ -251,7 +257,7 @@ async def test_mixed_search_sorts_public_time_and_preserves_ordinary_count(monke
     assert len(result["items"][0]["snippets"]) == 2
     response = ThreadSearchResponse.model_validate(result)
     assert all(item.workdir_path == WORKDIR for item in response.items)
-    assert repo.search.await_args.kwargs["exclude_agent_ids"] == ("health-consultation",)
+    assert set(repo.search.await_args.kwargs["exclude_agent_ids"]) == EDUCATION_HEALTH_AGENTS
 
 
 async def test_denied_threads_are_not_counted_or_checked_for_publication(monkeypatch):
@@ -330,7 +336,9 @@ async def test_candidate_stream_has_current_uid_active_fixed_role_audit_filter_f
     assert " LIMIT " not in sql.upper() and " OFFSET " not in sql.upper()
     assert "conversations.uid =" in sql and "actor" in values
     assert "conversations.status =" in sql and "active" in values
-    assert "conversations.agent_id =" in sql and "health-consultation" in values
+    assert "conversations.agent_id IN" in sql and EDUCATION_HEALTH_AGENTS in [
+        set(value) for value in values if isinstance(value, (list, tuple))
+    ]
     assert "messages.role IN" in sql and {"user", "assistant"} in [
         set(value) for value in values if isinstance(value, (list, tuple))
     ]

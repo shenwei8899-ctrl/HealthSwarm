@@ -12,6 +12,7 @@ from yuxi.services.health_agent_roles import (
     ANALYST_SKILLS,
     QUALITY_SKILLS,
     PURCHASE_SKILLS,
+    INDICATOR_AGENT_SKILLS,
     consultation_skill_snapshot,
 )
 from yuxi.services.health_capability_service import member_capabilities
@@ -49,7 +50,7 @@ async def member_readiness(uid: str, member_id: str) -> HealthMemberReadiness:
             "purchase": PURCHASE_SKILLS,
         }
         role_versions = {}
-        for required in purpose_skills.values():
+        for required in (*purpose_skills.values(), *INDICATOR_AGENT_SKILLS.values()):
             metadata = consultation_skill_snapshot(required)["skill_metadata"]
             for slug, source in metadata.items():
                 registered = await SkillRepository(session).get_by_slug(slug)
@@ -77,7 +78,13 @@ async def member_readiness(uid: str, member_id: str) -> HealthMemberReadiness:
                 entry.missing_dependencies = [
                     key for key in ("postgres", "redis", "worker") if runtime[key].status == "unavailable"
                 ]
-                if any(role_versions[slug].status == "unavailable" for slug in purpose_skills[task.purpose]):
+                indicator_skills = {
+                    "blood_glucose_review": INDICATOR_AGENT_SKILLS["health-blood-glucose"],
+                    "blood_lipids_review": INDICATOR_AGENT_SKILLS["health-blood-lipids"],
+                    "blood_pressure_review": INDICATOR_AGENT_SKILLS["health-blood-pressure"],
+                }
+                required_skills = indicator_skills.get(task.task_type, purpose_skills[task.purpose])
+                if any(role_versions[slug].status == "unavailable" for slug in required_skills):
                     entry.missing_dependencies.append("role_version")
                 if task.task_type in {
                     "meal_preview",

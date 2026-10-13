@@ -20,7 +20,11 @@ async def test_index_completion_rechecks_attempt_before_adding_any_citation(monk
     """旧 attempt 的纯计算结果不能重新进入业务发布链。"""
     context = SimpleNamespace(uid="synthetic-actor", thread_id="synthetic-thread", model="synthetic-model")
     session = SimpleNamespace(add=Mock())
-    run = SimpleNamespace(id="synthetic-run", input_payload={"health_processing": {"processor": "synthetic"}})
+    run = SimpleNamespace(
+        id="synthetic-run",
+        agent_slug="health-consultation",
+        input_payload={"health_processing": {"processor": "synthetic"}},
+    )
     binding = SimpleNamespace(conversation_id=7, member_id="synthetic-member")
     content = "合成科普正文"
     source = SimpleNamespace(
@@ -30,6 +34,8 @@ async def test_index_completion_rechecks_attempt_before_adding_any_citation(monk
         content=content,
         content_hash=hashlib.sha256(content.encode()).hexdigest(),
         source_ref="synthetic://source",
+        reviewed_scope=None,
+        scope_hash=None,
         reviewed_at=utc_now_naive() - timedelta(days=1),
     )
     attempts = AsyncMock(

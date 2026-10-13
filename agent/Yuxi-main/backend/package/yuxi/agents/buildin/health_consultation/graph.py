@@ -67,31 +67,33 @@ class HealthConsultationAgent(BaseAgent):
 
     name = "成员专属营养咨询"
     description = "读取成员已确认记录和审核通用科普，校验营养证据引用，不生成治疗或个人配餐方案。"
+    prompt_name = "CONSULTATION_PROMPT"
+    consultation_tools = (
+        get_confirmed_profile,
+        get_confirmed_diet,
+        get_complete_health_profile,
+        get_member_weight_records,
+        get_member_blood_pressure_records,
+        get_member_blood_glucose_records,
+        get_member_blood_lipids_records,
+        query_reviewed_nutrition_knowledge,
+        get_member_memories,
+        remember_member_fact,
+        get_meal_feedback,
+    )
 
     async def get_graph(self, *, context, **kwargs):
         """构图前核对审批，工具名单由本后端固定。"""
-        from yuxi.services.health_consultation_service import CONSULTATION_PROMPT, require_consultation_attempt
+        from yuxi.services import health_consultation_service
 
         if not getattr(context, "_runtime_prepared", False):
             raise ValueError("构图需要已准备的 Context")
-        await require_consultation_attempt(context)
+        await health_consultation_service.require_consultation_attempt(context)
         model_info = model_cache.get_model_info(context.model)
         return create_agent(
             model=load_chat_model(fully_specified_name=context.model, session_id=context.thread_id),
-            tools=[
-                get_confirmed_profile,
-                get_confirmed_diet,
-                get_complete_health_profile,
-                get_member_weight_records,
-                get_member_blood_pressure_records,
-                get_member_blood_glucose_records,
-                get_member_blood_lipids_records,
-                query_reviewed_nutrition_knowledge,
-                get_member_memories,
-                remember_member_fact,
-                get_meal_feedback,
-            ],
-            system_prompt=CONSULTATION_PROMPT,
+            tools=list(self.consultation_tools),
+            system_prompt=getattr(health_consultation_service, self.prompt_name),
             middleware=[
                 SteerMiddleware(),
                 HealthAuthorizationMiddleware(model_info),

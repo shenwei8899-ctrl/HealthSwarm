@@ -331,7 +331,7 @@ async def test_save_messages_from_langgraph_state_backfills_run_output_message(m
             request_id: str,
         ):
             captured["locked"] = (run_id, worker_id, conversation_thread_id, request_id)
-            return object()
+            return SimpleNamespace(agent_slug="ordinary-agent")
 
         async def set_output_message(self, run_id: str, message_id: int, *, worker_id: str):
             captured["run_id"] = run_id
@@ -394,7 +394,7 @@ async def test_state_fallback_does_not_rebind_hidden_message_from_previous_run(m
             pass
 
         async def lock_output_persistence(self, *_args, **_kwargs):
-            return object()
+            return SimpleNamespace(agent_slug="ordinary-agent")
 
         async def set_output_message(self, _run_id, message_id, *, worker_id):
             captured[worker_id] = message_id

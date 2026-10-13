@@ -18,6 +18,13 @@ QUALITY_SLUG = "health-quality"
 QUALITY_BACKEND = "HealthQualityAgent"
 PURCHASE_SLUG = "health-purchase"
 PURCHASE_BACKEND = "HealthPurchaseAgent"
+GLUCOSE_SLUG = "health-blood-glucose"
+GLUCOSE_BACKEND = "HealthBloodGlucoseAgent"
+LIPIDS_SLUG = "health-blood-lipids"
+LIPIDS_BACKEND = "HealthBloodLipidsAgent"
+PRESSURE_SLUG = "health-blood-pressure"
+PRESSURE_BACKEND = "HealthBloodPressureAgent"
+EDUCATION_HEALTH_AGENTS = frozenset((CONSULTATION_SLUG, GLUCOSE_SLUG, LIPIDS_SLUG, PRESSURE_SLUG))
 STRUCTURED_HEALTH_AGENTS = frozenset((PLANNER_SLUG, ANALYST_SLUG, QUALITY_SLUG, PURCHASE_SLUG))
 HEALTH_AGENT_BACKENDS = {
     CONSULTATION_SLUG: CONSULTATION_BACKEND,
@@ -25,6 +32,9 @@ HEALTH_AGENT_BACKENDS = {
     ANALYST_SLUG: ANALYST_BACKEND,
     QUALITY_SLUG: QUALITY_BACKEND,
     PURCHASE_SLUG: PURCHASE_BACKEND,
+    GLUCOSE_SLUG: GLUCOSE_BACKEND,
+    LIPIDS_SLUG: LIPIDS_BACKEND,
+    PRESSURE_SLUG: PRESSURE_BACKEND,
 }
 
 
@@ -78,6 +88,15 @@ class HealthConsultationRepository:
                 HealthConsultation.actor_uid == uid, HealthConsultation.request_id == request_id
             )
         )
+
+    async def authorize_indicator_member(self, uid, member_id, *, lock=False):
+        """指标专属入口只属于具备档案读取权限的本人。"""
+        health = HealthVisionRepository(self.session)
+        await health.authorize(member_id, uid, "ai_use", lock=lock)
+        member = await health.authorize(member_id, uid, "profile_view")
+        if member.owner_uid != uid or member.relationship_label != "本人":
+            raise HealthVisionError("not_found", "指标记录助手仅支持自己的本人记录", 404)
+        return member
 
     async def authorize(self, uid, thread_id, *, lock=False, preview_history=False):
         """逐次验证会话、项目、账号及成员 grant，成员锁与撤回排序。"""
@@ -167,17 +186,21 @@ class HealthConsultationRepository:
             await authorize_family_planner_binding(self.session, binding)
             return binding
         health_repo = HealthVisionRepository(self.session)
-        await health_repo.authorize(binding.member_id, uid, "ai_use", lock=lock)
-        scopes = (
-            ("diet_edit", "profile_view")
-            if conversation.agent_id == QUALITY_SLUG
-            else ("diet_edit",)
-            if conversation.agent_id == ANALYST_SLUG
-            else ("report_view", "diet_edit")
-        )
+        if conversation.agent_id in EDUCATION_HEALTH_AGENTS - {CONSULTATION_SLUG}:
+            await self.authorize_indicator_member(uid, binding.member_id, lock=lock)
+            scopes = ()
+        else:
+            await health_repo.authorize(binding.member_id, uid, "ai_use", lock=lock)
+            scopes = (
+                ("diet_edit", "profile_view")
+                if conversation.agent_id == QUALITY_SLUG
+                else ("diet_edit",)
+                if conversation.agent_id == ANALYST_SLUG
+                else ("report_view", "diet_edit")
+            )
         for scope in scopes:
             await health_repo.authorize(binding.member_id, uid, scope)
-        if conversation.agent_id == CONSULTATION_SLUG:
+        if conversation.agent_id in EDUCATION_HEALTH_AGENTS:
             from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
             from yuxi.repositories.health_weight_repository import HealthWeightRepository
             from yuxi.repositories.health_blood_pressure_repository import HealthBloodPressureRepository

@@ -26,6 +26,7 @@ from yuxi.models.execution_budget import (
     reset_model_execution_deadline,
 )
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
+from yuxi.repositories.health_consultation_repository import EDUCATION_HEALTH_AGENTS, HEALTH_AGENT_BACKENDS
 from yuxi.services.agent_request_queue_service import (
     dispatch_next_request,
     recover_pending_dispatches,
@@ -35,6 +36,7 @@ from yuxi.services.agent_run_manifest_service import (
     compute_manifest_fingerprint,
     prepare_run_execution,
 )
+from yuxi.services.agent_run_service import project_health_token_usage
 from yuxi.services.chat_service import get_agent_state_view, stream_agent_chat, stream_agent_resume
 from yuxi.services.input_message_service import restore_chat_input_message
 from yuxi.services.run_queue_service import (
@@ -81,9 +83,7 @@ RUN_DURABLE_CANCEL_POLL_SECONDS = 1.0
 RUN_LEASE_SECONDS = 120
 RUN_HEARTBEAT_SECONDS = 30
 SUPPORTED_RUN_TYPES = {"chat", "resume", "subagent"}
-HEALTH_EXECUTION_AGENT_SLUGS = frozenset(
-    {"health-consultation", "health-meal-planner", "health-diet-analyst", "health-quality", "health-purchase"}
-)
+HEALTH_EXECUTION_AGENT_SLUGS = frozenset(HEALTH_AGENT_BACKENDS)
 HEALTH_EXECUTION_CLEANUP_MARGIN_SECONDS = 30
 WORKER_ID = f"worker-{uuid.uuid4().hex}"
 _RECONCILIATION_TASK_KEY = "agent_run_reconciliation_task"
@@ -657,10 +657,24 @@ async def _confirmed_user_cancel(run_id: str) -> bool:
         return False
 
 
-async def _read_run_token_usage_from_state(*, run_id: str, thread_id: str, current_user) -> dict | None:
+async def _read_run_token_usage_from_state(*, run_id: str, thread_id: str, current_user, run=None) -> dict | None:
     """从当前线程 state 读取属于指定 Run 的用量快照。"""
     try:
         async with pg_manager.get_async_session_context() as db:
+            if run is not None and run.agent_slug in EDUCATION_HEALTH_AGENTS:
+                if run.id != run_id or run.uid != str(current_user.uid) or run.conversation_thread_id != thread_id:
+                    return None
+                authorized = await AgentRunRepository(db).get_run_for_user(run_id, str(current_user.uid))
+                if authorized is None or authorized.conversation_thread_id != thread_id:
+                    return None
+                saved = await pg_manager.get_langgraph_checkpointer().aget_tuple(
+                    {"configurable": {"uid": str(current_user.uid), "thread_id": thread_id, "checkpoint_ns": ""}}
+                )
+                values = saved.checkpoint["channel_values"] if saved else {}
+                snapshot = values.get("token_usage")
+                if not isinstance(snapshot, dict) or snapshot.get("current_run_id") != run_id:
+                    return None
+                return project_health_token_usage(snapshot.get("run"), (run.input_payload or {}).get("model_spec"))
             view = await get_agent_state_view(
                 thread_id=thread_id,
                 current_user=current_user,
@@ -742,6 +756,8 @@ def _loading_chunk_size(chunk: dict) -> int:
 
 def _contains_model_output(chunk: dict) -> bool:
     """识别非空模型文本、推理文本或工具调用数据。"""
+    if chunk.get("status") == "health_progress" and chunk.get("model_output_started") is True:
+        return True  # 健康候选正文只进入私有审计，固定标记保留真实首输出时点。
     stream_event = chunk.get("stream_event")
     if not isinstance(stream_event, dict):
         return False
@@ -814,6 +830,7 @@ async def _finish_run(
             run_id=run_id,
             thread_id=thread_id,
             current_user=current_user,
+            run=run,
         )
         if state_token_usage is not None:
             token_usage = state_token_usage
@@ -854,6 +871,7 @@ async def _finish_user_cancel(
             run_id=run_id,
             thread_id=thread_id,
             current_user=current_user,
+            run=run,
         )
     transition = await mark_run_terminal(
         run_id,
@@ -1197,6 +1215,16 @@ async def process_agent_run(ctx, run_id: str):
                 async for chunk_bytes in chunks:
                     for chunk in _iter_json_chunks(chunk_bytes):
                         target_thread_id = _chunk_thread_id(chunk, thread_id)
+                        if (
+                            chunk.get("status") == "health_progress"
+                            and not first_output_observed
+                            and target_thread_id == thread_id
+                            and _contains_model_output(chunk)
+                        ):
+                            first_output_observed = True
+                            await _record_run_timing_best_effort(
+                                run_id, worker_id, "first_output", observed_at=utc_now_naive()
+                            )
                         if chunk.get("status") == "loading":
                             if (
                                 not first_output_observed

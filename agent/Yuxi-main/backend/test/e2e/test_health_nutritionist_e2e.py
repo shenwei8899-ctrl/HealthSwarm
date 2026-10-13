@@ -71,9 +71,11 @@ async def test_reviewed_evidence_worker_citations_and_revoked_history(isolated_h
                 expired.valid_until = utc_now_naive() - timedelta(seconds=1)
     async with pg_manager.get_async_session_context() as session:
         repository = HealthEvidenceRepository(session)
-        assert [row.id for row in await repository.search("合成营养证据")] == [evidence_id]
-        assert await repository.search("%") == []
-        assert await repository.search("不存在的合成词") == []
+        assert [row.id for row in await repository.search("合成营养证据", agent_slug="health-consultation")] == [
+            evidence_id
+        ]
+        assert await repository.search("%", agent_slug="health-consultation") == []
+        assert await repository.search("不存在的合成词", agent_slug="health-consultation") == []
     roles = await client.get(f"{ROOT}/agent-roles", headers=headers)
     assert roles.status_code == 200 and roles.json()["full_health_profile_available"] is False
     native_skills = await client.get("/api/skills/accessible", headers=headers)
@@ -141,12 +143,16 @@ async def test_reviewed_evidence_worker_citations_and_revoked_history(isolated_h
             assert output.content == result.json()["output"] == f"合成科普说明 [证据:{citation.id}]"
             binding = await session.get(HealthConsultation, citation.conversation_id)
             repo = HealthEvidenceRepository(session)
-            await repo.validate_citations([citation.id], binding, users[0]["uid"], run_id=run_id)
+            await repo.validate_citations(
+                [citation.id], binding, users[0]["uid"], agent_slug="health-consultation", run_id=run_id
+            )
             original = await session.get(NutritionEvidence, evidence_id)
             original.content = "合成篡改内容"
             await session.flush()
             with pytest.raises(HealthVisionError, match="source_invalidated"):
-                await repo.validate_citations([citation.id], binding, users[0]["uid"], run_id=run_id)
+                await repo.validate_citations(
+                    [citation.id], binding, users[0]["uid"], agent_slug="health-consultation", run_id=run_id
+                )
             original.content = source["content"]
             await session.flush()
             for wrong_uid, wrong_run, wrong_member in (
@@ -156,7 +162,9 @@ async def test_reviewed_evidence_worker_citations_and_revoked_history(isolated_h
             ):
                 wrong_binding = SimpleNamespace(conversation_id=binding.conversation_id, member_id=wrong_member)
                 with pytest.raises(HealthVisionError, match="citation_invalid"):
-                    await repo.validate_citations([citation.id], wrong_binding, wrong_uid, run_id=wrong_run)
+                    await repo.validate_citations(
+                        [citation.id], wrong_binding, wrong_uid, agent_slug="health-consultation", run_id=wrong_run
+                    )
         citation_result = await client.get(f"{ROOT}/consultation-runs/{run_id}/citations", headers=headers)
         assert citation_result.status_code == 200, citation_result.text
         citation_data = citation_result.json()
@@ -237,7 +245,9 @@ async def test_reviewed_evidence_worker_citations_and_revoked_history(isolated_h
         async with pg_manager.get_async_session_context() as session:
             assert (await session.get(NutritionEvidence, evidence_id)).revoked_at is not None
             with pytest.raises(HealthVisionError, match="source_invalidated"):
-                await HealthEvidenceRepository(session).validate_citations([citation.id], binding, users[0]["uid"])
+                await HealthEvidenceRepository(session).validate_citations(
+                    [citation.id], binding, users[0]["uid"], agent_slug="health-consultation"
+                )
         async with httpx.AsyncClient(base_url="http://localhost:8766", timeout=10) as replay:
             calls = (await replay.get("/observations", params={"token": token})).json()["calls"]
             assert len(calls) == 2 and calls[-1]["record_ids"] == [citation.id]

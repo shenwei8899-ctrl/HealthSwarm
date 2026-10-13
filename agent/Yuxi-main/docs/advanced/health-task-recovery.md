@@ -16,6 +16,8 @@ Request 事件流没有持久事件 ID。重新订阅直接读取 PostgreSQL 当
 
 Run 事件流使用 `?verbose=false` 返回精简载荷。收到 `end`、`error` 或连接结束后，再查询健康 Task；流结束只表示需要查询当前事实，流正文不代替当前授权及来源校验后的健康业务结果。暂时无法读取时显示恢复失败并保留手动重试入口，采用有限退避，避免持续快速重连。
 
+普通咨询、血糖、血脂、血压四个教育角色在执行中只公开固定运行与校验进度。它们的 `verbose=true` 与 `verbose=false` 使用相同的最小公开载荷；模型正文、推理、工具输入输出、自由错误、模型填充状态和供应商自由文本不进入普通流。旧 Redis 事件从已消费游标或 `0-0` 回放也受当前读取白名单约束。执行状态中的模型候选不能用于补正文。
+
 ## 绑定请求与游标
 
 任务入口的 `client_request_id` 用于业务入口幂等；创建线程不表示已执行。客户端显式提交 `POST /api/agent/runs` 后保存服务端返回的 `request_id`，查询及恢复都使用该 ID。输入重试沿用同一次提交的幂等键；恢复连接只读取状态，不重新提交执行。线程中相邻任务各自保留 Request 和 Run 关联，不能用最近一条消息或线程当前活跃 Run 替换原任务。
@@ -29,11 +31,15 @@ Last-Event-ID: <last-consumed-redis-id>
 GET /api/health/v1/tasks/{request_id}
 ```
 
-客户端先由 Task 查询核对 Request、Run、成员与线程，再核对事件中的 `run_id` 和 `thread_id`。精简 `metadata` 帧不含 `request_id`；载荷带该字段时核对相等，结束帧核对同一请求。重复接收已有 Redis ID 时不重复追加内容，无 ID 的数据库结束通知按终态处理。切换账号、成员或任务时取消旧连接，隔离迟到读取，并清除旧健康内容。
+客户端先由 Task 查询核对 Request、Run、成员与线程，再核对事件中的 `run_id` 和 `thread_id`。通用角色的精简 `metadata` 帧不含 `request_id`；上述四个教育角色的最小公开帧保留请求与线程标识。载荷带该字段时核对相等，结束帧核对同一请求。重复接收已有 Redis ID 时不重复追加内容，无 ID 的数据库结束通知按终态处理。切换账号、成员或任务时取消旧连接，隔离迟到读取，并清除旧健康内容。
 
 ## 展示当前结果
 
 `request_status` 描述排队请求，`execution_status` 描述 Run；具体字段和结果分类由 [Task DTO](https://github.com/shenwei8899-ctrl/HealthSwarm/blob/main/agent/Yuxi-main/backend/package/yuxi/services/health_task_types.py) 定义。`final_message_id` 只指向同一已完成 Run 的权威消息，服务端在每次查询时复核授权、处理审批和当前业务来源。
+
+四个教育角色先执行来源、引用和当前授权校验，再在同一业务事务提交权威 Message、输出指针与 Run 完成状态。客户端收到终态后回读当前结果或历史，一次展示有效正文；提交未完成、失败、取消或中断时不补出积累候选。已完成后来源撤回或权限变化，结果与历史读取仍重新校验，旧游标和旧完成通知不能恢复失效正文。这一机制验证技术发布条件；专业正确性和真实模型质量须通过各自验收。
+
+知识引用同时核对真实角色及登记范围。资料范围变化时，当前结果与专用引用接口拒绝失效正文；普通历史、state 与 search 过滤该答复。校验器以 `source_invalidated` 表示范围失效，以 `citation_invalid` 表示跨角色引用；checkpoint 在 Worker 模型执行前完成校验。未登记范围的历史资料只供原普通咨询使用，三个指标角色的旧结果若采用这类资料须重新咨询。提交接口接受 Request 后仍可能执行失败，客户端继续以同 Request 的实际终态和当前结果为准。资料发布契约见[审核范围登记](./health-agent-operations.md#登记科普资料的审核范围)。
 
 | 查询结果 | 展示与后续动作 |
 |---|---|

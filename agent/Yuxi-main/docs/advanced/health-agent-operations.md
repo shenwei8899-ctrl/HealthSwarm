@@ -22,16 +22,34 @@
 
 ## 设置健康任务执行预算
 
-Worker 的 `YUXI_HEALTH_RUN_TIMEOUT_SECONDS` 默认值为 `300` 秒，仅适用于五个固定健康角色。配置必须为正整数，且不得超过 `YUXI_JOB_TIMEOUT_SECONDS` 减去 `30` 秒；保留的时间用于关闭执行链、提交终态和清理。无效配置会阻止 Worker 启动。配置在进程启动时读取，修改后重启 Worker；正在运行的 Run 仍沿用其持久化首次执行时间，后续 attempt 按当前部署预算计算剩余时间。
+Worker 的 `YUXI_HEALTH_RUN_TIMEOUT_SECONDS` 默认值为 `300` 秒，适用于注册的固定健康角色。配置必须为正整数，且不得超过 `YUXI_JOB_TIMEOUT_SECONDS` 减去 `30` 秒；保留的时间用于关闭执行链、提交终态和清理。无效配置会阻止 Worker 启动。配置在进程启动时读取，修改后重启 Worker；正在运行的 Run 仍沿用其持久化首次执行时间，后续 attempt 按当前部署预算计算剩余时间。
 
 首次开始执行之前的 FIFO 排队不消耗预算；同一 Run 首次开始后的准备、模型、工具以及重试等待均消耗预算。耗尽时返回不可重试的 `health_execution_timeout`，最终状态由 PostgreSQL Run 和 Request 记录提供。用户补充信息后的新 Run 使用自己的首次执行起点。模型 SDK 只使用剩余时间且关闭自动 HTTP 重试；人工重试仍须满足当前授权、来源和原 Run 剩余时间。
 
 用户取消、失去 lease 和基础设施取消分别沿其既有流程处理。数据库不可用时，终态提交及清理由既有恢复机制处理；接收到超时错误后仍应查询同一 Request/Run 的最终状态。该预算约束执行时间，用量或费用上限须另行审批。边界与隔离复验见[执行预算决定](../develop-guides/decisions/implemented/2026-10-10-health-run-execution-budget.md)。
+
+## 登记科普资料的审核范围
+
+平台管理员使用 `POST /api/health/v1/nutrition-evidence` 登记专业审核后的资料版本。既有来源、审核人、审核凭据及带时区的审核和有效日期继续必填；可选的 `reviewed_scope` 对象登记以下使用条件。字段校验由[发布 DTO](https://github.com/shenwei8899-ctrl/HealthSwarm/blob/main/agent/Yuxi-main/backend/package/yuxi/services/health_evidence_types.py)拥有，许可真实性及专业内容由资料负责人和专业审核人确认。
+
+| 字段 | 发布者填写内容 | 当前使用条件 |
+|---|---|---|
+| `domains` | 从 `nutrition`、`blood_glucose`、`blood_lipids`、`blood_pressure` 中选择一到四个不重复领域 | 分别对应普通咨询、血糖、血脂、血压角色；真实 Run 决定检索领域 |
+| `population_category` | `general_education` 或 `professional_selection_required` | 当前教育流程只使用 `general_education` |
+| `population_description` | 专业填写的适用人群说明 | 保存审核登记，不从说明文本推断个体适用性 |
+| `exclusion_conditions` | 专业填写的排除条件列表，可为空 | 当前流程只使用空列表的资料；有排除条件时须等待专业匹配契约 |
+| `license_ref` | 非空许可依据引用 | 保存专业许可记录，不自动验证许可真实性 |
+
+来源的 `reviewed_scope` 和服务端生成的 `scope_hash` 随不可变版本保存，引用同时记录采用时的范围摘要。领域或适用条件调整须发布新版本，并按需要通过 `DELETE /api/health/v1/nutrition-evidence/{evidence_id}` 撤回旧版本。未登记范围的历史资料保留原普通咨询语义；三个指标角色要求明确的领域登记。
+
+检索前先按当前角色及通用适用条件筛选，索引命中后重新锁读当前来源。引用、最终发布、当前结果、历史及 checkpoint 工具历史均复核角色、范围摘要和来源内容；范围变化或撤回、过期时拒绝复用旧正文。没有可用片段时返回 `insufficient_evidence`，角色仍可回顾已授权记录并追问。部署须先由 `storage-migrator` 将健康 Schema 升至 24，再启动 API 和 Worker；升级增加三个可空字段并保留历史记录。范围契约与验证见[审核范围决定](../develop-guides/decisions/implemented/2026-10-13-health-evidence-reviewed-scope.md)。
 
 ## 配置、重试与隔离回放
 
 健康角色使用业务入口固定的成员、用途、版本、模型和工具。配置缺失、用途尚未审批、处理同意撤回或来源失效时，先处理响应中的业务原因。可重试错误也需要当前授权及来源仍有效；更换处理方或策略后须重新取得相应用途同意。各用途的配置与默认关闭状态由 `health_vision` 的[配置 Owner](https://github.com/shenwei8899-ctrl/HealthSwarm/blob/main/agent/Yuxi-main/backend/package/yuxi/config/options.py)拥有。
 
 健康固定图的确定性回放通过真实 API、ARQ Worker、最终 Message 和 PG 结果验证装配；回放不能证明真实模型效果或专业规则正确。按[测试规范](../develop-guides/testing-guidelines.md)准备合成隔离槽位，然后在 API 容器运行 `uv run --no-sync --group test python test/support/health_agent_replay_gate.py`。门禁要求独立合成标记及固定测试数据库，拒绝占用中的回放端口，并要求实际执行的用例零跳过。
+
+普通咨询及三个指标教育角色的普通 SSE、Run 进度、状态与历史只提供固定执行事实或当前有效的已发布结果。排障所需模型和工具候选仍保存在私有审计中：`GET /api/chat/thread/{thread_id}/audits` 需要超级管理员身份、会话归属及当前成员健康授权；普通会话所有者不能直接读取。不要用 `verbose=true`、checkpoint 或旧事件游标取得候选内容。首模型输出时间使用 Worker 内部有限标记记录，不能用普通进度时间代替。
 
 Yuxi 的系统测试模板使用 `scripts/ci_health_agent_replay.sh` 建立专属 `health-agent-ci` Compose 项目；脚本拒绝接管已存在项目，只清理自身创建的容器与卷。HealthSwarm 保留的工作流位于 `agent/Yuxi-main/.github/workflows/`，GitHub 只发现仓库根 `.github/workflows/`；该模板在 HealthSwarm 根仓库的自动运行入口仍待维护者配置。本地门禁结果与远端运行状态分别验收。

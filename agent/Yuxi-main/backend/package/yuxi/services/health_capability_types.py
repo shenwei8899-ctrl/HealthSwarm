@@ -27,6 +27,7 @@ class HealthTaskCapability(HealthDTO):
     reason_code: (
         Literal[
             "missing_scopes",
+            "self_member_required",
             "agent_unavailable",
             "skill_unavailable",
             "configuration_unavailable",

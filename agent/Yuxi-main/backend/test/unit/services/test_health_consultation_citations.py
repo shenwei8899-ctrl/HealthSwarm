@@ -78,7 +78,9 @@ async def test_read_returns_only_actual_final_citations_after_current_authorizat
         "citations": [{"citation_id": SECOND, "title": "乙"}, {"citation_id": FIRST, "title": "甲"}],
     }
     binding_repository.authorize.assert_awaited_once_with("actor", THREAD, lock=True, preview_history=True)
-    evidence_repository.validate_citations.assert_awaited_once_with([SECOND, FIRST], binding, "actor", run_id="run")
+    evidence_repository.validate_citations.assert_awaited_once_with(
+        [SECOND, FIRST], binding, "actor", agent_slug="health-consultation", run_id="run"
+    )
 
 
 @pytest.mark.asyncio
@@ -130,7 +132,9 @@ async def test_read_rejects_scope_or_execution_before_loading_answer(monkeypatch
 @pytest.mark.parametrize("case", ["pointer", "conversation", "missing", "audit", "delivery", "request"])
 async def test_final_answer_requires_pointer_and_regular_complete_same_request(monkeypatch, case):
     """同Run最后一条审计或邻请求消息不能充当权威答复。"""
-    run = SimpleNamespace(id="run", conversation_id=7, output_message_id=12, request_id="request")
+    run = SimpleNamespace(
+        id="run", agent_slug="health-consultation", conversation_id=7, output_message_id=12, request_id="request"
+    )
     run.uid, run.conversation_thread_id = "actor", THREAD
     session = SimpleNamespace(
         get=AsyncMock(return_value=SimpleNamespace(uid="actor", thread_id=THREAD, agent_id="health-consultation"))
@@ -157,19 +161,21 @@ async def test_final_answer_requires_pointer_and_regular_complete_same_request(m
 
 
 @pytest.mark.asyncio
-async def test_final_answer_accepts_only_exact_pointer_without_legacy_fallback(monkeypatch):
+@pytest.mark.parametrize(
+    "slug", ["health-consultation", "health-blood-glucose", "health-blood-lipids", "health-blood-pressure"]
+)
+async def test_final_answer_accepts_only_exact_pointer_without_legacy_fallback(monkeypatch, slug):
     """权威消息读取不能退到该线程或同Run最新消息。"""
     run = SimpleNamespace(
         id="run",
+        agent_slug=slug,
         uid="actor",
         conversation_id=7,
         conversation_thread_id=THREAD,
         output_message_id=12,
         request_id="request",
     )
-    session = SimpleNamespace(
-        get=AsyncMock(return_value=SimpleNamespace(uid="actor", thread_id=THREAD, agent_id="health-consultation"))
-    )
+    session = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(uid="actor", thread_id=THREAD, agent_id=slug)))
     answer = SimpleNamespace(message_type="text", delivery_status="complete", request_id="request")
     output = SimpleNamespace(get_output_message=AsyncMock(return_value=answer))
     monkeypatch.setattr(repository_module, "AgentRunOutputRepository", lambda _: output)
@@ -180,11 +186,20 @@ async def test_final_answer_accepts_only_exact_pointer_without_legacy_fallback(m
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field,value", [("uid", "other"), ("thread_id", "other"), ("agent_id", "health-meal-planner")])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("uid", "other"),
+        ("thread_id", "other"),
+        ("agent_id", "health-meal-planner"),
+        ("agent_id", "health-blood-glucose"),
+    ],
+)
 async def test_final_answer_rejects_changed_conversation_identity(field, value):
     """仅修改Run的角色或线程快照不能冒充不同专属会话。"""
     run = SimpleNamespace(
         id="run",
+        agent_slug="health-consultation",
         uid="actor",
         conversation_id=7,
         conversation_thread_id=THREAD,

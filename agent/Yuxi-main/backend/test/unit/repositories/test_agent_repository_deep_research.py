@@ -49,6 +49,9 @@ async def test_discovered_presets_creates_orchestrator_and_subagents(monkeypatch
         "health-diet-analyst",
         "health-quality",
         "health-purchase",
+        "health-blood-glucose",
+        "health-blood-lipids",
+        "health-blood-pressure",
     }
 
     explorer = created["research-explorer"]
@@ -64,6 +67,17 @@ async def test_discovered_presets_creates_orchestrator_and_subagents(monkeypatch
     assert context["subagents"] == ["research-explorer", "fact-verifier"]
     assert context["skills"] == ["deep-research"]
     assert context["system_prompt"].strip()
+
+    indicator_backends = {
+        "health-blood-glucose": "HealthBloodGlucoseAgent",
+        "health-blood-lipids": "HealthBloodLipidsAgent",
+        "health-blood-pressure": "HealthBloodPressureAgent",
+    }
+    for slug, backend_id in indicator_backends.items():
+        indicator = created[slug]
+        assert indicator.backend_id == backend_id
+        assert indicator.is_subagent is False
+        assert indicator.is_default is False
 
 
 @pytest.mark.asyncio

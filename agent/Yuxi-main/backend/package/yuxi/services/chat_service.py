@@ -13,6 +13,7 @@ share the same runtime behavior once they reach the worker.
 """
 
 from yuxi.repositories.health_consultation_repository import (
+    EDUCATION_HEALTH_AGENTS,
     HEALTH_AGENT_BACKENDS,
     PLANNER_SLUG,
     ANALYST_SLUG,
@@ -570,7 +571,7 @@ async def save_partial_message(
 
             if locked_run.agent_slug in STRUCTURED_HEALTH_AGENTS and not interrupt_run:
                 return None  # 结构化角色的失败由Run错误表达，未经核验的正文不进入普通历史。
-            if locked_run.agent_slug == "health-consultation":
+            if locked_run.agent_slug in EDUCATION_HEALTH_AGENTS:
                 if not interrupt_run:
                     return None  # 所有咨询失败正文均未经过完成发布校验，只保留受控Run错误与私有审计。
                 content = ""
@@ -776,7 +777,11 @@ async def save_messages_from_langgraph_state(
                     # Checkpoint 包含线程完整历史；同一来源键只对账最后一次 AIMessage。
                     state_model_messages[str(msg_id)] = msg_dict
                     continue
-                if current_model_audits or msg_id in existing_ids:
+                if (
+                    current_model_audits
+                    or msg_id in existing_ids
+                    or (run_id and locked_run.agent_slug in EDUCATION_HEALTH_AGENTS and not complete_run)
+                ):
                     continue
                 last_ai_message = await _save_ai_message(
                     conv_repo,
@@ -827,14 +832,13 @@ async def save_messages_from_langgraph_state(
                     raise ValueError("最终 State AIMessage 无法与当前 Run 的 Model lifecycle 事实关联")
                 last_ai_message = terminal_ai_message
             if last_ai_message is not None:
-                if (complete_run or interrupt_run) and locked_run.agent_slug == "health-consultation":
+                if complete_run and locked_run.agent_slug in EDUCATION_HEALTH_AGENTS:
                     from yuxi.services.health_family_profile_service import validate_profile_publication
 
                     await validate_profile_publication(conv_repo.db, locked_run)
-                    if complete_run:
-                        from yuxi.services.health_evidence_service import validate_evidence_publication
+                    from yuxi.services.health_evidence_service import validate_evidence_publication
 
-                        await validate_evidence_publication(conv_repo.db, locked_run, last_ai_message.content)
+                    await validate_evidence_publication(conv_repo.db, locked_run, last_ai_message.content)
                 if complete_run and locked_run.agent_slug == PLANNER_SLUG:
                     from yuxi.services.health_family_planner_service import validate_family_planner_publication
 
@@ -863,9 +867,14 @@ async def save_messages_from_langgraph_state(
                     or complete_run
                     or (interrupt_run and not has_tool_calls)
                 )
+                if locked_run.agent_slug in EDUCATION_HEALTH_AGENTS and not complete_run:
+                    should_publish = False
                 if should_publish:
                     await conv_repo.publish_assistant_output(last_ai_message)
-                if should_publish or locked_run.agent_slug not in STRUCTURED_HEALTH_AGENTS:
+                if should_publish or (
+                    locked_run.agent_slug not in STRUCTURED_HEALTH_AGENTS
+                    and locked_run.agent_slug not in EDUCATION_HEALTH_AGENTS
+                ):
                     await run_repo.set_output_message(
                         run_id,
                         last_ai_message.id,
@@ -1086,6 +1095,7 @@ async def stream_agent_chat(
     image_content = input_message.image_content
     human_message = input_message.require_langchain_message()
     message_type = input_message.message_type
+    withhold_health_output = agent_slug in EDUCATION_HEALTH_AGENTS
 
     try:
         agent_item, agent, context, conversation = await _resolve_agent_runtime(
@@ -1097,7 +1107,12 @@ async def stream_agent_chat(
             prepared_execution=prepared_execution,
         )
     except ValueError as e:
-        yield make_chunk(status="error", error_type="invalid_agent", error_message=str(e), meta=meta)
+        yield make_chunk(
+            status="error",
+            error_type="invalid_agent",
+            error_message="健康解释暂时不可用，请重新咨询" if withhold_health_output else str(e),
+            meta=meta,
+        )
         return
 
     meta.update(
@@ -1111,6 +1126,7 @@ async def stream_agent_chat(
         }
     )
 
+    withhold_health_output = agent_item.slug in EDUCATION_HEALTH_AGENTS
     accumulated_content: list[str] = []
     trace_info: dict[str, Any] = {}
     last_agent_state_signature = ""
@@ -1163,12 +1179,15 @@ async def stream_agent_chat(
         if image_content:
             init_msg["image_content"] = image_content
         yield make_chunk(status="init", meta=meta, msg=init_msg)
+        if withhold_health_output:
+            yield make_chunk(status="health_progress", phase="running", message="正在回顾记录与审核知识", meta=meta)
 
         # 智能体流式执行期间不访问业务数据库，先结束预处理事务并归还连接池。
         await db.commit()
 
         final_state = None
         protocol_message_ids: dict[tuple[str, str], str] = {}
+        health_model_output_started = False
         model_audit = _build_model_message_audit_collector(meta, thread_id)
         tool_audit = _build_tool_message_audit_collector(model_audit)
         callbacks = list(langfuse_run.callbacks)
@@ -1189,6 +1208,8 @@ async def stream_agent_chat(
                     final_state = payload
                     continue
                 if mode == "values":
+                    if withhold_health_output:
+                        continue
                     agent_state = extract_agent_state(
                         payload if isinstance(payload, dict) else {},
                         workdir_path=context.workdir_path,
@@ -1200,6 +1221,8 @@ async def stream_agent_chat(
                     continue
 
                 if mode == "custom":
+                    if withhold_health_output:
+                        continue
                     compression = _context_compression_payload(payload)
                     if compression is not None:
                         yield make_chunk(status="context_compression", compression=compression, meta=meta)
@@ -1215,6 +1238,8 @@ async def stream_agent_chat(
                         and _is_root_tool_audit_event(event_payload, thread_id)
                     ):
                         await tool_audit.consume(event_payload)
+                    if withhold_health_output:
+                        continue
                     yield make_chunk(
                         status="stream_event",
                         event=event_payload,
@@ -1242,6 +1267,21 @@ async def stream_agent_chat(
                 )
 
                 for stream_event in stream_events:
+                    if withhold_health_output:
+                        if not health_model_output_started and any(
+                            stream_event.get(key)
+                            for key in (
+                                "content",
+                                "reasoning_content",
+                                "additional_reasoning_content",
+                                "name",
+                                "args",
+                                "args_delta",
+                            )
+                        ):
+                            health_model_output_started = True
+                            yield make_chunk(status="health_progress", phase="running", model_output_started=True)
+                        continue
                     if agent_item.slug in STRUCTURED_HEALTH_AGENTS and stream_event.get("type") == "message_delta":
                         continue  # 配餐正文须经过回执核验；原始模型消息仍由上方审计保存。
                     content = _stream_event_response(stream_event)
@@ -1267,17 +1307,23 @@ async def stream_agent_chat(
         async for chunk in check_and_handle_interrupts(final_state, make_chunk, meta, thread_id):
             interrupted = True
             interrupt_error_type, interrupt_error_message = _interrupt_terminal_details(chunk)
-            yield chunk
+            if withhold_health_output:
+                interrupt_error_type, interrupt_error_message = "interrupted", "咨询已中断，请重新发送文字咨询"
+                meta.pop("interrupt", None)
+            else:
+                yield chunk
 
         meta["time_cost"] = asyncio.get_event_loop().time() - start_time
         agent_state = extract_agent_state(final_state.values, workdir_path=context.workdir_path)
 
         final_signature = _agent_state_signature(agent_state)
-        if final_signature and final_signature != last_agent_state_signature:
+        if not withhold_health_output and final_signature and final_signature != last_agent_state_signature:
             last_agent_state_signature = final_signature
             yield make_chunk(status="agent_state", agent_state=agent_state, meta=meta)
 
         # 先记录模型请求时间，再由同一 lease owner 原子落库终态。
+        if withhold_health_output:
+            yield make_chunk(status="health_progress", phase="validating", message="正在校验答复来源与引用", meta=meta)
         await _persist_model_request_timing(model_request_recorder, meta)
         # 先存储数据库，再返回 finished，避免前端查询时数据未落库
         try:
@@ -1295,6 +1341,8 @@ async def stream_agent_chat(
                 interrupt_error_message=interrupt_error_message,
                 token_usage=_current_run_token_usage(agent_state, meta.get("run_id")),
             )
+            if withhold_health_output and not terminal_committed:
+                raise ValueError("健康解释终态尚未提交")
         except Exception as e:
             logger.exception(f"Error saving messages from LangGraph state: {e}")
             yield make_chunk(
@@ -1306,6 +1354,8 @@ async def stream_agent_chat(
             return
 
         if interrupted:
+            if withhold_health_output:
+                yield make_chunk(status="interrupted", message=interrupt_error_message, meta=meta)
             return
 
         yield make_chunk(status="finished", meta=meta, terminal_committed=terminal_committed)
@@ -1338,7 +1388,12 @@ async def stream_agent_chat(
             )
 
         await _persist_model_request_timing(model_request_recorder, meta)
-        yield make_chunk(status="error", error_type=error_type, error_message=error_msg, meta=meta)
+        yield make_chunk(
+            status="error",
+            error_type=error_type,
+            error_message="健康解释执行失败，请重新咨询" if withhold_health_output else error_msg,
+            meta=meta,
+        )
     finally:
         # 同步 exporter 会等待网络与队列，不能阻塞其他 Run 的事件循环。
         await asyncio.to_thread(flush_langfuse)
@@ -1370,6 +1425,9 @@ async def stream_agent_resume(
 
     if not thread_id or not meta.get("request_id"):
         raise ValueError("执行需要已持久化的 thread_id 和 request_id")
+    withhold_health_output = prepared_execution.backend_id in {
+        HEALTH_AGENT_BACKENDS[slug] for slug in EDUCATION_HEALTH_AGENTS
+    }
     yield make_resume_chunk(status="init", meta=meta)
 
     try:
@@ -1381,10 +1439,18 @@ async def stream_agent_resume(
             prepared_execution=prepared_execution,
         )
     except ValueError as e:
-        yield make_resume_chunk(status="error", error_type="invalid_agent", error_message=str(e), meta=meta)
+        yield make_resume_chunk(
+            status="error",
+            error_type="invalid_agent",
+            error_message="健康解释暂时不可用，请重新咨询" if withhold_health_output else str(e),
+            meta=meta,
+        )
         return
 
     conv_repo = ConversationRepository(db)
+    withhold_health_output = agent_item.slug in EDUCATION_HEALTH_AGENTS
+    if withhold_health_output:
+        yield make_resume_chunk(status="health_progress", phase="running", message="正在回顾记录与审核知识")
     resume_command = Command(resume=resume_input)
 
     # 恢复流执行期间不访问业务数据库，先结束运行时解析事务并归还连接池。
@@ -1420,6 +1486,7 @@ async def stream_agent_resume(
     )
 
     protocol_message_ids: dict[tuple[str, str], str] = {}
+    health_model_output_started = False
     model_audit = _build_model_message_audit_collector(meta, thread_id)
     tool_audit = _build_tool_message_audit_collector(model_audit)
 
@@ -1430,6 +1497,8 @@ async def stream_agent_resume(
                     final_state = payload
                     continue
                 if mode == "values":
+                    if withhold_health_output:
+                        continue
                     agent_state = extract_agent_state(
                         payload if isinstance(payload, dict) else {},
                         workdir_path=context.workdir_path,
@@ -1450,6 +1519,8 @@ async def stream_agent_resume(
                         and _is_root_tool_audit_event(event_payload, thread_id)
                     ):
                         await tool_audit.consume(event_payload)
+                    if withhold_health_output:
+                        continue
                     yield make_resume_chunk(
                         status="stream_event",
                         event=event_payload,
@@ -1460,6 +1531,8 @@ async def stream_agent_resume(
                     continue
 
                 if mode == "custom":
+                    if withhold_health_output:
+                        continue
                     compression = _context_compression_payload(payload)
                     if compression is not None:
                         yield make_resume_chunk(status="context_compression", compression=compression, meta=meta)
@@ -1489,6 +1562,23 @@ async def stream_agent_resume(
                 )
 
                 for stream_event in stream_events:
+                    if withhold_health_output:
+                        if not health_model_output_started and any(
+                            stream_event.get(key)
+                            for key in (
+                                "content",
+                                "reasoning_content",
+                                "additional_reasoning_content",
+                                "name",
+                                "args",
+                                "args_delta",
+                            )
+                        ):
+                            health_model_output_started = True
+                            yield make_resume_chunk(
+                                status="health_progress", phase="running", model_output_started=True
+                            )
+                        continue
                     content = _stream_event_response(stream_event)
                     yield make_resume_chunk(
                         content=content,
@@ -1506,17 +1596,23 @@ async def stream_agent_resume(
         async for chunk in check_and_handle_interrupts(final_state, make_resume_chunk, meta, thread_id):
             interrupted = True
             interrupt_error_type, interrupt_error_message = _interrupt_terminal_details(chunk)
-            yield chunk
+            if withhold_health_output:
+                interrupt_error_type, interrupt_error_message = "interrupted", "咨询已中断，请重新发送文字咨询"
+                meta.pop("interrupt", None)
+            else:
+                yield chunk
 
         meta["time_cost"] = asyncio.get_event_loop().time() - start_time
 
         agent_state = extract_agent_state(final_state.values, workdir_path=context.workdir_path)
 
         final_signature = _agent_state_signature(agent_state)
-        if final_signature and final_signature != last_agent_state_signature:
+        if not withhold_health_output and final_signature and final_signature != last_agent_state_signature:
             yield make_resume_chunk(status="agent_state", agent_state=agent_state, meta=meta)
 
         # 先记录模型请求时间，再由同一 lease owner 原子落库终态。
+        if withhold_health_output:
+            yield make_resume_chunk(status="health_progress", phase="validating", message="正在校验答复来源与引用")
         await _persist_model_request_timing(model_request_recorder, meta)
         # 先存储数据库，再返回 finished，避免前端查询时数据未落库
         try:
@@ -1534,6 +1630,8 @@ async def stream_agent_resume(
                 interrupt_error_message=interrupt_error_message,
                 token_usage=_current_run_token_usage(agent_state, meta.get("run_id")),
             )
+            if withhold_health_output and not terminal_committed:
+                raise ValueError("健康解释终态尚未提交")
         except Exception as e:
             logger.exception(f"Error saving messages from LangGraph state: {e}")
             yield make_resume_chunk(
@@ -1545,6 +1643,8 @@ async def stream_agent_resume(
             return
 
         if interrupted:
+            if withhold_health_output:
+                yield make_resume_chunk(status="interrupted", message=interrupt_error_message)
             return
 
         yield make_resume_chunk(status="finished", meta=meta, terminal_committed=terminal_committed)
@@ -1571,7 +1671,11 @@ async def stream_agent_resume(
             )
 
         await _persist_model_request_timing(model_request_recorder, meta)
-        yield make_resume_chunk(message=f"Error during resume: {e}", status="error")
+        yield make_resume_chunk(
+            error_message="健康解释执行失败，请重新咨询" if withhold_health_output else f"Error during resume: {e}",
+            error_type="resume_error",
+            status="error",
+        )
     finally:
         await asyncio.to_thread(flush_langfuse)
 
@@ -1643,12 +1747,15 @@ async def get_agent_state_view(
                 workdir_path=runtime_workdir,
             )
         }
-        if latest_run and latest_run.status == "interrupted" and interrupt_info:
+        withhold_health_output = conversation.agent_id in EDUCATION_HEALTH_AGENTS
+        if withhold_health_output:
+            response["agent_state"] = extract_agent_state({})
+        if latest_run and latest_run.status == "interrupted" and interrupt_info and not withhold_health_output:
             response["interrupt"] = {
                 **_build_pending_interrupt_payload(interrupt_info, thread_id),
                 "run_id": latest_run.id,
             }
-        if include_relations:
+        if include_relations and not withhold_health_output:
             # checkpoint 保存模型上下文；页面加载以持久 Run 的身份与状态为准。
             child_runs = await run_repo.list_subagent_runs_for_conversation(conversation.id, current_uid)
             response["agent_state"]["subagent_runs"] = [serialize_subagent_run_state(run) for run in child_runs]
@@ -1677,7 +1784,7 @@ async def get_agent_state_view(
                         logger.error(f"子智能体运行记录格式异常: thread_id={thread_id}, run_id={latest_run.id}, {exc}")
                         raise HTTPException(status_code=500, detail="子智能体运行记录格式异常") from exc
         if include_messages:
-            if conversation.agent_id == "health-consultation":
+            if conversation.agent_id in EDUCATION_HEALTH_AGENTS:
                 from yuxi.services.conversation_service import get_thread_history_view
 
                 public_history = await get_thread_history_view(thread_id=thread_id, current_uid=current_uid, db=db)

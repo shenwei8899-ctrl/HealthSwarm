@@ -1,5 +1,7 @@
 """成员私有识图数据及不可变确认快照。"""
 
+from sqlalchemy.dialects.postgresql import JSONB
+
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -9,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Index,
+    JSON,
     Numeric,
     String,
     Text,
@@ -471,6 +474,8 @@ class NutritionEvidence(Base):
     content = Column(Text, nullable=False)
     content_hash = Column(String(64), nullable=False)
     review_ref = Column(String(500), nullable=False)
+    reviewed_scope = Column(JSONB(none_as_null=True).with_variant(JSON(none_as_null=True), "sqlite"))
+    scope_hash = Column(String(64))
     reviewed_by = Column(String(100), nullable=False)
     reviewed_at = Column(DateTime, nullable=False)
     valid_until = Column(DateTime, nullable=False)
@@ -490,6 +495,7 @@ class NutritionEvidenceCitation(Base):
     member_id = Column(String(36), ForeignKey("family_member.id"), nullable=False)
     actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
     content_hash = Column(String(64), nullable=False)
+    scope_hash = Column(String(64))
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 

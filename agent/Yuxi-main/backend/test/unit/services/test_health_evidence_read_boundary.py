@@ -27,7 +27,7 @@ def controlled_read_mutation(monkeypatch):
     if mode == "read_gate":
         owner, attribute = evidence, "read_public_consultation_answer"
         original = evidence.read_public_consultation_answer
-        old = "await repo.validate_citations(ids, binding, uid, run_id=run.id, lock=True)"
+        old = "await repo.validate_citations(ids, binding, uid, agent_slug=run.agent_slug, run_id=run.id, lock=True)"
         replacements = [(old, "pass")]
     elif mode == "history_projection":
         owner, attribute = ConversationRepository, "list_agent_runs_for_history"
@@ -108,7 +108,12 @@ async def test_read_validates_only_actual_final_refs_without_processing_or_retri
     monkeypatch.setattr(evidence.HealthEvidenceRepository, "validate_citations", proof)
     assert await evidence.read_public_consultation_answer(session, run, "actor", binding=binding) is answer
     proof.assert_awaited_once_with(
-        [REFERENCE] if "[证据:" in content else [], binding, "actor", run_id=run.id, lock=True
+        [REFERENCE] if "[证据:" in content else [],
+        binding,
+        "actor",
+        agent_slug=run.agent_slug,
+        run_id=run.id,
+        lock=True,
     )
     session.scalar.assert_not_awaited()
 
@@ -158,7 +163,7 @@ async def test_public_read_refuses_revoked_final_source_instead_of_returning_sto
     monkeypatch.setattr(evidence.HealthEvidenceRepository, "validate_citations", proof)
     with pytest.raises(HealthVisionError, match="source_invalidated"):
         await evidence.read_public_consultation_answer(object(), run, "actor", binding=binding)
-    proof.assert_awaited_once_with([REFERENCE], binding, "actor", run_id=run.id, lock=True)
+    proof.assert_awaited_once_with([REFERENCE], binding, "actor", agent_slug=run.agent_slug, run_id=run.id, lock=True)
 
 
 async def test_read_without_binding_rechecks_history_authorization_without_model_consent(monkeypatch):
@@ -172,7 +177,7 @@ async def test_read_without_binding_rechecks_history_authorization_without_model
     monkeypatch.setattr(evidence.HealthEvidenceRepository, "validate_citations", proof)
     assert await evidence.read_public_consultation_answer(object(), run, "actor") is answer
     authorize.assert_awaited_once_with("actor", "thread", lock=True, preview_history=True)
-    proof.assert_awaited_once_with([], binding, "actor", run_id=run.id, lock=True)
+    proof.assert_awaited_once_with([], binding, "actor", agent_slug=run.agent_slug, run_id=run.id, lock=True)
 
 
 async def test_generic_result_keeps_legacy_output_without_consultation_gate(monkeypatch):

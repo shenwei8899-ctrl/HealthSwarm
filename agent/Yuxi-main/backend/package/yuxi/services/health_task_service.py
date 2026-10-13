@@ -7,6 +7,10 @@ from pydantic import ValidationError
 from yuxi.repositories.health_consultation_repository import (
     ANALYST_SLUG,
     CONSULTATION_SLUG,
+    EDUCATION_HEALTH_AGENTS,
+    GLUCOSE_SLUG,
+    LIPIDS_SLUG,
+    PRESSURE_SLUG,
     PLANNER_SLUG,
     PURCHASE_SLUG,
     QUALITY_SLUG,
@@ -115,6 +119,9 @@ async def create_health_task_entry(uid: str, member_id: str, data: HealthTaskEnt
     else:
         slug = {
             "consultation": CONSULTATION_SLUG,
+            "blood_glucose_review": GLUCOSE_SLUG,
+            "blood_lipids_review": LIPIDS_SLUG,
+            "blood_pressure_review": PRESSURE_SLUG,
             "meal_preview": PLANNER_SLUG,
             "initial_meal_preview": PLANNER_SLUG,
             "family_meal_revision": PLANNER_SLUG,
@@ -188,10 +195,10 @@ async def read_health_task(uid: str, request_id: str) -> HealthTaskResult:
         if current_binding.conversation_id != run.conversation_id or current_binding.member_id != binding.member_id:
             raise HealthVisionError("source_invalidated", "健康任务来源绑定已变化", 410)
         response.final_message_id = message.id
-        if run.agent_slug == CONSULTATION_SLUG:
+        if run.agent_slug in EDUCATION_HEALTH_AGENTS:
             evidence = HealthEvidenceRepository(session)
             ids = answer_citation_ids(message.content)
-            citations = await evidence.validate_citations(ids, binding, uid, run_id=run.id)
+            citations = await evidence.validate_citations(ids, binding, uid, agent_slug=run.agent_slug, run_id=run.id)
             response.result = HealthTaskGeneralAnswer(
                 answer=message.content, citations=[citations[citation_id] for citation_id in ids]
             )
@@ -221,8 +228,14 @@ async def read_health_task(uid: str, request_id: str) -> HealthTaskResult:
 
 def task_type_for_binding(slug, binding):
     """任务类型来自服务器线程事实，模型文字不能改变模式。"""
-    if slug == CONSULTATION_SLUG:
-        return "consultation"
+    education_tasks = {
+        CONSULTATION_SLUG: "consultation",
+        GLUCOSE_SLUG: "blood_glucose_review",
+        LIPIDS_SLUG: "blood_lipids_review",
+        PRESSURE_SLUG: "blood_pressure_review",
+    }
+    if slug in education_tasks:
+        return education_tasks[slug]
     if slug == ANALYST_SLUG:
         return "diet_analysis"
     if slug == QUALITY_SLUG:

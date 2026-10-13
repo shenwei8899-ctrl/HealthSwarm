@@ -9,7 +9,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from sqlalchemy import select
 
 from yuxi.repositories.agent_run_repository import AgentRunRepository
-from yuxi.repositories.health_consultation_repository import CONSULTATION_SLUG, HealthConsultationRepository
+from yuxi.repositories.health_consultation_repository import EDUCATION_HEALTH_AGENTS, HealthConsultationRepository
 from yuxi.repositories.health_evidence_repository import HealthEvidenceRepository
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.manager import pg_manager
@@ -22,7 +22,7 @@ async def read_consultation_citations(uid, run_id):
     """重验当前成员授权与完成答复，只公开该答复实际采用的本Run引用。"""
     async with pg_manager.get_async_session_context() as session:
         run = await AgentRunRepository(session).get_run_for_user(run_id, uid)
-        if run is None or run.agent_slug != CONSULTATION_SLUG:
+        if run is None or run.agent_slug not in EDUCATION_HEALTH_AGENTS:
             raise HealthVisionError("not_found", "专属咨询运行不存在或无权访问", 404)
         if run.status != "completed":
             raise HealthVisionError("answer_not_completed", "仅已完成的咨询答复可读取引用", 409)
@@ -34,7 +34,7 @@ async def read_consultation_citations(uid, run_id):
         repo = HealthEvidenceRepository(session)
         answer = await repo.final_answer(run)
         ids = answer_citation_ids(answer.content)
-        citations = await repo.validate_citations(ids, binding, uid, run_id=run.id)
+        citations = await repo.validate_citations(ids, binding, uid, agent_slug=run.agent_slug, run_id=run.id)
         return {
             "result_type": "nutrition_citations",
             "status": "cited" if ids else "not_cited",
@@ -65,12 +65,14 @@ async def validate_evidence_publication(session, run, content):
         if retrieved is not None:
             raise HealthVisionError("citation_invalid", "答复缺少有效的本轮证据引用", 409)
         return
-    await HealthEvidenceRepository(session).validate_citations(ids, binding, run.uid, run_id=run.id, lock=True)
+    await HealthEvidenceRepository(session).validate_citations(
+        ids, binding, run.uid, agent_slug=run.agent_slug, run_id=run.id, lock=True
+    )
 
 
 async def read_public_consultation_answer(session, run, uid, *, binding=None):
     """正文读取只校验权威最终回答实际采用的同Run来源，不扩大模型用途。"""
-    if run.agent_slug != CONSULTATION_SLUG or run.uid != uid or run.status != "completed":
+    if run.agent_slug not in EDUCATION_HEALTH_AGENTS or run.uid != uid or run.status != "completed":
         raise HealthVisionError("answer_unavailable", "咨询缺少可公开的最终答复", 409)
     if binding is None:
         binding = await HealthConsultationRepository(session).authorize(
@@ -81,7 +83,7 @@ async def read_public_consultation_answer(session, run, uid, *, binding=None):
     repo = HealthEvidenceRepository(session)
     answer = await repo.final_answer(run)
     ids = answer_citation_ids(answer.content)
-    await repo.validate_citations(ids, binding, uid, run_id=run.id, lock=True)
+    await repo.validate_citations(ids, binding, uid, agent_slug=run.agent_slug, run_id=run.id, lock=True)
     return answer
 
 
@@ -96,15 +98,26 @@ async def publish_evidence(uid, data):
     """发布不可变版本，不允许覆盖已被引用的片段。"""
     async with pg_manager.get_async_session_context() as session:
         await require_evidence_admin(session, uid)
+        values = data.model_dump()
         source = NutritionEvidence(
             id=str(uuid4()),
-            **data.model_dump(),
+            **values,
             content_hash=hashlib.sha256(data.content.encode()).hexdigest(),
+            scope_hash=HealthEvidenceRepository.scope_digest(values["reviewed_scope"]),
             published_by=uid,
         )
         session.add(source)
         await session.flush()
-        return {"evidence_id": source.id, "source_version": source.source_version, "scope": "general_education"}
+        result = {
+            "evidence_id": source.id,
+            "source_version": source.source_version,
+            "scope": values["reviewed_scope"]["population_category"]
+            if values["reviewed_scope"]
+            else "general_education",
+        }
+        if source.reviewed_scope is not None:
+            result.update(reviewed_scope=source.reviewed_scope, scope_hash=source.scope_hash)
+        return result
 
 
 async def revoke_evidence(uid, source_id):
@@ -132,7 +145,7 @@ async def search_nutrition_evidence(context, query):
         binding, _ = await require_consultation(
             session, context.uid, context.thread_id, context.model, expected=snapshot, lock=True
         )
-        sources = await HealthEvidenceRepository(session).search(query)
+        sources = await HealthEvidenceRepository(session).search(query, agent_slug=run.agent_slug)
         # 后台纯索引结束后再次核对当前 attempt；取消或接管不能继续创建引用。
         await HealthConsultationRepository(session).require_attempt(context)
         results = []
@@ -147,6 +160,7 @@ async def search_nutrition_evidence(context, query):
                 member_id=binding.member_id,
                 actor_uid=context.uid,
                 content_hash=source.content_hash,
+                scope_hash=source.scope_hash,
             )
             session.add(citation)
             results.append(HealthEvidenceRepository.project_citation(citation, source))
@@ -187,7 +201,9 @@ async def validate_nutrition_answer(context, content, messages):
         binding, _ = await require_consultation(
             session, context.uid, context.thread_id, context.model, expected=snapshot, lock=True
         )
-        await HealthEvidenceRepository(session).validate_citations(ids, binding, context.uid, run_id=run.id)
+        await HealthEvidenceRepository(session).validate_citations(
+            ids, binding, context.uid, agent_slug=run.agent_slug, run_id=run.id
+        )
 
 
 def answer_citation_ids(content):

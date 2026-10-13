@@ -1,4 +1,4 @@
-from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS
+from yuxi.repositories.health_consultation_repository import EDUCATION_HEALTH_AGENTS, HEALTH_AGENT_BACKENDS
 import uuid
 from typing import Any
 
@@ -289,7 +289,7 @@ async def search_threads_view(
         return {"items": [], "has_more": False, "limit": limit, "offset": offset}
 
     conv_repo = ConversationRepository(db)
-    if agent_id in (None, "health-consultation"):
+    if agent_id is None or agent_id in EDUCATION_HEALTH_AGENTS:
         search_items, has_more = await _search_with_public_consultations(
             conv_repo, db, str(current_uid), normalized_query, agent_id=agent_id, limit=limit, offset=offset
         )
@@ -307,7 +307,11 @@ async def search_threads_view(
     for item in search_items:
         conv = item["conversation"]
         try:
-            if agent_id not in (None, "health-consultation") and conv.agent_id in HEALTH_AGENT_BACKENDS:
+            if (
+                agent_id is not None
+                and agent_id not in EDUCATION_HEALTH_AGENTS
+                and conv.agent_id in HEALTH_AGENT_BACKENDS
+            ):
                 await require_user_conversation(conv_repo, conv.thread_id, str(current_uid))
         except HTTPException:
             continue
@@ -439,7 +443,7 @@ async def get_thread_history_view(
     ]
 
     runs = await conv_repo.list_agent_runs_for_history(conversation.id)
-    if conversation.agent_id == "health-consultation":
+    if conversation.agent_id in EDUCATION_HEALTH_AGENTS:
         run_map = {run.id: run for run in runs}
         public_messages = []
         for message in messages:
@@ -496,7 +500,8 @@ async def get_thread_history_view(
                     }
                     break
 
-        extra_metadata = _serialize_history_metadata(msg)
+        health_answer = conversation.agent_id in EDUCATION_HEALTH_AGENTS and msg.role == "assistant"
+        extra_metadata = {} if health_answer else _serialize_history_metadata(msg)
         request_id = extra_metadata.get("request_id")
         if msg.role == "user" and request_id and not extra_metadata.get("attachments"):
             extra_metadata["attachments"] = attachments_by_request_id.get(str(request_id), [])
@@ -522,9 +527,12 @@ async def get_thread_history_view(
         }
 
         if msg.role == "assistant":
-            msg_dict.update(parse_assistant_message_body(msg.content, msg.extra_metadata or {}))
+            if health_answer:
+                msg_dict["reasoning_content"] = ""  # 校验的正式正文不包含模型审计推理或工具候选。
+            else:
+                msg_dict.update(parse_assistant_message_body(msg.content, msg.extra_metadata or {}))
 
-        if msg.tool_calls:
+        if msg.tool_calls and not health_answer:
             msg_dict["tool_calls"] = [_serialize_tool_call(tool_call) for tool_call in msg.tool_calls]
 
         history.append(msg_dict)
@@ -558,7 +566,7 @@ async def _search_with_public_consultations(conv_repo, db, uid, query, *, agent_
                 limit=50,
                 offset=raw_offset,
                 exclude_sources=INVOCATION_CONVERSATION_SOURCES,
-                exclude_agent_ids=("health-consultation",),
+                exclude_agent_ids=tuple(sorted(EDUCATION_HEALTH_AGENTS)),
             )
             for item in candidates:
                 conversation = item["conversation"]
@@ -577,7 +585,7 @@ async def _search_with_public_consultations(conv_repo, db, uid, query, *, agent_
     authorized_threads = {}
     consultation_items = {}
     async for conversation, message in conv_repo.iter_consultation_search_matches(
-        uid=uid, query=query, exclude_sources=INVOCATION_CONVERSATION_SOURCES
+        uid=uid, query=query, agent_id=agent_id, exclude_sources=INVOCATION_CONVERSATION_SOURCES
     ):
         if conversation.id not in authorized_threads:
             try:

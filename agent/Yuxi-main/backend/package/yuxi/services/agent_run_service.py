@@ -14,7 +14,7 @@ subagent presentation details.
 
 from __future__ import annotations
 
-from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS
+from yuxi.repositories.health_consultation_repository import EDUCATION_HEALTH_AGENTS, HEALTH_AGENT_BACKENDS
 import asyncio
 import json
 import uuid
@@ -370,7 +370,9 @@ def _progress_message_from_chunk(chunk: dict, *, seq: str) -> dict | None:
     return {**base, "kind": kind, "content": content}
 
 
-async def get_agent_run_progress(run_id: str, *, message_limit: int = RUN_PROGRESS_MESSAGE_LIMIT) -> dict:
+async def get_agent_run_progress(
+    run_id: str, *, message_limit: int = RUN_PROGRESS_MESSAGE_LIMIT, agent_slug: str | None = None
+) -> dict:
     """读取适合 status 轮询返回的轻量运行进度快照。"""
     try:
         events = await list_recent_run_stream_events(run_id, limit=RUN_PROGRESS_RECENT_EVENT_SCAN_LIMIT)
@@ -379,6 +381,8 @@ async def get_agent_run_progress(run_id: str, *, message_limit: int = RUN_PROGRE
         return {"last_seq": "0-0", "messages": []}
 
     last_seq = str(events[0]["seq"]) if events else "0-0"
+    if agent_slug in EDUCATION_HEALTH_AGENTS:
+        return {"last_seq": last_seq, "messages": []}
     limit = max(1, int(message_limit or RUN_PROGRESS_MESSAGE_LIMIT))
     messages = []
 
@@ -756,7 +760,7 @@ async def get_agent_run_view(*, run_id: str, current_uid: str, db: AsyncSession)
     run = await repo.get_run_for_user(run_id, str(current_uid))
     if not run:
         raise HTTPException(status_code=404, detail="运行任务不存在")
-    return {"run": run.to_dict()}
+    return {"run": _public_run_view(run)}
 
 
 async def get_agent_run_result(*, run_id: str, current_uid: str, db: AsyncSession) -> dict:
@@ -771,7 +775,7 @@ async def get_agent_run_result(*, run_id: str, current_uid: str, db: AsyncSessio
         }
 
     output_message = None
-    if run.agent_slug == "health-consultation":
+    if run.agent_slug in EDUCATION_HEALTH_AGENTS:
         if run.status == "completed":
             from yuxi.services.health_evidence_service import read_public_consultation_answer
             from yuxi.services.health_vision_types import HealthVisionError
@@ -811,8 +815,16 @@ async def get_agent_run_result(*, run_id: str, current_uid: str, db: AsyncSessio
             first_model_request_at=getattr(run, "first_model_request_at", None),
         ),
     }
+    if run.agent_slug in EDUCATION_HEALTH_AGENTS:
+        payload["token_usage"] = project_health_token_usage(
+            payload["token_usage"], (getattr(run, "input_payload", None) or {}).get("model_spec")
+        ) or {"available": False}
     if run.error_type or run.error_message:
-        payload["error"] = {"type": run.error_type, "message": run.error_message}
+        payload["error"] = (
+            _public_health_error(run.error_type)
+            if run.agent_slug in EDUCATION_HEALTH_AGENTS
+            else {"type": run.error_type, "message": run.error_message}
+        )
     return payload
 
 
@@ -880,7 +892,98 @@ async def request_cancel_agent_run(
 async def cancel_agent_run_view(*, run_id: str, current_uid: str, db: AsyncSession) -> dict:
     """HTTP 取消入口：取消父 run 时默认级联取消活跃子 run。"""
     run = await request_cancel_agent_run(run_id=run_id, current_uid=current_uid, db=db, cascade_children=True)
-    return {"run": run.to_dict() if run else None}
+    return {"run": _public_run_view(run) if run else None}
+
+
+def project_health_token_usage(usage: object, model_spec: str | None) -> dict | None:
+    """公开健康用量只保留数字和已批准模型配置，过滤 Provider 自由文本。"""
+    if not isinstance(usage, dict) or usage.get("schema_version") != 2:
+        return None
+    total = usage.get("total")
+    token_keys = ("input_tokens", "output_tokens", "total_tokens")
+    if not isinstance(total, dict) or any(type(total.get(key)) is not int or total[key] < 0 for key in token_keys):
+        return None
+    counts = ("model_call_count", "usage_reported_call_count", "usage_unavailable_call_count")
+    result = {"schema_version": 2, "models": {}, "total": {key: total[key] for key in token_keys}}
+    result.update({key: usage[key] for key in counts if type(usage.get(key)) is int and usage[key] >= 0})
+    result["complete"] = usage.get("complete") is True
+    models = usage.get("models")
+    bucket = models.get(model_spec) if isinstance(models, dict) and isinstance(model_spec, str) else None
+    if isinstance(bucket, dict):
+        model_usage = bucket.get("usage")
+        if isinstance(model_usage, dict) and all(
+            type(model_usage.get(key)) is int and model_usage[key] >= 0 for key in token_keys
+        ):
+            result["models"][model_spec] = {
+                "model": {"configured_model_spec": model_spec},
+                "usage": {key: model_usage[key] for key in token_keys},
+                **{key: bucket[key] for key in counts if type(bucket.get(key)) is int and bucket[key] >= 0},
+            }
+    return result
+
+
+def _public_run_view(run) -> dict:
+    """普通健康状态读取不公开执行器异常的自由文本。"""
+    view = run.to_dict()
+    if getattr(run, "agent_slug", None) in EDUCATION_HEALTH_AGENTS:
+        view["token_usage"] = project_health_token_usage(
+            view.get("token_usage"), (getattr(run, "input_payload", None) or {}).get("model_spec")
+        ) or {"available": False}
+        if run.error_type or run.error_message:
+            error = _public_health_error(run.error_type)
+            view.update(error_type=error["type"], error_message=error["message"])
+    return view
+
+
+def _public_health_error(error_type: str | None) -> dict[str, str]:
+    """健康解释错误只公开服务端固定文案，细节留在审计与日志。"""
+    errors = {
+        "cancelled": "咨询已取消",
+        "interrupted": "咨询已中断，请重新发送文字咨询",
+        "output_persistence_error": "答复来源或输出校验未通过，请重新咨询",
+        "health_execution_timeout": "咨询执行超时，请重新咨询",
+        "worker_lease_expired": "咨询执行已停止，请重新咨询",
+    }
+    code = error_type if error_type in errors else "health_execution_failed"
+    return {"type": code, "message": errors.get(code, "健康解释执行失败，请重新咨询")}
+
+
+def _public_health_run_event(run, event_type: str, envelope: dict) -> dict | None:
+    """健康实时与重放事件只投影进度；正式正文由当前有效的完成结果读取。"""
+    payload = envelope.get("payload") if isinstance(envelope, dict) else None
+    payload = payload if isinstance(payload, dict) else {}
+    chunk = payload.get("chunk") if isinstance(payload.get("chunk"), dict) else {}
+    identity = {"run_id": run.id, "thread_id": run.conversation_thread_id, "request_id": run.request_id}
+    public_payload: dict[str, Any]
+    if event_type == "metadata":
+        public_payload = {"run_type": run.run_type, "source": run.source}
+    elif event_type == "end":
+        if run.status not in TERMINAL_RUN_STATUSES:
+            return None  # Redis 不拥有终态，旧候选事件不能冒充已提交的完成事实。
+        public_payload = {"status": run.status, "request_id": run.request_id}
+    elif event_type == "error":
+        error = _public_health_error(chunk.get("error_type"))
+        public_payload = {
+            "chunk": {**identity, "status": "error", "error_type": error["type"], "error_message": error["message"]},
+            "retryable": payload.get("retryable") is True,
+        }
+    elif event_type == "interrupt":
+        public_payload = {
+            "reason": "interrupted",
+            "chunk": {**identity, "status": "interrupted", "message": "咨询已中断，请重新发送文字咨询"},
+        }
+    elif event_type == "custom" and payload.get("name") == "yuxi.health_progress":
+        phase = "validating" if chunk.get("phase") == "validating" else "running"
+        message = "正在校验答复来源与引用" if phase == "validating" else "正在回顾记录与审核知识"
+        public_payload = {
+            "name": "yuxi.health_progress",
+            "chunk": {**identity, "status": "health_progress", "phase": phase, "message": message},
+        }
+    elif event_type == "custom" and payload.get("name") == "yuxi.init":
+        public_payload = {"name": "yuxi.init", "chunk": {**identity, "status": "init"}}
+    else:
+        return None
+    return {**identity, "event": event_type, "payload": public_payload}
 
 
 async def _load_stream_run_for_user(run_id: str, current_uid: str):
@@ -974,14 +1077,19 @@ async def stream_agent_run_events(
             emitted_terminal = False
             for event in events:
                 if run.agent_slug in HEALTH_AGENT_BACKENDS:
-                    if await _load_stream_run_for_user(run_id, current_uid) is None:
+                    run = await _load_stream_run_for_user(run_id, current_uid)
+                    if run is None:
                         yield format_sse({"run_id": run_id, "message": "运行任务不存在或无权访问"}, event="error")
                         return
                 seq = str(event.get("seq") or "0-0")
                 last_seq = seq
                 event_type = event.get("event_type") or "message"
                 envelope = event.get("payload") or {}
-                if not verbose and isinstance(envelope, dict):
+                if run.agent_slug in EDUCATION_HEALTH_AGENTS:
+                    envelope = _public_health_run_event(run, event_type, envelope)
+                    if envelope is None:
+                        continue
+                if not verbose and run.agent_slug not in EDUCATION_HEALTH_AGENTS and isinstance(envelope, dict):
                     envelope = _compact_run_event_envelope(envelope)
                     if envelope is None:
                         continue
@@ -1027,7 +1135,9 @@ async def stream_agent_run_events(
                     payload={"status": run.status, "request_id": run.request_id},
                     created_at=utc_now_naive().isoformat(),
                 )
-                if not verbose:
+                if run.agent_slug in EDUCATION_HEALTH_AGENTS:
+                    terminal_envelope = _public_health_run_event(run, "end", terminal_envelope)
+                if not verbose and run.agent_slug not in EDUCATION_HEALTH_AGENTS:
                     terminal_envelope = _compact_run_event_envelope(terminal_envelope)
                 yield format_sse(
                     terminal_envelope,
@@ -1076,5 +1186,5 @@ async def get_active_run_by_thread(*, thread_id: str, current_uid: str, db: Asyn
         if run.agent_slug in HEALTH_AGENT_BACKENDS:
             if await AgentRunRepository(db).get_run_for_user(run.id, str(current_uid)) is None:
                 return {"run": None}
-        return {"run": run.to_dict()}
+        return {"run": _public_run_view(run)}
     return {"run": None}

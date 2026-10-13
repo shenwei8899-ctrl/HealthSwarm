@@ -20,6 +20,8 @@
 
 ## 处理阻断原因
 
+`blood_glucose_review`、`blood_lipids_review` 和 `blood_pressure_review` 分别进入血糖、血脂与血压记录助手。三项均要求当前账号拥有本人成员的 `ai_use`、`profile_view` 及 `consultation` 用途同意；非本人返回 `self_member_required`。每个助手只读取对应类别的独立实测及明确登记本领域、无需专业人群选择且无排除条件的审核通用科普，记录缺失时追问，不提供个体化干预。未登记范围的历史科普仅供原普通咨询使用，资料发布条件见[审核范围登记](./health-agent-operations.md#登记科普资料的审核范围)。网页健康业务页的“指标助手”创建固定角色线程，随后通过既有消息入口提交问题；5xx 或未知响应后的入口重试沿用原 `client_request_id`。
+
 `missing_scopes` 只列出当前可见成员、本账号缺少的任务授权。客户端根据 `reason_code` 提示用户补充授权、配置角色或 Skill、处理用途审批、更新处理同意或完成选择；`external_contract_required` 保持待对接状态。
 
 `configuration_unavailable` 通过 `configuration_reason_code` 区分政策未审批、模型未就绪和处理配置审批失效等原因。配置检查复用[健康用途配置 Owner](https://github.com/shenwei8899-ctrl/HealthSwarm/blob/main/agent/Yuxi-main/backend/package/yuxi/services/health_vision_service.py)产生的原因码。处理同意必须属于同一账号、成员和用途，并匹配当前处理方及政策版本。配置或授权变更后重新查询，再以实际业务提交响应处理变化。
@@ -36,7 +38,7 @@
 
 `runtime` 复用平台 PostgreSQL、Redis 和兼容 Worker 的探针，增加对象存储签名只读访问检查。核心探针沿用一秒短缓存；对象存储使用当前配置、有界连接与读取超时，不创建桶或写入对象。探针成功只证明当前只读访问，上传、执行和结果发布仍由实际操作确认。数据库不可用时无法证明成员可见性，使用平台 ready 排障，不返回成员目录摘要。
 
-普通咨询和确认事实分析保持各自条件；对象存储故障只影响照片入口。配餐目录缺失或专业方案缺安全投影、有效规则时，相关入口返回 `unavailable`。`catalogue` 的营养、最新有效规则和已映射审核知识布尔值仅表示目录存在；明确选择、适用范围、内容完整性、营养重算和当前版本仍由业务 Owner 校验。审核知识目录为空时，普通咨询仍可追问和读取已授权事实，正式知识引用按实际检索结果返回。
+普通咨询和确认事实分析保持各自条件；对象存储故障只影响照片入口。配餐目录缺失或专业方案缺安全投影、有效规则时，相关入口返回 `unavailable`。`catalogue` 的营养、最新有效规则和已映射审核知识布尔值仅表示目录存在；明确选择、适用范围、内容完整性、营养重算和当前版本仍由业务 Owner 校验。审核知识目录存在不能证明当前角色有可用片段或专业资料交付完整；目录为空时，普通咨询仍可追问和读取已授权事实，正式知识引用按实际检索结果返回。
 
 `role_versions` 核对内置 Skill 发布源码与 PostgreSQL 登记的版本和内容哈希；不一致时只标记对应角色的 `role_version` 缺项。该摘要不证明全部 Worker 已部署相同版本。用户需要明确选定来源的入口保持 `needs_input`，客户端按 `complete_selection` 引导完成选择。
 

@@ -7,6 +7,7 @@ const idempotent = (data) => ({ headers: { 'Idempotency-Key': data.client_reques
 
 /** 健康接口统一走认证封装，不把私有对象地址暴露给页面。 */
 export const healthVisionApi = {
+  agentRunSubmitUrl: '/api/agent/runs',
   configuration: () => apiGet(`${root}/configuration`),
   configure: (data) => apiPut(`${root}/configuration`, data),
   members: () => apiGet(`${root}/members`),
@@ -24,6 +25,9 @@ export const healthVisionApi = {
     apiGet(`${root}/approved-quality-rules/${encodeURIComponent(code)}`),
   personalTargets: (id, data) => apiPost(`${root}/members/${id}/nutrition-targets`, data),
   consent: (id, data) => apiPost(`${root}/members/${id}/processing-consents`, data),
+  memberCapabilities: (id) => apiGet(`${root}/members/${id}/capabilities`),
+  createTaskEntry: (id, data) =>
+    apiPost(`${root}/members/${id}/task-entries`, data, idempotent(data)),
   createConsultation: (id, data) =>
     apiPost(`${root}/members/${id}/consultations`, data, idempotent(data)),
   createMealPlanner: (id, data) =>

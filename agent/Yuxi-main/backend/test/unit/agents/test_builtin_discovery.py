@@ -12,6 +12,9 @@ from yuxi.agents.buildin.health_meal_planner.graph import HealthMealPlannerAgent
 from yuxi.agents.buildin.health_diet_analyst.graph import HealthDietAnalystAgent
 from yuxi.agents.buildin.health_quality.graph import HealthQualityAgent
 from yuxi.agents.buildin.health_purchase.graph import HealthPurchaseAgent
+from yuxi.agents.buildin.health_blood_glucose.graph import HealthBloodGlucoseAgent
+from yuxi.agents.buildin.health_blood_lipids.graph import HealthBloodLipidsAgent
+from yuxi.agents.buildin.health_blood_pressure.graph import HealthBloodPressureAgent
 from yuxi.agents.buildin.subagent.graph import SubAgentBackend
 from yuxi.services.skills import shared as skill_service
 
@@ -41,6 +44,9 @@ def test_preset_discovery_includes_shipping_roles():
         "health-diet-analyst",
         "health-quality",
         "health-purchase",
+        "health-blood-glucose",
+        "health-blood-lipids",
+        "health-blood-pressure",
     }
     assert found["deep-research"].context["subagents"] == ["research-explorer", "fact-verifier"]
     assert found["general-purpose"].context == {}
@@ -127,6 +133,9 @@ def test_explicit_backend_ids_create_independent_instances():
         "HealthDietAnalystAgent": HealthDietAnalystAgent,
         "HealthQualityAgent": HealthQualityAgent,
         "HealthPurchaseAgent": HealthPurchaseAgent,
+        "HealthBloodGlucoseAgent": HealthBloodGlucoseAgent,
+        "HealthBloodLipidsAgent": HealthBloodLipidsAgent,
+        "HealthBloodPressureAgent": HealthBloodPressureAgent,
     }
     for backend_id, expected_type in buildin.BUILTIN_BACKENDS.items():
         first = buildin.get_agent_backend(backend_id)
@@ -171,7 +180,8 @@ with patch('pathlib.Path.iterdir', side_effect=AssertionError('directory scan'))
     reload(buildin)
 assert set(buildin.BUILTIN_BACKENDS) == {
     'ChatbotAgent', 'SubAgentBackend', 'HealthConsultationAgent', 'HealthMealPlannerAgent',
-    'HealthDietAnalystAgent', 'HealthQualityAgent', 'HealthPurchaseAgent'
+    'HealthDietAnalystAgent', 'HealthQualityAgent', 'HealthPurchaseAgent',
+    'HealthBloodGlucoseAgent', 'HealthBloodLipidsAgent', 'HealthBloodPressureAgent'
 }
 """
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
@@ -230,6 +240,9 @@ def test_shipping_skills_keep_required_dependencies():
         "family-diet-analyst",
         "family-quality-review",
         "family-purchase",
+        "family-blood-glucose",
+        "family-blood-lipids",
+        "family-blood-pressure",
     }
     assert found["family-meal-planner"]["version"] == "2026.10.09.2"
     assert found["family-quality-review"]["tool_dependencies"] == [
