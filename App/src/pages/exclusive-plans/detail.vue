@@ -1,21 +1,25 @@
 <script setup>
+import { ensureExclusivePlan } from '../../services/exclusive-planning.js'
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed, ref } from 'vue'
 import { onLoad,onShow } from '@dcloudio/uni-app'
 import { getProfile,backHome } from '../../utils/profile.js'
 import { getExclusivePlan,adaptExclusivePlan } from '../../utils/exclusive-plans.js'
+const error=ref(''),loading=ref(false),revision=ref(0)
 const id=ref('balanced'),profile=ref(getProfile()),showAll=ref(false)
-const plan=computed(()=>adaptExclusivePlan(getExclusivePlan(id.value),profile.value))
+const plan=computed(()=>{revision.value;return adaptExclusivePlan(getExclusivePlan(id.value),profile.value)})
 const firstBatchTotal=computed(()=>(plan.value.estimateCents/100).toFixed(2)),total=computed(()=>(plan.value.totalEstimateCents/100).toFixed(2))
 const displayDays=computed(()=>Array.from({length:showAll.value?21:2},(_,i)=>({...plan.value.days[i%plan.value.days.length],day:'第 '+(i+1)+' 天',version:'演示图文菜谱 v2'})))
 onLoad(o=>id.value=o.id||'balanced')
-onShow(()=>profile.value=getProfile())
+onShow(async()=>{profile.value=getProfile();await generatePlan()})
+async function generatePlan(){loading.value=true;error.value='';try{await ensureExclusivePlan(getExclusivePlan(id.value),profile.value);revision.value++}catch(e){error.value=e.message||'计划生成失败，请重试'}finally{loading.value=false}}
 function buy(){if(plan.value.blocked.length)return;uni.navigateTo({url:'/pages/exclusive-plans/schedule?id='+plan.value.id})}
 </script>
 
 <template>
   <view class="screen detail-screen">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">计划详情</text><text class="pill">21 天</text></view></AppNavBar>
+    <text v-if="loading" class="safe-note">正在分析专属计划…</text><view v-if="error" class="card"><text class="inline-error">{{error}}</text><button @click="generatePlan">重试生成</button></view>
     <view class="detail-head"><text class="eyebrow">AI专属计划 · 测试数据</text><text class="display-title">{{ plan.name }}</text><text>{{ plan.subtitle }}</text></view>
     <view class="section-head"><view><text class="section-title">21 天三餐菜谱</text><text>每天早餐／午餐／晚餐 · 测试菜谱版本</text></view><button @click="showAll=!showAll">{{showAll?'收起':'查看全部21天'}} ›</button></view>
     <scroll-view class="days-scroll" scroll-x :show-scrollbar="false">

@@ -27,7 +27,7 @@ function toggle(list, value) {
 }
 function setHealth(value) {
   props.member.healthStatus = value
-  props.member.health = value === 'none' ? '一般成人' : value === 'unknown' ? '未填写' : '用户自述'
+  props.member.health = value === 'none' ? '没有已知基础病' : value === 'unknown' ? '未填写' : '用户自述'
 }
 function openExtras(field) {
   editor.value = field

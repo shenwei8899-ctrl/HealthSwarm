@@ -1,22 +1,39 @@
 <script setup>
+import { ensureExclusivePlan } from '../../services/exclusive-planning.js'
+import { isMockMode } from '../../services/config.js'
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed, ref } from 'vue'
 import { onLoad,onShow } from '@dcloudio/uni-app'
 import { service as mockService } from '../../services/index.js'
-import { backHome } from '../../utils/profile.js'
+import { getProfile,backHome } from '../../utils/profile.js'
 import { createDeliveryBatches, defaultPlanStartDate, getExclusivePlan,adaptExclusivePlan } from '../../utils/exclusive-plans.js'
 
-const plan = ref(adaptExclusivePlan(getExclusivePlan('balanced')))
+const id = ref('balanced')
+const profile = ref(getProfile())
+const revision = ref(0)
+const loading = ref(false)
+const error = ref('')
+const plan = computed(() => { revision.value; return adaptExclusivePlan(getExclusivePlan(id.value), profile.value, startDate.value) })
 const startDate = ref(defaultPlanStartDate())
 const address = ref('')
-onShow(()=>{const selected=mockService.selectedAddress();address.value=selected?selected.name+' · '+selected.phone+'\n'+selected.region+' '+selected.detail:''})
-const batches = computed(() => createDeliveryBatches(plan.value, startDate.value, 21))
+let requestVersion = 0
+onShow(async()=>{profile.value=getProfile();const selected=mockService.selectedAddress();address.value=selected?selected.name+' · '+selected.phone+'\n'+selected.region+' '+selected.detail:'';await generatePlan()})
+const ready = computed(() => plan.value.sourceType === (isMockMode ? 'demo' : 'api') && (isMockMode || plan.value.fixturePlans?.length === 21))
+const batches = computed(() => ready.value ? createDeliveryBatches(plan.value, startDate.value, 21) : [])
 const total = computed(() => ((plan.value.totalEstimateCents || plan.value.estimateCents) / 100).toFixed(2))
-onLoad(options => { plan.value = adaptExclusivePlan(getExclusivePlan(options.id)) })
-function changeDate(event) { startDate.value = event.detail.value }
+onLoad(options => { id.value = options.id || 'balanced'; if(options.start) startDate.value = options.start })
+async function generatePlan() {
+  const version = ++requestVersion
+  loading.value = true; error.value = ''
+  try { await ensureExclusivePlan(getExclusivePlan(id.value), profile.value, { startDate: startDate.value }); if(version===requestVersion) revision.value++ }
+  catch (cause) { if(version===requestVersion) error.value = cause.message || '计划生成失败，请重试' }
+  finally { if(version===requestVersion) loading.value = false }
+}
+function changeDate(event) { if(startDate.value===event.detail.value)return; startDate.value = event.detail.value; return generatePlan() }
 function chooseAddress(){uni.navigateTo({url:'/pages/address/index'})}
 function pay() {
-  if(plan.value.blocked.length)return uni.showToast({title:'请先补充档案后重新检查',icon:'none'})
+  if(loading.value || error.value || !ready.value)return uni.showToast({title:'请先生成此日期的计划',icon:'none'})
+  if(plan.value.blocked.length)return uni.showToast({title:'请先处理计划问题',icon:'none'})
   if(!address.value)return uni.showToast({title:'请先选择配送地址',icon:'none'})
   uni.navigateTo({ url: '/pages/shop/index?meal=dinner&source=exclusive-plan&checkout=1&plan=' + plan.value.id + '&start=' + startDate.value + '&batches=21' })
 }
@@ -25,7 +42,8 @@ function pay() {
 <template>
   <view class="screen schedule-screen">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">确认配送</text><text class="pill">21 次</text></view></AppNavBar>
-    <view class="schedule-head"><text class="eyebrow">AI专属计划 · 配送安排</text><text class="display-title">先确定送到哪里，<br />再安排 21 批。</text><text>顺序固定为“地址 → 第1批预计送达日 → 21批配送”。日期与菜品均为测试数据。</text></view>
+    <view class="schedule-head"><text class="eyebrow">AI专属计划 · 配送安排</text><text class="display-title">先确定送到哪里，<br />再安排 21 批。</text><text>顺序固定为“地址 → 第1批预计送达日 → 21批配送”。{{isMockMode?'日期与菜品均为测试数据。':'配送日期与费用需在结算时确认。'}}</text></view>
+    <text v-if="loading" class="safe-note">正在分析所选日期的计划…</text><view v-if="error" class="card"><text class="inline-error">{{error}}</text><button @click="generatePlan">重试生成</button></view>
     <button class="address-card card" @click="chooseAddress"><view><text class="section-title">配送地址</text><text>{{address||'还没有收货地址'}}</text></view><text>{{address?'更换':'新增'}} ›</text></button>
     <view class="date-card card">
       <view><text class="section-title">第1批预计送达日</text><text>{{address?'选择可预约日期':'请先选地址'}}</text></view>
@@ -40,7 +58,7 @@ function pay() {
       </view>
     </view>
     <view class="schedule-note">实际商品、库存、配送范围与时间需在正式商城再次确认。本页不创建真实订阅或配送。</view>
-    <view class="bottom-bar"><view><text>一次支付总价 · 测试</text><text>¥{{ total }}</text><text>首批预计送达 {{ startDate }}</text></view><button class="primary-button" @click="pay">核对商品与价格，去结算 →</button></view>
+    <view class="bottom-bar"><view><text>一次支付总价 · 预估</text><text>¥{{ total }}</text><text>首批预计送达 {{ startDate }}</text></view><button class="primary-button" :disabled="loading || !!error || !ready || plan.blocked.length>0" @click="pay">核对商品与价格，去结算 →</button></view>
   </view>
 </template>
 

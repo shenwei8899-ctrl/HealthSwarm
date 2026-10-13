@@ -80,16 +80,16 @@ function accountPage(overrides = {}) {
   let stored = { accountId: '17', token: 'synthetic-token', householdId: 'own' }, revision = 0
   const profile = { sex: 'female', birth_date: '1996-01-01', height_cm: 165, activity_level: 'light', goal: '规律饮食' }
   const own = { id: 'self', is_self: true, is_active: true, version: 2, confirmed: false, ready: false, profile }
-  const family = { id: 'own', members: [own] }, calls = [], redirects = []
+  const family = { id: 'own', members: [own] }, calls = [], redirects = [], navigation = []
   let hide, show
-  globalThis.uni = { reLaunch: options => redirects.push(options.url) }
+  globalThis.uni = { reLaunch: options => redirects.push(options.url), navigateTo: options => navigation.push(options.url) }
   const deps = { ref, computed, selfMember, basicProfileInput, getSession: () => stored, sessionRevision: () => String(revision),
     wechatAuth: { restore: async () => { revision++; return { ...stored, families: [{ id: 'own', name: '合成家庭' }] } }, cancelPending() {}, logout() { stored = null; revision++ } },
     request: async options => { calls.push(options); return { data: family } },
     onShow: callback => { show = callback }, onHide: callback => { hide = callback }, onUnload() {}, ...overrides }
   const source = readFileSync(new URL('../src/pages/account/index.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
-  const page = new Function('deps', `const {${Object.keys(deps).join(',')}} = deps;\n${source}\nreturn { member, form, account, busy, uncertain, error, unsaved, save, confirm, load, createFamily, familyName }`)(deps)
-  return { ...page, show: () => show(), hide: () => hide(), calls, redirects, family, expire: () => { stored = null; revision++ } }
+  const page = new Function('deps', `const {${Object.keys(deps).join(',')}} = deps;\n${source}\nreturn { member, form, account, busy, uncertain, error, unsaved, save, confirm, load, createFamily, familyName, healthMembers, selectedHealthId, healthLink, healthError, healthUncertain, healthDiagnostics, healthEntries, healthEntryText, openHealthTask, readHealthMembers, selectHealthMember, readHealthDiagnostics, createHealthMember, linkSelfProfile }`)(deps)
+  return { ...page, show: () => show(), hide: () => hide(), calls, redirects, navigation, family, expire: () => { stored = null; revision++ } }
 }
 
 test('actual account page confirms only the saved version and sends only own basic fields', async () => {
@@ -117,6 +117,96 @@ test('hiding the account page prevents late private profile data from returning'
   const pending = page.show(); await new Promise(resolve => setImmediate(resolve)); page.hide()
   release({ data: page.family }); await pending
   assert.equal(page.member.value, null); assert.deepEqual(page.form.value, {}); assert.equal(page.account.value, null)
+})
+
+test('health member link requires explicit selection and re-reads the confirmed self IDs', async () => {
+  const id = '11111111-1111-4111-8111-111111111111'
+  const calls = []; let linked = false
+  const page = accountPage({ request: async options => {
+    calls.push(options)
+    if (options.path === '/api/health/v1/members') return { data: [{ id, display_name: '本人', relationship_label: '本人', is_owner: true }] }
+    if (options.path.endsWith('/family-profile-link')) {
+      if (options.method === 'POST') { linked = true; return { data: { member_id: id, family_id: 'own', source_member_id: 'self' } } }
+      return { data: linked ? { member_id: id, family_id: 'own', source_member_id: 'self' } : { member_id: id, source_member_id: null } }
+    }
+    return { data: { id: 'own', members: [{ id: 'self', is_self: true, is_active: true, version: 2, confirmed: true, ready: true, profile: {} }] } }
+  } })
+  await page.show(); await page.readHealthMembers()
+  assert.equal(calls.some(call => call.method === 'POST'), false)
+  assert.equal(page.selectedHealthId.value, '')
+  await page.selectHealthMember(id); await page.linkSelfProfile()
+  assert.deepEqual(calls.find(call => call.method === 'POST').data, { family_id: 'own', source_member_id: 'self', confirmed_identity: true })
+  assert.equal(page.healthLink.value.source_member_id, 'self')
+})
+
+test('unknown health member creation blocks another create until members are read', async () => {
+  let writes = 0
+  const page = accountPage({ request: async options => {
+    if (options.path === '/api/health/v1/members' && options.method === 'POST') {
+      writes++; throw Object.assign(new Error('timeout'), { code: 'NETWORK_ERROR' })
+    }
+    if (options.path === '/api/health/v1/members') return { data: [] }
+    return { data: { id: 'own', members: [{ id: 'self', is_self: true, is_active: true, version: 2, confirmed: true, ready: true, profile: {} }] } }
+  } })
+  await page.show(); await page.createHealthMember(); await page.createHealthMember()
+  assert.equal(writes, 1); assert.equal(page.healthUncertain.value, true)
+  await page.readHealthMembers(); assert.equal(page.healthUncertain.value, false)
+})
+
+test('health status uses both server diagnostics and never treats basic ready as task readiness', async () => {
+  const id = '11111111-1111-4111-8111-111111111111'
+  const page = accountPage({ request: async options => {
+    if (options.path === '/api/health/v1/members') return { data: [{ id, display_name: '本人', relationship_label: '本人', is_owner: true }] }
+    if (options.path.endsWith('/capabilities')) return { data: { member_id: id, tasks: [{ task_type: 'consultation', status: 'needs_input' }] } }
+    if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: id }, entries: [
+      { entry_type: 'consultation', status: 'needs_input', reason_code: 'consent_required' },
+      { entry_type: 'blood_glucose_review', status: 'available' },
+      { entry_type: 'glucose_plan', status: 'unavailable', reason_code: 'external_contract_required' },
+    ] } }
+    if (options.path.endsWith('/family-profile-link')) return { data: { member_id: id, source_member_id: null } }
+    return { data: { id: 'own', members: [{ id: 'self', is_self: true, is_active: true, version: 2, confirmed: true, ready: true, profile: {} }] } }
+  } })
+  await page.show(); assert.equal(page.healthDiagnostics.value, null)
+  await page.readHealthMembers(); await page.selectHealthMember(id); await page.readHealthDiagnostics()
+  assert.deepEqual(page.healthEntries.value.map(entry => [entry.entry_type, entry.status]), [
+    ['consultation', 'needs_input'], ['blood_glucose_review', 'available'], ['glucose_plan', 'unavailable'],
+  ])
+  assert.match(page.healthEntryText(page.healthEntries.value[0]), /数据处理同意/)
+  assert.match(page.healthEntryText(page.healthEntries.value[2]), /功能尚未开放/)
+  assert.match(page.healthEntryText({ status: 'unavailable', reason_code: 'dependency_not_ready', missing_dependencies: ['worker'] }), /服务暂不可用/)
+  assert.match(page.healthEntryText({ status: 'unavailable', reason_code: 'dependency_not_ready', missing_dependencies: ['nutrition'] }), /专业资料未就绪/)
+})
+
+test('health status rejects a diagnostic response for another member', async () => {
+  const id = '11111111-1111-4111-8111-111111111111'
+  const page = accountPage({ request: async options => {
+    if (options.path === '/api/health/v1/members') return { data: [{ id, display_name: '本人', relationship_label: '本人', is_owner: true }] }
+    if (options.path.endsWith('/capabilities')) return { data: { member_id: id } }
+    if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: 'other' }, entries: [] } }
+    if (options.path.endsWith('/family-profile-link')) return { data: { member_id: id, source_member_id: null } }
+    return { data: { id: 'own', members: [{ id: 'self', is_self: true, is_active: true, version: 2, confirmed: true, ready: true, profile: {} }] } }
+  } })
+  await page.show(); await page.readHealthMembers(); await page.selectHealthMember(id); await page.readHealthDiagnostics()
+  assert.equal(page.healthDiagnostics.value, null)
+  assert.match(page.healthError.value, /成员诊断不一致/)
+})
+
+test('incomplete basic profile does not hide an authorized education task', async () => {
+  const id = '11111111-1111-4111-8111-111111111111'
+  const page = accountPage({ request: async options => {
+    if (options.path === '/api/health/v1/members') return { data: [{ id, display_name: '本人', is_owner: true }] }
+    if (options.path.endsWith('/capabilities')) return { data: { member_id: id } }
+    if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: id }, entries: [
+      { entry_type: 'consultation', status: 'available' }, { entry_type: 'glucose_plan', status: 'unavailable' },
+    ] } }
+    if (options.path.endsWith('/family-profile-link')) return { data: { member_id: id, source_member_id: null } }
+    return { data: page.family }
+  } })
+  await page.show()
+  assert.equal(page.member.value.ready, false)
+  await page.readHealthMembers(); await page.selectHealthMember(id); await page.readHealthDiagnostics()
+  page.openHealthTask(page.healthEntries.value[0]); page.openHealthTask(page.healthEntries.value[1])
+  assert.deepEqual(page.navigation, [`/pages/chat/agent?memberId=${id}&taskType=consultation`])
 })
 
 test('write 401 clears private account state even after transport changes the session revision', async () => {

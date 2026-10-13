@@ -2,6 +2,7 @@ import { isMockMode } from '../services/config.js'
 import { scopedStorage } from '../services/storage.js'
 import { getActiveHealthCase, updateActiveHealthCaseProfile } from './health-cases.js'
 import { clearMealSwaps } from './meal-customization.js'
+import { memberAge } from './member-age.js'
 
 export const DEMO_MEMBERS = [
   { id: 1, name: '我', age: 28, birthDate: '1998-05-18', gender: '女', relation: '本人', height: 165, weight: 58, health: '一般成人', healthStatus: 'none', doctorStatus: 'none', conditions: [], focus: '规律三餐', flavors: ['清淡'], goals: ['健脾养胃'], cuisines: ['家常菜'], tastePreferences: ['少油少盐'], allergyStatus: 'none', allergies: [], avoidanceStatus: 'none', avoidances: [], reportStatus: 'empty', color: '#f6c96b', clinicianGuidance: '', hypoglycemiaRisk: '未填写', kidneyCondition: '未填写', recentNote: '' },
@@ -10,7 +11,7 @@ export const DEMO_MEMBERS = [
 ]
 
 export function newMember(index) {
-  return { id: Date.now() + index, name: `成员 ${index + 1}`, age: 30, birthDate: '', gender: '未填写', relation: '家人', height: '', weight: '', health: '未填写', healthStatus: 'unknown', doctorStatus: 'unknown', conditions: [], focus: '均衡饮食', flavors: [], goals: [], cuisines: [], tastePreferences: [], allergyStatus: 'unknown', allergies: [], avoidanceStatus: 'unknown', avoidances: [], reportStatus: 'empty', color: '#a9c8dd', clinicianGuidance: '', hypoglycemiaRisk: '未填写', kidneyCondition: '未填写', recentNote: '' }
+  return { id: Date.now() + index, name: `成员 ${index + 1}`, age: null, birthDate: '', gender: '未填写', relation: '家人', height: '', weight: '', health: '未填写', healthStatus: 'unknown', doctorStatus: 'unknown', conditions: [], focus: '均衡饮食', flavors: [], goals: [], cuisines: [], tastePreferences: [], allergyStatus: 'unknown', allergies: [], avoidanceStatus: 'unknown', avoidances: [], reportStatus: 'empty', color: '#a9c8dd', clinicianGuidance: '', hypoglycemiaRisk: '未填写', kidneyCondition: '未填写', recentNote: '' }
 }
 
 export function normalizeMember(member) {
@@ -20,9 +21,10 @@ export function normalizeMember(member) {
     healthStatus: 'unknown', doctorStatus: 'unknown', conditions: [], flavors: [], goals: [], cuisines: [], tastePreferences: [],
     allergyStatus: 'unknown', allergies: [], intoleranceStatus: 'unknown', intolerances: [], otherCondition: '', avoidanceStatus: 'unknown', avoidances: [], reportStatus: 'empty',
     ...member,
+    age: memberAge(member).years,
     ...(member.relation==='本人'&&!member.claimedBy?{claimedBy:'creator'}:{}),
     ...(legacyDisease?{healthStatus:'set',conditions:[legacyDisease]}:{}),
-    health: member.health || '未填写',
+    health: member.health === '一般成人' ? '没有已知基础病' : member.health || '未填写',
   }
 }
 
@@ -67,6 +69,9 @@ export function resetProfileData() {
   scopedStorage.setStorageSync('active-health-case-v1', null)
   clearMealSwaps()
   scopedStorage.setStorageSync('meal-session-v3', {})
+  scopedStorage.setStorageSync('generated-meals-v1', {})
+  scopedStorage.setStorageSync('generated-exclusive-v1', {})
+  scopedStorage.setStorageSync('meal-context-refs-v1', {})
   scopedStorage.setStorageSync('family-invites-v1', {})
 }
 export function backHome() {

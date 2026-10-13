@@ -1,5 +1,6 @@
 <script setup>
 import AppNavBar from '../../components/AppNavBar.vue'
+import DishNutritionCard from '../../components/DishNutritionCard.vue'
 import { computed, ref, watch } from 'vue'
 import { onLoad, onShow } from '@dcloudio/uni-app'
 import FlowRibbon from '../../components/FlowRibbon.vue'
@@ -64,6 +65,7 @@ function photoUpload() {
       </view>
       <view v-if="mealChoices.length>1" class="meal-choices"><button v-for="item in mealChoices" :key="item.type" :class="{ selected: selectedMeal === item.type }" @click="selectedMeal = item.type">{{ item.type }} · {{ item.name }}</button></view>
       <view class="dishes-card card"><view class="dish-tags"><button v-for="dish in dishGuides" :key="dish.name" :class="{selected:activeDish?.name===dish.name}" @click="activeDishName=dish.name">{{ dish.name }}</button></view></view>
+      <DishNutritionCard :nutrition="activeDish?.nutrition" />
       <view class="ingredients-card card"><view class="section-head"><text class="section-title">{{activeDish?.name}}所需食材</text><text>{{activeDish?.minutes}} 分钟</text></view><view class="ingredient-list"><view v-for="item in activeDish?.ingredients" :key="item"><text>•</text><text>{{item}}</text></view></view></view>
       <video v-if="activeDish?.videoUrl" :src="activeDish.videoUrl" controls class="guide-video"/>
       <view class="steps-section"><view class="section-head"><text class="section-title">{{activeDish?.name}}图文制作步骤</text><text>按顺序操作</text></view><view v-for="(step, index) in activeDish?.steps" :key="index" class="step-card card"><text class="step-number">{{ String(index + 1).padStart(2, '0') }}</text><view class="step-content"><text>{{ step }}</text><image v-if="activeDish?.stepImages?.[index]" :src="activeDish.stepImages[index]" mode="widthFix" class="step-image"/></view></view></view>

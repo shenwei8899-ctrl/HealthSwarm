@@ -14,7 +14,7 @@ const dishes = computed(() => [...(props.plan.dishes || [])].sort((a, b) =>
   Number(/饭|粥|面|主食/.test(b.name)) - Number(/饭|粥|面|主食/.test(a.name))))
 const nutritionLines = computed(() => [
   [['kcal', '热量', ' kcal'], ['protein', '蛋白质', 'g'], ['fat', '脂肪', 'g']],
-  [['carbs', '碳水', 'g'], ['sugars', '糖类', 'g']],
+  [['carbs', '碳水', 'g'], ['fiber', '膳食纤维', 'g'], ['sodium', '钠', 'mg']],
 ].map(line => line.map(([key, label, unit]) => {
   const value = props.plan.nutrition?.[key]
   return `${label} ${Number.isFinite(value) ? value + unit : '暂无法估算'}`
@@ -29,7 +29,7 @@ const nutritionLines = computed(() => [
         <text v-for="(line, index) in nutritionLines" :key="index">{{ line }}</text>
       </view>
       <text v-else class="nutrition-unavailable">该菜谱暂无可用营养数据</text>
-      <text v-if="plan.nutrition" class="estimate">固定示例估算</text>
+      <text v-if="plan.nutrition" class="estimate">{{plan.sourceType==='api'?'按个人熟重与菜品营养汇总':'固定示例估算'}}</text>
     </view>
 
     <view class="portion-section">
@@ -44,9 +44,10 @@ const nutritionLines = computed(() => [
       </view>
       <view v-if="selectedMember" class="portion-panel">
         <view class="portion-dishes">
-          <text v-for="(dish, index) in dishes" :key="dish.name">{{ index ? ' · ' : '' }}{{ dish.name }} XXg</text>
+          <template v-if="selectedNotes?.dishes?.length"><text v-for="(portion, index) in selectedNotes.dishes" :key="portion.recipeId">{{ index ? ' · ' : '' }}{{ portion.name || plan.dishes.find(dish=>dish.recipeId===portion.recipeId)?.name }} {{ portion.amount }}{{ portion.unit }}</text></template>
+          <text v-else>份量待确认</text>
         </view>
-        <text class="cooked-weight">（均为熟重 · 份量待计算）</text>
+        <text class="cooked-weight">{{selectedNotes?.dishes?.length?'熟制后可食重量':'当前没有可用的个人份量数据'}}</text>
         <text class="portion-reminder">提醒：{{ selectedNotes?.portion || '按实际食量分餐' }}</text>
       </view>
       <text v-else class="cooked-weight">请先选择本餐就餐者</text>
@@ -64,7 +65,7 @@ const nutritionLines = computed(() => [
       <text>营养依据与安全提醒</text><text>{{ detailsOpen ? '收起 −' : '展开 +' }}</text>
     </button>
     <view v-if="detailsOpen" class="note-details">
-      <text class="estimate">{{ plan.nutrition ? '整餐营养为固定示例估算，不是实际营养检测结果' : '该菜谱暂无可用营养数据' }}</text>
+      <text class="estimate">{{ plan.nutrition ? (plan.sourceType==='api'?'整餐营养按已确认的熟重份量和配方汇总':'整餐营养为固定示例估算，不是实际营养检测结果') : '该菜谱暂无可用营养数据' }}</text>
       <text class="safety">{{ plan.safetyText }}</text>
       <text v-for="note in selectedNotes?.notes || []" :key="note">{{ note }}</text>
       <text>烹饪注意：生熟分开、彻底加热，调味料另放。</text>

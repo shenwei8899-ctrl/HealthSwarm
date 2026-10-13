@@ -209,7 +209,7 @@ function help() {
       <view v-else-if="status !== 'idle'" class="confidence">示例餐盘示意 · 非真实识别</view>
     </view>
     <view class="photo-actions">
-      <button class="primary-button" :disabled="status === 'analyzing' || saving" @click="chooseImage('camera')">{{ imagePath ? '重新拍照' : '拍照' }}</button>
+      <button class="primary-button" :disabled="status === 'analyzing' || saving" :aria-label="imagePath ? '重新拍照' : '拍照'" @click="chooseImage('camera')"><text class="photo-capture-label">{{ imagePath ? '重新拍照' : '拍照' }}</text></button>
       <button class="secondary-button" :disabled="status === 'analyzing' || saving" @click="chooseImage('album')">从相册选择</button>
     </view>
 
@@ -304,6 +304,7 @@ function help() {
 @keyframes scan{to{top:78%}}@keyframes pulse{to{opacity:.3}}
 .photo-actions{display:grid;grid-template-columns:1fr 1fr;gap:14rpx;margin-top:16rpx}
 .photo-actions button{min-height:80rpx;font-size:26rpx}
+.photo-actions .photo-capture-label{color:#fff;font-size:26rpx;font-weight:600}
 .capture-setup{margin-top:24rpx;padding:24rpx}
 .field-title{display:block;font-size:28rpx;font-weight:600;line-height:1.4}
 .scope-grid{display:grid;grid-template-columns:1fr 1fr;gap:12rpx;margin-top:20rpx}

@@ -1,10 +1,14 @@
 <script setup>
 import AppNavBar from '../../components/AppNavBar.vue'
-import { computed,ref } from 'vue'
-import { onShow } from '@dcloudio/uni-app'
+import { computed,ref,watch } from 'vue'
+import { nutritionFeedback } from '../../services/nutrition-feedback.js'
+import { onShow,onUnload } from '@dcloudio/uni-app'
 import { backHome,getProfile,getRecords } from '../../utils/profile.js'
 import { confirmedFor,recordsOn,vegetableTrend } from '../../utils/feedback.js'
 import { localDate } from '../../utils/meal-state.js'
+const advice=ref(null),adviceError=ref(''),adviceBusy=ref(false)
+let feedbackVersion=0,disposed=false
+onUnload(()=>{disposed=true;feedbackVersion++})
 const profile=ref(getProfile()),records=ref(getRecords()),scope=ref('all'),view=ref('当餐'),date=ref(localDate()),days=ref(7),meal=ref('晚餐')
 onShow(()=>{profile.value=getProfile();records.value=getRecords()})
 const scoped=computed(()=>confirmedFor(records.value,scope.value))
@@ -13,6 +17,13 @@ const current=computed(()=>daily.value.filter(r=>r.meal===meal.value))
 const recordedMeals=computed(()=>new Set(daily.value.map(r=>r.meal)).size)
 const missing=computed(()=>['早餐','午餐','晚餐'].filter(m=>!daily.value.some(r=>r.meal===m)))
 const trend=computed(()=>vegetableTrend(scoped.value,days.value,new Date(date.value+'T12:00:00+08:00')))
+async function refreshAdvice(){
+ const version=++feedbackVersion;advice.value=null;adviceError.value='';adviceBusy.value=true
+ try{const result=await nutritionFeedback(profile.value,records.value,{scope:scope.value,date:date.value,meal:meal.value});if(!disposed&&version===feedbackVersion)advice.value=result}
+ catch(e){if(!disposed&&version===feedbackVersion)adviceError.value=e.message||'反馈生成失败，请重试'}
+ finally{if(version===feedbackVersion)adviceBusy.value=false}
+}
+watch([scope,date,meal,records],refreshAdvice,{immediate:true})
 function goRecords(){uni.navigateTo({url:'/pages/records/index'})}
 </script>
 <template>
@@ -24,7 +35,7 @@ function goRecords(){uni.navigateTo({url:'/pages/records/index'})}
     <view class="view-tabs"><button v-for="v in ['当餐','当日','近期趋势']" :key="v" :class="{active:view===v}" @click="view=v">{{v}}</button></view>
     <view v-if="view==='当餐'" class="feedback-card card">
       <view class="meal-tabs"><button v-for="m in ['早餐','午餐','晚餐']" :key="m" :class="{active:meal===m}" @click="meal=m">{{m}}</button></view>
-      <template v-if="current.length"><text class="section-title">{{meal}}的记录反馈</text><view><text>已确认菜品</text><text>{{current.flatMap(r=>r.dishes||[]).join('、')||'尚未确认具体菜品'}}</text></view><view><text>亮点</text><text>这餐有了可追溯的记录，之后可以一起回顾。</text></view><view><text>可改进处</text><text>照片不能确定隐形用油和准确重量，暂不提供精确营养结论。</text></view><view><text>下一步</text><text>补充真实份量，继续记录下一餐。个体化营养建议待服务接入。</text></view><text class="basis">依据：{{current.length}}条已保存记录 · 示例反馈文案</text></template>
+      <template v-if="current.length"><text v-if="adviceBusy" class="safe-note">正在分析已确认的饮食记录…</text><view v-if="adviceError"><text class="inline-error">{{adviceError}}</text><button @click="refreshAdvice">重试反馈</button></view><view v-if="advice"><text>{{advice.text}}</text><text class="basis">依据：{{advice.recordIds.length}} 条已保存记录</text></view><text class="section-title">{{meal}}的记录反馈</text><view><text>已确认菜品</text><text>{{current.flatMap(r=>r.dishes||[]).join('、')||'尚未确认具体菜品'}}</text></view><view><text>亮点</text><text>这餐有了可追溯的记录，之后可以一起回顾。</text></view><view><text>可改进处</text><text>照片不能确定隐形用油和准确重量，暂不提供精确营养结论。</text></view><view><text>下一步</text><text>补充真实份量，继续记录下一餐。个体化营养建议待服务接入。</text></view><text class="basis">依据：{{current.length}}条已保存记录 · 示例反馈文案</text></template>
       <template v-else><text class="section-title">这餐还没有记录</text><text class="demo-label">未记录不代表没有进食，不会生成这餐的评价。</text><button class="secondary-button" @click="goRecords">查看饮食记录</button></template>
     </view>
     <view v-else-if="view==='当日'" class="feedback-card card"><text class="section-title">已记录 {{recordedMeals}} 餐</text><view v-for="m in ['早餐','午餐','晚餐']" :key="m"><text>{{m}}</text><text>{{daily.some(r=>r.meal===m)?'已记录，可回顾':'未记录'}}</text></view><text class="basis">缺失：{{missing.join('、')||'无'}}。仅依据当天已记录餐次，不评价全天摄入量。</text></view>

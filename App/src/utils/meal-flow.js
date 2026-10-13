@@ -1,4 +1,7 @@
 import { bundleImage } from './meal-bundles.js'
+import { isMockMode } from '../services/config.js'
+import { normalizeDishNutrition } from './dish-nutrition.js'
+import { demoDishNutrition } from './dish-nutrition-demo.js'
 
 export const DAILY_MEALS = [
   { name: '早餐', route: 'breakfast' },
@@ -42,11 +45,15 @@ export function createDishGuide(plan, dishName) {
     name: dish.name,
     icon: dish.icon,
     image: ['清蒸鸡肉','番茄炖鸡肉','清炖冬瓜','番茄冬瓜汤','小米粥'].includes(dish.name)?instructionImage(2,'',dish.name):bundleImage(template.image),
-    minutes: template.minutes,
+    recipeId: dish.recipeId || null, recipeVersion: dish.recipeVersion || null,
+    minutes: dish.minutes || template.minutes,
+    nutrition: Object.prototype.hasOwnProperty.call(dish, 'nutrition')
+      ? normalizeDishNutrition(dish.nutrition)
+      : isMockMode ? demoDishNutrition(dish.name) : normalizeDishNutrition(null),
     ingredients: String(dish.detail || '所需食材按本餐清单准备').split(' · '),
-    steps: [...template.steps],
+    steps: [...(dish.steps || template.steps)],
     stepImages: template.steps.map((step,index)=>instructionImage(index,step,dish.name)),
-    notes: [...template.notes],
+    notes: [...(dish.notes || template.notes)],
     videoUrl: '',
   }
 }
@@ -65,7 +72,7 @@ const exclusiveSteps = {
 }
 
 export function createCookingGuide(plan, exclusivePlan = null, { batchIndex = 1, meal = '晚餐' } = {}) {
-  if(exclusivePlan?.fixturePlans){const day=exclusivePlan.fixturePlans[(batchIndex-1)%exclusivePlan.fixturePlans.length];return createCookingGuide(day.find(p=>p.meal===meal)||day[0])}
+  if(exclusivePlan?.fixturePlans?.length){const day=exclusivePlan.fixturePlans[(batchIndex-1)%exclusivePlan.fixturePlans.length];return createCookingGuide(day.find(p=>p.meal===meal)||day[0])}
   if (exclusivePlan) {
     const day = exclusivePlan.days[(batchIndex - 1) % exclusivePlan.days.length]
     const selectedMeal = day.meals.find(item => item.type === meal) || day.meals[0]

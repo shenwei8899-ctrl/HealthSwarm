@@ -1,3 +1,7 @@
+import * as planning from '../src/services/meal-planning.js'
+import * as contexts from '../src/utils/meal-context.js'
+import { isMockMode } from '../src/services/config.js'
+import { callApiAdapter } from '../src/services/index.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -39,7 +43,7 @@ function setup() {
 }
 function page(path, exposed, extras={}) {
   let show, ready, hide, unload
-  const deps={ref,computed,nextTick,watch,...profiles,...mealState,...mealFlow,...bundles,...memory,...healthCases,...customization,...images,
+  const deps={ref,computed,nextTick,watch,...profiles,...mealState,...mealFlow,...bundles,...memory,...healthCases,...customization,...images,...planning,...contexts,isMockMode,callApiAdapter,
     createPlan,scopedStorage,storageScope:storageContext,storageContext,mockDelay,
     getCurrentInstance:()=>({proxy:{getOpenerEventChannel:()=>({emit(name,image){extras.calls?.selected.push({name,image})}})}}),
     onLoad(fn){fn({})},onShow(fn){show=fn},onReady(fn){ready=fn},onHide(fn){hide=fn},onUnload(fn){unload=fn},...extras,

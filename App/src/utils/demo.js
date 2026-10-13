@@ -1,5 +1,7 @@
 // Fixed examples for interaction review, not medical or image inference.
 import { ingredientConflicts, unresolvedHealth, unknownRestrictions, memberNotes } from './health.js'
+import { fixtureDemands, demandTotal, productsFromDemands, addFixtureDemand, removeDemandProducts } from './meal-demands.js'
+import { memberAge } from './member-age.js'
 export function getMealMembers(profile) {
   if(profile.usageMode==='个人使用'&&!profile.mealScoped)return [profile.members.find(m=>m.relation==='本人')||profile.members[0]].filter(Boolean)
   const ids = profile.defaultDiners || profile.members.map(member => member.id)
@@ -9,12 +11,11 @@ export function getMealMembers(profile) {
 
 export function reviewReasons(profile) {
   const reasons = []
-  if(getMealMembers(profile).some(m=>Number(m.age)<18))reasons.push('原型暂不支持儿童个体化配餐，请补充适用成员资料')
   reasons.push(...unresolvedHealth(getMealMembers(profile)))
   return reasons
 }
 
-export function createPlan(profile, meal = '晚餐') {
+export function createPlan(profile, meal = '晚餐', date) {
   const breakfast = meal === '早餐'
   const lunch = meal === '午餐'
   const members = getMealMembers(profile)
@@ -38,23 +39,26 @@ export function createPlan(profile, meal = '晚餐') {
     { id: 5, icon: '◻', name: '嫩豆腐', perPerson: 100, unit: 'g', pack: 300, priceCents: 480 },
     { id: 6, icon: '🌾', name: '杂粮米', perPerson: 50, unit: 'g', pack: 500, priceCents: 1290 },
   ]
+  // These are fixture demands, never age-based nutrition coefficients.
+  const memberDemands = fixtureDemands(members, ingredients).map(demand => memberAge(members.find(m => m.id === demand.memberId), date).years === 0 ? { ...demand, participates: false, ingredients: [] } : demand)
+  const need = id => demandTotal(memberDemands, id, ingredients.find(p => p.id === id)?.unit)
   const dishes = breakfast ? [
-    { icon: '🥣', name: '原味燕麦粥', detail: `燕麦 ${40 * count}g · 清水煮熟`, color: '#f1e6d1', kcal: 150 },
-    { icon: '🥚', name: '水煮蛋', detail: `鸡蛋 ${count} 个 · 煮熟后食用`, color: '#f4ead0', kcal: 75 },
-    { icon: '🥒', name: '清爽黄瓜', detail: `黄瓜 ${100 * count}g · 清洗切片`, color: '#e4f0d3', kcal: 25 },
+    { icon: '🥣', name: '原味燕麦粥', detail: `燕麦 ${need(11)}g · 清水煮熟`, color: '#f1e6d1', kcal: 150 },
+    { icon: '🥚', name: '水煮蛋', detail: `鸡蛋 ${need(12)} 个 · 煮熟后食用`, color: '#f4ead0', kcal: 75 },
+    { icon: '🥒', name: '清爽黄瓜', detail: `黄瓜 ${need(13)}g · 清洗切片`, color: '#e4f0d3', kcal: 25 },
   ] : lunch ? [
-    { icon: '🍅', name: '番茄炒蛋', detail: `番茄 ${120 * count}g · 鸡蛋 ${count} 个`, color: '#f8ded2', kcal: 170 },
-    { icon: '🥬', name: '香菇青菜', detail: `上海青 ${120 * count}g · 香菇 ${40 * count}g`, color: '#e4f0d3', kcal: 95 },
-    { icon: '◻', name: '清炖豆腐', detail: `嫩豆腐 ${100 * count}g · 清水炖熟`, color: '#f1e6d1', kcal: 110 },
-    { icon: '🍚', name: '杂粮饭', detail: `生米 ${50 * count}g · 加水煮熟`, color: '#f1e6d1', kcal: 220 },
+    { icon: '🍅', name: '番茄炒蛋', detail: `番茄 ${need(4)}g · 鸡蛋 ${need(12)} 个`, color: '#f8ded2', kcal: 170 },
+    { icon: '🥬', name: '香菇青菜', detail: `上海青 ${need(2)}g · 香菇 ${need(3)}g`, color: '#e4f0d3', kcal: 95 },
+    { icon: '◻', name: '清炖豆腐', detail: `嫩豆腐 ${need(5)}g · 清水炖熟`, color: '#f1e6d1', kcal: 110 },
+    { icon: '🍚', name: '杂粮饭', detail: `生米 ${need(6)}g · 加水煮熟`, color: '#f1e6d1', kcal: 220 },
   ] : [
-    { icon: '🐟', name: '清蒸鲈鱼', detail: `鲈鱼 ${150 * count}g · 姜葱蒸熟`, color: '#dcebe6', kcal: 180 },
-    { icon: '🥬', name: '香菇青菜', detail: `上海青 ${120 * count}g · 香菇 ${40 * count}g`, color: '#e4f0d3', kcal: 95 },
-    { icon: '🍅', name: '番茄豆腐汤', detail: `番茄 ${100 * count}g · 豆腐 ${100 * count}g`, color: '#f8ded2', kcal: 125 },
-    { icon: '🍚', name: '杂粮饭', detail: `生米 ${50 * count}g · 加水煮熟`, color: '#f1e6d1', kcal: 220 },
+    { icon: '🐟', name: '清蒸鲈鱼', detail: `鲈鱼 ${need(1)}g · 姜葱蒸熟`, color: '#dcebe6', kcal: 180 },
+    { icon: '🥬', name: '香菇青菜', detail: `上海青 ${need(2)}g · 香菇 ${need(3)}g`, color: '#e4f0d3', kcal: 95 },
+    { icon: '🍅', name: '番茄豆腐汤', detail: `番茄 ${need(4)}g · 豆腐 ${need(5)}g`, color: '#f8ded2', kcal: 125 },
+    { icon: '🍚', name: '杂粮饭', detail: `生米 ${need(6)}g · 加水煮熟`, color: '#f1e6d1', kcal: 220 },
   ]
   const raw = { meal, count, members, blocked: reviewReasons(profile), dishes, minutes: breakfast ? 15 : lunch ? 30 : 35,
-    products: ingredients.map(p => ({ ...p, need: p.perPerson * count, quantity: Math.ceil(p.perPerson * count / p.pack) })),
+    memberDemands, products: productsFromDemands(ingredients, memberDemands), sourceType: 'demo', date,
     steps: breakfast ? ['先煮燕麦粥，同时把鸡蛋煮熟。', '清洗黄瓜、切片，分别装盘。', '按实际食量分餐，吃完拍照记录。'] : lunch ? ['先煮杂粮饭，清洗番茄、上海青和香菇。', '鸡蛋炒至熟透后加入番茄，少量调味。', '炒熟香菇青菜，同时将豆腐清炖至热透。', '按家庭成员实际食量分餐，吃完拍照记录。'] : ['先煮杂粮饭，再清洗切配蔬菜和鱼。', '锅内水沸后蒸鱼，至鱼肉熟透。', '煮番茄豆腐汤，同时炒香菇青菜。', '调味和蘸汁分开放，按实际食量分餐。'],
   }
   // Replace known conflicts in the actual fixture recipe and procurement, never just a flag.
@@ -69,19 +73,21 @@ export function createPlan(profile, meal = '晚餐') {
     if (!targets.length) continue
     const product = replacement.product
     if (ingredientConflicts(members, product.name).length) continue
-    raw.dishes = raw.dishes.map(d => targets.includes(d) ? {...d,name:replacement.name,icon:replacement.icon,kcal:replacement.kcal,detail:`${replacement.detail} ${product.perPerson*count}g · 清水烹饪，调味另放`} : d)
-    raw.products = raw.products.filter(p => !replacement.ids.includes(p.id))
-    const existing = raw.products.find(p => p.id === product.id)
-    if (existing) { existing.need += product.perPerson*count; existing.quantity=Math.ceil(existing.need/existing.pack) }
-    else raw.products.push({...product,need:product.perPerson*count,quantity:Math.ceil(product.perPerson*count/product.pack)})
+    removeDemandProducts(raw, replacement.ids)
+    const replacementNeed = addFixtureDemand(raw, product)
+    raw.dishes = raw.dishes.map(d => targets.includes(d) ? {...d,name:replacement.name,icon:replacement.icon,kcal:replacement.kcal,detail:`${replacement.detail} ${replacementNeed}g · 清水烹饪，调味另放`} : d)
+
   }
   // Avoid an explicit scallion/garlic restriction without changing procurement selections.
   if (ingredientConflicts(members,'葱蒜').length) raw.dishes=raw.dishes.map(d=>({...d,detail:d.detail.replace('姜葱','清水')}))
   raw.blocked.push(...ingredientConflicts(members,raw.dishes.map(d=>d.name+' '+d.detail).concat(raw.products.map(p=>p.name))))
   raw.general = unknownRestrictions(members)
-  raw.safetyText = raw.blocked.length ? '暂无法完成安全适配，请补充资料' : raw.general ? '通用建议 · 未填写信息不代表没有限制；已避开已知冲突' : '已避开已知冲突'
-  raw.memberNotes = members.map(member=>({id:member.id,name:member.name,notes:memberNotes(member),portion: member.healthStatus==='set'&&member.conditions?.includes('糖尿病') ? '主食单独分份，具体量依医嘱；其他菜按实际食量' : '按实际食量分餐'}))
-  raw.nutrition = {kcal:raw.dishes.reduce((sum,d)=>sum+d.kcal,0)*count,protein:32*count,fat:16*count,carbs:74*count,sugars:8*count}
+  raw.safetyText = raw.blocked.length ? '本餐有待处理的饮食问题' : raw.general ? '通用建议 · 未填写信息不代表没有限制；已避开已知冲突' : '已避开已知冲突'
+  raw.memberNotes = members.map(member=>({id:member.id,name:member.name,notes:memberNotes(member),dishes: [], portion: member.healthStatus==='set'&&member.conditions?.includes('糖尿病') ? '主食单独分份，具体量依医嘱；其他菜按实际食量' : memberAge(member, date).years === 0 ? '请在对话中说明当前喂养方式，暂不分配成人固体菜品' : '份量待确认；当前为菜谱与采购演示'}))
+  const served = raw.memberDemands.filter(demand => demand.ingredients.length)
+  raw.nutrition = served.reduce((total) => ({kcal:total.kcal+raw.dishes.reduce((sum,d)=>sum+d.kcal,0),protein:total.protein+32,fat:total.fat+16,carbs:total.carbs+74,sugars:total.sugars+8}), {kcal:0,protein:0,fat:0,carbs:0,sugars:0})
+  if (!served.length) { raw.dishes=[]; raw.nutrition=null }
+  raw.issues = raw.blocked.map(message => ({ type: /矛盾/.test(message) ? 'conflict' : /请补充/.test(message) ? 'needs_info' : 'ingredient_conflict', message }))
   return raw
 }
 

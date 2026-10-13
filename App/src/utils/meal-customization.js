@@ -1,6 +1,10 @@
 import { scopedStorage } from '../services/storage.js'
 const SWAP_KEY = 'meal-dish-swaps-v1'
 import { ingredientConflicts } from './health.js'
+import { isMockMode } from '../services/config.js'
+import { normalizeDishNutrition } from './dish-nutrition.js'
+import { demoDishNutrition } from './dish-nutrition-demo.js'
+import { addFixtureDemand, demandTotal, removeDemandProducts } from './meal-demands.js'
 
 export const DINNER_FISH_SWAPS = [
   {
@@ -82,6 +86,7 @@ export function clearMealSwap(meal) {
 export function clearMealSwaps() { writeSwaps({}) }
 
 export function applyMealCustomization(plan, swap = null) {
+  if (plan.sourceType === 'api') return plan
   if (!swap || plan.meal !== '晚餐') return plan
   const option = DINNER_FISH_SWAPS.find(item => item.id === swap.id)
   if (!option || !plan.dishes.some(dish => dish.name === option.sourceDish)) return plan
@@ -94,11 +99,16 @@ export function applyMealCustomization(plan, swap = null) {
       name: option.name,
       color: option.color,
       kcal: option.kcal,
+      // Legacy swap fixtures use a string for the comparison summary.
+      // Only a structured object (or explicit null) is recipe nutrition.
+      nutrition: Object.prototype.hasOwnProperty.call(option, 'nutrition') && typeof option.nutrition !== 'string'
+        ? normalizeDishNutrition(option.nutrition)
+        : isMockMode ? demoDishNutrition(option.name) : normalizeDishNutrition(null),
       detail: option.id === 'tomato-fish'
-        ? `鲈鱼 ${150 * plan.count}g · 番茄 ${100 * plan.count}g · 少油慢炖`
+        ? `鲈鱼 ${demandTotal(plan.memberDemands || [], 1, 'g')}g · 少油慢炖`
         : option.id === 'seared-fish'
-          ? `鲈鱼 ${150 * plan.count}g · 少油煎熟 · 蘸汁分开`
-          : `虾仁 ${120 * plan.count}g · 嫩豆腐 ${100 * plan.count}g · 清蒸`,
+          ? `鲈鱼 ${demandTotal(plan.memberDemands || [], 1, 'g')}g · 少油煎熟 · 蘸汁分开`
+          : '虾仁与嫩豆腐 · 清蒸',
     } : dish),
     products: plan.products.map(product => ({ ...product })),
     steps: [...plan.steps],
@@ -106,16 +116,16 @@ export function applyMealCustomization(plan, swap = null) {
   }
 
   if (option.id === 'tomato-fish') {
-    const tomato=next.products.find(p=>p.id===4)
-    if(tomato){tomato.need+=100*plan.count;tomato.quantity=Math.ceil(tomato.need/tomato.pack)}
+    const amount = addFixtureDemand(next, { id: 4, icon: '🍅', name: '番茄', perPerson: 100, unit: 'g', pack: 500, priceCents: 790 })
+    next.dishes = next.dishes.map(dish => dish.name === option.name ? { ...dish, detail: dish.detail + ` · 番茄 ${amount}g` } : dish)
     next.steps = ['先煮杂粮饭，再处理鲈鱼和番茄。', '番茄炒软后加入少量清水，放入鲈鱼炖至熟透。', '同时炒香菇青菜并煮番茄豆腐汤。', '调味和蘸汁分开放，按实际食量分餐。']
   } else if (option.id === 'seared-fish') {
     next.steps = ['先煮杂粮饭，再把鲈鱼吸干表面水分。', '锅中放少量油，将鲈鱼两面煎至熟透。', '同时炒香菇青菜并煮番茄豆腐汤。', '蘸汁分开放，按实际食量分餐。']
   } else {
-    next.products = next.products.filter(product => product.id !== 1)
-    next.products.push({ id: 7, icon: '🦐', name: '鲜虾仁', perPerson: 120, unit: 'g', pack: 400, priceCents: 3590, need: 120 * plan.count, quantity: Math.ceil(120 * plan.count / 400) })
-    const tofu=next.products.find(p=>p.id===5)
-    if(tofu){tofu.need+=100*plan.count;tofu.quantity=Math.ceil(tofu.need/tofu.pack)}
+    removeDemandProducts(next, [1])
+    const shrimp = addFixtureDemand(next, { id: 7, icon: '🦐', name: '鲜虾仁', perPerson: 120, unit: 'g', pack: 400, priceCents: 3590 })
+    const tofu = addFixtureDemand(next, { id: 5, icon: '◻', name: '嫩豆腐', perPerson: 100, unit: 'g', pack: 300, priceCents: 480 })
+    next.dishes = next.dishes.map(dish => dish.name === option.name ? { ...dish, detail: `虾仁 ${shrimp}g · 嫩豆腐 ${tofu}g · 清蒸` } : dish)
     next.steps = ['先煮杂粮饭，再把虾仁和嫩豆腐装盘。', '水沸后蒸豆腐虾仁，直至虾仁完全熟透。', '同时炒香菇青菜并煮番茄豆腐汤。', '调味和蘸汁分开放，按实际食量分餐。']
   }
   if(next.nutrition)next.nutrition={...next.nutrition,kcal:next.dishes.reduce((sum,d)=>sum+d.kcal,0)*next.count,fat:next.nutrition.fat+(option.id==='seared-fish'?5*next.count:0)}

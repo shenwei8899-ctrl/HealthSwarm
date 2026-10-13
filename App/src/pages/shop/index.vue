@@ -11,12 +11,15 @@ import { createCheckoutQuote,validateCheckoutQuote,checkoutFingerprint } from '.
 import { storageContext as storageScope } from '../../services/storage.js'
 import { mockDelay } from '../../services/mock-control.js'
 import { subtotal } from '../../utils/demo.js'
+import { isMockMode } from '../../services/config.js'
+import { ensureMealPlan } from '../../services/meal-planning.js'
+import { ensureExclusivePlan } from '../../services/exclusive-planning.js'
 import { createMealBundles } from '../../utils/meal-bundles.js'
 import { createDeliveryBatches,getExclusivePlan,adaptExclusivePlan } from '../../utils/exclusive-plans.js'
 import { createDemoOrder,getOrder } from '../../utils/orders.js'
 import { getDishSwapOptions,getMealSwap,saveMealSwap } from '../../utils/meal-customization.js'
 import { createCookingGuide,mealFromRoute,mealToRoute,DAILY_MEALS } from '../../utils/meal-flow.js'
-import { todayPlan,selectedFor,saveSelection,setMealMembers,changeResult,dailyProcurement } from '../../utils/meal-state.js'
+import { todayPlan,selectedFor,saveSelection,setMealMembers,changeResult,dailyProcurement,mergeDailyProducts } from '../../utils/meal-state.js'
 const address=ref(mockService.selectedAddress())
 function chooseAddress(){uni.navigateTo({url:'/pages/address/index'})}
 const meal=ref('晚餐'),profile=ref(getProfile()),revision=ref(0),daily=ref(false),included=ref(['早餐','午餐','晚餐']),dinersOpen=ref(false),updateNote=ref('')
@@ -26,32 +29,33 @@ const plan=computed(()=>{revision.value;return todayPlan(profile.value,meal.valu
 const procurement=computed(()=>{revision.value;return dailyProcurement(profile.value,included.value)})
 const blockers=computed(()=>daily.value?procurement.value.blocked:plan.value.blocked)
 const bundleId=ref(''),bundle=computed(()=>createMealBundles(plan.value).find(b=>b.id===bundleId.value))
-const sourcePlanId=ref(''),sourcePlan=computed(()=>sourcePlanId.value?adaptExclusivePlan(getExclusivePlan(sourcePlanId.value),profile.value):null)
-const products=computed(()=>daily.value?procurement.value.products:sourcePlan.value?sourcePlan.value.fixturePlans[0].flatMap(p=>p.products).reduce((list,p)=>{const same=list.find(x=>x.id===p.id);if(same){same.need+=p.need;same.quantity=Math.ceil(same.need/same.pack)}else list.push({...p});return list},[]):bundle.value?plan.value.products.filter(p=>bundle.value.productIds.includes(p.id)):plan.value.products)
+const sourcePlanId=ref(''),sourcePlan=computed(()=>sourcePlanId.value?adaptExclusivePlan(getExclusivePlan(sourcePlanId.value),profile.value,planStartDate.value||undefined):null)
+const sourcePlanReady=computed(()=>sourcePlan.value?.sourceType===(isMockMode?'demo':'api')&&sourcePlan.value.fixturePlans?.length===(isMockMode?2:21))
+const products=computed(()=>daily.value?procurement.value.products:sourcePlan.value?sourcePlanReady.value?mergeDailyProducts(sourcePlan.value.fixturePlans[0]):[]:bundle.value?plan.value.products.filter(p=>bundle.value.productIds.includes(p.id)):plan.value.products)
 const selected=ref([]),orderOpen=ref(false),paid=ref(false),paidOrderId=ref('')
 const planStartDate=ref(''),deliveryBatchCount=ref(0)
-const deliveryBatches=computed(()=>sourcePlan.value&&planStartDate.value?createDeliveryBatches(sourcePlan.value,planStartDate.value,deliveryBatchCount.value||21):[])
+const deliveryBatches=computed(()=>sourcePlanReady.value&&planStartDate.value?createDeliveryBatches(sourcePlan.value,planStartDate.value,deliveryBatchCount.value||21):[])
 const selectedProducts=computed(()=>products.value.filter(p=>selected.value.includes(p.id)))
 const productsSubtotalCents=computed(()=>subtotal(products.value,selected.value))
 const totalCents=computed(()=>sourcePlan.value&&deliveryBatches.value.length?sourcePlan.value.totalEstimateCents:productsSubtotalCents.value)
 const total=computed(()=>(totalCents.value/100).toFixed(2))
-let knownProducts=[],quote=null,disposed=false,menuVersion=0,retryMenu=null
+let knownProducts=[],quote=null,disposed=false,menuVersion=0,retryMenu=null,checkoutRequested=false
 const menuUpdating=ref(false),menuError=ref('')
 const paying=ref(false),payError=ref(''),paymentState=ref('idle'),paidTotal=ref('')
 onUnload(()=>{disposed=true;menuVersion++})
-function quoteInput(){return {scope:storageScope(),profileVersion:profile.value.revision||0,members:plan.value.members.map(m=>m.id),dishes:plan.value.dishes,products:selectedProducts.value,address:address.value,meal:meal.value,included:included.value,sourcePlan:sourcePlanId.value,generation:sourcePlan.value?.generation,start:planStartDate.value,batches:deliveryBatchCount.value,totalCents:totalCents.value}}
+function quoteInput(){return {scope:storageScope(),profileVersion:profile.value.revision||0,members:plan.value.members.map(m=>m.id),dishes:plan.value.dishes,products:selectedProducts.value,address:address.value,meal:meal.value,included:included.value,sourcePlan:sourcePlanId.value,generation:sourcePlan.value?.generation||plan.value.generationId,memberNotes:plan.value.memberNotes,start:planStartDate.value,batches:deliveryBatchCount.value,totalCents:totalCents.value}}
 function choosePaymentResult(){return new Promise((resolve,reject)=>uni.showActionSheet({itemList:['测试：支付成功','测试：取消支付','测试：支付失败','测试：结果待确认'],success:({tapIndex})=>resolve(['success','cancel','failure','unknown'][tapIndex]),fail:e=>/cancel/i.test(e.errMsg||'')?resolve('cancel'):reject(new Error('支付窗口未能打开，请重试'))}))}
 
 function refreshSelection(){
  selected.value=daily.value?procurement.value.selectedIds:selectedFor(meal.value,products.value)
  knownProducts=products.value.map(p=>[p.id,p.quantity])
 }
-onLoad(options=>{meal.value=mealFromRoute(options.meal);daily.value=options.daily==='1';bundleId.value=options.bundle||'';sourcePlanId.value=options.source==='exclusive-plan'?(options.plan||'balanced'):'';planStartDate.value=options.start||'';deliveryBatchCount.value=Number(options.batches||0);refreshSelection();const reorder=options.reorder?getOrder(options.reorder):null;if(reorder){selected.value=products.value.filter(p=>reorder.items.some(i=>i.id===p.id)).map(p=>p.id);saveSelection(meal.value,products.value,selected.value);}if(options.checkout==='1'||options.verify==='1')checkout()})
-onShow(()=>{address.value=mockService.selectedAddress();profile.value=getProfile();revision.value++;refreshSelection();if(orderOpen.value&&!paid.value&&quote&&quote.signature!==checkoutFingerprint(quoteInput())){orderOpen.value=false;updateNote.value='成员、菜品、地址或报价已变化，请重新核对结算。'}})
+onLoad(options=>{meal.value=mealFromRoute(options.meal);daily.value=options.daily==='1';bundleId.value=options.bundle||'';sourcePlanId.value=options.source==='exclusive-plan'?(options.plan||'balanced'):'';planStartDate.value=options.start||'';deliveryBatchCount.value=Number(options.batches||0);refreshSelection();const reorder=options.reorder?getOrder(options.reorder):null;if(reorder){selected.value=products.value.filter(p=>reorder.items.some(i=>i.id===p.id)).map(p=>p.id);saveSelection(meal.value,products.value,selected.value);}checkoutRequested=options.checkout==='1'||options.verify==='1'})
+onShow(async()=>{profile.value=getProfile();if(!isMockMode)await refreshPlans();if(disposed)return;address.value=mockService.selectedAddress();revision.value++;refreshSelection();if(orderOpen.value&&!paid.value&&quote&&quote.signature!==checkoutFingerprint(quoteInput())){orderOpen.value=false;updateNote.value='成员、菜品、地址或报价已变化，请重新核对结算。'}if(checkoutRequested&&!menuError.value){checkoutRequested=false;checkout()}})
 function toggle(id){if(paying.value)return;const i=selected.value.indexOf(id);i<0?selected.value.push(id):selected.value.splice(i,1);saveSelection(daily.value?'今日采购':meal.value,products.value,selected.value);if(daily.value){for(const p of procurement.value.plans){const ids=selectedFor(p.meal,p.products);const index=ids.indexOf(id);if(selected.value.includes(id)&&index<0)ids.push(id);else if(!selected.value.includes(id)&&index>=0)ids.splice(index,1);saveSelection(p.meal,p.products,ids)}}}
 function toggleMeal(value){if(paying.value)return;const i=included.value.indexOf(value);i<0?included.value.push(value):included.value.splice(i,1);revision.value++;refreshSelection()}
 function checkout(){
- if(paying.value||menuUpdating.value||menuError.value||blockers.value.length||sourcePlan.value?.blocked.length)return
+ if(paying.value||menuUpdating.value||menuError.value||blockers.value.length||sourcePlan.value?.blocked.length||(sourcePlanId.value&&!sourcePlanReady.value))return
  if(!selected.value.length)return uni.showToast({title:'请至少选择一件食材',icon:'none'})
  if(paymentState.value==='unknown'){orderOpen.value=true;return}
  paid.value=false;paidOrderId.value='';paymentState.value='idle';payError.value='';quote=createCheckoutQuote(quoteInput());orderOpen.value=true
@@ -62,7 +66,7 @@ async function pay(){
  const scope=storageScope();paying.value=true;payError.value=''
  try{
    profile.value=getProfile();revision.value++
-   if(blockers.value.length||sourcePlan.value?.blocked.length)throw new Error('饮食限制已变化，请重新检查菜单')
+   if(blockers.value.length||sourcePlan.value?.blocked.length||(sourcePlanId.value&&!sourcePlanReady.value))throw new Error('饮食限制或计划已变化，请重新检查菜单')
    validateCheckoutQuote(quote,quoteInput())
    const result=await choosePaymentResult()
    if(disposed||scope!==storageScope())return
@@ -100,17 +104,26 @@ function openDish(dish){uni.navigateTo({url:'/pages/recipe/index?meal='+mealToRo
 function changeDiners(){dinersOpen.value=true}
 async function updateMenu(work,retry){
  const version=++menuVersion,scope=storageScope();menuUpdating.value=true;menuError.value='';retryMenu=retry;orderOpen.value=false;quote=null
- try{await mockDelay('menu');if(disposed||version!==menuVersion||scope!==storageScope())return;work()}
+ try{await mockDelay('menu');if(disposed||version!==menuVersion||scope!==storageScope())return;await work()}
  catch(e){if(!disposed&&version===menuVersion&&scope===storageScope())menuError.value=e.message||'更新失败，请重试'}
  finally{if(version===menuVersion)menuUpdating.value=false}
 }
+async function refreshPlans(){
+ return updateMenu(async()=>{
+   if(sourcePlanId.value)await ensureExclusivePlan(getExclusivePlan(sourcePlanId.value),profile.value,{startDate:planStartDate.value||undefined})
+   else await Promise.all((daily.value?included.value:[meal.value]).map(name=>ensureMealPlan(profile.value,name)))
+   if(disposed)return;revision.value++;refreshSelection()
+ },refreshPlans)
+}
+function discuss(){uni.navigateTo({url:'/pages/chat/index?meal='+mealToRoute(meal.value)})}
+function chooseDinersFor(name){meal.value=name;changeDiners()}
 function retryMenuUpdate(){if(retryMenu&&!menuUpdating.value)return retryMenu()}
 async function confirmDiners(ids){
  if(paying.value)return;const before=plan.value,previous=[...selected.value],targetMeal=meal.value
- return updateMenu(()=>{saveSelection(targetMeal,products.value,previous);setMealMembers(profile.value,targetMeal,ids);revision.value++;refreshSelection();updateNote.value=changeResult(before,plan.value,previous);dinersOpen.value=false},()=>confirmDiners(ids))
+ return updateMenu(async()=>{saveSelection(targetMeal,products.value,previous);setMealMembers(profile.value,targetMeal,ids);await ensureMealPlan(profile.value,targetMeal);if(disposed)return;revision.value++;refreshSelection();updateNote.value=changeResult(before,plan.value,previous);dinersOpen.value=false},()=>confirmDiners(ids))
 }
 function canSwapDish(dish){return !plan.value.paid&&getDishSwapOptions(meal.value,dish.name,plan.value.members).length>0}
-function applySwap(option){const targetMeal=meal.value;return updateMenu(()=>{saveSelection(targetMeal,products.value,selected.value);saveMealSwap(targetMeal,option);revision.value++;refreshSelection();updateNote.value='菜品、营养、做法、食材包装数量与预计金额已同步更新。'},()=>applySwap(option))}
+function applySwap(option){const targetMeal=meal.value;return updateMenu(async()=>{saveSelection(targetMeal,products.value,selected.value);saveMealSwap(targetMeal,option);await ensureMealPlan(profile.value,targetMeal);if(disposed)return;revision.value++;refreshSelection();updateNote.value='菜品、营养、做法、食材包装数量与预计金额已同步更新。'},()=>applySwap(option))}
 function switchDish(dish){if(paying.value||menuUpdating.value)return;const options=getDishSwapOptions(meal.value,dish.name,plan.value.members);if(!options.length)return;uni.showActionSheet({itemList:options.map(o=>o.name+' · '+o.direction),success:({tapIndex})=>applySwap(options[tapIndex]),fail:e=>{if(!/cancel/i.test(e.errMsg||'')){retryMenu=()=>switchDish(dish);menuError.value='换菜窗口未能打开，请重试'}}})}
 
 function editProfile(){uni.navigateTo({url:'/pages/profile/index'})}
@@ -119,10 +132,10 @@ function editProfile(){uni.navigateTo({url:'/pages/profile/index'})}
   <view class="screen shop-screen">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">{{ daily ? '今日采购清单' : sourcePlan ? '食材商城' : meal + '安排与购买' }}</text><text class="pill">演示</text></view></AppNavBar>
     <FlowRibbon :current="orderOpen ? 4 : 3" class="shop-flow" />
-    <view v-if="(!plan.paid && blockers.length) || sourcePlan?.blocked.length" class="card safety-card">
-      <view><text>暂无法完成饮食安全适配</text><text class="small">{{ [...blockers,...(sourcePlan?.blocked||[])].join('；') }}</text><button class="secondary-button" @click="editProfile">核对档案</button></view>
+    <view v-if="blockers.length || sourcePlan?.blocked.length" class="card safety-card">
+      <view><text>本餐有待处理的饮食问题</text><text class="small">{{ [...new Set([...blockers,...(sourcePlan?.blocked||[])])].join('；') }}</text><button class="secondary-button" :disabled="menuUpdating" @click="discuss">在对话中补充信息</button><button v-if="!daily" class="secondary-button" :disabled="menuUpdating" @click="changeDiners">调整本餐成员</button><button v-for="name in daily?included:[]" :key="name" class="secondary-button" @click="chooseDinersFor(name)">调整{{name}}成员</button><button class="secondary-button" @click="editProfile">核对已有档案</button></view>
     </view>
-    <template v-else>
+    <template>
       <view class="shop-head"><text class="eyebrow">{{ isDiabetesCase ? '虚拟糖尿病家庭案例 · 一桌共享菜单' : sourcePlan ? 'AI专属计划 · 首批采购' : '本餐安排与购买清单 · 同一页面' }}</text><text class="display-title">{{daily?'把今天三餐，一次备齐':sourcePlan?'核对计划，准备开始':meal+'安排与购买'}}</text><text class="shop-desc">{{ isDiabetesCase ? '已按三人共享晚餐汇总菜品与食材。商品与价格均为演示；爸爸的实际主食份量仍需按专业要求确认。' : sourcePlan ? sourcePlan.name + '已自动检查已知饮食限制并安排' + (deliveryBatches.length || 21) + '次配送确认。这里演示首批食材采购。' : '先看本餐菜品与做法，再直接勾选需要购买的整包装食材。' }}</text></view>
       <view v-if="!daily" class="meal-summary-card"><view class="summary-title"><view><text class="eyebrow">本餐基本信息</text><text>{{meal}} · {{plan.count}} 人用餐</text></view></view><button class="diner-control" @click="changeDiners"><text class="diner-names">就餐者：{{plan.members.map(m=>m.name).join('、')}}</text><text class="diner-change">更改 ›</text></button><MealNotes :plan="plan"/></view>
       <view v-else class="card daily-meals"><text class="section-title">选择今日需要采购的餐次</text><button v-for="m in DAILY_MEALS" :key="m.name" @click="toggleMeal(m.name)">{{included.includes(m.name)?'✓':'○'}} {{m.name}}</button><text class="demo-label">跨餐合并同一食材与 SKU 后计算包装数量；仍需核对商品、地址和金额后结算。</text></view>
@@ -144,7 +157,7 @@ function editProfile(){uni.navigateTo({url:'/pages/profile/index'})}
         </view>
       </view>
       <view class="safety-card"><view class="shield">i</view><view><text>结算前核对采购内容</text><text class="small">商品、包装数量、配送地址和价格。饮食限制已在推荐前自动检查。当前为购买流程演示，不会生成真实订单或扣款。</text></view></view>
-      <view class="bottom-bar"><view><text>已选 {{selected.length}} 项</text><text class="strong">¥{{ total }}</text><text class="small">示例合计</text></view><button v-if="!plan.paid && (!daily || procurement.plans.every(p=>!p.paid))" class="primary-button" :disabled="menuUpdating||paying||Boolean(menuError)" @click="checkout">去结算／直接购买 →</button></view>
+      <view class="bottom-bar"><view><text>已选 {{selected.length}} 项</text><text class="strong">¥{{ total }}</text><text class="small">示例合计</text></view><button v-if="!plan.paid && (!daily || procurement.plans.every(p=>!p.paid))" class="primary-button" :disabled="menuUpdating||paying||Boolean(menuError)||Boolean(blockers.length)||Boolean(sourcePlan?.blocked.length)" @click="checkout">去结算／直接购买 →</button></view>
     </template>
     <DinerPicker :open="dinersOpen" :members="profile.members" :selected="plan.members.map(m=>m.id)" :meal="meal" @close="dinersOpen=false" @confirm="confirmDiners"/>
     <view v-if="orderOpen" class="sheet-mask"><view class="sheet order-sheet">

@@ -9,6 +9,32 @@ import { selfMember, basicProfileInput } from '../../services/family-onboarding.
 
 const account = ref(null), families = ref([]), member = ref(null), form = ref({})
 const familyName = ref(''), invitation = ref(''), error = ref(''), busy = ref(false), uncertain = ref(false)
+const healthMembers = ref([]), selectedHealthId = ref(''), healthLink = ref(null)
+const healthBusy = ref(false), healthError = ref(''), healthUncertain = ref(false)
+const healthDiagnostics = ref(null)
+const healthEntryLabels = { consultation: '营养咨询', meal_preview: '单日配餐', blood_glucose_review: '血糖记录回顾',
+  blood_lipids_review: '血脂记录回顾', blood_pressure_review: '血压记录回顾', glucose_plan: '控糖计划', multi_day_plan: '多日计划' }
+const healthEntries = computed(() => (healthDiagnostics.value?.entries || []).filter(item => healthEntryLabels[item.entry_type]))
+function healthEntryText(item) {
+  if (item.status === 'available') return '当前可尝试'
+  const reasons = { missing_scopes: '需成员授权', consent_required: '需确认数据处理同意', selection_required: '需先选择来源',
+    configuration_unavailable: '服务配置未就绪', external_contract_required: '功能尚未开放',
+    dependency_not_ready: '服务或专业资料未就绪', self_member_required: '需使用本人健康成员',
+    agent_unavailable: '助手尚未开放', skill_unavailable: '助手资料尚未就绪' }
+  if (item.reason_code === 'dependency_not_ready' && Array.isArray(item.missing_dependencies)) {
+    const runtime = item.missing_dependencies.some(key => ['postgres', 'redis', 'worker'].includes(key))
+    const professional = item.missing_dependencies.some(key => ['nutrition', 'rules', 'published_recipes', 'profile_projection'].includes(key))
+    if (runtime && professional) return '暂不可用 · 服务及专业资料未就绪'
+    if (runtime) return '暂不可用 · 服务暂不可用'
+    if (professional) return '暂不可用 · 专业资料未就绪'
+  }
+  return (item.status === 'needs_input' ? '需补充信息' : '暂不可用') + (reasons[item.reason_code] ? ' · ' + reasons[item.reason_code] : '')
+}
+function openHealthTask(entry) {
+  if (!selectedHealthId.value || !['consultation', 'blood_glucose_review', 'blood_lipids_review', 'blood_pressure_review'].includes(entry?.entry_type) ||
+    !(entry.status === 'available' || entry.reason_code === 'consent_required') || healthBusy.value) return
+  uni.navigateTo({ url: `/pages/chat/agent?memberId=${encodeURIComponent(selectedHealthId.value)}&taskType=${encodeURIComponent(entry.entry_type)}` })
+}
 const unsaved = computed(() => {
   if (!member.value) return true
   try { return JSON.stringify(basicProfileInput(form.value)) !== JSON.stringify(basicProfileInput(member.value.profile)) }
@@ -19,10 +45,13 @@ function active(ticket) { return ticket.generation === generation && ticket.revi
 function discard() {
   generation++; wechatAuth.cancelPending(); account.value = null; families.value = []; member.value = null; form.value = {}
   invitation.value = ''; familyName.value = ''; error.value = ''; uncertain.value = false; busy.value = false
+  healthMembers.value = []; selectedHealthId.value = ''; healthLink.value = null; healthDiagnostics.value = null
+  healthBusy.value = false; healthError.value = ''; healthUncertain.value = false
 }
 async function load() {
   const mine = ++generation
   busy.value = true; error.value = ''; member.value = null; form.value = {}; families.value = []
+  healthMembers.value = []; selectedHealthId.value = ''; healthLink.value = null; healthDiagnostics.value = null
   try {
     if (!getSession()?.token) { uni.reLaunch({ url: '/pages/index/index' }); return }
     const result = await wechatAuth.restore()
@@ -88,6 +117,91 @@ function confirm() {
   return write({ path: `/api/family/${encodeURIComponent(account.value.householdId)}/members/${encodeURIComponent(member.value.id)}/confirm`,
     method: 'POST', data: { expected_version: member.value.version } })
 }
+async function readHealthMembers() {
+  if (healthBusy.value || !member.value?.id || !account.value?.householdId) return
+  const ticket = { generation, revision: sessionRevision() }
+  healthBusy.value = true; healthError.value = ''
+  try {
+    const { data } = await request({ path: '/api/health/v1/members' })
+    if (!active(ticket)) return
+    if (!Array.isArray(data)) throw new Error('健康成员列表格式异常')
+    healthMembers.value = data.filter(item => item.is_owner === true)
+    selectedHealthId.value = ''; healthLink.value = null; healthDiagnostics.value = null; healthUncertain.value = false
+  } catch (e) { if (active(ticket)) healthError.value = e.message }
+  finally { if (active(ticket)) healthBusy.value = false }
+}
+async function selectHealthMember(id) {
+  if (healthBusy.value || !healthMembers.value.some(item => item.id === id)) return
+  const ticket = { generation, revision: sessionRevision() }
+  selectedHealthId.value = id; healthLink.value = null; healthDiagnostics.value = null; healthBusy.value = true; healthError.value = ''
+  try {
+    const { data } = await request({ path: `/api/health/v1/members/${encodeURIComponent(id)}/family-profile-link` })
+    if (active(ticket) && selectedHealthId.value === id) { healthLink.value = data; healthUncertain.value = false }
+  } catch (e) { if (active(ticket)) healthError.value = e.message }
+  finally { if (active(ticket)) healthBusy.value = false }
+}
+async function readHealthDiagnostics() {
+  const id = selectedHealthId.value
+  if (healthBusy.value || !id || !healthMembers.value.some(item => item.id === id)) return
+  const ticket = { generation, revision: sessionRevision() }
+  healthBusy.value = true; healthError.value = ''; healthDiagnostics.value = null
+  try {
+    const base = `/api/health/v1/members/${encodeURIComponent(id)}`
+    const [capabilities, readiness] = await Promise.all([
+      request({ path: base + '/capabilities' }), request({ path: base + '/readiness' }),
+    ])
+    if (!active(ticket) || selectedHealthId.value !== id) return
+    if (capabilities.data?.member_id !== id || readiness.data?.capabilities?.member_id !== id || !Array.isArray(readiness.data?.entries)) {
+      throw new Error('健康服务返回的成员诊断不一致')
+    }
+    healthDiagnostics.value = readiness.data
+  } catch (e) { if (active(ticket) && selectedHealthId.value === id) healthError.value = e.message }
+  finally { if (active(ticket)) healthBusy.value = false }
+}
+async function createHealthMember() {
+  if (healthBusy.value || healthUncertain.value || !member.value?.id || !account.value?.householdId) return
+  const ticket = { generation, revision: sessionRevision() }
+  healthBusy.value = true; healthError.value = ''
+  try {
+    const { data } = await request({ path: '/api/health/v1/members', method: 'POST',
+      data: { display_name: account.value.accountName || '本人', relationship_label: '本人', authorized: true } })
+    if (!active(ticket)) return
+    if (!data?.id) throw new Error('健康成员创建结果缺少 ID，请重新读取成员列表')
+    await readHealthMembersAfterCreate(ticket, data.id)
+  } catch (e) {
+    if (!active(ticket)) return
+    healthUncertain.value = e.code === 'NETWORK_ERROR' || Number(e.code) >= 500
+    healthError.value = healthUncertain.value ? '创建结果暂未确认，请先重新读取健康成员，不要重复创建。' : e.message
+  } finally { if (active(ticket)) healthBusy.value = false }
+}
+async function readHealthMembersAfterCreate(ticket, id) {
+  const { data } = await request({ path: '/api/health/v1/members' })
+  if (!active(ticket)) return
+  if (!Array.isArray(data) || !data.some(item => item.id === id && item.is_owner === true)) throw new Error('新建成员尚未回读到，请重新读取成员列表')
+  healthMembers.value = data.filter(item => item.is_owner === true)
+  selectedHealthId.value = id; healthLink.value = null; healthDiagnostics.value = null; healthUncertain.value = false
+}
+async function linkSelfProfile() {
+  const id = selectedHealthId.value, familyId = account.value?.householdId, sourceId = member.value?.id
+  if (healthBusy.value || healthUncertain.value || !id || !familyId || !sourceId) return
+  if (healthLink.value?.source_member_id && (healthLink.value.source_member_id !== sourceId || healthLink.value.family_id !== familyId)) {
+    healthError.value = '这个健康成员已关联其他档案，请核对后重新选择'; return
+  }
+  const ticket = { generation, revision: sessionRevision() }
+  healthBusy.value = true; healthError.value = ''
+  try {
+    await request({ path: `/api/health/v1/members/${encodeURIComponent(id)}/family-profile-link`, method: 'POST',
+      data: { family_id: familyId, source_member_id: sourceId, confirmed_identity: true } })
+    const { data } = await request({ path: `/api/health/v1/members/${encodeURIComponent(id)}/family-profile-link` })
+    if (!active(ticket) || selectedHealthId.value !== id) return
+    if (data?.family_id !== familyId || data?.source_member_id !== sourceId) throw new Error('关联回读与当前本人不一致')
+    healthLink.value = data; healthUncertain.value = false
+  } catch (e) {
+    if (!active(ticket)) return
+    healthUncertain.value = e.code === 'NETWORK_ERROR' || Number(e.code) >= 500
+    healthError.value = healthUncertain.value ? '关联结果暂未确认，请重新读取该健康成员的关联状态。' : e.message
+  } finally { if (active(ticket)) healthBusy.value = false }
+}
 function logout() { discard(); wechatAuth.logout(); uni.reLaunch({ url: '/pages/index/index' }) }
 onShow(load); onHide(discard); onUnload(discard)
 </script>
@@ -117,6 +231,23 @@ onShow(load); onHide(discard); onUnload(discard)
         <text v-if="unsaved" class="helper">有尚未保存的修改，请先保存，再确认。</text>
         <button class="secondary-button" :disabled="busy || uncertain || member.confirmed || unsaved" @click="confirm">已核对，确认已保存的资料</button>
         <text class="helper">{{ member.ready ? '本人基础资料已完成。' : '尚有基础项目待补充或确认。' }}健康授权和营养安全审核按各自流程办理。</text>
+      </view>
+      <view v-if="member" class="card section"><text class="section-title">关联本人健康档案</text>
+        <text class="helper">家庭成员与健康成员使用不同 ID。请核对后明确选择同一个本人；不会按姓名自动关联。</text>
+        <text class="helper">基础资料尚未齐全也可核对本人关联与普通科普咨询；个体化建议仍由服务端分别检查当前资料、授权和专业依据。</text>
+        <button class="secondary-button" :disabled="healthBusy" @click="readHealthMembers">{{ healthBusy ? '正在读取…' : '读取我的健康成员' }}</button>
+        <text v-if="healthError" class="error-note">{{ healthError }}</text>
+        <button v-for="item in healthMembers" :key="item.id" class="secondary-button" :disabled="healthBusy" @click="selectHealthMember(item.id)">{{ item.display_name }} · {{ item.relationship_label }} · {{ item.id.slice(0, 8) }}{{ selectedHealthId === item.id ? ' · 已选择' : '' }}</button>
+        <text v-if="selectedHealthId && healthLink?.source_member_id" class="helper">当前关联来源：{{ healthLink.source_member_id === member.id && healthLink.family_id === account.householdId ? '已关联这个家庭的本人档案' : '其他档案，请勿覆盖' }}</text>
+        <button v-if="selectedHealthId && !healthLink?.source_member_id" class="primary-button" :disabled="healthBusy || healthUncertain || !healthLink" @click="linkSelfProfile">确认这两个成员都是我，并建立关联</button>
+        <button v-if="selectedHealthId" class="secondary-button" :disabled="healthBusy" @click="readHealthDiagnostics">查看当前健康服务状态</button>
+        <text v-if="healthDiagnostics" class="helper">以下状态来自当前服务端，只用于提示；实际提交时仍会重新核对授权与资料。</text>
+        <view v-for="entry in healthEntries" :key="entry.entry_type">
+          <text class="helper">{{ healthEntryLabels[entry.entry_type] }}：{{ healthEntryText(entry) }}</text>
+          <button v-if="(entry.status === 'available' || entry.reason_code === 'consent_required') && ['consultation', 'blood_glucose_review', 'blood_lipids_review', 'blood_pressure_review'].includes(entry.entry_type)" class="secondary-button" :disabled="healthBusy" @click="openHealthTask(entry)">进入{{ healthEntryLabels[entry.entry_type] }}</button>
+        </view>
+        <button class="secondary-button" :disabled="healthBusy || healthUncertain" @click="createHealthMember">创建新的本人健康成员</button>
+        <text v-if="healthUncertain" class="helper">写入结果未确定，请先回读成员或关联状态。</text>
       </view>
       <text v-if="account.householdId && !member && !busy" class="helper">当前家庭没有可维护的本人成员，请使用对应成员邀请完成关联。</text>
       <text class="helper">饮食首页、AI 和商城正在接入真实服务，完成后开放。当前可保存和核对自己的家庭及本人基础资料。</text>

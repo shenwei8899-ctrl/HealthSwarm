@@ -107,11 +107,11 @@ test('paid orders retain the cooking steps selected at checkout', () => {
     delete globalThis.uni
   }
 })
-test('disease self-reports use AI fixture rules while unsupported minors are blocked',()=>{
+test('disease self-reports retain restrictions while children can join meal planning',()=>{
  const chronic=normalizeProfile(family());chronic.members[0].healthStatus='set';chronic.members[0].conditions=['糖尿病']
  assert.deepEqual(reviewReasons(chronic),[])
  assert.ok(createPlan(chronic).memberNotes[0].notes.length)
- const child=family();child.members[0].age=8;assert.ok(createPlan(child).blocked.length)
+ const child=family();child.members[0].age=8;assert.equal(createPlan(child).blocked.length,0)
 })
 test('default diners are separate from household members', () => {
   const profile = family(3)

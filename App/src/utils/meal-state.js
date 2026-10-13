@@ -4,12 +4,14 @@ import { createPlan, subtotal } from './demo.js'
 import { getOrders } from './orders.js'
 import { DAILY_MEALS } from './meal-flow.js'
 import { applyMealCustomization, getMealSwap } from './meal-customization.js'
-import { ingredientConflicts } from './health.js'
+import { ingredientConflicts, unresolvedHealth } from './health.js'
+import { isMockMode } from '../services/config.js'
+import { mealPlanKey, readMealResult, writeMealResult, unavailableMeal, MEAL_RULE_VERSION } from './meal-plan-store.js'
 
 export function localDate(date = new Date()) { const shanghai=new Date(date.getTime()+8*60*60*1000);return `${shanghai.getUTCFullYear()}-${String(shanghai.getUTCMonth()+1).padStart(2,'0')}-${String(shanghai.getUTCDate()).padStart(2,'0')}` }
 const read = () => scopedStorage.getStorageSync('meal-session-v3') || {}
 const write = value => scopedStorage.setStorageSync('meal-session-v3',JSON.parse(JSON.stringify(value)))
-const profileSignature = profile => JSON.stringify({members:profile.members,defaultDiners:profile.defaultDiners,usageMode:profile.usageMode,goals:profile.goals,tastes:profile.tastes})
+const profileSignature = profile => JSON.stringify({rules:MEAL_RULE_VERSION,members:profile.members,defaultDiners:profile.defaultDiners,usageMode:profile.usageMode,goals:profile.goals,tastes:profile.tastes})
 export function mealProfile(profile, meal, date=localDate()) {
   const saved=read()[date]?.[meal]?.members
   const defaults=profile.usageMode==='个人使用' ? [profile.members.find(m=>m.relation==='本人')?.id || profile.members[0]?.id] : profile.defaultDiners
@@ -24,28 +26,40 @@ export function todayPlan(profile=getProfile(),meal='晚餐',date=localDate()) {
   const batch=paid?.deliveryBatches.find(b=>b.date===date)
   const snapshot=paid?.cookingGuides?.find(b=>b.index===batch.index)?.guides.find(g=>g.meal===meal)
   const state=read()[date]?.[meal]
-  let plan=createPlan(scoped,meal)
-  const swap=applyMealCustomization(plan,getMealSwap(meal))
-  if (!ingredientConflicts(plan.members,swap.dishes.map(d=>d.name+' '+d.detail).concat(swap.products.map(p=>p.name))).length) plan=swap
+  const savedSwap=getMealSwap(meal), key=mealPlanKey(scoped,meal,date,savedSwap)
+  let plan=readMealResult(date,meal,key)
+  if (!plan) {
+    plan=isMockMode?createPlan(scoped,meal,date):unavailableMeal(scoped.members.filter(member=>scoped.defaultDiners.includes(member.id)),meal,date)
+    if (isMockMode) {
+      const swap=applyMealCustomization(plan,savedSwap)
+      if (!ingredientConflicts(plan.members,swap.dishes.map(d=>d.name+' '+d.detail).concat(swap.products.map(p=>p.name))).length) plan=swap
+      writeMealResult(date,meal,key,plan)
+    }
+  }
   if (snapshot) {
     // Purchased recipes are immutable. Only today's eating advice follows current members.
     const known=snapshot.dishGuides.flatMap(d=>d.ingredients).concat(snapshot.dishes)
-    const issues=ingredientConflicts(plan.members,known)
-    return {...plan,dishes:snapshot.dishGuides.map(d=>({name:d.name,detail:d.ingredients.join(' · '),icon:d.icon||'菜',color:'#e4f0d3'})),products:paid.items,
-      blocked:issues, safeSuggestions:issues.length&&!plan.blocked.length?plan.dishes.map(d=>d.name):[], safetyText:issues.length?'已购菜谱与当前成员限制有冲突，请勿让相关成员食用':'已避开已知冲突', paid:true, orderId:paid.id,batchIndex:batch.index,source:'执行中的 AI 专属计划',snapshot,nutrition:null}
+    const issues=[...ingredientConflicts(plan.members,known),...unresolvedHealth(plan.members),...plan.blocked]
+    const unique=[...new Set(issues)]
+    return {...plan,dishes:snapshot.dishGuides.map(d=>({name:d.name,recipeId:d.recipeId,recipeVersion:d.recipeVersion,steps:d.steps,notes:d.notes,detail:d.ingredients.join(' · '),icon:d.icon||'菜',color:'#e4f0d3',nutrition:d.nutrition ?? null})),products:paid.items,
+      memberNotes:plan.memberNotes.map(note=>({...note,dishes:(note.dishes||[]).filter(portion=>snapshot.dishGuides.some(dish=>dish.recipeId===portion.recipeId&&dish.recipeVersion===portion.recipeVersion))})),
+      blocked:unique, issues:unique.map(message=>({type:/请补充/.test(message)?'needs_info':'conflict',message})), safeSuggestions:unique.length&&!plan.blocked.length?plan.dishes.map(d=>d.name):[], safetyText:unique.length?'已购菜谱的当前吃法需要复核':'已避开已知冲突', paid:true, orderId:paid.id,batchIndex:batch.index,source:'执行中的 AI 专属计划',snapshot,nutrition:null}
   }
   if (state?.proposal && state.profileKey===profileSignature(profile)) {
     plan={...plan,...state.proposal,members:plan.members,memberNotes:plan.memberNotes}
     const issues=ingredientConflicts(plan.members,plan.dishes.map(d=>d.name+' '+d.detail).concat(plan.products.map(p=>p.name)))
-    if (!issues.length) return {...plan,source:'已保存的明日提议'}
-    plan=createPlan(scoped,meal)
+    if (!issues.length && state.proposalKey===key) return {...plan,source:'已保存的明日提议'}
+    plan=readMealResult(date,meal,key) || (isMockMode?createPlan(scoped,meal,date):unavailableMeal(plan.members,meal,date))
   }
   return {...plan,source:'家庭档案建议'}
 }
 export function saveTomorrowProposal(profile,meal) {
   const date=new Date(); date.setDate(date.getDate()+1); const key=localDate(date), store=read()
   store[key] ||= {}; store[key][meal] ||= {}
-  store[key][meal].proposal=createPlan(mealProfile(profile,meal,key),meal)
+  const scoped=mealProfile(profile,meal,key)
+  const proposalKey=mealPlanKey(scoped,meal,key,getMealSwap(meal))
+  store[key][meal].proposal=readMealResult(key,meal,proposalKey) || (isMockMode?createPlan(scoped,meal,key):null)
+  store[key][meal].proposalKey=proposalKey
   store[key][meal].profileKey=profileSignature(profile)
   write(store)
 }

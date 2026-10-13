@@ -18,7 +18,7 @@ const visibleBundles = computed(() => props.bundles.filter(b => selected.value =
         <view class="image-wrap"><image :src="bundle.image" :alt="bundle.name" mode="aspectFill" /><text class="image-tag">{{ bundle.category }}</text></view>
         <text class="product-name">{{ bundle.name }}</text>
         <text class="product-spec">{{ bundle.spec }}</text>
-        <view class="product-bottom"><text class="product-price"><text class="currency">¥</text>{{ (bundle.priceCents / 100).toFixed(2) }}</text><text class="product-arrow">↗</text></view>
+        <view class="product-bottom"><text class="product-arrow">↗</text></view>
       </button>
     </view>
     <button class="all-bundles" @click="$emit('all')">查看全部{{ meal }}食材包 <text>→</text></button>
@@ -41,9 +41,7 @@ const visibleBundles = computed(() => props.bundles.filter(b => selected.value =
 .image-tag { position: absolute; left: 9rpx; bottom: 9rpx; padding: 3rpx 8rpx; border-radius: 7rpx; background: rgba(255,254,249,.92); color: #426347; font-size: 17rpx; }
 .product-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; min-height: 64rpx; margin-top: 13rpx; color: #263f32; font-size: 24rpx; font-weight: 700; line-height: 1.4; }
 .product-spec { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 6rpx; color: #849086; font-size: 18rpx; }
-.product-bottom { display: flex; align-items: center; justify-content: space-between; margin-top: 10rpx; }
-.product-price { color: #9e4d35; font-size: 30rpx; font-weight: 800; letter-spacing: -1rpx; }
-.currency { margin-right: 2rpx; font-size: 21rpx; }
+.product-bottom { display: flex; align-items: center; justify-content: flex-end; margin-top: 10rpx; }
 .product-arrow { color: #77917b; font-size: 25rpx; }
 .all-bundles { display: flex; align-items: center; justify-content: center; gap: 14rpx; width: 100%; min-height: 82rpx; margin-top: 24rpx !important; border-radius: 20rpx; background: #246b50; color: #ffffff; font-size: 26rpx; font-weight: 700; }
 </style>

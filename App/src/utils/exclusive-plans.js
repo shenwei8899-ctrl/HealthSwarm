@@ -3,6 +3,10 @@ import { bundleImage as planImage } from './meal-bundles.js'
 import { subtotal } from './demo.js'
 import { createPlan } from './demo.js'
 import { getProfile } from './profile.js'
+import { addFixtureDemand, removeDemandProducts } from './meal-demands.js'
+import { isMockMode } from '../services/config.js'
+import { mealPlanKey } from './meal-plan-store.js'
+import { shanghaiDate } from './member-age.js'
 
 export const EXCLUSIVE_PLANS = [
   {
@@ -41,15 +45,26 @@ export const EXCLUSIVE_PLANS = [
 ]
 
 export function getExclusivePlan(id) { return EXCLUSIVE_PLANS.find(plan => plan.id === id) || EXCLUSIVE_PLANS[0] }
-export function adaptExclusivePlan(template, profile=getProfile()) {
+export function exclusivePlanKey(template,profile,startDate=defaultPlanStartDate()) {
+  return mealPlanKey(profile,'专属计划',shanghaiDate())+':'+template.id+':'+startDate+':'+(scopedStorage.getStorageSync('exclusive-generation')||0)
+}
+export function saveExclusivePlan(template,profile,startDate,plan) {
+  const store=scopedStorage.getStorageSync('generated-exclusive-v1')||{}
+  store[template.id]={key:exclusivePlanKey(template,profile,startDate),plan}
+  scopedStorage.setStorageSync('generated-exclusive-v1',store)
+}
+export function adaptExclusivePlan(template, profile=getProfile(), startDate=defaultPlanStartDate()) {
+  const saved=scopedStorage.getStorageSync('generated-exclusive-v1')?.[template.id]
+  if (saved?.key===exclusivePlanKey(template,profile,startDate)) return saved.plan
+  if (!isMockMode) return {...template,fixturePlans:[],blocked:['专属计划尚未生成，请重试分析'],products:[],estimateCents:0,totalEstimateCents:0}
   const tier={balanced:'标准型',fiber:'经济型',protein:'品质型'}[template.id]
   const regeneration=scopedStorage.getStorageSync('exclusive-generation')||0
   const variants=[0,1].map(day=>['早餐','午餐','晚餐'].map(meal=>{
     const plan=createPlan(profile,meal)
     if((day+regeneration)%2===1) plan.dishes=plan.dishes.map(d=>d.name==='香菇青菜'?{...d,name:'清炒上海青',detail:d.detail.replace(/ · 香菇 \d+g/,'')}:d)
-    if((day+regeneration)%2===1)plan.products=plan.products.filter(p=>p.id!==3)
-    if(template.id==='fiber'&&meal==='午餐'&&!plan.blocked.length){plan.dishes=plan.dishes.filter(d=>d.name!=='番茄炒蛋');plan.products=plan.products.filter(p=>p.id!==12);plan.nutrition=null}
-    if(template.id==='protein'&&meal==='晚餐'&&!plan.blocked.length&&plan.dishes.some(d=>d.name==='清蒸鲈鱼')){plan.dishes=plan.dishes.map(d=>d.name==='清蒸鲈鱼'?{...d,name:'番茄炖鲈鱼',detail:d.detail.replace('姜葱蒸熟','番茄炖熟')}:d);const tomato=plan.products.find(p=>p.id===4);if(tomato){tomato.need+=100*plan.count;tomato.quantity=Math.ceil(tomato.need/tomato.pack)}}
+    if((day+regeneration)%2===1)removeDemandProducts(plan,[3])
+    if(template.id==='fiber'&&meal==='午餐'&&!plan.blocked.length){plan.dishes=plan.dishes.filter(d=>d.name!=='番茄炒蛋');removeDemandProducts(plan,[12]);plan.nutrition=null}
+    if(template.id==='protein'&&meal==='晚餐'&&!plan.blocked.length&&plan.dishes.some(d=>d.name==='清蒸鲈鱼')){plan.dishes=plan.dishes.map(d=>d.name==='清蒸鲈鱼'?{...d,name:'番茄炖鲈鱼',detail:d.detail.replace('姜葱蒸熟','番茄炖熟')}:d);addFixtureDemand(plan,{id:4,name:'番茄',icon:'🍅',perPerson:100,unit:'g',pack:500,priceCents:790})}
     return plan
   }))
   const blocked=[...new Set(variants.flatMap(day=>day.flatMap(p=>p.blocked)))]
@@ -60,7 +75,9 @@ export function adaptExclusivePlan(template, profile=getProfile()) {
   const products=[...totals.values()].map(p=>({name:p.name,count:Math.ceil(p.need/p.pack)+' 包 · '+p.pack+p.unit,cents:p.priceCents*Math.ceil(p.need/p.pack),image:template.image}))
   const dayCost=plans=>{const map=new Map();plans.flatMap(p=>p.products).forEach(p=>{const previous=map.get(p.id);if(previous)previous.need+=p.need;else map.set(p.id,{...p})});const items=[...map.values()].map(p=>({...p,quantity:Math.ceil(p.need/p.pack)}));return subtotal(items,items.map(p=>p.id))}
   const estimateCents=dayCost(variants[0]),totalEstimateCents=Array.from({length:21},(_,i)=>dayCost(variants[i%variants.length])).reduce((a,b)=>a+b,0)
-  return {...template,estimateCents,totalEstimateCents,name:tier,tag:tier,subtitle:specs+' · '+(regeneration?'更新后的':'')+'21 天三餐方案',days,products,fixturePlans:variants,blocked,specs,generation:regeneration}
+  const result={...template,estimateCents,totalEstimateCents,name:tier,tag:tier,subtitle:specs+' · '+(regeneration?'更新后的':'')+'21 天三餐方案',days,products,fixturePlans:variants,blocked,specs,generation:regeneration,sourceType:'demo'}
+  saveExclusivePlan(template,profile,startDate,result)
+  return result
 }
 export function regenerateExclusivePlans(){scopedStorage.setStorageSync('exclusive-generation',(scopedStorage.getStorageSync('exclusive-generation')||0)+1)}
 

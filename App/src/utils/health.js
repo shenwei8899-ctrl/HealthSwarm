@@ -1,4 +1,5 @@
 // Interaction fixtures only. Production safety rules and AI services are not connected.
+import { birthDateError } from './member-age.js'
 export const diseaseOptions = ['糖尿病','高血压','高血脂','高尿酸／痛风','肾脏疾病','其他']
 export const preferenceGroups = {
   goals: { title: '饮食目标', items: ['控糖','控压','控脂','低嘌呤','减脂','增肌','补充蛋白质','饮食均衡','改善蔬菜摄入','其他'] },
@@ -25,7 +26,7 @@ export function ingredientConflicts(members, ingredients) {
   const text = Array.isArray(ingredients) ? ingredients.join('、') : String(ingredients)
   return members.flatMap(m => {
     const restrictions = Object.values(restrictionFields).flatMap(cfg => m[cfg.status] === 'set' ? m[cfg.field] || [] : [])
-    const doctor = m.doctorStatus === 'set' ? (m.clinicianGuidance.match(/(?:不吃|避免|禁止|不能吃)([^，。；]+)/g) || []).map(t => t.replace(/^(不吃|避免|禁止|不能吃)/,'')) : []
+    const doctor = m.doctorStatus === 'set' ? (String(m.clinicianGuidance || '').match(/(?:不吃|避免|禁止|不能吃)([^，。；]+)/g) || []).map(t => t.replace(/^(不吃|避免|禁止|不能吃)/,'')) : []
     return [...restrictions,...doctor].filter(value => (aliases[value] || { test: t => t.includes(value) }).test(text)).map(value => `${m.name}：${value}`)
   })
 }
@@ -36,9 +37,9 @@ export function unresolvedHealth(members) {
   return members.flatMap(m => {
     if (m.healthStatus !== 'set') return []
     if (!(m.conditions || []).length) return [`${m.name}请补充基础病情况`]
-    if (m.conditions.includes('其他')) return [`${m.name}填写的“${m.otherCondition || '其他'}”尚无可用演示规则，请补充资料；正式版由 AI 分析`]
+    if (m.conditions.includes('其他') && !m.otherCondition?.trim()) return [`${m.name}请补充“其他”的具体情况`]
     if (m.conditions.includes('肾脏疾病') && (m.doctorStatus!=='set'||!m.clinicianGuidance)) return [`${m.name}请补充肾脏相关饮食要求，以便确定蛋白质等限制`]
-    if (/高蛋白|增加蛋白/.test(m.clinicianGuidance) && /低蛋白|限制蛋白/.test(m.clinicianGuidance)) return [`${m.name}饮食要求存在矛盾，请复核`]
+    if (m.doctorStatus === 'set' && /高蛋白|增加蛋白/.test(m.clinicianGuidance) && /低蛋白|限制蛋白/.test(m.clinicianGuidance)) return [`${m.name}饮食要求存在矛盾，请复核`]
     return []
   })
 }
@@ -46,15 +47,17 @@ export function memberNotes(member) {
   const notes = []
   if (member.healthStatus === 'set') notes.push(diseaseSummary(member))
   if (member.doctorStatus === 'set' && member.clinicianGuidance) notes.push('医生要求：' + member.clinicianGuidance)
-  if (member.intoleranceStatus === 'set') notes.push('避开不耐受成分：' + member.intolerances.join('、'))
+  if (member.intoleranceStatus === 'set') notes.push('避开不耐受成分：' + (member.intolerances || []).join('、'))
+  if (member.conditions?.includes('其他') && member.otherCondition) notes.push('已填写情况：' + member.otherCondition + '（用户自述）')
   return notes
 }
 export function dataWarnings(member) {
   const height = Number(member.height), weight = Number(member.weight)
   const warnings = []
-  if (height && (height < 80 || height > 230)) warnings.push('身高数值可能有误')
-  if (weight && (weight < 20 || weight > 250)) warnings.push('体重数值可能有误')
-  if (height && weight && (weight / (height / 100) ** 2 < 15 || weight / (height / 100) ** 2 > 35)) warnings.push('BMI 超出常见范围')
+  if (member.height !== '' && member.height != null && (!Number.isFinite(height) || height <= 0 || height > 300)) warnings.push('请填写有效的身高数值')
+  if (member.weight !== '' && member.weight != null && (!Number.isFinite(weight) || weight <= 0 || weight > 500)) warnings.push('请填写有效的体重数值')
+  const dateError = birthDateError(member.birthDate)
+  if (dateError) warnings.push(dateError)
   if ((member.goals || []).includes('增肌') && /限制蛋白|低蛋白/.test(member.clinicianGuidance)) warnings.push('饮食目标与填写的医嘱可能不一致')
   if (member.reportFlag) warnings.push('报告信息待复核')
   return warnings

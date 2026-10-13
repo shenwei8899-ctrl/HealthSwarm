@@ -1,5 +1,6 @@
 <script setup>
 import AppNavBar from '../../components/AppNavBar.vue'
+import DishNutritionCard from '../../components/DishNutritionCard.vue'
 import { computed, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { backHome, getProfile } from '../../utils/profile.js'
@@ -14,7 +15,7 @@ const dishName = ref('')
 const caseId = ref('')
 const orderId=ref(''),batchIndex=ref(1)
 const plan=computed(()=>todayPlan(getProfile(),meal.value))
-const guide=computed(()=>{const order=getOrder(orderId.value);const saved=order?.cookingGuides?.find(b=>b.index===batchIndex.value)?.guides.find(g=>g.meal===meal.value)||order?.cookingGuide;return saved?.dishGuides.find(g=>g.name===dishName.value)||createDishGuide(plan.value,dishName.value)})
+const guide=computed(()=>{const order=getOrder(orderId.value);const saved=order?.cookingGuides?.find(b=>b.index===batchIndex.value)?.guides.find(g=>g.meal===meal.value)||order?.cookingGuide;return saved?.dishGuides?.find(g=>g.name===dishName.value)||createDishGuide(plan.value,dishName.value)})
 
 onLoad(options => {
   orderId.value=options.id||'';batchIndex.value=Number(options.batch)||1
@@ -28,6 +29,7 @@ onLoad(options => {
   <view class="screen recipe-screen">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">单道菜做法</text><text class="pill">购买前预览</text></view></AppNavBar>
     <view class="recipe-hero"><image :src="guide.image" mode="aspectFill"/><view><text class="eyebrow">{{meal}} · 做法预览</text><text class="display-title">{{guide.name}}</text><text>{{guide.minutes}} 分钟左右 · 测试菜谱</text></view></view>
+    <DishNutritionCard :nutrition="guide.nutrition" />
     <view class="card info-card"><view><text>预计制作时间</text><text>{{guide.minutes}} 分钟</text></view><view><text>页面用途</text><text>购买前查看做法</text></view></view>
     <video v-if="guide.videoUrl" :src="guide.videoUrl" controls class="guide-video"/>
     <view class="section-block"><text class="section-title">所需食材及用量</text><view class="ingredient-list card"><view v-for="item in guide.ingredients" :key="item"><text>•</text><text>{{item}}</text></view></view></view>

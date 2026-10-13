@@ -1,3 +1,7 @@
+import * as planning from '../src/services/meal-planning.js'
+import * as exclusivePlanning from '../src/services/exclusive-planning.js'
+import * as contexts from '../src/utils/meal-context.js'
+import { isMockMode } from '../src/services/config.js'
 import * as health from '../src/utils/health.js'
 import * as portions from '../src/utils/scan-portions.js'
 import { fileURLToPath } from 'node:url'
@@ -37,7 +41,7 @@ function planOrder() {
 }
 function evaluatePage(path, extras, exposed) {
   let show, unload
-  const deps = { ref, computed, nextTick, watch, ...profiles, ...orders, ...actions, ...mealState, ...customization, ...mealFlow, ...exclusive, ...bundles, ...demo, ...memory, ...healthCases, ...checkout, ...health, ...portions,
+  const deps = { ref, computed, nextTick, watch, ...profiles, ...orders, ...actions, ...mealState, ...customization, ...mealFlow, ...exclusive, ...bundles, ...demo, ...memory, ...healthCases, ...checkout, ...health, ...portions, ...planning, ...exclusivePlanning, ...contexts, isMockMode, callApiAdapter,
     scopedStorage, storageScope:storageContext, mockDelay, service:mockService, mockService,
     onHide() {}, onBackPress() {}, onLoad(callback) { callback(extras.options || {}) }, onShow(callback) { show=callback }, onUnload(callback) { unload=callback }, ...extras }
   const source=readFileSync(new URL('../src/pages/'+path,import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
@@ -54,7 +58,7 @@ test('merged onboarding starts with one unknown self profile and no implicit rel
   setup();setSession({accountId:'onboarding',householdId:'home'})
   const page=onboardingPage()
   assert.equal(page.step.value,0);assert.equal(page.current.value.name,'我');assert.equal(page.profile.value.members.length,1)
-  assert.equal(page.current.value.age,'');assert.equal(page.current.value.birthDate,'');assert.equal(page.current.value.height,'')
+  assert.equal(page.current.value.age,null);assert.equal(page.current.value.birthDate,'');assert.equal(page.current.value.height,'')
   assert.equal(page.dinerCount.value,1);assert.equal(page.profile.value.sharedDinerCount,1);page.dispose()
 })
 
@@ -283,6 +287,18 @@ test('failed member refresh preserves prior menu and disables stale checkout unt
   page.checkout();assert.equal(page.orderOpen.value,false);await page.retryMenuUpdate();assert.equal(page.menuError.value,'');page.checkout();assert.equal(page.orderOpen.value,true);page.dispose()
 })
 
+test('exclusive checkout waits for a complete generated plan in API mode',()=>{
+  setup()
+  const page=evaluatePage('shop/index.vue',{
+    options:{meal:'dinner',source:'exclusive-plan',plan:'balanced',start:'2026-10-20',batches:'21'},isMockMode:false,
+    adaptExclusivePlan:template=>({...template,sourceType:null,fixturePlans:[],blocked:['专属计划尚未生成'],products:[],estimateCents:0,totalEstimateCents:0}),
+  },'products,deliveryBatches,checkout,orderOpen')
+  assert.deepEqual(page.products.value,[])
+  assert.deepEqual(page.deliveryBatches.value,[])
+  page.checkout();assert.equal(page.orderOpen.value,false)
+  page.dispose()
+})
+
 async function apiRuntime() {
   const dataUrl=source=>'data:text/javascript;base64,'+Buffer.from(source).toString('base64')
   const config=dataUrl(readFileSync(new URL('../src/services/config.js',import.meta.url),'utf8').replace('import.meta.env',"({VITE_SERVICE_MODE:'api',VITE_API_BASE_URL:'https://integration.invalid'})"))
@@ -330,6 +346,28 @@ test('anonymous WeChat credential errors preserve an existing session and struct
   assert.match(api.storage.storageScope(),/unassigned/)
 })
 
+test('health requests keep server error details and cannot replace the session bearer token',async()=>{
+  setup();const api=await apiRuntime();api.session.setSession({accountId:'A',householdId:'home',token:'current-token'})
+  let callback;uni.request=options=>{callback=options}
+  const pending=api.transport.request({path:'/api/health/v1/members',method:'POST',data:{client_request_id:'intent'},headers:{Authorization:'Bearer other-token','Idempotency-Key':'intent','If-Match':'"3"'}})
+  assert.equal(callback.header.Authorization,'Bearer current-token')
+  assert.equal(callback.header['Idempotency-Key'],'intent')
+  assert.equal(callback.header['If-Match'],'"3"')
+  callback.success({statusCode:409,data:{code:'version_conflict',message:'草稿版本已变化',trace_id:'health-trace',retryable:true}})
+  await assert.rejects(pending,error=>error.code===409&&error.businessCode==='version_conflict'&&error.message==='草稿版本已变化'&&error.traceId==='health-trace'&&error.retryable===true)
+  assert.equal(api.session.getSession().token,'current-token')
+})
+
+test('a failed request from an old login cannot surface data in a new session',async()=>{
+  setup();const api=await apiRuntime();api.session.setSession({accountId:'A',householdId:'home',token:'old-token'})
+  let callback;uni.request=options=>{callback=options}
+  const pending=api.transport.request({path:'/api/health/v1/members'})
+  api.session.setSession({accountId:'A',householdId:'home',token:'new-token'})
+  callback.fail({errMsg:'request:fail timeout'})
+  await assert.rejects(pending,error=>error.code==='SESSION_CHANGED')
+  assert.equal(api.session.getSession().token,'new-token')
+})
+
 test('photo analysis failure retains image and retries without saving a fictional result',async()=>{
   setup();uni.chooseImage=options=>options.success({tempFilePaths:['/tmp/photo.jpg']})
   const page=evaluatePage('scan/index.vue',{},'chooseImage,analyze,status,imagePath,analysisError,confirmRecord')
@@ -343,4 +381,27 @@ test('latest photo analysis wins and unloading prevents a stale result',async()=
   const first=page.chooseImage('album'),second=page.chooseImage('album');completions[1]();await second;completions[0]();await first
   assert.equal(page.imagePath.value,'/tmp/photo-2.jpg');assert.equal(page.status.value,'result')
   const third=page.chooseImage('camera');page.dispose();completions[2]();await third;assert.equal(page.status.value,'analyzing')
+})
+
+
+test('pregnancy context belongs to the stated member, can be withdrawn, and adds no profile stage fields',async()=>{
+  setup();const page=evaluatePage('chat/index.vue',{},'ask,messages,withdrawContext,profile')
+  const original=structuredClone(profiles.getProfile().members)
+  await page.ask('我怀孕了，今晚吃什么？')
+  const message=page.messages.value.find(message=>message.role==='user')
+  assert.equal(message.memberId,original.find(member=>member.relation==='本人').id)
+  assert.equal(message.contextRecorded,true)
+  assert.ok(!page.messages.value.at(-1).text.includes('位成人'))
+  assert.deepEqual(profiles.getProfile().members,original)
+  await page.withdrawContext(message)
+  assert.equal(message.withdrawn,true);assert.deepEqual(contexts.mealContext(mealState.localDate()),[])
+  page.dispose()
+})
+
+test('an ambiguous special circumstance is clarified in dialogue before attaching it to a member',async()=>{
+  setup();const page=evaluatePage('chat/index.vue',{},'ask,messages')
+  await page.ask('家人正在哺乳，安排晚餐')
+  assert.match(page.messages.value.at(-1).text,/哪位家庭成员/)
+  assert.equal(page.messages.value[0].memberId,undefined)
+  page.dispose()
 })
