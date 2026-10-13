@@ -28,6 +28,13 @@ from yuxi.services.health_purchase_service import purchase_requirements
 from yuxi.services.health_diet_analysis_types import DietAnalysisPeriod, DietAnalysisSelection
 from yuxi.services.health_diet_analysis_service import read_diet_analysis, read_period_analysis
 from yuxi.services.health_agent_personal_target_types import TargetAwareAnalystInput
+from yuxi.services.health_fixed_conversation_types import (
+    MealPlannerConversationResult,
+    DietAnalystConversationResult,
+    TargetedDietAnalystConversationResult,
+    FeedbackConversationResult,
+    SafeMealPlannerConversationResult,
+)
 from yuxi.services.health_next_day_agent_service import create_agent_next_day_proposal
 from yuxi.services.health_next_day_agent_types import AgentNextDayProposalInput
 from yuxi.services.health_meal_plan_types import (
@@ -318,7 +325,7 @@ async def configuration(user: User = Depends(get_required_user)):
     return await service.configuration()
 
 
-@health_vision.post("/members/{member_id}/meal-planner", status_code=201)
+@health_vision.post("/members/{member_id}/meal-planner", status_code=201, response_model=MealPlannerConversationResult)
 async def create_planner(member_id: UUID, data: ConsultationInput, user: User = Depends(get_required_user)):
     """创建固定成员配餐线程，实际模型调用仍需独立用途同意。"""
     return await create_consultation(str(user.uid), str(member_id), data, agent_slug=PLANNER_SLUG)
@@ -348,7 +355,11 @@ async def create_family_planner(member_id: UUID, data: FamilyPlannerInput, user:
     )
 
 
-@health_vision.post("/members/{member_id}/safe-meal-plan-conversations", status_code=201)
+@health_vision.post(
+    "/members/{member_id}/safe-meal-plan-conversations",
+    status_code=201,
+    response_model=SafeMealPlannerConversationResult,
+)
 async def create_safe_planner(member_id: UUID, data: SafePlannerInput, user: User = Depends(get_required_user)):
     """绑定单成员当前已保存餐单，Agent仅提供安全改版预览。"""
     return await create_consultation(
@@ -360,7 +371,11 @@ async def create_safe_planner(member_id: UUID, data: SafePlannerInput, user: Use
     )
 
 
-@health_vision.post("/members/{member_id}/diet-analyst", status_code=201)
+@health_vision.post(
+    "/members/{member_id}/diet-analyst",
+    status_code=201,
+    response_model=DietAnalystConversationResult | TargetedDietAnalystConversationResult,
+)
 async def create_analyst(member_id: UUID, data: TargetAwareAnalystInput, user: User = Depends(get_required_user)):
     """创建固定成员分析线程，调用模型须独立用途审批与同意。"""
     return await create_consultation(
@@ -392,7 +407,9 @@ async def create_purchase_conversation(
     )
 
 
-@health_vision.post("/diet-logs/{record_id}/feedback-conversation", status_code=201)
+@health_vision.post(
+    "/diet-logs/{record_id}/feedback-conversation", status_code=201, response_model=FeedbackConversationResult
+)
 async def create_feedback_conversation(
     record_id: UUID, data: FeedbackConversationInput, user: User = Depends(get_required_user)
 ):
