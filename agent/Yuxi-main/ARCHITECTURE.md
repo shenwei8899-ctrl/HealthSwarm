@@ -58,7 +58,7 @@ Yuxi 只交付完整知识能力路径。API 始终注册 `external_kb`、`knowl
 
 采购 Agent 从当前有效的专业采用读取可食需求，输出程序计算的采购预览；独立采购用途的审批与逐成员同意由服务端验证。普通配餐的明日预览可由用户明确登记为待确认提议，登记复用既有业务事务 Owner，正式餐单、采用和实际饮食分别维护。业务写入和权限边界见[采购决定](docs/develop-guides/decisions/implemented/2026-10-10-health-purchase-agent.md)与[次日提议决定](docs/develop-guides/decisions/implemented/2026-10-10-health-agent-next-day-proposal.md)；错误追踪、用量事实和隔离回放查找方式见[运维参考](docs/advanced/health-agent-operations.md)。
 
-五个固定健康角色共享从 Run 首次执行起计的总预算，恢复和重试保留原起点；模型 SDK 仅使用剩余时限。咨询失败发布由聊天持久化 Owner 拒绝普通正文，显式中断仅保存固定错误投影。执行与发布分别见[预算决定](docs/develop-guides/decisions/implemented/2026-10-10-health-run-execution-budget.md)和[失败发布决定](docs/develop-guides/decisions/implemented/2026-10-10-health-consultation-partial-publication.md)。
+八个固定健康角色共享从 Run 首次执行起计的总预算，恢复和重试保留原起点；模型 SDK 仅使用剩余时限。咨询失败发布由聊天持久化 Owner 拒绝普通正文，显式中断仅保存固定错误投影。执行与发布分别见[预算决定](docs/develop-guides/decisions/implemented/2026-10-10-health-run-execution-budget.md)和[失败发布决定](docs/develop-guides/decisions/implemented/2026-10-10-health-consultation-partial-publication.md)。
 
 健康后台通过业务接口初始化绑定成员的饮食分析与固定选餐反馈会话，复用既有 Request、Run 和恢复链路。饮食列表公开实际确认版本；聊天卡片只呈现同一完成 Run 最终消息的统计事实或反馈收据。入口、配置及展示边界见[后台分析入口决定](docs/develop-guides/decisions/implemented/2026-10-10-health-analysis-web-entry.md)。
 

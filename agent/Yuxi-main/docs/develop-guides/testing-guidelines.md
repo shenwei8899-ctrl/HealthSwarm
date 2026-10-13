@@ -296,7 +296,7 @@ docker compose @healthCompose exec -T -u root api uv run --no-sync --group test 
 
 ## 健康 Run 预算与咨询失败发布
 
-五个固定健康角色的预算从 Run 首次执行起计，同一 Run 的重试不能重置起点。先运行预算、取消竞争及咨询失败发布的相关单测：
+八个固定健康角色的预算从 Run 首次执行起计，同一 Run 的重试不能重置起点。先运行预算、取消竞争及咨询失败发布的相关单测：
 
 ```powershell
 docker compose exec -T api uv run --no-sync --group test pytest test/unit/services/test_run_worker.py test/unit/services/test_health_consultation_partial_publication.py -q --tb=short

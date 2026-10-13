@@ -1,26 +1,29 @@
 # 家庭营养师 Agent 交付与待对接
 
-更新日期：2026-10-11。本文依据当前源码、决策记录和实际验收整理交接事实；原始分工见[模块划分](家庭营养师平台-Agent模块划分.md)。A 负责专业数据、计算、校验及业务结果；B 负责 Agent、受控工具、检索、图片交互、采购适配和运行监控。正式小程序页面由同事负责。
+更新日期：2026-10-13。本文依据当前源码、决策记录和实际验收整理交接事实；原始分工见[模块划分](家庭营养师平台-Agent模块划分.md)。A 负责专业数据、计算、校验及业务结果；B 负责 Agent、受控工具、检索、图片交互、采购适配和运行监控。正式小程序页面由同事负责。
 
 ## 当前可交付范围
 
-当前有五个固定、受控的 Agent 入口，五个角色均保持 `partial`。完整专业资料、适用规则和外部联调未交付前，不将工程闭环标为完整营养业务完成。角色目录及剩余范围由 [health_agent_roles.py](../Yuxi-main/backend/package/yuxi/services/health_agent_roles.py) 拥有。
+当前有八个固定、受控的 Agent 入口，八个角色均保持 `partial`。完整专业资料、适用规则和外部联调未交付前，不将工程闭环标为完整营养业务完成。角色目录及剩余范围由 [health_agent_roles.py](../Yuxi-main/backend/package/yuxi/services/health_agent_roles.py) 拥有。
 
 | 固定入口 | 当前能力 | 保留的边界 |
 |---|---|---|
 | `health-consultation` 家庭营养师 | 授权成员事实、本人确认档案及独立实测指标、审核科普本地检索与当前来源引用、自述记忆与每日消息摘要 | 科普回答不等于个体化临床建议；完整专业档案及跨用途协调待定 |
+| `health-blood-glucose` 血糖记录助手 | 本人实测血糖回顾、测量条件追问、审核科普解释与来源重验 | 不提供控糖目标、21 天计划或诊断 |
+| `health-blood-lipids` 血脂记录助手 | 本人同条血脂四项回顾、资料追问、审核科普解释与来源重验 | 不提供诊断或治疗方案；生产审核资料与模型质量待验收 |
+| `health-blood-pressure` 血压记录助手 | 本人成对血压回顾、资料追问、审核科普解释与来源重验 | 不提供诊断或治疗方案；生产审核资料与模型质量待验收 |
 | `health-meal-planner` 配餐师 | 普通、初始个人/家庭、家庭改版及单成员安全改版的受控预览；服务端复算、当前 Run 回执；普通模式显式次日提议 | 保存、专业复核、正式采用分别执行；21 天及自动日终/跨模式次日联动待定 |
 | `health-diet-analyst` 饮食分析师 | 确认单餐和 1/7/30 天记录事实、显式选餐反馈；普通分析可选绑定当前批准个人目标 | 当前目标独立投影，不套历史窗口，不产生达标、差额、趋势或全天完成结论 |
 | `health-quality` 质量审核 | 程序营养复算与限制检查、当前版本及专业状态读取 | 专业批准仍由具备资格与成员授权的业务入口执行，模型不能批准 |
 | `health-purchase` 采购助手 | 有效采用餐单的可食克数汇总、用户确认同食材版本/生熟状态库存扣减、独立用途及同 Run 回执 | 无 SKU/报价/交易；`purchase_available`、`order_available` 为 `false`，生产采购用途默认关闭 |
 
-`health-profile` 是档案业务能力，不是新增固定 Agent；`health-glucose` 仍为 `not_implemented`，不能仅改角色状态作为交付。
+`health-profile` 是档案业务能力，不是新增固定 Agent。角色目录的 `health-glucose` 对应 `health-blood-glucose` 固定入口，状态为 `partial`；它只回顾记录和解释审核知识，`glucose_plan` 仍未就绪。
 
-统一入口支持八类显式任务：`consultation`、`meal_preview`、`initial_meal_preview`、`family_meal_revision`、`safe_meal_revision`、`diet_analysis`、`quality_check`、`purchase_requirements`。输入与结果以 [Task DTO](../Yuxi-main/backend/package/yuxi/services/health_task_types.py) 为准：
+统一入口支持十一类显式任务：`consultation`、`blood_glucose_review`、`blood_lipids_review`、`blood_pressure_review`、`meal_preview`、`initial_meal_preview`、`family_meal_revision`、`safe_meal_revision`、`diet_analysis`、`quality_check`、`purchase_requirements`。输入与结果以 [Task DTO](../Yuxi-main/backend/package/yuxi/services/health_task_types.py) 为准：
 
 - `POST /api/health/v1/members/{member_id}/task-entries` 返回 `ready`、`needs_input` 或 `dependency_not_ready`；就绪只表示固定线程已创建，客户端仍需显式提交 `POST /api/agent/runs`。
 - `GET /api/health/v1/tasks/{request_id}` 从 PostgreSQL 读取当前 Request、Run、权威最终 Message 和业务结果；排队时重新订阅 Request 当前 PG 状态，派发后 Run SSE 按游标恢复，Task GET 提供断线查询兜底。Request 排队事件没有持久事件游标。执行完成、追问、专业批准和交易状态分别表达。
-- `glucose_plan`、`multi_day_plan`、`automatic_family_coordination` 当前返回 `dependency_not_ready` / `external_contract_required`。纯意图建议可由营养师 Skill 引导用户明确选择上述八类入口；当前没有自动调用通用 subAgent 的健康协调闭环。
+- `glucose_plan`、`multi_day_plan`、`automatic_family_coordination` 当前返回 `dependency_not_ready` / `external_contract_required`。纯意图建议可由营养师 Skill 引导用户明确选择上述十一类入口；当前没有自动调用通用 subAgent 的健康协调闭环。
 
 ## 独立核心项与事实 Owner
 
@@ -28,7 +31,7 @@
 
 | 能力 | 当前交付及验证边界 | 决策与源码 Owner |
 |---|---|---|
-| 任务入口与结果 | 八类显式任务、来源重验、追问/失败/取消投影；真实 HTTP、Worker、PG 最终结果及清理回读 | [首版 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-task-projection.md)、[采购/目标扩展 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-task-purchase-target-entry.md)、[Task service](../Yuxi-main/backend/package/yuxi/services/health_task_service.py) |
+| 任务入口与结果 | 十一类显式任务、来源重验、追问/失败/取消投影；真实 HTTP、Worker、PG 最终结果及清理回读 | [首版 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-task-projection.md)、[指标助手 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-13-health-indicator-agents.md)、[Task service](../Yuxi-main/backend/package/yuxi/services/health_task_service.py) |
 | 咨询引用 | 只读当前完成咨询实际采用的引用，保序去重；同 actor/member/thread/Run 来源校验，撤回/过期/篡改返回 410；不猜测旧最终指针 | [引用 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-consultation-citations.md)、[evidence service](../Yuxi-main/backend/package/yuxi/services/health_evidence_service.py) |
 | 受限知识索引与正文来源 | 审核科普逐查询重建本地词法索引，命中后 fresh PG proof；最终发布及 result/history/state/search 只公开当前有效的实际引用；搜索先统计有效匹配再限制摘要和分页；合成 Recall/F1、真实 HTTP/Worker 与零残留回读通过 | [索引 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-evidence-lexical-index.md)、[index Owner](../Yuxi-main/backend/package/yuxi/services/health_evidence_index.py)、[来源 repository](../Yuxi-main/backend/package/yuxi/repositories/health_evidence_repository.py) |
 | 当前个人目标 | 普通分析师显式选择、不可变绑定，复用 A 的当前目标计算；Schema 23 正式增量迁移及实际 HTTP/Worker 验证 | [目标 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-agent-personal-targets.md)、[target service](../Yuxi-main/backend/package/yuxi/services/health_agent_personal_target_service.py) |
@@ -37,7 +40,7 @@
 | 图片交互 | 受控上传、候选、用户确认、程序计算和正式饮食记录；识别失败保留手动路径 | [图片链路 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-04-health-meal-e2e.md)、[vision service](../Yuxi-main/backend/package/yuxi/services/health_vision_service.py) |
 | 后台分析与反馈入口 | 健康识图选择成员和1/7/30日或确认单餐后进入分析会话；确认记录旁提供固定选餐反馈对话与最终事实卡片，手动反馈保留；模型用途配置完整保存采购值 | [使用说明](../Yuxi-main/docs/advanced/health-diet-analysis.md)、[入口 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-analysis-web-entry.md) |
 | 追踪、用量与装配 | 安全 `trace_id`、识图供应商已报告用量与未知值分离；本地独立固定图门禁核对 Worker/PG；远端自动入口单独验收 | [观测 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-observability.md)、[statistics Owner](../Yuxi-main/backend/package/yuxi/services/health_vision_statistics.py)、[运维参考](../Yuxi-main/docs/advanced/health-agent-operations.md) |
-| 执行预算与失败发布 | 五个固定健康角色按首次执行起点共享跨 attempt 预算；SDK 受剩余时限约束；咨询失败不保留回答正文或最终指针；实际取消、撤同意、lease 及重试恢复验证 | [预算 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-run-execution-budget.md)、[失败发布 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-consultation-partial-publication.md)、[Worker Owner](../Yuxi-main/backend/package/yuxi/services/run_worker.py) |
+| 执行预算与失败发布 | 八个固定健康角色按首次执行起点共享跨 attempt 预算；SDK 受剩余时限约束；咨询失败不保留回答正文或最终指针；实际取消、撤同意、lease 及重试恢复验证 | [预算 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-run-execution-budget.md)、[失败发布 ADR](../Yuxi-main/docs/develop-guides/decisions/implemented/2026-10-10-health-consultation-partial-publication.md)、[Worker Owner](../Yuxi-main/backend/package/yuxi/services/run_worker.py) |
 
 ## B 的剩余接口交付
 
@@ -66,7 +69,7 @@
 ### 3. 产品跨用途协调与日终联动：待定
 
 - **提供方与必需契约：**产品/授权及模型用途 Owner 明确成员与业务对象选择、允许的任务类型与顺序、每阶段 purpose/processor/policy_version/同意范围、失败/取消/恢复及专业等待边界；明确哪些动作必须用户确认。日终需业务日期/次日日期、触发与补跑时间、去重键、优先级事实来源、费用承担和通知许可；家庭/初始/安全模式需各自次日来源及提议契约。
-- **当前接口状态：**八类型显式路由已可用，纯意图引导可以在营养师 Skill 完成。日终 [daily service](../Yuxi-main/backend/package/yuxi/services/health_daily_service.py) 生成消息摘要，`meal_plan_generated=false`；普通单成员次日桥接须用户显式动作。尚无自动跨成员/跨用途执行或自动登记。
+- **当前接口状态：**十一类显式任务入口已可用，纯意图引导可以在营养师 Skill 完成。日终 [daily service](../Yuxi-main/backend/package/yuxi/services/health_daily_service.py) 生成消息摘要，`meal_plan_generated=false`；普通单成员次日桥接须用户显式动作。尚无自动跨成员/跨用途执行或自动登记。
 - **验收触发：**流程与用途契约确认后，B 在现有 Request/Run 上落实协调；覆盖午夜边界、补跑/重复触发、成员撤权、阶段取消、来源变化及明确确认。是否需要新角色由批准流程决定，不能用通用 subAgent 绕过阶段授权。
 
 ### 4. A 的换算与商城：待定
