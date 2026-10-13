@@ -132,7 +132,6 @@ function next() {
     </view>
     <text v-if="step === 1" class="later-note">资料可稍后补充</text>
     <button class="primary-button next" @click="next"><text>{{ step === 2 ? (invited ? '保存，进入家庭' : '完成建档，进入首页') : '保存并继续' }}</text><text>{{ step === 1 ? '›' : '→' }}</text></button>
-    <button v-if="step === 2" class="secondary-button" @click="next">稍后补充未填写的信息</button>
     <text class="demo-label">前端体验版 · 资料保存于本机，请勿输入真实病历</text>
   </view>
 </template>

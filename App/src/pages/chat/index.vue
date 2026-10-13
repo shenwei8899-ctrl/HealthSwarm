@@ -1,10 +1,12 @@
 <script setup>
 import { scopedStorage,storageContext as storageScope } from '../../services/storage.js'
 import { mockDelay } from '../../services/mock-control.js'
+import { persistChatImage, previewChatImage, sendChatImage } from '../../services/chat-images.js'
 import AppIcon from '../../components/AppIcon.vue'
 import AppNavBar from '../../components/AppNavBar.vue'
+import VoiceInput from '../../components/VoiceInput.vue'
 import { computed, nextTick, ref, watch } from 'vue'
-import { onLoad, onShow,onUnload } from '@dcloudio/uni-app'
+import { onLoad, onShow,onHide,onUnload } from '@dcloudio/uni-app'
 import FlowRibbon from '../../components/FlowRibbon.vue'
 import MealBundleRecommendations from '../../components/MealBundleRecommendations.vue'
 import { getProfile, getRecords, updateRecord } from '../../utils/profile.js'
@@ -22,13 +24,19 @@ const profile = ref(getProfile())
 const records = ref(getRecords())
 const input = ref('')
 const thinking = ref(false)
+const voiceMode = ref(false), voiceBusy = ref(false), voiceRef = ref(null)
+const draftImage = ref(null), draftSaving = ref(false), draftError = ref('')
+const hasDraftContent = computed(() => Boolean(input.value.trim() || draftImage.value))
+const canSend = computed(() => hasDraftContent.value && !thinking.value && !draftSaving.value && !draftError.value)
+let draftVersion = 0, openingCamera = false, chatScope = storageScope()
 const chatDate=ref(localDate()),replyError=ref(''),lastRequest=ref('')
 let requestVersion=0,disposed=false
 const replyTimers=[]
-onUnload(()=>{disposed=true;requestVersion++;replyTimers.forEach(clearTimeout)})
+onUnload(()=>{disposed=true;requestVersion++;draftVersion++;replyTimers.forEach(clearTimeout)})
+onHide(()=>voiceRef.value?.cancel())
 function scheduleReply(work,delay){const scope=storageScope();replyTimers.push(setTimeout(()=>{if(!disposed&&scope===storageScope())work()},delay))}
 const messages = ref(scopedStorage.getStorageSync('chat-'+chatDate.value)||[])
-watch(messages,value=>scopedStorage.setStorageSync('chat-'+chatDate.value,JSON.parse(JSON.stringify(value))),{deep:true})
+watch(messages,value=>{if(chatScope===storageScope())scopedStorage.setStorageSync('chat-'+chatDate.value,JSON.parse(JSON.stringify(value)))},{deep:true})
 const scrollTarget = ref('')
 const caseId = ref(getActiveHealthCaseId())
 const caseFeedback = ref(false)
@@ -52,7 +60,13 @@ onLoad(options => {
   if (options.startCase === 'diabetes') scheduleReply(() => ask(DIABETES_CASE_QUESTION), 380)
 })
 onShow(() => {
-  if(chatDate.value!==localDate()){requestVersion++;thinking.value=false;replyError.value='';chatDate.value=localDate();messages.value=scopedStorage.getStorageSync('chat-'+chatDate.value)||[]}
+  if(chatScope!==storageScope()){
+    voiceRef.value?.cancel();voiceMode.value=false;voiceBusy.value=false
+    requestVersion++;draftVersion++;chatScope=storageScope();thinking.value=false;draftSaving.value=false
+    input.value='';draftImage.value=null;draftError.value='';replyError.value='';lastRequest.value=''
+    messages.value=scopedStorage.getStorageSync('chat-'+chatDate.value)||[]
+  }
+  if(chatDate.value!==localDate()){requestVersion++;thinking.value=false;replyError.value='';lastRequest.value='';chatDate.value=localDate();messages.value=scopedStorage.getStorageSync('chat-'+chatDate.value)||[]}
   const nextProfile = getProfile()
   planRevision.value++
   profile.value = nextProfile
@@ -67,23 +81,38 @@ onShow(() => {
   }
 })
 async function ask(text, retry=false) {
-  const content = typeof text === 'string' ? text : input.value.trim()
-  if (!content || thinking.value) return
-  if(!retry)messages.value.push({ role: 'user', text: content })
-  lastRequest.value=content;replyError.value=''
+  if (disposed || thinking.value || voiceBusy.value || chatScope!==storageScope()) return
+  const fromComposer = typeof text !== 'string'
+  if (!retry && fromComposer && (draftSaving.value || draftError.value)) return
+  const request = retry ? lastRequest.value : {
+    id: 'chat-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+    text: typeof text === 'string' ? text : input.value.trim(),
+    image: fromComposer && draftImage.value ? { ...draftImage.value } : null,
+  }
+  if (!request || (!request.text && !request.image)) return
+  const content = request.text
+  if(!retry)messages.value.push({ id:request.id, role:'user', text:content, ...(request.image?{image:{...request.image}}:{}) })
+  lastRequest.value=request;replyError.value=''
   const version=++requestVersion,scope=storageScope()
   scrollToLatestReply()
-  input.value = ''
+  if(!retry && fromComposer){input.value='';draftImage.value=null;draftError.value='';draftVersion++}
   thinking.value = true
   try {
-    await mockDelay('chat',450)
-    if(disposed||version!==requestVersion||scope!==storageScope())return
     if (/头晕|出汗|手抖|疑似低血糖|低血糖怎么办/.test(content)) {
       messages.value.push({ role: 'assistant', safety: true, text: '这可能是低血糖等需要及时处理的情况。请立即停止当前菜单和购买操作；如果能够安全测量，请尽快测血糖，并按医生事先给出的处理方案处理。若意识不清、无法吞咽、症状严重或持续不缓解，请立即联系急救或就近就医。不要给意识不清的人喂食或喂水。' })
       thinking.value = false
       scrollToLatestReply()
       return
     }
+    if (request.image) {
+      const response = await sendChatImage(request, { isCurrent: () => !disposed && version===requestVersion && scope===storageScope() })
+      if(disposed||version!==requestVersion||scope!==storageScope())return
+      messages.value.push({ role:'assistant', ...response })
+      scrollToLatestReply()
+      return
+    }
+    await mockDelay('chat',450)
+    if(disposed||version!==requestVersion||scope!==storageScope())return
     if (/糖尿病家庭怎么吃|糖尿病.*饮食建议|糖尿病.*怎么吃/.test(content)) {
       messages.value.push({
         role: 'assistant', healthAdvice: true,
@@ -129,6 +158,27 @@ async function ask(text, retry=false) {
   finally{if(version===requestVersion)thinking.value=false}
 }
 function retryReply(){if(lastRequest.value)return ask(lastRequest.value,true)}
+function removeDraftImage(){draftVersion++;draftImage.value=null;draftSaving.value=false;draftError.value=''}
+async function prepareDraftImage(image = draftImage.value) {
+  if(!image || disposed)return
+  const version=++draftVersion,scope=storageScope()
+  draftImage.value={path:image.path||image.localPath,source:image.source};draftSaving.value=true;draftError.value=''
+  try {
+    const saved=await persistChatImage(draftImage.value)
+    if(disposed||version!==draftVersion||scope!==storageScope())return
+    // Persisting the draft also keeps the next camera-page album thumbnail valid.
+    scopedStorage.setStorageSync('last-chat-image',saved)
+    draftImage.value=saved
+  } catch(e){if(!disposed&&version===draftVersion&&scope===storageScope())draftError.value=e.message||'图片保存失败，请重试'}
+  finally{if(version===draftVersion)draftSaving.value=false}
+}
+function openCamera(){
+  if(openingCamera||thinking.value||voiceBusy.value||draftSaving.value||disposed)return
+  const scope=storageScope();openingCamera=true;uni.hideKeyboard?.()
+  uni.navigateTo({url:'/pages/chat/camera',events:{photoSelected:image=>{
+    if(!disposed&&scope===storageScope())prepareDraftImage(image)
+  }},fail(){uni.showToast({title:'相机页面打开失败，请重试',icon:'none'})},complete(){openingCamera=false}})
+}
 function answerCaseChoice(choice, message) {
   if (message?.caseChoiceAnswered) return
   if (message) message.caseChoiceAnswered = true
@@ -160,8 +210,10 @@ function handleCaseAction(type) {
   }
 }
 function voice() {
-  uni.showModal({ title: '语音输入演示', content: '尚未接入录音与语音转写。是否使用示例句“今晚全家吃什么”？', confirmText: '使用示例', success: r => { if(r.confirm) ask('今晚全家吃什么？') } })
+  if(thinking.value||draftSaving.value||disposed)return
+  uni.hideKeyboard?.();voiceMode.value=true
 }
+function sendVoice(text){if(!disposed&&voiceMode.value&&chatScope===storageScope()){input.value=text;return ask()}}
 function go(url) { uni.navigateTo({ url }) }
 function openDailyMeal(item) {
   go('/pages/shop/index?meal=' + item.route + (isDiabetesCase.value && item.name === '晚餐' ? '&case=diabetes' : ''))
@@ -186,18 +238,18 @@ function undoProcessed(message){if(message.memoryId){forget(message.memoryId);pr
 </script>
 
 <template>
-<view class="screen chat-screen">
+<view class="screen chat-screen" :class="{'voice-is-busy':voiceBusy}">
   <AppNavBar><view class="nav-row chat-nav"><button class="history-button" aria-label="查询历史记录" @click="showHistory"><AppIcon name="history" :size="40"/></button><view class="assistant-title"><text>家庭营养师</text><text class="nav-subtitle">你的家庭饮食伙伴</text></view><button class="me-button" aria-label="进入我的页面" @click="go('/pages/my/index')"><AppIcon name="user" :size="40"/></button></view></AppNavBar>
   <scroll-view class="conversation" scroll-y :scroll-into-view="scrollTarget">
-    <view class="today-card"><view class="today-top"><view><text class="eyebrow">{{today.getMonth()+1}}月{{today.getDate()}}日 · 今日安排</text><text class="section-title">好好吃饭，从今天开始</text></view><text class="test-badge">测试数据</text></view><view class="today-meals"><view v-for="item in dailyPlans" :key="item.route" class="daily-meal-row"><view class="meal-card-head"><text class="meal-name">{{item.name}}</text><button class="diner-capsule" @click="changeDiners(item)"><AppIcon name="family" :size="26"/> {{item.plan.count}}人用餐</button></view><text class="meal-summary">{{item.summary}}</text><view class="meal-foot"><text class="meal-source">{{item.plan.source}}</text><button class="meal-link" @click="openDailyMeal(item)">查看本餐安排 &gt;</button></view></view></view><button v-if="!hasActivePaidPlan" class="daily-buy" @click="go('/pages/shop/index?daily=1')">一键采购 <text>↗</text></button></view>
+    <view class="today-card"><view class="today-top"><view><text class="eyebrow">{{today.getMonth()+1}}月{{today.getDate()}}日 · 今日安排</text><text class="section-title">好好吃饭，从今天开始</text></view><text class="test-badge">测试数据</text></view><view class="today-meals"><view v-for="item in dailyPlans" :key="item.route" class="daily-meal-row"><view class="meal-card-head"><text class="meal-name">{{item.name}}</text><button class="diner-capsule" @click="changeDiners(item)"><AppIcon name="family" :size="26"/> {{item.plan.count}}人用餐</button></view><text class="meal-summary">{{item.summary}}</text><view class="meal-foot"><text class="meal-source">{{item.plan.source}}</text><button class="meal-link" @click="openDailyMeal(item)">查看本餐安排 ›</button></view></view></view><button v-if="!hasActivePaidPlan" class="daily-buy" @click="go('/pages/shop/index?daily=1')">一键采购 <text>↗</text></button></view>
     <text v-if="updateNote" class="update-note">{{updateNote}}</text>
     <view v-if="lastRecord" class="feedback-card card"><text class="section-title">这一餐，已经记好了</text><text>{{lastRecord.memberNames?.join('、')||lastRecord.memberName}} · {{lastRecord.meal}}</text><button class="message-action" @click="go('/pages/feedback/index')">查看饮食反馈 →</button></view>
     <view class="message-list"><view v-if="!messages.length" class="welcome-message"><view class="welcome-symbol"><AppIcon name="chat" :size="54"/></view><text class="welcome-title">今天，想怎么吃？</text><text>你好，{{nameList}}。告诉我你想吃什么，
 我们一起安排适合家人的三餐。</text></view>
-      <view v-for="(message,index) in messages" :id="'message-'+index" :key="index" class="message-group"><view class="message-row" :class="message.role"><view v-if="message.role==='assistant'" class="ai-avatar"><AppIcon name="chat" :size="28"/></view><view class="bubble" :class="{'safety-bubble':message.safety}"><text class="bubble-copy">{{message.text}}</text><view v-if="message.quickReplies&&!message.caseChoiceAnswered" class="case-quick-replies"><button v-for="choice in message.quickReplies" :key="choice" @click="answerCaseChoice(choice,message)">{{choice}}</button></view><view v-if="message.caseActions" class="case-actions"><button v-for="action in message.caseActions" :key="action.type" @click="handleCaseAction(action.type)">{{action.label}}</button></view><button v-if="message.action" class="message-action" :class="{'menu-link':message.action==='plan'}" @click="openAction(message)">{{message.action==='plan'?'查看'+message.meal+'菜单':message.action==='profile'?'前往“我的”':'拍照记一餐'}} →</button></view></view><MealBundleRecommendations v-if="message.bundles" :bundles="message.bundles" :meal="message.meal" @open="openShop(message,$event)" @all="openShop(message)"/><view v-if="message.processed" class="processing-result card"><text class="eyebrow">本次处理结果</text><text>{{message.resultText}}</text><view v-if="message.processed!=='undone'"><button @click="openProcessed(message)">{{message.processed==='memory'?'查看记忆':'查看反馈'}}</button><button @click="undoProcessed(message)">撤回</button></view></view></view>
+      <view v-for="(message,index) in messages" :id="'message-'+index" :key="index" class="message-group"><view class="message-row" :class="message.role"><view v-if="message.role==='assistant'" class="ai-avatar"><AppIcon name="chat" :size="28"/></view><view class="bubble" :class="{'safety-bubble':message.safety}"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><text v-if="message.text" class="bubble-copy">{{message.text}}</text><view v-if="message.quickReplies&&!message.caseChoiceAnswered" class="case-quick-replies"><button v-for="choice in message.quickReplies" :key="choice" @click="answerCaseChoice(choice,message)">{{choice}}</button></view><view v-if="message.caseActions" class="case-actions"><button v-for="action in message.caseActions" :key="action.type" @click="handleCaseAction(action.type)">{{action.label}}</button></view><button v-if="message.action" class="message-action" :class="{'menu-link':message.action==='plan'}" @click="openAction(message)">{{message.action==='plan'?'查看'+message.meal+'菜单':message.action==='profile'?'前往“我的”':'拍照记一餐'}} →</button></view></view><MealBundleRecommendations v-if="message.bundles" :bundles="message.bundles" :meal="message.meal" @open="openShop(message,$event)" @all="openShop(message)"/><view v-if="message.processed" class="processing-result card"><text class="eyebrow">本次处理结果</text><text>{{message.resultText}}</text><view v-if="message.processed!=='undone'"><button @click="openProcessed(message)">{{message.processed==='memory'?'查看记忆':'查看反馈'}}</button><button @click="undoProcessed(message)">撤回</button></view></view></view>
       <view v-if="replyError" class="error-panel"><text class="inline-error">{{replyError}}</text><button :disabled="thinking" @click="retryReply">重新获取回复</button></view>
       <view v-if="thinking" class="message-row"><view class="ai-avatar"><AppIcon name="chat" :size="28"/></view><view class="bubble thinking">正在整理本餐建议…</view></view>
-    </view><view class="quick-prompts"><button v-for="prompt in prompts" :key="prompt" @click="ask(prompt)">{{prompt}}</button></view>
+    </view><view class="quick-prompts"><text class="quick-prompts-title">问问AI</text><button v-for="prompt in prompts" :key="prompt" @click="ask(prompt)">{{prompt}}</button></view>
     <view v-if="inlineTodayOpen" class="inline-today card"><view><text class="section-title">今日饮食计划</text><button @click="inlineTodayOpen=false">收起</button></view><button v-for="item in dailyPlans" :key="item.route" @click="openDailyMeal(item)"><text>{{item.name}}</text><text>{{item.summary}}</text><text>›</text></button></view><view class="conversation-spacer"></view>
   </scroll-view>
   <view class="composer-wrap"><scroll-view class="tool-strip" scroll-x :show-scrollbar="false"><view class="tool-row">
@@ -206,13 +258,15 @@ function undoProcessed(message){if(message.memoryId){forget(message.memoryId);pr
     <button class="tool-chip" @click="go('/pages/scan/index')"><AppIcon name="camera" :size="28"/><text>拍照看热量</text></button><view class="tool-divider"></view>
     <button class="tool-chip" @click="inlineTodayOpen=!inlineTodayOpen"><AppIcon name="record" :size="28"/><text>今日饮食计划</text></button><view class="tool-divider"></view>
     <button class="tool-chip" @click="communityOpen=true"><AppIcon name="chat" :size="28"/><text>加入社群</text></button>
-  </view></scroll-view><view class="composer"><button class="camera-button" aria-label="拍照记一餐" @click="go('/pages/scan/index')"><AppIcon name="camera" :size="38"/></button><input v-model="input" placeholder="问问家庭营养师…" confirm-type="send" @confirm="ask()"/><button v-if="input.trim()" class="send-button" aria-label="发送" @click="ask()"><AppIcon name="arrow" :size="30"/></button><button v-else class="voice-button" aria-label="语音演示" @click="voice"><AppIcon name="mic" :size="36"/></button></view><text class="safe-note">AI 回复与营养数值为测试数据 · 膳食建议仅供参考</text></view>
+  </view></scroll-view><view v-if="draftImage" class="image-draft"><view class="draft-thumbnail"><image :src="draftImage.localPath||draftImage.path" mode="aspectFill" @click="previewChatImage(draftImage)"/><button class="remove-draft" aria-label="移除待发送图片" @click="removeDraftImage">×</button></view><view class="draft-description"><text>{{draftSaving?'正在准备图片…':draftError||'可直接发送图片，也可以补充文字'}}</text><button v-if="draftError" @click="prepareDraftImage()">重新准备图片</button></view></view><view class="composer"><button class="camera-button" :disabled="thinking||voiceBusy||draftSaving" aria-label="打开相机或选择照片" @click="openCamera"><AppIcon name="camera" :size="38"/></button><view v-if="voiceMode" class="voice-input-slot"><VoiceInput ref="voiceRef" style="width:100%;flex:1" :disabled="thinking||draftSaving||Boolean(draftError)" @send="sendVoice" @busy="voiceBusy=$event"/></view><input v-else v-model="input" placeholder="问问家庭营养师…" confirm-type="send" @confirm="ask()"/><button v-if="voiceMode" class="keyboard-button" :disabled="voiceBusy" aria-label="切换文字输入" @click="voiceMode=false"><view class="keyboard-icon"><view></view><view></view><view></view></view></button><button v-else-if="hasDraftContent" :disabled="!canSend" class="send-button" aria-label="发送" @click="ask()"><AppIcon name="arrow" :size="30"/></button><button v-else class="voice-button" :disabled="thinking||draftSaving" aria-label="切换语音输入" @click="voice"><AppIcon name="mic" :size="36"/></button></view><text class="safe-note">AI 回复与营养数值为测试数据 · 膳食建议仅供参考</text></view>
   <DinerPicker :open="dinersOpen" :members="profile.members" :selected="selectedDinerPlan.members.map(m=>m.id)" :meal="dinerMeal" @close="dinersOpen=false" @confirm="confirmDiners"/>
   <view v-if="communityOpen" class="sheet-mask" @click.self="communityOpen=false"><view class="sheet community-sheet"><view class="community-head"><text class="section-title">加入社群</text><button @click="communityOpen=false">×</button></view><view class="qr-placeholder">二维码待运营配置</view><text class="safe-note">暂无可用社群二维码，请稍后再试</text></view></view>
 </view>
 </template>
 <style scoped>
+.composer{position:relative}.voice-input-slot{flex:1;min-width:0;display:flex;align-items:center}.keyboard-button{margin-left:auto;margin-right:0}.voice-is-busy .conversation,.voice-is-busy .tool-strip{opacity:.35;pointer-events:none}.voice-is-busy .history-button,.voice-is-busy .me-button{pointer-events:none}.keyboard-button{width:68rpx;height:68rpx;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#63636b}.keyboard-icon{width:42rpx;height:32rpx;border:3rpx solid currentColor;border-radius:7rpx;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4rpx}.keyboard-icon>view{width:26rpx;height:3rpx;border-top:3rpx dotted currentColor}.keyboard-icon>view:last-child{width:18rpx;border-top-style:solid}
+.chat-message-image{display:block;width:360rpx;max-width:100%;border-radius:16rpx}.chat-message-image+.bubble-copy{display:block;margin-top:16rpx}.image-draft{display:flex;align-items:center;gap:20rpx;padding:0 0 20rpx}.draft-thumbnail{position:relative;flex-shrink:0;width:112rpx;height:112rpx}.draft-thumbnail image{width:100%;height:100%;border-radius:16rpx}.image-draft .remove-draft{position:absolute;right:-10rpx;top:-10rpx;width:44rpx;height:44rpx;display:flex;align-items:center;justify-content:center;border-radius:50%;background:#1d1d1f;color:#fff;font-size:32rpx}.draft-description{font-size:24rpx;color:#767680;line-height:1.5}.draft-description button{min-height:64rpx;color:#246b50;font-size:24rpx;text-align:left}.send-button[disabled]{opacity:.4}
 .error-panel{padding:24rpx;border-radius:20rpx;background:#fff2ee;margin:24rpx 0}.error-panel button{color:#246b50;min-height:80rpx}
 
-.chat-screen{height:100vh;display:flex;flex-direction:column;background:#fff;padding-bottom:calc(env(safe-area-inset-bottom) + 12rpx)}.chat-nav{flex-shrink:0}.history-button,.me-button{width:72rpx;height:80rpx;display:flex;align-items:center;justify-content:center}.assistant-title{text-align:center;display:flex;flex-direction:column;gap:4rpx;min-width:0}.assistant-title>text:first-child{font-size:32rpx;font-weight:600}.nav-subtitle{font-size:21rpx;color:#767680}.conversation{flex:1;min-height:0}.today-card{margin-top:20rpx;padding:28rpx;border-radius:30rpx;background:#f5f5f7}.today-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12rpx}.today-top .section-title{font-size:34rpx}.test-badge{font-size:20rpx;color:#767680;white-space:nowrap}.today-meals{margin-top:16rpx}.daily-meal-row{padding:20rpx 0;border-top:1rpx solid #e5e5ea}.daily-meal-row:first-child{border:0}.meal-card-head{display:flex;justify-content:space-between;align-items:center}.meal-name{font-size:29rpx;font-weight:600}.diner-capsule{display:flex;gap:8rpx;align-items:center;justify-content:center;min-height:84rpx;padding:0 20rpx;border:1rpx solid #e0e0e5;background:#fff;border-radius:999rpx;font-size:24rpx;color:#246b50}.meal-summary{display:block;font-size:26rpx;margin-top:4rpx;line-height:1.5}.meal-foot{display:flex;justify-content:space-between;align-items:center;gap:12rpx}.meal-source{font-size:21rpx;color:#767680}.meal-link{font-size:24rpx;min-height:72rpx;color:#246b50}.daily-buy{display:flex;gap:16rpx;margin-left:auto!important;align-items:center;background:#1d1d1f;color:white;border-radius:18rpx;padding:16rpx 24rpx;min-height:80rpx;font-size:26rpx}.welcome-message{display:flex;flex-direction:column;align-items:center;text-align:center;padding:56rpx 16rpx 36rpx;gap:20rpx}.welcome-symbol{height:96rpx;width:96rpx;border-radius:30rpx;background:#eaf2ed;color:#246b50;display:flex;align-items:center;justify-content:center}.welcome-title{font-size:40rpx;font-weight:600}.welcome-message>text:last-child{font-size:27rpx;color:#63636b;line-height:1.7;white-space:pre-line}.message-list{padding-top:20rpx}.message-row{display:flex;align-items:flex-start;gap:14rpx;margin:24rpx 0}.message-row.user{justify-content:flex-end;padding-left:60rpx}.ai-avatar{width:52rpx;height:52rpx;display:flex;align-items:center;justify-content:center;border-radius:18rpx;background:#eaf2ed;color:#246b50;flex-shrink:0}.bubble{max-width:570rpx;padding:24rpx;border-radius:4rpx 24rpx 24rpx;background:#f5f5f7;font-size:28rpx;line-height:1.75}.bubble-copy{white-space:pre-line}.user .bubble{border-radius:24rpx 4rpx 24rpx 24rpx;background:#eaf2ed}.safety-bubble{background:#fff2ee;color:#a3392c}.message-action{display:block;padding:18rpx 0;font-size:27rpx;color:#246b50;min-height:80rpx;text-align:left}.processing-result{margin:0 0 22rpx 66rpx;padding:24rpx;font-size:26rpx;line-height:1.6}.processing-result>text{display:block}.processing-result>view{display:flex;gap:28rpx}.processing-result button{color:#246b50;min-height:80rpx}.processing-result button:last-child{color:#a3392c}.quick-prompts{display:flex;flex-direction:column;gap:14rpx;padding:16rpx 0 32rpx}.quick-prompts button{width:100%;box-sizing:border-box}.quick-prompts button,.case-quick-replies button,.case-actions button{min-height:80rpx;padding:16rpx 22rpx;border:1rpx solid #e5e5ea;border-radius:18rpx;font-size:26rpx;text-align:left;background:#fff}.inline-today{padding:24rpx}.inline-today>view,.inline-today>button{display:flex;justify-content:space-between;gap:20rpx;width:100%;font-size:26rpx}.inline-today>button{padding:24rpx 0;border-top:1rpx solid #e5e5ea}.inline-today>view{margin-bottom:20rpx}.conversation-spacer{height:32rpx}.composer-wrap{padding-top:14rpx;background:#fff;border-top:1rpx solid #f0f0f3}.tool-strip{width:calc(100% + 32rpx);white-space:nowrap;margin-bottom:16rpx}.tool-row{display:inline-flex;gap:12rpx;padding-right:32rpx;align-items:center}.tool-chip{display:inline-flex;align-items:center;gap:8rpx;min-height:76rpx;padding:12rpx 18rpx;border:1rpx solid #e5e5ea;border-radius:18rpx;background:#fff;color:#3c3c43;font-size:23rpx}.tool-divider{display:none}.tool-chip,.tool-divider { flex-shrink: 0; }.composer{display:flex;align-items:center;gap:12rpx;padding:12rpx;border:1rpx solid #dedee3;border-radius:24rpx;background:#fafafa}.composer input{flex:1;min-width:0;height:68rpx;font-size:29rpx}.camera-button,.voice-button,.send-button{width:68rpx;height:68rpx;display:flex;align-items:center;justify-content:center;color:#63636b;flex-shrink:0}.send-button{border-radius:50%;background:#1d1d1f;color:#fff}.composer-wrap .safe-note{font-size:20rpx;margin-top:12rpx}.feedback-card{padding:28rpx;margin:24rpx 0}.feedback-card>text{display:block;margin-top:12rpx;font-size:28rpx}.community-head{display:flex;justify-content:space-between}.community-head button{font-size:40rpx;min-height:80rpx}.qr-placeholder{width:320rpx;height:320rpx;background:#f5f5f7;margin:36rpx auto;display:flex;align-items:center;justify-content:center;color:#767680;font-size:26rpx;border-radius:24rpx}.update-note{display:block;padding:24rpx;background:#eaf2ed;margin:24rpx 0;border-radius:22rpx;font-size:26rpx;line-height:1.6}
+.chat-screen{height:100vh;display:flex;flex-direction:column;background:#fff;padding-bottom:calc(env(safe-area-inset-bottom) + 12rpx)}.chat-nav{flex-shrink:0}.history-button,.me-button{width:72rpx;height:80rpx;display:flex;align-items:center;justify-content:center}.assistant-title{text-align:center;display:flex;flex-direction:column;gap:4rpx;min-width:0}.assistant-title>text:first-child{font-size:32rpx;font-weight:600}.nav-subtitle{font-size:21rpx;color:#767680}.conversation{flex:1;min-height:0}.today-card{margin-top:20rpx;padding:28rpx;border-radius:30rpx;background:#f5f5f7}.today-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12rpx}.today-top .section-title{font-size:34rpx}.test-badge{font-size:20rpx;color:#767680;white-space:nowrap}.today-meals{margin-top:16rpx}.daily-meal-row{padding:20rpx 0;border-top:1rpx solid #e5e5ea}.daily-meal-row:first-child{border:0}.meal-card-head{display:flex;justify-content:space-between;align-items:center}.meal-name{font-size:29rpx;font-weight:600}.diner-capsule{display:flex;gap:8rpx;align-items:center;justify-content:center;min-height:84rpx;padding:0 20rpx;border:1rpx solid #e0e0e5;background:#fff;border-radius:999rpx;font-size:24rpx;color:#246b50}.meal-summary{display:block;font-size:26rpx;margin-top:4rpx;line-height:1.5}.meal-foot{display:flex;justify-content:space-between;align-items:center;gap:12rpx}.meal-source{font-size:21rpx;color:#767680}.meal-link{font-size:24rpx;min-height:72rpx;color:#246b50}.daily-buy{display:flex;gap:16rpx;margin-left:auto!important;align-items:center;background:#1d1d1f;color:white;border-radius:18rpx;padding:16rpx 24rpx;min-height:80rpx;font-size:26rpx}.welcome-message{display:flex;flex-direction:column;align-items:center;text-align:center;padding:56rpx 16rpx 36rpx;gap:20rpx}.welcome-symbol{height:96rpx;width:96rpx;border-radius:30rpx;background:#eaf2ed;color:#246b50;display:flex;align-items:center;justify-content:center}.welcome-title{font-size:40rpx;font-weight:600}.welcome-message>text:last-child{font-size:27rpx;color:#63636b;line-height:1.7;white-space:pre-line}.message-list{padding-top:20rpx}.message-row{display:flex;align-items:flex-start;gap:14rpx;margin:24rpx 0}.message-row.user{justify-content:flex-end;padding-left:60rpx}.ai-avatar{width:52rpx;height:52rpx;display:flex;align-items:center;justify-content:center;border-radius:18rpx;background:#eaf2ed;color:#246b50;flex-shrink:0}.bubble{max-width:570rpx;padding:24rpx;border-radius:4rpx 24rpx 24rpx;background:#f5f5f7;font-size:28rpx;line-height:1.75}.bubble-copy{white-space:pre-line}.user .bubble{border-radius:24rpx 4rpx 24rpx 24rpx;background:#eaf2ed}.safety-bubble{background:#fff2ee;color:#a3392c}.message-action{display:block;padding:18rpx 0;font-size:27rpx;color:#246b50;min-height:80rpx;text-align:left}.processing-result{margin:0 0 22rpx 66rpx;padding:24rpx;font-size:26rpx;line-height:1.6}.processing-result>text{display:block}.processing-result>view{display:flex;gap:28rpx}.processing-result button{color:#246b50;min-height:80rpx}.processing-result button:last-child{color:#a3392c}.quick-prompts{display:flex;flex-direction:column;gap:14rpx;padding:16rpx 0 32rpx}.quick-prompts-title{display:block;font-size:28rpx;font-weight:600;text-align:left}.quick-prompts button{width:100%;box-sizing:border-box;min-height:80rpx;padding:16rpx 0;border:0;border-radius:0;font-size:26rpx;text-align:left;background:transparent}.quick-prompts button::after{border:0}.case-quick-replies button,.case-actions button{min-height:80rpx;padding:16rpx 22rpx;border:1rpx solid #e5e5ea;border-radius:18rpx;font-size:26rpx;text-align:left;background:#fff}.inline-today{padding:24rpx}.inline-today>view,.inline-today>button{display:flex;justify-content:space-between;gap:20rpx;width:100%;font-size:26rpx}.inline-today>button{padding:24rpx 0;border-top:1rpx solid #e5e5ea}.inline-today>view{margin-bottom:20rpx}.conversation-spacer{height:32rpx}.composer-wrap{padding-top:14rpx;background:#fff;border-top:1rpx solid #f0f0f3}.tool-strip{width:calc(100% + 32rpx);white-space:nowrap;margin-bottom:16rpx}.tool-row{display:inline-flex;gap:12rpx;padding-right:32rpx;align-items:center}.tool-chip{display:inline-flex;align-items:center;gap:8rpx;min-height:76rpx;padding:12rpx 18rpx;border:1rpx solid #e5e5ea;border-radius:18rpx;background:#fff;color:#3c3c43;font-size:23rpx}.tool-divider{display:none}.tool-chip,.tool-divider { flex-shrink: 0; }.composer{display:flex;align-items:center;gap:12rpx;padding:12rpx;border:1rpx solid #dedee3;border-radius:24rpx;background:#fafafa}.composer input{flex:1;min-width:0;height:68rpx;font-size:29rpx}.camera-button,.voice-button,.send-button{width:68rpx;height:68rpx;display:flex;align-items:center;justify-content:center;color:#63636b;flex-shrink:0}.send-button{border-radius:50%;background:#1d1d1f;color:#fff}.composer-wrap .safe-note{font-size:20rpx;margin-top:12rpx}.feedback-card{padding:28rpx;margin:24rpx 0}.feedback-card>text{display:block;margin-top:12rpx;font-size:28rpx}.community-head{display:flex;justify-content:space-between}.community-head button{font-size:40rpx;min-height:80rpx}.qr-placeholder{width:320rpx;height:320rpx;background:#f5f5f7;margin:36rpx auto;display:flex;align-items:center;justify-content:center;color:#767680;font-size:26rpx;border-radius:24rpx}.update-note{display:block;padding:24rpx;background:#eaf2ed;margin:24rpx 0;border-radius:22rpx;font-size:26rpx;line-height:1.6}
 </style>

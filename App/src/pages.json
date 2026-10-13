@@ -36,6 +36,7 @@
         "navigationBarTitleText": "家庭建档"
       }
     },
+    {"path":"pages/chat/camera","style":{"navigationStyle":"custom","navigationBarTitleText":"AI 相机","navigationBarTextStyle":"white","backgroundColor":"#000000","disableScroll":true}},
     {
       "path": "pages/chat/index",
       "style": {

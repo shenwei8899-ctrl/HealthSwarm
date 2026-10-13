@@ -16,6 +16,7 @@
       "es6": true,
       "minified": true
     },
+    "permission": { "scope.camera": { "desc": "用于拍摄照片并在聊天中提问" }, "scope.record": { "desc": "用于按住说话，转成文字向家庭营养师提问" } },
     "usingComponents": true
   }
 }

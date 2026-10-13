@@ -39,7 +39,7 @@ function evaluatePage(path, extras, exposed) {
   let show, unload
   const deps = { ref, computed, nextTick, watch, ...profiles, ...orders, ...actions, ...mealState, ...customization, ...mealFlow, ...exclusive, ...bundles, ...demo, ...memory, ...healthCases, ...checkout, ...health, ...portions,
     scopedStorage, storageScope:storageContext, mockDelay, service:mockService, mockService,
-    onBackPress() {}, onLoad(callback) { callback(extras.options || {}) }, onShow(callback) { show=callback }, onUnload(callback) { unload=callback }, ...extras }
+    onHide() {}, onBackPress() {}, onLoad(callback) { callback(extras.options || {}) }, onShow(callback) { show=callback }, onUnload(callback) { unload=callback }, ...extras }
   const source=readFileSync(new URL('../src/pages/'+path,import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const scope=effectScope()
   const page=scope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;\n${source}\nreturn {${exposed}}`)(deps))
