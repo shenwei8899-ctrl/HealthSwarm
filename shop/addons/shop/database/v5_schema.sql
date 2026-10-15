@@ -883,10 +883,13 @@ CREATE TABLE IF NOT EXISTS `__PREFIX__shop_supplier_sku` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `supplier_id` bigint unsigned NOT NULL,
   `sku_id` bigint unsigned NOT NULL,
+  `supplier_goods_code` varchar(100) NOT NULL DEFAULT '',
   `supplier_sku_code` varchar(100) NOT NULL,
   `supplier_sku_name` varchar(255) NOT NULL DEFAULT '',
   `purchase_price_cent` bigint unsigned NOT NULL DEFAULT 0,
   `minimum_order_quantity` int unsigned NOT NULL DEFAULT 1,
+  `delivery_days` int unsigned NOT NULL DEFAULT 0,
+  `source_note` text DEFAULT NULL,
   `stock_status` varchar(30) NOT NULL DEFAULT 'unknown',
   `stock_quantity` int unsigned NOT NULL DEFAULT 0,
   `stock_updated_at` bigint unsigned NOT NULL DEFAULT 0,
@@ -1216,3 +1219,35 @@ CREATE TABLE IF NOT EXISTS `__PREFIX__shop_metric_daily` (
   UNIQUE KEY `uk_metric_daily` (`metric_date`,`metric_group`,`metric_key`,`dimension_key`),
   KEY `idx_metric_group` (`metric_group`,`metric_date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='经营数据日聚合';
+CREATE TABLE IF NOT EXISTS `__PREFIX__shop_miniapp_identity` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `app_id` varchar(64) NOT NULL,
+  `openid` varchar(128) NOT NULL,
+  `user_id` bigint unsigned NOT NULL,
+  `createtime` bigint NOT NULL,
+  PRIMARY KEY (`id`), UNIQUE KEY `uk_miniapp_identity` (`app_id`,`openid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Delivery slot capacity reservations.
+CREATE TABLE IF NOT EXISTS `__PREFIX__shop_slot_reservation` (`order_sn` varchar(64) NOT NULL, `slot_id` bigint NOT NULL, `status` varchar(20) NOT NULL DEFAULT 'active', PRIMARY KEY (`order_sn`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+-- WeChat prepay mapping and successful gateway transactions.
+CREATE TABLE IF NOT EXISTS `__PREFIX__shop_payment_transaction` (
+ `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+ `payment_sn` varchar(64) NOT NULL,
+ `order_id` bigint unsigned NOT NULL,
+ `order_sn` varchar(64) NOT NULL,
+ `channel` varchar(30) NOT NULL,
+ `channel_transaction_id` varchar(100) NOT NULL DEFAULT '',
+ `amount` decimal(12,2) NOT NULL,
+ `status` varchar(30) NOT NULL DEFAULT 'CREATED',
+ `request_json` json DEFAULT NULL,
+ `callback_json` json DEFAULT NULL,
+ `paid_at` bigint DEFAULT NULL,
+ `createtime` bigint NOT NULL,
+ `updatetime` bigint DEFAULT NULL,
+ PRIMARY KEY (`id`), UNIQUE KEY `uk_payment_sn` (`payment_sn`),
+ UNIQUE KEY `uk_channel_transaction` (`channel`,`channel_transaction_id`),
+ KEY `idx_order_status` (`order_id`,`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

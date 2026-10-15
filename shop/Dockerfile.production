@@ -1,21 +1,27 @@
-FROM composer:2 AS vendor
+FROM composer:2.8.12 AS vendor
 
 WORKDIR /app
-COPY composer.json ./
+COPY composer.json composer.lock ./
+COPY scripts/apply-runtime-patches.php ./scripts/apply-runtime-patches.php
+COPY patches ./patches
 RUN composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader --ignore-platform-reqs
 
 FROM php:8.3-fpm
+ARG PHP_BUILD_JOBS=2
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libcurl4-openssl-dev libfreetype6-dev libjpeg62-turbo-dev libpng-dev libzip-dev libonig-dev libicu-dev libpq-dev unzip \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install -j"$(nproc)" bcmath curl gd intl mbstring opcache pdo_pgsql zip \
-    && rm -rf /var/lib/apt/lists/*
+    && docker-php-ext-install -j"${PHP_BUILD_JOBS}" bcmath curl gd intl mbstring opcache pdo_pgsql zip \
+    && apt-get clean
 
 WORKDIR /var/www/html
 COPY . /var/www/html
 COPY --from=vendor /app/vendor /var/www/html/vendor
+COPY --from=vendor /app/thinkphp /var/www/html/thinkphp
+RUN php scripts/apply-runtime-patches.php \
+    && php -l thinkphp/library/think/db/connector/Pgsql.php
 COPY docker/php-production.ini /usr/local/etc/php/conf.d/zz-healthflow-production.ini
 
 RUN chmod +x docker/production-entrypoint.sh docker/run-v5-scheduler.sh \

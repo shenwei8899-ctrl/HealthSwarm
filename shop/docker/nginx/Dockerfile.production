@@ -1,4 +1,11 @@
+FROM node:24-alpine AS assets
+WORKDIR /assets
+COPY package.json package-lock.json Gruntfile.js ./
+RUN npm ci --ignore-scripts --no-audit --no-fund \
+    && ./node_modules/.bin/grunt deploy
+
 FROM nginx:1.27-alpine
 
 COPY public /var/www/html/public
+COPY --from=assets /assets/public/assets/libs /var/www/html/public/assets/libs
 COPY docker/nginx/default.conf.template /etc/nginx/templates/default.conf.template

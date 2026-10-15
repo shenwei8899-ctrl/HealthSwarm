@@ -70,7 +70,19 @@ class AftersaleService
     public function cancel($userId,$sn)
     {
         $row=$this->detail($userId,$sn);if((int)$row['status']!==1)throw new DomainException('当前售后单不可撤销',40910,409);
-        Db::startTrans();try{Db::name('shop_order_aftersales')->where('id',$row['id'])->update(['status'=>4,'cancelled_at'=>time(),'row_version'=>(int)$row['row_version']+1,'updatetime'=>time()]);Db::name('shop_order_goods')->where('id',$row['order_goods_id'])->update(['salestate'=>0]);$pending=Db::name('shop_order_aftersales')->where('order_id',$row['order_id'])->where('status','in',[1,2])->count();if(!$pending)Db::name('shop_order')->where('id',$row['order_id'])->update(['orderstate'=>0,'updatetime'=>time()]);Db::commit();}catch(\Exception $e){Db::rollback();throw $e;}return $this->detail($userId,$sn);
+        Db::startTrans();try{Db::name('shop_order')->where('id',$row['order_id'])->lock(true)->find();$locked=Db::name('shop_order_aftersales')->where('id',$row['id'])->lock(true)->find();if((int)$locked['status']!==1)throw new DomainException('当前售后单不可撤销',40910,409);Db::name('shop_order_aftersales')->where('id',$row['id'])->update(['status'=>4,'cancelled_at'=>time(),'row_version'=>(int)$locked['row_version']+1,'updatetime'=>time()]);Db::name('shop_order_goods')->where('id',$row['order_goods_id'])->update(['salestate'=>0]);$this->restoreOrderAfterResolution($row['order_id']);Db::commit();}catch(\Exception $e){Db::rollback();throw $e;}return $this->detail($userId,$sn);
+    }
+
+    /** All rejected/cancelled requests restore the actual receipt state. */
+    public function restoreOrderAfterResolution($orderId)
+    {
+        $order=Db::name('shop_order')->where('id',$orderId)->lock(true)->find();
+        if(!$order || (int)$order['orderstate']!==4)return;
+        if(Db::name('shop_order_aftersales')->where('order_id',$orderId)->where('status','in',[1,2])->count())return;
+        $ext=Db::name('shop_order_ext')->where('order_sn',$order['order_sn'])->find();
+        if($ext && !in_array($ext['payment_status'],['paid','unpaid','created'],true))return;
+        $state=(int)$order['paystate']===1 && (int)$order['shippingstate']===2?3:0;
+        Db::name('shop_order')->where('id',$orderId)->update(['orderstate'=>$state,'updatetime'=>time()]);
     }
 
     public function confirmResult($userId,$sn)

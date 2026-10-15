@@ -60,6 +60,8 @@ function bootstrapPostgresqlSchema($prefix)
     $schemaFiles = [
         dirname(__DIR__) . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'postgresql' . DIRECTORY_SEPARATOR . '002_shop.sql',
         dirname(__DIR__) . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'postgresql' . DIRECTORY_SEPARATOR . '003_v5_schema.sql',
+        dirname(__DIR__) . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'postgresql' . DIRECTORY_SEPARATOR . '004_supplier_catalog_import_fields.sql',
+        dirname(__DIR__) . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'postgresql' . DIRECTORY_SEPARATOR . '005_wechat_payment_lifecycle.sql',
     ];
     foreach ($schemaFiles as $path) {
         if (!is_file($path)) {

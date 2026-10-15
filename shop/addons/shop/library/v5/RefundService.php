@@ -52,12 +52,20 @@ class RefundService
 
     public function rejectAftersale($aftersaleId,$adminId,$comment)
     {
+        Db::startTrans();
+        try {
         $after=Db::name('shop_order_aftersales')->where('id',(int)$aftersaleId)->where('status',1)->find();
         if(!$after)throw new DomainException('售后单不存在或已处理',40910,409);
+        Db::name('shop_order')->where('id',$after['order_id'])->lock(true)->find();
+        $after=Db::name('shop_order_aftersales')->where('id',$after['id'])->lock(true)->find();
+        if((int)$after['status']!==1)throw new DomainException('售后单已处理',40910,409);
         Db::name('shop_order_aftersales')->where('id',$after['id'])->update(['status'=>3,'mark'=>$comment,'row_version'=>(int)$after['row_version']+1,'updatetime'=>time()]);
         Db::name('shop_order_goods')->where('id',$after['order_goods_id'])->update(['salestate'=>6]);
         if($after['batch_id'])Db::name('shop_plan_delivery_batch')->where('id',$after['batch_id'])->update(['aftersale_status'=>'rejected','updatetime'=>time()]);
+        (new AftersaleService())->restoreOrderAfterResolution($after['order_id']);
+        Db::commit();
         return Db::name('shop_order_aftersales')->where('id',$after['id'])->find();
+        } catch(\Throwable $e) { Db::rollback(); throw $e; }
     }
 
     public function submitWechat($refundSn)
@@ -65,6 +73,8 @@ class RefundService
         $refund=Db::name('shop_refund_record')->where('refund_sn',$refundSn)->find();
         $order=$refund?Db::name('shop_order')->where('order_sn',$refund['order_sn'])->find():null;
         if(!$refund||!$order)throw new DomainException('退款记录不存在',40414,404);
+        $payment=Db::name('shop_payment_record')->where('id',$refund['payment_id'])->find();
+        if($payment && $payment['channel']==='local_test')throw new DomainException('本地测试付款未实际扣款，不发起微信退款',40935,409);
         if(in_array($refund['status'],['submitted','processing','success'],true))return $refund;
         $result=\addons\shop\library\service\WechatPayService::refund([
             'order_id'=>(int)$order['id'],

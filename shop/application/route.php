@@ -10,6 +10,9 @@
 // | Author: liu21st <liu21st@gmail.com>
 // +----------------------------------------------------------------------
 
+// Override the package's image route with the platform font adapter.
+\think\Route::get('captcha/[:id]', '\\app\\index\\controller\\Captcha@index');
+
 return [
     'api/v1/shop/goods$' => function () {
         return (new \think\addons\Route())->execute('shop', 'api.catalog', 'index');

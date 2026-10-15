@@ -6,7 +6,7 @@ use think\Db;
 
 class IdempotencyService
 {
-    public function run($scope, $clientId, $key, array $payload, callable $callback, $ttl = 86400)
+    public function run($scope, $clientId, $key, array $payload, callable $callback, $ttl = 86400, $cacheSuccess = true)
     {
         $key = trim((string)$key);
         if ($key === '' || strlen($key) > 64) {
@@ -24,7 +24,7 @@ class IdempotencyService
             if (!hash_equals($record['request_hash'], $hash)) {
                 throw new DomainException('相同幂等键对应了不同请求内容', 40901, 409);
             }
-            if ($record['status'] === 'succeeded') {
+            if ($record['status'] === 'succeeded' && $cacheSuccess) {
                 return Json::decode($record['response_body'], []);
             }
             if ($record['status'] === 'processing' && (int)$record['locked_until'] > $now) {

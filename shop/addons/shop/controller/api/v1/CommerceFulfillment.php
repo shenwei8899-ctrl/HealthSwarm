@@ -10,6 +10,7 @@ class CommerceFulfillment extends Base
 {
     public function timeline($order_sn = null)
     {
+        $order_sn = $order_sn ?? $this->request->route('order_sn');
         return $this->execute(function () use ($order_sn) {
             $order = Db::name('shop_order')->where('order_sn', $order_sn)->where('user_id', $this->userId())->find();
             if (!$order) {
@@ -32,6 +33,7 @@ class CommerceFulfillment extends Base
 
     public function deliveryIssue($order_sn = null)
     {
+        $order_sn = $order_sn ?? $this->request->route('order_sn');
         return $this->execute(function () use ($order_sn) {
             $this->requireMethod('POST');$p=$this->input();$uid=$this->userId();
             return(new IdempotencyService())->run('commerce.fulfillment.delivery_issue','miniapp:'.$uid,$this->request->header('idempotency-key'),['order_sn'=>$order_sn]+$p,function()use($uid,$order_sn,$p){

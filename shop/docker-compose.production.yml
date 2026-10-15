@@ -17,10 +17,12 @@ x-app-environment: &app-environment
   FASTADMIN_ADMIN_PASSWORD: ${FASTADMIN_ADMIN_PASSWORD:?FASTADMIN_ADMIN_PASSWORD is required}
   SHOP_V5_MASTER_KEY: ${SHOP_V5_MASTER_KEY:?SHOP_V5_MASTER_KEY is required}
   SHOP_WECHAT_APP_ID: ${SHOP_WECHAT_APP_ID:-}
+  SHOP_WECHAT_APP_SECRET: ${SHOP_WECHAT_APP_SECRET:-}
+  SHOP_MEDIA_BASE_URL: ${SHOP_MEDIA_BASE_URL:-}
   SHOP_WECHAT_MCH_ID: ${SHOP_WECHAT_MCH_ID:-}
   SHOP_WECHAT_API_V2_KEY: ${SHOP_WECHAT_API_V2_KEY:-}
-  SHOP_WECHAT_CERT_PATH: ${SHOP_WECHAT_CERT_PATH:-}
-  SHOP_WECHAT_KEY_PATH: ${SHOP_WECHAT_KEY_PATH:-}
+  SHOP_WECHAT_CERT_PATH: ${SHOP_WECHAT_CERT_PATH:-/run/secrets/wechat/apiclient_cert.pem}
+  SHOP_WECHAT_KEY_PATH: ${SHOP_WECHAT_KEY_PATH:-/run/secrets/wechat/apiclient_key.pem}
   SHOP_WECHAT_NOTIFY_URL: ${SHOP_WECHAT_NOTIFY_URL:-}
   SHOP_WECHAT_SANDBOX: ${SHOP_WECHAT_SANDBOX:-false}
   ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
@@ -56,6 +58,7 @@ services:
     volumes:
       - healthflow_prod_runtime:/var/www/html/runtime
       - healthflow_prod_uploads:/var/www/html/public/uploads
+      - ${SHOP_WECHAT_CERT_DIR:-./docker/certs/wechat}:/run/secrets/wechat:ro
     healthcheck:
       test: ["CMD", "php", "-r", "$$s=@fsockopen('127.0.0.1',9000,$$e,$$m,2); exit($$s?0:1);"]
       interval: 15s
@@ -103,6 +106,7 @@ services:
     volumes:
       - healthflow_prod_runtime:/var/www/html/runtime
       - healthflow_prod_uploads:/var/www/html/public/uploads
+      - ${SHOP_WECHAT_CERT_DIR:-./docker/certs/wechat}:/run/secrets/wechat:ro
     command: ["sh", "docker/run-v5-scheduler.sh"]
     healthcheck:
       test: ["CMD", "php", "-r", "exit(is_file('/tmp/healthflow-scheduler-ok') && filemtime('/tmp/healthflow-scheduler-ok') > time()-300 ? 0 : 1);"]

@@ -13,6 +13,9 @@ class CheckoutService
                 throw new DomainException('缺少必填字段: ' . $field, 40001, 400, ['field' => $field]);
             }
         }
+        if (!in_array($payload['source_type'], ['cart', 'purchase_list', 'recommendation_package', 'service_plan'], true)) {
+            throw new DomainException('结算来源无效', 40001, 400);
+        }
         $delivery = (new DeliveryService())->validateAddress($userId, $payload['address_id'], isset($payload['delivery_slot_id']) ? $payload['delivery_slot_id'] : 0);
         if ($payload['source_type'] === 'service_plan') {
             $pricing = $this->pricePlan($userId, $payload, $delivery);
@@ -30,9 +33,12 @@ class CheckoutService
         $tokenHash = hash('sha256', $token);
         $now = time();
         $expiresAt = $now + 900;
+        $mealSnapshot = (new MealCommerceService())->quoteSnapshot($userId, $payload, $pricing);
+        if ($mealSnapshot) $pricing['meal_snapshot'] = $mealSnapshot;
         $pricing['address_snapshot'] = $delivery['snapshot'];
         $pricing['delivery_area_id'] = (string)$delivery['area']['id'];
         $pricing['delivery_slot_id'] = $delivery['slot'] ? (string)$delivery['slot']['id'] : '0';
+        $pricing['delivery_slot_fee_cent'] = $delivery['slot'] ? (int)$delivery['slot']['extra_fee_cent'] : 0;
 
         Db::startTrans();
         try {
@@ -84,11 +90,23 @@ class CheckoutService
             throw new DomainException('结算令牌已失效', 40918, 409);
         }
         $pricing = Json::decode($session['pricing_snapshot_json'], []);
-        $this->revalidatePricing($session, $pricing);
-        if ($session['source_type'] === 'service_plan') {
-            return $this->createPlanOrder($session, $pricing, $payload, $requestId);
-        }
-        return $this->createNormalOrder($session, $pricing, $payload, $requestId);
+        Db::startTrans();
+        try {
+            $locked = Db::name('shop_checkout_session')->where('id', $session['id'])->lock(true)->find();
+            if ($locked['status'] !== 'active') throw new DomainException('结算令牌已使用', 40918, 409);
+            if (!empty($pricing['meal_snapshot'])) {
+                $meal = $pricing['meal_snapshot'];
+                Db::name('shop_recommendation_package')->where('package_sn',$meal['package_sn'])->where('user_id',$userId)->lock(true)->find();
+                $currentMenu=(new MealCommerceService())->package($userId, $meal['package_sn'], $meal['package_version']);
+                if (!$currentMenu['available']) throw new DomainException('菜单已不可购买，请重新确认',40917,409);
+            }
+            $this->revalidatePricing($locked, $pricing);
+            $result = $session['source_type'] === 'service_plan'
+                ? $this->createPlanOrder($session, $pricing, $payload, $requestId)
+                : $this->createNormalOrder($session, $pricing, $payload, $requestId);
+            Db::commit();
+            return $result;
+        } catch (\Exception $e) { Db::rollback(); throw $e; }
     }
 
     protected function pricePlan($userId, array $payload, array $delivery)
@@ -188,7 +206,10 @@ class CheckoutService
     protected function priceCommerce($userId, array $payload, array $delivery)
     {
         $sourceItems = isset($payload['items']) ? $payload['items'] : [];
-        if ($payload['source_type'] === 'purchase_list') {
+        if ($payload['source_type'] === 'cart') {
+            if ((string)$payload['source_ref'] !== (string)$userId) throw new DomainException('购物车来源不匹配', 40301, 403);
+            $sourceItems = (new CartService())->checkoutItems($userId, isset($payload['cart_items']) ? $payload['cart_items'] : []);
+        } elseif ($payload['source_type'] === 'purchase_list') {
             $list = Db::name('shop_purchase_list')->where('purchase_list_sn', $payload['source_ref'])->find();
             if (!$list) {
                 throw new DomainException('采购清单不存在', 40403, 404);
@@ -219,7 +240,8 @@ class CheckoutService
         foreach ($sourceItems as $sourceItem) {
             try {
                 $sku = (new CatalogService())->getSku($sourceItem['sku_id'], false);
-                $quantity = max(1, (int)$sourceItem['quantity']);
+                $quantity = (int)$sourceItem['quantity'];
+                if ($quantity <= 0 || $quantity > (int)$sku['available_quantity']) throw new DomainException('购买数量无效或库存不足', 40904, 409);
                 $line = $sku['price_cent'] * $quantity;
                 $items[] = ['sku_id' => $sku['sku_id'], 'goods_id' => $sku['product_id'], 'quantity' => $quantity, 'unit_price_cent' => $sku['price_cent'], 'line_amount_cent' => $line, 'snapshot' => $sku];
                 $goodsTotal += $line;
@@ -235,11 +257,23 @@ class CheckoutService
             'shipping_fee_cent' => $shipping, 'service_fee_cent' => 0,
             'payable_amount_cent' => $goodsTotal + $shipping, 'delivery_batches' => [],
             'non_refund_policy' => null, 'warnings' => $warnings,
+            'cart_items' => $payload['source_type'] === 'cart' ? $sourceItems : [],
         ];
     }
 
     protected function revalidatePricing(array $session, array $pricing)
     {
+        $deliveryService = new DeliveryService();
+        $deliveryService->lockRules();
+        $delivery = $deliveryService->validateAddress($session['user_id'], $session['address_id'], $pricing['delivery_slot_id'] ?? 0, true);
+        if ((string)$delivery['area']['id'] !== (string)$pricing['delivery_area_id']
+            || Json::canonical($delivery['snapshot']) !== Json::canonical($pricing['address_snapshot'])
+            || (int)($delivery['slot']['extra_fee_cent'] ?? 0) !== (int)($pricing['delivery_slot_fee_cent'] ?? 0)) {
+            throw new DomainException('地址或配送规则已变化，请重新结算', 40906, 409);
+        }
+        if ($session['source_type'] === 'cart') {
+            (new CartService())->checkoutItems($session['user_id'], $pricing['cart_items'], true);
+        }
         if ((int)$session['expires_at'] <= time()) {
             throw new DomainException('结算令牌已过期', 40918, 409);
         }
@@ -303,7 +337,7 @@ class CheckoutService
             $orderId = Db::name('shop_order')->insertGetId([
                 'order_sn' => $orderSn, 'user_id' => $session['user_id'], 'address_id' => $session['address_id'],
                 'province_id' => $address['province_id'], 'city_id' => $address['city_id'], 'area_id' => $address['area_id'],
-                'receiver' => $address['receiver'], 'address' => $address['detail'], 'zipcode' => $address['zipcode'],
+                'receiver' => $address['receiver'], 'address' => trim(($address['region'] ?? '') . ' ' . $address['detail']), 'zipcode' => $address['zipcode'],
                 'mobile' => $address['mobile'], 'amount' => $amount,
                 'discount' => number_format($pricing['discount_amount_cent'] / 100, 2, '.', ''),
                 'shippingfee' => number_format($pricing['shipping_fee_cent'] / 100, 2, '.', ''),
@@ -330,6 +364,12 @@ class CheckoutService
                 }
             }
             Db::name('shop_checkout_session')->where('id', $session['id'])->where('status', 'active')->update(['status' => 'consumed', 'updatetime' => $now]);
+            (new DeliveryService())->reserveSlot($orderSn, (int)($pricing['delivery_slot_id'] ?? 0), $pricing['delivery_area_id']);
+            if ($session['source_type'] === 'cart') {
+                foreach ($pricing['cart_items'] as $cartItem) {
+                    Db::name('shop_carts')->where('id', $cartItem['cart_item_id'])->where('user_id', $session['user_id'])->where('row_version', $cartItem['version'])->delete();
+                }
+            }
             Db::name('shop_order_consent')->where('checkout_token_hash', $session['checkout_token_hash'])->update(['order_id' => $orderId]);
             (new OutboxService())->append('order.created', 'order', $orderSn, 1, 'agent', ['order_sn' => $orderSn, 'order_type' => $orderType, 'request_id' => $requestId]);
             Db::commit();

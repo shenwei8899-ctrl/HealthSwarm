@@ -19,7 +19,7 @@
         "topthink/framework": "dev-master",
         "topthink/think-captcha": "^1.0.9",
         "topthink/think-installer": "^1.0.14",
-        "topthink/think-queue": "1.1.6",
+        "topthink/think-queue": "~1.1.6",
         "topthink/think-helper": "^1.0.7",
         "fastadminnet/fastadmin-addons": "~1.4.0",
         "fastadminnet/fastadmin-mailer": "^2.0.0",
@@ -41,7 +41,12 @@
     "autoload": {
         "psr-4": {
             "addons\\": "addons/"
-        }
+        },
+        "classmap": ["scripts/apply-runtime-patches.php"]
+    },
+    "scripts": {
+        "post-install-cmd": ["HealthflowRuntimePatches::apply"],
+        "post-update-cmd": ["HealthflowRuntimePatches::apply"]
     },
     "repositories": [
         {

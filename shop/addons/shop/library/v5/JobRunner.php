@@ -17,6 +17,7 @@ class JobRunner
     {
         $jobs = [
             'expire_recommendations' => [$this, 'expireRecommendations'],
+            'reconcile_pending_payments' => [$this, 'reconcilePendingPayments'],
             'close_unpaid_v5_orders' => [$this, 'closeUnpaidOrders'],
             'expire_reservations' => [$this, 'expireReservations'],
             'reconcile_paid_orders' => [$this, 'reconcilePaidOrders'],
@@ -74,6 +75,11 @@ class JobRunner
         $orders = Db::name('shop_order')->where('request_id', '<>', '')->where('paystate', 0)
             ->where('orderstate', 0)->where('expiretime', '<=', time())->limit(100)->select();
         foreach ($orders as $order) {
+            (new WechatPaymentLifecycle())->reconcile($order['order_sn'], true);
+            Db::startTrans();
+            try {
+            $order=Db::name('shop_order')->where('id',$order['id'])->lock(true)->find();
+            if ((int)$order['paystate']!==0 || (int)$order['orderstate']!==0 || (new PaymentService())->hasPending($order['order_sn'])) { Db::commit(); continue; }
             Db::name('shop_order')->where('id', $order['id'])->update(['orderstate' => 2, 'updatetime' => time()]);
             $ext = Db::name('shop_order_ext')->where('order_sn', $order['order_sn'])->find();
             if ($ext) {
@@ -84,6 +90,9 @@ class JobRunner
                 }
             }
             Db::name('shop_service_plan_order')->where('order_sn', $order['order_sn'])->where('status', 'pending_payment')->update(['status' => 'payment_closed', 'updatetime' => time()]);
+            (new DeliveryService())->releaseSlot($order['order_sn']);
+            Db::commit();
+            } catch (\Throwable $e) { Db::rollback(); throw $e; }
         }
         return count($orders);
     }
@@ -92,8 +101,29 @@ class JobRunner
     {
         $rows = Db::name('shop_inventory_reservation')->where('status', 'active')->where('expires_at', '<=', time())->limit(200)->select();
         foreach ($rows as $row) {
-            (new InventoryService())->release($row['reservation_sn'], 'reservation_expired', $row['request_id']);
+            Db::startTrans();
+            try {
+                $ext=$row['source_type']==='checkout'?Db::name('shop_order_ext')->where('checkout_token_hash',$row['source_ref'])->find():null;
+                $order=$ext?Db::name('shop_order')->where('order_sn',$ext['order_sn'])->lock(true)->find():null;
+                // Existing open orders are released only by the order-close transaction.
+                // A reservation may expire a little earlier than persistOrder's expiretime.
+                if ($order && ((int)$order['paystate']===1 || (int)$order['orderstate']===0 || (new PaymentService())->hasPending($order['order_sn']))) {
+                    Db::commit();
+                    continue;
+                }
+                $current=Db::name('shop_inventory_reservation')->where('id',$row['id'])->lock(true)->find();
+                if ($current && $current['status']==='active') (new InventoryService())->release($row['reservation_sn'], 'reservation_expired', $row['request_id']);
+                Db::commit();
+            } catch (\Throwable $e) { Db::rollback(); throw $e; }
         }
+        return count($rows);
+    }
+
+    public function reconcilePendingPayments()
+    {
+        $rows=Db::name('shop_payment_record')->where('channel','wechat')->where('status','in',['created','paying'])
+            ->where('last_query_at','<=',time()-30)->order('last_query_at asc,id asc')->limit(100)->select();
+        foreach ($rows as $row) (new WechatPaymentLifecycle())->reconcile($row['order_sn']);
         return count($rows);
     }
 
@@ -102,10 +132,14 @@ class JobRunner
         $rows = Db::name('shop_order')->alias('o')->join('shop_order_ext e','e.order_id=o.id')
             ->join('shop_service_plan_order po','po.order_id=o.id','LEFT')
             ->where('o.request_id','<>','')->where('o.paystate',1)
+            ->where('o.orderstate',0)->where('o.shippingstate',0)
+            ->where('e.payment_status','in',['created','unpaid','paying','paid'])
             ->where(function($query){
-                $query->where('e.payment_status','<>','paid')
+                $query->where(function($initial){
+                        $initial->where('e.payment_status','in',['created','unpaid','paying'])->where('e.business_status','created');
+                    })
                     ->whereOr(function($normal){
-                        $normal->where('o.order_type','normal')->where('e.fulfillment_status','pending');
+                        $normal->where('o.order_type','normal')->where('e.business_status','paid')->where('e.payment_status','paid')->where('e.fulfillment_status','pending');
                     })
                     ->whereOr('po.status','pending_payment');
             })->field('o.order_sn,o.saleamount,o.transactionid')->limit(100)->select();

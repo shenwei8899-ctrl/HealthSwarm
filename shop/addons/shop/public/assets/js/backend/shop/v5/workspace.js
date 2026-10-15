@@ -144,6 +144,7 @@ define(['jquery', 'bootstrap', 'backend', 'table', 'form'], function ($, undefin
             // Goods are managed from one detail entry: product fields and its
             // SKU variants live together, so do not render a second pencil.
             if (cfg.editable && resource !== 'goods') out.push('<button class="btn btn-xs btn-primary" data-v5-action="edit" data-id="' + id + '"><i class="fa fa-pencil"></i></button>');
+            if (resource === 'orders_normal' && Number((row.__raw || row).paystate) === 1 && Number((row.__raw || row).orderstate) === 0 && Number((row.__raw || row).shippingstate) === 0) out.push('<button class="btn btn-xs btn-success" data-v5-action="ship" data-id="' + id + '">安排发货</button>');
             if (resource === 'supplier_applications' && row.review_status === 'pending') out.push('<button class="btn btn-xs btn-success" data-v5-action="approve" data-id="' + id + '">审核</button>');
             if (resource === 'supplier_orders' && row.push_status === 'failed') out.push('<button class="btn btn-xs btn-warning" data-v5-action="retry" data-id="' + id + '">重试</button>');
             if (/^exceptions/.test(resource) && row.status !== 'resolved') out.push('<button class="btn btn-xs btn-default" data-v5-action="resolve" data-id="' + id + '">关闭</button>');
@@ -158,9 +159,10 @@ define(['jquery', 'bootstrap', 'backend', 'table', 'form'], function ($, undefin
             if (cfg.deletable) out.push('<button class="btn btn-xs btn-danger" data-v5-action="remove" data-id="' + id + '"><i class="fa fa-trash"></i></button>');
             return out.join(' ');
         },
-        hasAction: function (resource) { return ['goods','supplier_applications','supplier_orders','skus','recommendations','batches_prepare','policies','aftersales','outbox_events','imports'].indexOf(resource) >= 0 || /^exceptions/.test(resource); },
+        hasAction: function (resource) { return ['orders_normal','goods','supplier_applications','supplier_orders','skus','recommendations','batches_prepare','policies','aftersales','outbox_events','imports'].indexOf(resource) >= 0 || /^exceptions/.test(resource); },
         handle: function (action, $pane, row) {
             var self = this, resource = $pane.data('resource');
+            if (action === 'ship') return this.prompt('物流公司', '', function (carrier) { self.prompt('运单号', '', function (tracking) { Fast.api.ajax({url:'shop/v5/workspace/shipOrder',type:'POST',data:{order_sn:row.order_sn,carrier:carrier,tracking_no:tracking,__token__:self.config.csrfToken}},function(data){self.config.csrfToken=data.__token__||self.config.csrfToken;self.load($pane,1);return false;},function(data){if(data&&data.__token__)self.config.csrfToken=data.__token__;return true;}); }); });
             if (action === 'edit') return this.edit($pane, row);
             if (action === 'remove') return Layer.confirm('确认删除该记录？', function (index) { Layer.close(index); self.post('remove', {resource:resource,id:row.id}, $pane); });
             if (action === 'approve') return this.prompt('审核意见（填写 REJECT 表示拒绝）', '', function (value) { self.post('reviewApplication', {id:row.id,decision:String(value).toUpperCase()==='REJECT'?'rejected':'approved',comment:value}, $pane); });
@@ -305,7 +307,7 @@ define(['jquery', 'bootstrap', 'backend', 'table', 'form'], function ($, undefin
             $('.btn-v5-confirm-import').prop('disabled',!ok||imported).data({batchId:result.batch_id,pane:$pane}).off('click').on('click',function(){var meta=$(this).data();$(this).prop('disabled',true);self.post('confirmImport',{batch_id:meta.batchId},meta.pane,function(){self.load(meta.pane,1);$('#v5-import-modal').modal('hide');});});
             $('#v5-import-modal').modal('show');
         },
-        post: function (action, data, $pane, done) { var self=this; Fast.api.ajax({url:'shop/v5/workspace/'+action,type:'POST',data:data},function(){if(done)done();self.load($pane,1);return false;}); },
+        post: function (action, data, $pane, done) { var self=this; if(action==='reviewAftersale')data.__token__=self.config.csrfToken; Fast.api.ajax({url:'shop/v5/workspace/'+action,type:'POST',data:data},function(result){if(result&&result.__token__)self.config.csrfToken=result.__token__;if(done)done();self.load($pane,1);return false;},function(result){if(result&&result.__token__)self.config.csrfToken=result.__token__;return true;}); },
         prompt: function (title, value, callback) { Layer.prompt({title:title,value:value,formType:2}, function(v,i){if(!$.trim(v)){Toastr.error('内容不能为空');return;}Layer.close(i);callback(v);}); },
         pagination: function ($pane, page, pages) { var self=this, html=''; if(pages<=1){$pane.find('.v5-pagination').empty();return;} for(var i=Math.max(1,page-2);i<=Math.min(pages,page+2);i++) html+='<li class="'+(i===page?'active':'')+'"><a href="#" data-page="'+i+'">'+i+'</a></li>'; $pane.find('.v5-pagination').html(html).off('click').on('click','a',function(e){e.preventDefault();self.load($pane,$(this).data('page'));}); },
         escape: function (value) { return $('<div>').text(value == null ? '' : String(value)).html(); }

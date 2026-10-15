@@ -55,7 +55,8 @@ class Mysql extends Driver
     {
         $expiretime = !is_null($expire) && $expire !== 0 ? time() + $expire : 0;
         $token = $this->getEncryptedToken($token);
-        $this->handler->insert(['token' => $token, 'user_id' => $user_id, 'createtime' => time(), 'expiretime' => $expiretime]);
+        // Tokens have a string primary key; do not request a PostgreSQL sequence ID.
+        $this->handler->insertAll([['token' => $token, 'user_id' => $user_id, 'createtime' => time(), 'expiretime' => $expiretime]]);
         return true;
     }
 

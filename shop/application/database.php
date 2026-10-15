@@ -12,7 +12,7 @@
 
 use think\Env;
 
-return [
+$database = [
     // 数据库类型
     'type'            => Env::get('database.type', 'pgsql'),
     // 服务器地址
@@ -54,3 +54,15 @@ return [
     // 是否需要进行SQL性能分析
     'sql_explain'     => false,
 ];
+
+// Local linking uses a dedicated database without changing the installed .env.
+if (getenv('HEALTHFLOW_LINK_DATABASE') === 'healthflow_link_test') {
+    $database = array_replace($database, [
+        'type' => 'pgsql', 'hostname' => '127.0.0.1',
+        'database' => 'healthflow_link_test', 'username' => 'healthflow_link',
+        'password' => getenv('HEALTHFLOW_LINK_DB_PASSWORD'),
+        'hostport' => getenv('HEALTHFLOW_LINK_DB_PORT') ?: '15435',
+        'prefix' => 'fa_',
+    ]);
+}
+return $database;

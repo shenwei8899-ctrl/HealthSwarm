@@ -97,6 +97,7 @@ class Migrator
                 'row_version'            => "int unsigned NOT NULL DEFAULT 1 COMMENT '乐观锁版本'",
             ],
             'shop_carts' => [
+                'is_selected'     => "tinyint unsigned NOT NULL DEFAULT 1 COMMENT 'Selected for checkout'",
                 'source_type'     => "varchar(30) NOT NULL DEFAULT '' COMMENT '来源类型'",
                 'source_ref'      => "varchar(64) NOT NULL DEFAULT '' COMMENT '来源编号'",
                 'source_version'  => "int unsigned NOT NULL DEFAULT 0 COMMENT '来源版本'",
@@ -107,6 +108,17 @@ class Migrator
                 'order_type' => "varchar(20) NOT NULL DEFAULT 'normal' COMMENT 'normal/plan'",
                 'row_version'=> "int unsigned NOT NULL DEFAULT 1 COMMENT '乐观锁版本'",
                 'request_id' => "varchar(64) NOT NULL DEFAULT '' COMMENT '请求追踪号'",
+            ],
+            'shop_address' => [
+                'row_version' => "int unsigned NOT NULL DEFAULT 1 COMMENT 'Address version'",
+            ],
+            'shop_supplier_application' => [
+                'partner_type' => "varchar(20) NOT NULL DEFAULT 'supplier' COMMENT 'supplier/channel/distributor'",
+            ],
+            'shop_supplier_sku' => [
+                'supplier_goods_code' => "varchar(100) NOT NULL DEFAULT '' COMMENT '供应商商品编码'",
+                'delivery_days' => "int unsigned NOT NULL DEFAULT 0 COMMENT '交付天数'",
+                'source_note' => "text DEFAULT NULL COMMENT '供应商导入备注'",
             ],
             'shop_order_goods' => [
                 'row_version' => "int unsigned NOT NULL DEFAULT 1 COMMENT '乐观锁版本'",

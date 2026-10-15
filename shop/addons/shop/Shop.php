@@ -145,6 +145,16 @@ class Shop extends Addons
     protected function registerV5Routes()
     {
         $routes = [
+            ['api/v1/commerce/session/wechat', 'addons/shop/api.v1.commerce_session/wechat', 'POST'],
+            ['api/v1/commerce/session/login', 'addons/shop/api.v1.commerce_session/login', 'POST'],
+            ['api/v1/commerce/session', 'addons/shop/api.v1.commerce_session/detail', 'GET'],
+            ['api/v1/commerce/session', 'addons/shop/api.v1.commerce_session/logout', 'DELETE'],
+            ['api/v1/commerce/areas', 'addons/shop/api.v1.commerce_address/areas', 'GET'],
+            ['api/v1/commerce/addresses', 'addons/shop/api.v1.commerce_address/index', 'GET'],
+            ['api/v1/commerce/addresses', 'addons/shop/api.v1.commerce_address/create', 'POST'],
+            ['api/v1/commerce/addresses/:id/default', 'addons/shop/api.v1.commerce_address/selectDefault', 'PUT'],
+            ['api/v1/commerce/addresses/:id', 'addons/shop/api.v1.commerce_address/update', 'PUT'],
+            ['api/v1/commerce/addresses/:id', 'addons/shop/api.v1.commerce_address/remove', 'DELETE'],
             ['api/v1/integration/ai/catalog/products', 'addons/shop/api.v1.integration_ai_catalog/products', 'GET'],
             ['api/v1/integration/ai/catalog/skus/:sku_id/alternatives', 'addons/shop/api.v1.integration_ai_catalog/alternatives', 'GET'],
             ['api/v1/integration/ai/catalog/skus/:sku_id', 'addons/shop/api.v1.integration_ai_catalog/sku', 'GET'],
@@ -163,6 +173,10 @@ class Shop extends Addons
             ['api/v1/payment/wechat/notify', 'addons/shop/api.v1.payment_notify/wechat', 'POST'],
             ['api/v1/refund/wechat/notify', 'addons/shop/api.v1.payment_notify/refund', 'POST'],
 
+            ['api/v1/commerce/meals/current', 'addons/shop/api.v1.commerce_meal/current', 'GET'],
+            ['api/v1/commerce/meals/cart', 'addons/shop/api.v1.commerce_meal/cart', 'POST'],
+            ['api/v1/commerce/orders/:order_sn/cooking', 'addons/shop/api.v1.commerce_meal/cooking', 'GET'],
+            ['api/v1/commerce/local-test/orders/:order_sn/pay', 'addons/shop/api.v1.local_test_payment/pay', 'POST'],
             ['api/v1/commerce/products', 'addons/shop/api.v1.commerce_product/products', 'GET'],
             ['api/v1/commerce/categories', 'addons/shop/api.v1.commerce_product/categories', 'GET'],
             ['api/v1/commerce/products/:product_id', 'addons/shop/api.v1.commerce_product/detail', 'GET'],
@@ -196,6 +210,7 @@ class Shop extends Addons
             ['api/v1/commerce/cart/items', 'addons/shop/api.v1.commerce_cart/add', 'POST'],
             ['api/v1/commerce/cart/items/:id', 'addons/shop/api.v1.commerce_cart/update', 'PUT'],
             ['api/v1/commerce/cart/items/:id', 'addons/shop/api.v1.commerce_cart/remove', 'DELETE'],
+            ['api/v1/commerce/cart/items/:id/selection', 'addons/shop/api.v1.commerce_cart/selection', 'PUT'],
             ['api/v1/commerce/cart/validate', 'addons/shop/api.v1.commerce_cart/validateCart', 'POST'],
             ['api/v1/commerce/orders', 'addons/shop/api.v1.commerce_order/create', 'POST'],
             ['api/v1/commerce/orders', 'addons/shop/api.v1.commerce_order/index', 'GET'],
@@ -217,6 +232,8 @@ class Shop extends Addons
             ['api/v1/commerce/plan-orders/:order_sn/batches/:batch_no/fulfillment', 'addons/shop/api.v1.commerce_fulfillment/batchTimeline', 'GET'],
             ['api/v1/commerce/plan-orders/:order_sn/batches/:batch_no/logistics', 'addons/shop/api.v1.commerce_fulfillment/batchTimeline', 'GET'],
             ['api/v1/commerce/orders/:order_sn/aftersales/eligibility', 'addons/shop/api.v1.commerce_aftersale/eligibility', 'GET'],
+            ['api/v1/commerce/media/evidence', 'addons/shop/api.v1.commerce_media/evidence', 'POST'],
+            ['api/v1/commerce/orders/:order_sn/aftersales', 'addons/shop/api.v1.commerce_aftersale/forOrder', 'GET'],
             ['api/v1/commerce/aftersales', 'addons/shop/api.v1.commerce_aftersale/create', 'POST'],
             ['api/v1/commerce/aftersales', 'addons/shop/api.v1.commerce_aftersale/index', 'GET'],
             ['api/v1/commerce/aftersales/:id', 'addons/shop/api.v1.commerce_aftersale/detail', 'GET'],
@@ -233,7 +250,7 @@ class Shop extends Addons
             $controller = substr($handler, 0, $separator);
             $action = substr($handler, $separator + 1);
             $target = '\\think\\addons\\Route@execute?addon=shop&controller=' . $controller . '&action=' . $action;
-            \think\Route::rule($route[0], $target, $route[2]);
+            \think\Route::rule($route[0] . '$', $target, $route[2]);
         }
     }
 

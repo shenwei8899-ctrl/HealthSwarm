@@ -339,7 +339,7 @@ class Workspace extends Backend
             'plan_allowed' => [0=>'否',1=>'是'],
             'refund_allocation_rule' => ['none'=>'不参与退款','proportional'=>'按比例分摊','first_batch'=>'首批优先'],
             'client_type' => ['agent'=>'Agent','supplier'=>'供应商','logistics'=>'物流','review'=>'专业审核'],
-            'partner_type' => ['agent'=>'Agent','supplier'=>'供应商','logistics'=>'物流','review'=>'专业审核'],
+            'partner_type' => ['agent'=>'Agent','supplier'=>'供应商','channel'=>'渠道商','distributor'=>'经销商','logistics'=>'物流','review'=>'专业审核'],
             'resource_type' => ['recommendation'=>'食材包推荐','plan'=>'专属计划','swap'=>'换菜请求','order'=>'订单'],
             'policy_type' => ['plan_non_refund'=>'专属计划不退款'],
             'direction' => ['inbound'=>'入站','outbound'=>'出站'], 'success' => [0=>'失败',1=>'成功'],
@@ -716,7 +716,7 @@ class Workspace extends Backend
         Db::startTrans();
         try {
             $supplierId = 0;
-            if ($decision === 'approved') {
+            if ($decision === 'approved' && ($application['partner_type'] ?? 'supplier') === 'supplier') {
                 $supplierId = Db::name('shop_supplier')->insertGetId([
                     'supplier_code' => 'SUP-' . date('Ymd') . '-' . $id,
                     'name' => $application['company_name'], 'company_name' => $application['company_name'],
@@ -737,6 +737,17 @@ class Workspace extends Backend
             Db::rollback();
             $this->error($e->getMessage());
         }
+    }
+
+    public function shipOrder()
+    {
+        if (!$this->request->isPost()) $this->error('请求方式错误');
+        $this->token();
+        try {
+            $result=(new \addons\shop\library\v5\ManualFulfillmentService())->ship($this->request->post('order_sn'),$this->request->post('carrier'),$this->request->post('tracking_no'),$this->auth->id);
+        } catch (\Exception $e) { $this->error($e->getMessage()); }
+        $result['__token__']=$this->request->token();
+        $this->success('已安排发货',null,$result);
     }
 
     public function retrySupplier()
@@ -824,12 +835,17 @@ class Workspace extends Backend
 
     public function reviewAftersale()
     {
-        try{
-            $decision=(string)$this->request->post('decision');$id=(int)$this->request->post('id');$comment=trim((string)$this->request->post('comment'));
+        if (!$this->request->isPost()) $this->error('请求方式错误');
+        $this->token();
+        try {
+            $decision=(string)$this->request->post('decision');
+            if (!in_array($decision,['approved','rejected'],true)) throw new DomainException('审核结果无效',40001,400);
+            $id=(int)$this->request->post('id');$comment=trim((string)$this->request->post('comment'));
             $service=new RefundService();
             $result=$decision==='approved'?$service->approveAftersale($id,(int)$this->auth->id,$comment,Identifiers::requestId()):$service->rejectAftersale($id,(int)$this->auth->id,$comment);
-            $this->success('售后审核完成',null,$result);
-        }catch(\Exception $e){$this->error($e->getMessage());}
+        } catch (\Exception $e) { $this->error($e->getMessage(),null,['__token__'=>$this->request->token()]); }
+        $result['__token__']=$this->request->token();
+        $this->success('售后审核完成',null,$result);
     }
 
     public function retryOutbox()
@@ -916,6 +932,7 @@ class Workspace extends Backend
         }
         $config = $workspaces[$this->workspace];
         $config['key'] = $this->workspace;
+        $config['csrfToken'] = $this->request->token();
         foreach ($config['tabs'] as &$tab) {
             $resource = $this->resource($tab['resource']);
             $tab['columns'] = $resource['columns'];
@@ -954,14 +971,14 @@ class Workspace extends Backend
             'recommendations' => ['title' => '食材包与推荐', 'description' => '固定包、菜品映射、Agent推荐与换菜版本', 'tabs' => [['label' => 'Agent推荐', 'resource' => 'recommendations'], ['label' => '推荐版本', 'resource' => 'recommendation_versions'], ['label' => '固定包组成', 'resource' => 'bundle_items'], ['label' => '菜品映射', 'resource' => 'recipe_maps'], ['label' => '换菜记录', 'resource' => 'swaps']]],
             'plans' => ['title' => 'AI专属计划', 'description' => '21天计划、不可变版本和可选专业审核', 'tabs' => [['label' => '计划列表', 'resource' => 'plans'], ['label' => '计划版本', 'resource' => 'plan_versions'], ['label' => '计划日历', 'resource' => 'plan_days'], ['label' => '专业审核', 'resource' => 'reviews']]],
             'purchases' => ['title' => '采购清单', 'description' => '自动采购结果、SKU匹配和缺货处理', 'tabs' => [['label' => '清单', 'resource' => 'purchase_lists'], ['label' => '采购项', 'resource' => 'purchase_items'], ['label' => '匹配结果', 'resource' => 'purchase_matches'], ['label' => '缺货处理', 'resource' => 'exceptions_supply']]],
-            'orders' => ['title' => '订单管理', 'description' => '普通订单与专属计划订单', 'tabs' => [['label' => '普通订单', 'resource' => 'orders_normal'], ['label' => '专属计划', 'resource' => 'plan_orders'], ['label' => '支付记录', 'resource' => 'payments']]],
+            'orders' => ['title' => '订单管理', 'description' => '普通订单与专属计划订单', 'tabs' => [['label' => '普通订单', 'resource' => 'orders_normal'], ['label' => '专属计划', 'resource' => 'plan_orders'], ['label' => '支付记录', 'resource' => 'payments'], ['label' => '收货地址', 'resource' => 'addresses']]],
             'batches' => ['title' => '配送批次', 'description' => '21天每日一批的排程、金额和状态', 'tabs' => [['label' => '全部批次', 'resource' => 'batches'], ['label' => '批次商品', 'resource' => 'batch_items'], ['label' => '计划变更', 'resource' => 'plan_changes']]],
             'fulfillment' => ['title' => '备货配送', 'description' => '待备货、配送中和履约轨迹', 'tabs' => [['label' => '待备货', 'resource' => 'batches_prepare'], ['label' => '配送中', 'resource' => 'batches_shipping'], ['label' => '物流事件', 'resource' => 'fulfillment_events']]],
             'aftersales' => ['title' => '售后与异常', 'description' => '普通售后、计划例外售后和系统异常', 'tabs' => [['label' => '售后单', 'resource' => 'aftersales'], ['label' => '例外退款', 'resource' => 'refunds'], ['label' => '系统异常', 'resource' => 'exceptions']]],
             'suppliers' => ['title' => '供应商档案', 'description' => '正式供应商和合作申请', 'tabs' => [['label' => '正式供应商', 'resource' => 'suppliers'], ['label' => '合作申请', 'resource' => 'supplier_applications']]],
             'supplier_sku' => ['title' => '供应商商品', 'description' => '平台SKU与供应商SKU、采购价和库存状态', 'tabs' => [['label' => '商品映射', 'resource' => 'supplier_skus']]],
             'supplier_collaboration' => ['title' => '供应商协同', 'description' => '供应商订单、推单异常和接口日志', 'tabs' => [['label' => '供应商订单', 'resource' => 'supplier_orders'], ['label' => '订单明细', 'resource' => 'supplier_order_items'], ['label' => '推单异常', 'resource' => 'exceptions_supplier'], ['label' => '接口日志', 'resource' => 'integration_logs']]],
-            'delivery_rules' => ['title' => '配送规则', 'description' => '配送区域、时段和运费模板', 'tabs' => [['label' => '配送区域', 'resource' => 'delivery_areas'], ['label' => '配送时段', 'resource' => 'delivery_slots'], ['label' => '运费模板', 'resource' => 'freights']]],
+            'delivery_rules' => ['title' => '配送规则', 'description' => '可按省、市、区县设置或暂停配送；区县规则优先于市、省规则', 'tabs' => [['label' => '配送区域', 'resource' => 'delivery_areas'], ['label' => '配送时段', 'resource' => 'delivery_slots'], ['label' => '运费模板', 'resource' => 'freights']]],
             'analytics' => ['title' => '经营数据', 'description' => '销售、计划、缺货、售后和履约指标', 'tabs' => [['label' => '日指标', 'resource' => 'metrics'], ['label' => '订单', 'resource' => 'orders_all'], ['label' => '异常', 'resource' => 'exceptions']]],
             'marketing' => ['title' => '营销管理', 'description' => '优惠券与适用业务规则', 'tabs' => [['label' => '优惠券', 'resource' => 'coupons'], ['label' => '领取记录', 'resource' => 'user_coupons']]],
             'members' => ['title' => '会员管理', 'description' => '商城会员与外部用户引用，不展示健康档案', 'tabs' => [['label' => '会员', 'resource' => 'members'], ['label' => '外部身份绑定', 'resource' => 'external_identities']]],
@@ -1044,7 +1061,8 @@ class Workspace extends Backend
             'purchase_lists' => $this->r('shop_purchase_list', ['id'=>'ID','purchase_list_sn'=>'清单号','user_id'=>'会员ID','source_type'=>'来源','source_ref'=>'来源编号','source_version'=>'来源版本','current_version'=>'当前版本','match_status'=>'匹配状态','confirm_status'=>'确认状态','estimated_total_cent'=>'预计金额(分)','status'=>'状态','expires_at'=>'失效时间'], ['purchase_list_sn','source_ref']),
             'purchase_items' => $this->r('shop_purchase_item', ['id'=>'ID','purchase_list_id'=>'清单ID','list_version_no'=>'版本','recipe_ref'=>'菜品引用','ingredient_id'=>'食材ID','required_value'=>'总需求','pantry_value'=>'家中已有','net_required_value'=>'净需求','match_status'=>'匹配状态','selected_match_id'=>'选中匹配'], ['purchase_list_id','recipe_ref']),
             'purchase_matches' => $this->r('shop_purchase_match', ['id'=>'ID','purchase_item_id'=>'采购项ID','sku_id'=>'SKU ID','rank_no'=>'候选排序','required_pack_count'=>'购买件数','covered_value'=>'覆盖量','surplus_value'=>'余量','total_price_cent'=>'金额(分)','trade_status'=>'交易状态','requires_agent_revalidation'=>'需Agent复核','is_selected'=>'已选'], ['purchase_item_id','sku_id']),
-            'orders_normal' => $this->r('shop_order', ['id'=>'ID','order_sn'=>'订单号','user_id'=>'会员ID','order_type'=>'类型','saleamount'=>'应付金额','payamount'=>'实付金额','paystate'=>'支付状态','shippingstate'=>'配送状态','orderstate'=>'订单状态','receiver'=>'收货人','createtime'=>'创建时间'], ['order_sn','receiver'], [], false, ['order_type'=>'normal']),
+            'addresses' => $this->r('shop_address', ['id'=>'ID','user_id'=>'会员ID','receiver'=>'收货人','mobile'=>'联系电话','province_id'=>'省ID','city_id'=>'市ID','area_id'=>'区ID','address'=>'详细地址','isdefault'=>'默认地址','row_version'=>'版本','updatetime'=>'更新时间'], ['receiver','mobile','address'], [], false, ['status'=>'normal','deletetime'=>null]),
+            'orders_normal' => $this->r('shop_order', ['id'=>'ID','order_sn'=>'订单号','user_id'=>'会员ID','order_type'=>'类型','saleamount'=>'应付金额','payamount'=>'实付金额','paystate'=>'支付状态','shippingstate'=>'配送状态','orderstate'=>'订单状态','receiver'=>'收货人','mobile'=>'联系电话','address'=>'收货地址','createtime'=>'创建时间'], ['order_sn','receiver'], [], false, ['order_type'=>'normal']),
             'orders_all' => $this->r('shop_order', ['id'=>'ID','order_sn'=>'订单号','user_id'=>'会员ID','order_type'=>'类型','saleamount'=>'应付金额','payamount'=>'实付金额','paystate'=>'支付状态','shippingstate'=>'配送状态','orderstate'=>'订单状态','createtime'=>'创建时间'], ['order_sn']),
             'plan_orders' => $this->r('shop_service_plan_order', ['id'=>'ID','plan_order_sn'=>'计划订单号','order_sn'=>'商城订单号','plan_id'=>'计划ID','user_id'=>'会员ID','first_delivery_date'=>'首批日期','total_batches'=>'总批次','completed_batches'=>'已完成','total_amount_cent'=>'实付金额(分)','fulfilled_amount_cent'=>'已履约金额(分)','exception_refunded_amount_cent'=>'例外退款(分)','user_cancellable'=>'用户可取消','status'=>'状态','row_version'=>'版本','updatetime'=>'更新时间'], ['plan_order_sn','order_sn']),
             'payments' => $this->r('shop_payment_record', ['id'=>'ID','payment_sn'=>'支付单号','order_sn'=>'订单号','channel'=>'渠道','amount_cent'=>'金额(分)','status'=>'状态','paid_at'=>'支付时间','last_query_at'=>'最后查询','updatetime'=>'更新时间'], ['payment_sn','order_sn']),
@@ -1064,7 +1082,7 @@ class Workspace extends Backend
                 'credit_code'=>$this->f('统一信用代码'), 'contact_name'=>$this->f('联系人'), 'interface_type'=>$this->f('接口方式','select',true,['manual'=>'人工','api'=>'API']),
                 'endpoint_url'=>$this->f('推单地址'), 'secret_plaintext'=>$this->f('接口密钥','password'), 'priority'=>$this->f('优先级','number'), 'status'=>$this->f('状态','select',true,$status),
             ], true),
-            'supplier_applications' => $this->r('shop_supplier_application', ['id'=>'ID','application_sn'=>'申请编号','user_id'=>'会员ID','company_name'=>'公司名称','credit_code'=>'信用代码','contact_name'=>'联系人','review_status'=>'审核状态','review_admin_id'=>'审核人','review_comment'=>'审核意见','supplier_id'=>'供应商ID','submitted_at'=>'提交时间','reviewed_at'=>'审核时间'], ['application_sn','company_name','credit_code']),
+            'supplier_applications' => $this->r('shop_supplier_application', ['id'=>'ID','application_sn'=>'申请编号','user_id'=>'会员ID','company_name'=>'公司名称','partner_type'=>'合作类型','credit_code'=>'信用代码','contact_name'=>'联系人','review_status'=>'审核状态','review_admin_id'=>'审核人','review_comment'=>'审核意见','supplier_id'=>'供应商ID','submitted_at'=>'提交时间','reviewed_at'=>'审核时间'], ['application_sn','company_name','credit_code']),
             'supplier_skus' => $this->r('shop_supplier_sku', ['id'=>'ID','supplier_id'=>'供应商ID','sku_id'=>'平台SKU','supplier_sku_code'=>'供应商SKU','supplier_sku_name'=>'供应商商品名','purchase_price_cent'=>'采购价(分)','minimum_order_quantity'=>'最小起订量','stock_status'=>'库存状态','stock_quantity'=>'供应商库存','stock_updated_at'=>'同步时间','priority'=>'优先级','status'=>'状态'], ['supplier_sku_code','supplier_sku_name'], [
                 'supplier_id'=>$this->f('供应商ID','number',true), 'sku_id'=>$this->f('平台SKU ID','number',true),
                 'supplier_sku_code'=>$this->f('供应商SKU编码','text',true), 'supplier_sku_name'=>$this->f('供应商商品名'),
@@ -1078,7 +1096,7 @@ class Workspace extends Backend
             'delivery_areas' => $this->r('shop_delivery_area', ['id'=>'ID','area_code'=>'区域编码','name'=>'区域名称','province_code'=>'省编码','city_code'=>'市编码','district_code'=>'区编码','supplier_id'=>'供应商ID','status'=>'状态','version'=>'版本','updatetime'=>'更新时间'], ['area_code','name'], [
                 'area_code'=>$this->f('区域编码','text',true), 'name'=>$this->f('区域名称','text',true), 'province_code'=>$this->f('省编码'),
                 'city_code'=>$this->f('市编码'), 'district_code'=>$this->f('区编码'), 'supplier_id'=>$this->f('供应商ID','number'),
-                'postal_codes_json'=>$this->f('邮编JSON','textarea'), 'status'=>$this->f('状态','select',true,$status),
+                'postal_codes_json'=>$this->f('邮编JSON','textarea'), 'status'=>$this->f('配送状态','select',true,['normal'=>'支持配送','hidden'=>'暂停配送']),
             ]),
             'delivery_slots' => $this->r('shop_delivery_slot', ['id'=>'ID','area_id'=>'区域ID','slot_code'=>'时段编码','name'=>'名称','start_time'=>'开始','end_time'=>'结束','cutoff_minutes'=>'提前截单分钟','capacity'=>'容量','used_capacity'=>'已用','weekday_mask'=>'星期','extra_fee_cent'=>'附加费(分)','status'=>'状态'], ['slot_code','name'], [
                 'area_id'=>$this->f('区域ID','number',true), 'slot_code'=>$this->f('时段编码','text',true), 'name'=>$this->f('名称','text',true),

@@ -8,7 +8,7 @@ use app\common\library\Upload;
 use app\common\model\Area;
 use app\common\model\Version;
 use fast\Random;
-use think\captcha\Captcha;
+use app\common\library\CaptchaImage as Captcha;
 use think\Config;
 use think\Hook;
 

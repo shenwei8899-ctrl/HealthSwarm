@@ -9,6 +9,7 @@ $workspaceRules = [
     ['name' => 'shop/v5/workspace/reviewapplication', 'title' => '审核供应商申请'],
     ['name' => 'shop/v5/workspace/retrysupplier', 'title' => '重试供应商推单'],
     ['name' => 'shop/v5/workspace/resolveexception', 'title' => '关闭异常单'],
+    ['name' => 'shop/v5/workspace/shiporder', 'title' => '安排普通订单发货'],
     ['name' => 'shop/v5/workspace/adjuststock', 'title' => '人工调整库存'],
     ['name' => 'shop/v5/workspace/revalidaterecommendation', 'title' => '重新交易校验'],
     ['name' => 'shop/v5/workspace/retrybatch', 'title' => '重试批次备货'],
