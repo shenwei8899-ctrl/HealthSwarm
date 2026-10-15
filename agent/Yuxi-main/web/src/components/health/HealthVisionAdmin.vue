@@ -1,5 +1,5 @@
 <script setup>
-import { reactive, ref, watch, inject } from 'vue'
+import { computed, reactive, ref, watch, inject } from 'vue'
 import { message } from 'ant-design-vue'
 import { healthVisionApi } from '@/apis/health_vision_api'
 import { nutrientLabels } from '@/utils/healthVision'
@@ -8,6 +8,23 @@ const props = defineProps({ configuration: { type: Object, required: true } })
 const emit = defineEmits(['saved'])
 const openSettings = inject('settingsModal', null)?.openSettingsModal
 const busy = ref(false)
+const consultation = computed(() => props.configuration.consultation || {})
+const consultationNextStep = computed(() => {
+  if (consultation.value.available === true) {
+    return '进入成员页面核对 AI 读取授权和本次咨询用途同意，再进行实际问答验收。'
+  }
+  const actions = {
+    policy_not_approved: '由服务负责人确认实际数据处理政策，在下方填写政策版本并明确审批后保存。',
+    model_unavailable:
+      '在系统设置中启用带有效凭据的模型供应商，再在下方选择已验证的固定咨询模型并审批保存。',
+    processor_approval_changed:
+      '供应商端点或请求配置已变化。请负责人重新核对处理方，审批保存后重新取得成员用途同意。'
+  }
+  return (
+    actions[consultation.value.reason_code] ||
+    '请管理员核对下方模型与政策配置；保存后重新读取服务状态。'
+  )
+})
 const settings = reactive({
   report_model: '',
   meal_model: '',
@@ -92,9 +109,56 @@ async function publishFood() {
 <template>
   <section class="admin-section">
     <h2>健康服务配置</h2>
+    <section class="consultation-setup" aria-labelledby="consultation-setup-title">
+      <h3 id="consultation-setup-title">成员营养咨询启用指引</h3>
+      <p>
+        普通营养咨询可查询“家庭营养与食养知识库”用于一般科普；涉及个人计划、诊断、治疗或用药的建议须按对应专业流程处理。
+      </p>
+      <a-alert
+        :type="consultation.available === true ? 'info' : 'warning'"
+        :message="
+          consultation.available === true
+            ? '咨询服务配置可用，成员授权与问答效果需另行验收'
+            : '咨询服务配置尚未就绪'
+        "
+        :description="
+          consultation.available === true
+            ? consultationNextStep
+            : `${consultation.reason || '尚未取得可用的咨询配置'}。${consultationNextStep}`
+        "
+        show-icon
+      />
+      <dl class="consultation-config">
+        <div>
+          <dt>已保存的咨询模型</dt>
+          <dd>{{ consultation.model || '未选择' }}</dd>
+        </div>
+        <div>
+          <dt>已保存的政策版本</dt>
+          <dd>{{ configuration.policy_version || '未登记' }}</dd>
+        </div>
+      </dl>
+      <ol>
+        <li><strong>管理员配置模型：</strong>选择已验证的固定版本，保存后以服务端返回状态为准。</li>
+        <li>
+          <strong>负责人确认数据处理：</strong
+          >确认处理政策、供应商和任务限额后审批保存。一般科普资料审核与成员数据云处理同意分别管理。
+        </li>
+        <li>
+          <strong>成员确认用途：</strong>在成员页面核对 AI
+          读取授权及咨询用途同意；家庭档案共享权限单独管理。
+        </li>
+        <li>
+          <strong>开发与业务共同验收：</strong>实际提问，核对答复、引用资料及授权撤回后的访问结果。
+        </li>
+      </ol>
+      <p class="saved-state-note">
+        这里展示已保存的配置。修改下方选项或勾选审批后，需要保存成功并读回状态。
+      </p>
+    </section>
     <p>
-      先在系统设置中配置模型供应商及 PaddleOCR 凭据，再选择验证过的固定模型版本。饮食模型限定
-      qwen3-vl-flash-2026-01-22。此页面不显示密钥。
+      先在系统设置中配置所需模型供应商，再选择验证过的固定模型版本。报告识别另需 PaddleOCR
+      凭据，饮食模型限定 qwen3-vl-flash-2026-01-22。此页面不显示密钥。
     </p>
     <a-button v-if="openSettings" @click="openSettings('ocr')">打开 OCR 与模型设置</a-button>
     <div class="grid">
@@ -257,11 +321,51 @@ async function publishFood() {
     width: 100%;
   }
 }
+.consultation-setup {
+  padding: 16px;
+  margin: 16px 0;
+  border: 1px solid var(--gray-200);
+  border-radius: 8px;
+  background: var(--gray-25);
+  overflow-wrap: anywhere;
+  h3 {
+    margin: 0;
+    font-size: 15px;
+    color: var(--gray-1000);
+  }
+  ol {
+    padding-left: 22px;
+    color: var(--gray-700);
+    line-height: 1.8;
+  }
+  li + li {
+    margin-top: 6px;
+  }
+  .saved-state-note {
+    margin-bottom: 0;
+    font-size: 13px;
+  }
+}
+.consultation-config {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+  dt {
+    color: var(--gray-600);
+    font-size: 13px;
+  }
+  dd {
+    margin: 4px 0 0;
+    color: var(--gray-1000);
+  }
+}
 .actions {
   margin-top: 16px;
 }
 @media (max-width: 700px) {
-  .grid {
+  .grid,
+  .consultation-config {
     grid-template-columns: minmax(0, 1fr);
   }
 }

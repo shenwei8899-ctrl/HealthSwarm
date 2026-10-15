@@ -43,6 +43,7 @@ function admin(api = {}) {
   const events = []
   const state = scope.run(() =>
     new Function(
+      'computed',
       'reactive',
       'ref',
       'watch',
@@ -52,8 +53,9 @@ function admin(api = {}) {
       'healthVisionApi',
       'message',
       'nutrientLabels',
-      `${script}\nreturn { settings, busy, saveConfiguration, food, openSettings }`
+      `${script}\nreturn { settings, busy, saveConfiguration, food, openSettings, consultation, consultationNextStep }`
     )(
+      Vue.computed,
       Vue.reactive,
       Vue.ref,
       Vue.watch,
@@ -69,8 +71,7 @@ function admin(api = {}) {
     ...state,
     props,
     events,
-    template: () =>
-      render({ ...state, configuration: props.configuration, busy: state.busy.value }, []),
+    template: () => render(Vue.proxyRefs({ ...state, configuration: props.configuration }), []),
     dispose: () => scope.stop()
   }
 }
@@ -182,5 +183,92 @@ test('配置保存失败不发出已保存事件并释放忙碌状态', async ()
   await state.saveConfiguration()
   assert.deepEqual(state.events, [])
   assert.equal(state.busy.value, false)
+  state.dispose()
+})
+
+test('本地填写政策与模型和勾选审批不改变服务端未就绪状态', async () => {
+  const state = admin({
+    configure: async () => {
+      throw new Error('save rejected')
+    }
+  })
+  state.props.configuration = {
+    ...configuration(),
+    policy_version: '',
+    consultation: {
+      available: false,
+      model: '',
+      reason_code: 'policy_not_approved',
+      reason: '尚未审批云处理政策'
+    }
+  }
+  await Vue.nextTick()
+  state.settings.policy_version = 'local-unsaved-v1'
+  state.settings.consultation_model = 'synthetic:local-model'
+  state.settings.cloud_processing_reviewed = true
+  await state.saveConfiguration()
+  const alert = nodes(state.template(), 'a-alert')[0]
+  assert.equal(alert.props.type, 'warning')
+  assert.equal(alert.props.message, '咨询服务配置尚未就绪')
+  assert.match(alert.props.description, /尚未审批云处理政策/)
+  assert.match(alert.props.description, /负责人确认实际数据处理政策/)
+  const saved = nodes(state.template(), 'dd').map((node) => node.children)
+  assert.deepEqual(saved, ['未选择', '未登记'])
+  assert.deepEqual(state.events, [])
+  state.dispose()
+})
+
+test('服务端重载可用状态后仍提示成员授权和实际问答验收', async () => {
+  const state = admin()
+  state.props.configuration = {
+    ...configuration(),
+    consultation: {
+      available: true,
+      model: 'synthetic:consultation-v2',
+      processor: 'synthetic-processor'
+    }
+  }
+  await Vue.nextTick()
+  const alert = nodes(state.template(), 'a-alert')[0]
+  assert.equal(alert.props.type, 'info')
+  assert.match(alert.props.message, /成员授权与问答效果需另行验收/)
+  assert.match(alert.props.description, /AI 读取授权和本次咨询用途同意/)
+  assert.deepEqual(
+    nodes(state.template(), 'dd').map((node) => node.children),
+    ['synthetic:consultation-v2', 'synthetic-policy-v1']
+  )
+  assert.equal(state.settings.cloud_processing_reviewed, false)
+  assert.deepEqual(state.events, [])
+  state.dispose()
+})
+
+test('未配置模型和处理方变化分别提供实际恢复路径', async () => {
+  const state = admin()
+  for (const [reason_code, expected] of [
+    ['model_unavailable', /启用带有效凭据的模型供应商/],
+    ['processor_approval_changed', /重新取得成员用途同意/],
+    ['future_reason', /请管理员核对下方模型与政策配置/]
+  ]) {
+    state.props.configuration = {
+      ...configuration(),
+      consultation: { available: false, reason_code, reason: '服务端实际原因' }
+    }
+    await Vue.nextTick()
+    const alert = nodes(state.template(), 'a-alert')[0]
+    assert.equal(alert.props.type, 'warning')
+    assert.match(alert.props.description, /服务端实际原因/)
+    assert.match(alert.props.description, expected)
+  }
+  state.dispose()
+})
+
+test('缺失咨询配置仍显示未就绪且不发起配置写入', async () => {
+  const state = admin({ configure: () => assert.fail('只读展示不应写入') })
+  state.props.configuration = { ...configuration(), consultation: undefined }
+  await Vue.nextTick()
+  const alert = nodes(state.template(), 'a-alert')[0]
+  assert.equal(alert.props.type, 'warning')
+  assert.match(alert.props.description, /尚未取得可用的咨询配置/)
+  assert.deepEqual(state.events, [])
   state.dispose()
 })
