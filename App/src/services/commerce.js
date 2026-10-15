@@ -25,9 +25,9 @@ let isWechat = false;
 // #ifdef MP-WEIXIN
 isWechat = true;
 // #endif
-const native = (method) => (options) =>
+const native = (invoke) => (options) =>
   new Promise((resolve, reject) =>
-    uni[method]({ ...options, success: resolve, fail: reject }),
+    invoke({ ...options, success: resolve, fail: reject }),
   );
 let baseUrl = commerceApiBaseUrl;
 // #ifdef H5
@@ -38,8 +38,8 @@ export const commerce = createCommerceClient({
   // #ifdef H5
   allowProxy: true,
   // #endif
-  transport: native("request"),
-  uploadTransport: native("uploadFile"),
+  transport: native((options) => uni.request(options)),
+  uploadTransport: native((options) => uni.uploadFile(options)),
   parent: { read: getSession, scope: storageContext, storageScope },
   storage: {
     get: (key) => uni.getStorageSync(key),
@@ -59,12 +59,12 @@ export const commerce = createCommerceClient({
   appId: (import.meta.env || {}).VITE_WECHAT_APPID || "",
   getWechatCode: isWechat
     ? async () => {
-        const r = await native("login")({ provider: "weixin", timeout: 10000 });
+        const r = await native((options) => uni.login(options))({ provider: "weixin", timeout: 10000 });
         if (!r.code) throw new Error("微信未返回登录凭证，请重试");
         return r.code;
       }
     : null,
-  pay: isWechat ? native("requestPayment") : null,
+  pay: isWechat ? native((options) => uni.requestPayment(options)) : null,
 });
 
 export const commerceContext = () => storageContext() + ":commerce:" + commerce.sessionRevision();
