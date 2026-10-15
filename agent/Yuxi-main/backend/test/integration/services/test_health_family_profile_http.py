@@ -312,6 +312,19 @@ async def test_ordinary_consultation_contract_authorization_and_idempotency(fami
             "created_at": "2026-10-10T03:04:05.123456Z",
         },
     ]
+    denied = await client.get(path, headers=headers)
+    assert denied.status_code == 403 and denied.json()["code"] == "consent_required", denied.text
+    # 仅在隔离 schema 登记合成同意，不配置或调用真实模型与生产政策。
+    async with sessions.begin() as session:
+        session.add(
+            HealthProcessingConsent(
+                member_id=member_id,
+                actor_uid="self",
+                purpose="consultation",
+                processor="synthetic-processor",
+                policy_version="synthetic-policy",
+            )
+        )
     for offset in range(3):
         page = await client.get(path, headers=headers, params={"limit": 1, "offset": offset})
         assert page.status_code == 200, page.text
@@ -322,6 +335,15 @@ async def test_ordinary_consultation_contract_authorization_and_idempotency(fami
             "has_more": offset == 0,
             "next_offset": 1 if offset == 0 else None,
         }, "consultation_list_page_wire_contract"
+
+    async with sessions.begin() as session:
+        consent = await session.get(HealthProcessingConsent, (member_id, "self", "consultation"))
+        consent.revoked_at = datetime(2026, 10, 12)
+    denied = await client.get(path, headers=headers)
+    assert denied.status_code == 403 and denied.json()["code"] == "consent_required", denied.text
+    async with sessions.begin() as session:
+        consent = await session.get(HealthProcessingConsent, (member_id, "self", "consultation"))
+        consent.revoked_at = None
 
     # 错误请求头、跨账号、同键换成员及撤权都经过正式路由，最后独立回读无新增咨询。
     wrong_key = await client.post(path, headers=headers, json={"client_request_id": str(uuid4())})
@@ -344,7 +366,7 @@ async def test_ordinary_consultation_contract_authorization_and_idempotency(fami
     )
     assert conflicting.status_code == 409 and conflicting.json()["code"] == "request_conflict"
     revoked = await client.put(
-        f"{ROOT}/members/{member_id}/grants", headers=headers, json={"actor_uid": "self", "scopes": ["ai_use"]}
+        f"{ROOT}/members/{member_id}/grants", headers=headers, json={"actor_uid": "self", "scopes": []}
     )
     assert revoked.status_code == 200, revoked.text
     assert (await client.get(path, headers=headers)).status_code == 404

@@ -10,6 +10,8 @@ Owner：backend/package/yuxi/services/family_service.py
 
 ## 决策
 
+普通家庭档案的可见及编辑范围由[家庭共享与独立 AI 来源授权](./2026-10-15-family-profile-sharing.md)部分取代；本记录中的字段授权、监护限制继续用于独立来源读取或确认，普通共享以有效家庭成员关系为准。
+
 ### 实现方案
 
 `FamilyArchivesView.vue` 复用现有布局、认证、主题和 PageHeader，在 `/family` 下组织成员档案、健康指标、统计概览和授权管理四个视图。普通读写通过 `/api/family` 业务接口完成。

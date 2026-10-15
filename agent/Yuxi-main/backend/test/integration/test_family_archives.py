@@ -16,11 +16,106 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from server.routers import router
 from server.utils.auth_middleware import get_db
-from yuxi.storage.postgres.models_business import Base, Department, FamilyMember, FamilyMeasurement, User
+from yuxi.storage.postgres.models_business import (
+    Base,
+    Department,
+    FamilyArchive,
+    FamilyAudit,
+    FamilyMember,
+    FamilyMeasurement,
+    User,
+)
+from yuxi.services.family_service import authorized_fields
+from yuxi.services.family_schemas import PROFILE_FIELDS, METRIC_FIELDS
 from yuxi.utils.auth_utils import AuthUtils
 
 pytestmark = pytest.mark.integration
 TEST_TOKENS = {}
+
+
+async def test_active_peer_can_maintain_unclaimed_profile_without_ai_grant(family_client):
+    """普通成员可维护未认领档案，版本和审计落库，独立 AI 来源仍拒绝。"""
+    client, sessions = family_client
+    family = await create_family(client)
+    fid = family["id"]
+    peer_id = await invite_member(client, fid)
+    added = await client.post(
+        f"/api/family/{fid}/members", headers=headers(), json={"name": "未认领合成成员", "relationship": "家人"}
+    )
+    mid = added.json()["id"]
+    path = f"/api/family/{fid}/members/{mid}"
+    renamed = await client.put(
+        path + "/relationship",
+        headers=headers("member"),
+        json={"expected_version": 1, "name": "共同维护", "relationship": "父亲"},
+    )
+    assert renamed.status_code == 200 and renamed.json()["relationship_version"] == 2
+    saved = await client.put(
+        path, headers=headers("member"), json={"expected_version": 1, "profile": {"height_cm": 172, "allergens": []}}
+    )
+    assert saved.status_code == 200 and saved.json()["version"] == 2
+    assert (
+        await client.put(path, headers=headers("member"), json={"expected_version": 1, "profile": {"height_cm": 180}})
+    ).status_code == 409
+    record = measurement_payload()
+    assert (await client.post(path + "/measurements", headers=headers("member"), json=record)).status_code == 200
+    assert (await client.get(path + "/history", headers=headers("member"))).json()["items"][0]["profile"] == {
+        "height_cm": 172,
+        "allergens": [],
+    }
+    assert (await client.get(path + "/measurements/export", headers=headers("member"))).json()["total"] == 1
+    # 普通共享不提供本人确认、独立授权或邀请管理身份。
+    assert (
+        await client.post(path + "/confirm", headers=headers("member"), json={"expected_version": 2})
+    ).status_code == 403
+    assert (await client.post(path + "/invite", headers=headers("member"))).status_code == 403
+    async with sessions() as db:
+        source = await db.get(FamilyMember, mid)
+        assert source.subject_uid is None and source.profile == {"height_cm": 172, "allergens": []}
+        assert authorized_fields(await db.get(FamilyArchive, fid), source, "member") == set()
+        assert (await db.get(FamilyMeasurement, record["id"])).created_by == "member"
+        actions = set(
+            (
+                await db.scalars(
+                    select(FamilyAudit.action).where(FamilyAudit.member_id == mid, FamilyAudit.actor_uid == "member")
+                )
+            ).all()
+        )
+        assert {"member.update", "profile.update", "profile.history", "measurements.read"} <= actions
+    assert (await client.get(path + "/history", headers=headers("reviewer"))).status_code == 404
+    assert (await client.get(path + "/measurements")).status_code == 401
+    assert (
+        await client.put(
+            f"/api/family/{fid}/members/{peer_id}/status",
+            headers=headers("member"),
+            json={"expected_version": 1, "is_active": False},
+        )
+    ).status_code == 200
+    for suffix in ("/history", "/measurements", "/measurements/export"):
+        assert (await client.get(path + suffix, headers=headers("member"))).status_code == 404
+    assert (
+        await client.put(path, headers=headers("member"), json={"expected_version": 2, "profile": {"height_cm": 180}})
+    ).status_code == 404
+
+
+async def test_owner_label_without_active_membership_cannot_share(family_client):
+    """管理员标签不能覆盖实际成员关系的失效。"""
+    client, sessions = family_client
+    family = await create_family(client)
+    fid, mid = family["id"], family["members"][0]["id"]
+    async with sessions() as db:
+        source = await db.get(FamilyMember, mid)
+        source.is_active = False
+        await db.commit()
+    assert (await client.get("/api/family", headers=headers())).json() == []
+    assert (await client.get(f"/api/family/{fid}", headers=headers())).status_code == 404
+    assert (
+        await client.put(
+            f"/api/family/{fid}/members/{mid}/status",
+            headers=headers(),
+            json={"expected_version": 1, "is_active": True},
+        )
+    ).status_code == 404
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -137,7 +232,7 @@ async def guardian_application(client):
         },
     )
     assert response.status_code == 200, response.text
-    assert response.json()["profile"] == {} and response.json()["allowed_fields"] == []
+    assert response.json()["profile"] == {} and "height_cm" in response.json()["allowed_fields"]
     return fid, child["id"], path, response.json()["guardian"]["version"]
 
 
@@ -166,7 +261,7 @@ async def test_guardian_requires_independent_review_and_keeps_versions(family_cl
     assert (await client.put(path + "/guardian/review", headers=headers(), json=body)).status_code == 403
     assert (
         await client.put(path, headers=headers(), json={"expected_version": 1, "profile": {"height_cm": 118}})
-    ).status_code == 403
+    ).status_code == 200
     async with sessions() as db:
         owner = await db.scalar(select(User).where(User.uid == "owner"))
         owner.role = "admin"
@@ -210,10 +305,10 @@ async def test_guardian_requires_independent_review_and_keeps_versions(family_cl
     revoke = await client.post(
         path + "/guardian/revoke", headers=headers(), json={"expected_version": new_guardian_version}
     )
-    assert revoke.status_code == 200 and revoke.json()["allowed_fields"] == []
-    assert (await client.get(path + "/measurements", headers=headers())).status_code == 403
+    assert revoke.status_code == 200 and "height_cm" in revoke.json()["allowed_fields"]
+    assert (await client.get(path + "/measurements", headers=headers())).status_code == 200
     final = (await client.get(f"/api/family/{fid}/statistics", headers=headers())).json()
-    assert {t["code"] for t in final["tasks"] if t["member_id"] == mid} == {"access_pending"}
+    assert "access_pending" not in {t["code"] for t in final["tasks"] if t["member_id"] == mid}
     async with sessions() as db:
         stored = await db.get(FamilyMember, mid)
         assert stored.profile["height_cm"] == 118 and stored.guardian_status == "revoked"
@@ -230,7 +325,7 @@ async def test_guardian_requires_independent_review_and_keeps_versions(family_cl
     reapplied = await client.post(path + "/guardian", headers=headers(), json=request)
     assert reapplied.status_code == 200, reapplied.text
     assert reapplied.json()["guardian"]["status"] == "pending"
-    assert not reapplied.json()["is_guardian"] and reapplied.json()["allowed_fields"] == []
+    assert not reapplied.json()["is_guardian"] and "height_cm" in reapplied.json()["allowed_fields"]
 
 
 @pytest.mark.parametrize("change", ["expiry", "adult", "identity", "applicant_minor"])
@@ -260,7 +355,9 @@ async def test_guardian_access_expires_or_identity_changes(family_client, change
         assert response.status_code == 200
     family = (await client.get(f"/api/family/{fid}", headers=headers())).json()
     child = next(m for m in family["members"] if m["id"] == mid)
-    assert child["profile"] == {} and child["is_guardian"] is False
+    assert child["profile"]["birth_date"] and child["is_guardian"] is False
+    async with sessions() as db:
+        assert authorized_fields(await db.get(FamilyArchive, fid), await db.get(FamilyMember, mid), "owner") == set()
     assert (await client.post(path + "/confirm", headers=headers(), json={"expected_version": 2})).status_code == 403
 
 
@@ -297,7 +394,7 @@ async def test_family_settings_are_owner_only_and_versioned(family_client):
             headers=headers(),
             json={"expected_version": response.json()["version"], "profile": profile},
         )
-    ).status_code == 403
+    ).status_code == 200
 
 
 async def test_child_identity_change_and_change_back_does_not_restore_guardian(family_client):
@@ -319,11 +416,9 @@ async def test_child_identity_change_and_change_back_does_not_restore_guardian(f
         child = changed.json()
     current = (await client.get(f"/api/family/{fid}", headers=headers())).json()
     ward = next(m for m in current["members"] if m["id"] == mid)
-    assert ward["guardian"]["status"] == "revoked" and ward["allowed_fields"] == []
+    assert ward["guardian"]["status"] == "revoked" and "height_cm" in ward["allowed_fields"]
     assert (
-        await client.put(
-            path, headers=headers(), json={"expected_version": child["version"], "profile": {"goal": "未经重新审核"}}
-        )
+        await client.post(path + "/confirm", headers=headers(), json={"expected_version": child["version"]})
     ).status_code == 403
 
 
@@ -362,7 +457,7 @@ async def test_height_measurement_is_persisted_separately_and_authorized(family_
     record = measurement_payload(kind="height", values={"height": 171})
     created = await client.post(path + "/measurements", headers=headers("member"), json=record)
     assert created.status_code == 200 and created.json()["unit"] == "cm"
-    assert (await client.get(path + "/measurements?kind=height", headers=headers())).status_code == 403
+    assert (await client.get(path + "/measurements?kind=height", headers=headers())).status_code == 200
     await grant(client, fid, mid, ["height"])
     corrected = await client.put(
         path + f"/measurements/{record['id']}",
@@ -433,8 +528,8 @@ def measurement_payload(kind="weight", **overrides):
 
 
 @pytest.mark.asyncio
-async def test_view_only_grant_cannot_write_correct_or_void_and_export_rechecks(family_client):
-    """仅查看不授予代维护；撤回后历史、趋势和导出均关闭。"""
+async def test_source_grant_does_not_limit_shared_profile_writes(family_client):
+    """独立来源授权与普通家庭共享分离，后者保留更正和作废。"""
     client, sessions = family_client
     family = await create_family(client)
     fid, mid = family["id"], await invite_member(client, family["id"])
@@ -446,13 +541,13 @@ async def test_view_only_grant_cannot_write_correct_or_void_and_export_rechecks(
     member = next(
         m for m in (await client.get(f"/api/family/{fid}", headers=headers())).json()["members"] if m["id"] == mid
     )
-    assert member["editable_fields"] == []
-    assert member["allowed_fields"] == ["birth_date", "weight"]
+    assert set(member["editable_fields"]) == PROFILE_FIELDS | METRIC_FIELDS.keys()
+    assert set(member["allowed_fields"]) == PROFILE_FIELDS | METRIC_FIELDS.keys()
     assert (await client.get(path + "/measurements/export", headers=headers())).json()["total"] == 1
     assert (
         await client.put(path, headers=headers(), json={"expected_version": 2, "profile": {"birth_date": "1991-01-01"}})
-    ).status_code == 403
-    assert (await client.post(path + "/measurements", headers=headers(), json=measurement_payload())).status_code == 403
+    ).status_code == 200
+    assert (await client.post(path + "/measurements", headers=headers(), json=measurement_payload())).status_code == 200
     rid = record["id"]
     assert (
         await client.put(
@@ -460,12 +555,12 @@ async def test_view_only_grant_cannot_write_correct_or_void_and_export_rechecks(
             headers=headers(),
             json={"expected_version": 1, "values": {"weight": 61}, "note": "更正"},
         )
-    ).status_code == 403
+    ).status_code == 200
     assert (
         await client.post(
-            path + f"/measurements/{rid}/void", headers=headers(), json={"expected_version": 1, "reason": "重复"}
+            path + f"/measurements/{rid}/void", headers=headers(), json={"expected_version": 2, "reason": "重复"}
         )
-    ).status_code == 403
+    ).status_code == 200
     assert (
         await client.put(
             path + "/authorization", headers=headers("member"), json={**body, "edit_fields": ["height_cm"]}
@@ -473,10 +568,11 @@ async def test_view_only_grant_cannot_write_correct_or_void_and_export_rechecks(
     ).status_code == 422
     await grant(client, fid, mid, [])
     for suffix in ("/history", "/measurements", "/measurements/export"):
-        assert (await client.get(path + suffix, headers=headers())).status_code == 403
+        assert (await client.get(path + suffix, headers=headers())).status_code == 200
     async with sessions() as db:
         saved = await db.scalar(select(FamilyMeasurement).where(FamilyMeasurement.id == rid))
-        assert saved.version == 1 and saved.values == {"weight": 60} and saved.voided_at is None
+        assert saved.version == 3 and saved.values == {"weight": 61} and saved.voided_at is not None
+        assert authorized_fields(await db.get(FamilyArchive, fid), await db.get(FamilyMember, mid), "owner") == set()
 
 
 @pytest.mark.asyncio
@@ -505,8 +601,8 @@ async def test_noop_preserves_confirmation_and_history_masks_paginated_changes(f
     assert first["items"][0]["changes"] == {"height_cm": {"before": 170, "after": 171}}
     second = (await client.get(path + "/history?limit=1&offset=1", headers=headers())).json()["items"][0]
     assert second["confirmed_at"] == confirmed["confirmed_at"]
-    assert second["profile"] == {"height_cm": 170}
-    assert "合成私密" not in str(first) + str(second)
+    assert second["profile"] == {"birth_date": "1990-01-01", **profile}
+    assert second["profile"]["medical_history"] == "合成私密资料"
     assert (await client.get(path + "/history?offset=-1", headers=headers())).status_code == 422
     async with sessions() as db:
         assert await db.scalar(text("SELECT count(*) FROM family_audits WHERE action='profile.confirm'")) == 1
@@ -548,10 +644,10 @@ async def test_relationship_lifecycle_revokes_grants_invites_and_keeps_history(f
     ).status_code == 404
     assert (
         await client.put(path + "/status", headers=headers("member"), json={"expected_version": 3, "is_active": True})
-    ).status_code == 403
+    ).status_code == 404
     restored = await client.put(path + "/status", headers=headers(), json={"expected_version": 3, "is_active": True})
-    assert restored.json()["allowed_fields"] == []
-    assert (await client.get(path + "/history", headers=headers())).status_code == 403
+    assert "height_cm" in restored.json()["allowed_fields"]
+    assert (await client.get(path + "/history", headers=headers())).status_code == 200
     assert (await client.get(path + "/history", headers=headers("member"))).json()["total"] == 1
     assert (
         await client.put(path + "/status", headers=headers("member"), json={"expected_version": 4, "is_active": False})
@@ -702,23 +798,23 @@ async def test_family_is_private_and_requires_authentication(family_client):
 
 
 @pytest.mark.asyncio
-async def test_owner_needs_subject_authorization_for_fields_and_metrics(family_client):
+async def test_shared_profile_still_requires_version_and_personal_grant_authority(family_client):
     client, _ = family_client
     family = await create_family(client)
     fid = family["id"]
     mid = await invite_member(client, fid)
     path = f"/api/family/{fid}/members/{mid}"
     denied = await client.put(path, headers=headers(), json={"expected_version": 1, "profile": {"height_cm": 170}})
-    assert denied.status_code == 403
+    assert denied.status_code == 409
     assert (await grant(client, fid, mid, ["height_cm", "weight"])).status_code == 200
     result = await client.put(path, headers=headers(), json={"expected_version": 2, "profile": {"height_cm": 170}})
     assert result.status_code == 200
-    assert result.json()["profile"] == {"height_cm": 170}
+    assert result.json()["profile"] == {"birth_date": "1990-01-01", "height_cm": 170}
     assert (
         await client.put(
-            path, headers=headers(), json={"expected_version": 2, "profile": {"medical_history": "合成敏感信息"}}
+            path, headers=headers(), json={"expected_version": 3, "profile": {"medical_history": "合成敏感信息"}}
         )
-    ).status_code == 403
+    ).status_code == 200
     assert (
         await client.put(
             path + "/authorization",
@@ -765,10 +861,10 @@ async def test_measurement_retries_conflicts_and_revocation(family_client):
     await grant(client, fid, mid, [])
     listed = (await client.get(f"/api/family/{fid}", headers=headers())).json()
     member = next(row for row in listed["members"] if row["id"] == mid)
-    assert member["profile"] == {}
-    assert (await client.get(path, headers=headers())).status_code == 403
-    assert (await client.post(path, headers=headers(), json=payload)).status_code == 403
-    assert (await client.get(f"/api/family/{fid}/statistics", headers=headers())).json()["record_count"] == 0
+    assert member["profile"] == {"birth_date": "1990-01-01"}
+    assert (await client.get(path, headers=headers())).status_code == 200
+    assert (await client.post(path, headers=headers(), json=payload)).status_code == 200
+    assert (await client.get(f"/api/family/{fid}/statistics", headers=headers())).json()["record_count"] == 1
     async with sessions() as db:
         count = await db.scalar(text("SELECT count(*) FROM family_measurements"))
         assert count == 1
@@ -822,7 +918,7 @@ async def test_metric_shape_time_expiry_and_foreign_member_are_rejected(family_c
 
 
 @pytest.mark.asyncio
-async def test_expired_grant_filters_profile_history_and_statistics(family_client):
+async def test_expired_source_grant_preserves_shared_profile_but_denies_ai_source(family_client):
     """落库授权过期后，所有健康读取路径都重新校验。"""
     client, sessions = family_client
     family = await create_family(client)
@@ -836,7 +932,7 @@ async def test_expired_grant_filters_profile_history_and_statistics(family_clien
     )
     await grant(client, fid, mid, ["height_cm", "weight"])
     history = (await client.get(path + "/history", headers=headers())).json()
-    assert history["items"][0]["profile"] == {"height_cm": 172}
+    assert history["items"][0]["profile"]["height_cm"] == 172
     async with sessions() as db:
         member = await db.scalar(select(FamilyMember).where(FamilyMember.id == mid))
         member.grant_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
@@ -844,9 +940,11 @@ async def test_expired_grant_filters_profile_history_and_statistics(family_clien
     response = await client.get(f"/api/family/{fid}", headers=headers())
     assert response.headers["cache-control"] == "no-store"
     visible = next(row for row in response.json()["members"] if row["id"] == mid)
-    assert visible["profile"] == {} and visible["allowed_fields"] == []
-    assert (await client.get(path + "/history", headers=headers())).status_code == 403
-    assert (await client.get(path + "/measurements", headers=headers())).status_code == 403
+    assert visible["profile"]["medical_history"] == "合成私密信息"
+    async with sessions() as db:
+        assert authorized_fields(await db.get(FamilyArchive, fid), await db.get(FamilyMember, mid), "owner") == set()
+    assert (await client.get(path + "/history", headers=headers())).status_code == 200
+    assert (await client.get(path + "/measurements", headers=headers())).status_code == 200
     own = (await client.get(path + "/history", headers=headers("member"))).json()
     assert own["items"][0]["profile"]["medical_history"] == "合成私密信息"
 

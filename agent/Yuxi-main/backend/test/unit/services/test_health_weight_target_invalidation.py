@@ -178,6 +178,9 @@ async def test_rejected_correction_does_not_mutate_or_invalidate(write_context, 
         ctx.record.voided_at = ctx.record.measured_at
     elif fault == "unauthorized":
         ctx.service.uid = "outsider"
+        ctx.service.context = FamilyService.context.__get__(ctx.service)
+        ctx.service.repo.get_family = AsyncMock(return_value=ctx.family)
+        ctx.service.repo.subject_member = AsyncMock(return_value=None)
     with pytest.raises(HTTPException) as error:
         await ctx.service.correct_measurement(
             ctx.family.id,
@@ -185,7 +188,7 @@ async def test_rejected_correction_does_not_mutate_or_invalidate(write_context, 
             ctx.record.id,
             MeasurementUpdate(expected_version=expected, values={"weight": 62}, note="合成更正"),
         )
-    assert error.value.status_code == (403 if fault == "unauthorized" else 409)
+    assert error.value.status_code == (404 if fault == "unauthorized" else 409)
     assert ctx.record.version == 1 and ctx.record.values == {"weight": 60}
     assert ctx.record.previous == [] and ctx.events == []
 

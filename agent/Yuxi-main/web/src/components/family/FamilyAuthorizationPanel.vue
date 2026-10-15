@@ -3,14 +3,14 @@
     <FamilyGuardianPanel ref="guardianPanel" :family="family" @changed="emit('changed')" />
     <div class="section-heading">
       <div>
-        <h2>成员授权管理</h2>
-        <p class="muted">家庭营养管理用途 · 分别控制查看和代维护权限</p>
+        <h2>成员关系与独立资料授权</h2>
+        <p class="muted">家庭档案共享 · AI 资料读取另行授权</p>
       </div>
     </div>
     <a-alert
       type="info"
       show-icon
-      message="成员本人认领后决定开放范围，家庭管理员身份不自动授予健康详情权限。"
+      message="同一家庭的有效成员账号共享档案和实测。下方独立资料授权用于营养资料读取，不代替 AI 用途授权与处理同意；撤回不会关闭家庭档案共享。"
     />
     <div class="table-scroll">
       <table class="family-table">
@@ -18,7 +18,7 @@
           <tr>
             <th>成员</th>
             <th>状态与访问范围</th>
-            <th>有效期</th>
+            <th>独立资料授权有效期</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -55,7 +55,7 @@
                 v-if="member.is_self && !family.is_owner && member.is_active"
                 type="link"
                 @click="edit(member)"
-                >管理我的授权</a-button
+                >管理我的资料授权</a-button
               >
               <span v-else-if="member.is_self" class="muted">本人可管理自身数据</span>
               <a-button
@@ -69,7 +69,7 @@
               <span v-else class="muted">{{
                 member.is_guardian ? '当前由监护人代维护' : '由成员本人管理'
               }}</span>
-              <div v-if="family.is_owner || member.is_self" class="button-group">
+              <div class="button-group">
                 <a-button v-if="member.is_active" type="link" @click="editRelationship(member)"
                   >编辑关系</a-button
                 >
@@ -80,11 +80,11 @@
                   >撤销邀请</a-button
                 >
                 <a-popconfirm
-                  v-if="!(member.is_self && family.is_owner)"
+                  v-if="(family.is_owner || member.is_self) && !(member.is_self && family.is_owner)"
                   :title="
                     member.is_active
                       ? '退出或停用后将撤销授权与邀请，历史仍保留。确认？'
-                      : '恢复关系后需要重新授权，确认恢复？'
+                      : '恢复后重新共享家庭档案；独立资料授权仍需重新确认，继续？'
                   "
                   @confirm="changeStatus(member)"
                 >
@@ -100,21 +100,22 @@
     </div>
     <a-modal
       v-model:open="editing"
-      title="管理向家庭管理员开放的字段"
+      title="管理向家庭管理员开放的营养资料读取范围"
       :confirm-loading="saving"
       @ok="save"
     >
       <p class="form-note">
-        用途：家庭营养管理。请先填写本人出生日期；一期仅支持成年成员授权。查看权限不会自动授予代维护权限，授权可随时撤回。
+        接收方：家庭管理员。用途：营养资料读取。请先填写本人出生日期；一期支持成年成员授权。此处不限制家庭内档案读改，也不代替
+        AI 用途同意。
       </p>
-      <p>允许查看</p>
+      <p>允许资料读取</p>
       <a-checkbox-group
         v-model:value="fields"
         class="permission-fields"
         :options="allFields"
         aria-label="允许查看的字段"
       />
-      <p>允许代维护（可选，须先允许查看）</p>
+      <p>兼容代维护范围（不影响当前家庭共享）</p>
       <a-checkbox-group
         aria-label="允许代维护的字段"
         v-model:value="editFields"
@@ -151,7 +152,7 @@
     <a-modal v-model:open="inviteOpen" title="邀请成员本人认领" :footer="null">
       <p>
         请将代码通过你选择的渠道发给成员，由成员登录平台后在“家庭档案 →
-        加入家庭”输入。认领后仍需本人设置授权。
+        加入家庭”输入。认领后即可共享家庭档案；AI 等用途仍需另行授权。
       </p>
       <a-input :value="invitation?.code" readonly aria-label="家庭邀请代码" />
       <p class="muted form-note">

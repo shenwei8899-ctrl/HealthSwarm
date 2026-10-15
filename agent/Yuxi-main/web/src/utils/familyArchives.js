@@ -257,7 +257,9 @@ export function scrubFamilyAccess(family, now = Date.now(), unknownAccess = fals
   return {
     ...family,
     members: family.members.map((member) => {
-      const expired = Date.parse(member.authorization?.expires_at) <= now
+      const expired =
+        member.profile_access !== 'family_shared' &&
+        Date.parse(member.authorization?.expires_at) <= now
       if (member.is_self || (!unknownAccess && !expired) || !member.allowed_fields.length)
         return member
       return {

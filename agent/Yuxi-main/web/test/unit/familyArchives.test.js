@@ -12,6 +12,23 @@ import {
   scrubFamilyAccess
 } from '../../src/utils/familyArchives.js'
 
+test('家庭共享不因独立资料授权到期清空，访问状态未知时仍清理', () => {
+  const member = {
+    id: 'shared',
+    is_self: false,
+    profile_access: 'family_shared',
+    profile: { height_cm: 170 },
+    allowed_fields: ['height_cm'],
+    editable_fields: ['height_cm'],
+    authorization: { expires_at: '2020-01-01T00:00:00Z' }
+  }
+  assert.deepEqual(scrubFamilyAccess({ members: [member] }).members[0].profile, { height_cm: 170 })
+  assert.deepEqual(
+    scrubFamilyAccess({ members: [member] }, Date.now(), true).members[0].profile,
+    {}
+  )
+})
+
 test('未授权字段不进入档案提交，空值保留为未知', () => {
   assert.deepEqual(profileChanges({ height_cm: null, medical_history: 'private' }, ['height_cm']), {
     height_cm: null

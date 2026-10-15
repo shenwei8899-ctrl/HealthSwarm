@@ -26,7 +26,7 @@
     />
     <a-empty
       v-if="!visibleKeys.length"
-      description="健康档案尚未授权。成员本人认领并授权，或完成独立监护审核后才可查看。"
+      description="当前成员档案不可访问，请刷新并核对家庭成员状态。"
     />
     <dl v-else class="profile-grid">
       <div v-for="key in visibleKeys" :key="key">
@@ -54,7 +54,7 @@
         class="form-note"
         type="info"
         show-icon
-        message="仅维护当前授权字段。保存后形成新版本，由本人或有效监护人重新确认。"
+        message="家庭有效成员可共同维护档案。保存后形成新版本，由本人或有效监护人重新确认。"
       />
       <a-form layout="vertical" :model="draft" name="family-profile">
         <a-alert

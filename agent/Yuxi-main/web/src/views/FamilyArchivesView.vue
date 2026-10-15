@@ -54,7 +54,7 @@
         </a-empty>
         <template v-if="family">
           <p class="scope-note">
-            <ShieldCheck :size="15" />仅显示当前授权字段；健康资料不保存在浏览器本地存储。
+            <ShieldCheck :size="15" />家庭有效成员共享档案和实测记录；AI、报告原图及订单另行授权。
           </p>
           <FamilyStatsPanel
             v-if="activeTab === 'statistics'"
@@ -141,7 +141,7 @@
             :maxlength="80"
             placeholder="例如：我的家庭" /></a-form-item
       ></a-form>
-      <p class="muted">系统会为当前登录账户建立本人档案，其他成员需本人认领和授权。</p>
+      <p class="muted">系统会建立本人档案；加入的有效成员账号可共同查看和修改家庭档案。</p>
       <a-alert v-if="formError" type="error" :message="formError" show-icon />
     </a-modal>
     <a-modal
@@ -167,9 +167,7 @@
             "
         /></a-form-item>
       </a-form>
-      <p class="muted">
-        成年成员由本人认领并授权；儿童可在“授权管理”申请监护，经独立审核后代维护。
-      </p>
+      <p class="muted">家庭有效成员可共同维护此档案；本人确认及监护确认仍有独立身份要求。</p>
       <a-alert v-if="formError" type="error" :message="formError" show-icon />
     </a-modal>
     <a-modal v-model:open="joinOpen" title="加入家庭" :confirm-loading="saving" @ok="join">
@@ -180,7 +178,7 @@
             placeholder="输入家庭管理员发给你的代码" /></a-form-item
       ></a-form>
       <p class="muted">
-        此操作将当前账号关联为被邀请的成员。认领后，你可以填写本人档案，并决定向家庭管理员开放哪些字段。
+        加入后，你与同一家庭的有效成员账号可互相查看和修改档案、实测记录，包括未认领成员的档案。AI、报告原图、聊天及订单仍需各自授权。
       </p>
       <a-alert v-if="formError" type="error" :message="formError" show-icon />
     </a-modal>
@@ -436,7 +434,7 @@ async function join() {
     await load()
     activeTab.value = 'profiles'
     router.replace({ path: '/family', query: { tab: 'profiles' } })
-    message.success('已加入家庭，请先补充本人档案，再设置授权')
+    message.success('已加入家庭并共享档案；AI 资料读取仍需独立授权')
   } catch (cause) {
     formError.value = cause.message
   } finally {

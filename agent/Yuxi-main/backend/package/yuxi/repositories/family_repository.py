@@ -18,11 +18,11 @@ class FamilyRepository:
         self.db = db
 
     def visible_families(self, uid, *, include_inactive=False):
-        """仅查询自己管理或本人已加入的家庭。"""
+        """仅查询本人已认领的家庭，普通访问要求有效成员关系。"""
         membership = exists().where(FamilyMember.family_id == FamilyArchive.id, FamilyMember.subject_uid == uid)
         if not include_inactive:
             membership = membership.where(FamilyMember.is_active.is_(True))
-        return select(FamilyArchive).where(or_(FamilyArchive.owner_uid == uid, membership))
+        return select(FamilyArchive).where(membership)
 
     async def list_families(self, uid):
         """列出可访问家庭。"""

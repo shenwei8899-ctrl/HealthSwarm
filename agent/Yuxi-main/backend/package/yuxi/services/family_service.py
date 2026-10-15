@@ -51,11 +51,11 @@ def is_adult(member):
     return today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day)) >= 18
 
 
-def authorized_fields(family, member, uid, now=None, *, write=False):
-    """在有效关系与授权中分别计算查看和代维护范围。"""
+def authorized_fields(family, member, uid, now=None, *, write=False, family_sharing=False):
+    """普通档案可显式使用已校验家庭身份；AI 来源默认保留独立字段授权。"""
     if not member.is_active:
         return set()
-    if member.subject_uid == uid or guardian_active(member, uid, now):
+    if family_sharing or member.subject_uid == uid or guardian_active(member, uid, now):
         return PROFILE_FIELDS | METRIC_FIELDS.keys()
     now = now or utc_now_naive()
     if (
@@ -72,9 +72,9 @@ def authorized_fields(family, member, uid, now=None, *, write=False):
 
 
 def member_view(family, member, uid):
-    """按当前访问范围投影，隐藏未经授权的字段及其完整度。"""
-    allowed = authorized_fields(family, member, uid)
-    editable = authorized_fields(family, member, uid, write=True)
+    """投影已校验家庭身份可见的普通档案，停用档案隐藏健康字段。"""
+    allowed = authorized_fields(family, member, uid, family_sharing=True)
+    editable = authorized_fields(family, member, uid, write=True, family_sharing=True)
     profile = {key: value for key, value in (member.profile or {}).items() if key in allowed}
     missing = [key for key in REQUIRED_PROFILE_FIELDS if key in allowed and profile.get(key) in (None, "", [])]
     full_profile_access = set(REQUIRED_PROFILE_FIELDS) <= allowed
@@ -96,6 +96,7 @@ def member_view(family, member, uid):
         "is_self": member.subject_uid == uid,
         "claimed": member.subject_uid is not None or guardian_active(member, uid),
         "profile": profile,
+        "profile_access": "family_shared" if member.is_active else "unavailable",
         "allowed_fields": sorted(allowed),
         "editable_fields": sorted(editable),
         "version": member.version,
@@ -107,8 +108,8 @@ def member_view(family, member, uid):
         "confirmed_at": format_utc_datetime(member.confirmed_at) if full_profile_access else None,
         "updated_at": format_utc_datetime(member.updated_at),
         "authorization": {
-            "fields": sorted(allowed) if member.subject_uid != uid else sorted(member.grant_fields or []),
-            "edit_fields": sorted(editable) if member.subject_uid != uid else sorted(member.grant_edit_fields or []),
+            "fields": sorted(member.grant_fields or []),
+            "edit_fields": sorted(member.grant_edit_fields or []),
             "expires_at": format_utc_datetime(
                 member.guardian_expires_at if guardian_active(member, uid) else member.grant_expires_at
             ),
@@ -153,14 +154,17 @@ class FamilyService:
         family = await self.repo.get_family(fid, self.uid, include_inactive=include_inactive)
         if family is None:
             raise HTTPException(404, "家庭不存在或不可访问")
+        actor = await self.repo.subject_member(fid, self.uid)
+        if actor is None or not actor.is_active:
+            raise HTTPException(404, "家庭不存在或不可访问")
         member = await self.repo.member(fid, mid) if mid else None
         if mid and (member is None or (not member.is_active and not include_inactive)):
             raise HTTPException(404, "成员不存在")
         return family, member
 
     def require_fields(self, family, member, fields, *, write=False):
-        """授权字段必须覆盖此次读写；空白和过期都拒绝。"""
-        if not set(fields) <= authorized_fields(family, member, self.uid, write=write):
+        """已校验家庭身份的共享范围必须覆盖此次普通字段读写。"""
+        if not set(fields) <= authorized_fields(family, member, self.uid, write=write, family_sharing=True):
             raise HTTPException(403, "请由成员本人授权对应字段")
 
     def require_version(self, member, expected):
@@ -330,7 +334,7 @@ class FamilyService:
         return await self.family(family.id)
 
     async def add_member(self, fid, name, relationship):
-        """仅管理员新增成员关系；健康信息须本人认领后授权。"""
+        """仅管理员新增成员关系；有效家庭账号共享普通档案。"""
         family, _ = await self.context(fid)
         if family.owner_uid != self.uid:
             raise HTTPException(403, "仅家庭管理员可添加成员")
@@ -346,10 +350,8 @@ class FamilyService:
         return result
 
     async def update_member(self, fid, mid, payload):
-        """本人或管理员按关系版本维护昵称与关系。"""
+        """有效家庭成员按关系版本维护昵称与关系。"""
         family, member = await self.context(fid, mid)
-        if self.uid not in {family.owner_uid, member.subject_uid}:
-            raise HTTPException(403, "仅本人或家庭管理员可维护成员关系")
         if member.relationship_version != payload.expected_version:
             raise HTTPException(409, "成员关系已更新，请重新核对")
         if (member.name, member.relationship) != (payload.name, payload.relationship):
@@ -361,7 +363,7 @@ class FamilyService:
         return result
 
     async def member_status(self, fid, mid, payload):
-        """退出或停用撤销授权与邀请；恢复关系不恢复授权。"""
+        """退出或停用撤销授权与邀请；恢复共享关系不恢复独立来源授权。"""
         family, member = await self.context(fid, mid, include_inactive=True)
         is_owner = family.owner_uid == self.uid
         if not is_owner and (member.subject_uid != self.uid or payload.is_active):
@@ -426,7 +428,7 @@ class FamilyService:
         return {"code": code, "expires_at": format_utc_datetime(member.invite_expires_at)}
 
     async def join(self, code):
-        """已登录的本人认领关系，不自动开放健康信息。"""
+        """已登录本人认领后共享普通档案，AI 等用途仍独立授权。"""
         digest = hashlib.sha256(code.encode()).hexdigest()
         candidate = await self.repo.invitation(digest)
         if candidate is None:
@@ -459,7 +461,7 @@ class FamilyService:
         return await self.family(fid)
 
     async def authorization(self, fid, mid, fields, purpose, expires_at, edit_fields):
-        """仅档案本人可授予或撤回向家庭管理员开放的字段。"""
+        """本人授予或撤回管理员的独立来源字段权限，不改变普通档案共享。"""
         family, member = await self.context(fid, mid)
         if member.subject_uid != self.uid:
             raise HTTPException(403, "授权须由成员本人确认")
@@ -477,7 +479,7 @@ class FamilyService:
         return result
 
     async def update_profile(self, fid, mid, payload):
-        """按授予字段和当前版本修改，保存新的完整快照。"""
+        """有效家庭账号按当前版本修改，保存新的完整快照。"""
         family, member = await self.context(fid, mid)
         changes = {
             key: value
@@ -540,9 +542,9 @@ class FamilyService:
         return result
 
     async def history(self, fid, mid, *, limit=20, offset=0):
-        """历史快照同样使用当前授权，撤回不能通过历史绕过。"""
+        """历史快照使用当前家庭共享范围，退出和停用仍拒绝读取。"""
         family, member = await self.context(fid, mid)
-        allowed = authorized_fields(family, member, self.uid) & PROFILE_FIELDS
+        allowed = authorized_fields(family, member, self.uid, family_sharing=True) & PROFILE_FIELDS
         if not allowed:
             raise HTTPException(403, "无档案访问权限")
         records, total = await self.repo.revisions(mid, limit=limit, offset=offset)
@@ -587,7 +589,7 @@ class FamilyService:
     ):
         """分页读取当前授权指标，支持日期、条件与作废记录筛选。"""
         family, member = await self.context(fid, mid)
-        allowed = authorized_fields(family, member, self.uid) & METRIC_FIELDS.keys()
+        allowed = authorized_fields(family, member, self.uid, family_sharing=True) & METRIC_FIELDS.keys()
         if not allowed or (kind and kind not in allowed):
             raise HTTPException(403, "无指标访问权限")
         since, until = self._measurement_period(days, from_date, to_date)
@@ -753,7 +755,7 @@ class FamilyService:
             .astimezone(UTC)
             .replace(tzinfo=None)
         )
-        visible = {row.id: authorized_fields(family, row, self.uid) for row in members}
+        visible = {row.id: authorized_fields(family, row, self.uid, family_sharing=True) for row in members}
         records = await self.repo.measurement_statistics(
             {mid: fields & METRIC_FIELDS.keys() for mid, fields in visible.items()}, since, until
         )

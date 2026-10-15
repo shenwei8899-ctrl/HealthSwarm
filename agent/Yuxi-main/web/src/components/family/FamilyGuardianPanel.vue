@@ -80,7 +80,10 @@
           {{ reviewTarget.relationship }}
         </p>
         <p>申请人账号：{{ reviewTarget.applicant_name }}（{{ reviewTarget.applicant_uid }}）</p>
-        <p>请核对申请人身份、监护证明和儿童身份；审核通过后将开放资料代维护与确认权限。</p>
+        <p>
+          请核对申请人身份、监护证明和儿童身份；审核通过后可代为确认档案及授权范围内的资料来源读取。普通家庭档案共享不依赖本次审核，AI
+          处理仍需独立用途授权与同意。
+        </p>
         <a-checkbox v-model:checked="verified">已核对监护资料和成员身份</a-checkbox>
         <div class="review-actions">
           <a-button type="primary" :disabled="!verified" :loading="saving" @click="review(true)"
