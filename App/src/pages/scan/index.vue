@@ -1,4 +1,9 @@
 <script setup>
+import CommerceMealRecord from '../../components/CommerceMealRecord.vue'
+import CommerceAccess from '../../components/CommerceAccess.vue'
+const commerceOrderId=ref(''),commerceFlow=ref(false)
+onLoad(o=>{commerceFlow.value=o.commerce==='1';commerceOrderId.value=o.id||''})
+
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed, ref } from 'vue'
 import { onLoad, onBackPress,onUnload } from '@dcloudio/uni-app'
@@ -190,7 +195,8 @@ function help() {
 }
 </script>
 <template>
-  <view class="screen scan-screen">
+  <CommerceAccess v-if="commerceFlow"><CommerceMealRecord :id="commerceOrderId"/></CommerceAccess>
+  <view v-else class="screen scan-screen">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="goBack">‹</button><text class="nav-title">拍照记一餐</text><button class="icon-button" aria-label="估算说明" @click="help">?</button></view></AppNavBar>
     <FlowRibbon :current="6" class="scan-flow" />
 

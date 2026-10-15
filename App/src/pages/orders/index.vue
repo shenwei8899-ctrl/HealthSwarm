@@ -1,4 +1,8 @@
 <script setup>
+import { isCommerceEnabled } from '../../services/config.js'
+import CommerceOrders from '../../components/CommerceOrders.vue'
+import CommerceAccess from '../../components/CommerceAccess.vue'
+
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed, ref } from 'vue'
 import { onShow,onUnload } from '@dcloudio/uni-app'
@@ -20,7 +24,7 @@ const tabs = [
 ]
 const filtered = computed(() => orders.value.filter(order => tab.value === 'all' || (tab.value === 'delivery' ? !complete(order) : complete(order))))
 async function load(){const version=++loadVersion,scope=storageScope();loading.value=true;error.value='';try{const result=await service.orders();if(version===loadVersion&&scope===storageScope())orders.value=result}catch(e){if(version===loadVersion&&scope===storageScope())error.value=e.message||'订单读取失败，请重试'}finally{if(version===loadVersion)loading.value=false}}
-onShow(load)
+onShow(()=>{if(!isCommerceEnabled)return load()})
 onUnload(()=>loadVersion++)
 function total(order) { return (order.totalCents / 100).toFixed(2) }
 function detail(order, mode = '') { uni.navigateTo({ url: '/pages/orders/detail?id=' + encodeURIComponent(order.id) + (mode ? '&mode=' + mode : '') }) }
@@ -29,7 +33,9 @@ function nutritionist() { uni.reLaunch({ url: '/pages/chat/index' }) }
 </script>
 
 <template>
-  <view class="screen orders-screen">
+<CommerceAccess v-if="isCommerceEnabled"><CommerceOrders /></CommerceAccess>
+
+  <view v-else class="screen orders-screen">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">我的订单</text><text class="pill">测试数据</text></view></AppNavBar>
     <view class="orders-hero">
       <text class="eyebrow">ORDER DESK · 一餐之后还有交付</text>

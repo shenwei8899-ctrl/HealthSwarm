@@ -147,3 +147,7 @@ VITE_WECHAT_APPID=你的微信小程序AppID
 `src/services/meal-planning.js`、`exclusive-planning.js` 和 `nutrition-feedback.js` 提供结果校验、保存及正式服务适配入口。后台通过 `registerApiAdapters()` 注册 `generateMealPlan`、`generateExclusivePlan`、`generateNutritionFeedback` 和 `chatText`；接口约定见[全人群配餐接口契约](docs/全人群配餐接口契约.md)。没有适配器时明确返回服务错误，不回退到演示结果。正式模式的页面路由仍须按现有联调规则逐项开放。
 
 当前默认演示模式使用固定示例配方与采购需求，个人份量保持待确认，不提供真实儿童或孕产营养计算。正式 AI、营养规则和供应链服务仍由后台接入与验证。修改方案见[全人群配餐修改方案](docs/家庭AI营养师-全人群配餐修改方案.md)。
+
+## Healthflow2 商城联调
+
+已接入独立商城模式，使用方式与验证边界见[商城接口联调说明](docs/commerce-deployment.md)。本地入口为 [选购食材](http://127.0.0.1:5178/#/pages/shop/index?commerce=1)。

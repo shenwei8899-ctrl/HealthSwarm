@@ -1,4 +1,5 @@
 <script setup>
+import { isCommerceEnabled } from '../../services/config.js'
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed,ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
@@ -8,7 +9,7 @@ import { createMealBundles } from '../../utils/meal-bundles.js'
 import { mealFromRoute,mealToRoute } from '../../utils/meal-flow.js'
 const profile=ref(getProfile()),meal=ref('晚餐'),bundleId=ref('')
 const plan=computed(()=>todayPlan(profile.value,meal.value)),bundle=computed(()=>createMealBundles(plan.value).find(b=>b.id===bundleId.value)||createMealBundles(plan.value)[0]),products=computed(()=>plan.value.products.filter(p=>bundle.value?.productIds.includes(p.id)))
-onLoad(o=>{meal.value=mealFromRoute(o.meal);bundleId.value=o.bundle||''})
+onLoad(o=>{if(isCommerceEnabled){uni.redirectTo({url:'/pages/shop/index?commerce=1&meal='+(o.meal||'dinner')+(o.date?'&date='+encodeURIComponent(o.date):'')});return}meal.value=mealFromRoute(o.meal);bundleId.value=o.bundle||''})
 function next(){uni.navigateTo({url:`/pages/shop/index?meal=${mealToRoute(meal.value)}&bundle=${encodeURIComponent(bundle.value.id)}&checkout=1`})}
 function menu(){uni.navigateTo({url:`/pages/shop/index?meal=${mealToRoute(meal.value)}&bundle=${encodeURIComponent(bundle.value.id)}`})}
 </script>

@@ -1,8 +1,13 @@
 <script setup>
 import AppNavBar from '../../components/AppNavBar.vue'
 import DishNutritionCard from '../../components/DishNutritionCard.vue'
-import { computed, ref } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
+import { computed, ref, watch } from 'vue'
+import CommerceAccess from '../../components/CommerceAccess.vue'
+import { isCommerceEnabled } from '../../services/config.js'
+import { commerce, commerceContext, commerceSessionEpoch } from '../../services/commerce.js'
+import { commerceRecipe } from '../../services/meal-commerce-state.js'
+import { useCommercePage } from '../../services/commerce-page.js'
+import { onLoad, onShow } from '@dcloudio/uni-app'
 import { backHome, getProfile } from '../../utils/profile.js'
 import { todayPlan } from '../../utils/meal-state.js'
 import { getOrder } from '../../utils/orders.js'
@@ -11,13 +16,32 @@ import { applyMealCustomization, getMealSwap } from '../../utils/meal-customizat
 import { createDishGuide, mealFromRoute } from '../../utils/meal-flow.js'
 
 const meal = ref('晚餐')
+const commercePreview=ref(false),route=ref({}),realRecipe=ref(null)
+const unavailableRecipe={name:'菜谱待确认',image:'',minutes:null,ingredients:[],steps:[],notes:[],nutrition:null}
+const recipePage=isCommerceEnabled?useCommercePage(()=>{realRecipe.value=null}):null
+let recipeScope=isCommerceEnabled?commerceContext():''
+if(isCommerceEnabled)watch(commerceSessionEpoch,()=>{if(recipeScope!==commerceContext()){realRecipe.value=null;recipeScope=commerceContext()}})
+async function loadCommerceRecipe(){
+  if(!commercePreview.value||!commerce.session()?.token)return
+  return recipePage.run(async active=>{
+    realRecipe.value=null
+    const menu=await commerce.meal(route.value.meal,route.value.date)
+    if(!active())return
+    if(menu.package_sn!==route.value.package||String(menu.package_version)!==String(route.value.packageVersion))throw new Error('菜单版本已变化，请返回本餐安排重新查看。')
+    const recipe=menu.dishes.find(d=>String(d.recipe_ref)===String(route.value.recipe)&&String(d.recipe_version)===String(route.value.version))
+    if(!recipe)throw new Error('本餐没有这道菜的已确认版本，请返回重新查看。')
+    realRecipe.value=commerceRecipe(recipe)
+  })
+}
+onShow(loadCommerceRecipe)
 const dishName = ref('')
 const caseId = ref('')
 const orderId=ref(''),batchIndex=ref(1)
-const plan=computed(()=>todayPlan(getProfile(),meal.value))
-const guide=computed(()=>{const order=getOrder(orderId.value);const saved=order?.cookingGuides?.find(b=>b.index===batchIndex.value)?.guides.find(g=>g.meal===meal.value)||order?.cookingGuide;return saved?.dishGuides?.find(g=>g.name===dishName.value)||createDishGuide(plan.value,dishName.value)})
+const plan=computed(()=>commercePreview.value?null:todayPlan(getProfile(),meal.value))
+const guide=computed(()=>{if(commercePreview.value)return realRecipe.value||unavailableRecipe;const order=getOrder(orderId.value);const saved=order?.cookingGuides?.find(b=>b.index===batchIndex.value)?.guides.find(g=>g.meal===meal.value)||order?.cookingGuide;return saved?.dishGuides?.find(g=>g.name===dishName.value)||createDishGuide(plan.value,dishName.value)})
 
 onLoad(options => {
+  route.value=options;commercePreview.value=isCommerceEnabled&&options.commerce==='1'
   orderId.value=options.id||'';batchIndex.value=Number(options.batch)||1
   meal.value = mealFromRoute(options.meal)
   dishName.value = decodeURIComponent(options.dish || '')
@@ -26,11 +50,13 @@ onLoad(options => {
 </script>
 
 <template>
+<CommerceAccess :enabled="commercePreview" @ready="loadCommerceRecipe">
   <view class="screen recipe-screen">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">单道菜做法</text><text class="pill">购买前预览</text></view></AppNavBar>
-    <view class="recipe-hero"><image :src="guide.image" mode="aspectFill"/><view><text class="eyebrow">{{meal}} · 做法预览</text><text class="display-title">{{guide.name}}</text><text>{{guide.minutes}} 分钟左右 · 测试菜谱</text></view></view>
+    <view class="recipe-hero"><image v-if="guide.image" :src="guide.image" mode="aspectFill"/><view><text class="eyebrow">{{meal}} · 做法预览</text><text class="display-title">{{guide.name}}</text><text>{{commercePreview?(guide.minutes?guide.minutes+' 分钟左右 · 已保存菜谱':'已保存菜谱 · 制作时间待确认'):guide.minutes+' 分钟左右 · 测试菜谱'}}</text></view></view>
+    <text v-if="commercePreview && recipePage.busy.value" class="safe-note">正在读取已保存菜谱…</text><view v-if="commercePreview && recipePage.error.value" class="card notice-card"><text class="inline-error">{{recipePage.error.value}}</text><button class="secondary-button" :disabled="recipePage.busy.value" @click="loadCommerceRecipe">重新读取菜谱</button></view>
     <DishNutritionCard :nutrition="guide.nutrition" />
-    <view class="card info-card"><view><text>预计制作时间</text><text>{{guide.minutes}} 分钟</text></view><view><text>页面用途</text><text>购买前查看做法</text></view></view>
+    <view class="card info-card"><view><text>预计制作时间</text><text>{{guide.minutes?guide.minutes+' 分钟':'待确认'}}</text></view><view><text>页面用途</text><text>购买前查看做法</text></view></view>
     <video v-if="guide.videoUrl" :src="guide.videoUrl" controls class="guide-video"/>
     <view class="section-block"><text class="section-title">所需食材及用量</text><view class="ingredient-list card"><view v-for="item in guide.ingredients" :key="item"><text>•</text><text>{{item}}</text></view></view></view>
     <view class="section-block"><view class="section-head"><text class="section-title">完整图文制作步骤</text><text>按顺序操作</text></view><view v-for="(step,index) in guide.steps" :key="step" class="step-card card"><text>{{String(index+1).padStart(2,'0')}}</text><view class="step-content"><text>{{step}}</text><image v-if="guide.stepImages?.[index]" :src="guide.stepImages[index]" mode="widthFix" class="step-image"/></view></view></view>
@@ -38,6 +64,7 @@ onLoad(options => {
     <button class="primary-button back-button" @click="backHome">返回本餐安排与购买清单</button>
     <text class="safe-note">本页是购买前做法预览，不代表已经收到食材，也不替代收货后的正式制作烹饪页面。</text>
   </view>
+</CommerceAccess>
 </template>
 
 <style scoped>

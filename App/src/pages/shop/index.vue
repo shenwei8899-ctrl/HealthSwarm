@@ -1,6 +1,13 @@
 <script setup>
+import { isCommerceEnabled } from '../../services/config.js'
+import CommerceShop from '../../components/CommerceShop.vue'
+import CommerceAccess from '../../components/CommerceAccess.vue'
+const commerceRoute=ref({}), commercePage=ref(false)
+
 import AppNavBar from '../../components/AppNavBar.vue'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useMealCommercePage } from '../../services/meal-commerce-page.js'
+import { commerce, commerceSessionEpoch } from '../../services/commerce.js'
 import { onLoad,onShow,onUnload } from '@dcloudio/uni-app'
 import FlowRibbon from '../../components/FlowRibbon.vue'
 import DinerPicker from '../../components/DinerPicker.vue'
@@ -10,7 +17,7 @@ import { service as mockService } from '../../services/index.js'
 import { createCheckoutQuote,validateCheckoutQuote,checkoutFingerprint } from '../../utils/checkout-state.js'
 import { storageContext as storageScope } from '../../services/storage.js'
 import { mockDelay } from '../../services/mock-control.js'
-import { subtotal } from '../../utils/demo.js'
+import { getMealMembers, subtotal } from '../../utils/demo.js'
 import { isMockMode } from '../../services/config.js'
 import { ensureMealPlan } from '../../services/meal-planning.js'
 import { ensureExclusivePlan } from '../../services/exclusive-planning.js'
@@ -19,26 +26,53 @@ import { createDeliveryBatches,getExclusivePlan,adaptExclusivePlan } from '../..
 import { createDemoOrder,getOrder } from '../../utils/orders.js'
 import { getDishSwapOptions,getMealSwap,saveMealSwap } from '../../utils/meal-customization.js'
 import { createCookingGuide,mealFromRoute,mealToRoute,DAILY_MEALS } from '../../utils/meal-flow.js'
-import { todayPlan,selectedFor,saveSelection,setMealMembers,changeResult,dailyProcurement,mergeDailyProducts } from '../../utils/meal-state.js'
-const address=ref(mockService.selectedAddress())
-function chooseAddress(){uni.navigateTo({url:'/pages/address/index'})}
+import { mealProfile,localDate,todayPlan,selectedFor,saveSelection,setMealMembers,changeResult,dailyProcurement,mergeDailyProducts } from '../../utils/meal-state.js'
+const demoAddress=ref(isCommerceEnabled ? null : mockService.selectedAddress())
+const address=computed({get:()=>isCommerceEnabled?mealCommerce.state.address:demoAddress.value,set:value=>{if(isCommerceEnabled)mealCommerce.state.address=value;else demoAddress.value=value}})
+function chooseAddress(){if(isCommerceEnabled&&mealCommerce.state.busy)return;uni.navigateTo({url:'/pages/address/index'})}
 const meal=ref('晚餐'),profile=ref(getProfile()),revision=ref(0),daily=ref(false),included=ref(['早餐','午餐','晚餐']),dinersOpen=ref(false),updateNote=ref('')
 const isDiabetesCase=computed(()=>false),caseId=ref('')
-const activeSwap=computed(()=>{revision.value;return getMealSwap(meal.value)})
-const plan=computed(()=>{revision.value;return todayPlan(profile.value,meal.value)})
-const procurement=computed(()=>{revision.value;return dailyProcurement(profile.value,included.value)})
-const blockers=computed(()=>daily.value?procurement.value.blocked:plan.value.blocked)
-const bundleId=ref(''),bundle=computed(()=>createMealBundles(plan.value).find(b=>b.id===bundleId.value))
-const sourcePlanId=ref(''),sourcePlan=computed(()=>sourcePlanId.value?adaptExclusivePlan(getExclusivePlan(sourcePlanId.value),profile.value,planStartDate.value||undefined):null)
+const activeSwap=computed(()=>{revision.value;return isCommerceEnabled?null:getMealSwap(meal.value)})
+const plan=computed(()=>{revision.value;return isCommerceEnabled?mealCommerce.plan.value:todayPlan(profile.value,meal.value)})
+const procurement=computed(()=>{revision.value;return isCommerceEnabled?{products:[],plans:[],blocked:[],selectedIds:[]}:dailyProcurement(profile.value,included.value)})
+const blockers=computed(()=>isCommerceEnabled?plan.value.blocked:daily.value?procurement.value.blocked:plan.value.blocked)
+const bundleId=ref(''),bundle=computed(()=>(isCommerceEnabled?[]:createMealBundles(plan.value)).find(b=>b.id===bundleId.value))
+const sourcePlanId=ref(''),sourcePlan=computed(()=>!isCommerceEnabled&&sourcePlanId.value?adaptExclusivePlan(getExclusivePlan(sourcePlanId.value),profile.value,planStartDate.value||undefined):null)
 const sourcePlanReady=computed(()=>sourcePlan.value?.sourceType===(isMockMode?'demo':'api')&&sourcePlan.value.fixturePlans?.length===(isMockMode?2:21))
-const products=computed(()=>daily.value?procurement.value.products:sourcePlan.value?sourcePlanReady.value?mergeDailyProducts(sourcePlan.value.fixturePlans[0]):[]:bundle.value?plan.value.products.filter(p=>bundle.value.productIds.includes(p.id)):plan.value.products)
-const selected=ref([]),orderOpen=ref(false),paid=ref(false),paidOrderId=ref('')
+const products=computed(()=>isCommerceEnabled?plan.value.products:daily.value?procurement.value.products:sourcePlan.value?sourcePlanReady.value?mergeDailyProducts(sourcePlan.value.fixturePlans[0]):[]:bundle.value?plan.value.products.filter(p=>bundle.value.productIds.includes(p.id)):plan.value.products)
+const demoSelected=ref([]),orderOpen=ref(false),paid=ref(false),paidOrderId=ref('')
 const planStartDate=ref(''),deliveryBatchCount=ref(0)
 const deliveryBatches=computed(()=>sourcePlanReady.value&&planStartDate.value?createDeliveryBatches(sourcePlan.value,planStartDate.value,deliveryBatchCount.value||21):[])
 const selectedProducts=computed(()=>products.value.filter(p=>selected.value.includes(p.id)))
 const productsSubtotalCents=computed(()=>subtotal(products.value,selected.value))
 const totalCents=computed(()=>sourcePlan.value&&deliveryBatches.value.length?sourcePlan.value.totalEstimateCents:productsSubtotalCents.value)
 const total=computed(()=>(totalCents.value/100).toFixed(2))
+const mealCommerce=isCommerceEnabled?useMealCommercePage(()=>({enabled:!commercePage.value, meal:mealToRoute(meal.value), date:commerceRoute.value.date||localDate(), members:getMealMembers(mealProfile(profile.value,meal.value,commerceRoute.value.date||localDate())), unsupported:daily.value||!!sourcePlanId.value||!!bundleId.value})):null
+const selected=computed({get:()=>isCommerceEnabled?mealCommerce.state.selected:demoSelected.value,set:value=>{if(isCommerceEnabled)mealCommerce.state.selected=value;else demoSelected.value=value}})
+const checkoutQuote=computed(()=>mealCommerce?.state.quote)
+const commerceBusy=computed(()=>mealCommerce?.state.busy||false)
+const commerceError=computed(()=>mealCommerce?.state.error||'')
+const checkoutError=computed(()=>mealCommerce?.state.checkoutError||'')
+const pendingCommerceOrder=computed(()=>mealCommerce?.state.pending)
+const createdCommerceOrder=computed(()=>mealCommerce?.state.orderSn)
+const deliverySlots=computed(()=>mealCommerce?.state.slots||[])
+const deliveryMessage=computed(()=>mealCommerce?.state.deliveryMessage||'')
+const money=value=>(Number(value||0)/100).toFixed(2)
+async function reloadCommerce(){
+  if(!isCommerceEnabled||commercePage.value||!commerce.session()?.token)return
+  profile.value=getProfile()
+  await mealCommerce.load()
+  if(checkoutRequested&&mealCommerce.state.ready&&!mealCommerce.state.error){checkoutRequested=false;await checkout()}
+}
+async function submitCommerceOrder(){
+  profile.value=getProfile()
+  const result=await mealCommerce.submit()
+  if(result)uni.navigateTo({url:'/pages/orders/detail?id='+encodeURIComponent(result.order_sn)})
+}
+async function recoverCommerceOrder(){const result=await mealCommerce.recover();if(result)uni.navigateTo({url:'/pages/orders/detail?id='+encodeURIComponent(result.order_sn)})}
+function setQuantity(product,delta){mealCommerce.quantity(product.id,Math.min(product.availableQuantity,product.quantity+delta))}
+function selectSlot(slot){if(commerceBusy.value)return;mealCommerce.state.slotId=slot.id;mealCommerce.invalidateQuote()}
+if(isCommerceEnabled)watch(commerceSessionEpoch,()=>{if(!mealCommerce.state.ready){profile.value=getProfile();orderOpen.value=false;dinersOpen.value=false;updateNote.value=''}})
 let knownProducts=[],quote=null,disposed=false,menuVersion=0,retryMenu=null,checkoutRequested=false
 const menuUpdating=ref(false),menuError=ref('')
 const paying=ref(false),payError=ref(''),paymentState=ref('idle'),paidTotal=ref('')
@@ -50,11 +84,13 @@ function refreshSelection(){
  selected.value=daily.value?procurement.value.selectedIds:selectedFor(meal.value,products.value)
  knownProducts=products.value.map(p=>[p.id,p.quantity])
 }
-onLoad(options=>{meal.value=mealFromRoute(options.meal);daily.value=options.daily==='1';bundleId.value=options.bundle||'';sourcePlanId.value=options.source==='exclusive-plan'?(options.plan||'balanced'):'';planStartDate.value=options.start||'';deliveryBatchCount.value=Number(options.batches||0);refreshSelection();const reorder=options.reorder?getOrder(options.reorder):null;if(reorder){selected.value=products.value.filter(p=>reorder.items.some(i=>i.id===p.id)).map(p=>p.id);saveSelection(meal.value,products.value,selected.value);}checkoutRequested=options.checkout==='1'||options.verify==='1'})
-onShow(async()=>{profile.value=getProfile();if(!isMockMode)await refreshPlans();if(disposed)return;address.value=mockService.selectedAddress();revision.value++;refreshSelection();if(orderOpen.value&&!paid.value&&quote&&quote.signature!==checkoutFingerprint(quoteInput())){orderOpen.value=false;updateNote.value='成员、菜品、地址或报价已变化，请重新核对结算。'}if(checkoutRequested&&!menuError.value){checkoutRequested=false;checkout()}})
-function toggle(id){if(paying.value)return;const i=selected.value.indexOf(id);i<0?selected.value.push(id):selected.value.splice(i,1);saveSelection(daily.value?'今日采购':meal.value,products.value,selected.value);if(daily.value){for(const p of procurement.value.plans){const ids=selectedFor(p.meal,p.products);const index=ids.indexOf(id);if(selected.value.includes(id)&&index<0)ids.push(id);else if(!selected.value.includes(id)&&index>=0)ids.splice(index,1);saveSelection(p.meal,p.products,ids)}}}
+onLoad(options=>{commerceRoute.value=options;commercePage.value=isCommerceEnabled&&options.commerce==='1'&&!options.meal;if(commercePage.value)return;meal.value=mealFromRoute(options.meal);daily.value=options.daily==='1';bundleId.value=options.bundle||'';sourcePlanId.value=options.source==='exclusive-plan'?(options.plan||'balanced'):'';planStartDate.value=options.start||'';deliveryBatchCount.value=Number(options.batches||0);checkoutRequested=options.checkout==='1'||options.verify==='1';if(isCommerceEnabled)return;refreshSelection();const reorder=options.reorder?getOrder(options.reorder):null;if(reorder){selected.value=products.value.filter(p=>reorder.items.some(i=>i.id===p.id)).map(p=>p.id);saveSelection(meal.value,products.value,selected.value);}checkoutRequested=options.checkout==='1'||options.verify==='1'})
+onShow(async()=>{if(commercePage.value)return;if(isCommerceEnabled){await reloadCommerce();return;}profile.value=getProfile();if(!isMockMode)await refreshPlans();if(disposed)return;address.value=mockService.selectedAddress();revision.value++;refreshSelection();if(orderOpen.value&&!paid.value&&quote&&quote.signature!==checkoutFingerprint(quoteInput())){orderOpen.value=false;updateNote.value='成员、菜品、地址或报价已变化，请重新核对结算。'}if(checkoutRequested&&!menuError.value){checkoutRequested=false;checkout()}})
+function toggle(id){if(isCommerceEnabled){mealCommerce.toggle(id);return;}if(paying.value)return;const i=selected.value.indexOf(id);i<0?selected.value.push(id):selected.value.splice(i,1);saveSelection(daily.value?'今日采购':meal.value,products.value,selected.value);if(daily.value){for(const p of procurement.value.plans){const ids=selectedFor(p.meal,p.products);const index=ids.indexOf(id);if(selected.value.includes(id)&&index<0)ids.push(id);else if(!selected.value.includes(id)&&index>=0)ids.splice(index,1);saveSelection(p.meal,p.products,ids)}}}
 function toggleMeal(value){if(paying.value)return;const i=included.value.indexOf(value);i<0?included.value.push(value):included.value.splice(i,1);revision.value++;refreshSelection()}
-function checkout(){
+async function checkout(){
+ if(isCommerceEnabled){if(commerceBusy.value)return;orderOpen.value=true;profile.value=getProfile();await mealCommerce.prepare();return}
+
  if(paying.value||menuUpdating.value||menuError.value||blockers.value.length||sourcePlan.value?.blocked.length||(sourcePlanId.value&&!sourcePlanReady.value))return
  if(!selected.value.length)return uni.showToast({title:'请至少选择一件食材',icon:'none'})
  if(paymentState.value==='unknown'){orderOpen.value=true;return}
@@ -100,7 +136,7 @@ async function queryPayment(){
 
 function viewOrder(){uni.navigateTo({url:'/pages/orders/detail?id='+encodeURIComponent(paidOrderId.value)})}
 function nutritionist(){uni.reLaunch({url:'/pages/chat/index'})}
-function openDish(dish){uni.navigateTo({url:'/pages/recipe/index?meal='+mealToRoute(meal.value)+'&dish='+encodeURIComponent(dish.name)+(plan.value.paid?'&id='+plan.value.orderId+'&batch='+plan.value.batchIndex:'' )})}
+function openDish(dish){if(isCommerceEnabled){uni.navigateTo({url:'/pages/recipe/index?commerce=1&meal='+mealToRoute(meal.value)+'&date='+encodeURIComponent(mealCommerce.state.menu.date)+'&package='+encodeURIComponent(plan.value.packageSn)+'&packageVersion='+plan.value.packageVersion+'&recipe='+encodeURIComponent(dish.recipeId)+'&version='+encodeURIComponent(dish.recipeVersion)});return;}uni.navigateTo({url:'/pages/recipe/index?meal='+mealToRoute(meal.value)+'&dish='+encodeURIComponent(dish.name)+(plan.value.paid?'&id='+plan.value.orderId+'&batch='+plan.value.batchIndex:'' )})}
 function changeDiners(){dinersOpen.value=true}
 async function updateMenu(work,retry){
  const version=++menuVersion,scope=storageScope();menuUpdating.value=true;menuError.value='';retryMenu=retry;orderOpen.value=false;quote=null
@@ -119,49 +155,58 @@ function discuss(){uni.navigateTo({url:'/pages/chat/index?meal='+mealToRoute(mea
 function chooseDinersFor(name){meal.value=name;changeDiners()}
 function retryMenuUpdate(){if(retryMenu&&!menuUpdating.value)return retryMenu()}
 async function confirmDiners(ids){
- if(paying.value)return;const before=plan.value,previous=[...selected.value],targetMeal=meal.value
+ if(isCommerceEnabled){if(commerceBusy.value)return;setMealMembers(profile.value,meal.value,ids,commerceRoute.value.date||localDate());profile.value=getProfile();mealCommerce.membersChanged();orderOpen.value=false;dinersOpen.value=false;updateNote.value=mealCommerce.state.contextIssue;return;}if(paying.value)return;const before=plan.value,previous=[...selected.value],targetMeal=meal.value
  return updateMenu(async()=>{saveSelection(targetMeal,products.value,previous);setMealMembers(profile.value,targetMeal,ids);await ensureMealPlan(profile.value,targetMeal);if(disposed)return;revision.value++;refreshSelection();updateNote.value=changeResult(before,plan.value,previous);dinersOpen.value=false},()=>confirmDiners(ids))
 }
-function canSwapDish(dish){return !plan.value.paid&&getDishSwapOptions(meal.value,dish.name,plan.value.members).length>0}
+function canSwapDish(dish){if(isCommerceEnabled)return true;return !plan.value.paid&&getDishSwapOptions(meal.value,dish.name,plan.value.members).length>0}
 function applySwap(option){const targetMeal=meal.value;return updateMenu(async()=>{saveSelection(targetMeal,products.value,selected.value);saveMealSwap(targetMeal,option);await ensureMealPlan(profile.value,targetMeal);if(disposed)return;revision.value++;refreshSelection();updateNote.value='菜品、营养、做法、食材包装数量与预计金额已同步更新。'},()=>applySwap(option))}
-function switchDish(dish){if(paying.value||menuUpdating.value)return;const options=getDishSwapOptions(meal.value,dish.name,plan.value.members);if(!options.length)return;uni.showActionSheet({itemList:options.map(o=>o.name+' · '+o.direction),success:({tapIndex})=>applySwap(options[tapIndex]),fail:e=>{if(!/cancel/i.test(e.errMsg||'')){retryMenu=()=>switchDish(dish);menuError.value='换菜窗口未能打开，请重试'}}})}
+function switchDish(dish){if(isCommerceEnabled){uni.showToast({title:'换菜服务尚未接入，请在对话中说明需求',icon:'none'});return;}if(paying.value||menuUpdating.value)return;const options=getDishSwapOptions(meal.value,dish.name,plan.value.members);if(!options.length)return;uni.showActionSheet({itemList:options.map(o=>o.name+' · '+o.direction),success:({tapIndex})=>applySwap(options[tapIndex]),fail:e=>{if(!/cancel/i.test(e.errMsg||'')){retryMenu=()=>switchDish(dish);menuError.value='换菜窗口未能打开，请重试'}}})}
 
 function editProfile(){uni.navigateTo({url:'/pages/profile/index'})}
 </script>
 <template>
-  <view class="screen shop-screen">
-    <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">{{ daily ? '今日采购清单' : sourcePlan ? '食材商城' : meal + '安排与购买' }}</text><text class="pill">演示</text></view></AppNavBar>
+<CommerceAccess :enabled="isCommerceEnabled" @ready="reloadCommerce"><CommerceShop v-if="commercePage" :route="commerceRoute"/>
+
+  <view v-else class="screen shop-screen">
+    <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">{{ daily ? '今日采购清单' : sourcePlan ? '食材商城' : meal + '安排与购买' }}</text><text class="pill">{{isCommerceEnabled?(plan.isLocalFixture?'本地联调':'商城'):'演示'}}</text></view></AppNavBar>
     <FlowRibbon :current="orderOpen ? 4 : 3" class="shop-flow" />
     <view v-if="blockers.length || sourcePlan?.blocked.length" class="card safety-card">
       <view><text>本餐有待处理的饮食问题</text><text class="small">{{ [...new Set([...blockers,...(sourcePlan?.blocked||[])])].join('；') }}</text><button class="secondary-button" :disabled="menuUpdating" @click="discuss">在对话中补充信息</button><button v-if="!daily" class="secondary-button" :disabled="menuUpdating" @click="changeDiners">调整本餐成员</button><button v-for="name in daily?included:[]" :key="name" class="secondary-button" @click="chooseDinersFor(name)">调整{{name}}成员</button><button class="secondary-button" @click="editProfile">核对已有档案</button></view>
     </view>
-    <template>
-      <view class="shop-head"><text class="eyebrow">{{ isDiabetesCase ? '虚拟糖尿病家庭案例 · 一桌共享菜单' : sourcePlan ? 'AI专属计划 · 首批采购' : '本餐安排与购买清单 · 同一页面' }}</text><text class="display-title">{{daily?'把今天三餐，一次备齐':sourcePlan?'核对计划，准备开始':meal+'安排与购买'}}</text><text class="shop-desc">{{ isDiabetesCase ? '已按三人共享晚餐汇总菜品与食材。商品与价格均为演示；爸爸的实际主食份量仍需按专业要求确认。' : sourcePlan ? sourcePlan.name + '已自动检查已知饮食限制并安排' + (deliveryBatches.length || 21) + '次配送确认。这里演示首批食材采购。' : '先看本餐菜品与做法，再直接勾选需要购买的整包装食材。' }}</text></view>
+      <view class="shop-head"><text class="eyebrow">{{ isDiabetesCase ? '虚拟糖尿病家庭案例 · 一桌共享菜单' : sourcePlan ? 'AI专属计划 · 首批采购' : '本餐安排与购买清单 · 同一页面' }}</text><text class="display-title">{{daily?'把今天三餐，一次备齐':sourcePlan?'核对计划，准备开始':meal+'安排与购买'}}</text><text class="shop-desc">{{ isCommerceEnabled ? '先看本餐菜品与做法，再勾选需要的商城食材。采购量调整不会自动重新计算营养与个人份量。' : isDiabetesCase ? '已按三人共享晚餐汇总菜品与食材。商品与价格均为演示；爸爸的实际主食份量仍需按专业要求确认。' : sourcePlan ? sourcePlan.name + '已自动检查已知饮食限制并安排' + (deliveryBatches.length || 21) + '次配送确认。这里演示首批食材采购。' : '先看本餐菜品与做法，再直接勾选需要购买的整包装食材。' }}</text></view>
       <view v-if="!daily" class="meal-summary-card"><view class="summary-title"><view><text class="eyebrow">本餐基本信息</text><text>{{meal}} · {{plan.count}} 人用餐</text></view></view><button class="diner-control" @click="changeDiners"><text class="diner-names">就餐者：{{plan.members.map(m=>m.name).join('、')}}</text><text class="diner-change">更改 ›</text></button><MealNotes :plan="plan"/></view>
       <view v-else class="card daily-meals"><text class="section-title">选择今日需要采购的餐次</text><button v-for="m in DAILY_MEALS" :key="m.name" @click="toggleMeal(m.name)">{{included.includes(m.name)?'✓':'○'}} {{m.name}}</button><text class="demo-label">跨餐合并同一食材与 SKU 后计算包装数量；仍需核对商品、地址和金额后结算。</text></view>
-      <text v-if="menuUpdating" class="safe-note">正在复核成员、菜单和报价…</text><view v-if="menuError" class="card"><text class="inline-error">{{menuError}}</text><button :disabled="menuUpdating" @click="retryMenuUpdate">重试更新</button></view>
+      <text v-if="isCommerceEnabled" class="safe-note">{{plan.isLocalFixture?'本地联调菜单与商品 · 未经个体化营养评估':'服务端已保存菜单 · 个体化营养与个人份量尚未接入'}}</text><text v-if="commerceBusy" class="safe-note">正在核对菜单、商品和配送…</text><view v-if="commerceError" class="card commerce-message"><text class="inline-error">{{commerceError}}</text><button class="secondary-button" :disabled="commerceBusy" @click="reloadCommerce">重新读取本餐安排</button></view><view v-if="isCommerceEnabled && (pendingCommerceOrder || createdCommerceOrder)" class="card commerce-message"><text>{{createdCommerceOrder?'订单已创建，请前往订单详情继续处理':'上次下单结果尚未确认，请重试原订单，避免重复购买'}}</text><button class="primary-button" :disabled="commerceBusy" @click="recoverCommerceOrder">{{createdCommerceOrder?'查看已创建订单':'重试并确认原订单'}}</button></view><text v-if="menuUpdating" class="safe-note">正在复核成员、菜单和报价…</text><view v-if="menuError" class="card"><text class="inline-error">{{menuError}}</text><button :disabled="menuUpdating" @click="retryMenuUpdate">重试更新</button></view>
       <text v-if="updateNote" class="update-note">{{updateNote}}</text>
       <view v-if="bundle" class="bundle-card">
         <view class="bundle-top"><view><text>{{ bundle.name }}</text><text class="small">按 {{ plan.count }} 位成员的菜单需求匹配 · 示例商品</text></view><view class="bundle-badge">单包</view></view>
         <image v-if="bundle" class="selected-bundle-image" :src="bundle.image" mode="aspectFill" />
       </view>
       <view v-if="!daily" class="section-head"><text class="section-title">本餐全部菜品</text><text>点击查看独立做法页</text></view>
-      <view v-if="!daily" class="dish-list"><view v-for="dish in plan.dishes" :key="dish.name" class="dish-card card"><button class="dish-main" @click="openDish(dish)"><view class="dish-visual" :style="{background:dish.color}">{{dish.icon}}</view><view><text>{{dish.name}}</text><text>{{dish.detail}}</text><text>{{dish.kcal?'约 '+dish.kcal+' kcal · ':''}}查看做法与注意事项</text></view><text>›</text></button><button v-if="canSwapDish(dish)" class="swap-button" :disabled="menuUpdating||paying" @click="switchDish(dish)">换一换</button></view></view>
-      <view class="section-head ingredient-head"><view><text class="section-title">{{daily?'今日所需食材和购买清单':'本餐所需食材和购买清单'}}</text><text>包装数量按本餐人数计算</text></view><text>已选 {{ selected.length }} 项</text></view>
+      <view v-if="!daily" class="dish-list"><view v-for="dish in plan.dishes" :key="dish.name" class="dish-card card"><button class="dish-main" @click="openDish(dish)"><view class="dish-visual" :style="{background:dish.color}"><image v-if="dish.image" :src="dish.image" mode="aspectFill"/><text v-else>{{dish.icon}}</text></view><view><text>{{dish.name}}</text><text>{{dish.detail}}</text><text>{{dish.kcal?'约 '+dish.kcal+' kcal · ':''}}查看做法与注意事项</text></view><text>›</text></button><button v-if="canSwapDish(dish)" class="swap-button" :disabled="menuUpdating||paying||commerceBusy" @click="switchDish(dish)">换一换</button></view></view>
+      <view class="section-head ingredient-head"><view><text class="section-title">{{daily?'今日所需食材和购买清单':'本餐所需食材和购买清单'}}</text><text>{{isCommerceEnabled?'按服务端菜单匹配包装，可调整采购数量':'包装数量按本餐人数计算'}}</text></view><text>已选 {{ selected.length }} 项</text></view>
       <view class="product-list">
         <view v-for="product in products" :key="product.id" class="product-card card" @click="toggle(product.id)">
           <view class="select-box" :class="{ selected: selected.includes(product.id) }">{{ selected.includes(product.id) ? '✓' : '' }}</view>
-          <view class="product-image">{{ product.icon }}</view>
-          <view class="product-copy"><text>{{ product.name }}</text><text class="small">需要 {{ product.need }}{{ product.unit }}</text><text class="em">{{ product.pack }}{{ product.unit }}/包 × {{ product.quantity }} 包</text></view>
+          <view class="product-image"><image v-if="product.imageUrl" :src="product.imageUrl" mode="aspectFill"/><text v-else>{{ product.icon }}</text></view>
+          <view class="product-copy"><text>{{ product.name }}</text><text class="small">{{isCommerceEnabled?product.needLabel:'需要 '+product.need+product.unit}}</text><text class="em">{{isCommerceEnabled?product.packLabel:product.pack+product.unit+'/包'}} × {{ product.quantity }} 包</text><text v-if="isCommerceEnabled" class="small">¥{{money(product.priceCents)}} / 包 · 可售 {{product.availableQuantity}} 包</text><view v-if="isCommerceEnabled" class="quantity-control" @click.stop><button :disabled="commerceBusy||product.quantity<=1" @click.stop="setQuantity(product,-1)">−</button><text>{{product.quantity}}</text><button :disabled="commerceBusy||product.quantity>=product.availableQuantity" @click.stop="setQuantity(product,1)">＋</button></view></view>
           <text class="price">¥{{ (product.priceCents * product.quantity / 100).toFixed(2) }}</text>
         </view>
       </view>
-      <view class="safety-card"><view class="shield">i</view><view><text>结算前核对采购内容</text><text class="small">商品、包装数量、配送地址和价格。饮食限制已在推荐前自动检查。当前为购买流程演示，不会生成真实订单或扣款。</text></view></view>
-      <view class="bottom-bar"><view><text>已选 {{selected.length}} 项</text><text class="strong">¥{{ total }}</text><text class="small">示例合计</text></view><button v-if="!plan.paid && (!daily || procurement.plans.every(p=>!p.paid))" class="primary-button" :disabled="menuUpdating||paying||Boolean(menuError)||Boolean(blockers.length)||Boolean(sourcePlan?.blocked.length)" @click="checkout">去结算／直接购买 →</button></view>
-    </template>
+      <view v-if="isCommerceEnabled && !products.length && !commerceBusy" class="card commerce-message"><text>这一餐暂无可购买食材，请先确认菜单或稍后重试。</text></view><view class="safety-card"><view class="shield">i</view><view><text>结算前核对采购内容</text><text class="small">{{isCommerceEnabled?'核对商品、包装数量、配送范围与后端报价。菜单尚未完成个体化营养与个人份量评估，请结合已知饮食限制确认。':'商品、包装数量、配送地址和价格。饮食限制已在推荐前自动检查。当前为购买流程演示，不会生成真实订单或扣款。'}}</text></view></view>
+      <view class="bottom-bar"><view><text>已选 {{selected.length}} 项</text><text class="strong">¥{{ total }}</text><text class="small">{{isCommerceEnabled?'商品小计 · 运费结算确认':'示例合计'}}</text></view><button v-if="!plan.paid && (!daily || procurement.plans.every(p=>!p.paid))" class="primary-button" :disabled="commerceBusy||(isCommerceEnabled&&(!mealCommerce.state.ready||!selected.length||!!pendingCommerceOrder||!!createdCommerceOrder))||menuUpdating||paying||Boolean(menuError)||Boolean(blockers.length)||Boolean(sourcePlan?.blocked.length)" @click="checkout">去结算／直接购买 →</button></view>
     <DinerPicker :open="dinersOpen" :members="profile.members" :selected="plan.members.map(m=>m.id)" :meal="meal" @close="dinersOpen=false" @confirm="confirmDiners"/>
     <view v-if="orderOpen" class="sheet-mask"><view class="sheet order-sheet">
-      <template v-if="!paid">
+      <template v-if="isCommerceEnabled">
+        <view class="order-title"><view><text class="eyebrow">本餐食材订单</text><text class="section-title">确认订单</text></view><button :disabled="commerceBusy" @click="orderOpen=false">×</button></view>
+        <view class="delivery-card" @click="chooseAddress"><view class="delivery-icon">⌂</view><view><text>{{address?address.name+' · '+address.phone:'请选择配送地址'}}</text><text>{{address?address.region+' '+address.detail:'选择地址后核对配送范围与价格'}}</text></view><text>›</text></view>
+        <view v-if="checkoutQuote" class="order-lines"><view v-for="item in checkoutQuote.items" :key="item.sku_id"><text>{{item.snapshot?.product_name}} × {{item.quantity}}</text><text>¥{{money(item.line_amount_cent)}}</text></view></view><view v-else class="order-lines"><view v-for="product in selectedProducts" :key="product.id"><text>{{product.name}} × {{product.quantity}}</text><text>¥{{money(product.priceCents*product.quantity)}}</text></view></view>
+        <view v-if="deliverySlots.length" class="delivery-options"><text class="section-title">配送时段</text><button v-for="slot in deliverySlots" :key="slot.id" :disabled="commerceBusy" :class="{chosen:String(mealCommerce.state.slotId)===String(slot.id)}" @click="selectSlot(slot)">{{slot.name||slot.start_time+'—'+slot.end_time}} · ¥{{money(slot.extra_fee_cent)}}</button></view><text v-if="deliveryMessage" class="inline-error">{{deliveryMessage}}</text>
+        <view v-if="checkoutQuote" class="price-lines"><view><text>商品金额</text><text>¥{{money(checkoutQuote.goods_amount_cent)}}</text></view><view><text>配送费</text><text>¥{{money(checkoutQuote.shipping_fee_cent)}}</text></view><view><text>优惠</text><text>−¥{{money(checkoutQuote.discount_amount_cent)}}</text></view><view class="pay-total"><text>应付金额</text><text>¥{{money(checkoutQuote.payable_amount_cent)}}</text></view></view>
+        <text class="demo-label">{{checkoutQuote?'配送地址、范围和价格已由后端核对。提交后在订单详情完成支付，并以服务端支付状态为准。':'请先选择地址并核对商品与价格。'}}</text><text v-if="checkoutError" class="inline-error">{{checkoutError}}</text>
+        <button v-if="pendingCommerceOrder || createdCommerceOrder" class="primary-button" :disabled="commerceBusy" @click="recoverCommerceOrder">{{createdCommerceOrder?'查看已创建订单':'重试并确认原订单'}}</button><button v-else-if="checkoutQuote" class="primary-button" :disabled="commerceBusy" @click="submitCommerceOrder">{{commerceBusy?'正在提交…':'确认下单 ¥'+money(checkoutQuote.payable_amount_cent)}}</button><button v-else class="primary-button" :disabled="commerceBusy" @click="checkout">{{commerceBusy?'正在核对…':'核对商品与价格'}}</button><button class="secondary-button" :disabled="commerceBusy" @click="orderOpen=false">返回调整商品</button>
+      </template>
+      <template v-else-if="!paid">
         <view class="order-title"><view><text class="eyebrow">演示订单</text><text class="section-title">确认订单</text></view><button :disabled="paying" @click="orderOpen = false">×</button></view>
         <view class="delivery-card" @click="chooseAddress">
           <view class="delivery-icon">⌂</view>
@@ -188,8 +233,10 @@ function editProfile(){uni.navigateTo({url:'/pages/profile/index'})}
       </template>
     </view></view>
   </view>
+</CommerceAccess>
 </template>
 <style scoped>
+.commerce-message{margin-top:24rpx;padding:24rpx;display:flex;flex-direction:column;gap:18rpx;line-height:1.7}.product-image image,.dish-visual image{width:100%;height:100%;border-radius:inherit}.product-image>text{font-size:24rpx}.quantity-control{display:flex;align-items:center;gap:18rpx;margin-top:8rpx}.quantity-control button{margin:0;padding:4rpx 16rpx;font-size:24rpx;border:1rpx solid #cddacb;border-radius:12rpx}.quantity-control text{font-size:24rpx}.delivery-options{display:flex;flex-direction:column;gap:12rpx;margin-top:18rpx}.delivery-options button{padding:16rpx;border:1rpx solid #cddacb;border-radius:18rpx;text-align:left;font-size:23rpx}.delivery-options .chosen{background:#eaf2e3;color:#246b50}
 .daily-meals{margin-top:28rpx;padding:26rpx;display:flex;flex-direction:column;gap:20rpx}.daily-meals button{padding:20rpx;border:1rpx solid #d3dfcc;border-radius:18rpx;color:#246b50;text-align:left;font-size:26rpx}.update-note{display:block;padding:22rpx;margin-top:20rpx;background:#e6efdc;border-radius:22rpx;font-size:22rpx;line-height:1.7}
 .selected-bundle-image { display: block; width: 100%; height: 260rpx; margin-top: 24rpx; border-radius: 22rpx; }
 .shop-screen { padding-bottom: calc(env(safe-area-inset-bottom) + 190rpx); }.shop-flow { margin-top: 20rpx; }.shop-head { margin-top: 54rpx; }.shop-head .display-title { display: block; font-size: 52rpx; }.shop-desc { display: block; margin-top: 22rpx; color: #65776f; font-size: 24rpx; line-height: 1.75; }

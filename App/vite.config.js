@@ -11,6 +11,15 @@ export default defineConfig(({ mode }) => {
   const appid = process.env.VITE_WECHAT_APPID || env.VITE_WECHAT_APPID || ''
   if (appid && !/^wx[0-9a-f]{16}$/i.test(appid)) throw new Error('VITE_WECHAT_APPID 必须是有效的小程序 AppID')
   return {
+    server: {
+      proxy: {
+        '/commerce-api': {
+          target: env.COMMERCE_PROXY_TARGET || 'http://127.0.0.1:18081',
+          changeOrigin: true,
+          rewrite: path => path.replace(/^\/commerce-api/, ''),
+        },
+      },
+    },
     plugins: [uni(), {
       name: 'wechat-appid',
       closeBundle() {

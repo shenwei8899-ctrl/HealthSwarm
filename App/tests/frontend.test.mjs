@@ -1,3 +1,4 @@
+import { isCommerceEnabled } from '../src/services/config.js'
 import { canOrderAction,currentAfterSale,afterSales,batchItems } from '../src/utils/order-actions.js'
 import { storageContext as storageScope } from '../src/services/storage.js'
 import test from 'node:test'
@@ -41,7 +42,7 @@ async function receiptPage({ batches = false, modalFailure = false } = {}) {
     showToast(options) { calls.toast = options },
   })
   let show
-  const deps = { ref, computed, getOrder, updateOrder, orderStatus, service:mockService,storageScope,canOrderAction,currentAfterSale,afterSales,batchItems,onUnload() {},
+  const deps = { isCommerceEnabled, ref, computed, getOrder, updateOrder, orderStatus, service:mockService,storageScope,canOrderAction,currentAfterSale,afterSales,batchItems,onUnload() {},
     onLoad(callback) { callback({id:created.id}) },
     onShow(callback) { show = callback },
   }

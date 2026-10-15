@@ -1,4 +1,9 @@
 <script setup>
+import { isCommerceEnabled } from '../../services/config.js'
+import CommerceOrderDetail from '../../components/CommerceOrderDetail.vue'
+import CommerceAccess from '../../components/CommerceAccess.vue'
+const commerceOrderId=ref('')
+
 import AppNavBar from '../../components/AppNavBar.vue'
 import FlowRibbon from '../../components/FlowRibbon.vue'
 import { computed, ref } from 'vue'
@@ -33,8 +38,8 @@ const paymentConfirmed=computed(()=>order.value?.paymentStatus?order.value.payme
 const preparing=computed(()=>paymentConfirmed.value&&!['cancelled','refund_pending'].includes(order.value?.status)&&!order.value?.planPaused&&['preparing','shipped','partial','delivered'].includes(selectedBatch.value?.fulfillmentStatus||order.value?.fulfillmentStatus||'preparing'))
 const cookingMeals=computed(()=>selectedBatch.value?.meals||order.value?.cookingGuides?.[0]?.guides.map(g=>({type:g.meal,name:g.dishes.join('、')}))||(order.value?.cookingGuide?[{type:order.value.cookingGuide.meal,name:order.value.cookingGuide.dishes.join('、')}]:[]))
 function allowed(action){return canOrderAction(order.value,action,selectedBatchIndex.value)}
-onLoad(options=>{orderId.value=options.id||'';requestedMode.value=options.mode||'';logisticsOpen.value=options.mode==='logistics';selectedBatchIndex.value=Math.max(1,Number(options.batch)||1)})
-onShow(loadOrder)
+onLoad(options=>{commerceOrderId.value=options.id||'';if(isCommerceEnabled)return;orderId.value=options.id||'';requestedMode.value=options.mode||'';logisticsOpen.value=options.mode==='logistics';selectedBatchIndex.value=Math.max(1,Number(options.batch)||1)})
+onShow(()=>{if(!isCommerceEnabled)return loadOrder()})
 onUnload(()=>{disposed=true;loadVersion++})
 async function loadOrder(){
  const version=++loadVersion,scope=storageScope();loading.value=true;error.value=''
@@ -85,7 +90,9 @@ function cook(meal){if(delivered.value)uni.navigateTo({url:'/pages/cook/index?id
 function nutritionist(){uni.reLaunch({url:'/pages/chat/index'})}
 </script>
 <template>
-<view class="screen detail-screen">
+<CommerceAccess v-if="isCommerceEnabled"><CommerceOrderDetail :id="commerceOrderId"/></CommerceAccess>
+
+<view v-else class="screen detail-screen">
 <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">订单详情</text><text class="pill">测试数据</text></view></AppNavBar>
 <text v-if="loading" class="safe-note">正在读取订单…</text>
 <view v-if="error" class="error-panel"><text class="inline-error">{{error}}</text><button v-if="!busy" @click="loadOrder">刷新订单</button></view>

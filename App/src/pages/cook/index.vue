@@ -1,4 +1,9 @@
 <script setup>
+import CommerceCooking from '../../components/CommerceCooking.vue'
+import CommerceAccess from '../../components/CommerceAccess.vue'
+const commerceOrderId=ref(''),commerceFlow=ref(false)
+onLoad(o=>{commerceFlow.value=o.commerce==='1';commerceOrderId.value=o.id||''})
+
 import AppNavBar from '../../components/AppNavBar.vue'
 import DishNutritionCard from '../../components/DishNutritionCard.vue'
 import { computed, ref, watch } from 'vue'
@@ -42,7 +47,7 @@ const dishGuides = computed(() => {
 const activeDish = computed(() => dishGuides.value.find(item => item.name === activeDishName.value) || dishGuides.value[0])
 watch(dishGuides, value => { if (!value.some(item => item.name === activeDishName.value)) activeDishName.value = value[0]?.name || '' }, { immediate: true })
 onLoad(options => { orderId.value = options.id || ''; batchIndex.value = Math.max(1, Number(options.batch) || 1);selectedMeal.value=mealFromRoute(options.meal) })
-onShow(() => { order.value = getOrder(orderId.value); if (hasBatches.value && !batch.value) batchIndex.value = 1; if (!mealChoices.value.some(item => item.type === selectedMeal.value)) selectedMeal.value = mealChoices.value[0]?.type || '晚餐' })
+onShow(() => { if(commerceFlow.value)return; order.value = getOrder(orderId.value); if (hasBatches.value && !batch.value) batchIndex.value = 1; if (!mealChoices.value.some(item => item.type === selectedMeal.value)) selectedMeal.value = mealChoices.value[0]?.type || '晚餐' })
 function viewOrder() { uni.redirectTo({ url: '/pages/orders/detail?id=' + encodeURIComponent(orderId.value) + (hasBatches.value ? '&batch=' + batchIndex.value : '') }) }
 function photoUpload() {
   if (!ready.value || !guide.value) return
@@ -51,7 +56,8 @@ function photoUpload() {
 </script>
 
 <template>
-  <view class="screen cook-screen">
+  <CommerceAccess v-if="commerceFlow"><CommerceCooking :id="commerceOrderId"/></CommerceAccess>
+  <view v-else class="screen cook-screen">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">{{guide?.meal||selectedMeal}}制作</text><text class="pill">演示</text></view></AppNavBar>
     <FlowRibbon :current="5" class="cook-flow" />
     <view v-if="!order" class="state-card card"><text class="section-title">未找到这笔订单</text><text>请从订单详情进入烹饪步骤。</text><button class="primary-button" @click="backHome">返回</button></view>

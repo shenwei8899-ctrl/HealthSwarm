@@ -13,7 +13,8 @@ import { getProfile, getRecords, updateRecord } from '../../utils/profile.js'
 import { createPlan } from '../../utils/demo.js'
 import { ensureMealPlan } from '../../services/meal-planning.js'
 import { hasMealContext, contextMember, planningMembers, linkMealContext } from '../../utils/meal-context.js'
-import { isMockMode } from '../../services/config.js'
+import { commerce } from '../../services/commerce.js'
+import { isMockMode, isCommerceEnabled } from '../../services/config.js'
 import { callApiAdapter } from '../../services/index.js'
 import { createMealBundles } from '../../utils/meal-bundles.js'
 import { createDiabetesCasePlan, DIABETES_CASE_ID, DIABETES_CASE_QUESTION, getActiveHealthCaseId } from '../../utils/health-cases.js'
@@ -23,6 +24,7 @@ import { DAILY_MEALS, mealToRoute } from '../../utils/meal-flow.js'
 import DinerPicker from '../../components/DinerPicker.vue'
 import { todayPlan,setMealMembers,activePlanOrder,changeResult,localDate,saveTomorrowProposal } from '../../utils/meal-state.js'
 import { remember,forget } from '../../utils/memory.js'
+const serverMeals=ref({})
 const menuBusy=ref(false),menuError=ref('')
 let dailyVersion=0
 const dinerMeal=ref('晚餐'),dinersOpen=ref(false),planRevision=ref(0),communityOpen=ref(false),updateNote=ref('')
@@ -56,7 +58,7 @@ const lastRecord = computed(() => records.value[records.value.length - 1])
 const isDiabetesCase = computed(() => caseId.value === DIABETES_CASE_ID)
 const caseRecordFeedback = computed(() => isDiabetesCase.value && lastRecord.value?.memberName === '爸爸')
 const today = new Date()
-const dailyPlans=computed(()=>{planRevision.value;return DAILY_MEALS.map(item=>{const plan=todayPlan(profile.value,item.name);return {...item,plan,summary:plan.blocked.length?plan.blocked[0]:plan.dishes.length?plan.dishes.slice(0,2).map(d=>d.name).join(' · '):'在对话中说明当前喂养与用餐需要'}})})
+const dailyPlans=computed(()=>{planRevision.value;return DAILY_MEALS.map(item=>{if(isCommerceEnabled){const saved=serverMeals.value[item.route];return {...item,plan:{count:profile.value.defaultDiners?.length||1,source:saved?.is_local_fixture?'本地联调菜单':saved?.package_sn?'服务端已保存菜单':'尚无服务端菜单'},summary:saved?.dishes?.map(d=>d.recipe_name).join(' · ')||saved?.message||'本餐菜单尚未接入'}}const plan=todayPlan(profile.value,item.name);return {...item,plan,summary:plan.blocked.length?plan.blocked[0]:plan.dishes.length?plan.dishes.slice(0,2).map(d=>d.name).join(' · '):'在对话中说明当前喂养与用餐需要'}})})
 const selectedDinerPlan=computed(()=>{planRevision.value;return todayPlan(profile.value,dinerMeal.value)})
 const hasActivePaidPlan=computed(()=>{planRevision.value;return Boolean(activePlanOrder())})
 const prompts = computed(() => ['今晚全家吃什么？', '给我安排明天早餐', '看看我的饮食记录', '糖尿病家庭怎么吃？'])
@@ -78,7 +80,7 @@ onShow(async () => {
   profile.value = nextProfile
   records.value = getRecords()
   caseId.value = getActiveHealthCaseId()
-  if (!isDiabetesCase.value) {
+  if (!isCommerceEnabled && !isDiabetesCase.value) {
     messages.value.forEach(message => {
       if (message.action !== 'plan') return
       const refreshed = todayPlan(profile.value, message.meal)
@@ -89,7 +91,7 @@ onShow(async () => {
 })
 async function refreshDailyMenus() {
   const version=++dailyVersion,scope=storageScope();menuBusy.value=true;menuError.value=''
-  try { await Promise.all(DAILY_MEALS.map(item=>ensureMealPlan(profile.value,item.name)));if(!disposed&&version===dailyVersion&&scope===storageScope())planRevision.value++ }
+  try { if(isCommerceEnabled){const values=await Promise.all(DAILY_MEALS.map(item=>commerce.meal(item.route)));if(!disposed&&version===dailyVersion&&scope===storageScope())serverMeals.value=Object.fromEntries(DAILY_MEALS.map((item,n)=>[item.route,values[n]]));return} await Promise.all(DAILY_MEALS.map(item=>ensureMealPlan(profile.value,item.name)));if(!disposed&&version===dailyVersion&&scope===storageScope())planRevision.value++ }
   catch(error){if(!disposed&&version===dailyVersion&&scope===storageScope())menuError.value=error.message||'建议未生成，请重试'}
   finally{if(version===dailyVersion)menuBusy.value=false}
 }
@@ -123,6 +125,17 @@ async function ask(text, retry=false) {
       messages.value.push({ role:'assistant', ...response })
       scrollToLatestReply()
       return
+    }
+    if (isCommerceEnabled && isMockMode) {
+      if (/记录|总结/.test(content)) messages.value.push({role:'assistant',text:'当前会员在本机保存了 '+records.value.length+' 条饮食记录，可在“我的 → 饮食记录”核对。健康云端与 AI 分析尚未接入。',action:'scan'});
+      else {
+        const route=/早餐|早上/.test(content)?'breakfast':/午餐|中午/.test(content)?'lunch':'dinner';
+        const date=/明天|明日/.test(content)?localDate(new Date(Date.now()+86400000)):localDate();
+        const menu=await commerce.meal(route,date);
+        if(disposed||version!==requestVersion||scope!==storageScope())return;
+        messages.value.push({role:'assistant',text:menu.dishes?.length ? '已读取服务端保存的菜单：'+menu.dishes.map(d=>d.recipe_name).join('、')+(menu.is_local_fixture?'。这是本地联调菜单，未经个体化营养评估。':'。') : menu.message||'尚无服务端菜单，AI 营养师尚未接入。',action:menu.dishes?.length?'plan':undefined,meal:{breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}[route],date});
+      }
+      scrollToLatestReply();return;
     }
     await mockDelay('chat',450)
     if(disposed||version!==requestVersion||scope!==storageScope())return
@@ -265,7 +278,7 @@ function openShop(message, bundleId = '') {
   go((bundleId ? '/pages/shop/detail?meal=' : '/pages/shop/index?meal=') + meal + (isDiabetesCase.value && message.meal === '晚餐' ? '&case=diabetes' : '') + (bundleId ? '&bundle=' + encodeURIComponent(bundleId) : ''))
 }
 function openAction(message) {
-  if (message.action === 'plan') go('/pages/shop/index?meal=' + mealToRoute(message.meal) + (isDiabetesCase.value && message.meal === '晚餐' ? '&case=diabetes' : ''))
+  if (message.action === 'plan') go('/pages/shop/index?meal=' + mealToRoute(message.meal) + (message.date ? '&date='+encodeURIComponent(message.date) : '') + (isDiabetesCase.value && message.meal === '晚餐' ? '&case=diabetes' : ''))
   else if (message.action === 'profile') go('/pages/my/index')
   else go('/pages/scan/index')
 }
@@ -283,13 +296,13 @@ function undoProcessed(message){if(message.memoryId){forget(message.memoryId);pr
 <view class="screen chat-screen" :class="{'voice-is-busy':voiceBusy}">
   <AppNavBar><view class="nav-row chat-nav"><button class="history-button" aria-label="查询历史记录" @click="showHistory"><AppIcon name="history" :size="40"/></button><view class="assistant-title"><text>家庭营养师</text><text class="nav-subtitle">你的家庭饮食伙伴</text></view><button class="me-button" aria-label="进入我的页面" @click="go('/pages/my/index')"><AppIcon name="user" :size="40"/></button></view></AppNavBar>
   <scroll-view class="conversation" scroll-y :scroll-into-view="scrollTarget">
-    <view class="today-card"><view class="today-top"><view><text class="eyebrow">{{today.getMonth()+1}}月{{today.getDate()}}日 · 今日安排</text><text class="section-title">好好吃饭，从今天开始</text></view><text class="test-badge">测试数据</text></view><view class="today-meals"><view v-for="item in dailyPlans" :key="item.route" class="daily-meal-row"><view class="meal-card-head"><text class="meal-name">{{item.name}}</text><button class="diner-capsule" @click="changeDiners(item)"><AppIcon name="family" :size="26"/> {{item.plan.count}}人用餐</button></view><text class="meal-summary">{{item.summary}}</text><view class="meal-foot"><text class="meal-source">{{item.plan.source}}</text><button class="meal-link" @click="openDailyMeal(item)">查看本餐安排 ›</button></view></view></view><button v-if="!hasActivePaidPlan" class="daily-buy" @click="go('/pages/shop/index?daily=1')">一键采购 <text>↗</text></button></view>
+    <view class="today-card"><view class="today-top"><view><text class="eyebrow">{{today.getMonth()+1}}月{{today.getDate()}}日 · 今日安排</text><text class="section-title">好好吃饭，从今天开始</text></view><text class="test-badge">{{isCommerceEnabled?'服务端餐单':'测试数据'}}</text></view><view class="today-meals"><view v-for="item in dailyPlans" :key="item.route" class="daily-meal-row"><view class="meal-card-head"><text class="meal-name">{{item.name}}</text><button v-if="!isCommerceEnabled" class="diner-capsule" @click="changeDiners(item)"><AppIcon name="family" :size="26"/> {{item.plan.count}}人用餐</button></view><text class="meal-summary">{{item.summary}}</text><view class="meal-foot"><text class="meal-source">{{item.plan.source}}</text><button class="meal-link" @click="openDailyMeal(item)">查看本餐安排 ›</button></view></view></view><button v-if="!hasActivePaidPlan" class="daily-buy" @click="go(isCommerceEnabled?'/pages/shop/index?commerce=1':'/pages/shop/index?daily=1')">{{isCommerceEnabled?'选购商城食材':'一键采购'}} <text>↗</text></button></view>
     <text v-if="menuBusy" class="safe-note">正在分析本餐建议…</text><view v-if="menuError" class="card"><text class="inline-error">{{menuError}}</text><button @click="refreshDailyMenus">重试分析</button></view>
     <text v-if="updateNote" class="update-note">{{updateNote}}</text>
     <view v-if="lastRecord" class="feedback-card card"><text class="section-title">这一餐，已经记好了</text><text>{{lastRecord.memberNames?.join('、')||lastRecord.memberName}} · {{lastRecord.meal}}</text><button class="message-action" @click="go('/pages/feedback/index')">查看饮食反馈 →</button></view>
     <view class="message-list"><view v-if="!messages.length" class="welcome-message"><view class="welcome-symbol"><AppIcon name="chat" :size="54"/></view><text class="welcome-title">今天，想怎么吃？</text><text>你好，{{nameList}}。告诉我你想吃什么，
 我们一起安排适合家人的三餐。</text></view>
-      <view v-for="(message,index) in messages" :id="'message-'+index" :key="index" class="message-group"><view class="message-row" :class="message.role"><view v-if="message.role==='assistant'" class="ai-avatar"><AppIcon name="chat" :size="28"/></view><view class="bubble" :class="{'safety-bubble':message.safety}"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><text v-if="message.text" class="bubble-copy">{{message.text}}</text><button v-if="message.role==='user'&&message.contextRecorded&&!message.withdrawn" class="message-action" @click="withdrawContext(message)">不再用于建议</button><text v-if="message.withdrawn" class="safe-note">此条信息已停止用于新建议</text><view v-if="message.quickReplies&&!message.caseChoiceAnswered" class="case-quick-replies"><button v-for="choice in message.quickReplies" :key="choice" @click="answerCaseChoice(choice,message)">{{choice}}</button></view><view v-if="message.caseActions" class="case-actions"><button v-for="action in message.caseActions" :key="action.type" @click="handleCaseAction(action.type)">{{action.label}}</button></view><button v-if="message.action" class="message-action" :class="{'menu-link':message.action==='plan'}" @click="openAction(message)">{{message.action==='plan'?'查看'+message.meal+'菜单':message.action==='profile'?'前往“我的”':'拍照记一餐'}} →</button></view></view><MealBundleRecommendations v-if="message.bundles" :bundles="message.bundles" :meal="message.meal" @open="openShop(message,$event)" @all="openShop(message)"/><view v-if="message.processed" class="processing-result card"><text class="eyebrow">本次处理结果</text><text>{{message.resultText}}</text><view v-if="message.processed!=='undone'"><button @click="openProcessed(message)">{{message.processed==='memory'?'查看记忆':'查看反馈'}}</button><button @click="undoProcessed(message)">撤回</button></view></view></view>
+      <view v-for="(message,index) in messages" :id="'message-'+index" :key="index" class="message-group"><view class="message-row" :class="message.role"><view v-if="message.role==='assistant'" class="ai-avatar"><AppIcon name="chat" :size="28"/></view><view class="bubble" :class="{'safety-bubble':message.safety}"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><text v-if="message.text" class="bubble-copy">{{message.text}}</text><button v-if="message.role==='user'&&message.contextRecorded&&!message.withdrawn" class="message-action" @click="withdrawContext(message)">不再用于建议</button><text v-if="message.withdrawn" class="safe-note">此条信息已停止用于新建议</text><view v-if="message.quickReplies&&!message.caseChoiceAnswered" class="case-quick-replies"><button v-for="choice in message.quickReplies" :key="choice" @click="answerCaseChoice(choice,message)">{{choice}}</button></view><view v-if="message.caseActions" class="case-actions"><button v-for="action in message.caseActions" :key="action.type" @click="handleCaseAction(action.type)">{{action.label}}</button></view><button v-if="message.action" class="message-action" :class="{'menu-link':message.action==='plan'}" @click="openAction(message)">{{message.action==='plan'?'查看'+message.meal+'菜单':message.action==='profile'?'前往“我的”':'拍照记一餐'}} →</button></view></view><MealBundleRecommendations v-if="message.bundles && !isCommerceEnabled" :bundles="message.bundles" :meal="message.meal" @open="openShop(message,$event)" @all="openShop(message)"/><view v-if="message.processed" class="processing-result card"><text class="eyebrow">本次处理结果</text><text>{{message.resultText}}</text><view v-if="message.processed!=='undone'"><button @click="openProcessed(message)">{{message.processed==='memory'?'查看记忆':'查看反馈'}}</button><button @click="undoProcessed(message)">撤回</button></view></view></view>
       <view v-if="replyError" class="error-panel"><text class="inline-error">{{replyError}}</text><button :disabled="thinking" @click="retryReply">重新获取回复</button></view>
       <view v-if="thinking" class="message-row"><view class="ai-avatar"><AppIcon name="chat" :size="28"/></view><view class="bubble thinking">正在整理本餐建议…</view></view>
     </view><view class="quick-prompts"><text class="quick-prompts-title">问问AI</text><button v-for="prompt in prompts" :key="prompt" @click="ask(prompt)">{{prompt}}</button></view>

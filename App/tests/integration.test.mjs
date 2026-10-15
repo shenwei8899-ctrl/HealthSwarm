@@ -1,7 +1,7 @@
 import * as planning from '../src/services/meal-planning.js'
 import * as exclusivePlanning from '../src/services/exclusive-planning.js'
 import * as contexts from '../src/utils/meal-context.js'
-import { isMockMode } from '../src/services/config.js'
+import { isMockMode, isCommerceEnabled } from '../src/services/config.js'
 import * as health from '../src/utils/health.js'
 import * as portions from '../src/utils/scan-portions.js'
 import { fileURLToPath } from 'node:url'
@@ -41,7 +41,7 @@ function planOrder() {
 }
 function evaluatePage(path, extras, exposed) {
   let show, unload
-  const deps = { ref, computed, nextTick, watch, ...profiles, ...orders, ...actions, ...mealState, ...customization, ...mealFlow, ...exclusive, ...bundles, ...demo, ...memory, ...healthCases, ...checkout, ...health, ...portions, ...planning, ...exclusivePlanning, ...contexts, isMockMode, callApiAdapter,
+  const deps = { ref, computed, nextTick, watch, ...profiles, ...orders, ...actions, ...mealState, ...customization, ...mealFlow, ...exclusive, ...bundles, ...demo, ...memory, ...healthCases, ...checkout, ...health, ...portions, ...planning, ...exclusivePlanning, ...contexts, isMockMode, isCommerceEnabled, callApiAdapter,
     scopedStorage, storageScope:storageContext, mockDelay, service:mockService, mockService,
     onHide() {}, onBackPress() {}, onLoad(callback) { callback(extras.options || {}) }, onShow(callback) { show=callback }, onUnload(callback) { unload=callback }, ...extras }
   const source=readFileSync(new URL('../src/pages/'+path,import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
