@@ -9,7 +9,11 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolRuntime
 from pydantic import ValidationError
 
-from yuxi.agents.toolkits.health import get_complete_health_profile, query_reviewed_nutrition_knowledge
+from yuxi.agents.toolkits.health import (
+    get_complete_health_profile,
+    query_family_nutrition_knowledge,
+    query_reviewed_nutrition_knowledge,
+)
 from yuxi.services.health_agent_roles import consultation_skill_prompt, consultation_skill_snapshot, health_agent_roles
 from yuxi.services.agent_run_manifest_service import build_skill_manifest_entries
 from yuxi.services.health_evidence_service import validate_nutrition_answer
@@ -79,7 +83,7 @@ def test_fixed_skill_snapshot_records_published_identity_and_exact_content(monke
     assert build_skill_manifest_entries({"skills": ["family-nutritionist"]}, snapshot) == [
         {
             "slug": "family-nutritionist",
-            "version": "2026.10.10.2",
+            "version": "2026.10.14.1",
             "content_hash": spec["content_hash"],
             "preload_content_hash": hashlib.sha256(content.encode()).hexdigest(),
         }
@@ -90,13 +94,14 @@ def test_fixed_skill_snapshot_records_published_identity_and_exact_content(monke
 def test_new_tool_schema_rejects_member_scope_and_uncontrolled_knowledge_selection():
     """模型只能传短关键词，不能把个人库或其他成员带入检索。"""
     assert get_complete_health_profile.tool_call_schema.model_json_schema()["properties"] == {}
-    assert set(query_reviewed_nutrition_knowledge.tool_call_schema.model_json_schema()["properties"]) == {"query"}
-    for field in ("uid", "member_id", "kb_id", "runtime", "file_id"):
-        with pytest.raises(ValidationError):
-            query_reviewed_nutrition_knowledge.args_schema.model_validate({"query": "营养", field: "forged"})
-    for query in ("", " " * 5, "x" * 121):
-        with pytest.raises(ValidationError):
-            query_reviewed_nutrition_knowledge.args_schema.model_validate({"query": query})
+    for knowledge_tool in (query_reviewed_nutrition_knowledge, query_family_nutrition_knowledge):
+        assert set(knowledge_tool.tool_call_schema.model_json_schema()["properties"]) == {"query"}
+        for field in ("uid", "member_id", "kb_id", "runtime", "file_id"):
+            with pytest.raises(ValidationError):
+                knowledge_tool.args_schema.model_validate({"query": "营养", field: "forged"})
+        for query in ("", " " * 5, "x" * 121):
+            with pytest.raises(ValidationError):
+                knowledge_tool.args_schema.model_validate({"query": query})
 
 
 @pytest.mark.asyncio

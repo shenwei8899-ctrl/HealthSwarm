@@ -1,4 +1,8 @@
-from yuxi.repositories.health_consultation_repository import EDUCATION_HEALTH_AGENTS, HEALTH_AGENT_BACKENDS
+from yuxi.repositories.health_consultation_repository import (
+    CONSULTATION_SLUG,
+    EDUCATION_HEALTH_AGENTS,
+    HEALTH_AGENT_BACKENDS,
+)
 import uuid
 from typing import Any
 
@@ -29,6 +33,8 @@ from yuxi.storage.postgres.models_business import (
     AUDIT_MESSAGE_TYPES,
     AGENT_RUN_TERMINAL_STATUSES,
     AgentRun,
+    Message,
+    TOOL_AUDIT_MESSAGE_TYPE,
     User,
     build_agent_run_timing,
 )
@@ -69,6 +75,25 @@ async def get_thread_message_audits_view(
         thread_id,
         str(current_uid),
     )
+    unverified_family_runs: set[str] = set()
+    if conversation.agent_id == CONSULTATION_SLUG:
+        from yuxi.services.health_family_kb_service import TOOL_NAME, validate_family_kb_audit
+
+        family_audits = (
+            await db.scalars(
+                select(Message).where(
+                    Message.conversation_id == conversation.id,
+                    Message.message_type == TOOL_AUDIT_MESSAGE_TYPE,
+                    Message.extra_metadata["tool_name"].as_string() == TOOL_NAME,
+                )
+            )
+        ).all()
+        try:
+            for audit in family_audits:
+                if not await validate_family_kb_audit(db, audit):
+                    unverified_family_runs.add(audit.run_id)
+        except HealthVisionError as exc:
+            raise HTTPException(status_code=410, detail="家庭科普审计来源已失效") from exc
     messages, truncated = await repository.list_message_audits(
         conversation.id,
         limit=MESSAGE_AUDIT_LIMIT,
@@ -78,7 +103,12 @@ async def get_thread_message_audits_view(
         limit=AGENT_RUN_TRACE_LIMIT,
     )
     return {
-        "audits": [_serialize_message_audit(message) for message in messages],
+        "audits": [
+            _serialize_redacted_message_audit(message)
+            if message.run_id in unverified_family_runs
+            else _serialize_message_audit(message)
+            for message in messages
+        ],
         "runs": [_serialize_run_trace(run) for run in runs],
         "runs_truncated": runs_truncated,
         "truncated": truncated,
@@ -731,6 +761,26 @@ def _serialize_message_audit(message: Any) -> dict[str, Any]:
     if message.role == "tool":
         return _serialize_tool_audit(message)
     return _serialize_model_audit(message)
+
+
+def _serialize_redacted_message_audit(message: Any) -> dict[str, Any]:
+    """家庭知识工具未完成时，仅公开该 Run 的审计诊断元数据。"""
+    audit = _serialize_message_audit(message)
+    audit["content"] = ""
+    audit["namespace"] = []
+    if audit["type"] == "tool":
+        audit["tool_input"] = {}
+        audit["tool_output"] = None
+        audit["error_message"] = None
+    else:
+        audit["reasoning_content"] = ""
+        audit["content_blocks"] = []
+        audit["usage"] = None
+        for tool_call in audit["tool_calls"]:
+            tool_call["args"] = {}
+            tool_call["tool_call_result"] = None
+            tool_call["error_message"] = None
+    return audit
 
 
 def _serialize_run_trace(run: AgentRun) -> dict[str, Any]:

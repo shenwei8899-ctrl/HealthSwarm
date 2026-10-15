@@ -1,7 +1,7 @@
 """健康咨询处理审批、最小投影和实际受限执行图的本地验证。"""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -153,6 +153,12 @@ async def test_context_does_not_expand_none_resources_or_user_prompt(monkeypatch
     snapshot = {"model": "provider/fixed", "processor": "fingerprint", "policy_version": "policy"}
     require = AsyncMock(return_value=(SimpleNamespace(member_id="member", conversation_id="conversation"), snapshot))
     monkeypatch.setattr(service, "require_consultation", require)
+    monkeypatch.setattr(
+        service.HealthVisionRepository,
+        "visible_member_scopes",
+        AsyncMock(return_value=(object(), {"ai_use", "report_view", "diet_edit", "profile_view", "profile_edit"})),
+    )
+    db = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(owner_uid="actor", relationship_label="本人")))
     context = BaseContext(
         uid="actor",
         thread_id="thread",
@@ -161,7 +167,7 @@ async def test_context_does_not_expand_none_resources_or_user_prompt(monkeypatch
         preload_skills=["untrusted"],
     )
     run = SimpleNamespace(agent_slug="health-consultation", input_payload={"health_processing": snapshot})
-    prepared = await service.prepare_consultation_context(context, None, run)
+    prepared = await service.prepare_consultation_context(context, db, run)
     assert prepared.model == "provider/fixed" and prepared.tools == service.HEALTH_TOOL_NAMES
     assert prepared.system_prompt == service.CONSULTATION_PROMPT
     assert prepared.knowledges == prepared.mcps == []
@@ -169,7 +175,58 @@ async def test_context_does_not_expand_none_resources_or_user_prompt(monkeypatch
     assert prepared._skill_runtime_snapshot["skill_metadata"]["family-nutritionist"]["source_scope"] == "builtin"
     assert require.await_args.kwargs["expected"] == snapshot
     with pytest.raises(HealthVisionError, match="policy_changed"):
-        await service.prepare_consultation_context(context, None, SimpleNamespace(input_payload={}))
+        await service.prepare_consultation_context(context, db, SimpleNamespace(input_payload={}))
+
+
+@pytest.mark.asyncio
+async def test_ai_only_consultation_does_not_offer_personal_data_tools(monkeypatch):
+    """仅 AI 咨询授权可检索科普，不能把报告、饮食或档案工具发给模型。"""
+    snapshot = {"model": "provider/fixed", "processor": "fingerprint", "policy_version": "policy"}
+    binding = SimpleNamespace(member_id="member", conversation_id="conversation")
+    monkeypatch.setattr(service, "require_consultation", AsyncMock(return_value=(binding, snapshot)))
+    monkeypatch.setattr(
+        service.HealthVisionRepository,
+        "visible_member_scopes",
+        AsyncMock(return_value=(object(), {"ai_use"})),
+    )
+    db = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(owner_uid="actor", relationship_label="本人")))
+    context = BaseContext(uid="actor", thread_id="thread")
+    run = SimpleNamespace(agent_slug="health-consultation", input_payload={"health_processing": snapshot})
+
+    prepared = await service.prepare_consultation_context(context, db, run)
+
+    assert prepared.tools == [
+        "query_reviewed_nutrition_knowledge",
+        "query_family_nutrition_knowledge",
+        "get_member_memories",
+    ]
+    assert prepared.knowledges == prepared.mcps == []
+
+
+@pytest.mark.asyncio
+async def test_graph_binds_only_prepared_ai_consultation_tools(monkeypatch):
+    """构图只暴露已准备的科普工具，不重新装配全部个人工具。"""
+    from yuxi.agents.buildin.health_consultation import graph as graph_module
+
+    monkeypatch.setattr(service, "require_consultation_attempt", AsyncMock())
+    monkeypatch.setattr(graph_module.model_cache, "get_model_info", Mock(return_value={"model": "fixed"}))
+    monkeypatch.setattr(graph_module, "load_chat_model", Mock(return_value="model"))
+    monkeypatch.setattr(HealthConsultationAgent, "_get_checkpointer", AsyncMock(return_value="PG"))
+    assemble = Mock(return_value="compiled graph")
+    monkeypatch.setattr(graph_module, "create_agent", assemble)
+    context = BaseContext(
+        uid="actor",
+        thread_id="thread",
+        model="synthetic/fixed",
+        tools=["query_family_nutrition_knowledge", "get_member_memories", "forged_tool"],
+    )
+    context._runtime_prepared = True
+
+    assert await HealthConsultationAgent().get_graph(context=context) == "compiled graph"
+    assert [tool.name for tool in assemble.call_args.kwargs["tools"]] == [
+        "query_family_nutrition_knowledge",
+        "get_member_memories",
+    ]
 
 
 @pytest.mark.asyncio
@@ -229,7 +286,12 @@ async def test_actual_graph_only_binds_fixed_read_tools_and_checks_each_model_tu
     backend = HealthConsultationAgent()
     monkeypatch.setattr(backend, "_get_checkpointer", AsyncMock(return_value=InMemorySaver()))
     context = BaseContext(
-        uid="actor", thread_id="synthetic-thread", model="synthetic/fixed", run_id="run", worker_id="owner"
+        uid="actor",
+        thread_id="synthetic-thread",
+        model="synthetic/fixed",
+        run_id="run",
+        worker_id="owner",
+        tools=service.HEALTH_TOOL_NAMES,
     )
     context._runtime_prepared = True
     graph = await backend.get_graph(context=context)

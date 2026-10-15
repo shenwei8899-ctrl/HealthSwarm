@@ -199,6 +199,9 @@ async def read_health_task(uid: str, request_id: str) -> HealthTaskResult:
             evidence = HealthEvidenceRepository(session)
             ids = answer_citation_ids(message.content)
             citations = await evidence.validate_citations(ids, binding, uid, agent_slug=run.agent_slug, run_id=run.id)
+            from yuxi.services.health_family_kb_service import validate_family_kb_answer
+
+            await validate_family_kb_answer(session, run, current_binding, message.content)
             response.result = HealthTaskGeneralAnswer(
                 answer=message.content, citations=[citations[citation_id] for citation_id in ids]
             )

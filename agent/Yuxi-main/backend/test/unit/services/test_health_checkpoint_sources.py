@@ -8,7 +8,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 import pytest
 
 from yuxi.agents.buildin.health_consultation.graph import HealthAuthorizationMiddleware
@@ -17,6 +17,68 @@ from yuxi.services import health_memory_service as memory_service
 from yuxi.repositories.health_evidence_repository import HealthEvidenceRepository
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.models_health import HealthObservation, DietLog
+
+
+@pytest.mark.asyncio
+async def test_model_wrapper_drops_previous_family_knowledge_turn(monkeypatch):
+    """第二轮模型不能读取或复述上一 Run 的家庭库片段，必须重新调用工具。"""
+    from yuxi.services import health_meal_feedback_service
+
+    poison = "上一轮家庭知识库片段不得进入下一轮模型输入"
+
+    async def keep_other_history(_context, messages, **_kwargs):
+        return messages
+
+    monkeypatch.setattr(health_meal_feedback_service, "filter_health_history", keep_other_history)
+    previous = HumanMessage(content="旧问题")
+    current = HumanMessage(content="请回答另一个问题")
+    request = SimpleNamespace(
+        runtime=SimpleNamespace(context=SimpleNamespace(request_id="current")),
+        messages=[
+            previous,
+            AIMessage(content="", tool_calls=[{"name": "query_family_nutrition_knowledge", "args": {}, "id": "old"}]),
+            ToolMessage(
+                name="query_family_nutrition_knowledge",
+                tool_call_id="old",
+                content=json.dumps({"sources": [{"content": poison}]}, ensure_ascii=False),
+            ),
+            AIMessage(content=poison),
+            current,
+        ],
+        override=lambda **changes: SimpleNamespace(**changes),
+    )
+
+    async def handler(filtered_request):
+        assert filtered_request.messages == [previous, current]
+        assert poison not in str(filtered_request.messages)
+        return "called"
+
+    assert await HealthAuthorizationMiddleware(None).awrap_model_call(request, handler) == "called"
+
+
+@pytest.mark.asyncio
+async def test_model_wrapper_keeps_current_family_knowledge_result(monkeypatch):
+    """同一轮刚取得的家庭库回执仍可交给模型形成带来源答复。"""
+    from yuxi.services import health_meal_feedback_service
+
+    async def keep_other_history(_context, messages, **_kwargs):
+        return messages
+
+    monkeypatch.setattr(health_meal_feedback_service, "filter_health_history", keep_other_history)
+    messages = [
+        HumanMessage(content="当前问题"),
+        AIMessage(content="", tool_calls=[{"name": "query_family_nutrition_knowledge", "args": {}, "id": "now"}]),
+        ToolMessage(name="query_family_nutrition_knowledge", tool_call_id="now", content='{"sources":[]}'),
+    ]
+    request = SimpleNamespace(
+        runtime=SimpleNamespace(context=SimpleNamespace(request_id="current")),
+        messages=messages,
+        override=lambda **changes: SimpleNamespace(**changes),
+    )
+    handler = AsyncMock(return_value="called")
+
+    assert await HealthAuthorizationMiddleware(None).awrap_model_call(request, handler) == "called"
+    assert handler.await_args.args[0].messages == messages
 
 
 @pytest.mark.asyncio

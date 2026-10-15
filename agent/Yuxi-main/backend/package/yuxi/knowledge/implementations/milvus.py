@@ -35,6 +35,24 @@ from yuxi.utils.datetime_utils import utc_isoformat
 
 MILVUS_AVAILABLE = True
 CONTENT_SPARSE_FIELD = "content_sparse"
+
+
+class OrphanedMilvusHitsError(ValueError):
+    """Milvus 有命中，但对应 PostgreSQL 来源已全部失效。"""
+
+
+def _collection_embedding_model_id(description: str, kb_id: str) -> str | None:
+    """从当前或旧版集合描述中读取完整模型 ID，避免前缀子串误匹配。"""
+    for prefix in (
+        f"Knowledge base collection for {kb_id} using ",
+        "Knowledge base collection using ",
+    ):
+        if description.startswith(prefix):
+            model_id = description.removeprefix(prefix)
+            return model_id or None
+    return None
+
+
 CONTENT_ANALYZER_PARAMS = {"type": "chinese"}
 VECTOR_METRIC_TYPE = "COSINE"
 MILVUS_CHUNK_EMBED_BATCH_SIZE = 200
@@ -371,7 +389,7 @@ class MilvusKB(KnowledgeBase):
                 description = collection.description
                 expected_model = embedding_info.model_id
 
-                if expected_model not in description:
+                if _collection_embedding_model_id(description, kb_id) != expected_model:
                     logger.warning(
                         f"Collection {collection_name} model mismatch: "
                         f"expected='{expected_model}', found_in_description='{description}'"
@@ -505,9 +523,9 @@ class MilvusKB(KnowledgeBase):
             logger.error(f"Traceback: {traceback.format_exc()}")
             return None
 
-    async def _get_existing_milvus_collection(self, kb_id: str) -> Collection | None:
+    async def _get_existing_milvus_collection(self, kb_id: str, *, refresh: bool = False) -> Collection | None:
         """获取已存在的集合，不因删除操作创建新集合。"""
-        collection = self.collections.get(kb_id)
+        collection = None if refresh else self.collections.get(kb_id)
         if collection is not None:
             return collection
 
@@ -879,13 +897,28 @@ class MilvusKB(KnowledgeBase):
     ) -> list[dict]:
         """异步查询知识库"""
         embedding_model_spec = config.embedding_model_spec
-        collection = await self._get_or_create_milvus_collection(kb_id, embedding_model_spec)
-        if not collection:
-            raise ValueError(f"Database {kb_id} not found")
+        read_only = kwargs.pop("read_only", False) is True
+        if read_only:
+            collection = await self._get_existing_milvus_collection(kb_id, refresh=True)
+            if collection is None:
+                raise ValueError(f"Milvus collection {kb_id} is unavailable for read-only query")
+            embedding_info = model_cache.get_model_info(embedding_model_spec) if embedding_model_spec else None
+            if embedding_info is None or embedding_info.model_type != "embedding":
+                raise ValueError(f"Embedding model spec is unavailable for read-only query of {kb_id}")
+            if _collection_embedding_model_id(collection.description, kb_id) != embedding_info.model_id:
+                raise ValueError(f"Milvus collection {kb_id} embedding model does not match configuration")
+            if not self._collection_supports_bm25(collection):
+                raise ValueError(f"Milvus collection {kb_id} has no BM25 schema")
+            await asyncio.to_thread(collection.load)
+        else:
+            collection = await self._get_or_create_milvus_collection(kb_id, embedding_model_spec)
+            if not collection:
+                raise ValueError(f"Database {kb_id} not found")
 
         # 合并查询参数：kwargs（临时参数）优先级高于 query_params（持久化参数）
         # 这样允许用户在单次查询中临时覆盖持久化配置
         merged_kwargs = {**config.query_options, **kwargs}
+        merged_kwargs.pop("read_only", None)
 
         try:
             # 查询参数（从 merged_kwargs 读取）
@@ -1026,7 +1059,12 @@ class MilvusKB(KnowledgeBase):
             if not retrieved_chunks:
                 return []
 
+            raw_hit_count = len(retrieved_chunks)
             retrieved_chunks = await self._hydrate_chunk_sources(kb_id, retrieved_chunks)
+            if read_only and raw_hit_count and not retrieved_chunks:
+                raise OrphanedMilvusHitsError(
+                    f"Milvus returned {raw_hit_count} hit(s) for {kb_id}, but all PostgreSQL sources are missing"
+                )
 
             if not use_reranker:
                 return retrieved_chunks[:final_top_k]

@@ -53,7 +53,7 @@ async def member_capabilities(uid: str, member_id: str) -> MemberCapabilities:
             "purchase_requirements": ("adoption_id", "adoption_version", "plan_version"),
         }
         entries = (
-            ("consultation", CONSULTATION_SLUG, CONSULTATION_SKILLS, "consultation", ordinary_scopes),
+            ("consultation", CONSULTATION_SLUG, CONSULTATION_SKILLS, "consultation", ("ai_use",)),
             (
                 "blood_glucose_review",
                 GLUCOSE_SLUG,

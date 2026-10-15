@@ -2,7 +2,7 @@
 
 import json
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from yuxi.agents.toolkits.health import remember_member_fact
 from yuxi.services import health_memory_service as service
+from yuxi.services import health_daily_service as daily_service
 from yuxi.services.health_daily_service import business_date, message_digest
 from yuxi.services.health_memory_types import validate_memory_statement
 from yuxi.services.health_vision_types import HealthVisionError
@@ -261,3 +262,32 @@ def test_summary_is_sourced_digest_and_changes_on_late_content():
     assert digest["open_item_mentions"][0]["message_id"] == 1
     rows[0].content = "更新的真实内容"
     assert message_digest(rows)[0] != fingerprint
+
+
+@pytest.mark.asyncio
+async def test_daily_summary_rejects_invalidated_family_knowledge_before_excerpts(monkeypatch):
+    """资料失效后日终摘要不能继续展示旧问答摘录。"""
+    from yuxi.services import health_family_kb_service
+
+    binding = SimpleNamespace(member_id="member")
+    daily = SimpleNamespace(member_id="member", business_date=business_date() - timedelta(days=1))
+    row = SimpleNamespace(
+        role="assistant", content="合成资料 [资料:00000000-0000-0000-0000-000000000001]", run_id="run"
+    )
+    source_run = SimpleNamespace(id="run")
+    db = SimpleNamespace(get=AsyncMock(return_value=source_run))
+
+    @asynccontextmanager
+    async def session_context():
+        yield db
+
+    monkeypatch.setattr(daily_service.pg_manager, "get_async_session_context", session_context)
+    monkeypatch.setattr(daily_service.HealthConsultationRepository, "authorize", AsyncMock(return_value=binding))
+    monkeypatch.setattr(daily_service.HealthDailyRepository, "for_thread", AsyncMock(return_value=daily))
+    monkeypatch.setattr(daily_service.HealthDailyRepository, "source_messages", AsyncMock(return_value=[row]))
+    validate = AsyncMock(side_effect=HealthVisionError("source_invalidated", "合成资料已改版", 410))
+    monkeypatch.setattr(health_family_kb_service, "validate_family_kb_answer", validate)
+
+    with pytest.raises(HealthVisionError, match="source_invalidated"):
+        await daily_service.daily_summary("actor", "thread")
+    validate.assert_awaited_once_with(db, source_run, binding, row.content)

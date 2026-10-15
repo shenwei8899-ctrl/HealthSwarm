@@ -9,6 +9,7 @@ from yuxi.repositories.health_daily_repository import HealthDailyRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.manager import pg_manager
+from yuxi.storage.postgres.models_business import AgentRun
 from yuxi.utils.datetime_utils import format_utc_datetime, utc_now_naive
 from yuxi.utils.logging_config import logger
 
@@ -32,8 +33,8 @@ async def daily_history(uid, member_id, before=None):
     """日期列表不泄露摘要正文；正文独立检查当前来源。"""
     async with pg_manager.get_async_session_context() as session:
         health = HealthVisionRepository(session)
-        for scope in ("ai_use", "report_view", "diet_edit"):
-            await health.authorize(member_id, uid, scope)
+        await health.authorize(member_id, uid, "ai_use")
+        await HealthConsultationRepository(session).require_active_consultation_consent(member_id, uid)
         rows = await HealthDailyRepository(session).history(uid, member_id, before)
         return {
             "days": [
@@ -100,6 +101,14 @@ async def daily_summary(uid, thread_id, *, refresh=False):
         messages = await repo.source_messages(daily, thread_id)
         if messages is None:
             return {"status": "waiting_for_requests", "date": daily.business_date.isoformat(), "summary": None}
+        from yuxi.services.health_family_kb_service import validate_family_kb_answer
+
+        for message in messages:
+            if message.role == "assistant" and "[资料:" in message.content:
+                source_run = await session.get(AgentRun, message.run_id)
+                if source_run is None:
+                    raise HealthVisionError("source_invalidated", "日终摘要的科普资料来源无法核对", 410)
+                await validate_family_kb_answer(session, source_run, binding, message.content)
         fingerprint, digest = message_digest(messages)
         if refresh:
             if daily.summary_fingerprint != fingerprint:

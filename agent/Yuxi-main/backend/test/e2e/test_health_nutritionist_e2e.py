@@ -91,6 +91,7 @@ async def test_reviewed_evidence_worker_citations_and_revoked_history(isolated_h
         "get_member_blood_glucose_records",
         "get_member_blood_lipids_records",
         "query_reviewed_nutrition_knowledge",
+        "query_family_nutrition_knowledge",
         "get_member_memories",
         "remember_member_fact",
         "get_meal_feedback",
@@ -215,7 +216,8 @@ async def test_reviewed_evidence_worker_citations_and_revoked_history(isolated_h
         assert bad_citations.status_code == 409 and bad_citations.json()["code"] == "answer_not_completed"
         async with pg_manager.get_async_session_context() as session:
             bad_run = await session.get(AgentRun, bad_run_id)
-            assert "citation_invalid" in bad_run.error_message
+            assert bad_run.error_type == "unexpected_error"
+            assert bad_run.error_message == "健康解释执行失败，请重新咨询"
             assert (
                 await session.scalar(
                     select(NutritionEvidenceCitation).where(NutritionEvidenceCitation.run_id == bad_run_id)
@@ -263,7 +265,8 @@ async def test_reviewed_evidence_worker_citations_and_revoked_history(isolated_h
             assert failed.json()["status"] == "failed", failed.text
             async with pg_manager.get_async_session_context() as session:
                 failed_run = await session.get(AgentRun, rejected_id)
-                assert failed_run.error_type == "unexpected_error" and "source_invalidated" in failed_run.error_message
+                assert failed_run.error_type == "unexpected_error"
+                assert failed_run.error_message == "健康解释执行失败，请重新咨询"
                 assert (
                     await session.scalar(
                         select(NutritionEvidenceCitation).where(NutritionEvidenceCitation.run_id == rejected_id)

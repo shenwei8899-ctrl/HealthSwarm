@@ -393,6 +393,81 @@ async def test_consultation_binding_concurrent_replay_is_private_and_immutable(h
     assert denied.status_code == 404
 
 
+@pytest.mark.parametrize("invalid_owner", ["conversation", "project"])
+async def test_consultation_create_replay_rejects_inactive_conversation_or_project(health_http, invalid_owner):
+    """已删除会话或失效 Project 不能被原创建幂等键重新暴露。"""
+    client, users = health_http
+    owner = users[0]
+    member = await create_member(client, owner["headers"])
+    request_id = str(uuid4())
+    headers = {**owner["headers"], "Idempotency-Key": request_id}
+    path = f"{ROOT}/members/{member}/consultations"
+    body = {"client_request_id": request_id}
+
+    created = await client.post(path, headers=headers, json=body)
+    assert created.status_code == 201, created.text
+    async with pg_manager.get_async_session_context() as session:
+        binding = await session.scalar(
+            select(HealthConsultation).where(
+                HealthConsultation.actor_uid == owner["uid"],
+                HealthConsultation.request_id == request_id,
+            )
+        )
+        conversation = await session.get(Conversation, binding.conversation_id)
+        if invalid_owner == "conversation":
+            conversation.status = "deleted"
+        else:
+            project = await session.get(Project, conversation.project_id)
+            project.status = "deleted"
+
+    replay = await client.post(path, headers=headers, json=body)
+    assert replay.status_code == 404, replay.text
+    assert replay.json()["code"] == "not_found"
+    async with pg_manager.get_async_session_context() as session:
+        bindings = (
+            await session.scalars(
+                select(HealthConsultation).where(
+                    HealthConsultation.actor_uid == owner["uid"],
+                    HealthConsultation.request_id == request_id,
+                )
+            )
+        ).all()
+        assert len(bindings) == 1
+
+
+async def test_ai_only_member_can_create_and_list_general_consultation(health_http):
+    """真实 HTTP/PG 入口只要求当前成员 AI 授权，未授予个人资料范围也可建线程。"""
+    client, users = health_http
+    owner = users[0]
+    member = await create_member(client, owner["headers"])
+    granted = await client.put(
+        f"{ROOT}/members/{member}/grants",
+        headers=owner["headers"],
+        json={"actor_uid": owner["uid"], "scopes": ["ai_use"]},
+    )
+    assert granted.status_code == 200, granted.text
+    async with pg_manager.get_async_session_context() as session:
+        session.add(
+            HealthProcessingConsent(
+                member_id=member,
+                actor_uid=owner["uid"],
+                purpose="consultation",
+                processor="synthetic-list-test",
+                policy_version="synthetic-list-test",
+            )
+        )
+    request_id = str(uuid4())
+    created = await client.post(
+        f"{ROOT}/members/{member}/consultations",
+        headers={**owner["headers"], "Idempotency-Key": request_id},
+        json={"client_request_id": request_id},
+    )
+    assert created.status_code == 201, created.text
+    listed = await client.get(f"{ROOT}/members/{member}/consultations", headers=owner["headers"])
+    assert listed.status_code == 200, listed.text
+    assert [item["thread_id"] for item in listed.json()["items"]] == [created.json()["thread_id"]]
+
+
 async def test_closed_consultation_rejects_requests_before_message_queue_or_run(health_http):
     """云未配置、未绑定及多模态替代入口均不能产生 Message/Request/Run。"""
     client, users = health_http
@@ -571,6 +646,7 @@ async def test_consultation_tools_read_confirmed_records_under_current_pg_lease_
     monkeypatch.setattr(graph_module.SteerMiddleware, "_jump_if_steer_requested", AsyncMock(return_value=None))
     backend = graph_module.HealthConsultationAgent()
     graph_context = BaseContext(**vars(context))
+    graph_context.tools = consultation_service.HEALTH_TOOL_NAMES
     graph_context._runtime_prepared = True
     graph = await backend.get_graph(context=graph_context)
     graph_config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 20}
@@ -607,7 +683,7 @@ async def test_consultation_tools_read_confirmed_records_under_current_pg_lease_
         grant = await session.get(HealthGrant, (member, owner["uid"]))
         grant.scopes = ["ai_use", "diet_edit"]
     with pytest.raises(HealthVisionError, match="not_found"):
-        await consultation_service.require_consultation_attempt(context)
+        await consultation_service.require_consultation_attempt(context, history)
 
 
 async def test_consultation_private_history_memory_dashboard_and_sse_recheck_revocation(health_http, monkeypatch):

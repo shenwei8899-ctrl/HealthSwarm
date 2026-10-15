@@ -4,8 +4,13 @@ from sqlalchemy import and_, or_, select, text
 
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
 from yuxi.services.health_vision_types import HealthVisionError
-from yuxi.storage.postgres.models_business import AgentRun, Conversation, Project
-from yuxi.storage.postgres.models_health import HealthConsultation, HealthDailyConversation, HealthSafePlannerPreview
+from yuxi.storage.postgres.models_business import AgentRun, Conversation, Message, Project, TOOL_AUDIT_MESSAGE_TYPE
+from yuxi.storage.postgres.models_health import (
+    HealthConsultation,
+    HealthDailyConversation,
+    HealthProcessingConsent,
+    HealthSafePlannerPreview,
+)
 from yuxi.utils.datetime_utils import utc_now_naive
 
 CONSULTATION_SLUG = "health-consultation"
@@ -89,6 +94,28 @@ class HealthConsultationRepository:
             )
         )
 
+    async def require_active_create_replay(self, binding, *, uid, member_id, request_id):
+        """重放创建时只复核不可变绑定、会话和项目的当前归属。"""
+        conversation = await self.session.scalar(
+            select(Conversation)
+            .select_from(HealthConsultation)
+            .join(Conversation, Conversation.id == HealthConsultation.conversation_id)
+            .join(Project, Project.id == Conversation.project_id)
+            .where(
+                HealthConsultation.conversation_id == binding.conversation_id,
+                HealthConsultation.actor_uid == uid,
+                HealthConsultation.member_id == member_id,
+                HealthConsultation.request_id == request_id,
+                Conversation.uid == uid,
+                Conversation.status == "active",
+                Project.uid == uid,
+                Project.status == "active",
+            )
+        )
+        if conversation is None:
+            raise HealthVisionError("not_found", "专属咨询不存在或无权访问", 404)
+        return conversation
+
     async def authorize_indicator_member(self, uid, member_id, *, lock=False):
         """指标专属入口只属于具备档案读取权限的本人。"""
         health = HealthVisionRepository(self.session)
@@ -97,6 +124,15 @@ class HealthConsultationRepository:
         if member.owner_uid != uid or member.relationship_label != "本人":
             raise HealthVisionError("not_found", "指标记录助手仅支持自己的本人记录", 404)
         return member
+
+    async def require_active_consultation_consent(self, member_id, uid):
+        """在当前事务内重读成员的咨询用途同意。"""
+        consent = await self.session.get(
+            HealthProcessingConsent, (member_id, uid, "consultation"), populate_existing=True
+        )
+        if consent is None or consent.revoked_at is not None:
+            raise HealthVisionError("consent_required", "请先同意当前咨询用途", 403)
+        return consent
 
     async def authorize(self, uid, thread_id, *, lock=False, preview_history=False):
         """逐次验证会话、项目、账号及成员 grant，成员锁与撤回排序。"""
@@ -191,14 +227,64 @@ class HealthConsultationRepository:
             scopes = ()
         else:
             await health_repo.authorize(binding.member_id, uid, "ai_use", lock=lock)
-            scopes = (
-                ("diet_edit", "profile_view")
-                if conversation.agent_id == QUALITY_SLUG
-                else ("diet_edit",)
-                if conversation.agent_id == ANALYST_SLUG
-                else ("report_view", "diet_edit")
-            )
-        for scope in scopes:
+            if conversation.agent_id == CONSULTATION_SLUG:
+                scopes = ()
+            elif conversation.agent_id == QUALITY_SLUG:
+                scopes = ("diet_edit", "profile_view")
+            elif conversation.agent_id == ANALYST_SLUG:
+                scopes = ("diet_edit",)
+            else:
+                scopes = ("report_view", "diet_edit")
+            if conversation.agent_id == CONSULTATION_SLUG:
+                historical_runs = (
+                    await self.session.execute(
+                        select(AgentRun.manifest, AgentRun.status).where(
+                            AgentRun.conversation_id == binding.conversation_id
+                        )
+                    )
+                ).all()
+                prepared_tools = set()
+                for manifest, status in historical_runs:
+                    resources = manifest.get("resources") if isinstance(manifest, dict) else None
+                    names = resources.get("tools") if isinstance(resources, dict) else None
+                    if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+                        if status in {"completed", "failed", "cancelled", "interrupted"}:
+                            scopes += ("report_view", "diet_edit")
+                        continue
+                    if "query_family_nutrition_knowledge" not in names:
+                        scopes += ("report_view", "diet_edit")
+                    else:
+                        prepared_tools.update(names)
+                used_tools = set(
+                    (
+                        await self.session.scalars(
+                            select(Message.extra_metadata["tool_name"].as_string()).where(
+                                Message.conversation_id == binding.conversation_id,
+                                Message.message_type == TOOL_AUDIT_MESSAGE_TYPE,
+                                Message.role == "tool",
+                                Message.execution_status == "completed",
+                            )
+                        )
+                    ).all()
+                )
+                used_tools.update(prepared_tools)
+                if "get_confirmed_profile" in used_tools:
+                    scopes += ("report_view",)
+                if used_tools.intersection({"get_confirmed_diet", "get_meal_feedback"}):
+                    scopes += ("diet_edit",)
+                if used_tools.intersection(
+                    {
+                        "get_complete_health_profile",
+                        "get_member_weight_records",
+                        "get_member_blood_pressure_records",
+                        "get_member_blood_glucose_records",
+                        "get_member_blood_lipids_records",
+                    }
+                ):
+                    scopes += ("profile_view",)
+        if conversation.agent_id in EDUCATION_HEALTH_AGENTS:
+            await self.require_active_consultation_consent(binding.member_id, uid)
+        for scope in dict.fromkeys(scopes):
             await health_repo.authorize(binding.member_id, uid, scope)
         if conversation.agent_id in EDUCATION_HEALTH_AGENTS:
             from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository

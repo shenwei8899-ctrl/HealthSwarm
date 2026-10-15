@@ -25,6 +25,7 @@ from yuxi.services import health_blood_lipids_service, health_consultation_servi
 from yuxi.services.health_agent_roles import consultation_skill_prompt, health_agent_roles
 from yuxi.services.health_family_profile_service import validate_profile_publication
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.storage.postgres.models_health import HealthProcessingConsent
 
 
 def tool_runtime():
@@ -217,7 +218,31 @@ async def test_derived_consultation_without_new_tool_and_final_publication_reche
         assert "FROM health_consultation JOIN conversations" in str(statement)
         return binding
 
-    session = SimpleNamespace(scalar=AsyncMock(side_effect=scalar), get=AsyncMock(return_value=conversation))
+    async def get(model, identity, **kwargs):
+        """咨询用途同意与会话各返回当前合成事实。"""
+        if model is HealthProcessingConsent:
+            return SimpleNamespace(revoked_at=None)
+        return conversation
+
+    session = SimpleNamespace(
+        scalar=AsyncMock(side_effect=scalar),
+        get=AsyncMock(side_effect=get),
+        execute=AsyncMock(
+            return_value=SimpleNamespace(
+                all=lambda: [
+                    (
+                        {
+                            "resources": {
+                                "tools": ["query_family_nutrition_knowledge", "get_member_blood_lipids_records"]
+                            }
+                        },
+                        "completed",
+                    )
+                ]
+            )
+        ),
+        scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [])),
+    )
     monkeypatch.setattr(health_consultation_service.HealthVisionRepository, "authorize", AsyncMock())
     guards = [AsyncMock() for _ in range(5)]
     for repository, guard in zip(
@@ -312,7 +337,12 @@ async def test_actual_graph_binds_and_executes_fixed_blood_lipids_tool(monkeypat
     backend = HealthConsultationAgent()
     monkeypatch.setattr(backend, "_get_checkpointer", AsyncMock(return_value=InMemorySaver()))
     context = BaseContext(
-        uid="actor", thread_id="synthetic-thread", model="synthetic/fixed", run_id="run", worker_id="owner"
+        uid="actor",
+        thread_id="synthetic-thread",
+        model="synthetic/fixed",
+        run_id="run",
+        worker_id="owner",
+        tools=health_consultation_service.HEALTH_TOOL_NAMES,
     )
     context._runtime_prepared = True
     graph = await backend.get_graph(context=context)
@@ -324,7 +354,7 @@ async def test_actual_graph_binds_and_executes_fixed_blood_lipids_tool(monkeypat
     read.assert_awaited_once_with(context)
     assert tool_lists and all("get_member_blood_lipids_records" in tools for tools in tool_lists)
     assert all(set(tools) == set(health_consultation_service.HEALTH_TOOL_NAMES) for tools in tool_lists)
-    assert system_prompts and all('version: "2026.10.10.2"' in prompt for prompt in system_prompts)
+    assert system_prompts and all('version: "2026.10.14.1"' in prompt for prompt in system_prompts)
     tool_result = next(message for message in result["messages"] if message.type == "tool")
     assert tool_result.name == "get_member_blood_lipids_records"
     assert json.loads(tool_result.content) == read.return_value

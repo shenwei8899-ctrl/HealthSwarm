@@ -131,12 +131,14 @@ async def test_bound_consultation_fifo_preserves_confirmed_records_and_own_outpu
     assert "餐次反馈保存入口尚未接入" not in skill_text
     async with pg_manager.get_async_session_context() as session:
         skill = await session.scalar(select(Skill).where(Skill.slug == "family-nutritionist"))
-        assert skill is not None and skill.version == "2026.10.10.2"
+        assert skill is not None and skill.version == "2026.10.14.1"
         expected_skill = {
             "slug": "family-nutritionist",
             "version": skill.version,
             "content_hash": skill.content_hash,
-            "preload_content_hash": hashlib.sha256(skill_text.encode()).hexdigest(),
+            "preload_content_hash": hashlib.sha256(
+                skill_text.replace("\r\n", "\n").replace("\r", "\n").encode()
+            ).hexdigest(),
         }
     member_id = await create_member(client, headers)
     request_key = str(uuid4())
@@ -177,7 +179,7 @@ async def test_bound_consultation_fifo_preserves_confirmed_records_and_own_outpu
         try:
             for denied_thread, expected_status, expected_detail in (
                 (str(uuid4()), 404, "专属咨询不存在或无权访问"),
-                (thread_id, 403, "请先同意当前用途、处理方及政策"),
+                (thread_id, 403, "请先同意当前咨询用途"),
             ):
                 denied_request = str(uuid4())
                 submitted_requests.append(denied_request)
@@ -323,6 +325,7 @@ async def test_bound_consultation_fifo_preserves_confirmed_records_and_own_outpu
                             "get_member_blood_glucose_records",
                             "get_member_blood_lipids_records",
                             "query_reviewed_nutrition_knowledge",
+                            "query_family_nutrition_knowledge",
                             "get_member_memories",
                             "remember_member_fact",
                             "get_meal_feedback",

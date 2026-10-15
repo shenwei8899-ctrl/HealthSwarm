@@ -25,6 +25,7 @@ TOOLS = {
     "get_member_blood_glucose_records",
     "get_member_blood_lipids_records",
     "query_reviewed_nutrition_knowledge",
+    "query_family_nutrition_knowledge",
     "get_member_memories",
     "remember_member_fact",
     "get_meal_feedback",

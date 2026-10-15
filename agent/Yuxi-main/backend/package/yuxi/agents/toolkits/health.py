@@ -96,6 +96,14 @@ async def query_reviewed_nutrition_knowledge(query: str, runtime: ToolRuntime) -
     return await search_nutrition_evidence(runtime.context, query)
 
 
+@tool(category="health", display_name="家庭营养与食养科普检索", args_schema=HealthKnowledgeInput)
+async def query_family_nutrition_knowledge(query: str, runtime: ToolRuntime) -> dict:
+    """仅检索服务器固定家庭库的当前一般科普片段，不构成个体化建议。"""
+    from yuxi.services.health_family_kb_service import search_family_nutrition_knowledge
+
+    return await search_family_nutrition_knowledge(runtime.context, query)
+
+
 @tool(category="health", display_name="成员有效记忆", args_schema=HealthReadInput)
 async def get_member_memories(runtime: ToolRuntime) -> dict:
     """读取当前绑定成员的账号私有自述，不能当作确诊或正式档案。"""

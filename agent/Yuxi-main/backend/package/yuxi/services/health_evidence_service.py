@@ -35,6 +35,9 @@ async def read_consultation_citations(uid, run_id):
         answer = await repo.final_answer(run)
         ids = answer_citation_ids(answer.content)
         citations = await repo.validate_citations(ids, binding, uid, agent_slug=run.agent_slug, run_id=run.id)
+        from yuxi.services.health_family_kb_service import validate_family_kb_answer
+
+        await validate_family_kb_answer(session, run, binding, answer.content)
         return {
             "result_type": "nutrition_citations",
             "status": "cited" if ids else "not_cited",
@@ -58,16 +61,20 @@ async def validate_evidence_publication(session, run, content):
     if binding.conversation_id != run.conversation_id or binding.actor_uid != run.uid:
         raise HealthVisionError("citation_invalid", "引用与当前咨询线程不符", 409)
     ids = answer_citation_ids(content)
+    from yuxi.services.health_family_kb_service import validate_family_kb_publication
+
     if not ids:
         retrieved = await session.scalar(
             select(NutritionEvidenceCitation.id).where(NutritionEvidenceCitation.run_id == run.id).limit(1)
         )
         if retrieved is not None:
             raise HealthVisionError("citation_invalid", "答复缺少有效的本轮证据引用", 409)
+        await validate_family_kb_publication(session, run, binding, content)
         return
     await HealthEvidenceRepository(session).validate_citations(
         ids, binding, run.uid, agent_slug=run.agent_slug, run_id=run.id, lock=True
     )
+    await validate_family_kb_publication(session, run, binding, content)
 
 
 async def read_public_consultation_answer(session, run, uid, *, binding=None):
@@ -84,6 +91,9 @@ async def read_public_consultation_answer(session, run, uid, *, binding=None):
     answer = await repo.final_answer(run)
     ids = answer_citation_ids(answer.content)
     await repo.validate_citations(ids, binding, uid, agent_slug=run.agent_slug, run_id=run.id, lock=True)
+    from yuxi.services.health_family_kb_service import validate_family_kb_answer
+
+    await validate_family_kb_answer(session, run, binding, answer.content)
     return answer
 
 
@@ -189,6 +199,13 @@ async def validate_nutrition_answer(context, content, messages):
             except (ValueError, TypeError, KeyError):
                 raise HealthVisionError("citation_invalid", "本次检索结果无法校验", 409) from None
     ids = answer_citation_ids(content)
+    if "[资料:" in content or any(
+        isinstance(message, ToolMessage) and message.name == "query_family_nutrition_knowledge"
+        for message in messages[start:]
+    ):
+        from yuxi.services.health_family_kb_service import validate_family_kb_model_answer
+
+        await validate_family_kb_model_answer(context, content)
     if retrieved and not ids:
         raise HealthVisionError("citation_invalid", "答复缺少有效的本轮证据引用", 409)
     if not ids:

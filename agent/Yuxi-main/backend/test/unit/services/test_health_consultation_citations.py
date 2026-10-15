@@ -222,7 +222,7 @@ async def test_final_answer_rejects_changed_conversation_identity(field, value):
     ],
 )
 def test_current_nutritionist_replay_rejects_missing_newly_registered_tool(removed):
-    """11工具的显式oracle必须拒绝缺少任一正式记录工具。"""
+    """固定工具清单的显式oracle必须拒绝缺少任一正式记录工具。"""
     from test.support.health_consultation_replay_server import validate_request
     from test.unit.services.test_health_consultation_replay import AUTH, replay_body
 

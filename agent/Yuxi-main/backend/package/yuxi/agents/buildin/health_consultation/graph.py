@@ -15,6 +15,7 @@ from yuxi.agents.toolkits.health import (
     get_member_blood_glucose_records,
     get_member_blood_lipids_records,
     query_reviewed_nutrition_knowledge,
+    query_family_nutrition_knowledge,
     get_member_memories,
     remember_member_fact,
     get_meal_feedback,
@@ -55,18 +56,20 @@ class HealthAuthorizationMiddleware(AgentMiddleware):
             }
 
     async def awrap_model_call(self, request, handler):
-        """模型输入排除已经修改或撤回的历史记忆轮次。"""
+        """模型输入排除旧家庭库正文及已经修改或撤回的历史轮次。"""
+        from yuxi.services.health_family_kb_service import filter_family_kb_history
         from yuxi.services.health_meal_feedback_service import filter_health_history
 
-        messages = await filter_health_history(request.runtime.context, request.messages)
+        messages = filter_family_kb_history(request.messages)
+        messages = await filter_health_history(request.runtime.context, messages)
         return await handler(request.override(messages=messages))
 
 
 class HealthConsultationAgent(BaseAgent):
-    """健康咨询仅使用授权记录、自述记忆及审核科普。"""
+    """健康咨询仅使用本轮授权记录、自述记忆及受控科普来源。"""
 
     name = "成员专属营养咨询"
-    description = "读取成员已确认记录和审核通用科普，校验营养证据引用，不生成治疗或个人配餐方案。"
+    description = "按当前授权读取成员记录和通用科普，核对资料与证据引用，不生成治疗或个人配餐方案。"
     prompt_name = "CONSULTATION_PROMPT"
     consultation_tools = (
         get_confirmed_profile,
@@ -77,6 +80,7 @@ class HealthConsultationAgent(BaseAgent):
         get_member_blood_glucose_records,
         get_member_blood_lipids_records,
         query_reviewed_nutrition_knowledge,
+        query_family_nutrition_knowledge,
         get_member_memories,
         remember_member_fact,
         get_meal_feedback,
@@ -90,9 +94,13 @@ class HealthConsultationAgent(BaseAgent):
             raise ValueError("构图需要已准备的 Context")
         await health_consultation_service.require_consultation_attempt(context)
         model_info = model_cache.get_model_info(context.model)
+        tools = list(self.consultation_tools)
+        if self.prompt_name == "CONSULTATION_PROMPT":
+            allowed = set(context.tools)
+            tools = [tool for tool in tools if tool.name in allowed]
         return create_agent(
             model=load_chat_model(fully_specified_name=context.model, session_id=context.thread_id),
-            tools=list(self.consultation_tools),
+            tools=tools,
             system_prompt=getattr(health_consultation_service, self.prompt_name),
             middleware=[
                 SteerMiddleware(),

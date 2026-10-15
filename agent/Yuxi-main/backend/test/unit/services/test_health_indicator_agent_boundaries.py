@@ -20,6 +20,7 @@ from yuxi.repositories.health_weight_repository import HealthWeightRepository
 from yuxi.services import agent_run_service, health_consultation_service, health_evidence_service
 from yuxi.services.health_family_profile_service import validate_profile_publication
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.storage.postgres.models_health import HealthProcessingConsent
 
 CASES = (
     ("health-blood-glucose", HealthBloodGlucoseAgent, "get_member_blood_glucose_records", "BLOOD_GLUCOSE_PROMPT"),
@@ -129,11 +130,18 @@ async def test_derived_specialist_answer_rechecks_source_without_another_tool_re
     """来源失效阻止旧线程派生回答、完成发布和公开正文。"""
     binding = SimpleNamespace(member_id="member", actor_uid="actor", conversation_id=7)
     conversation = SimpleNamespace(agent_id=slug)
+
+    async def get(model, identity, **kwargs):
+        """提供当前会话及有效的咨询用途同意。"""
+        if model is HealthProcessingConsent:
+            return SimpleNamespace(revoked_at=None)
+        return conversation
+
     session = SimpleNamespace(
         scalar=AsyncMock(
             side_effect=lambda query: binding if "FROM health_consultation JOIN conversations" in str(query) else None
         ),
-        get=AsyncMock(return_value=conversation),
+        get=AsyncMock(side_effect=get),
     )
     monkeypatch.setattr(HealthConsultationRepository, "validate_personal_target_runs", AsyncMock())
     monkeypatch.setattr(

@@ -218,7 +218,7 @@ async def test_visible_member_reports_own_missing_scopes_without_private_profile
         "version": None,
     }
     tasks = task_map(result)
-    assert set(tasks["consultation"]["missing_scopes"]) == {"ai_use", "report_view"}
+    assert tasks["consultation"]["missing_scopes"] == ["ai_use"]
     assert tasks["diet_analysis"]["missing_scopes"] == ["ai_use"]
     assert set(tasks["quality_check"]["missing_scopes"]) == {"ai_use", "profile_view"}
     assert all(tasks[kind]["reason_code"] == "missing_scopes" for kind in BASIC_TASKS + SELECTED_TASKS)

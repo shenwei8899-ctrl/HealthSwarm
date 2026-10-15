@@ -272,7 +272,7 @@ def test_shipping_skills_keep_required_dependencies():
         "preview_safe_plan_regeneration",
     ]
     assert found["family-nutritionist"]["name"] == "家庭营养师"
-    assert found["family-nutritionist"]["version"] == "2026.10.10.2"
+    assert found["family-nutritionist"]["version"] == "2026.10.14.1"
     assert found["family-nutritionist"]["tool_dependencies"] == [
         "get_confirmed_profile",
         "get_confirmed_diet",
@@ -282,6 +282,7 @@ def test_shipping_skills_keep_required_dependencies():
         "get_member_blood_glucose_records",
         "get_member_blood_lipids_records",
         "query_reviewed_nutrition_knowledge",
+        "query_family_nutrition_knowledge",
         "get_member_memories",
         "remember_member_fact",
         "get_meal_feedback",

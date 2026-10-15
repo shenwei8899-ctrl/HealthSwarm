@@ -24,6 +24,7 @@ from yuxi.services import health_blood_pressure_service, health_consultation_ser
 from yuxi.services.health_agent_roles import consultation_skill_prompt, health_agent_roles
 from yuxi.services.health_family_profile_service import validate_profile_publication
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.storage.postgres.models_health import HealthProcessingConsent
 
 
 @pytest.fixture
@@ -282,7 +283,35 @@ async def test_consultation_and_final_publication_recheck_both_measurement_depen
         assert "FROM health_consultation JOIN conversations" in str(statement)
         return binding
 
-    session = SimpleNamespace(scalar=AsyncMock(side_effect=scalar), get=AsyncMock(return_value=conversation))
+    async def get(model, identity, **kwargs):
+        """分别提供当前会话与咨询用途同意。"""
+        if model is HealthProcessingConsent:
+            return SimpleNamespace(revoked_at=None)
+        return conversation
+
+    session = SimpleNamespace(
+        scalar=AsyncMock(side_effect=scalar),
+        get=AsyncMock(side_effect=get),
+        execute=AsyncMock(
+            return_value=SimpleNamespace(
+                all=lambda: [
+                    (
+                        {
+                            "resources": {
+                                "tools": [
+                                    "query_family_nutrition_knowledge",
+                                    "get_member_weight_records",
+                                    "get_member_blood_pressure_records",
+                                ]
+                            }
+                        },
+                        "completed",
+                    )
+                ]
+            )
+        ),
+        scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [])),
+    )
     monkeypatch.setattr(boundary.HealthVisionRepository, "authorize", AsyncMock())
     profile, weight, bp = AsyncMock(), AsyncMock(), AsyncMock()
     monkeypatch.setattr(HealthFamilyProfileRepository, "validate_history", profile)

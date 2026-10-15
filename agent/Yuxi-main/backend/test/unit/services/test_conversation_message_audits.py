@@ -2,8 +2,11 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 from yuxi.services import conversation_service
+from yuxi.services import health_family_kb_service
+from yuxi.services.health_vision_types import HealthVisionError
 
 
 @pytest.mark.asyncio
@@ -226,3 +229,150 @@ async def test_get_thread_message_audits_view_uses_agent_run_terminal_status(mon
     assert result["runs_truncated"] is False
     assert result["runs"][0]["status"] == "cancelled"
     assert result["runs"][0]["timing"]["total_latency_ms"] == 1000
+
+
+@pytest.mark.asyncio
+async def test_family_knowledge_audits_are_checked_before_truncated_timeline(monkeypatch):
+    """即使来源审计不在最新 500 条中，也不能公开旧资料的审计时间线。"""
+
+    class FakeConversationRepository:
+        def __init__(self, _db):
+            pass
+
+        async def list_message_audits(self, *_args, **_kwargs):
+            pytest.fail("stale source must stop serialization")
+
+    class FakeSession:
+        async def scalars(self, _statement):
+            return SimpleNamespace(all=lambda: [SimpleNamespace(id=1)])
+
+    async def fake_require_user_conversation(_repository, _thread_id, _uid):
+        return SimpleNamespace(id=7, agent_id=conversation_service.CONSULTATION_SLUG)
+
+    async def reject_stale_audit(_session, _audit):
+        raise HealthVisionError("source_invalidated", "资料版本已失效", 410)
+
+    monkeypatch.setattr(conversation_service, "ConversationRepository", FakeConversationRepository)
+    monkeypatch.setattr(conversation_service, "require_user_conversation", fake_require_user_conversation)
+    monkeypatch.setattr(health_family_kb_service, "validate_family_kb_audit", reject_stale_audit)
+
+    with pytest.raises(HTTPException) as caught:
+        await conversation_service.get_thread_message_audits_view(
+            thread_id="thread-1", current_uid="user-1", db=FakeSession()
+        )
+    assert caught.value.status_code == 410
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["running", "failed", "completed", "interrupted", "abandoned"])
+async def test_unpublished_family_knowledge_audit_redacts_whole_run(monkeypatch, status):
+    """失败、运行中或错误输出的家庭检索只公开同 Run 的诊断元数据。"""
+    poison = "未经校验的家庭库片段"
+    now = datetime(2026, 8, 30, 1, 0, 0)
+    model_audit = SimpleNamespace(
+        id=1,
+        role="assistant",
+        content=poison,
+        created_at=now,
+        run_id="run-1",
+        request_id="request-1",
+        message_type="model_audit",
+        operation_id="model-1",
+        started_at=now,
+        finished_at=now,
+        duration_ms=5,
+        sequence=1,
+        execution_status="completed",
+        usage={"provider_note": poison},
+        extra_metadata={"content": [{"type": "text", "text": poison}], "reasoning_content": poison},
+        tool_calls=[
+            SimpleNamespace(
+                id=1,
+                langgraph_tool_call_id="call-1",
+                tool_name=health_family_kb_service.TOOL_NAME,
+                tool_input={"query": poison},
+                tool_output=poison,
+                status="success",
+                error_message=poison,
+            )
+        ],
+    )
+    family_audit = SimpleNamespace(
+        id=2,
+        role="tool",
+        content=poison,
+        created_at=now,
+        conversation_id=7,
+        run_id="run-1",
+        request_id="request-1",
+        message_type="tool_audit",
+        operation_id="call-1",
+        started_at=now,
+        finished_at=now,
+        duration_ms=10,
+        sequence=2,
+        execution_status=status,
+        extra_metadata={
+            "tool_call_id": "call-1",
+            "tool_name": health_family_kb_service.TOOL_NAME,
+            "input": {"query": poison},
+            "output": {"status": "error", "content": poison},
+            "error_message": poison,
+        },
+    )
+    other_audit = SimpleNamespace(
+        id=3,
+        role="tool",
+        content="ordinary output",
+        created_at=now,
+        run_id="run-2",
+        request_id="request-2",
+        message_type="tool_audit",
+        operation_id="call-2",
+        started_at=now,
+        finished_at=now,
+        duration_ms=10,
+        sequence=2,
+        execution_status="completed",
+        extra_metadata={"tool_call_id": "call-2", "tool_name": "other", "output": "ordinary output"},
+    )
+
+    class FakeConversationRepository:
+        def __init__(self, _db):
+            pass
+
+        async def list_message_audits(self, *_args, **_kwargs):
+            return [model_audit, family_audit, other_audit], False
+
+        async def list_agent_runs_for_trace(self, *_args, **_kwargs):
+            return [], False
+
+    class FakeSession:
+        async def scalars(self, _statement):
+            return SimpleNamespace(all=lambda: [family_audit])
+
+        async def scalar(self, _statement):
+            return SimpleNamespace(id="run-1")
+
+    async def fake_require_user_conversation(_repository, _thread_id, _uid):
+        return SimpleNamespace(id=7, agent_id=conversation_service.CONSULTATION_SLUG)
+
+    monkeypatch.setattr(conversation_service, "ConversationRepository", FakeConversationRepository)
+    monkeypatch.setattr(conversation_service, "require_user_conversation", fake_require_user_conversation)
+
+    result = await conversation_service.get_thread_message_audits_view(
+        thread_id="thread-1", current_uid="user-1", db=FakeSession()
+    )
+
+    model, family, other = result["audits"]
+    assert poison not in str(result)
+    assert model["content"] == ""
+    assert model["content_blocks"] == []
+    assert model["tool_calls"][0]["args"] == {}
+    assert model["tool_calls"][0]["tool_call_result"] is None
+    assert family["execution_status"] == status
+    assert family["content"] == ""
+    assert family["tool_input"] == {}
+    assert family["tool_output"] is None
+    assert family["error_message"] is None
+    assert other["content"] == "ordinary output"

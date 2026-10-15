@@ -209,7 +209,7 @@ async def test_visible_member_missing_scopes_precede_resources_and_profile_is_un
     sources.health.visible_member_scopes.return_value = (sources.user, {"diet_edit"})
     result = await service_module.member_capabilities(sources.uid, sources.member_id)
     tasks = {task.task_type: task for task in result.tasks}
-    assert tasks["consultation"].missing_scopes == ["ai_use", "report_view"]
+    assert tasks["consultation"].missing_scopes == ["ai_use"]
     assert tasks["diet_analysis"].missing_scopes == ["ai_use"]
     assert tasks["quality_check"].missing_scopes == ["ai_use", "profile_view"]
     assert all(task.reason_code == "missing_scopes" for task in result.tasks[:8])
