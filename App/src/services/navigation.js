@@ -1,5 +1,5 @@
 import { isMockMode } from './config.js'
-const apiPages = new Set(['pages/index/index', 'pages/account/index'])
+const apiPages = new Set(['pages/index/index', 'pages/account/index', 'pages/family-shared/index'])
 export function registerApiPages(pages) { pages.forEach(page => apiPages.add(page.replace(/^\//, '').split('?')[0])) }
 export function canOpenPage(url) { return isMockMode || apiPages.has((url || '').replace(/^\//, '').split('?')[0]) }
 export function guardInitialH5Route(location, history) {

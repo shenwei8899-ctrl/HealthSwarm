@@ -8,6 +8,7 @@
       }
     },
     {"path":"pages/account/index","style":{"navigationStyle":"custom","navigationBarTitleText":"账号与家庭"}},
+    {"path":"pages/family-shared/index","style":{"navigationStyle":"custom","navigationBarTitleText":"家庭共享档案"}},
     {
       "path": "pages/profile/member",
       "style": {

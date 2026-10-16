@@ -92,11 +92,17 @@ deliverables/家庭营养师-离线体验版.html            单文件离线体�
 
 ### 接入真实服务的入口
 
+2026-10-16 家庭档案共享：API 模式可使用已有健康业务账号登录（`/api/auth/token`），在“账号与家庭”选定家庭后进入“查看与维护家庭共享档案”。有效同家庭成员可维护未认领成员的姓名、关系、健康及饮食资料、五类实测和修改历史。保存携带服务端版本，冲突或结果未知时先重新读取；退出及权限失效后清理页面资料。本人确认、AI、报告原图和订单仍按各自权限处理。商城身份不会自动变成健康业务身份。
+
+H5 的 `VITE_API_BASE_URL` 留空时使用同源 `/api`；本地开发可通过 `VITE_HEALTH_API_PROXY` 指向开发 API（默认 `http://127.0.0.1:15050`），发布时需配置同源反向代理。微信小程序仍要求 HTTPS API 地址及合法域名。默认 mock 模式不变，原本地演示档案不会自动迁入云端。业务账号登录不代表微信登录服务端已经交付。
+
+共享页面本地工程验收：207 项 App 单测、H5/mp-weixin 构建、正式 H5→真实 HTTP→独立 PostgreSQL 合成家庭及直接数据库回读通过；微信真机、生产客户端发布与业务签认仍待完成。复现流程见 [家庭共享浏览器验收](tests/e2e/README.md)。
+
 参考 `.env.example`，在本机 `.env.local` 配置 `VITE_SERVICE_MODE=api` 及 `VITE_API_BASE_URL`，配置变更后重启开发服务或重建。默认仍为 `mock`；不要在前端填写 AppSecret、模型密钥或支付密钥。
 
-`src/services/index.js` 的 `registerApiAdapters()` 用于挂载接口适配器，当前已注册微信登录；`src/services/request.js` 提供 HTTPS 请求、会话、超时、HTTP 错误及 traceId 处理。真实会话保存最小业务账号、token 和当前家庭选择，允许用户尚未加入家庭。其他服务方法仍是前端内部约定，需要各自完成后台契约适配。
+`src/services/index.js` 的 `registerApiAdapters()` 用于挂载接口适配器，当前已注册微信登录；`src/services/request.js` 提供 HTTPS 或 H5 同源请求、会话、超时、HTTP 错误及 traceId 处理。真实会话保存最小业务账号、token 和当前家庭选择，允许用户尚未加入家庭。其他服务方法仍是前端内部约定，需要各自完成后台契约适配。
 
-`api` 模式下未注册的服务明确失败，不回退到 mock；当前开放登录页和“账号与家庭”页，可读取真实家庭、选择/创建/通过成员邀请加入家庭，并维护和确认本人的基础资料。完成某页所有数据来源的真实适配和验证后，再通过 `registerApiPages()` 放行路由。其余菜单、档案、记忆、报告和照片仍含本地演示逻辑，不能仅注册订单接口就把全部页面放行。开发者工具仍需实际 AppID、合法域名及真机验收。
+`api` 模式下未注册的服务明确失败，不回退到 mock；当前开放登录页、“账号与家庭”及“家庭共享档案”页，可读取真实家庭、选择/创建/通过成员邀请加入家庭，维护共享资料及实测，并在本人页面确认本人基础资料。完成某页所有数据来源的真实适配和验证后，再通过 `registerApiPages()` 放行路由。其余菜单、档案、记忆、报告和照片仍含本地演示逻辑，不能仅注册订单接口就把全部页面放行。开发者工具仍需实际 AppID、合法域名及真机验收。
 
 当前内部订单方法为 orders、order、createOrder、payOrder、paymentResult、receive、pausePlan、resumePreview、resumePlan、changeBatchAddress、refundPreview、cancelRemaining、submitAfterSale。商城返回的 allowedActions 决定按钮权限；实际支付还需接微信支付参数、调起支付及服务端查询，不能直接使用模拟结果选择器。
 

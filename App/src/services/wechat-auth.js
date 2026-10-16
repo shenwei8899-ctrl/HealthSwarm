@@ -1,13 +1,14 @@
 import { request } from './request.js'
 import { getSession, setSession, clearSession, sessionRevision } from './session.js'
 import { createWechatAuthClient } from './wechat-auth-client.js'
+import { createBusinessAuthClient } from './business-auth-client.js'
 
 let isWechat = false
 // #ifdef MP-WEIXIN
 isWechat = true
 // #endif
 
-export const wechatAuth = createWechatAuthClient({
+const client = createWechatAuthClient({
   send: request,
   session: { read: getSession, save: setSession, clear: clearSession, revision: sessionRevision },
   appId: (import.meta.env || {}).VITE_WECHAT_APPID || '',
@@ -19,3 +20,13 @@ export const wechatAuth = createWechatAuthClient({
     })
   }),
 })
+const business = createBusinessAuthClient({ send: request,
+  session: { read: getSession, save: setSession, clear: clearSession, revision: sessionRevision } })
+export const wechatAuth = {
+  ...client,
+  loginWithPassword: business.login,
+  restore: () => getSession()?.authSource === 'business' ? business.restore() : client.restore(),
+  selectFamily: id => getSession()?.authSource === 'business' ? business.selectFamily(id) : client.selectFamily(id),
+  cancelPending() { business.cancelPending(); client.cancelPending() },
+  logout() { business.cancelPending(); client.logout() },
+}

@@ -1,0 +1,113 @@
+import fs from 'node:fs/promises'
+import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
+const { chromium } = createRequire(import.meta.url)('playwright')
+const dir=process.env.FORMAL_CLIENT_EVIDENCE
+assert.ok(dir, 'FORMAL_CLIENT_EVIDENCE must point to an isolated synthetic fixture directory')
+for(let i=0;i<120;i++){try{const r=await fetch('http://127.0.0.1:15486/fixture-ready');if(r.ok)break}catch{}if(i===119)throw new Error('fixture not ready');await new Promise(r=>setTimeout(r,1000))}
+const fixture=JSON.parse(await fs.readFile(`${dir}/fixture.json`,'utf8'))
+const browser=await chromium.launch({headless:true})
+const context=await browser.newContext({viewport:{width:420,height:900}})
+const page=await context.newPage(), errors=[]
+page.on('pageerror',error=>errors.push(error.message))
+const button=text=>page.locator('uni-button:not([disabled])').filter({hasText:new RegExp('^'+text+'$')})
+const field=(label,scope=page)=>scope.locator('.archive-field').filter({has:page.locator('uni-text').filter({hasText:new RegExp('^'+label.replace(/[()]/g,'\\$&')+'$')})}).locator('input,textarea')
+const base='/api/family/'+fixture.family_id, target=base+'/members/'+fixture.target_id
+const outcomes=[]
+async function api(path,token,method='GET',body,expected=200){
+  const response=await fetch('http://127.0.0.1:15486'+path,{method,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined})
+  const data=await response.json();assert.equal(response.status,expected,JSON.stringify(data));return data
+}
+async function loginToken(username){const r=await fetch('http://127.0.0.1:15486/api/auth/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({username,password:fixture.password})});assert.equal(r.status,200);return(await r.json()).access_token}
+async function save(text,method='PUT'){
+  const response=page.waitForResponse(r=>r.url().includes('/api/family/')&&r.request().method()===method)
+  await button(text).click();const result=await response;assert.equal(result.status(),200,await result.text())
+  await button('重新读取家庭档案').waitFor();await page.getByText('已保存，并重新读取服务端记录。',{exact:true}).waitFor()
+}
+try {
+  await page.goto('http://127.0.0.1:15187/')
+  await page.locator('uni-input').filter({hasText:'业务账号 UID 或手机号'}).locator('input').fill('formal_peer')
+  await page.locator('uni-input').filter({hasText:'业务账号密码'}).locator('input').fill(fixture.password)
+  await page.getByText('登录家庭档案',{exact:true}).click()
+  await page.waitForURL('**/pages/account/index')
+  await page.getByText('合成共享家庭',{exact:true}).click()
+  await page.locator('uni-button:not([disabled])').filter({hasText:'查看与维护家庭共享档案'}).click()
+  await page.waitForURL('**/pages/family-shared/index')
+  await page.locator('uni-button:not([disabled])').filter({hasText:'待共享验收 · 未认领'}).click()
+  await page.getByText('待共享验收的档案',{exact:true}).waitFor();const owner=await loginToken('formal_owner'),peer=await loginToken('formal_peer'),stranger=await loginToken('formal_stranger');let member;
+  await button('编辑资料').click()
+  await field('过敏原（每行一项）').fill('取消的合成过敏原')
+  await button('取消编辑').click()
+  await page.waitForFunction(()=>!Array.from(document.querySelectorAll('textarea')).some(n=>n.value==='取消的合成过敏原'));assert.equal(await field('过敏原（每行一项）').inputValue(),'')
+  outcomes.push('取消编辑恢复已保存资料')
+  await button('编辑资料').click()
+  await field('身高（cm）').fill('166')
+  await field('饮食目标').fill('正式客户端合成目标')
+  await field('既往情况').fill('正式客户端合成记录')
+  await field('过敏原（每行一项）').fill('合成过敏原A\n合成过敏原B')
+  await field('工作日').fill('合成工作日安排')
+  await field('作息').fill('合成作息安排')
+  await save('保存档案资料')
+  await field('姓名或称呼').fill('共享验收成员')
+  await save('保存姓名与关系')
+  member=(await api(base,peer)).members.find(m=>m.id===fixture.target_id)
+  assert.equal(member.version,3);assert.equal(member.relationship_version,2);assert.equal(member.confirmed,false)
+  assert.equal(member.profile.height_cm,166);assert.equal(member.profile.condition_records[0].description,'合成情况');assert.equal(member.profile.medications,undefined)
+  assert.deepEqual(member.profile.allergens,['合成过敏原A','合成过敏原B'])
+  outcomes.push('同家庭普通成员维护未认领成员档案、名称、结构化资料及版本')
+  for(const [label,fields] of [['体重',{'体重（kg）':'60'}],['身高',{'身高（cm）':'166'}],['血压',{'收缩压（mmHg）':'120','舒张压（mmHg）':'80'}],['血糖',{'血糖（mmol/L）':'5.5'}],['血脂',{'总胆固醇（mmol/L）':'4.5','甘油三酯（mmol/L）':'1.2','高密度脂蛋白（mmol/L）':'1.3','低密度脂蛋白（mmol/L）':'2.4'}]]){
+    await button('记录'+label).click()
+    const form=page.locator('.record').filter({has:page.locator('uni-text').filter({hasText:'添加'+label})})
+    for(const [key,value] of Object.entries(fields))await field(key,form).fill(value)
+    await save('保存实测记录','POST')
+  }
+  let metrics=await api(target+'/measurements?days=366&include_voided=true',peer)
+  assert.equal(metrics.total,5);const weight=metrics.items.find(row=>row.kind==='weight')
+  const weightCard=page.locator('.record').filter({has:page.locator('uni-text').filter({hasText:/^体重 ·/})})
+  await weightCard.getByText('更正',{exact:true}).click()
+  await field('体重（kg）').fill('61');await field('更正原因').fill('合成更正')
+  await save('保存实测记录')
+  await weightCard.getByText('作废',{exact:true}).click()
+  await page.locator('.uni-modal input, .uni-modal textarea').fill('合成作废')
+  const voidResponse=page.waitForResponse(r=>r.url().endsWith('/void'))
+  await page.locator('.uni-modal__btn_primary').click();assert.equal((await voidResponse).status(),200)
+  await button('重新读取家庭档案').waitFor()
+  metrics=await api(target+'/measurements?days=366&include_voided=true',peer)
+  const finalWeight=metrics.items.find(row=>row.id===weight.id)
+  assert.equal(finalWeight.version,3);assert.equal(finalWeight.values.weight,61);assert.equal(finalWeight.previous.length,2);assert.ok(finalWeight.voided_at)
+  outcomes.push('五类实测保存、原ID更正递增版本并保留旧值、作废');
+  member=(await api(base,peer)).members.find(m=>m.id===fixture.target_id)
+  await button('编辑资料').click();await field('饮食目标').fill('过期版本不得覆盖')
+  await api(target,owner,'PUT',{expected_version:member.version,profile:{goal:'户主并发修改'}})
+  const conflict=page.waitForResponse(r=>r.url().endsWith(target)&&r.request().method()==='PUT')
+  await button('保存档案资料').click();assert.equal((await conflict).status(),409)
+  await page.getByText('资料已被更新，请重新读取后再修改。',{exact:true}).waitFor()
+  assert.ok(await page.getByText('保存档案资料',{exact:true}).getAttribute('disabled')!==null)
+  await button('重新读取家庭档案').click();await button('编辑资料').waitFor();assert.equal(await field('饮食目标').inputValue(),'户主并发修改')
+  outcomes.push('真实并发旧版本409、页面阻止重提并回读新值')
+  await api(base,stranger,'GET',undefined,404);await api(target+'/history',stranger,'GET',undefined,404)
+  await api(target, stranger,'PUT',{expected_version:4,profile:{goal:'跨家庭不得写入'}},404)
+  await api(target+'/confirm',peer,'POST',{expected_version:4},403)
+  outcomes.push('跨家庭读写拒绝、普通家庭成员不能代确认')
+  await page.screenshot({path:`${dir}/shared-before.png`})
+  const family=await api(base,owner),actor=family.members.find(m=>m.id===fixture.peer_member_id)
+  await api(base+'/members/'+actor.id+'/status',owner,'PUT',{is_active:false,expected_version:actor.relationship_version})
+  await button('重新读取家庭档案').click();await button('重新读取家庭档案').waitFor()
+  assert.equal(await page.getByText('共享验收成员的档案',{exact:true}).count(),0)
+  assert.equal(await page.locator('.archive-field').count(),0)
+  await api(base,peer,'GET',undefined,404)
+  outcomes.push('成员停用后真实服务拒绝且页面清除旧档案')
+  await page.getByText('‹',{exact:true}).click();await page.waitForURL('**/pages/account/index')
+  await page.getByText('退出登录',{exact:true}).click();await button('登录家庭档案').waitFor()
+  await page.locator('uni-input').filter({hasText:'业务账号 UID 或手机号'}).locator('input').fill('formal_stranger')
+  await page.locator('uni-input').filter({hasText:'业务账号密码'}).locator('input').fill(fixture.password)
+  await button('登录家庭档案').click();await page.waitForURL('**/pages/account/index')
+  await button('合成独立家庭').click();await button('查看与维护家庭共享档案').click();await page.waitForURL('**/pages/family-shared/index')
+  await button('编辑资料').waitFor();assert.equal(await page.getByText('共享验收成员的档案',{exact:true}).count(),0)
+  assert.equal(await field('既往情况').inputValue(),'')
+  outcomes.push('退出再登录另一账号与家庭不保留上一家庭资料')
+  assert.deepEqual(errors,[])
+  await fs.writeFile(`${dir}/browser-result.json`,JSON.stringify({status:'passed',outcomes,errors},null,2))
+  console.log(JSON.stringify({status:'passed',outcomes},null,2))
+} catch(error) {await page.screenshot({path:`${dir}/browser-failed.png`});console.log(await page.locator('body').innerText());throw error}
+finally {await browser.close()}

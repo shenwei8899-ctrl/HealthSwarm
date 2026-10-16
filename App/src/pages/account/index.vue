@@ -202,6 +202,7 @@ async function linkSelfProfile() {
     healthError.value = healthUncertain.value ? '关联结果暂未确认，请重新读取该健康成员的关联状态。' : e.message
   } finally { if (active(ticket)) healthBusy.value = false }
 }
+function openFamilyArchives() { uni.navigateTo({ url: '/pages/family-shared/index' }) }
 function logout() { discard(); wechatAuth.logout(); uni.reLaunch({ url: '/pages/index/index' }) }
 onShow(load); onHide(discard); onUnload(discard)
 </script>
@@ -212,6 +213,7 @@ onShow(load); onHide(discard); onUnload(discard)
     <view class="page-heading"><text class="display-title">建立自己的家庭</text><text v-if="account" class="subtitle">已登录：{{ account.accountName }}</text></view>
     <text v-if="error" class="error-note">{{ error }}</text>
     <button class="secondary-button" :disabled="busy" @click="load">{{ busy ? '正在读取…' : '重新读取家庭状态' }}</button>
+    <button v-if="account?.householdId" class="primary-button" :disabled="busy" @click="openFamilyArchives">查看与维护家庭共享档案</button>
     <template v-if="account">
       <view class="card section"><text class="section-title">选择家庭</text>
         <text v-if="!families.length" class="helper">你还没有加入家庭，可以创建自己的家庭或使用成员邀请码加入。</text>
@@ -250,7 +252,7 @@ onShow(load); onHide(discard); onUnload(discard)
         <text v-if="healthUncertain" class="helper">写入结果未确定，请先回读成员或关联状态。</text>
       </view>
       <text v-if="account.householdId && !member && !busy" class="helper">当前家庭没有可维护的本人成员，请使用对应成员邀请完成关联。</text>
-      <text class="helper">饮食首页、AI 和商城正在接入真实服务，完成后开放。当前可保存和核对自己的家庭及本人基础资料。</text>
+      <text class="helper">饮食首页、AI 和商城正在接入真实服务，完成后开放。当前可维护同家庭共享档案；本人确认、AI、报告和订单分别按各自权限办理。</text>
     </template>
   </view>
 </template>

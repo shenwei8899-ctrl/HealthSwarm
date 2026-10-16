@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => {
   return {
     server: {
       proxy: {
+        '/api': { target: process.env.VITE_HEALTH_API_PROXY || env.VITE_HEALTH_API_PROXY || 'http://127.0.0.1:15050', changeOrigin: true },
         '/commerce-api': {
           target: env.COMMERCE_PROXY_TARGET || 'http://127.0.0.1:18081',
           changeOrigin: true,

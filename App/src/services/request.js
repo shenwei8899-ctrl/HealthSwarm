@@ -3,7 +3,11 @@ import { getSession, clearSession, sessionRevision } from './session.js'
 import { storageContext } from './storage.js'
 // Paths and response mapping belong to the agreed backend adapters. Never retry writes automatically.
 export function request({ path, method = 'GET', data, headers = {}, timeout = 15000, authenticated = true }) {
-  if (!/^https:\/\//.test(apiBaseUrl) || !path?.startsWith('/') || path.startsWith('//')) {
+  let sameOrigin = false
+  // #ifdef H5
+  sameOrigin = typeof window !== 'undefined' && apiBaseUrl === ''
+  // #endif
+  if ((!sameOrigin && !/^https:\/\//.test(apiBaseUrl)) || !path?.startsWith('/') || path.startsWith('//')) {
     return Promise.reject(Object.assign(new Error('服务暂不可用，请稍后重试'), { code: 'API_NOT_CONFIGURED' }))
   }
   const session = getSession(), scope = storageContext(), revision = sessionRevision()
