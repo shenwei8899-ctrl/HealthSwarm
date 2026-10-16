@@ -66,6 +66,67 @@ function fixtureBase(options) {
   throw new Error('unexpected request ' + options.path)
 }
 
+test('selected indicator scope is sent unchanged and kept apart from default threads', async () => {
+  const selection = { start_date: '2026-10-01', end_date: '2026-10-16', records: [{ record_id: requestId, version: 2 }] }
+  const h = fixture()
+  await h.flow.open(memberId, taskType, selection)
+  await h.flow.createEntry()
+  assert.deepEqual(h.calls.find(call => call.path.endsWith('/task-entries')).data.selection, selection)
+  assert.equal(h.saved.has(`health-task:${memberId}:${taskType}`), false)
+  assert.equal(h.saved.has(`health-task:${memberId}:${taskType}:${JSON.stringify(selection)}`), true)
+})
+
+test('saved-meal chat binds the exact version and retries only thread creation', async () => {
+  const selection = { record_id: requestId, source_version: 2 }
+  let attempts = 0
+  const h = fixture({ send: async options => {
+    if (options.path.endsWith('/detail')) return { data: { id: requestId, source_version: 2 } }
+    if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [{ entry_type: 'diet_analysis', status: 'available' }] } }
+    if (options.path.endsWith('/feedback-conversation')) {
+      if (++attempts === 1) throw Object.assign(new Error('timeout'), { code: 'NETWORK_ERROR' })
+      return { data: { member_id: memberId, thread_id: threadId, agent_slug: 'health-diet-analyst', feedback_selection: selection } }
+    }
+    return fixtureBase(options)
+  } })
+  await h.flow.open(memberId, 'diet_analysis', selection)
+  await h.flow.createEntry(); await h.flow.createEntry()
+  const writes = h.calls.filter(call => call.method === 'POST')
+  assert.equal(writes.length, 2)
+  assert.ok(writes.every(call => call.path.endsWith('/feedback-conversation')))
+  assert.deepEqual(writes[0].data, { client_request_id: entryId, source_version: 2 })
+  assert.deepEqual(writes[0], writes[1])
+  assert.equal(h.flow.getState().entry.thread_id, threadId)
+})
+
+test('changed meal source cannot create a feedback thread', async () => {
+  const h = fixture({ send: async options => {
+    if (options.path.endsWith('/detail')) return { data: { id: requestId, source_version: 3 } }
+    if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [{ entry_type: 'diet_analysis', status: 'available' }] } }
+    return fixtureBase(options)
+  } })
+  await h.flow.open(memberId, 'diet_analysis', { record_id: requestId, source_version: 2 })
+  await h.flow.createEntry()
+  assert.equal(h.flow.getState().available, false)
+  assert.equal(h.calls.some(call => call.method === 'POST'), false)
+})
+
+test('meal feedback displays the verified receipt and rejects a different source', async () => {
+  const selection = { record_id: requestId, source_version: 2 }
+  let wrongSource = false
+  const h = fixture({ send: async options => {
+    if (options.path.endsWith('/detail')) return { data: { id: requestId, source_version: 2 } }
+    if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [{ entry_type: 'diet_analysis', status: 'available' }] } }
+    if (options.path.endsWith('/feedback-conversation')) return { data: { member_id: memberId, thread_id: threadId, agent_slug: 'health-diet-analyst', feedback_selection: selection } }
+    if (options.path.endsWith('/tasks/' + requestId)) return { data: { request_id: requestId, member_id: memberId, task_type: 'diet_analysis', thread_id: threadId, agent_slug: 'health-diet-analyst', request_status: 'dispatched', execution_status: 'completed', result: { result_type: 'meal_feedback', data: { status: 'saved', records: [{ ...selection, source_version: wrongSource ? 1 : 2 }], feedback: { diet_log_id: requestId, status: 'active', version: 1, details: { comment: '口味偏咸' } } } } } }
+    return fixtureBase(options)
+  } })
+  await h.flow.open(memberId, 'diet_analysis', selection); await h.flow.createEntry(); await h.flow.submit('记录这餐反馈：口味偏咸')
+  assert.match(h.flow.getState().result.text, /口味偏咸/)
+  wrongSource = true; await h.flow.refresh()
+  assert.equal(h.flow.getState().result, null)
+  assert.equal(h.flow.getState().available, false)
+})
+
 test('lost submit response keeps the same request ID and blocks a different question', async () => {
   let attempts = 0
   const h = fixture({ send: async options => {

@@ -14,6 +14,7 @@ from yuxi.repositories.health_vision_repository import HealthVisionRepository
 from yuxi.services.family_schemas import METRIC_UNITS, validate_metric_values
 from yuxi.services.family_service import authorized_fields
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.health_indicator_review_types import IndicatorSelection, indicator_review
 from yuxi.storage.postgres.models_business import AgentRun
 from yuxi.storage.postgres.models_health import HealthConsultation, HealthFamilyProfileLink
 from yuxi.utils.datetime_utils import format_utc_datetime
@@ -33,12 +34,20 @@ class HealthMeasurementRepository:
     def __init__(self, session):
         self.session = session
 
-    async def read(self, uid, member_id, period=None, *, lock=True, audit=True):
+    async def read(self, uid, member_id, period=None, *, lock=True, audit=True, selection=None):
         """只投影本人必要实测字段，不继承基础档案确认或营养安全状态。"""
         member = await HealthVisionRepository(self.session).authorize(member_id, uid, "profile_view", lock=lock)
         if member.owner_uid != uid or member.relationship_label != "本人":
             raise HealthVisionError("not_found", f"仅能读取自己的本人实测{self.label}", 404)
-        period, since, until = self.period_window(period)
+        chosen = IndicatorSelection.model_validate(selection) if selection is not None else None
+        if chosen is not None:
+            period = {
+                "start_date": chosen.start_date.isoformat(),
+                "end_date": chosen.end_date.isoformat(),
+                "timezone": "Asia/Shanghai",
+            }
+        period, since, until = self.period_window(period, selected=chosen is not None)
+        limit = 100 if chosen is not None else MEASUREMENT_LIMIT
         result = {
             "status": "not_ready",
             "code": f"{self.kind}_not_linked",
@@ -46,7 +55,7 @@ class HealthMeasurementRepository:
             "member_id": member_id,
             "source_member_id": None,
             "period": period,
-            "limit": MEASUREMENT_LIMIT,
+            "limit": limit,
             "records": [],
             "truncated": False,
             "full_health_profile_available": False,
@@ -59,9 +68,27 @@ class HealthMeasurementRepository:
                 raise HealthVisionError("not_found", f"无本人实测{self.label}字段访问授权", 403)
             family_repo = FamilyRepository(self.session)
             rows, total = await family_repo.measurement_page(
-                [source.id], [self.kind], since=since, until=until, limit=MEASUREMENT_LIMIT
+                [source.id],
+                [self.kind],
+                since=since,
+                until=until,
+                limit=limit,
+                **(
+                    {"record_ids": [str(item.record_id) for item in chosen.records]}
+                    if chosen and chosen.records
+                    else {}
+                ),
             )
-            for row in rows[:MEASUREMENT_LIMIT]:
+            if (
+                chosen
+                and chosen.records
+                and {row.id: row.version for row in rows}
+                != {str(item.record_id): item.version for item in chosen.records}
+            ):
+                raise HealthVisionError(
+                    "measurement_selection_changed", "所选记录不属于该范围或版本已变化，请重新选择", 409
+                )
+            for row in rows[:limit]:
                 try:
                     if not isinstance(row.values, dict) or any(
                         type(row.values.get(field)) not in (int, float) for field in self.value_fields.values()
@@ -88,12 +115,20 @@ class HealthMeasurementRepository:
                         "source": row.source,
                         "version": row.version,
                     }
-                    for row in rows[:MEASUREMENT_LIMIT]
+                    for row in rows[:limit]
                 ],
-                truncated=total > MEASUREMENT_LIMIT,
+                truncated=total > limit,
             )
+            if chosen is not None:
+                result["total"] = total
             if audit:
                 await family_repo.audit(link.family_id, source.id, uid, f"agent_{self.kind}_read")
+        if chosen is not None:
+            if chosen.records and not result["records"]:
+                raise HealthVisionError("measurement_selection_changed", "所选记录已不可读取", 409)
+            result["selection"] = chosen.model_dump(mode="json")
+            result.setdefault("total", 0)
+            result["review"] = indicator_review(result, self.value_fields, self.kind)
         result["source_hash"] = self.payload_hash(result)
         return result
 
@@ -102,7 +137,7 @@ class HealthMeasurementRepository:
         binding = await self.session.get(HealthConsultation, run.conversation_id)
         if binding is None or binding.actor_uid != run.uid or payload["member_id"] != binding.member_id:
             raise HealthVisionError(f"{self.kind}_source_changed", f"{self.label}读取缺少当前咨询绑定", 410)
-        period, _, _ = self.period_window(payload["period"])
+        period, _, _ = self.period_window(payload["period"], selected="selection" in payload)
         await self.session.execute(
             insert(self.use_model)
             .values(
@@ -135,7 +170,18 @@ class HealthMeasurementRepository:
                 "timezone": "Asia/Shanghai",
             }
             try:
-                current = await self.read(uid, binding.member_id, period, lock=lock, audit=False)
+                current = await self.read(
+                    uid,
+                    binding.member_id,
+                    period,
+                    lock=lock,
+                    audit=False,
+                    **(
+                        {"selection": binding.indicator_selection}
+                        if getattr(binding, "indicator_selection", None)
+                        else {}
+                    ),
+                )
             except HealthVisionError as error:
                 if error.status not in (403, 404):
                     raise
@@ -157,7 +203,13 @@ class HealthMeasurementRepository:
         if not isinstance(payload, dict) or "period" not in payload:
             raise HealthVisionError(f"{self.kind}_source_changed", f"{self.label}checkpoint无法核对", 410)
         try:
-            current = await self.read(uid, binding.member_id, payload["period"], audit=False)
+            current = await self.read(
+                uid,
+                binding.member_id,
+                payload["period"],
+                audit=False,
+                **({"selection": binding.indicator_selection} if getattr(binding, "indicator_selection", None) else {}),
+            )
         except HealthVisionError as error:
             if error.status not in (403, 404):
                 raise
@@ -196,7 +248,7 @@ class HealthMeasurementRepository:
         ).hexdigest()
 
     @classmethod
-    def period_window(cls, period=None):
+    def period_window(cls, period=None, *, selected=False):
         """北京时间自然日闭区间转换为数据库 UTC 半开区间。"""
         if period is None:
             end = datetime.now(DISPLAY_ZONE).date()
@@ -209,7 +261,8 @@ class HealthMeasurementRepository:
                     raise ValueError
                 start = date.fromisoformat(period["start_date"])
                 end = date.fromisoformat(period["end_date"])
-                if end - start != timedelta(days=29) or start.isoformat() != period["start_date"]:
+                valid_span = 0 <= (end - start).days < 366 if selected else end - start == timedelta(days=29)
+                if not valid_span or start.isoformat() != period["start_date"]:
                     raise ValueError
                 if end.isoformat() != period["end_date"]:
                     raise ValueError

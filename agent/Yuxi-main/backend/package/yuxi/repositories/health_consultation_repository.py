@@ -298,6 +298,9 @@ class HealthConsultationRepository:
             await HealthBloodPressureRepository(self.session).validate_history(uid, binding, lock=lock)
             await HealthBloodGlucoseRepository(self.session).validate_history(uid, binding, lock=lock)
             await HealthBloodLipidsRepository(self.session).validate_history(uid, binding, lock=lock)
+            from yuxi.repositories.health_diet_correction_repository import HealthDietCorrectionRepository
+
+            await HealthDietCorrectionRepository(self.session).validate_consultation_history(uid, binding)
         if conversation.agent_id == ANALYST_SLUG:
             from yuxi.repositories.health_diet_analysis_repository import HealthDietAnalysisRepository
             from yuxi.repositories.health_dialog_feedback_repository import HealthDialogFeedbackRepository

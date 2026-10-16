@@ -111,7 +111,8 @@ async def meal_pagination_http(monkeypatch, request):
         app.include_router(router, prefix="/api")
         app.dependency_overrides[get_db] = database
         listener = socket.socket()
-        listener.bind(("127.0.0.1", 0))
+        ui_port = int(os.getenv("HEALTH_WORKFLOW_UI_PORT", "0"))
+        listener.bind(("0.0.0.0" if ui_port else "127.0.0.1", ui_port))
         server = uvicorn.Server(uvicorn.Config(app, log_level="error", lifespan="off"))
         task = asyncio.create_task(server.serve(sockets=[listener]))
         for _ in range(100):

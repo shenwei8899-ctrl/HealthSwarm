@@ -133,6 +133,9 @@ async def create_health_task_entry(uid: str, member_id: str, data: HealthTaskEnt
                 "initial_meal_preview": "initial_selection",
                 "family_meal_revision": "family_selection",
                 "safe_meal_revision": "safe_selection",
+                "blood_glucose_review": "indicator_selection",
+                "blood_lipids_review": "indicator_selection",
+                "blood_pressure_review": "indicator_selection",
             }[chosen.task_type]
             selections[keyword] = chosen.selection.model_dump(mode="json")
         entry = await create_consultation(

@@ -805,6 +805,7 @@ class HealthVisionService:
                         member_id=draft.member_id,
                         confirmation_id=confirmation.id,
                         calculation_id=calculation.id,
+                        version=draft.version,
                         snapshot={"meal": draft.payload, "nutrition": calculation.result},
                     )
                 )
@@ -1052,7 +1053,7 @@ class HealthVisionService:
                 "created_at": format_utc_datetime(record.created_at),
             }
             if kind == "meal":
-                item["source_version"] = confirmation.draft_version
+                item["source_version"] = record.version or confirmation.draft_version
             result.append(item)
         return result
 

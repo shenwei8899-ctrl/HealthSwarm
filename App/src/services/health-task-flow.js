@@ -5,6 +5,7 @@ import { scopedStorage } from './storage.js'
 export const HEALTH_TEXT_TASKS = Object.freeze({
   consultation: '营养咨询', blood_glucose_review: '血糖记录回顾',
   blood_lipids_review: '血脂记录回顾', blood_pressure_review: '血压记录回顾',
+  diet_analysis: '已保存餐次反馈',
 })
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const terminalStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupted'])
@@ -24,6 +25,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   storage = scopedStorage, newId = newHealthRequestId, onChange = () => {},
   schedule = (fn, ms) => setTimeout(fn, ms), cancel = handle => clearTimeout(handle),
   pollInterval = 2000, pollLimit = 45 } = {}) {
+  let indicatorSelection = null
   let epoch = 0, readVersion = 0, timer = null, polls = 0, pendingQuery = '', storageKey = ''
   let state = { memberId: '', taskType: '', title: '', loading: false, busy: false, available: false,
     consentOption: null, entry: null, requestId: '', submitUnknown: false, status: '', result: null, error: '', notice: '' }
@@ -59,13 +61,17 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       forgetPrivate('当前任务或成员已不可读取，请返回核对身份、授权和资料来源。')
     } else { state.error = error?.message || '服务暂不可用，请手动重试'; emit() }
   }
-  async function open(memberId, taskType) {
+  async function open(memberId, taskType, selection = null) {
     hide()
+    indicatorSelection = selection
     if (!uuidPattern.test(memberId || '') || !Object.prototype.hasOwnProperty.call(HEALTH_TEXT_TASKS, taskType)) {
       state.error = '健康任务参数无效，请返回重新选择'; emit(); return
     }
     state.memberId = memberId; state.taskType = taskType; state.title = HEALTH_TEXT_TASKS[taskType]
-    storageKey = `health-task:${memberId}:${taskType}`
+    if (taskType === 'diet_analysis' && (!uuidPattern.test(selection?.record_id || '') || !Number.isInteger(selection?.source_version) || selection.source_version < 1)) {
+      state.error = '请从已保存餐次进入反馈。'; emit(); return
+    }
+    storageKey = `health-task:${memberId}:${taskType}${selection ? ':' + JSON.stringify(selection) : ''}`
     if (!session()?.token) { state.error = '请先登录后再读取健康任务'; emit(); return }
     const ticket = token(); state.loading = true; emit()
     try {
@@ -74,6 +80,11 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
         send({ path: `/api/health/v1/members/${memberId}/readiness` }),
       ])
       if (!current(ticket)) return
+      if (taskType === 'diet_analysis') {
+        const { data: source } = await send({ path: `/api/health/v1/members/${memberId}/diet-logs/${selection.record_id}/detail` })
+        if (!current(ticket)) return
+        if (source.id !== selection.record_id || source.source_version !== selection.source_version) throw mismatch()
+      }
       if (!Array.isArray(members.data) || !members.data.some(row => row.id === memberId && row.is_owner === true) ||
         readiness.data?.capabilities?.member_id !== memberId || !Array.isArray(readiness.data?.entries)) throw mismatch()
       const entry = readiness.data.entries.find(row => row.entry_type === taskType)
@@ -82,9 +93,11 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       if (entry?.reason_code === 'consent_required') {
         const policy = (await send({ path: '/api/health/v1/configuration' })).data
         if (!current(ticket)) return
-        if (policy?.consultation?.available === true && typeof policy.consultation.processor === 'string' &&
-          policy.consultation.processor && typeof policy.policy_version === 'string' && policy.policy_version) {
-          state.consentOption = { processor: policy.consultation.processor, policyVersion: policy.policy_version }
+        const purpose = taskType === 'diet_analysis' ? 'diet_analysis' : 'consultation'
+        const configured = policy?.[purpose]
+        if (configured?.available === true && typeof configured.processor === 'string' &&
+          configured.processor && typeof policy.policy_version === 'string' && policy.policy_version) {
+          state.consentOption = { processor: configured.processor, policyVersion: policy.policy_version, ...(purpose === 'diet_analysis' ? {purpose} : {}) }
           state.notice = '请先核对当前咨询处理方和政策版本，再明确选择是否同意。'
         }
       }
@@ -107,11 +120,11 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
     state.busy = true; state.error = ''; emit()
     try {
       const { data } = await send({ path: `/api/health/v1/members/${memberId}/processing-consents`, method: 'POST',
-        data: { purpose: 'consultation', accepted: true, processor: consentOption.processor,
+        data: { purpose: consentOption.purpose || 'consultation', accepted: true, processor: consentOption.processor,
           policy_version: consentOption.policyVersion } })
       if (!current(ticket)) return
       if (data?.accepted !== true) throw mismatch()
-      await open(memberId, taskType)
+      await open(memberId, taskType, indicatorSelection)
     } catch (error) { handle(error, ticket) }
     finally { if (current(ticket)) { state.busy = false; emit() } }
   }
@@ -122,10 +135,18 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
     if (!uuidPattern.test(clientId)) throw new Error('无法生成有效请求标识')
     state.entry = { client_request_id: clientId, pending: true }; state.busy = true; state.error = ''; save(); emit()
     try {
-      const response = await send({ path: `/api/health/v1/members/${id}/task-entries`, method: 'POST',
-        headers: { 'Idempotency-Key': clientId }, data: { task_type: type, client_request_id: clientId } })
+      const response = type === 'diet_analysis'
+        ? await send({ path: `/api/health/v1/diet-logs/${indicatorSelection.record_id}/feedback-conversation`, method: 'POST',
+          data: { client_request_id: clientId, source_version: indicatorSelection.source_version } })
+        : await send({ path: `/api/health/v1/members/${id}/task-entries`, method: 'POST',
+          headers: { 'Idempotency-Key': clientId }, data: { task_type: type, client_request_id: clientId, ...(indicatorSelection ? { selection: indicatorSelection } : {}) } })
       if (!current(ticket)) return
-      const row = response.data
+      let row = response.data
+      if (type === 'diet_analysis') {
+        if (row.member_id !== id || row.agent_slug !== 'health-diet-analyst' ||
+          row.feedback_selection?.record_id !== indicatorSelection.record_id || row.feedback_selection?.source_version !== indicatorSelection.source_version) throw mismatch()
+        row = { ...row, task_type: type, client_request_id: clientId, entry_status: 'ready', request_submit_url: '/api/agent/runs' }
+      }
       if (row?.member_id !== id || row?.task_type !== type || row?.client_request_id !== clientId) throw mismatch()
       if (row.entry_status !== 'ready') {
         state.entry = null; state.available = false; state.notice = row.entry_status === 'needs_input'
@@ -186,6 +207,14 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
           typeof data.result.answer === 'string' && Array.isArray(data.result.citations)) {
           state.result = { type: 'answer', text: data.result.answer,
             citations: data.result.citations.map(item => item.title).filter(Boolean) }
+        } else if (data.result?.result_type === 'meal_feedback' && data.result.data) {
+          const receipt = data.result.data
+          if (receipt.status !== 'saved' || receipt.feedback?.status !== 'active' ||
+            receipt.feedback?.diet_log_id !== indicatorSelection?.record_id ||
+            receipt.records?.length !== 1 || receipt.records[0].record_id !== indicatorSelection?.record_id ||
+            receipt.records[0].source_version !== indicatorSelection?.source_version ||
+            typeof receipt.feedback.details?.comment !== 'string') throw mismatch()
+          state.result = { type: 'answer', text: `这餐反馈已保存（v${receipt.feedback.version}）：${receipt.feedback.details.comment}`, citations: [] }
         } else if (data.result?.result_type === 'needs_input' && Array.isArray(data.result.questions)) {
           state.result = { type: 'needs_input', questions: data.result.questions }
         } else throw mismatch()

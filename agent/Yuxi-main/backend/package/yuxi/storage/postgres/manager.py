@@ -25,7 +25,7 @@ from yuxi.utils.singleton import SingletonMeta
 AGENT_RUN_TERMINAL_STATUS_SQL = ", ".join(f"'{status}'" for status in AGENT_RUN_TERMINAL_STATUSES)
 BUSINESS_SCHEMA_VERSION = 12
 KNOWLEDGE_SCHEMA_VERSION = 2
-HEALTH_SCHEMA_VERSION = 24
+HEALTH_SCHEMA_VERSION = 26
 SCHEMA_VERSION_TABLE = "yuxi_schema_migrations"
 AGENT_RUN_LEASE_SCHEMA_STATEMENTS = (
     "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS worker_id VARCHAR(128)",
@@ -568,6 +568,13 @@ class PostgresManager(metaclass=SingletonMeta):
         self._check_initialized()
         async with self.async_engine.begin() as conn:
             await conn.run_sync(lambda connection: BusinessBase.metadata.create_all(connection, tables=HEALTH_TABLES))
+            await conn.execute(text("ALTER TABLE diet_log ADD COLUMN IF NOT EXISTS version INTEGER"))
+            await conn.execute(
+                text(
+                    "UPDATE diet_log d SET version = c.draft_version FROM vision_confirmation c "
+                    "WHERE d.confirmation_id = c.id AND d.version IS NULL"
+                )
+            )
             for statement in (
                 "ALTER TABLE nutrition_evidence ADD COLUMN IF NOT EXISTS reviewed_scope JSONB",
                 "ALTER TABLE nutrition_evidence ADD COLUMN IF NOT EXISTS scope_hash VARCHAR(64)",
@@ -588,6 +595,9 @@ class PostgresManager(metaclass=SingletonMeta):
             )
             await conn.execute(
                 text("ALTER TABLE health_consultation ADD COLUMN IF NOT EXISTS personal_target_selection JSONB")
+            )
+            await conn.execute(
+                text("ALTER TABLE health_consultation ADD COLUMN IF NOT EXISTS indicator_selection JSONB")
             )
             await conn.execute(
                 text(

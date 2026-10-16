@@ -29,7 +29,7 @@ class HealthDietAnalysisRepository:
         draft = await HealthVisionRepository(self.session).draft(confirmation.draft_id, uid, "meal")
         if draft.review_status != "confirmed" or draft.version != confirmation.draft_version:
             raise HealthVisionError("source_invalidated", "餐次已更正或撤回，请选择当前确认记录", 410)
-        if source_version is not None and confirmation.draft_version != source_version:
+        if source_version is not None and (record.version or confirmation.draft_version) != source_version:
             raise HealthVisionError("version_conflict", "确认来源版本不一致，请刷新餐次", 409)
         return record, confirmation
 

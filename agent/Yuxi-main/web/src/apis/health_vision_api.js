@@ -11,6 +11,10 @@ export const healthVisionApi = {
   configuration: () => apiGet(`${root}/configuration`),
   configure: (data) => apiPut(`${root}/configuration`, data),
   members: () => apiGet(`${root}/members`),
+  indicatorReview: (id, kind, data) =>
+    apiPost(`${root}/members/${id}/indicator-reviews/${kind}`, data),
+  prepareNutritionImport: (data) => apiPost(`${root}/nutrition-imports`, data, idempotent(data)),
+  nutritionImport: (id) => apiGet(`${root}/nutrition-imports/${id}`),
   createMember: (data) => apiPost(`${root}/members`, data),
   grant: (id, data) => apiPut(`${root}/members/${id}/grants`, data),
   familyProfileLink: (id) => apiGet(`${root}/members/${id}/family-profile-link`),
@@ -108,7 +112,14 @@ export const healthVisionApi = {
       idempotent(data)
     ),
   list: (memberId) => apiGet(`${root}/members/${memberId}/vision`),
-  visionPage: (memberId, kind, jobsLimit = 20, jobsOffset = 0, draftsLimit = 20, draftsOffset = 0) =>
+  visionPage: (
+    memberId,
+    kind,
+    jobsLimit = 20,
+    jobsOffset = 0,
+    draftsLimit = 20,
+    draftsOffset = 0
+  ) =>
     apiGet(
       `${root}/members/${memberId}/vision/page?${buildQuery({
         kind,

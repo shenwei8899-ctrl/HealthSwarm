@@ -94,6 +94,7 @@ async def test_actual_model_entry_rejects_changed_body_with_real_source_identity
         snapshot={"name": "合成指标", "value_numeric": 5, "unit_raw": "synthetic"},
     )
     if kind == "meal":
+        record.version = 1
         record.snapshot = {
             "meal": {"meal_type": "lunch", "eaten_at": "2026-10-08T12:00:00+08:00", "items": []},
             "nutrition": {
@@ -120,7 +121,9 @@ async def test_actual_model_entry_rejects_changed_body_with_real_source_identity
     citation = SimpleNamespace(id="synthetic-citation", content_hash=source.content_hash, scope_hash=None)
     session = SimpleNamespace(get=AsyncMock(), execute=AsyncMock(return_value=[(citation, source)]))
     session.get.side_effect = lambda model, identity: (
-        record if model in (HealthObservation, DietLog) else SimpleNamespace(draft_id="synthetic-draft")
+        record
+        if model in (HealthObservation, DietLog)
+        else SimpleNamespace(draft_id="synthetic-draft", draft_version=1)
     )
 
     @asynccontextmanager

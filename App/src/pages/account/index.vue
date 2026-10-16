@@ -242,7 +242,8 @@ onShow(load); onHide(discard); onUnload(discard)
         <button v-for="item in healthMembers" :key="item.id" class="secondary-button" :disabled="healthBusy" @click="selectHealthMember(item.id)">{{ item.display_name }} · {{ item.relationship_label }} · {{ item.id.slice(0, 8) }}{{ selectedHealthId === item.id ? ' · 已选择' : '' }}</button>
         <text v-if="selectedHealthId && healthLink?.source_member_id" class="helper">当前关联来源：{{ healthLink.source_member_id === member.id && healthLink.family_id === account.householdId ? '已关联这个家庭的本人档案' : '其他档案，请勿覆盖' }}</text>
         <button v-if="selectedHealthId && !healthLink?.source_member_id" class="primary-button" :disabled="healthBusy || healthUncertain || !healthLink" @click="linkSelfProfile">确认这两个成员都是我，并建立关联</button>
-        <button v-if="selectedHealthId" class="secondary-button" :disabled="healthBusy" @click="readHealthDiagnostics">查看当前健康服务状态</button>
+        <button class="secondary-button" @click="uni.navigateTo({url: '/pages/records/index'})">记录实际饮食与更正</button>
+        <button v-if="selectedHealthId" class="secondary-button" :disabled="healthBusy" @click="uni.navigateTo({url: '/pages/indicators/index?memberId=' + selectedHealthId})">查看实测记录与统计</button><button v-if="selectedHealthId" class="secondary-button" :disabled="healthBusy" @click="readHealthDiagnostics">查看当前健康服务状态</button>
         <text v-if="healthDiagnostics" class="helper">以下状态来自当前服务端，只用于提示；实际提交时仍会重新核对授权与资料。</text>
         <view v-for="entry in healthEntries" :key="entry.entry_type">
           <text class="helper">{{ healthEntryLabels[entry.entry_type] }}：{{ healthEntryText(entry) }}</text>

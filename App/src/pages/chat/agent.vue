@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { onLoad, onShow, onHide, onUnload } from '@dcloudio/uni-app'
+import { scopedStorage } from '../../services/storage.js'
 import AppNavBar from '../../components/AppNavBar.vue'
 import { createHealthTaskFlow } from '../../services/health-task-flow.js'
 
@@ -14,8 +15,8 @@ const statusText = computed(() => ({ queued: '排队中', dispatched: '已派发
   cancel_requested: '正在取消', completed: '已完成', failed: '处理失败', cancelled: '已取消',
   interrupted: '运行中断', rejected: '请求被拒绝' })[view.value.status] || view.value.status)
 
-onLoad(options => { route.value = { memberId: options.memberId || '', taskType: options.taskType || '' } })
-onShow(() => { void flow.open(route.value.memberId, route.value.taskType) })
+onLoad(options => { route.value = { memberId: options.memberId || '', taskType: options.taskType || '', selection: options.indicatorChoice === '1' ? scopedStorage.getStorageSync('indicator-choice:' + options.memberId + ':' + options.taskType) : null } })
+onShow(() => { void flow.open(route.value.memberId, route.value.taskType, route.value.selection) })
 onHide(() => { flow.hide(); question.value = ''; consentChecked.value = false })
 onUnload(() => { flow.hide(); question.value = ''; consentChecked.value = false })
 function back() { uni.navigateBack() }

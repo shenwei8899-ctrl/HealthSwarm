@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
+import HealthIndicatorReview from './HealthIndicatorReview.vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { healthVisionApi as api } from '@/apis/health_vision_api'
@@ -32,6 +33,7 @@ const roles = [
     detail: '回顾成对血压记录，追问测量资料，解释审核知识。'
   }
 ]
+const indicatorSelection = ref(null)
 const selectedTask = ref(roles[0].task)
 const consent = ref(false)
 const working = ref(false)
@@ -49,8 +51,7 @@ const capability = computed(() =>
 )
 const canRead = computed(
   () =>
-    !!props.memberId &&
-    ['ai_use', 'profile_view'].every((scope) => props.scopes.includes(scope))
+    !!props.memberId && ['ai_use', 'profile_view'].every((scope) => props.scopes.includes(scope))
 )
 const canUse = computed(
   () =>
@@ -119,7 +120,11 @@ async function refreshCapabilities() {
 async function enter() {
   if (!canEnter.value) return
   if (!attempt.value)
-    attempt.value = { client_request_id: crypto.randomUUID(), task_type: role.value.task }
+    attempt.value = {
+      client_request_id: crypto.randomUUID(),
+      task_type: role.value.task,
+      selection: indicatorSelection.value
+    }
   const pending = attempt.value
   const chosen = role.value
   const id = props.memberId
@@ -203,11 +208,26 @@ onBeforeUnmount(() => {
         />
       </a-form-item>
       <p>{{ role.detail }}</p>
+      <HealthIndicatorReview
+        :member-id="memberId"
+        :kind="selectedTask.replace('_review', '')"
+        :allowed="scopes.includes('profile_view')"
+        @selection="
+          (value) => {
+            reset()
+            indicatorSelection = value
+          }
+        "
+      />
       <a-alert v-if="loading" type="info" message="正在核对所选成员的助手状态…" show-icon />
       <a-alert v-else-if="reason" type="info" :message="reason" show-icon />
       <a-alert v-if="error" type="error" :message="error" show-icon />
       <p class="hint">
-        将问题、当前对话历史、所选类别的授权实测记录及审核知识发送给已审批模型。实测仅包含近30个北京时间自然日最多20条记录，
+        将问题、当前对话历史、所选类别的授权实测记录及审核知识发送给已审批模型。{{
+          indicatorSelection
+            ? '实测使用上方已读取的固定日期及记录选择，最多100条。'
+            : '未选择范围时，实测仅包含近30个北京时间自然日最多20条记录。'
+        }}
         保留原值、单位、测量时间、来源、记录ID和版本；血糖保留 mmol/L
         及空腹、餐后2小时或随机的测量条件， 血压保留成对收缩压、舒张压及
         mmHg，血脂保留同条总胆固醇、甘油三酯、高密度脂蛋白、低密度脂蛋白及 mmol/L。 处理方：{{

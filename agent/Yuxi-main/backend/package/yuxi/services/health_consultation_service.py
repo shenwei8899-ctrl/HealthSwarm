@@ -158,6 +158,7 @@ async def create_consultation(
     safe_selection=None,
     purchase_selection=None,
     target_selection=None,
+    indicator_selection=None,
 ):
     """单事务幂等创建项目、会话与固定成员绑定；不调用模型。"""
     request_id = str(data.client_request_id)
@@ -190,6 +191,18 @@ async def create_consultation(
         if agent_slug in INDICATOR_AGENT_SKILLS:
             await repo.authorize_indicator_member(uid, member_id, lock=True)
         binding = await repo.find_request(uid, request_id)
+        if indicator_selection is not None:
+            from yuxi.services.health_indicator_review_service import read_indicator_in_session
+            from yuxi.services.health_indicator_review_types import IndicatorSelection
+
+            if agent_slug not in INDICATOR_AGENT_SKILLS:
+                raise HealthVisionError("request_conflict", "指标选择只属于指标助手", 409)
+            indicator_selection = IndicatorSelection.model_validate(indicator_selection).model_dump(mode="json")
+            await read_indicator_in_session(
+                session, uid, member_id, agent_slug.removeprefix("health-").replace("-", "_"), indicator_selection
+            )
+        if binding and getattr(binding, "indicator_selection", None) != indicator_selection:
+            raise HealthVisionError("request_conflict", "同一幂等键不能改变指标选择", 409)
         old_family = getattr(binding, "family_planner_selection", None)
         old_initial = getattr(binding, "initial_planner_selection", None)
         old_safe = getattr(binding, "safe_planner_selection", None)
@@ -362,6 +375,7 @@ async def create_consultation(
                     safe_planner_selection=safe_binding,
                     **({"purchase_selection": purchase_binding} if purchase_binding is not None else {}),
                     **({"personal_target_selection": target_binding} if target_binding is not None else {}),
+                    **({"indicator_selection": indicator_selection} if indicator_selection is not None else {}),
                 )
             )
             if feedback_selection is not None:
@@ -749,7 +763,13 @@ async def require_consultation_attempt(context, messages=None):
                     raise HealthVisionError("source_invalidated", "历史咨询引用已失效，请重新进入咨询", 410) from None
                 if draft.review_status != "confirmed":
                     raise HealthVisionError("source_invalidated", "历史咨询引用已失效，请重新进入咨询", 410)
-                projections.append(project_confirmed_record(record, kind))
+                projection = project_confirmed_record(record, kind)
+                if kind == "meal" and "source_version" not in reference:
+                    # 兼容升级前的工具回执，但只允许从未更正的原确认版本。
+                    if (record.version or confirmation.draft_version) != confirmation.draft_version:
+                        raise HealthVisionError("source_invalidated", "历史饮食记录已更正，请重新进入咨询", 410)
+                    projection.pop("source_version", None)
+                projections.append(projection)
             expected = {
                 "records": projections,
                 "full_health_profile_available": False,
@@ -781,6 +801,8 @@ def project_confirmed_record(record, kind):
         )
     else:
         meal, nutrition = snapshot["meal"], snapshot["nutrition"]
+        if getattr(record, "version", None) is not None:
+            result["source_version"] = record.version
         result.update(
             {
                 "meal_type": meal["meal_type"],

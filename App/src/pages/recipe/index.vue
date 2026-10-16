@@ -3,7 +3,7 @@ import AppNavBar from '../../components/AppNavBar.vue'
 import DishNutritionCard from '../../components/DishNutritionCard.vue'
 import { computed, ref, watch } from 'vue'
 import CommerceAccess from '../../components/CommerceAccess.vue'
-import { isCommerceEnabled } from '../../services/config.js'
+import { isCommerceEnabled, isMockMode } from '../../services/config.js'
 import { commerce, commerceContext, commerceSessionEpoch } from '../../services/commerce.js'
 import { commerceRecipe } from '../../services/meal-commerce-state.js'
 import { useCommercePage } from '../../services/commerce-page.js'
@@ -61,6 +61,7 @@ onLoad(options => {
     <view class="section-block"><text class="section-title">所需食材及用量</text><view class="ingredient-list card"><view v-for="item in guide.ingredients" :key="item"><text>•</text><text>{{item}}</text></view></view></view>
     <view class="section-block"><view class="section-head"><text class="section-title">完整图文制作步骤</text><text>按顺序操作</text></view><view v-for="(step,index) in guide.steps" :key="step" class="step-card card"><text>{{String(index+1).padStart(2,'0')}}</text><view class="step-content"><text>{{step}}</text><image v-if="guide.stepImages?.[index]" :src="guide.stepImages[index]" mode="widthFix" class="step-image"/></view></view></view>
     <view class="notice-card"><text class="section-title">注意事项</text><text v-for="item in guide.notes" :key="item">{{item}}</text></view>
+    <button v-if="!isMockMode" class="secondary-button back-button" @click="uni.navigateTo({url:'/pages/records/index'})">按已发布菜谱记录实际摄入</button>
     <button class="primary-button back-button" @click="backHome">返回本餐安排与购买清单</button>
     <text class="safe-note">本页是购买前做法预览，不代表已经收到食材，也不替代收货后的正式制作烹饪页面。</text>
   </view>

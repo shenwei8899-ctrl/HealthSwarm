@@ -117,10 +117,22 @@ class FamilyRepository:
         return None
 
     async def measurement_page(
-        self, mids, kinds=None, since=None, until=None, *, condition=None, include_voided=False, limit=100, offset=0
+        self,
+        mids,
+        kinds=None,
+        since=None,
+        until=None,
+        *,
+        condition=None,
+        include_voided=False,
+        limit=100,
+        offset=0,
+        record_ids=None,
     ):
         """按授权作用域统计和分页，不以截断列表推断总数。"""
         query = self._measurement_query(mids, kinds, since, until, condition, include_voided)
+        if record_ids is not None:
+            query = query.where(FamilyMeasurement.id.in_(record_ids))
         total = await self.db.scalar(select(func.count()).select_from(query.subquery()))
         rows = await self.db.scalars(
             query.order_by(FamilyMeasurement.measured_at.desc(), FamilyMeasurement.id).offset(offset).limit(limit)

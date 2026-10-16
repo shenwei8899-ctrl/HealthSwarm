@@ -12,6 +12,14 @@ from fastapi.routing import APIRoute
 from server.utils.auth_middleware import get_admin_user, get_required_user
 from yuxi.services.health_vision_service import health_vision_service as service
 from yuxi.services.health_vision_types import DietLogPage, VisionListPage
+from yuxi.services.health_diet_correction_types import DietLogCorrection
+from yuxi.services.health_diet_correction_service import correct_diet_log, diet_log_revisions
+from yuxi.services.health_meal_recording_types import MealRecordingInput, FamilyMealRecordingInput
+from yuxi.services.health_meal_recording_service import record_meal, record_family_meal, read_meal
+from yuxi.services.health_indicator_review_types import IndicatorSelection
+from yuxi.services.health_indicator_review_service import read_indicator_review
+from yuxi.services.health_nutrition_import_types import NutritionImportInput
+from yuxi.services.health_nutrition_import_service import prepare_nutrition_import, read_nutrition_import
 from yuxi.services.health_consultation_service import create_consultation, create_daily_consultation, list_consultations
 from yuxi.services.health_family_planner_types import FamilyPlannerInput
 from yuxi.services.health_initial_meal_plan_types import InitialPlannerInput
@@ -1063,6 +1071,54 @@ async def retry(
     return await service.retry(user.uid, task_id, data.client_request_id)
 
 
+@health_vision.post("/meal-recordings", status_code=201)
+async def record_actual_meal(
+    data: MealRecordingInput,
+    response: Response,
+    request_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(get_required_user),
+):
+    """明确实际摄入后原子记餐，保存与聊天导航相互独立。"""
+    require_request_key(data.client_request_id, request_key)
+    response.headers["Cache-Control"] = "no-store"
+    return await record_meal(user.uid, data)
+
+
+@health_vision.post("/family-meal-recordings")
+async def record_actual_family_meal(
+    data: FamilyMealRecordingInput,
+    response: Response,
+    request_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(get_required_user),
+):
+    """逐人成败的明确克数记餐；仅重试原失败项。"""
+    require_request_key(data.group_id, request_key)
+    response.headers["Cache-Control"] = "no-store"
+    return await record_family_meal(user.uid, data)
+
+
+@health_vision.get("/members/{member_id}/diet-logs/{record_id}/detail")
+async def actual_meal_detail(
+    member_id: UUID, record_id: UUID, response: Response, user: User = Depends(get_required_user)
+):
+    """读取指定成员当前的正式饮食详情。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await read_meal(user.uid, str(member_id), str(record_id))
+
+
+@health_vision.post("/members/{member_id}/indicator-reviews/{kind}")
+async def indicator_fact_review(
+    member_id: UUID,
+    kind: Literal["blood_glucose", "blood_lipids", "blood_pressure"],
+    data: IndicatorSelection,
+    response: Response,
+    user: User = Depends(get_required_user),
+):
+    """按明确日期和记录版本返回事实统计，不调用模型。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await read_indicator_review(user.uid, str(member_id), kind, data)
+
+
 @health_vision.post("/manual-drafts", status_code=201)
 async def manual_draft(data: DraftInput, user: User = Depends(get_required_user)):
     """手工录入真实候选而非伪造识别成功。"""
@@ -1166,6 +1222,26 @@ async def foods(q: str = Query(default="", max_length=120), user: User = Depends
     return await service.foods(q)
 
 
+@health_vision.post("/nutrition-imports", status_code=201)
+async def prepare_food_import(
+    data: NutritionImportInput,
+    response: Response,
+    request_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(get_admin_user),
+):
+    """管理员导入候选，只生成待审清单。"""
+    require_request_key(data.client_request_id, request_key)
+    response.headers["Cache-Control"] = "no-store"
+    return await prepare_nutrition_import(user.uid, data)
+
+
+@health_vision.get("/nutrition-imports/{batch_id}")
+async def food_import_detail(batch_id: UUID, response: Response, user: User = Depends(get_admin_user)):
+    """重新读取当前管理员的候选校验报告。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await read_nutrition_import(user.uid, str(batch_id))
+
+
 @health_vision.post("/foods", status_code=201)
 async def publish_food(data: FoodInput, user: User = Depends(get_admin_user)):
     """管理员审核发布食品数据，不自动导入商用数据。"""
@@ -1198,6 +1274,29 @@ async def portions(
 async def publish_portion(data: PortionInput, user: User = Depends(get_admin_user)):
     """审核发布实测参考及适用范围。"""
     return await service.publish_portion(user.uid, data)
+
+
+@health_vision.patch("/diet-logs/{record_id}")
+async def correct_diet_record(
+    record_id: UUID,
+    data: DietLogCorrection,
+    response: Response,
+    request_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    match: str | None = Header(default=None, alias="If-Match"),
+    user: User = Depends(get_required_user),
+):
+    """保留餐次 ID，同事务递增版本、重算并使旧派生结果失效。"""
+    require_request_key(data.client_request_id, request_key)
+    require_match(data.expected_version, match)
+    response.headers["Cache-Control"] = "no-store"
+    return await correct_diet_log(user.uid, str(record_id), data)
+
+
+@health_vision.get("/diet-logs/{record_id}/revisions")
+async def diet_record_revisions(record_id: UUID, response: Response, user: User = Depends(get_required_user)):
+    """读取不可变审计快照，历史不得作为当前分析来源。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await diet_log_revisions(user.uid, str(record_id))
 
 
 @health_vision.get("/diet-logs/{record_id}/feedback")

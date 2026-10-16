@@ -13,7 +13,7 @@ from sqlalchemy import delete, text
 
 from yuxi.repositories.health_evidence_repository import HealthEvidenceRepository
 from yuxi.services.health_vision_types import HealthVisionError
-from yuxi.storage.postgres.manager import pg_manager
+from yuxi.storage.postgres.manager import HEALTH_SCHEMA_VERSION, pg_manager
 from yuxi.storage.postgres.models_business import AgentRun, Conversation, Message, Project, User
 from yuxi.storage.postgres.models_health import (
     FamilyMember,
@@ -155,7 +155,7 @@ async def seed_legacy():
 
 async def verify_legacy(mode):
     """新列为NULL且旧列逐字节相等；仅普通咨询继承旧通用审核。"""
-    assert (await pg_manager.get_schema_versions())["health"] == 24
+    assert (await pg_manager.get_schema_versions())["health"] == HEALTH_SCHEMA_VERSION
     snapshot = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
     identities = snapshot["identities"]
     rows = await read_legacy_rows(identities)
@@ -182,7 +182,7 @@ async def verify_legacy(mode):
             else:
                 raise AssertionError("旧普通引用被错误扩大到指标角色")
     receipt = {
-        "health_version": 24,
+        "health_version": HEALTH_SCHEMA_VERSION,
         "phase": mode,
         "old_columns_equal": True,
         "legacy_scope_null": True,

@@ -162,6 +162,7 @@ class HealthConsultation(Base):
     safe_planner_selection = Column(JSON_VALUE)
     purchase_selection = Column(JSON_VALUE)
     personal_target_selection = Column(JSON_VALUE)
+    indicator_selection = Column(JSON_VALUE)
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
@@ -390,6 +391,27 @@ class DietLog(Base):
     member_id = Column(String(36), ForeignKey("family_member.id"), nullable=False, index=True)
     confirmation_id = Column(String(36), ForeignKey("vision_confirmation.id"), nullable=False)
     calculation_id = Column(String(36), ForeignKey("nutrition_calculation.id"), nullable=False)
+    version = Column(Integer)
+    snapshot = Column(JSON_VALUE, nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
+class DietLogRevision(Base):
+    """同一餐次的不可变快照及更正收据；原确认版本在首次更正时归档。"""
+
+    __tablename__ = "diet_log_revision"
+    __table_args__ = (
+        UniqueConstraint("diet_log_id", "version", name="uq_diet_log_revision"),
+        UniqueConstraint("actor_uid", "request_id", name="uq_diet_log_correction_request"),
+    )
+    id = Column(String(36), primary_key=True)
+    diet_log_id = Column(String(36), ForeignKey("diet_log.id", ondelete="CASCADE"), nullable=False)
+    version = Column(Integer, nullable=False)
+    calculation_id = Column(String(36), ForeignKey("nutrition_calculation.id"), nullable=False)
+    actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
+    request_id = Column(String(36))
+    fingerprint = Column(String(64))
+    reason = Column(String(500), nullable=False)
     snapshot = Column(JSON_VALUE, nullable=False)
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
@@ -825,6 +847,19 @@ class HealthMealPlanAdoptionAction(Base):
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
+class NutritionImportBatch(Base):
+    """隔离的未发布营养候选与逐行校验报告。"""
+
+    __tablename__ = "nutrition_import_batch"
+    __table_args__ = (UniqueConstraint("actor_uid", "request_id", name="uq_nutrition_import_request"),)
+    id = Column(String(36), primary_key=True)
+    actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
+    request_id = Column(String(36), nullable=False)
+    fingerprint = Column(String(64), nullable=False)
+    report = Column(JSON_VALUE, nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
 HEALTH_TABLES = [
     model.__table__
     for model in (
@@ -852,6 +887,8 @@ HEALTH_TABLES = [
         VisionConfirmation,
         HealthObservation,
         DietLog,
+        DietLogRevision,
+        NutritionImportBatch,
         MealFeedback,
         MealFeedbackRevision,
         MealFeedbackUse,

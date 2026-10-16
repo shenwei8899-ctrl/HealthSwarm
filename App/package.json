@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/demo.test.mjs tests/revision.test.mjs tests/frontend.test.mjs tests/integration.test.mjs tests/wechat-auth.test.mjs tests/chat-camera.test.mjs tests/chat-voice.test.mjs tests/dish-nutrition.test.mjs tests/all-members.test.mjs tests/health-task-flow.test.mjs tests/commerce-link.test.mjs tests/commerce-page.test.mjs tests/commerce-normal-flow.test.mjs tests/meal-commerce.test.mjs tests/family-sharing.test.mjs",
+    "test": "node --test tests/demo.test.mjs tests/revision.test.mjs tests/frontend.test.mjs tests/integration.test.mjs tests/wechat-auth.test.mjs tests/chat-camera.test.mjs tests/chat-voice.test.mjs tests/dish-nutrition.test.mjs tests/all-members.test.mjs tests/health-task-flow.test.mjs tests/commerce-link.test.mjs tests/commerce-page.test.mjs tests/commerce-normal-flow.test.mjs tests/meal-commerce.test.mjs tests/family-sharing.test.mjs tests/diet-journal.test.mjs",
     "dev:h5": "uni -p h5",
     "dev:mp-weixin": "uni -p mp-weixin",
     "build:h5": "uni build -p h5",

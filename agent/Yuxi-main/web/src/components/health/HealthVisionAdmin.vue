@@ -1,4 +1,5 @@
 <script setup>
+import HealthNutritionImport from './HealthNutritionImport.vue'
 import { computed, reactive, ref, watch, inject } from 'vue'
 import { message } from 'ant-design-vue'
 import { healthVisionApi } from '@/apis/health_vision_api'
@@ -288,6 +289,7 @@ async function publishFood() {
     <p>当前已发布 {{ configuration.food_count }} 条食品数据。不会根据商品宣传自动生成营养属性。</p>
   </section>
   <RecipePortionAdmin :food-count="configuration.food_count" @saved="emit('saved')" />
+  <HealthNutritionImport />
 </template>
 
 <style scoped lang="less">

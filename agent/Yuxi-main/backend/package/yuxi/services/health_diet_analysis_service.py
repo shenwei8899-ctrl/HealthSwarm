@@ -63,12 +63,14 @@ def analyze_confirmed_meal(record, confirmation):
         "result_type": "diet_analysis",
         "status": "completed",
         "member_id": record.member_id,
-        "records": [{"record_id": record.id, "source_version": confirmation.draft_version}],
+        "records": [
+            {"record_id": record.id, "source_version": getattr(record, "version", None) or confirmation.draft_version}
+        ],
         "source": {
             "record_id": record.id,
             "confirmation_id": confirmation.id,
             "draft_id": confirmation.draft_id,
-            "source_version": confirmation.draft_version,
+            "source_version": getattr(record, "version", None) or confirmation.draft_version,
             "confirmed_at": format_utc_datetime(record.created_at),
         },
         "meal_type": meal["meal_type"],
@@ -263,7 +265,7 @@ async def analyst_meal_records(context):
             records.append(
                 {
                     "record_id": record.id,
-                    "source_version": confirmation.draft_version,
+                    "source_version": getattr(record, "version", None) or confirmation.draft_version,
                     "meal_type": record.snapshot["meal"]["meal_type"],
                     "eaten_at": record.snapshot["meal"]["eaten_at"],
                     "names": [item["name"] for item in record.snapshot["meal"]["items"] if not item.get("excluded")],

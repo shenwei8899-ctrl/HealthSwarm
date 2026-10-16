@@ -60,7 +60,7 @@ async def get_member_weight_records(runtime: ToolRuntime) -> dict:
 
 @tool(category="health", display_name="本人血压实测记录", args_schema=HealthReadInput)
 async def get_member_blood_pressure_records(runtime: ToolRuntime) -> dict:
-    """读取固定本人近30日原始血压及独立版本；缺失保持未知，不作医学判断。"""
+    """读取本人当前线程固定范围的血压及版本，未选时近30日；缺失保持未知，不作医学判断。"""
     from yuxi.services.health_blood_pressure_service import blood_pressure_records_for_run
 
     return await blood_pressure_records_for_run(runtime.context)
@@ -68,7 +68,7 @@ async def get_member_blood_pressure_records(runtime: ToolRuntime) -> dict:
 
 @tool(category="health", display_name="本人血糖实测记录", args_schema=HealthReadInput)
 async def get_member_blood_glucose_records(runtime: ToolRuntime) -> dict:
-    """读取固定本人近30日血糖原值、条件及独立版本；缺失保持未知，不作医学判断。"""
+    """读取本人当前线程固定范围的血糖原值、条件及版本，未选时近30日；不作医学判断。"""
     from yuxi.services.health_blood_glucose_service import blood_glucose_records_for_run
 
     return await blood_glucose_records_for_run(runtime.context)
@@ -76,7 +76,7 @@ async def get_member_blood_glucose_records(runtime: ToolRuntime) -> dict:
 
 @tool(category="health", display_name="本人血脂四项实测记录", args_schema=HealthReadInput)
 async def get_member_blood_lipids_records(runtime: ToolRuntime) -> dict:
-    """读取固定本人近30日同条血脂四项及独立版本；不补项或作医学判断。"""
+    """读取本人当前线程固定范围的同条血脂四项及版本，未选时近30日；不补项或作医学判断。"""
     from yuxi.services.health_blood_lipids_service import blood_lipids_records_for_run
 
     return await blood_lipids_records_for_run(runtime.context)

@@ -13,6 +13,7 @@ from yuxi.services.health_quality_types import Code
 from yuxi.services.health_purchase_types import PurchaseSelection
 from yuxi.services.health_safe_planner_types import SafePlannerSelection
 from yuxi.services.health_vision_types import HealthDTO
+from yuxi.services.health_indicator_review_types import IndicatorSelection
 
 HealthTaskType = Literal[
     "consultation",
@@ -32,11 +33,17 @@ HealthTaskType = Literal[
 class BasicTaskEntry(HealthDTO):
     """选择已有交互角色，具体数据仍由其受控工具读取。"""
 
-    task_type: Literal[
-        "consultation", "meal_preview", "blood_glucose_review", "blood_lipids_review", "blood_pressure_review"
-    ]
+    task_type: Literal["consultation", "meal_preview"]
     client_request_id: UUID
     selection: None = None
+
+
+class IndicatorTaskEntry(HealthDTO):
+    """指标线程的不可变日期和记录版本选择。"""
+
+    task_type: Literal["blood_glucose_review", "blood_lipids_review", "blood_pressure_review"]
+    client_request_id: UUID
+    selection: IndicatorSelection | None = None
 
 
 class AnalystTaskEntry(TargetAwareAnalystInput):
@@ -107,6 +114,7 @@ class HealthTaskEntryInput(RootModel):
 
     root: Annotated[
         BasicTaskEntry
+        | IndicatorTaskEntry
         | AnalystTaskEntry
         | PurchaseTaskEntry
         | InitialTaskEntry
