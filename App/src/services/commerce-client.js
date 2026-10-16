@@ -15,6 +15,7 @@ export function createCommerceClient({
   activateIdentity,
   deactivateIdentity,
   allowProxy = false,
+  authMode = 'member',
 }) {
   const url = (baseUrl || "").replace(/\/$/, "");
   const prefix = "/api/v1/commerce";
@@ -94,8 +95,29 @@ export function createCommerceClient({
   }
   async function connect() {
     const scope = parent.scope(), session = read().session;
-    if (session?.token && session.scope === scope) return session;
+    if (session?.token && session.scope === scope && (authMode !== 'agent' || session.agentAccountId === parent.read()?.accountId)) return session;
+    if (authMode === 'agent') return exchange();
     throw failure("请先登录商城账号", 401);
+  }
+  let exchanging = null;
+  async function exchange(binding) {
+    const identity = parent.read(), scope = parent.scope();
+    if (!identity?.token || identity.isDemo || identity.authSource === 'commerce') throw failure('请先登录小程序账号', 401);
+    if (!binding && exchanging?.token === identity.token && exchanging.scope === scope) return exchanging.promise;
+    const generation = ++loginGeneration;
+    const promise = (async () => {
+      const result = await send('/session/exchange', { method: 'POST', data: binding || {} }, { Authorization: 'Bearer ' + identity.token });
+      current(scope);
+      if (generation !== loginGeneration || parent.read()?.token !== identity.token || parent.read()?.accountId !== identity.accountId) throw failure('登录状态已变更，请重新操作', 'SESSION_CHANGED');
+      if (result.agent_account_id !== identity.accountId || !result.user?.token || !Number.isSafeInteger(Number(result.user.id)) || Number(result.user.id) <= 0) throw failure('商城身份校验失败', 'INVALID_IDENTITY');
+      const userId = String(result.user.id), previous = read();
+      const session = { token: result.user.token, userId, scope, revision: randomKey(), agentAccountId: identity.accountId, identityNamespace: result.identity_namespace, localTestPayment: result.local_test_payment === true };
+      save({ ...(previous.userId === userId ? previous : {}), userId, session });
+      return session;
+    })();
+    exchanging = { token: identity.token, scope, promise };
+    try { return await promise; }
+    finally { if (exchanging?.promise === promise) exchanging = null; }
   }
   async function request(path, options = {}) {
     const scope = parent.scope();
@@ -181,6 +203,7 @@ export function createCommerceClient({
       .map(([k, v]) => id(k) + "=" + id(v))
       .join("&");
   async function login(credentials) {
+    if (authMode === 'agent') return exchange(credentials);
     const generation = ++loginGeneration, scope = parent.scope();
     const wechat = !credentials;
     if (wechat && (!getWechatCode || !/^wx[0-9a-f]{16}$/i.test(appId || "")))
@@ -209,7 +232,7 @@ export function createCommerceClient({
     finally { current(scope); if (read().session?.token === state.session?.token) { save({ ...read(), session: null }); deactivateIdentity?.(state.session); } }
   }
   return {
-    login, logout,
+    login, logout, exchange,
     session: () => read().session || null,
     sessionRevision: () => read().session?.revision || read().session?.token || "guest",
     restore: async () => {

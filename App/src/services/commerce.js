@@ -34,6 +34,7 @@ let baseUrl = commerceApiBaseUrl;
 if (/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(baseUrl)) baseUrl = "/commerce-api";
 // #endif
 export const commerce = createCommerceClient({
+  authMode: isMockMode ? 'member' : 'agent',
   baseUrl,
   // #ifdef H5
   allowProxy: true,

@@ -3,6 +3,7 @@ import { ref, onMounted, watch } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import AppNavBar from './AppNavBar.vue'
 import { commerce, commerceContext, commerceSessionEpoch, usesCommerceIdentity } from '../services/commerce.js'
+import { isMockMode } from '../services/config.js'
 
 const props = defineProps({ entry: Boolean, enabled: { type: Boolean, default: true } })
 const emit = defineEmits(['ready'])
@@ -17,7 +18,7 @@ function sync() {
 async function restore() {
   if (props.enabled === false) return
   sync()
-  if (!ready.value || busy.value) return
+  if ((!ready.value && isMockMode) || busy.value) return
   busy.value = true
   try { await commerce.restore(); emit('ready') }
   catch (e) { error.value = e.message }
@@ -40,6 +41,15 @@ async function wechat() {
   catch (e) { error.value = e.message }
   finally { busy.value = false }
 }
+async function createMember() {
+  if (busy.value) return
+  const confirmed = await new Promise(resolve => uni.showModal({ title: '创建新商城会员', content: '新会员没有原账号的购物车、地址或订单。已有会员请使用原账号关联。', success: result => resolve(result.confirm), fail: () => resolve(false) }))
+  if (!confirmed) return
+  busy.value = true; error.value = ''
+  try { await commerce.exchange({ create_member: true }); sync(); emit('ready') }
+  catch (e) { error.value = e.message }
+  finally { busy.value = false }
+}
 async function logout() {
   if (busy.value) return
   ++generation; busy.value = true; error.value = ''
@@ -52,7 +62,7 @@ watch(commerceSessionEpoch, () => {
   if (wasReady && !ready.value && !busy.value) error.value = '商城登录已过期，请重新登录';
 })
 onMounted(restore)
-onShow(sync)
+onShow(restore)
 </script>
 <template>
   <view>
@@ -64,9 +74,10 @@ onShow(sync)
     <view v-else :class="entry ? 'entry-login' : 'screen'">
       <AppNavBar v-if="!entry"><view class="nav-row"><button class="icon-button" @click="uni.navigateBack()">‹</button><text class="nav-title">登录商城</text><text /></view></AppNavBar>
       <view class="page-heading"><text class="display-title">登录后选购食材</text><text class="subtitle">商品、地址和订单由商城服务保存。</text></view>
-      <view class="card login-form"><text class="form-label">商城会员账号</text><input v-model="account" class="field-input" placeholder="会员账号" :disabled="busy" /><text class="form-label">密码</text><input v-model="password" class="field-input" password placeholder="会员密码" :disabled="busy" /><button class="primary-button" :disabled="busy || !account.trim() || !password" @click="login">{{ busy ? '正在登录…' : '登录商城' }}</button></view>
+      <view class="card login-form"><text class="form-label">商城会员账号</text><input v-model="account" class="field-input" placeholder="会员账号" :disabled="busy" /><text class="form-label">密码</text><input v-model="password" class="field-input" password placeholder="会员密码" :disabled="busy" /><button class="primary-button" :disabled="busy || !account.trim() || !password" @click="login">{{ busy ? '正在验证…' : isMockMode ? '登录商城' : '验证并关联原商城会员' }}</button></view>
+      <button v-if="!isMockMode" class="secondary-button" :disabled="busy" @click="createMember">首次使用，创建商城会员</button>
       <!-- #ifdef MP-WEIXIN -->
-      <button class="secondary-button" :disabled="busy" @click="wechat">微信登录商城</button>
+      <button v-if="isMockMode" class="secondary-button" :disabled="busy" @click="wechat">微信登录商城</button>
       <!-- #endif -->
       <text class="safe-note">{{ usesCommerceIdentity ? '使用商城会员身份；购物车、地址和订单由后端保存。健康档案与饮食记录暂按该会员保存在本机。' : '商城会员账号与管理后台账号分别管理。' }}</text>
     </view>
