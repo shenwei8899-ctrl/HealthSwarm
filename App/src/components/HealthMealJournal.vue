@@ -68,6 +68,7 @@ function chatWithSaved(record = state.saved[0]) {
     <view v-if="mode==='list'">
       <view class="choices"><button v-for="member in state.members" :key="member.id" :class="{active:state.memberId===member.id}" :disabled="state.busy" @click="client.select(member.id)">{{member.display_name||member.name||member.relationship_label}}</button></view>
       <button v-if="state.memberId" class="primary-button" :disabled="state.busy" @click="newMeal">按菜谱记餐 / 家庭桌菜</button>
+      <button v-if="state.memberId" class="secondary-button" :disabled="state.busy" @click="uni.navigateTo({url:'/pages/meal-photo/index?memberId='+encodeURIComponent(state.memberId)})">拍照识别并核对记餐</button>
       <text v-if="!state.records.length&&!state.busy" class="safe-note">本页没有可展示的已确认记录。</text>
       <button v-for="record in state.records" :key="record.id" class="card record" :disabled="state.busy" @click="show(record)">
         <text>{{labels[record.snapshot.meal.meal_type]}} · {{mealDate(record.snapshot.meal.eaten_at)}} · v{{record.source_version}}</text>

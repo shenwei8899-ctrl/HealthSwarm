@@ -7,6 +7,7 @@
         "navigationBarTitleText": "家庭营养师"
       }
     },
+    {"path":"pages/meal-photo/index","style":{"navigationStyle":"custom","navigationBarTitleText":"拍照记餐"}},
     {"path":"pages/indicators/index","style":{"navigationStyle":"custom","navigationBarTitleText":"实测记录回顾"}},
     {"path":"pages/health/vision","style":{"navigationStyle":"custom","navigationBarTitleText":"上传与核对"}},
     {"path":"pages/health/plans","style":{"navigationStyle":"custom","navigationBarTitleText":"餐单与正式采用"}},
