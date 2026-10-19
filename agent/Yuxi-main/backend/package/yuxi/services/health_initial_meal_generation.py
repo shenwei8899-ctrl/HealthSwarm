@@ -13,7 +13,17 @@ from yuxi.services.health_safe_plan_regeneration_service import MAX_SEARCH_STATE
 from yuxi.services.health_vision_types import NUTRIENTS
 
 
-def generate_initial_plan(selection, current, recipes, by_recipe, refs, *, max_states=MAX_SEARCH_STATES):
+def generate_initial_plan(
+    selection,
+    current,
+    recipes,
+    by_recipe,
+    refs,
+    *,
+    max_states=MAX_SEARCH_STATES,
+    purchase_validator=None,
+    fixed_meals=None,
+):
     """有界搜索共同菜谱与独立份量，只有全部实际参加者通过才返回方案。"""
     result = {
         "status": "not_ready",
@@ -63,6 +73,9 @@ def generate_initial_plan(selection, current, recipes, by_recipe, refs, *, max_s
     catalog = {str(c.recipe_version_id): c for c in rules.meal_generation.recipe_classifications}
     options, layout = [], []
     for meal in selection.meals:
+        if fixed_meals and meal.meal_type in fixed_meals:
+            layout.append((meal, None))
+            continue
         members = sorted(str(p) for p in meal.participant_ids)
         dish_rules = {}
         for mid in members:
@@ -111,6 +124,9 @@ def generate_initial_plan(selection, current, recipes, by_recipe, refs, *, max_s
         """每个完整组合独立复算逐人成品营养与当前配料来源。"""
         meals = []
         for meal, slots in layout:
+            if slots is None:
+                meals.append(fixed_meals[meal.meal_type])
+                continue
             dishes = []
             for recipe_index, portion_indexes in slots:
                 rid = options[recipe_index][indices[recipe_index]][2]
@@ -143,7 +159,9 @@ def generate_initial_plan(selection, current, recipes, by_recipe, refs, *, max_s
                     entry["source_current"] = entry["source_current"] and food["source_current"]
             check = evaluate_plan_quality(snapshot, next(iter(profiles.values())), parsed_rules, ingredients)
             sources = {"recipes": {rid: refs[rid] for rid in used}, "ingredients": ingredients}
-        return (spec, snapshot, check, sources) if check["status"] == "passed" else None
+        if check["status"] != "passed" or purchase_validator is not None and not purchase_validator(snapshot):
+            return None
+        return spec, snapshot, check, sources
 
     selected, search = search_plan_combinations(options, evaluate, max_states=max_states)
     if selected is None:

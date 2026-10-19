@@ -20,7 +20,7 @@ from yuxi.storage.postgres.models_health import DietLog, HealthMealPlan, HealthM
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
-async def publish_planner_recipe(client, admin, name, energy="100"):
+async def publish_planner_recipe(client, admin, name, energy="100", *, food_source=None, recipe_source=None):
     """固定合成来源和手算营养，仅用于协议验收。"""
     source = {"source": "synthetic-planner", "license": "synthetic-test", "edition": "v1", "dataset_version": "v1"}
     food = await client.post(
@@ -28,6 +28,7 @@ async def publish_planner_recipe(client, admin, name, energy="100"):
         headers=admin,
         json={
             **source,
+            "source": food_source or source["source"],
             "record_code": str(uuid4()),
             "name": name + "原料",
             "cooking_state": "合成",
@@ -46,6 +47,7 @@ async def publish_planner_recipe(client, admin, name, energy="100"):
         headers=admin,
         json={
             **source,
+            "source": recipe_source or source["source"],
             "record_code": str(uuid4()),
             "name": name,
             "cooking_state": "合成",

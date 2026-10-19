@@ -23,6 +23,18 @@ export const healthVisionApi = {
     apiPost(`${root}/members/${id}/external-profile-versions`, data),
   approvedQualityRules: (code) =>
     apiGet(`${root}/approved-quality-rules/${encodeURIComponent(code)}`),
+  importQualityRules: (data) => apiPost(`${root}/approved-quality-rules`, data),
+  revokeQualityRules: (code, version) =>
+    apiPost(
+      `${root}/approved-quality-rules/${encodeURIComponent(code)}/versions/${version}/revoke`,
+      {}
+    ),
+  nutritionSource: (kb, file) =>
+    apiGet(
+      `${root}/nutrition-sources/${encodeURIComponent(kb)}/documents/${encodeURIComponent(file)}`
+    ),
+  nutritionReadiness: (id, ruleCode) =>
+    apiGet(`${root}/members/${id}/nutrition-readiness?${buildQuery({ rule_code: ruleCode })}`),
   personalTargets: (id, data) => apiPost(`${root}/members/${id}/nutrition-targets`, data),
   consent: (id, data) => apiPost(`${root}/members/${id}/processing-consents`, data),
   memberCapabilities: (id) => apiGet(`${root}/members/${id}/capabilities`),

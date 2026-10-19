@@ -463,7 +463,13 @@ async def test_saved_plan_quality_consumes_same_weight_dependency(projection_con
 @pytest.fixture
 def source_context(monkeypatch):
     """隔离数据库设备；本人来源与实测校验保留真实实现。"""
-    link = SimpleNamespace(member_id=MEMBER, family_id=FAMILY, source_member_id=SOURCE_MEMBER, actor_uid=OWNER)
+    link = SimpleNamespace(
+        member_id=MEMBER,
+        family_id=FAMILY,
+        source_member_id=SOURCE_MEMBER,
+        actor_uid=OWNER,
+        source_kind="self_confirmed",
+    )
     member = SimpleNamespace(
         id=SOURCE_MEMBER, is_active=True, subject_uid=OWNER, version=1, confirmed_version=1, profile={}
     )

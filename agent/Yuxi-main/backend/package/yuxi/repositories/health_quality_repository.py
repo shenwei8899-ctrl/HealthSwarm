@@ -10,6 +10,7 @@ from yuxi.services.health_family_meal_plan_types import plan_member_ids
 
 from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
+from yuxi.repositories.health_source_repository import HealthSourceRepository
 from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.health_quality_checks import external_projection, projection_digest
 from yuxi.services.health_vision_types import HealthVisionError
@@ -56,6 +57,13 @@ class HealthQualityRepository:
 
     async def profile_projection(self, member_id):
         """最高安全投影须仍对应本人当前确认来源，失败不回退旧版本。"""
+        from yuxi.storage.postgres.models_health import HealthFamilyProfileLink
+
+        link = await self.session.get(HealthFamilyProfileLink, member_id)
+        if link is not None and link.source_kind == "miniapp_reported":
+            from yuxi.services.miniapp_planning_source import submitted_profile_projection
+
+            return await submitted_profile_projection(self.session, link)
         result = external_projection(await self.profile(member_id), "profile", member_id)
         if result["status"] != "ready":
             return result
@@ -112,12 +120,17 @@ class HealthQualityRepository:
         """规则发布与使用共享来源锁，未知规则不会换到其他目录。"""
         if lock:
             await self.lock_key(f"health-rules:{rule_code}")
-        return await self.session.scalar(
+        row = await self.session.scalar(
             select(HealthRuleSnapshot)
             .where(HealthRuleSnapshot.rule_code == rule_code)
             .order_by(HealthRuleSnapshot.version.desc())
             .limit(1)
         )
+        if row is not None:
+            source = (row.attestation or {}).get("source_ref", "")
+            states = await HealthSourceRepository(self.session).current_sources([source])
+            row._knowledge_source_current = states[source]
+        return row
 
     async def has_current_rules(self):
         """仅检查每个规则最新版本的有效目录，不选择成员适用规则。"""
@@ -244,6 +257,8 @@ class HealthQualityRepository:
             food.id: food
             for food in (await self.session.scalars(select(FoodRecord).where(FoodRecord.id.in_(food_ids)))).all()
         }
+        source_values = [r.source for r in parsed] + [f.source for f in foods.values()]
+        source_states = await HealthSourceRepository(self.session).current_sources(source_values)
         result, recipe_refs = {}, {}
         for recipe in parsed:
             recipe_foods = result.setdefault(recipe.id, {})
@@ -261,7 +276,12 @@ class HealthQualityRepository:
                 entry = recipe_foods.setdefault(
                     food_id, {"content_hash": input_fingerprint(current), "source_current": True}
                 )
-                entry["source_current"] = entry["source_current"] and current == ingredient["food"]
+                entry["source_current"] = (
+                    entry["source_current"]
+                    and current == ingredient["food"]
+                    and source_states[recipe.source]
+                    and bool(current and source_states[current["source"]])
+                )
         return result, recipe_refs
 
     async def selected(self, binding):

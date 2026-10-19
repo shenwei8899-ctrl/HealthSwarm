@@ -155,7 +155,10 @@ async def initial_answer_in_session(session, run, binding, answer):
     ):
         raise HealthVisionError("planner_receipt_invalid", "初始预览回执不属于当前运行", 409)
     await validate_initial_receipt(session, binding, preview)
-    return initial_preview_result(preview)
+    result = initial_preview_result(preview)
+    if answer.explanation.strip():
+        result["explanation"] = answer.explanation.strip()
+    return result
 
 
 async def validate_initial_planner_publication(session, run, text):
@@ -179,7 +182,11 @@ async def validate_initial_planner_publication(session, run, text):
         raise HealthVisionError("source_invalidated", "初始运行绑定已变化", 410)
     try:
         payload = json.loads(text)
-        answer = PlannerAnswer(preview_id=payload.get("preview_id"), questions=payload.get("questions", []))
+        answer = PlannerAnswer(
+            preview_id=payload.get("preview_id"),
+            questions=payload.get("questions", []),
+            explanation=payload.get("explanation", ""),
+        )
     except (ValueError, TypeError):
         raise HealthVisionError("planner_output_invalid", "初始待发布结果无法解析", 409) from None
     if await initial_answer_in_session(session, run, binding, answer) != payload:

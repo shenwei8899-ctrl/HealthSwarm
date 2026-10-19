@@ -31,6 +31,21 @@ Base = declarative_base()
 JSON_VALUE = JSON().with_variant(JSONB, "postgresql")
 
 
+class WechatIdentity(Base):
+    """微信身份摘要关联，软删除账号仍保留绑定事实。"""
+
+    __tablename__ = "wechat_identities"
+    __table_args__ = (
+        UniqueConstraint("appid", "openid_hash", name="uq_wechat_app_identity"),
+        UniqueConstraint("appid", "user_id", name="uq_wechat_app_user"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    appid = Column(String(18), nullable=False)
+    openid_hash = Column(String(64), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
 class FamilyArchive(Base):
     """家庭关系，管理员身份不表示健康数据授权。"""
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -22,6 +23,9 @@ def family_schema_upgrade(monkeypatch):
 
     monkeypatch.setattr(storage_migration, "upgrade_family_archives", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_family_care", upgrade)
+    wechat_upgrade = AsyncMock()
+    monkeypatch.setattr(storage_migration, "upgrade_wechat_identity", wechat_upgrade)
+    return wechat_upgrade
 
 
 class _Session:
@@ -181,7 +185,9 @@ async def test_storage_migration_rejects_v071_schema_without_quiescence_proof(mo
         storage_migration.HEALTH_SCHEMA_VERSION,
     ],
 )
-async def test_current_schema_skips_unrelated_ddl_and_upgrades_health(monkeypatch, health_version):
+async def test_current_schema_skips_unrelated_ddl_and_upgrades_health(
+    monkeypatch, health_version, family_schema_upgrade
+):
     calls: list[str] = []
     sessions = [_Session(), _Session(), _Session()]
 
@@ -245,6 +251,7 @@ async def test_current_schema_skips_unrelated_ddl_and_upgrades_health(monkeypatc
         health_version != storage_migration.HEALTH_SCHEMA_VERSION
     )
     assert "converge:False" in calls
+    family_schema_upgrade.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -284,7 +291,9 @@ async def test_main_rejects_unsupported_business_schema_before_ddl(monkeypatch, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("business_version", [2, 7, 8, 9])
-async def test_supported_legacy_business_schema_is_converged_and_versioned_as_current(monkeypatch, business_version):
+async def test_supported_legacy_business_schema_is_converged_and_versioned_as_current(
+    monkeypatch, business_version, family_schema_upgrade
+):
     calls: list[str] = []
     sessions = [_Session(), _Session(), _Session()]
 
@@ -334,6 +343,7 @@ async def test_supported_legacy_business_schema_is_converged_and_versioned_as_cu
     assert f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}" in calls
     assert "create_business" in calls
     assert {"checkpoint", "knowledge_schema"}.isdisjoint(calls)
+    family_schema_upgrade.assert_awaited_once_with(manager)
 
 
 @pytest.mark.asyncio

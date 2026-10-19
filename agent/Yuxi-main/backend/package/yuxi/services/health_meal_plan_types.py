@@ -78,6 +78,7 @@ class PlannerAnswer(HealthDTO):
     """模型最终输出只能引用运行回执或提出补充问题。"""
 
     preview_id: UUID | None = None
+    explanation: str = Field(default="", max_length=3000)
     questions: list[str] = Field(default_factory=list, max_length=3)
 
     @model_validator(mode="after")

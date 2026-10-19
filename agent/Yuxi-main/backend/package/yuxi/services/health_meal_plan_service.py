@@ -137,10 +137,16 @@ async def calculate_in_session(session, spec):
     recipes = {
         r.id: r for r in (await session.scalars(select(RecipeVersion).where(RecipeVersion.id.in_(recipe_ids)))).all()
     }
+    from yuxi.repositories.health_source_repository import HealthSourceRepository
+
+    source_values = [r.source for r in recipes.values()] + [
+        ingredient["food"]["source"] for r in recipes.values() for ingredient in r.ingredients
+    ]
     portions = {
         r.id: r
         for r in (await session.scalars(select(PortionReference).where(PortionReference.id.in_(portion_ids)))).all()
     }
+    await HealthSourceRepository(session).require_current_sources(source_values + [p.source for p in portions.values()])
     if isinstance(spec, FamilyMealPlanSpec):
         from yuxi.services.health_family_meal_plan import calculate_family_meal_plan
 

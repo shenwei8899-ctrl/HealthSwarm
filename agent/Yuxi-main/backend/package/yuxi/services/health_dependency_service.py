@@ -8,6 +8,7 @@ from sqlalchemy import select
 from yuxi.repositories.health_quality_repository import HealthQualityRepository
 from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
+from yuxi.repositories.health_source_repository import HealthSourceRepository
 from yuxi.services.health_evidence_service import require_evidence_admin
 from yuxi.services.health_quality_checks import external_projection, projection_digest
 from yuxi.services.health_vision_types import HealthVisionError
@@ -135,6 +136,7 @@ async def import_approved_rules(uid, data):
         await require_evidence_admin(session, uid)
         repo = HealthQualityRepository(session)
         latest = await repo.rules(data.rule_code, lock=True)
+        await HealthSourceRepository(session).require_publication_source(uid, data.source_ref)
         existing = await session.scalar(
             select(HealthRuleSnapshot).where(
                 HealthRuleSnapshot.rule_code == data.rule_code, HealthRuleSnapshot.version == data.version
@@ -168,7 +170,7 @@ async def read_approved_rules(uid, rule_code):
         if not await session.scalar(select(User.uid).where(User.uid == uid, User.is_deleted == 0)):
             raise HealthVisionError("not_found", "账号不可用", 404)
         row = await HealthQualityRepository(session).rules(rule_code)
-        return external_projection(row, "rules", rule_code)
+        return {**external_projection(row, "rules", rule_code), "next_version": row.version + 1 if row else 1}
 
 
 async def revoke_approved_rules(uid, rule_code, version):

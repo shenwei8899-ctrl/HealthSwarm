@@ -18,6 +18,7 @@ globalThis.localStorage = {
 test('从二级目录点击全部文件会清空 parent_id 并返回根目录', async (t) => {
   const server = await createServer({
     server: { middlewareMode: true, hmr: false },
+    optimizeDeps: { noDiscovery: true, include: [] },
     appType: 'custom'
   })
 
@@ -79,6 +80,7 @@ test('从二级目录点击全部文件会清空 parent_id 并返回根目录', 
 test('知识库提交跨账号返回时，不把旧入队任务登记给新账号', async (t) => {
   const server = await createServer({
     server: { middlewareMode: true, hmr: false },
+    optimizeDeps: { noDiscovery: true, include: [] },
     appType: 'custom'
   })
   const pinia = createPinia()

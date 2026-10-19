@@ -30,6 +30,10 @@ class InitialPlanSelection(HealthDTO):
     """日期、全员档案版本和批准规则均由明确业务选择提供。"""
 
     kind: Literal["single", "family"]
+    purchase_required: bool = False
+    base_plan_id: UUID | None = None
+    base_plan_version: int | None = Field(default=None, gt=0)
+    change_meal: Literal["breakfast", "lunch", "dinner"] | None = None
     plan_date: date
     rule_code: str = Field(min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_.:-]+$")
     rule_version: int = Field(gt=0, strict=True)
@@ -39,6 +43,10 @@ class InitialPlanSelection(HealthDTO):
     @model_validator(mode="after")
     def complete_selection(self):
         """所有参与者恰好有已选来源；个人模式完整参加三餐。"""
+        if any(
+            value is not None for value in (self.base_plan_id, self.base_plan_version, self.change_meal)
+        ) and not all(value is not None for value in (self.base_plan_id, self.base_plan_version, self.change_meal)):
+            raise ValueError("单餐调整须同时绑定原餐单、版本和餐次")
         if {m.meal_type for m in self.meals} != {"breakfast", "lunch", "dinner"}:
             raise ValueError("须各选择一次早餐、午餐和晚餐")
         ids = {p for m in self.meals for p in m.participant_ids}

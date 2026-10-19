@@ -17,6 +17,7 @@ from yuxi.repositories.health_vision_repository import HealthVisionRepository
 from yuxi.services import health_initial_meal_plan_service, health_personal_target_service, health_quality_service
 from yuxi.services.health_quality_checks import external_projection, projection_digest
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.storage.postgres.models_health import HealthFamilyProfileLink
 
 
 def family_source():
@@ -52,12 +53,18 @@ def snapshot(member_id, *, source=None, kind="profile", payload=None):
     )
 
 
+@pytest.fixture
+def unlinked_session():
+    """显式提供无小程序档案关联的事务设备，不替代投影或来源判断。"""
+    return SimpleNamespace(get=AsyncMock(return_value=None))
+
+
 @pytest.mark.asyncio
-async def test_unlinked_legacy_projection_keeps_independent_contract(monkeypatch):
+async def test_unlinked_legacy_projection_keeps_independent_contract(monkeypatch, unlinked_session):
     """无正式关联的既有专业资料不被伪造成本人档案。"""
     member_id = "synthetic-member"
     row = snapshot(member_id)
-    repo = HealthQualityRepository(None)
+    repo = HealthQualityRepository(unlinked_session)
     repo.profile = AsyncMock(return_value=row)
     monkeypatch.setattr(HealthFamilyProfileRepository, "confirmed_source", AsyncMock(return_value=None), raising=False)
 
@@ -65,15 +72,16 @@ async def test_unlinked_legacy_projection_keeps_independent_contract(monkeypatch
 
     assert result == external_projection(row, "profile", member_id)
     assert "family_profile_source" not in result["attestation"]
+    unlinked_session.get.assert_awaited_once_with(HealthFamilyProfileLink, member_id)
 
 
 @pytest.mark.asyncio
-async def test_current_source_preserves_professionally_unknown_fields(monkeypatch):
+async def test_current_source_preserves_professionally_unknown_fields(monkeypatch, unlinked_session):
     """来源匹配不把不耐受未知改成明确无或安全通过。"""
     payload = profile_payload()
     payload["intolerances"] = {"state": "unknown", "codes": []}
     row = snapshot("synthetic-member", source=family_source(), payload=payload)
-    repo = HealthQualityRepository(None)
+    repo = HealthQualityRepository(unlinked_session)
     repo.profile = AsyncMock(return_value=row)
     monkeypatch.setattr(
         HealthFamilyProfileRepository, "confirmed_source", AsyncMock(return_value=family_source()), raising=False
@@ -88,7 +96,7 @@ async def test_current_source_preserves_professionally_unknown_fields(monkeypatc
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fault", ["unmapped", "missing_link", "family", "member", "version", "hash", "bool"])
-async def test_source_difference_hides_latest_payload_without_fallback(monkeypatch, fault):
+async def test_source_difference_hides_latest_payload_without_fallback(monkeypatch, unlinked_session, fault):
     """正式关联及完整来源摘要均须一致，JSON改型也不继承旧确认。"""
     actual = family_source()
     recorded = deepcopy(actual)
@@ -107,7 +115,7 @@ async def test_source_difference_hides_latest_payload_without_fallback(monkeypat
     else:
         recorded["confirmed_version"] = True
     row = snapshot("synthetic-member", source=recorded)
-    repo = HealthQualityRepository(None)
+    repo = HealthQualityRepository(unlinked_session)
     repo.profile = AsyncMock(return_value=row)
     monkeypatch.setattr(
         HealthFamilyProfileRepository, "confirmed_source", AsyncMock(return_value=actual), raising=False
@@ -132,9 +140,9 @@ async def test_source_difference_hides_latest_payload_without_fallback(monkeypat
         ("not_found", 404, "family_profile_source_unavailable"),
     ],
 )
-async def test_unconfirmed_or_unavailable_source_hides_payload(monkeypatch, code, status, reason):
+async def test_unconfirmed_or_unavailable_source_hides_payload(monkeypatch, unlinked_session, code, status, reason):
     """来源错误只暴露明确未就绪状态，不公开旧专业正文。"""
-    repo = HealthQualityRepository(None)
+    repo = HealthQualityRepository(unlinked_session)
     repo.profile = AsyncMock(return_value=snapshot("synthetic-member", source=family_source()))
     monkeypatch.setattr(
         HealthFamilyProfileRepository,
@@ -150,9 +158,9 @@ async def test_unconfirmed_or_unavailable_source_hides_payload(monkeypatch, code
 
 
 @pytest.mark.asyncio
-async def test_unexpected_source_error_is_not_disguised_as_missing_data(monkeypatch):
+async def test_unexpected_source_error_is_not_disguised_as_missing_data(monkeypatch, unlinked_session):
     """来源查询的其他失败不能静默降为资料不足。"""
-    repo = HealthQualityRepository(None)
+    repo = HealthQualityRepository(unlinked_session)
     repo.profile = AsyncMock(return_value=snapshot("synthetic-member", source=family_source()))
     monkeypatch.setattr(
         HealthFamilyProfileRepository,
@@ -169,7 +177,7 @@ async def test_unexpected_source_error_is_not_disguised_as_missing_data(monkeypa
 @pytest.mark.parametrize(
     "fault,reason", [("missing", "not_delivered"), ("revoked", "revoked"), ("hash", "integrity_mismatch")]
 )
-async def test_external_failure_is_not_replaced_by_formal_source(monkeypatch, fault, reason):
+async def test_external_failure_is_not_replaced_by_formal_source(monkeypatch, unlinked_session, fault, reason):
     """正式来源有效也不能恢复缺失、撤回或篡改的专业投影。"""
     row = snapshot("synthetic-member", source=family_source())
     if fault == "missing":
@@ -178,7 +186,7 @@ async def test_external_failure_is_not_replaced_by_formal_source(monkeypatch, fa
         row.revoked_at = datetime.now(UTC).replace(tzinfo=None)
     else:
         row.payload = {**row.payload, "age_years": 99}
-    repo = HealthQualityRepository(None)
+    repo = HealthQualityRepository(unlinked_session)
     repo.profile = AsyncMock(return_value=row)
     source = AsyncMock(return_value=family_source())
     monkeypatch.setattr(HealthFamilyProfileRepository, "confirmed_source", source, raising=False)
@@ -207,13 +215,13 @@ def changed_source(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_personal_targets_reject_stale_formal_source(monkeypatch, changed_source):
+async def test_personal_targets_reject_stale_formal_source(monkeypatch, changed_source, unlinked_session):
     """目标服务不能重新解析原始投影而绕过正式版本失效。"""
 
     @asynccontextmanager
     async def session_context():
         """该单测仅隔离事务设备，不模拟目标结论。"""
-        yield None
+        yield unlinked_session
 
     monkeypatch.setattr(health_personal_target_service.pg_manager, "get_async_session_context", session_context)
     selection = SimpleNamespace(rule_code="synthetic-rules", profile_version=1, rule_version=1)
@@ -226,12 +234,12 @@ async def test_personal_targets_reject_stale_formal_source(monkeypatch, changed_
 
 
 @pytest.mark.asyncio
-async def test_initial_plan_context_exposes_stale_source_without_professional_payload(changed_source):
+async def test_initial_plan_context_exposes_stale_source_without_professional_payload(changed_source, unlinked_session):
     """初始个人与家庭生成共享的上下文不得传递旧编码正文。"""
     selected = SimpleNamespace(profile_versions={changed_source: 1}, rule_code="synthetic-rules", rule_version=1)
 
     result = await health_initial_meal_plan_service.initial_context_in_session(
-        None, "synthetic-owner", changed_source, selected
+        unlinked_session, "synthetic-owner", changed_source, selected
     )
 
     assert result["profiles"][changed_source]["status"] == "not_ready"
@@ -240,7 +248,7 @@ async def test_initial_plan_context_exposes_stale_source_without_professional_pa
 
 
 @pytest.mark.asyncio
-async def test_saved_plan_quality_cannot_pass_with_stale_formal_source(monkeypatch, changed_source):
+async def test_saved_plan_quality_cannot_pass_with_stale_formal_source(monkeypatch, changed_source, unlinked_session):
     """质量Owner使用当前来源，完整手算营养不能掩盖档案更正。"""
     calculated = {
         "nutrition": {
@@ -261,7 +269,7 @@ async def test_saved_plan_quality_cannot_pass_with_stale_formal_source(monkeypat
     monkeypatch.setattr(health_quality_service, "calculate_in_session", AsyncMock(return_value=calculated))
     selection = SimpleNamespace(plan_id=plan.id, plan_version=1, rule_code="synthetic-rules")
 
-    current = await health_quality_service.quality_context_in_session(None, "synthetic-owner", selection)
+    current = await health_quality_service.quality_context_in_session(unlinked_session, "synthetic-owner", selection)
     result = health_quality_service.quality_snapshot(current)
 
     assert result["safety_check"]["status"] == "unknown"

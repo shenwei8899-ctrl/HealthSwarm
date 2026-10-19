@@ -16,6 +16,8 @@ async function withServer(run) {
   const server = await createServer({
     server: { middlewareMode: true },
     appType: 'custom',
+    // 测试只经 SSR 加载模块，避免为每个实例扫描客户端入口。
+    optimizeDeps: { noDiscovery: true, include: [] },
     ssr: { noExternal: ['ant-design-vue'] },
     plugins: [
       {

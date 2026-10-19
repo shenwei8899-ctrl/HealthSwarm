@@ -20,11 +20,16 @@ from yuxi.services.health_daily_service import daily_history, daily_summary
 from yuxi.services.health_memory_service import list_member_memory, memory_history, change_member_memory
 from yuxi.services.health_memory_types import MemoryPatch, MemoryRevoke
 from yuxi.services.health_agent_roles import health_agent_roles
+from yuxi.services.health_source_service import read_nutrition_source
+from yuxi.services.health_readiness_service import read_nutrition_readiness
 from yuxi.services.health_meal_feedback_types import MealFeedbackChange, MealFeedbackRevoke, FeedbackConversationInput
 from yuxi.services.health_meal_feedback_service import meal_feedback, change_meal_feedback
 from yuxi.repositories.health_consultation_repository import PLANNER_SLUG, ANALYST_SLUG, PURCHASE_SLUG
 from yuxi.services.health_purchase_types import PurchaseInput, PurchaseSelection
 from yuxi.services.health_purchase_service import purchase_requirements
+from yuxi.services.health_commerce_service import (
+    SourceProof, commerce_configuration, export_adopted_purchase, validate_source_proof,
+)
 from yuxi.services.health_diet_analysis_types import DietAnalysisPeriod, DietAnalysisSelection
 from yuxi.services.health_diet_analysis_service import read_diet_analysis, read_period_analysis
 from yuxi.services.health_agent_personal_target_types import TargetAwareAnalystInput
@@ -389,6 +394,24 @@ async def read_purchase_requirements(member_id: UUID, data: PurchaseSelection, u
     return await purchase_requirements(str(user.uid), str(member_id), data)
 
 
+@health_vision.get("/commerce/configuration")
+async def get_commerce_configuration(user: User = Depends(get_required_user)):
+    """普通账号只读取采购连接缺失项。"""
+    return commerce_configuration()[0]
+
+
+@health_vision.post("/members/{member_id}/commerce-recommendations")
+async def create_commerce_recommendation(member_id: UUID, data: PurchaseSelection, user=Depends(get_required_user)):
+    """客户端不能提交营养结论、商品或交易身份。"""
+    return await export_adopted_purchase(str(user.uid), str(member_id), data)
+
+
+@health_vision.post("/commerce/source-validation")
+async def check_commerce_source(data: SourceProof):
+    """商城使用服务器签发的只读凭据检查来源，不返回健康信息。"""
+    return await validate_source_proof(data)
+
+
 @health_vision.post("/members/{member_id}/purchase-conversations", status_code=201)
 async def create_purchase_conversation(
     member_id: UUID,
@@ -466,6 +489,24 @@ async def revoke_external_profile(member_id: UUID, version: int, user: User = De
 async def import_quality_rules(data: RulesImport, user: User = Depends(get_admin_user)):
     """登记专业内容方已批准规则版本。"""
     return await import_approved_rules(user.uid, data)
+
+
+@health_vision.get("/nutrition-sources/{kb_id}/documents/{file_id}")
+async def nutrition_source(kb_id: str, file_id: str, user: User = Depends(get_admin_user)):
+    """读取当前原件引用，不能据此声称专业资料已经批准。"""
+    return await read_nutrition_source(user.uid, kb_id, file_id)
+
+
+@health_vision.get("/members/{member_id}/nutrition-readiness")
+async def nutrition_readiness(
+    member_id: UUID,
+    response: Response,
+    rule_code: str = Query(min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_.:-]+$"),
+    user: User = Depends(get_required_user),
+):
+    """成员依赖检查不创建模型同意、目标、餐单或专业审核。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await read_nutrition_readiness(user.uid, str(member_id), rule_code)
 
 
 @health_vision.get("/approved-quality-rules/{rule_code}")

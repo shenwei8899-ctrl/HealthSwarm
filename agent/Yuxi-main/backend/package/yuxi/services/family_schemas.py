@@ -7,9 +7,11 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from yuxi.services.miniapp_profile_types import DietaryDetails
 
 
 PROFILE_FIELDS = {
+    "dietary_details",
     "sex",
     "birth_date",
     "height_cm",
@@ -31,6 +33,7 @@ PROFILE_FIELDS = {
 }
 REQUIRED_PROFILE_FIELDS = ("sex", "birth_date", "height_cm", "activity_level", "goal")
 STRUCTURED_PROFILE_FIELDS = {
+    "dietary_details",
     "health_goals",
     "condition_records",
     "medication_records",
@@ -130,6 +133,9 @@ class HouseholdSettings(BaseModel):
     """共同生活偏好，不承载成员的私有健康信息。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    default_diners: list[UUID] = Field(default_factory=list, max_length=20)
+    usage_mode: Literal["个人使用", "家庭使用"] = "家庭使用"
+    miniapp_onboarded: bool = False
     cook: str | None = Field(default=None, max_length=100)
     shopper: str | None = Field(default=None, max_length=100)
     weekday_meals: str | None = Field(default=None, max_length=500)
@@ -201,6 +207,7 @@ class ProfileInput(BaseModel):
     """可更正的档案字段；未提供与明确空值分别表达。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    dietary_details: DietaryDetails | None = None
     sex: Literal["female", "male", "unspecified"] | None = None
     birth_date: date | None = None
     height_cm: float | None = Field(default=None, gt=0, le=300, allow_inf_nan=False)

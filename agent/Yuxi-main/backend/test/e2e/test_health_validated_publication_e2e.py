@@ -155,10 +155,14 @@ async def test_education_publication_live_reconnect_and_authoritative_results(
             rewind = []
             await collect_public_events(subject, run_id, rewind, verbose=False)
             assert_status_only(rewind, token)
-            assert any(
-                event == "custom" and payload["payload"]["name"] == "yuxi.init" and event_id not in legacy_ids
-                for event, payload, event_id in rewind
-            ) or mode in {"source", "scope"}
+            if mode == "consent":
+                # 用途同意已撤回，重新建连必须在读取历史事件前拒绝授权。
+                assert rewind == [("error", {"run_id": run_id, "message": "运行任务不存在"}, None)], rewind
+            else:
+                assert any(
+                    event == "custom" and payload["payload"]["name"] == "yuxi.init" and event_id not in legacy_ids
+                    for event, payload, event_id in rewind
+                ) or mode in {"source", "scope"}
             write_evidence("sse", {"role": role, "mode": mode, "live": live, "recovered": recovered, "rewind": rewind})
             if mode == "success":
                 assert recovered[-1][0] == rewind[-1][0] == "end"

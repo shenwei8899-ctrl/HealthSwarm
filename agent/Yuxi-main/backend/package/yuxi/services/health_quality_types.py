@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from decimal import Decimal
+import re
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -291,6 +292,7 @@ class QualityRules(HealthDTO):
     """外部批准的人群、疾病组合、配料分类及营养范围。"""
 
     allowed_population_codes: list[Code] = Field(min_length=1, max_length=50)
+    miniapp_profile_codes: dict[str, dict[str, str]] | None = None
     minimum_age_years: int = Field(ge=0, le=130, strict=True)
     maximum_age_years: int = Field(ge=0, le=130, strict=True)
     supported_condition_sets: list[list[Code]] = Field(min_length=1, max_length=50)
@@ -313,6 +315,38 @@ class QualityRules(HealthDTO):
     @model_validator(mode="after")
     def consistent_catalogs(self):
         """拒绝模糊或重复分类，缺营养范围由检查器显式报告未知。"""
+        if self.miniapp_profile_codes is not None:
+            mapping = self.miniapp_profile_codes
+            if not set(mapping) <= {
+                "population_age_ranges",
+                "sex",
+                "activity",
+                "conditions",
+                "allergies",
+                "intolerances",
+                "avoidances",
+                "doctor_requirements",
+                "preferences",
+            }:
+                raise ValueError("建档编码规则包含未知字段")
+            if any(
+                not label.strip() or len(label) > 2000 or not re.fullmatch(r"[a-zA-Z0-9_.:-]{1,80}", code)
+                for group in mapping.values()
+                for label, code in group.items()
+            ):
+                raise ValueError("建档文本或目标编码无效")
+            spans = []
+            for span, code in mapping.get("population_age_ranges", {}).items():
+                if not re.fullmatch(r"\d{1,3}:\d{1,3}", span):
+                    raise ValueError("建档年龄区间格式无效")
+                lo, hi = map(int, span.split(":"))
+                if (
+                    not 0 <= lo <= hi <= 130
+                    or code not in self.allowed_population_codes
+                    or any(lo <= old_hi and old_lo <= hi for old_lo, old_hi in spans)
+                ):
+                    raise ValueError("建档年龄区间重叠或未批准")
+                spans.append((lo, hi))
         if self.minimum_age_years > self.maximum_age_years:
             raise ValueError("批准年龄范围倒置")
         if not set(self.daily_bounds) <= NUTRIENTS.keys():
