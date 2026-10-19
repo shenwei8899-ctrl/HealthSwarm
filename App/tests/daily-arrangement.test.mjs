@@ -1,0 +1,131 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { createDailyArrangementClient, dailyArrangementState, validateDailyArrangement } from '../src/services/daily-arrangement-client.js'
+
+const day='2026-10-17'
+function ready() {
+  return {status:'ready',id:'saved-1',version:1,date:day,saved:true,validation:{status:'passed'},procurement:{checked:true},
+    analysis:{source:'agent',request_id:'request-1',run_id:'run-1',text:'合成测试：以下说明与三餐同源。'},
+    meals:['breakfast','lunch','dinner'].map(type=>({type,detail_ref:type,members:[{id:'member-1',name:'合成成员'}],
+      dishes:[{id:'recipe-1',name:'合成菜',recipeVersion:'version-1',ingredients:[{name:'合成食材'}],steps:['合成步骤']}],
+      memberNotes:[{memberId:'member-1',dishes:[{grams:100}]}],nutrition:{protein:10},nutritionSource:{source:'synthetic-test-only'},
+      purchase:{package_sn:'package-'+type,package_version:1,items:[]}}))}
+}
+function setup(handler) {
+  const state=dailyArrangementState(),data=new Map(),calls=[]
+  let scope='A',familyId='family-A',count=0
+  const client=createDailyArrangementClient({state,context:()=>({scope,familyId}),storage:{getStorageSync:key=>data.get(scope+key),setStorageSync:(key,value)=>data.set(scope+key,structuredClone(value))},
+    send:async input=>{calls.push(structuredClone(input));return {data:await handler(input,calls)}},newId:()=>'request-'+ ++count,wait:async()=>{},pollLimit:3})
+  return {client,state,calls,data,switch(){scope='B';familyId='family-B'}}
+}
+test('ready requires three complete saved meals and a genuine Agent request/run reference',()=>{
+  assert.equal(validateDailyArrangement(ready(),day).id,'saved-1')
+  for(const mutate of [v=>v.meals.pop(),v=>v.saved=false,v=>v.validation.status='pending',v=>v.procurement.checked=false,v=>v.analysis.source='demo',v=>v.analysis.run_id='',v=>v.meals[0].dishes[0].steps=[],v=>v.meals[0].memberNotes=[],v=>delete v.meals[0].purchase,v=>v.meals[0].purchase.package_version=0]){
+    const value=ready();mutate(value);assert.throws(()=>validateDailyArrangement(value,day))
+  }
+})
+test('reopening a saved day only reads and does not submit generation',async()=>{
+  const f=setup(()=>ready());await f.client.load(day);await f.client.load(day)
+  assert.equal(f.state.phase,'ready');assert.equal(f.calls.length,2);assert.ok(f.calls.every(call=>!call.method))
+})
+test('analysis text alone never reveals an incomplete card',async()=>{
+  const partial=ready();partial.meals.pop()
+  const f=setup(()=>partial);await f.client.load(day)
+  assert.equal(f.state.phase,'error');assert.equal(f.state.arrangement,null)
+})
+test('a lost create response queries the original daily result without submitting another generation',async()=>{
+  let reads=0,starts=0
+  const f=setup(input=>{
+    if(input.method==='POST'){starts++;throw Object.assign(new Error('timeout'),{code:'NETWORK_ERROR'})}
+    return ++reads===1?{status:'absent',date:day}:ready()
+  })
+  await f.client.load(day);assert.equal(starts,1);assert.equal(f.state.phase,'ready')
+})
+test('an unconfirmed save replays exactly the original key, including after a page reload',async()=>{
+  const payloads=[]
+  const f=setup(input=>{
+    if(input.method==='POST'){payloads.push(input.data);if(payloads.length===1)throw Object.assign(new Error('timeout'),{code:'NETWORK_ERROR'});return ready()}
+    return {status:'absent',date:day}
+  })
+  await f.client.load(day);assert.equal(payloads.length,2);assert.deepEqual(payloads[0],payloads[1]);assert.equal(f.state.phase,'ready')
+})
+test('concurrent first opens share one generation',async()=>{
+  let release;const gate=new Promise(resolve=>release=resolve);let starts=0
+  const f=setup(async input=>{if(input.method==='POST'){starts++;await gate;return ready()}return {status:'absent',date:day}})
+  const first=f.client.load(day),second=f.client.load(day);release();await Promise.all([first,second]);assert.equal(starts,1)
+})
+test('an account switch cannot resume a former family task in the new family',async()=>{
+  let release;const f=setup(()=>new Promise(resolve=>release=resolve))
+  const pending=f.client.load(day);f.switch();release({status:'generating',date:day});await pending
+  assert.equal(f.calls.length,1);assert.equal(f.state.arrangement,null)
+})
+test('background generation is polled with GET only until final persistence',async()=>{
+  let reads=0
+  const f=setup(()=>++reads<3?{status:'generating',date:day}:ready())
+  await f.client.load(day);assert.equal(reads,3);assert.equal(f.state.phase,'ready');assert.ok(f.calls.every(call=>!call.method))
+})
+
+test('a failed revision keeps the published arrangement readable',async()=>{
+  const f=setup(()=>({...ready(),update:{status:'failed',version:2,message:'调整失败，原安排保留'}}))
+  await f.client.load(day)
+  assert.equal(f.state.arrangement.version,1);assert.equal(f.state.phase,'ready');assert.match(f.state.error,/保留/)
+})
+
+test('a pending revision retains the original version until replacement commits',async()=>{
+  let reads=0
+  const f=setup(()=>++reads<3?({...ready(),update:{status:'generating',version:2}}):({...ready(),version:2}))
+  await f.client.load(day)
+  assert.equal(f.state.arrangement.version,2);assert.ok(f.calls.every(call=>!call.method))
+})
+test('unavailable service keeps the card hidden and reports a service error',async()=>{
+  const f=setup(()=>{throw Object.assign(new Error('营养服务尚未配置'),{code:503})});await f.client.load(day)
+  assert.equal(f.state.arrangement,null);assert.match(f.state.error,/服务/);assert.ok(!f.calls.some(call=>call.method==='POST'))
+})
+test('detail must match the displayed arrangement and version',async()=>{
+  const f=setup(input=>input.path.includes('/meals/')?{arrangement_id:'saved-1',version:2,meal:{type:'dinner'}}:ready())
+  await f.client.load(day);await assert.rejects(f.client.detail('saved-1','dinner',1),/更新/)
+})
+
+test('transient initial read retries without creating a second task',async()=>{
+  let reads=0
+  const f=setup(()=>{if(++reads===1)throw Object.assign(new Error('timeout'),{code:'NETWORK_ERROR'});return ready()})
+  await f.client.load(day);assert.equal(f.state.phase,'ready');assert.equal(f.calls.length,2)
+  assert.ok(f.calls.every(call=>!call.method))
+})
+
+test('explicit retry restarts only a failed daily request through its existing endpoint',async()=>{
+  const f=setup(input=>input.path.endsWith('/resume?retry_failed=true')?ready():{status:'failed',id:'saved-1',date:day,message:'合成生成失败'})
+  await f.client.load(day);assert.equal(f.state.phase,'error')
+  assert.equal(f.calls.length,1)
+  await f.client.load(day,true);assert.equal(f.state.phase,'ready')
+  assert.ok(!f.calls.some(call=>call.path.endsWith('/daily-arrangements')&&call.method==='POST'))
+})
+
+test('lost member-change response is recovered with the exact original key on reload',async()=>{
+  let writes=0;const payloads=[]
+  const f=setup(input=>{
+    if(input.path.endsWith('/members')){payloads.push(input.data);if(++writes===1)throw Object.assign(new Error('timeout'),{code:'NETWORK_ERROR'});return {status:'generating'}}
+    return ready()
+  })
+  await f.client.load(day);await f.client.changeMembers('dinner',['member-2'])
+  assert.match(f.state.error,/timeout/)
+  await f.client.load(day)
+  assert.equal(f.state.phase,'ready');assert.equal(writes,2);assert.deepEqual(payloads[0],payloads[1])
+})
+
+test('saved meal viewing does not depend on a commerce login',()=>{
+  const page=readFileSync(new URL('../src/pages/shop/index.vue',import.meta.url),'utf8')
+  assert.match(page,/<CloudMealDetail v-if="!isMockMode/)
+  assert.match(page,/<CommerceAccess v-else/)
+  const detail=readFileSync(new URL('../src/components/CloudMealDetail.vue',import.meta.url),'utf8')
+  assert.ok(!detail.includes('commerce.session'))
+  assert.ok(detail.includes('/meals/'))
+})
+test('formal UI places the real analysis before the gated card and has no placeholder menus',()=>{
+  const ui=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
+  assert.ok(ui.indexOf('class="analysis-message"')<ui.indexOf('<DailyArrangementCard'))
+  assert.match(ui,/v-if="cardVisible && state.phase==='ready'"/)
+  assert.ok(!ui.includes('本餐有待处理的饮食问题'));assert.ok(!ui.includes('测试数据'))
+  assert.ok(!/#[0-9a-f]*246b50/i.test(ui))
+})

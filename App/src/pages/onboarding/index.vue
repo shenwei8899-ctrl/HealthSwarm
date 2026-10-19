@@ -7,6 +7,9 @@ import MemberFields from '../../components/MemberFields.vue'
 import OnboardingHealthFields from '../../components/OnboardingHealthFields.vue'
 import { backHome, getProfile, newMember, normalizeMember, normalizeProfile, saveProfile } from '../../utils/profile.js'
 import { dataWarnings } from '../../utils/health.js'
+import { isMockMode } from '../../services/config.js'
+import { loadCloudProfile, saveCloudProfile } from '../../services/cloud-profile.js'
+const cloudLoading=ref(!isMockMode),cloudError=ref(''),cloudSaving=ref(false),cloudLoaded=ref(isMockMode)
 let initialProfile = getProfile()
 if (!initialProfile.members.length || !scopedStorage.getStorageSync('family-profile-v2') && !scopedStorage.getStorageSync('frontend-onboarding-progress-v1')) {
   const self = normalizeMember({ ...newMember(0), name: '我', relation: '本人', age: '', claimedBy: 'creator' })
@@ -27,7 +30,25 @@ const copy = [
 ]
 watch(step, () => nextTick(() => uni.pageScrollTo?.({ scrollTop: 0, duration: 0 })))
 
-onLoad(options => {
+async function readCloud() {
+    cloudLoading.value=true;cloudError.value=''
+    try {
+      profile.value = await loadCloudProfile()
+      const policy=profile.value.analysisPolicy
+      const draft = scopedStorage.getStorageSync('frontend-onboarding-progress-v1')
+      if (draft?.profile?.householdId === profile.value.householdId && draft.profile.familyVersion === profile.value.familyVersion) {
+        profile.value = normalizeProfile(draft.profile); step.value = draft.step || 0
+        profile.value.analysisPolicy=policy
+      }
+      if (!profile.value.defaultDiners.length) profile.value.defaultDiners = profile.value.members.map(member=>member.id)
+      familyDiners.value=[...profile.value.defaultDiners]
+      syncDiners()
+      cloudLoaded.value=true
+    } catch(error) { cloudError.value=error.message }
+    finally { cloudLoading.value=false }
+}
+onLoad(async options => {
+  if (!isMockMode) { await readCloud(); return }
   if (options.member) {
     invited.value = true
     memberIndex.value = Math.max(0, profile.value.members.findIndex(m => String(m.id) === options.member))
@@ -50,6 +71,7 @@ watch([profile, step, memberIndex, familyDiners], () => {
   })
 }, { deep: true })
 onShow(() => {
+  if(!isMockMode)return
   const fresh = getProfile()
   for (const m of profile.value.members) {
     const updated = fresh.members.find(n => n.id === m.id)
@@ -81,10 +103,17 @@ function toggleDiner(id) {
   familyDiners.value = selected.includes(id) ? selected.filter(value => value !== id) : [...selected, id]
   syncDiners()
 }
-function commit() {
+async function commit() {
+  if(cloudSaving.value||cloudLoading.value||!cloudLoaded.value)return
   if (!invited.value) syncDiners()
-  saveProfile(profile.value)
+  if(isMockMode)saveProfile(profile.value)
   if (step.value < 2) { step.value++; return }
+  if(!isMockMode){
+    cloudSaving.value=true;cloudError.value=''
+    try { profile.value=await saveCloudProfile(profile.value) }
+    catch(error){cloudError.value=error.message;return}
+    finally{cloudSaving.value=false}
+  }
   if (!invited.value) {
     completed = true
     scopedStorage.setStorageSync('frontend-onboarded-v1', true)
@@ -93,6 +122,7 @@ function commit() {
   uni.redirectTo({ url: invited.value ? '/pages/profile/index' : '/pages/chat/index?from=onboarding' })
 }
 function next() {
+  if(cloudSaving.value||cloudLoading.value||cloudError.value&&!profile.value.householdId)return
   for (const member of visibleMembers.value) {
     const message = !member.name.trim() ? '请填写姓名／称呼' : step.value === 1 && member.healthStatus === 'set' &&
       (!member.conditions.length || member.conditions.includes('其他') && !member.otherCondition.trim()) ? '请补充具体基础病' : ''
@@ -107,7 +137,9 @@ function next() {
 }
 </script>
 <template>
-  <view class="screen onboarding-screen" :class="{ 'health-step': step === 1 }">
+  <view v-if="cloudLoading" class="screen"><text class="safe-note">正在读取云端档案…</text></view>
+  <view v-if="cloudError" class="cloud-onboarding-error" role="alert"><text>{{cloudError}}</text><button @click="cloudLoaded ? next() : readCloud()">{{cloudLoaded?'重试保存':'重新读取档案'}}</button></view>
+  <view v-show="!cloudLoading && cloudLoaded" class="screen onboarding-screen" :class="{ 'health-step': step === 1 }">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="step > 0 ? step-- : backHome()">‹</button><text class="nav-title">{{ invited ? '受邀成员建档' : '家庭建档' }}</text><text v-if="step !== 1" class="step-count">{{ step + 1 }} / 3</text></view></AppNavBar>
     <text v-if="step === 1" class="step-caption">第 2 步，共 3 步</text>
     <view class="progress"><view :style="{ width: (step + 1) / 3 * 100 + '%' }"></view></view>
@@ -131,8 +163,9 @@ function next() {
       <text class="helper diner-summary">默认按 {{ dinerCount }} 人安排饮食，每餐可以单独调整。</text>
     </view>
     <text v-if="step === 1" class="later-note">资料可稍后补充</text>
-    <button class="primary-button next" @click="next"><text>{{ step === 2 ? (invited ? '保存，进入家庭' : '完成建档，进入首页') : '保存并继续' }}</text><text>{{ step === 1 ? '›' : '→' }}</text></button>
-    <text class="demo-label">前端体验版 · 资料保存于本机，请勿输入真实病历</text>
+    <text v-if="!isMockMode && step===2 && profile.analysisPolicy" class="analysis-policy">点击“保存并分析”，将使用上述成员档案安排三餐。处理方：{{profile.analysisPolicy.processor}}；政策版本：{{profile.analysisPolicy.policy_version}}。</text>
+    <button class="primary-button next" :disabled="cloudSaving||cloudLoading" @click="next"><text>{{ step === 2 ? (cloudSaving ? '正在保存…' : !isMockMode && profile.analysisPolicy ? '保存并分析今日饮食' : invited ? '保存，进入家庭' : '完成建档，进入首页') : '保存并继续' }}</text><text>{{ step === 1 ? '›' : '→' }}</text></button>
+    <text v-if="isMockMode" class="demo-label">前端体验版 · 资料保存于本机，请勿输入真实病历</text>
   </view>
 </template>
 <style scoped>
@@ -168,3 +201,7 @@ function next() {
 .onboarding-screen :deep(.text-area){background:#f5f5f7;border-color:#e3e3e9;color:#1d1d1f}
 .onboarding-screen :deep(.secondary-button){background:#fff;border-color:#dedee3;color:#1d1d1f}
 </style>
+
+<style scoped>.cloud-onboarding-error{padding:28rpx;margin:24rpx 32rpx;background:#eeeef1;border-radius:20rpx;color:#444;font-size:27rpx;line-height:1.7}.cloud-onboarding-error button{margin-top:16rpx;text-decoration:underline;color:#222}.onboarding-screen :deep(.secondary-button){color:#333}</style>
+
+<style scoped>.analysis-policy{display:block;font-size:23rpx;color:#888;line-height:1.8;margin:24rpx 0;overflow-wrap:anywhere}</style>

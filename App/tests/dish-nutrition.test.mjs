@@ -15,6 +15,15 @@ const family = { members: [{ id: 1, age: 30, health: '一般成人' }], defaultD
 const metadata = { basis: 'per_100g', foodState: 'cooked_edible', source: 'calculated', sourceReference: 'test-recipe-v1' }
 const missingItems = value => dishNutritionItems(value).every(item => item.text === '暂无数据' && !item.available)
 
+test('saved backend recipe nutrition retains its actual cooking-state label and numbers',()=>{
+  const value={...metadata,foodState:'recipe_edible',cookingStateLabel:'清蒸成品',energyKcal:120,proteinG:8}
+  const normalized=normalizeDishNutrition(value)
+  assert.equal(normalized.cookingStateLabel,'清蒸成品')
+  assert.equal(dishNutritionItems(normalized)[0].text,'120')
+  assert.equal(dishNutritionItems(normalized)[1].text,'8.0')
+  assert.ok(missingItems({...value,cookingStateLabel:''}))
+})
+
 function setupStorage() {
   const storage = new Map()
   globalThis.uni = { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, JSON.parse(JSON.stringify(value))) }

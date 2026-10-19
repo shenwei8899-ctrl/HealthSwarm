@@ -59,11 +59,34 @@ function fixture(){
   const controller=createMealCommerceController({state,api,scope:()=>account,context:()=>({enabled:true,meal:'dinner',date:menu.date,members,unsupported:false})})
   return {state,controller,calls,menu,api,member:value=>{members=value},switch:()=>{account='B';controller.sync()},failOrder:()=>{failOrder=true},defer:promise=>{deferMenu=promise}}
 }
+
+test('saved meal procurement reads its exact package and never substitutes the current menu', async () => {
+  const f=fixture(), calls=[]
+  f.api.meal=async()=>{ throw new Error('must not read the current menu') }
+  f.api.mealPackage=async(sn,version)=>{calls.push([sn,version]);return copy(f.menu)}
+  const controller=createMealCommerceController({state:f.state,api:f.api,scope:()=> 'A',
+    context:()=>({enabled:true,meal:'dinner',date:f.menu.date,packageSn:'A-DINNER',packageVersion:1,members:[{id:1,name:'我',allergies:[]}],unsupported:false})})
+  await controller.load()
+  assert.equal(f.state.ready,true)
+  assert.deepEqual(calls,[['A-DINNER',1]])
+  assert.equal(f.calls.some(call=>['addMeal','quote','createOrder'].includes(call[0])),false)
+})
 test('opening meal is read-only and renders real SKU fields without demo nutrition',async()=>{
   const f=fixture();await f.controller.load();assert.deepEqual(f.calls.map(c=>c[0]),['meal','cart']);
   const view=commerceMealView(f.state.menu,{members:[{id:1,name:'我'}],quantities:f.state.quantities});
   assert.equal(view.dishes[0].name,'番茄炒蛋');assert.equal(view.products[0].priceCents,800);assert.equal(view.products[0].packLabel,'500g/包');
   assert.equal(view.nutrition,null);assert.deepEqual(view.memberNotes,[]);assert.equal(view.products[0].needLabel,'用量待确认');
+})
+
+test('an arrangement reads its exact package instead of the newest meal',async()=>{
+  const f=fixture(), calls=[]
+  f.api.meal=async()=>{throw new Error('must not read newest package')}
+  f.api.mealPackage=async(sn,version)=>{calls.push([sn,version]);return f.menu}
+  const controller=createMealCommerceController({state:f.state,api:f.api,scope:()=> 'A',
+    context:()=>({enabled:true,meal:'dinner',date:f.menu.date,members:[],packageSn:'A-DINNER',packageVersion:1})})
+  await controller.load()
+  assert.deepEqual(calls,[['A-DINNER',1]])
+  assert.equal(f.state.menu.package_sn,'A-DINNER')
 })
 test('meal checkout applies selected quantities and never quotes unrelated cart lines',async()=>{
   const f=fixture();await f.controller.load();f.controller.quantity('2',2);f.controller.toggle('3');await f.controller.prepare();

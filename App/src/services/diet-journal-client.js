@@ -1,6 +1,7 @@
 import { request } from './request.js'
 import { sessionRevision } from './session.js'
 import { newHealthRequestId } from './health-task-flow.js'
+import { mealInput } from './health-meal-input.js'
 
 const root = '/api/health/v1'
 const copy = value => JSON.parse(JSON.stringify(value))
@@ -80,7 +81,7 @@ export function createDietJournalClient({ state, send = request, revision = sess
     correct(meal, reason, acceptIncomplete) {
       if (state.busy || !state.detail || state.conflict) return
       if (!state.pending) {
-        const data = { expected_version: state.detail.source_version, client_request_id: newId(), meal: copy(meal),
+        const data = { expected_version: state.detail.source_version, client_request_id: newId(), meal: mealInput(meal),
           reason, accept_incomplete: acceptIncomplete }
         state.pending = { path: `${root}/diet-logs/${state.detail.id}`, method: 'PATCH', data,
           headers: { 'Idempotency-Key': data.client_request_id, 'If-Match': `"${data.expected_version}"` } }

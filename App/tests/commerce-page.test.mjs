@@ -145,7 +145,7 @@ test("return from native payment preserves its work and rereads the server order
 
 test("expired commerce credentials remove the protected view immediately", async () => {
   let session = { token: "valid" }, changed, mounted;
-  const deps = {ref, defineProps:()=>({entry:false}), defineEmits:()=>()=>{}, usesCommerceIdentity:false, onMounted: cb => {mounted=cb}, onShow: () => {},
+  const deps = {ref, computed, onUnmounted:()=>{}, defineProps:()=>({entry:false}), defineEmits:()=>()=>{}, usesCommerceIdentity:false, usesAgentIdentity:false, onMounted: cb => {mounted=cb}, onShow: () => {},
     watch: (_, cb) => {changed=cb}, commerceSessionEpoch: ref(0),
     commerceContext: () => session?.token || "guest",
     commerce: {session:()=>session,restore:async()=>session},
@@ -157,6 +157,46 @@ test("expired commerce credentials remove the protected view immediately", async
   session=null; changed();
   assert.equal(page.ready.value,false); assert.match(page.error.value,/重新登录/);
 });
+
+function memberAccess(commerce) {
+  let mounted, unmounted, events = 0
+  const deps = { ref, computed, defineProps: () => ({ entry: true, memberEntry: true }),
+    defineEmits: () => () => { events++ }, usesCommerceIdentity: false, usesAgentIdentity: true,
+    onMounted: cb => { mounted = cb }, onUnmounted: cb => { unmounted = cb }, onShow: () => {}, watch: () => {},
+    commerceSessionEpoch: ref(0), commerceContext: () => 'guest', commerce }
+  const code = readFileSync(new URL('../src/components/CommerceAccess.vue', import.meta.url), 'utf8')
+    .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
+  const page = new Function('deps', `const {${Object.keys(deps)}}=deps;${code};return {account,password,ready,error,login}`)(deps)
+  return { page, mount: () => mounted(), unmount: () => unmounted(), events: () => events }
+}
+
+test('homepage mall form does not exchange an Agent session and clears a rejected password', async () => {
+  let restores = 0, logins = 0, credentials
+  const h = memberAccess({ session: () => null, isMemberLogin: () => false,
+    restore: async () => { restores++ }, login: async () => { throw new Error('wrong login method') },
+    loginMember: async value => { logins++; credentials = value; throw new Error('账号或密码错误') } })
+  await h.mount()
+  assert.equal(restores, 0)
+  h.page.account.value = ' member '; h.page.password.value = 'synthetic-password'
+  await h.page.login()
+  assert.equal(logins, 1)
+  assert.deepEqual(credentials, { account: 'member', password: 'synthetic-password' })
+  assert.equal(h.page.error.value, '账号或密码错误')
+  assert.equal(h.page.password.value, '')
+  assert.equal(h.events(), 0)
+})
+
+test('closing the mall form cancels its pending login and cannot navigate on a late response', async () => {
+  let release, cancellations = 0
+  const h = memberAccess({ session: () => null, isMemberLogin: () => false,
+    loginMember: () => new Promise(resolve => { release = resolve }), cancelLogin: () => { cancellations++ } })
+  h.page.account.value = 'member'; h.page.password.value = 'synthetic-password'
+  const pending = h.page.login()
+  h.unmount(); release(); await pending
+  assert.equal(cancellations, 1)
+  assert.equal(h.page.password.value, '')
+  assert.equal(h.events(), 0)
+})
 
 function shop(delivery) {
   const h = fixture();

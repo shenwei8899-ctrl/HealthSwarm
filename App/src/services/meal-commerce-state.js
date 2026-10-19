@@ -94,7 +94,10 @@ export function createMealCommerceController({ state, api, scope, context }) {
       if (!input.enabled) return
       if (input.unsupported) { state.ready = false; state.error = '当前按单餐采购；三餐合并和周期计划的交易契约尚未接入。'; return }
       state.ready = false; invalidateQuote()
-      const [menu, basket, addresses] = await Promise.all([api.meal(input.meal, input.date), api.cart(), api.addresses()])
+      const menuRequest = input.packageSn
+        ? api.mealPackage(input.packageSn, input.packageVersion)
+        : api.meal(input.meal, input.date)
+      const [menu, basket, addresses] = await Promise.all([menuRequest, api.cart(), api.addresses()])
       if (!active()) return
       const unchanged = sameMenu(state.menu, menu)
       state.menu = menu; state.cart = basket.items; invalidateQuote()

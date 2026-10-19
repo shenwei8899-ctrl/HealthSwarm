@@ -1,5 +1,5 @@
 // Dependency injection keeps credential exchange and account-switch races testable.
-export function createWechatAuthClient({ send, session, getCode, appId, isWechat }) {
+export function createWechatAuthClient({ send, session, getCode, appId, isWechat, allowPasswordLogin = false }) {
   let generation = 0
   function ticket() { return { generation, revision: session.revision() } }
   function current(t) {
@@ -21,6 +21,23 @@ export function createWechatAuthClient({ send, session, getCode, appId, isWechat
     const response = await send({ path: '/api/auth/wechat/login', method: 'POST', data, authenticated: false })
     current(t)
     const result = projectLogin(response.data)
+    session.save(result)
+    return result
+  }
+  async function passwordLogin({ identifier, password }) {
+    if (!allowPasswordLogin || isWechat) throw Object.assign(new Error('当前环境未开放账号登录'), { code: 'PASSWORD_LOGIN_DISABLED' })
+    const t = ticket()
+    if (!identifier?.trim() || !password) throw new Error('请填写已有账号与密码')
+    const response = await send({ path: '/api/auth/token', method: 'POST', authenticated: false,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      data: 'username=' + encodeURIComponent(identifier.trim()) + '&password=' + encodeURIComponent(password) })
+    current(t)
+    const token = response.data?.access_token
+    if (typeof token !== 'string' || !token) throw new Error('登录服务返回的会话无效')
+    const context = await send({ path: '/api/auth/wechat/session', authenticated: false, authenticationToken: token })
+    current(t)
+    const result = { ...projectContext(context.data), token, householdId: null, isDemo: false }
+    if (result.accountId !== String(response.data.user_id)) throw new Error('登录身份不一致，请重试')
     session.save(result)
     return result
   }
@@ -51,7 +68,7 @@ export function createWechatAuthClient({ send, session, getCode, appId, isWechat
   }
   function logout() { generation++; session.clear() }
   function cancelPending() { generation++ }
-  return { login, restore, selectFamily, logout, cancelPending }
+  return { login, passwordLogin, restore, selectFamily, logout, cancelPending }
 }
 
 export function projectContext(data) {

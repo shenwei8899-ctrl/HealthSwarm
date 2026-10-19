@@ -4,6 +4,7 @@ import { mockDelay } from '../../services/mock-control.js'
 import { persistChatImage, previewChatImage, sendChatImage } from '../../services/chat-images.js'
 import AppIcon from '../../components/AppIcon.vue'
 import AppNavBar from '../../components/AppNavBar.vue'
+import CloudNutritionChat from '../../components/CloudNutritionChat.vue'
 import VoiceInput from '../../components/VoiceInput.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 import { onLoad, onShow,onHide,onUnload } from '@dcloudio/uni-app'
@@ -63,11 +64,13 @@ const selectedDinerPlan=computed(()=>{planRevision.value;return todayPlan(profil
 const hasActivePaidPlan=computed(()=>{planRevision.value;return Boolean(activePlanOrder())})
 const prompts = computed(() => ['今晚全家吃什么？', '给我安排明天早餐', '看看我的饮食记录', '糖尿病家庭怎么吃？'])
 onLoad(options => {
+  if (!isMockMode) return
   caseFeedback.value = options.caseFeedback === 'diabetes'
   if (options.recordId) scheduleReply(() => { messages.value.push({ role:'assistant', recordId:options.recordId, text:'这餐吃下来怎么样？有什么想告诉我的吗？你可以用文字或语音补充。' }); scrollToLatestReply() }, 280)
   if (options.startCase === 'diabetes') scheduleReply(() => ask(DIABETES_CASE_QUESTION), 380)
 })
 onShow(async () => {
+  if (!isMockMode) return
   if(chatScope!==storageScope()){
     voiceRef.value?.cancel();voiceMode.value=false;voiceBusy.value=false
     requestVersion++;draftVersion++;chatScope=storageScope();thinking.value=false;draftSaving.value=false
@@ -293,7 +296,8 @@ function undoProcessed(message){if(message.memoryId){forget(message.memoryId);pr
 </script>
 
 <template>
-<view class="screen chat-screen" :class="{'voice-is-busy':voiceBusy}">
+  <CloudNutritionChat v-if="!isMockMode"/>
+<view v-else class="screen chat-screen" :class="{'voice-is-busy':voiceBusy}">
   <AppNavBar><view class="nav-row chat-nav"><button class="history-button" aria-label="查询历史记录" @click="showHistory"><AppIcon name="history" :size="40"/></button><view class="assistant-title"><text>家庭营养师</text><text class="nav-subtitle">你的家庭饮食伙伴</text></view><button class="me-button" aria-label="进入我的页面" @click="go('/pages/my/index')"><AppIcon name="user" :size="40"/></button></view></AppNavBar>
   <scroll-view class="conversation" scroll-y :scroll-into-view="scrollTarget">
     <view class="today-card"><view class="today-top"><view><text class="eyebrow">{{today.getMonth()+1}}月{{today.getDate()}}日 · 今日安排</text><text class="section-title">好好吃饭，从今天开始</text></view><text class="test-badge">{{isCommerceEnabled?'服务端餐单':'测试数据'}}</text></view><view class="today-meals"><view v-for="item in dailyPlans" :key="item.route" class="daily-meal-row"><view class="meal-card-head"><text class="meal-name">{{item.name}}</text><button v-if="!isCommerceEnabled" class="diner-capsule" @click="changeDiners(item)"><AppIcon name="family" :size="26"/> {{item.plan.count}}人用餐</button></view><text class="meal-summary">{{item.summary}}</text><view class="meal-foot"><text class="meal-source">{{item.plan.source}}</text><button class="meal-link" @click="openDailyMeal(item)">查看本餐安排 ›</button></view></view></view><button v-if="!hasActivePaidPlan" class="daily-buy" @click="go(isCommerceEnabled?'/pages/shop/index?commerce=1':'/pages/shop/index?daily=1')">{{isCommerceEnabled?'选购商城食材':'一键采购'}} <text>↗</text></button></view>

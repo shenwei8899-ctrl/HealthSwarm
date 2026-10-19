@@ -4,6 +4,7 @@ import { onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import { createDietJournalClient, journalState, mealDate } from '../services/diet-journal-client.js'
 import { newHealthRequestId } from '../services/health-task-flow.js'
 import { scopedStorage } from '../services/storage.js'
+import HealthMealEditor from './HealthMealEditor.vue'
 
 const state = reactive(journalState())
 const client = createDietJournalClient({ state })
@@ -37,7 +38,7 @@ async function show(record) {
 async function correct() {
   if (!reason.value.trim() || !meal.value) return
   await client.correct(meal.value, reason.value.trim(), accept.value)
-  if (!state.pending && !state.error) meal.value = JSON.parse(JSON.stringify(state.detail.snapshot.meal))
+  if (!state.pending && !state.error && state.detail) meal.value = JSON.parse(JSON.stringify(state.detail.snapshot.meal))
 }
 async function save(chat = false) {
   if (!canSave.value && !state.pending) return
@@ -46,8 +47,8 @@ async function save(chat = false) {
     meal_type: mealType.value, eaten_at: now, items: row.items.map(item => ({ ...item, grams: Number(item.grams) })) } })), accept.value)
   if (chat && !state.pending && state.saved.length === 1) chatWithSaved()
 }
-function chatWithSaved() {
-  const saved = state.saved[0]
+function chatWithSaved(record = state.saved[0]) {
+  const saved = record
   if (!saved || state.pending) return
   const memberId = saved.member_id || state.memberId
   scopedStorage.setStorageSync(`indicator-choice:${memberId}:diet_analysis`, { record_id: saved.id, source_version: saved.source_version })
@@ -79,11 +80,12 @@ function chatWithSaved() {
       <text class="section-title">更正实际摄入 · v{{state.detail.source_version}}</text>
       <text>当前计算：{{totals.energy_kcal ?? '未知'}} kcal · 蛋白质 {{totals.protein_g ?? '未知'}} g</text>
       <text class="safe-note">未知值保留为空。修改实际克数后，服务端重新计算当前记录。</text>
-      <view v-for="item in meal.items" :key="item.item_id" class="item"><text>{{item.name}}</text><input v-model="item.grams" type="digit" :disabled="state.busy||!!state.pending||!!item.portion_reference_id" placeholder="可食克数"/><text>克 × 个人比例 {{item.share_ratio ?? '未知'}}</text><text v-if="item.portion_reference_id">该项使用已发布份量参考，本页保留原数量。</text></view>
+      <HealthMealEditor :meal="meal" :disabled="state.busy||!!state.pending" :recipes="state.recipes" @search="client.searchRecipes"/>
       <textarea v-model="reason" :disabled="state.busy||!!state.pending" placeholder="填写更正原因" class="text-area"/>
       <label class="consent"><switch :checked="accept" :disabled="state.busy||!!state.pending" @change="accept=$event.detail.value"/>接受营养资料不完整，缺失项保持未知</label>
       <button class="primary-button" :disabled="state.busy||state.conflict||!reason.trim()" @click="correct">{{state.pending?'重试原更正':'保存更正并重新计算'}}</button>
       <button v-if="state.conflict" class="secondary-button" :disabled="state.busy" @click="show(state.detail)">读取当前版本后重新填写</button>
+      <button class="secondary-button" :disabled="state.busy||!!state.pending||state.conflict" @click="chatWithSaved(state.detail)">就这条已保存记录聊聊</button>
     </view>
     <view v-if="mode==='new'" class="editor">
       <text class="section-title">每人实际吃了什么</text>
@@ -104,7 +106,7 @@ function chatWithSaved() {
       <button v-if="unsavedPeople.length||state.pending" class="primary-button" :disabled="state.busy||(!canSave&&!state.pending)" @click="save()">{{state.pending?'重试未完成项':'一次保存实际摄入'}}</button>
       <button v-if="state.canEditFailed" class="secondary-button" :disabled="state.busy" @click="client.editFailed()">修改未保存项</button>
       <button v-if="selectedPeople.length===1&&!state.saved.length" class="secondary-button" :disabled="state.busy||!canSave" @click="save(true)">保存并聊聊</button>
-      <button v-if="state.saved.length===1&&!state.pending" class="secondary-button" @click="chatWithSaved">继续聊聊</button>
+      <button v-if="state.saved.length===1&&!state.pending" class="secondary-button" @click="chatWithSaved()">继续聊聊</button>
     </view>
     <button v-if="mode!=='list'" class="secondary-button" :disabled="state.busy||!!state.pending" @click="mode='list';client.page()">返回记录列表</button>
     <text v-if="state.pending" class="safe-note">保存尚未全部确认，请在此页重试原请求。不要重新新建相同餐次。</text>

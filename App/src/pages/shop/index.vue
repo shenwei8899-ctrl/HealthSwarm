@@ -2,6 +2,8 @@
 import { isCommerceEnabled } from '../../services/config.js'
 import CommerceShop from '../../components/CommerceShop.vue'
 import CommerceAccess from '../../components/CommerceAccess.vue'
+import CloudMealDetail from '../../components/CloudMealDetail.vue'
+import { request } from '../../services/request.js'
 const commerceRoute=ref({}), commercePage=ref(false)
 
 import AppNavBar from '../../components/AppNavBar.vue'
@@ -15,7 +17,7 @@ import MealNotes from '../../components/MealNotes.vue'
 import { getProfile,backHome } from '../../utils/profile.js'
 import { service as mockService } from '../../services/index.js'
 import { createCheckoutQuote,validateCheckoutQuote,checkoutFingerprint } from '../../utils/checkout-state.js'
-import { storageContext as storageScope } from '../../services/storage.js'
+import { scopedStorage, storageContext as storageScope } from '../../services/storage.js'
 import { mockDelay } from '../../services/mock-control.js'
 import { getMealMembers, subtotal } from '../../utils/demo.js'
 import { isMockMode } from '../../services/config.js'
@@ -31,9 +33,21 @@ const demoAddress=ref(isCommerceEnabled ? null : mockService.selectedAddress())
 const address=computed({get:()=>isCommerceEnabled?mealCommerce.state.address:demoAddress.value,set:value=>{if(isCommerceEnabled)mealCommerce.state.address=value;else demoAddress.value=value}})
 function chooseAddress(){if(isCommerceEnabled&&mealCommerce.state.busy)return;uni.navigateTo({url:'/pages/address/index'})}
 const meal=ref('晚餐'),profile=ref(getProfile()),revision=ref(0),daily=ref(false),included=ref(['早餐','午餐','晚餐']),dinersOpen=ref(false),updateNote=ref('')
+const savedArrangementMeal=ref(null),savedArrangementError=ref('')
 const isDiabetesCase=computed(()=>false),caseId=ref('')
 const activeSwap=computed(()=>{revision.value;return isCommerceEnabled?null:getMealSwap(meal.value)})
-const plan=computed(()=>{revision.value;return isCommerceEnabled?mealCommerce.plan.value:todayPlan(profile.value,meal.value)})
+const plan=computed(()=>{
+ revision.value
+ if(isCommerceEnabled&&savedArrangementMeal.value){
+  const saved=savedArrangementMeal.value,base=mealCommerce.plan.value
+  const matched=base.packageSn===saved.purchase?.package_sn&&base.packageVersion===saved.purchase?.package_version
+  return {...base,...saved,meal:meal.value,count:saved.members.length,sourceType:'api',blocked:[],paid:false,
+   dishes:saved.dishes.map(d=>({...d,recipeId:d.id,recipeVersion:d.recipeVersion,detail:d.ingredients.map(i=>i.name).join(' · '),icon:'菜',color:'#ececef'})),
+   memberNotes:saved.memberNotes.map(note=>({...note,id:note.memberId,dishes:note.dishes.map(p=>({...p,recipeId:p.dishId,amount:p.grams,unit:'g'})),notes:[JSON.stringify(saved.nutritionSource)]})),
+   products:matched?base.products:[],safetyText:'按当前已保存档案、配方及建议熟重计算。明确医嘱优先。'}
+ }
+ return isCommerceEnabled?mealCommerce.plan.value:todayPlan(profile.value,meal.value)
+})
 const procurement=computed(()=>{revision.value;return isCommerceEnabled?{products:[],plans:[],blocked:[],selectedIds:[]}:dailyProcurement(profile.value,included.value)})
 const blockers=computed(()=>isCommerceEnabled?plan.value.blocked:daily.value?procurement.value.blocked:plan.value.blocked)
 const bundleId=ref(''),bundle=computed(()=>(isCommerceEnabled?[]:createMealBundles(plan.value)).find(b=>b.id===bundleId.value))
@@ -47,7 +61,7 @@ const selectedProducts=computed(()=>products.value.filter(p=>selected.value.incl
 const productsSubtotalCents=computed(()=>subtotal(products.value,selected.value))
 const totalCents=computed(()=>sourcePlan.value&&deliveryBatches.value.length?sourcePlan.value.totalEstimateCents:productsSubtotalCents.value)
 const total=computed(()=>(totalCents.value/100).toFixed(2))
-const mealCommerce=isCommerceEnabled?useMealCommercePage(()=>({enabled:!commercePage.value, meal:mealToRoute(meal.value), date:commerceRoute.value.date||localDate(), members:getMealMembers(mealProfile(profile.value,meal.value,commerceRoute.value.date||localDate())), unsupported:daily.value||!!sourcePlanId.value||!!bundleId.value})):null
+const mealCommerce=isCommerceEnabled?useMealCommercePage(()=>({enabled:!commercePage.value, meal:mealToRoute(meal.value), date:commerceRoute.value.date||localDate(), packageSn:savedArrangementMeal.value?.purchase?.package_sn, packageVersion:savedArrangementMeal.value?.purchase?.package_version, members:getMealMembers(mealProfile(profile.value,meal.value,commerceRoute.value.date||localDate())), unsupported:daily.value||!!sourcePlanId.value||!!bundleId.value})):null
 const selected=computed({get:()=>isCommerceEnabled?mealCommerce.state.selected:demoSelected.value,set:value=>{if(isCommerceEnabled)mealCommerce.state.selected=value;else demoSelected.value=value}})
 const checkoutQuote=computed(()=>mealCommerce?.state.quote)
 const commerceBusy=computed(()=>mealCommerce?.state.busy||false)
@@ -59,9 +73,23 @@ const deliverySlots=computed(()=>mealCommerce?.state.slots||[])
 const deliveryMessage=computed(()=>mealCommerce?.state.deliveryMessage||'')
 const money=value=>(Number(value||0)/100).toFixed(2)
 async function reloadCommerce(){
+  if(!isMockMode&&commerceRoute.value.arrangement&&commerceRoute.value.purchase!=='1')return
   if(!isCommerceEnabled||commercePage.value||!commerce.session()?.token)return
   profile.value=getProfile()
+  if(!isMockMode&&commerceRoute.value.arrangement){
+   savedArrangementError.value=''
+   try{
+    const options=commerceRoute.value
+    const {data}=await request({path:'/api/family/'+encodeURIComponent(profile.value.householdId)+'/daily-arrangements/'+options.date+'/meals/'+options.meal+'?arrangement_id='+encodeURIComponent(options.arrangement)+'&version='+Number(options.version)})
+    if(disposed)return
+    if(data.arrangement_id!==options.arrangement||data.version!==Number(options.version))throw new Error('本餐安排已更新，请返回重新读取。')
+    savedArrangementMeal.value=data.meal
+   }catch(error){savedArrangementMeal.value=null;savedArrangementError.value=error.message;return}
+  }
   await mealCommerce.load()
+  if(savedArrangementMeal.value&&mealCommerce.state.menu&&(mealCommerce.state.menu.package_sn!==savedArrangementMeal.value.purchase?.package_sn||mealCommerce.state.menu.package_version!==savedArrangementMeal.value.purchase?.package_version)){
+   mealCommerce.state.ready=false;mealCommerce.state.error='采购内容已更新，请重新核对本餐食材。'
+  }
   if(checkoutRequested&&mealCommerce.state.ready&&!mealCommerce.state.error){checkoutRequested=false;await checkout()}
 }
 async function submitCommerceOrder(){
@@ -136,7 +164,7 @@ async function queryPayment(){
 
 function viewOrder(){uni.navigateTo({url:'/pages/orders/detail?id='+encodeURIComponent(paidOrderId.value)})}
 function nutritionist(){uni.reLaunch({url:'/pages/chat/index'})}
-function openDish(dish){if(isCommerceEnabled){uni.navigateTo({url:'/pages/recipe/index?commerce=1&meal='+mealToRoute(meal.value)+'&date='+encodeURIComponent(mealCommerce.state.menu.date)+'&package='+encodeURIComponent(plan.value.packageSn)+'&packageVersion='+plan.value.packageVersion+'&recipe='+encodeURIComponent(dish.recipeId)+'&version='+encodeURIComponent(dish.recipeVersion)});return;}uni.navigateTo({url:'/pages/recipe/index?meal='+mealToRoute(meal.value)+'&dish='+encodeURIComponent(dish.name)+(plan.value.paid?'&id='+plan.value.orderId+'&batch='+plan.value.batchIndex:'' )})}
+function openDish(dish){if(savedArrangementMeal.value){const r=commerceRoute.value;uni.navigateTo({url:'/pages/recipe/index?arrangement='+encodeURIComponent(r.arrangement)+'&meal='+r.meal+'&date='+r.date+'&version='+r.version+'&dish='+encodeURIComponent(dish.id)});return}if(isCommerceEnabled){uni.navigateTo({url:'/pages/recipe/index?commerce=1&meal='+mealToRoute(meal.value)+'&date='+encodeURIComponent(mealCommerce.state.menu.date)+'&package='+encodeURIComponent(plan.value.packageSn)+'&packageVersion='+plan.value.packageVersion+'&recipe='+encodeURIComponent(dish.recipeId)+'&version='+encodeURIComponent(dish.recipeVersion)});return;}uni.navigateTo({url:'/pages/recipe/index?meal='+mealToRoute(meal.value)+'&dish='+encodeURIComponent(dish.name)+(plan.value.paid?'&id='+plan.value.orderId+'&batch='+plan.value.batchIndex:'' )})}
 function changeDiners(){dinersOpen.value=true}
 async function updateMenu(work,retry){
  const version=++menuVersion,scope=storageScope();menuUpdating.value=true;menuError.value='';retryMenu=retry;orderOpen.value=false;quote=null
@@ -155,28 +183,45 @@ function discuss(){uni.navigateTo({url:'/pages/chat/index?meal='+mealToRoute(mea
 function chooseDinersFor(name){meal.value=name;changeDiners()}
 function retryMenuUpdate(){if(retryMenu&&!menuUpdating.value)return retryMenu()}
 async function confirmDiners(ids){
+  if(savedArrangementMeal.value){
+   if(menuUpdating.value)return
+   menuUpdating.value=true;menuError.value=''
+   try{
+    const {newHealthRequestId}=await import('../../services/health-task-flow.js')
+    const r=commerceRoute.value,key='daily-arrangement-change:'+r.arrangement,scope=storageScope()
+    let pending=scopedStorage.getStorageSync(key)
+    if(!pending){const id=newHealthRequestId();pending={client_request_id:id,version:Number(r.version),meal:r.meal,member_ids:ids};scopedStorage.setStorageSync(key,pending)}
+    await request({path:'/api/family/'+encodeURIComponent(profile.value.householdId)+'/daily-arrangements/'+r.date+'/members',method:'POST',headers:{'Idempotency-Key':pending.client_request_id},data:pending})
+    if(disposed||scope!==storageScope())return
+    scopedStorage.setStorageSync(key,null)
+    dinersOpen.value=false;uni.redirectTo({url:'/pages/chat/index'})
+   }catch(error){menuError.value=error.message}finally{menuUpdating.value=false}
+   return
+  }
  if(isCommerceEnabled){if(commerceBusy.value)return;setMealMembers(profile.value,meal.value,ids,commerceRoute.value.date||localDate());profile.value=getProfile();mealCommerce.membersChanged();orderOpen.value=false;dinersOpen.value=false;updateNote.value=mealCommerce.state.contextIssue;return;}if(paying.value)return;const before=plan.value,previous=[...selected.value],targetMeal=meal.value
  return updateMenu(async()=>{saveSelection(targetMeal,products.value,previous);setMealMembers(profile.value,targetMeal,ids);await ensureMealPlan(profile.value,targetMeal);if(disposed)return;revision.value++;refreshSelection();updateNote.value=changeResult(before,plan.value,previous);dinersOpen.value=false},()=>confirmDiners(ids))
 }
-function canSwapDish(dish){if(isCommerceEnabled)return true;return !plan.value.paid&&getDishSwapOptions(meal.value,dish.name,plan.value.members).length>0}
+function canSwapDish(dish){if(isCommerceEnabled)return false;return !plan.value.paid&&getDishSwapOptions(meal.value,dish.name,plan.value.members).length>0}
 function applySwap(option){const targetMeal=meal.value;return updateMenu(async()=>{saveSelection(targetMeal,products.value,selected.value);saveMealSwap(targetMeal,option);await ensureMealPlan(profile.value,targetMeal);if(disposed)return;revision.value++;refreshSelection();updateNote.value='菜品、营养、做法、食材包装数量与预计金额已同步更新。'},()=>applySwap(option))}
 function switchDish(dish){if(isCommerceEnabled){uni.showToast({title:'换菜服务尚未接入，请在对话中说明需求',icon:'none'});return;}if(paying.value||menuUpdating.value)return;const options=getDishSwapOptions(meal.value,dish.name,plan.value.members);if(!options.length)return;uni.showActionSheet({itemList:options.map(o=>o.name+' · '+o.direction),success:({tapIndex})=>applySwap(options[tapIndex]),fail:e=>{if(!/cancel/i.test(e.errMsg||'')){retryMenu=()=>switchDish(dish);menuError.value='换菜窗口未能打开，请重试'}}})}
 
-function editProfile(){uni.navigateTo({url:'/pages/profile/index'})}
+function editProfile(){uni.navigateTo({url:isMockMode?'/pages/profile/index':'/pages/family-shared/index'})}
 </script>
 <template>
-<CommerceAccess :enabled="isCommerceEnabled" @ready="reloadCommerce"><CommerceShop v-if="commercePage" :route="commerceRoute"/>
+<CloudMealDetail v-if="!isMockMode && commerceRoute.arrangement && commerceRoute.purchase!=='1'" :route="commerceRoute"/>
+<CommerceAccess v-else :enabled="isCommerceEnabled" @ready="reloadCommerce"><CommerceShop v-if="commercePage" :route="commerceRoute"/>
 
-  <view v-else class="screen shop-screen">
+  <view v-else class="screen shop-screen" :class="{'cloud-meal-screen':!isMockMode}">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">{{ daily ? '今日采购清单' : sourcePlan ? '食材商城' : meal + '安排与购买' }}</text><text class="pill">{{isCommerceEnabled?(plan.isLocalFixture?'本地联调':'商城'):'演示'}}</text></view></AppNavBar>
     <FlowRibbon :current="orderOpen ? 4 : 3" class="shop-flow" />
-    <view v-if="blockers.length || sourcePlan?.blocked.length" class="card safety-card">
-      <view><text>本餐有待处理的饮食问题</text><text class="small">{{ [...new Set([...blockers,...(sourcePlan?.blocked||[])])].join('；') }}</text><button class="secondary-button" :disabled="menuUpdating" @click="discuss">在对话中补充信息</button><button v-if="!daily" class="secondary-button" :disabled="menuUpdating" @click="changeDiners">调整本餐成员</button><button v-for="name in daily?included:[]" :key="name" class="secondary-button" @click="chooseDinersFor(name)">调整{{name}}成员</button><button class="secondary-button" @click="editProfile">核对已有档案</button></view>
+    <view v-if="savedArrangementError" class="card commerce-message"><text>{{savedArrangementError}}</text><button class="secondary-button" @click="reloadCommerce">重新读取本餐安排</button></view>
+    <view v-if="!savedArrangementError && (blockers.length || sourcePlan?.blocked.length) && isMockMode" class="card safety-card">
+      <view><text>本餐需要调整</text><text class="small">{{ [...new Set([...blockers,...(sourcePlan?.blocked||[])])].join('；') }}</text><button class="secondary-button" :disabled="menuUpdating" @click="discuss">在对话中补充信息</button><button v-if="!daily" class="secondary-button" :disabled="menuUpdating" @click="changeDiners">调整本餐成员</button><button v-for="name in daily?included:[]" :key="name" class="secondary-button" @click="chooseDinersFor(name)">调整{{name}}成员</button><button class="secondary-button" @click="editProfile">核对已有档案</button></view>
     </view>
       <view class="shop-head"><text class="eyebrow">{{ isDiabetesCase ? '虚拟糖尿病家庭案例 · 一桌共享菜单' : sourcePlan ? 'AI专属计划 · 首批采购' : '本餐安排与购买清单 · 同一页面' }}</text><text class="display-title">{{daily?'把今天三餐，一次备齐':sourcePlan?'核对计划，准备开始':meal+'安排与购买'}}</text><text class="shop-desc">{{ isCommerceEnabled ? '先看本餐菜品与做法，再勾选需要的商城食材。采购量调整不会自动重新计算营养与个人份量。' : isDiabetesCase ? '已按三人共享晚餐汇总菜品与食材。商品与价格均为演示；爸爸的实际主食份量仍需按专业要求确认。' : sourcePlan ? sourcePlan.name + '已自动检查已知饮食限制并安排' + (deliveryBatches.length || 21) + '次配送确认。这里演示首批食材采购。' : '先看本餐菜品与做法，再直接勾选需要购买的整包装食材。' }}</text></view>
       <view v-if="!daily" class="meal-summary-card"><view class="summary-title"><view><text class="eyebrow">本餐基本信息</text><text>{{meal}} · {{plan.count}} 人用餐</text></view></view><button class="diner-control" @click="changeDiners"><text class="diner-names">就餐者：{{plan.members.map(m=>m.name).join('、')}}</text><text class="diner-change">更改 ›</text></button><MealNotes :plan="plan"/></view>
       <view v-else class="card daily-meals"><text class="section-title">选择今日需要采购的餐次</text><button v-for="m in DAILY_MEALS" :key="m.name" @click="toggleMeal(m.name)">{{included.includes(m.name)?'✓':'○'}} {{m.name}}</button><text class="demo-label">跨餐合并同一食材与 SKU 后计算包装数量；仍需核对商品、地址和金额后结算。</text></view>
-      <text v-if="isCommerceEnabled" class="safe-note">{{plan.isLocalFixture?'本地联调菜单与商品 · 未经个体化营养评估':'服务端已保存菜单 · 个体化营养与个人份量尚未接入'}}</text><text v-if="commerceBusy" class="safe-note">正在核对菜单、商品和配送…</text><view v-if="commerceError" class="card commerce-message"><text class="inline-error">{{commerceError}}</text><button class="secondary-button" :disabled="commerceBusy" @click="reloadCommerce">重新读取本餐安排</button></view><view v-if="isCommerceEnabled && (pendingCommerceOrder || createdCommerceOrder)" class="card commerce-message"><text>{{createdCommerceOrder?'订单已创建，请前往订单详情继续处理':'上次下单结果尚未确认，请重试原订单，避免重复购买'}}</text><button class="primary-button" :disabled="commerceBusy" @click="recoverCommerceOrder">{{createdCommerceOrder?'查看已创建订单':'重试并确认原订单'}}</button></view><text v-if="menuUpdating" class="safe-note">正在复核成员、菜单和报价…</text><view v-if="menuError" class="card"><text class="inline-error">{{menuError}}</text><button :disabled="menuUpdating" @click="retryMenuUpdate">重试更新</button></view>
+      <text v-if="isCommerceEnabled" class="safe-note">{{savedArrangementMeal?'已保存安排 · 按逐人熟重与配方汇总':plan.isLocalFixture?'本地联调菜单与商品 · 未经个体化营养评估':'服务端已保存菜单 · 个体化营养与个人份量尚未接入'}}</text><text v-if="commerceBusy" class="safe-note">正在核对菜单、商品和配送…</text><view v-if="commerceError" class="card commerce-message"><text class="inline-error">{{commerceError}}</text><button class="secondary-button" :disabled="commerceBusy" @click="reloadCommerce">重新读取本餐安排</button></view><view v-if="isCommerceEnabled && (pendingCommerceOrder || createdCommerceOrder)" class="card commerce-message"><text>{{createdCommerceOrder?'订单已创建，请前往订单详情继续处理':'上次下单结果尚未确认，请重试原订单，避免重复购买'}}</text><button class="primary-button" :disabled="commerceBusy" @click="recoverCommerceOrder">{{createdCommerceOrder?'查看已创建订单':'重试并确认原订单'}}</button></view><text v-if="menuUpdating" class="safe-note">正在复核成员、菜单和报价…</text><view v-if="menuError" class="card"><text class="inline-error">{{menuError}}</text><button :disabled="menuUpdating" @click="retryMenuUpdate">重试更新</button></view>
       <text v-if="updateNote" class="update-note">{{updateNote}}</text>
       <view v-if="bundle" class="bundle-card">
         <view class="bundle-top"><view><text>{{ bundle.name }}</text><text class="small">按 {{ plan.count }} 位成员的菜单需求匹配 · 示例商品</text></view><view class="bundle-badge">单包</view></view>
@@ -184,7 +229,7 @@ function editProfile(){uni.navigateTo({url:'/pages/profile/index'})}
       </view>
       <view v-if="!daily" class="section-head"><text class="section-title">本餐全部菜品</text><text>点击查看独立做法页</text></view>
       <view v-if="!daily" class="dish-list"><view v-for="dish in plan.dishes" :key="dish.name" class="dish-card card"><button class="dish-main" @click="openDish(dish)"><view class="dish-visual" :style="{background:dish.color}"><image v-if="dish.image" :src="dish.image" mode="aspectFill"/><text v-else>{{dish.icon}}</text></view><view><text>{{dish.name}}</text><text>{{dish.detail}}</text><text>{{dish.kcal?'约 '+dish.kcal+' kcal · ':''}}查看做法与注意事项</text></view><text>›</text></button><button v-if="canSwapDish(dish)" class="swap-button" :disabled="menuUpdating||paying||commerceBusy" @click="switchDish(dish)">换一换</button></view></view>
-      <view class="section-head ingredient-head"><view><text class="section-title">{{daily?'今日所需食材和购买清单':'本餐所需食材和购买清单'}}</text><text>{{isCommerceEnabled?'按服务端菜单匹配包装，可调整采购数量':'包装数量按本餐人数计算'}}</text></view><text>已选 {{ selected.length }} 项</text></view>
+      <view class="section-head ingredient-head"><view><text class="section-title">{{daily?'今日所需食材和购买清单':'本餐所需食材和购买清单'}}</text><text>{{isCommerceEnabled?'按已保存菜单匹配包装，可调整采购数量':'包装数量按本餐人数计算'}}</text></view><text>已选 {{ selected.length }} 项</text></view>
       <view class="product-list">
         <view v-for="product in products" :key="product.id" class="product-card card" @click="toggle(product.id)">
           <view class="select-box" :class="{ selected: selected.includes(product.id) }">{{ selected.includes(product.id) ? '✓' : '' }}</view>
@@ -252,3 +297,5 @@ function editProfile(){uni.navigateTo({url:'/pages/profile/index'})}
 .success-mark { width: 96rpx; height: 96rpx; display: flex; align-items: center; justify-content: center; margin: 4rpx auto 22rpx; border-radius: 50%; background: #246b50; color: #e0eee5; font-size: 48rpx; font-weight: 800; box-shadow: 0 16rpx 34rpx rgba(31,107,82,.2); }.success-title,.success-copy { display: block; text-align: center; }.success-copy { margin: 16rpx auto 28rpx; }
 .status-track { display: grid; grid-template-columns: 1fr 38rpx 1fr 38rpx 1fr; align-items: start; margin: 12rpx 0 30rpx; }.status-track > view:nth-child(even) { height: 2rpx; margin-top: 22rpx; background: #cfdbd0; }.status-track > view:nth-child(odd) { display: flex; flex-direction: column; align-items: center; gap: 8rpx; color: #7a8a83; font-size: 17rpx; text-align: center; line-height: 1.4; }.status-track > view:nth-child(odd) text:first-child { width: 44rpx; height: 44rpx; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #e5ece2; color: #61776d; font-weight: 700; }.status-track .done text:first-child { background: #246b50 !important; color: white !important; }.status-track .done text:last-child { color: #246b50; font-weight: 700; }
 </style>
+
+<style scoped>.cloud-meal-screen .meal-summary-card{background:#303036;box-shadow:none}.cloud-meal-screen .diner-change,.cloud-meal-screen .secondary-button{color:#333}.cloud-meal-screen .diner-change{color:#eee}.cloud-meal-screen .shop-desc,.cloud-meal-screen .section-head>text:last-child{color:#777}.cloud-meal-screen .select-box.selected{background:#333;border-color:#333}.cloud-meal-screen .swap-button{color:#333;border-color:#ccc}.cloud-meal-screen .safety-card{background:#f1f1f3;color:#555}.cloud-meal-screen :deep(.member-tab.active){background:#fff;color:#222}.cloud-meal-screen :deep(.checked){color:#222}</style>

@@ -1,38 +1,51 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import AppNavBar from './AppNavBar.vue'
-import { commerce, commerceContext, commerceSessionEpoch, usesCommerceIdentity } from '../services/commerce.js'
-import { isMockMode } from '../services/config.js'
+import { commerce, commerceContext, commerceSessionEpoch, usesCommerceIdentity, usesAgentIdentity } from '../services/commerce.js'
 
-const props = defineProps({ entry: Boolean, enabled: { type: Boolean, default: true } })
+const props = defineProps({ entry: Boolean, memberEntry: Boolean, enabled: { type: Boolean, default: true } })
 const emit = defineEmits(['ready'])
 const ready = ref(false), busy = ref(false), error = ref('')
 const account = ref(''), password = ref(''), revision = ref('guest')
+const needsLink = ref(false)
+const agentLoginRequired = ref(false)
+const agentIdentity = computed(() => {
+  commerceSessionEpoch.value
+  return usesAgentIdentity && !props.memberEntry && !commerce.isMemberLogin?.()
+})
 let generation = 0
 function sync() {
   if (props.enabled === false) return
   revision.value = commerceContext()
-  ready.value = Boolean(commerce.session()?.token)
+  ready.value = Boolean(commerce.session()?.token && (!props.memberEntry || !usesAgentIdentity || commerce.isMemberLogin?.()))
 }
 async function restore() {
   if (props.enabled === false) return
   sync()
-  if ((!ready.value && isMockMode) || busy.value) return
+  if ((!ready.value && !agentIdentity.value) || busy.value) return
+  const ticket = ++generation
   busy.value = true
-  try { await commerce.restore(); emit('ready') }
-  catch (e) { error.value = e.message }
-  finally { sync(); busy.value = false }
+  error.value = ''; agentLoginRequired.value = false
+  try { await commerce.restore(); if (ticket === generation) { needsLink.value = false; emit('ready') } }
+  catch (e) {
+    if (ticket !== generation) return
+    error.value = e.message; needsLink.value = Number(e.code) === 40940
+    agentLoginRequired.value = agentIdentity.value && [401, 40100].includes(Number(e.code))
+  }
+  finally { if (ticket === generation) { sync(); busy.value = false } }
 }
 async function login() {
   if (busy.value) return
   const ticket = ++generation
   busy.value = true; error.value = ''
   try {
-    await commerce.login({ account: account.value.trim(), password: password.value })
+    const credentials = { account: account.value.trim(), password: password.value }
+    if (props.memberEntry) await commerce.loginMember(credentials)
+    else await commerce.login(credentials)
     if (ticket === generation) { password.value = ''; sync(); emit('ready') }
   } catch (e) { if (ticket === generation) error.value = e.message }
-  finally { if (ticket === generation) busy.value = false }
+  finally { if (ticket === generation) { password.value = ''; busy.value = false } }
 }
 async function wechat() {
   if (busy.value) return
@@ -43,10 +56,8 @@ async function wechat() {
 }
 async function createMember() {
   if (busy.value) return
-  const confirmed = await new Promise(resolve => uni.showModal({ title: '创建新商城会员', content: '新会员没有原账号的购物车、地址或订单。已有会员请使用原账号关联。', success: result => resolve(result.confirm), fail: () => resolve(false) }))
-  if (!confirmed) return
   busy.value = true; error.value = ''
-  try { await commerce.exchange({ create_member: true }); sync(); emit('ready') }
+  try { await commerce.login({ create_member: true }); needsLink.value = false; sync(); emit('ready') }
   catch (e) { error.value = e.message }
   finally { busy.value = false }
 }
@@ -63,6 +74,11 @@ watch(commerceSessionEpoch, () => {
 })
 onMounted(restore)
 onShow(restore)
+onUnmounted(() => {
+  generation++
+  password.value = ''
+  if (props.memberEntry && busy.value) commerce.cancelLogin()
+})
 </script>
 <template>
   <view>
@@ -73,11 +89,12 @@ onShow(restore)
     </view>
     <view v-else :class="entry ? 'entry-login' : 'screen'">
       <AppNavBar v-if="!entry"><view class="nav-row"><button class="icon-button" @click="uni.navigateBack()">‹</button><text class="nav-title">登录商城</text><text /></view></AppNavBar>
-      <view class="page-heading"><text class="display-title">登录后选购食材</text><text class="subtitle">商品、地址和订单由商城服务保存。</text></view>
-      <view class="card login-form"><text class="form-label">商城会员账号</text><input v-model="account" class="field-input" placeholder="会员账号" :disabled="busy" /><text class="form-label">密码</text><input v-model="password" class="field-input" password placeholder="会员密码" :disabled="busy" /><button class="primary-button" :disabled="busy || !account.trim() || !password" @click="login">{{ busy ? '正在验证…' : isMockMode ? '登录商城' : '验证并关联原商城会员' }}</button></view>
-      <button v-if="!isMockMode" class="secondary-button" :disabled="busy" @click="createMember">首次使用，创建商城会员</button>
+      <view class="page-heading"><text class="display-title">{{ agentIdentity ? '关联商城会员' : '登录后选购食材' }}</text><text class="subtitle">{{ agentIdentity ? '使用当前小程序账号进入商城。已有会员可在下方验证后关联，保留原有购物车和订单。' : '使用已有商城账号，查看购物车、地址和订单。' }}</text></view>
+      <button v-if="agentLoginRequired" class="primary-button" @click="uni.reLaunch({ url: '/pages/index/index' })">登录小程序账号</button>
+      <button v-if="agentIdentity && needsLink" class="primary-button" :disabled="busy" @click="createMember">创建新商城会员并关联</button>
+      <view v-if="!agentLoginRequired" class="card login-form"><text class="form-label">商城会员账号</text><input v-model="account" class="field-input" placeholder="会员账号" maxlength="100" :disabled="busy" /><text class="form-label">密码</text><input v-model="password" class="field-input" password placeholder="会员密码" maxlength="128" :disabled="busy" /><button class="primary-button" :disabled="busy || !account.trim() || !password" @click="login">{{ busy ? '正在登录…' : agentIdentity ? '关联已有会员' : '登录商城' }}</button></view>
       <!-- #ifdef MP-WEIXIN -->
-      <button v-if="isMockMode" class="secondary-button" :disabled="busy" @click="wechat">微信登录商城</button>
+      <button v-if="!agentIdentity && !memberEntry" class="secondary-button" :disabled="busy" @click="wechat">微信登录商城</button>
       <!-- #endif -->
       <text class="safe-note">{{ usesCommerceIdentity ? '使用商城会员身份；购物车、地址和订单由后端保存。健康档案与饮食记录暂按该会员保存在本机。' : '商城会员账号与管理后台账号分别管理。' }}</text>
     </view>
@@ -85,5 +102,5 @@ onShow(restore)
   </view>
 </template>
 <style scoped>
-.login-form{padding:28rpx;display:flex;flex-direction:column;gap:20rpx}.account-row{display:flex;align-items:center;justify-content:space-between;padding:12rpx 32rpx;background:#edf4ee;font-size:24rpx}.account-row button{font-size:24rpx;color:#246b50;margin:0;padding:8rpx 16rpx;background:transparent}
+.login-form{padding:28rpx;display:flex;flex-direction:column;gap:20rpx}.account-row{display:flex;align-items:center;justify-content:space-between;padding:12rpx 32rpx;background:#f1f1f4;font-size:24rpx}.account-row button{font-size:24rpx;color:#555;margin:0;padding:8rpx 16rpx;background:transparent}
 </style>

@@ -1,6 +1,7 @@
 import { request } from './request.js'
 import { getSession, sessionRevision } from './session.js'
 import { scopedStorage } from './storage.js'
+import { subscribeHealthEvents } from './health-events.js'
 
 export const HEALTH_TEXT_TASKS = Object.freeze({
   consultation: '营养咨询', blood_glucose_review: '血糖记录回顾',
@@ -8,7 +9,7 @@ export const HEALTH_TEXT_TASKS = Object.freeze({
   diet_analysis: '已保存餐次反馈',
 })
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-const terminalStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupted'])
+const terminalStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'rejected'])
 const privateFailure = error => [401, 403, 404, 409, 410].includes(Number(error?.code))
 const uncertainFailure = error => error?.code === 'NETWORK_ERROR' || Number(error?.code) >= 500
 const mismatch = () => Object.assign(new Error('任务与当前成员或线程不一致，请返回重新核对'), { code: 'TASK_MISMATCH' })
@@ -23,33 +24,39 @@ export function newHealthRequestId() {
 
 export function createHealthTaskFlow({ send = request, session = getSession, revision = sessionRevision,
   storage = scopedStorage, newId = newHealthRequestId, onChange = () => {},
+  subscribe = subscribeHealthEvents,
   schedule = (fn, ms) => setTimeout(fn, ms), cancel = handle => clearTimeout(handle),
   pollInterval = 2000, pollLimit = 45 } = {}) {
   let indicatorSelection = null
   let epoch = 0, readVersion = 0, timer = null, polls = 0, pendingQuery = '', storageKey = ''
+  let streams = [], streamKey = '', streamAttempts = 0, cursors = {}
   let state = { memberId: '', taskType: '', title: '', loading: false, busy: false, available: false,
-    consentOption: null, entry: null, requestId: '', submitUnknown: false, status: '', result: null, error: '', notice: '' }
+    consentOption: null, entry: null, requestId: '', runId: '', requests: [], submitUnknown: false, status: '', result: null, error: '', notice: '' }
   const emit = () => onChange({ ...state, canRetry: !!pendingQuery && state.submitUnknown,
     entry: state.entry && { ...state.entry }, result: state.result && { ...state.result } })
   const token = () => ({ epoch, revision: revision(), accountId: session()?.accountId })
   const current = ticket => ticket.epoch === epoch && ticket.revision === revision() &&
     ticket.accountId && ticket.accountId === session()?.accountId
-  function stop() { if (timer !== null) cancel(timer); timer = null; polls = 0 }
+  function stopStreams() { const old = streams; streams = []; streamKey = ''; old.forEach(close => close()) }
+  function stop() { if (timer !== null) cancel(timer); timer = null; polls = 0; streamAttempts = 0; stopStreams() }
   function forgetPrivate(message) {
+    epoch++; readVersion++; state.busy = false; state.loading = false
     stop(); pendingQuery = ''; state.entry = null; state.requestId = ''; state.submitUnknown = false
-    state.result = null; state.available = false; state.consentOption = null; state.status = ''; state.error = message
+    state.result = null; state.requests = []; state.runId = ''; state.available = false; state.consentOption = null; state.status = ''; state.error = message
     if (storageKey) storage.setStorageSync(storageKey, null)
     emit()
   }
   function hide() {
-    epoch++; readVersion++; stop(); pendingQuery = ''; storageKey = ''
+    epoch++; readVersion++; stop(); pendingQuery = ''; storageKey = ''; cursors = {}
     state = { memberId: '', taskType: '', title: '', loading: false, busy: false, available: false,
-      consentOption: null, entry: null, requestId: '', submitUnknown: false, status: '', result: null, error: '', notice: '' }
+      consentOption: null, entry: null, requestId: '', runId: '', requests: [], submitUnknown: false, status: '', result: null, error: '', notice: '' }
     emit()
   }
   function save() {
     storage.setStorageSync(storageKey, { memberId: state.memberId, taskType: state.taskType,
-      entry: state.entry, requestId: state.requestId, submitUnknown: state.submitUnknown })
+      entry: state.entry, requestId: state.requestId, requests: state.requests, cursors, submitUnknown: state.submitUnknown,
+      // 仅结果未知时保留原提交；回读确认后立即清除，不缓存模型正文。
+      pendingQuery: state.submitUnknown ? pendingQuery : '' })
   }
   function handle(error, ticket) {
     if (Number(error?.code) === 401 && ticket.epoch === epoch && !session()?.token) {
@@ -85,7 +92,8 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
         if (!current(ticket)) return
         if (source.id !== selection.record_id || source.source_version !== selection.source_version) throw mismatch()
       }
-      if (!Array.isArray(members.data) || !members.data.some(row => row.id === memberId && row.is_owner === true) ||
+      const indicatorTask = taskType.startsWith('blood_')
+      if (!Array.isArray(members.data) || !members.data.some(row => row.id === memberId && (!indicatorTask || row.is_owner === true)) ||
         readiness.data?.capabilities?.member_id !== memberId || !Array.isArray(readiness.data?.entries)) throw mismatch()
       const entry = readiness.data.entries.find(row => row.entry_type === taskType)
       state.available = entry?.status === 'available'
@@ -104,7 +112,10 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       const saved = storage.getStorageSync(storageKey)
       if (saved?.memberId === memberId && saved?.taskType === taskType && saved.entry?.thread_id && saved.entry?.agent_slug) {
         state.entry = saved.entry; state.requestId = saved.requestId || ''
+        state.requests = Array.isArray(saved.requests) ? saved.requests.filter(row => uuidPattern.test(row.request_id)).slice(-50) : []
         state.submitUnknown = saved.submitUnknown === true
+        cursors = saved.cursors && typeof saved.cursors === 'object' ? Object.fromEntries(Object.entries(saved.cursors).filter(([id, value]) => uuidPattern.test(id) && /^\d+-\d+$/.test(value))) : {}
+        pendingQuery = state.submitUnknown && typeof saved.pendingQuery === 'string' && saved.pendingQuery.length <= 4000 ? saved.pendingQuery : ''
         if (state.requestId) await refresh(ticket)
       } else if (saved?.entry?.client_request_id && saved.entry?.pending === true) {
         state.entry = saved.entry
@@ -167,11 +178,14 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   async function submit(query, retry = false) {
     if (!state.available || !state.entry?.thread_id || state.busy || state.loading) return
     if (state.submitUnknown && !retry) return
-    if (state.requestId && !terminalStatuses.has(state.status) && !retry) return
     const text = retry ? pendingQuery : String(query || '').trim()
     if (!text || text.length > 4000 || (retry && !state.submitUnknown)) return
     const ticket = token()
-    if (!retry) { state.requestId = newId(); pendingQuery = text; state.submitUnknown = true; state.status = '提交中'; state.result = null; save() }
+    if (!retry) {
+      stop(); readVersion++; state.requestId = newId(); state.runId = ''; pendingQuery = text
+      state.requests = [...state.requests, { request_id: state.requestId, status: '提交中' }].slice(-50)
+      state.submitUnknown = true; state.status = '提交中'; state.result = null; save()
+    }
     state.busy = true; state.error = ''; emit()
     try {
       const response = await send({ path: '/api/agent/runs', method: 'POST',
@@ -202,6 +216,9 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
         data?.agent_slug !== expectedEntry?.agent_slug) throw mismatch()
       state.submitUnknown = false; pendingQuery = ''; state.status = data.execution_status === 'not_dispatched'
         ? data.request_status : data.execution_status
+      state.runId = data.run_id || ''
+      const known = state.requests.some(row => row.request_id === expectedId)
+      state.requests = known ? state.requests.map(row => row.request_id === expectedId ? { ...row, status: state.status } : row) : [...state.requests, { request_id: expectedId, status: state.status }]
       if (data.execution_status === 'completed') {
         if (data.result?.result_type === 'general_education_answer' && data.result.scope === 'general_education' &&
           typeof data.result.answer === 'string' && Array.isArray(data.result.citations)) {
@@ -220,7 +237,9 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
         } else throw mismatch()
       } else if (data.result?.result_type === 'error') state.result = { type: 'error', code: data.result.code }
       save(); emit()
-      if (!terminalStatuses.has(data.execution_status) && !['cancelled', 'rejected', 'failed'].includes(data.request_status)) startPolling(givenTicket)
+      if (!terminalStatuses.has(data.execution_status) && !['cancelled', 'rejected', 'failed'].includes(data.request_status)) {
+        startPolling(givenTicket); startStreams(givenTicket)
+      }
       else stop()
     } catch (error) {
       if (!current(givenTicket) || read !== readVersion) return
@@ -234,8 +253,40 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   }
   function startPolling(ticket) {
     if (timer !== null || !current(ticket)) return
-    if (polls >= pollLimit) { state.notice = '等待已暂停，服务端可能仍在执行。请手动读取同一任务。'; emit(); return }
+    if (polls >= pollLimit) { stopStreams(); state.notice = '等待已暂停，服务端可能仍在执行。请手动读取同一任务。'; emit(); return }
     timer = schedule(() => { timer = null; polls++; void refresh(ticket) }, pollInterval)
   }
-  return { open, hide, acceptConsent, createEntry, submit, refresh, getState: () => ({ ...state, canRetry: !!pendingQuery && state.submitUnknown }) }
+  function startStreams(ticket) {
+    const id = state.requestId, runId = state.runId, key = `${id}:${runId}`
+    if (streamKey === key || streamAttempts >= 5) return
+    stopStreams(); streamKey = key; streamAttempts++
+    const options = { requestId: id, onEvent(event) {
+      if (!current(ticket) || id !== state.requestId || (event.requestId && event.requestId !== id) || (event.runId && runId && event.runId !== runId)) return
+      if (event.id && runId) { cursors[runId] = event.id; save() }
+      if (['run_created', 'end', 'cancelled', 'failed', 'rejected', 'error'].includes(event.type)) void refresh(ticket)
+    }, onEnd() { if (current(ticket) && id === state.requestId) streamKey = '' }, onError(error) {
+      if (!current(ticket) || id !== state.requestId) return
+      streamKey = ''
+      if ([401, 403, 404, 409, 410].includes(Number(error?.code))) { readVersion++; forgetPrivate('当前授权或来源已变化，请返回重新核对。') }
+    } }
+    streams.push(subscribe({ ...options, runId: runId || undefined, cursor: cursors[runId] || '0-0' }))
+  }
+  async function selectRequest(id) {
+    if (state.busy || state.loading || state.submitUnknown || !state.requests.some(row => row.request_id === id)) return
+    stop(); readVersion++; state.requestId = id; state.runId = ''; state.result = null; state.status = ''; save()
+    await refresh()
+  }
+  async function cancelRequest() {
+    if (state.busy || !state.requestId || state.submitUnknown || terminalStatuses.has(state.status)) return
+    const ticket = token(), id = state.requestId, runId = state.runId
+    state.busy = true; state.error = ''; emit()
+    try {
+      await send({ path: runId ? `/api/agent/runs/${encodeURIComponent(runId)}/cancel` : `/api/agent/requests/${encodeURIComponent(id)}/cancel`, method: 'POST' })
+      if (!current(ticket)) return
+      await refresh(ticket)
+    } catch (error) { handle(error, ticket) }
+    finally { if (current(ticket)) { state.busy = false; emit() } }
+  }
+  return { open, hide, acceptConsent, createEntry, submit, refresh, selectRequest, cancelRequest,
+    getState: () => ({ ...state, canRetry: !!pendingQuery && state.submitUnknown }) }
 }

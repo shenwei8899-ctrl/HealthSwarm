@@ -228,3 +228,89 @@ test('an older status read cannot replace a newer completed answer', async () =>
   await old
   assert.equal(h.flow.getState().result.text, '当前答复')
 })
+
+test('unknown submit survives hide and reopens with the exact original request', async () => {
+  let writes = 0
+  const h = fixture({ send: async options => {
+    if (options.path === '/api/agent/runs') {
+      if (++writes === 1) throw Object.assign(new Error('timeout'), { code: 'NETWORK_ERROR' })
+      return { data: { request_id: requestId, thread_id: threadId } }
+    }
+    if (options.path.endsWith('/tasks/' + requestId)) {
+      if (writes === 1) throw Object.assign(new Error('absent'), { code: 404 })
+      return { data: { request_id: requestId, member_id: memberId, task_type: taskType, thread_id: threadId,
+        agent_slug: 'health-blood-glucose', request_status: 'dispatched', execution_status: 'running' } }
+    }
+    return fixtureBase(options)
+  } })
+  await h.flow.open(memberId, taskType); await h.flow.createEntry(); await h.flow.submit('冻结的原问题')
+  h.flow.hide(); await h.flow.open(memberId, taskType)
+  assert.equal(h.flow.getState().canRetry, true)
+  await h.flow.submit('', true)
+  const submitted = h.calls.filter(row => row.path === '/api/agent/runs')
+  assert.deepEqual(submitted[0], submitted[1])
+  assert.equal(h.saved.get(`health-task:${memberId}:${taskType}`).pendingQuery, '')
+})
+
+test('rejected requests permit an explicit new question and preserve request order', async () => {
+  const second = '55555555-5555-4555-8555-555555555555'
+  let active = requestId, next = 0
+  const h = fixture({ flow: { newId: () => [entryId, requestId, second][next++] }, send: async options => {
+    if (options.path === '/api/agent/runs') { active = options.data.meta.request_id; return { data: { request_id: active, thread_id: threadId } } }
+    if (options.path.includes('/tasks/')) return { data: { request_id: active, member_id: memberId, task_type: taskType,
+      thread_id: threadId, agent_slug: 'health-blood-glucose', execution_status: 'not_dispatched', request_status: 'rejected' } }
+    return fixtureBase(options)
+  } })
+  await h.flow.open(memberId, taskType); await h.flow.createEntry(); await h.flow.submit('第一次'); await h.flow.submit('第二次')
+  assert.equal(h.calls.filter(row => row.path === '/api/agent/runs').length, 2)
+  assert.deepEqual(h.flow.getState().requests.map(row => row.request_id), [requestId, second])
+})
+
+test('delegated feedback follows server permissions while indicators still require self ownership', async () => {
+  const selection = { record_id: requestId, source_version: 2 }
+  const h = fixture({ send: async options => {
+    if (options.path.endsWith('/members')) return { data: [{ id: memberId, is_owner: false, scopes: ['diet_edit', 'ai_use'] }] }
+    if (options.path.endsWith('/detail')) return { data: { id: requestId, source_version: 2 } }
+    if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [{ entry_type: 'diet_analysis', status: 'available' }] } }
+    if (options.path.endsWith('/feedback-conversation')) return { data: { member_id: memberId, thread_id: threadId, agent_slug: 'health-diet-analyst', feedback_selection: selection } }
+    return fixtureBase(options)
+  } })
+  await h.flow.open(memberId, 'diet_analysis', selection); await h.flow.createEntry()
+  assert.equal(h.flow.getState().entry.thread_id, threadId)
+  await h.flow.open(memberId, taskType)
+  assert.equal(h.flow.getState().available, false)
+})
+
+test('run event cursors resume and private stream errors erase task projections', async () => {
+  const runId = '66666666-6666-4666-8666-666666666666', subscriptions = []
+  const h = fixture({ flow: { subscribe: options => { subscriptions.push(options); return () => {} } }, send: async options => {
+    if (options.path.includes('/tasks/')) return { data: { request_id: requestId, member_id: memberId, task_type: taskType,
+      thread_id: threadId, agent_slug: 'health-blood-glucose', request_status: 'dispatched', execution_status: 'running', run_id: runId } }
+    return fixtureBase(options)
+  } })
+  await h.flow.open(memberId, taskType); await h.flow.createEntry(); await h.flow.submit('进度')
+  subscriptions.at(-1).onEvent({ id: '123-0', type: 'message', runId })
+  assert.equal(h.flow.getState().result, null)
+  h.flow.hide(); await h.flow.open(memberId, taskType)
+  assert.equal(subscriptions.at(-1).cursor, '123-0')
+  subscriptions.at(-1).onError({ code: 403 })
+  assert.equal(h.flow.getState().entry, null)
+  assert.equal(h.saved.get(`health-task:${memberId}:${taskType}`), null)
+})
+
+test('cancel sends the running Run ID and a new queued question can be selected independently', async () => {
+  const runId = '66666666-6666-4666-8666-666666666666', second = '55555555-5555-4555-8555-555555555555'
+  let active = requestId, next = 0
+  const h = fixture({ flow: { newId: () => [entryId, requestId, second][next++] }, send: async options => {
+    if (options.path === '/api/agent/runs') { active = options.data.meta.request_id; return { data: { request_id: active, thread_id: threadId } } }
+    if (options.path.endsWith('/cancel')) return { data: { status: 'cancel_requested' } }
+    if (options.path.includes('/tasks/')) return { data: { request_id: options.path.split('/').at(-1), member_id: memberId, task_type: taskType,
+      thread_id: threadId, agent_slug: 'health-blood-glucose', request_status: 'dispatched', execution_status: 'running', run_id: runId } }
+    return fixtureBase(options)
+  } })
+  await h.flow.open(memberId, taskType); await h.flow.createEntry(); await h.flow.submit('原问题'); await h.flow.submit('追加问题')
+  await h.flow.selectRequest(requestId); await h.flow.cancelRequest()
+  assert.ok(h.calls.some(row => row.path === `/api/agent/runs/${runId}/cancel`))
+  assert.equal(h.flow.getState().requestId, requestId)
+  assert.deepEqual(h.flow.getState().requests.map(row => row.request_id), [requestId, second])
+})

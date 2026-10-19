@@ -16,7 +16,7 @@ const note = computed(() => ({
 <template>
   <view class="card dish-nutrition-card" aria-label="本菜营养信息">
     <view class="nutrition-heading"><text class="nutrition-title">营养信息</text><text class="nutrition-badge">{{ normalized.source === 'measured' ? '营养检测' : '营养估算' }}</text></view>
-    <text class="nutrition-basis">每 100 克可食部分 · 熟制后</text>
+    <text class="nutrition-basis">{{normalized.foodState==='recipe_edible' ? '每 100 克成品可食部分 · '+normalized.cookingStateLabel : '每 100 克可食部分 · 熟制后'}}</text>
     <view class="nutrition-grid">
       <view v-for="item in items" :key="item.key" class="nutrition-item">
         <text class="nutrition-label">{{ item.label }}</text>

@@ -6,6 +6,7 @@ import { wechatAuth } from '../../services/wechat-auth.js'
 import { request } from '../../services/request.js'
 import { getSession, sessionRevision } from '../../services/session.js'
 import { selfMember, basicProfileInput } from '../../services/family-onboarding.js'
+import { isCommerceEnabled } from '../../services/config.js'
 
 const account = ref(null), families = ref([]), member = ref(null), form = ref({})
 const familyName = ref(''), invitation = ref(''), error = ref(''), busy = ref(false), uncertain = ref(false)
@@ -242,8 +243,7 @@ onShow(load); onHide(discard); onUnload(discard)
         <button v-for="item in healthMembers" :key="item.id" class="secondary-button" :disabled="healthBusy" @click="selectHealthMember(item.id)">{{ item.display_name }} · {{ item.relationship_label }} · {{ item.id.slice(0, 8) }}{{ selectedHealthId === item.id ? ' · 已选择' : '' }}</button>
         <text v-if="selectedHealthId && healthLink?.source_member_id" class="helper">当前关联来源：{{ healthLink.source_member_id === member.id && healthLink.family_id === account.householdId ? '已关联这个家庭的本人档案' : '其他档案，请勿覆盖' }}</text>
         <button v-if="selectedHealthId && !healthLink?.source_member_id" class="primary-button" :disabled="healthBusy || healthUncertain || !healthLink" @click="linkSelfProfile">确认这两个成员都是我，并建立关联</button>
-        <button class="secondary-button" @click="uni.navigateTo({url: '/pages/records/index'})">记录实际饮食与更正</button>
-        <button v-if="selectedHealthId" class="secondary-button" :disabled="healthBusy" @click="uni.navigateTo({url: '/pages/indicators/index?memberId=' + selectedHealthId})">查看实测记录与统计</button><button v-if="selectedHealthId" class="secondary-button" :disabled="healthBusy" @click="readHealthDiagnostics">查看当前健康服务状态</button>
+        <button v-if="selectedHealthId" class="secondary-button" :disabled="healthBusy" @click="readHealthDiagnostics">查看当前健康服务状态</button>
         <text v-if="healthDiagnostics" class="helper">以下状态来自当前服务端，只用于提示；实际提交时仍会重新核对授权与资料。</text>
         <view v-for="entry in healthEntries" :key="entry.entry_type">
           <text class="helper">{{ healthEntryLabels[entry.entry_type] }}：{{ healthEntryText(entry) }}</text>
@@ -253,7 +253,14 @@ onShow(load); onHide(discard); onUnload(discard)
         <text v-if="healthUncertain" class="helper">写入结果未确定，请先回读成员或关联状态。</text>
       </view>
       <text v-if="account.householdId && !member && !busy" class="helper">当前家庭没有可维护的本人成员，请使用对应成员邀请完成关联。</text>
-      <text class="helper">饮食首页、AI 和商城正在接入真实服务，完成后开放。当前可维护同家庭共享档案；本人确认、AI、报告和订单分别按各自权限办理。</text>
+      <button v-if="account.householdId" class="primary-button" @click="uni.navigateTo({url:'/pages/chat/index'})">今日饮食安排</button>
+      <button v-if="account.householdId && isCommerceEnabled" class="secondary-button" @click="uni.navigateTo({url:'/pages/purchase/index?source=daily'})">今日食材采购</button>
+      <button v-if="account.householdId" class="secondary-button" @click="uni.navigateTo({url:'/pages/onboarding/index'})">维护家庭饮食档案</button>
+      <button v-if="isCommerceEnabled" class="primary-button" @click="uni.navigateTo({ url: '/pages/shop/index?commerce=1' })">进入商城购物车</button>
+      <button v-if="isCommerceEnabled" class="secondary-button" @click="uni.navigateTo({ url: '/pages/purchase/index' })">餐单采购清单</button>
+      <button v-if="isCommerceEnabled" class="secondary-button" @click="uni.navigateTo({ url: '/pages/address/index' })">管理收货地址</button>
+      <button v-if="isCommerceEnabled" class="secondary-button" @click="uni.navigateTo({ url: '/pages/orders/index' })">查询我的订单</button>
+      <text class="helper">当前可维护家庭与本人基础资料。商城购物车、地址和订单由商城服务保存。</text>
     </template>
   </view>
 </template>

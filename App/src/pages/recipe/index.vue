@@ -1,4 +1,6 @@
 <script setup>
+import CloudRecipe from '../../components/CloudRecipe.vue'
+const cloudRecipeRoute=ref(null)
 import AppNavBar from '../../components/AppNavBar.vue'
 import DishNutritionCard from '../../components/DishNutritionCard.vue'
 import { computed, ref, watch } from 'vue'
@@ -40,7 +42,7 @@ const orderId=ref(''),batchIndex=ref(1)
 const plan=computed(()=>commercePreview.value?null:todayPlan(getProfile(),meal.value))
 const guide=computed(()=>{if(commercePreview.value)return realRecipe.value||unavailableRecipe;const order=getOrder(orderId.value);const saved=order?.cookingGuides?.find(b=>b.index===batchIndex.value)?.guides.find(g=>g.meal===meal.value)||order?.cookingGuide;return saved?.dishGuides?.find(g=>g.name===dishName.value)||createDishGuide(plan.value,dishName.value)})
 
-onLoad(options => {
+onLoad(options => {if(options.arrangement){cloudRecipeRoute.value=options;return;} 
   route.value=options;commercePreview.value=isCommerceEnabled&&options.commerce==='1'
   orderId.value=options.id||'';batchIndex.value=Number(options.batch)||1
   meal.value = mealFromRoute(options.meal)
@@ -50,7 +52,8 @@ onLoad(options => {
 </script>
 
 <template>
-<CommerceAccess :enabled="commercePreview" @ready="loadCommerceRecipe">
+  <CloudRecipe v-if="cloudRecipeRoute" :route="cloudRecipeRoute"/>
+<CommerceAccess v-else :enabled="commercePreview" @ready="loadCommerceRecipe">
   <view class="screen recipe-screen">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">单道菜做法</text><text class="pill">购买前预览</text></view></AppNavBar>
     <view class="recipe-hero"><image v-if="guide.image" :src="guide.image" mode="aspectFill"/><view><text class="eyebrow">{{meal}} · 做法预览</text><text class="display-title">{{guide.name}}</text><text>{{commercePreview?(guide.minutes?guide.minutes+' 分钟左右 · 已保存菜谱':'已保存菜谱 · 制作时间待确认'):guide.minutes+' 分钟左右 · 测试菜谱'}}</text></view></view>

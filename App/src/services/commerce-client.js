@@ -22,6 +22,7 @@ export function createCommerceClient({
   const key = () =>
     "fn-commerce-v1:" + encodeURIComponent(url) + ":" + (parent.storageScope?.() || parent.scope());
   let loginGeneration = 0;
+  let connecting = null;
   function current(scope) {
     if (scope !== parent.scope())
       throw failure("账号或家庭已切换，请重新操作", "SESSION_CHANGED");
@@ -32,6 +33,8 @@ export function createCommerceClient({
   function save(value) {
     storage.set(key(), value);
   }
+  // A direct member login authenticates commerce only; it never creates an Agent identity.
+  const isAgentMode = () => authMode === 'agent' && read().loginMode !== 'member';
   function configured() {
     if (allowProxy && url === "/commerce-api") return;
     if (
@@ -95,29 +98,17 @@ export function createCommerceClient({
   }
   async function connect() {
     const scope = parent.scope(), session = read().session;
-    if (session?.token && session.scope === scope && (authMode !== 'agent' || session.agentAccountId === parent.read()?.accountId)) return session;
-    if (authMode === 'agent') return exchange();
+    if (session?.token && session.scope === scope && (!isAgentMode() || session.agentAccountId === String(parent.read()?.accountId))) return session;
+    if (isAgentMode()) {
+      if (!connecting || connecting.scope !== scope) {
+        const pending = exchangeAgent();
+        const entry = { scope, pending };
+        connecting = entry;
+        pending.finally(() => { if (connecting === entry) connecting = null; }).catch(() => {});
+      }
+      return connecting.pending;
+    }
     throw failure("请先登录商城账号", 401);
-  }
-  let exchanging = null;
-  async function exchange(binding) {
-    const identity = parent.read(), scope = parent.scope();
-    if (!identity?.token || identity.isDemo || identity.authSource === 'commerce') throw failure('请先登录小程序账号', 401);
-    if (!binding && exchanging?.token === identity.token && exchanging.scope === scope) return exchanging.promise;
-    const generation = ++loginGeneration;
-    const promise = (async () => {
-      const result = await send('/session/exchange', { method: 'POST', data: binding || {} }, { Authorization: 'Bearer ' + identity.token });
-      current(scope);
-      if (generation !== loginGeneration || parent.read()?.token !== identity.token || parent.read()?.accountId !== identity.accountId) throw failure('登录状态已变更，请重新操作', 'SESSION_CHANGED');
-      if (result.agent_account_id !== identity.accountId || !result.user?.token || !Number.isSafeInteger(Number(result.user.id)) || Number(result.user.id) <= 0) throw failure('商城身份校验失败', 'INVALID_IDENTITY');
-      const userId = String(result.user.id), previous = read();
-      const session = { token: result.user.token, userId, scope, revision: randomKey(), agentAccountId: identity.accountId, identityNamespace: result.identity_namespace, localTestPayment: result.local_test_payment === true };
-      save({ ...(previous.userId === userId ? previous : {}), userId, session });
-      return session;
-    })();
-    exchanging = { token: identity.token, scope, promise };
-    try { return await promise; }
-    finally { if (exchanging?.promise === promise) exchanging = null; }
   }
   async function request(path, options = {}) {
     const scope = parent.scope();
@@ -182,6 +173,19 @@ export function createCommerceClient({
     const scope = parent.scope();
     if (!getWechatCode || !pay || !/^wx[0-9a-f]{16}$/i.test(appId || ""))
       throw failure("请在已配置的小程序中支付", "WECHAT_PLATFORM_REQUIRED");
+    if (isAgentMode()) {
+      const account = parent.read(), session = await connect();
+      current(scope);
+      if (!account?.token || account.isDemo) throw failure('请先登录小程序账号', 401);
+      const code = await getWechatCode();
+      current(scope);
+      if (session.revision !== read().session?.revision) throw failure('商城账号已切换，请重新操作', 'SESSION_CHANGED');
+      if (typeof code !== 'string' || !code || code.length > 256) throw failure('微信未返回有效凭证，请重试', 'INVALID_WECHAT_CODE');
+      // A fresh code must never enter the persisted mutation-intent queue.
+      const identity = await send('/session/wechat-payment-identity', { method: 'POST', data: { code } },
+        { token: session.token, Authorization: 'Bearer ' + account.token });
+      if (identity?.linked !== true || identity.app_id !== appId) throw failure('微信支付身份验证返回异常', 'INVALID_WECHAT_IDENTITY');
+    }
     const payment = await mutate("/orders/" + id(orderId) + "/payments/wechat");
     current(scope);
     if (!payment?.payment_params)
@@ -203,7 +207,14 @@ export function createCommerceClient({
       .map(([k, v]) => id(k) + "=" + id(v))
       .join("&");
   async function login(credentials) {
-    if (authMode === 'agent') return exchange(credentials);
+    if (isAgentMode()) return exchangeAgent(credentials);
+    return loginWithMember(credentials);
+  }
+  async function loginMember(credentials) {
+    if (!credentials?.account?.trim() || !credentials?.password) throw failure('请填写商城会员账号和密码', 'INVALID_CREDENTIALS');
+    return loginWithMember({ account: credentials.account.trim(), password: credentials.password });
+  }
+  async function loginWithMember(credentials) {
     const generation = ++loginGeneration, scope = parent.scope();
     const wechat = !credentials;
     if (wechat && (!getWechatCode || !/^wx[0-9a-f]{16}$/i.test(appId || "")))
@@ -214,16 +225,30 @@ export function createCommerceClient({
     const result = await send(wechat ? "/session/wechat" : "/session/login", { method: "POST", data });
     if (generation !== loginGeneration) throw failure("登录已取消", "SESSION_CHANGED");
     current(scope);
-    if (!result?.user?.token || !result.user.id) throw failure("商城登录返回异常", "INVALID_RESPONSE");
+    return acceptLogin(result, 'member');
+  }
+  function acceptLogin(result, loginMode) {
+    if (!result?.user?.token || !Number.isSafeInteger(Number(result.user.id)) || Number(result.user.id) <= 0) throw failure("商城登录返回异常", "INVALID_RESPONSE");
     const userId = String(result.user.id), previous = read();
     if (previous.userId) storage.set(key() + ":member:" + previous.userId, { intents: previous.intents || {} });
     // The identity hook runs only after the server has authenticated this member.
     activateIdentity?.({ ...result, userId });
     const memberState = read();
     const retained = memberState.userId === userId ? memberState : storage.get(key() + ":member:" + userId) || {};
-    const session = { token: result.user.token, userId, scope: parent.scope(), revision: randomKey(), identityNamespace: result.identity_namespace, localTestPayment: result.local_test_payment === true };
-    save({ ...retained, userId, session });
+    const session = { token: result.user.token, userId, scope: parent.scope(), revision: randomKey(), identityNamespace: result.identity_namespace, localTestPayment: result.local_test_payment === true,
+      ...(loginMode === 'agent' ? { agentAccountId: String(result.agent_account_id) } : {}) };
+    save({ ...retained, loginMode, userId, session });
     return session;
+  }
+  async function exchangeAgent(payload = {}) {
+    const generation = ++loginGeneration, scope = parent.scope(), account = parent.read();
+    if (!account?.token || !account.accountId || account.isDemo || account.authSource === 'commerce') throw failure('请先登录小程序账号', 401);
+    const result = await send('/session/exchange', { method: 'POST', data: payload }, { Authorization: 'Bearer ' + account.token });
+    if (generation !== loginGeneration) throw failure('登录已取消', 'SESSION_CHANGED');
+    current(scope);
+    if (parent.read()?.token !== account.token || parent.read()?.accountId !== account.accountId) throw failure('登录状态已变更，请重新操作', 'SESSION_CHANGED');
+    if (String(result?.agent_account_id) !== String(account.accountId)) throw failure('商城返回的关联身份不一致', 'INVALID_IDENTITY');
+    return acceptLogin(result, 'agent');
   }
   async function logout() {
     ++loginGeneration;
@@ -232,11 +257,20 @@ export function createCommerceClient({
     finally { current(scope); if (read().session?.token === state.session?.token) { save({ ...read(), session: null }); deactivateIdentity?.(state.session); } }
   }
   return {
-    login, logout, exchange,
-    session: () => read().session || null,
+    login, loginMember, logout, exchange: exchangeAgent,
+    isMemberLogin: () => read().loginMode === 'member',
+    cancelLogin: () => { ++loginGeneration; },
+    session: () => { const session = read().session; return session?.scope === parent.scope() ? session : null; },
     sessionRevision: () => read().session?.revision || read().session?.token || "guest",
     restore: async () => {
-      const session = await connect(), result = await request("/session");
+      let session = await connect(), result;
+      try { result = await request('/session'); }
+      catch (error) {
+        // Refresh only the read-only session check. Never retry a cart/order write here.
+        if (!isAgentMode() || Number(error.code) !== 401) throw error;
+        session = await connect();
+        result = await request('/session');
+      }
       if (!result.user?.id) throw failure("商城身份返回异常，请重试", "INVALID_RESPONSE");
       if (result.user && String(result.user.id) !== session.userId || session.identityNamespace && result.identity_namespace !== session.identityNamespace) {
         save({ ...read(), session: null }); throw failure("商城身份已变化，请重新登录", 401);
@@ -270,6 +304,7 @@ export function createCommerceClient({
     products: (cursor) =>
       request("/products" + query({ limit: 30, cursor }), { auth: false }),
     meal: (meal = "dinner", date) => request("/meals/current" + query({ meal, date })),
+    mealPackage: (sn, version) => request("/meals/packages/" + id(sn) + query({ version })),
     addMeal: (menu) => mutate("/meals/cart", "POST", { package_sn: menu.package_sn, package_version: menu.package_version }),
     cooking: (orderId) => request("/orders/" + id(orderId) + "/cooking"),
     localTestPay: async (orderId) => {
@@ -277,6 +312,11 @@ export function createCommerceClient({
       return mutate("/local-test/orders/" + id(orderId) + "/pay");
     },
     cart: () => request("/cart"),
+    recommendation: (sn) => request('/recommendation-packages/' + id(sn)),
+    confirmRecommendation: (sn, version) => mutate('/recommendation-packages/' + id(sn) + '/purchase-list', 'POST', { package_version: version }),
+    purchaseLists: () => request('/purchase-lists'),
+    purchaseList: (sn) => request('/purchase-lists/' + id(sn)),
+    addPurchaseList: (sn, version) => mutate('/purchase-lists/' + id(sn) + '/cart', 'POST', { version }),
     add: (sku, quantity = 1) =>
       mutate("/cart/items", "POST", { sku_id: sku, quantity }),
     quantity: (line, quantity) =>

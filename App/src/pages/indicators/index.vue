@@ -25,7 +25,7 @@ async function read(onlySelected=false){
 }
 function toggle(id){selected.value=selected.value.includes(id)?selected.value.filter(x=>x!==id):[...selected.value,id]}
 function consult(){
-  if(!result.value)return
+  if(!result.value?.source_member_id)return
   const task=kind.value+'_review'
   scopedStorage.setStorageSync(`indicator-choice:${memberId.value}:${task}`,result.value.selection)
   uni.navigateTo({url:`/pages/chat/agent?memberId=${encodeURIComponent(memberId.value)}&taskType=${task}&indicatorChoice=1`,fail(){error.value='进入咨询失败，可重试；实测记录未改变。'}})
@@ -37,10 +37,10 @@ function consult(){
 <text>开始日期</text><picker mode="date" :value="start" :disabled="busy" @change="change('start',$event.detail.value)"><view class="field-input">{{start}} ›</view></picker>
 <text>结束日期</text><picker mode="date" :value="end" :disabled="busy" @change="change('end',$event.detail.value)"><view class="field-input">{{end}} ›</view></picker>
 <button class="primary-button" :disabled="busy" @click="read()">{{busy?'正在读取…':'读取记录与统计'}}</button><text v-if="error" class="inline-error">{{error}}</text>
-<template v-if="result"><text>范围内 {{result.total}} 条，本次 {{result.records.length}} 条{{result.truncated?'，已截断，请缩短范围':''}}</text><text v-if="!result.records.length" class="safe-note">所选范围没有可用记录。</text>
+<template v-if="result"><text v-if="!result.source_member_id" class="inline-error">尚未关联本人的指标来源，请返回账号页完成本人档案关联。</text><text>范围内 {{result.total}} 条，本次 {{result.records.length}} 条{{result.truncated?'，已截断，请缩短范围':''}}</text><text v-if="result.source_member_id&&!result.records.length" class="safe-note">所选范围没有可用记录，未按零值统计。</text><text class="safe-note">以下统计仅依据本次返回的记录，不代表未返回记录或全天完整情况。</text>
 <view v-for="row in result.records" :key="row.record_id" class="card item" @click="toggle(row.record_id)"><text>{{selected.includes(row.record_id)?'☑':'☐'}} {{new Date(row.measured_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}} · {{conditions[row.condition]||'同条测量'}} · v{{row.version}}</text><template v-for="(label,key) in labels" :key="key"><text v-if="row[key]!==undefined">{{label}} {{row[key]}} {{row.unit}}</text></template><text>来源：{{row.source}}</text></view>
 <button v-if="result.records.length" class="secondary-button" :disabled="busy||!selected.length" @click="read(true)">仅回顾勾选记录</button>
 <view v-for="group in result.review.groups" :key="group.condition" class="card item"><text>{{conditions[group.condition]}}</text><text v-for="(value,key) in group.statistics" :key="key">{{labels[key]}}：{{value.count}}次，均值{{value.mean}}，最低{{value.minimum}}，最高{{value.maximum}} {{result.records[0]?.unit}}</text></view>
-<text v-for="question in result.review.questions" :key="question" class="safe-note">{{question}}</text><text class="safe-note">审核解释尚未请求，暂无引用。咨询仍需独立授权及模型配置。</text><button class="secondary-button" @click="consult">就这个范围进入指标助手</button></template>
+<text v-if="result.source_member_id" class="section-title">进一步回顾需补充</text><text v-for="question in result.review.questions" :key="question" class="safe-note">{{question}}</text><text class="safe-note">审核解释尚未请求，暂无引用。咨询仍需独立授权及模型配置。</text><button v-if="result.source_member_id" class="secondary-button" @click="consult">就这个范围进入指标助手</button></template>
 </view></view></template>
 <style scoped>.panel{display:flex;flex-direction:column;gap:22rpx;margin-top:30rpx}.item{display:flex;flex-direction:column;gap:12rpx;padding:22rpx;font-size:24rpx}.safe-note{text-align:left}.field-input{display:flex;align-items:center}</style>

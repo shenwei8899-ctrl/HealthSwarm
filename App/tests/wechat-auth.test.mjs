@@ -7,6 +7,36 @@ import { ref, computed } from 'vue'
 
 const context = { account: { id: 17, name: '合成用户' }, families: [] }
 const loginResult = { ...context, access_token: 'synthetic-token', expires_at: Date.now() / 1000 + 300, session_key: 'must-not-store', openid: 'must-not-store' }
+
+test('local password login validates the real Agent session before saving and does not retain credentials', async () => {
+  const h = harness({ isWechat: false, allowPasswordLogin: true })
+  h.replies.push({ access_token: 'agent-token', user_id: 17 }, context)
+  await h.client.passwordLogin({ identifier: ' user ', password: 'a&b' })
+  assert.equal(h.calls[0].data, 'username=user&password=a%26b')
+  assert.equal(h.calls[1].authenticationToken, 'agent-token')
+  assert.equal(h.session.read().accountId, '17')
+  assert.equal(h.session.read().password, undefined)
+})
+test('password login is disabled by default and cannot be used on WeChat', async () => {
+  for (const options of [{ isWechat: false }, { isWechat: true, allowPasswordLogin: true }]) {
+    const h = harness(options)
+    await assert.rejects(h.client.passwordLogin({ identifier: 'user', password: 'secret' }), e => e.code === 'PASSWORD_LOGIN_DISABLED')
+    assert.equal(h.calls.length, 0)
+  }
+})
+test('password login rejects context mismatch, unavailable context and late account changes', async () => {
+  for (const reply of [{ account: { id: 18 }, families: [] }, new Error('unavailable')]) {
+    const h = harness({ isWechat: false, allowPasswordLogin: true })
+    h.replies.push({ access_token: 'agent-token', user_id: 17 }, reply)
+    await assert.rejects(h.client.passwordLogin({ identifier: 'user', password: 'secret' }))
+    assert.equal(h.session.read(), null)
+  }
+  let release
+  const h = harness({ isWechat: false, allowPasswordLogin: true, send: async r => r.path.endsWith('/token') ? { data: { access_token: 'agent-token', user_id: 17 } } : new Promise(resolve => { release = resolve }) })
+  const pending = h.client.passwordLogin({ identifier: 'user', password: 'secret' })
+  await new Promise(resolve => setImmediate(resolve)); h.client.logout(); release({ data: context })
+  await assert.rejects(pending, e => e.code === 'SESSION_CHANGED'); assert.equal(h.session.read(), null)
+})
 function harness(options = {}) {
   let stored = null, revision = 0, codes = 0
   const calls = [], replies = []
@@ -225,7 +255,7 @@ test('registered launch route remains the welcome page', () => {
 })
 
 test('closing and reopening binding form preserves access without retaining its password', async () => {
-  const deps = { ref, onShow() {}, onHide() {}, onUnload() {}, isMockMode: false, getSession: () => null,
+  const deps = { ref, onShow() {}, onHide() {}, onUnload() {}, isMockMode: false, canUseBusinessLogin: false, getSession: () => null,
     wechatAuth: { cancelPending() {} }, mockService: { login: async () => { throw Object.assign(new Error('请绑定账号'), { businessCode: 'WECHAT_ACCOUNT_UNBOUND' }) } } }
   globalThis.uni = { showToast() {} }
   const source = readFileSync(new URL('../src/pages/index/index.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')

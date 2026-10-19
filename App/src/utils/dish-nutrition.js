@@ -12,9 +12,11 @@ export const DISH_NUTRITION_FIELDS = Object.freeze([
 const sources = ['demo', 'calculated', 'measured']
 
 export function normalizeDishNutrition(value) {
-  const usable = value?.basis === 'per_100g' && value?.foodState === 'cooked_edible' && sources.includes(value?.source)
+  const recipe = value?.foodState === 'recipe_edible' && typeof value.cookingStateLabel === 'string' && value.cookingStateLabel.trim()
+  const usable = value?.basis === 'per_100g' && (value?.foodState === 'cooked_edible' || recipe) && sources.includes(value?.source)
   const result = {
-    basis: 'per_100g', foodState: 'cooked_edible',
+    basis: 'per_100g', foodState: usable && recipe ? 'recipe_edible' : 'cooked_edible',
+    cookingStateLabel: usable && recipe ? value.cookingStateLabel : null,
     source: usable ? value.source : 'unavailable',
     sourceReference: usable && typeof value.sourceReference === 'string' ? value.sourceReference : null,
   }

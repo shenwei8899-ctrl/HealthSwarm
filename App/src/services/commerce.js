@@ -9,6 +9,7 @@ import { commerceApiBaseUrl } from "./config.js";
 
 export const commerceSessionEpoch = ref(0);
 export const usesCommerceIdentity = isMockMode && isCommerceEnabled;
+export const usesAgentIdentity = !isMockMode && isCommerceEnabled;
 function activateIdentity(result) {
   if (!usesCommerceIdentity) return;
   const accountId = "commerce:" + (result.identity_namespace || commerceApiBaseUrl) + ":" + result.userId;
@@ -34,8 +35,8 @@ let baseUrl = commerceApiBaseUrl;
 if (/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(baseUrl)) baseUrl = "/commerce-api";
 // #endif
 export const commerce = createCommerceClient({
-  authMode: isMockMode ? 'member' : 'agent',
   baseUrl,
+  authMode: usesAgentIdentity ? 'agent' : 'member',
   // #ifdef H5
   allowProxy: true,
   // #endif
