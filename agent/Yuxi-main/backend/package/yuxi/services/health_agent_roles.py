@@ -132,8 +132,10 @@ def health_agent_roles():
                 "status": "partial",
                 "entry_agent": "health-blood-glucose",
                 "skills": list(BLOOD_GLUCOSE_SKILLS),
-                "implemented_scope": "独立固定成员咨询、本人实测血糖回顾、测量条件追问、审核知识解释与来源重验",
-                "missing": ["21天计划", "打卡反馈", "审核控糖规则"],
+                "implemented_scope": (
+                    "独立固定成员咨询、本人实测血糖回顾、测量条件追问；审核知识及绑定专题库的一般科普解释与来源重验"
+                ),
+                "missing": ["21天计划", "打卡反馈", "审核控糖规则", "专题库生产绑定与检索验收", "真实模型质量验收"],
             },
             {
                 "role": "health-blood-lipids",
@@ -141,8 +143,10 @@ def health_agent_roles():
                 "status": "partial",
                 "entry_agent": "health-blood-lipids",
                 "skills": list(BLOOD_LIPIDS_SKILLS),
-                "implemented_scope": "独立固定成员咨询、本人同条血脂四项回顾、资料追问、审核知识解释与来源重验",
-                "missing": ["审核知识生产数据", "真实模型质量验收"],
+                "implemented_scope": (
+                    "独立固定成员咨询、本人同条血脂四项回顾、资料追问；审核知识及绑定专题库的一般科普解释与来源重验"
+                ),
+                "missing": ["审核知识生产数据", "专题库生产绑定与检索验收", "真实模型质量验收"],
             },
             {
                 "role": "health-blood-pressure",
@@ -150,8 +154,10 @@ def health_agent_roles():
                 "status": "partial",
                 "entry_agent": "health-blood-pressure",
                 "skills": list(BLOOD_PRESSURE_SKILLS),
-                "implemented_scope": "独立固定成员咨询、本人成对血压回顾、资料追问、审核知识解释与来源重验",
-                "missing": ["审核知识生产数据", "真实模型质量验收"],
+                "implemented_scope": (
+                    "独立固定成员咨询、本人成对血压回顾、资料追问；审核知识及绑定专题库的一般科普解释与来源重验"
+                ),
+                "missing": ["审核知识生产数据", "专题库生产绑定与检索验收", "真实模型质量验收"],
             },
             {
                 "role": "health-purchase",

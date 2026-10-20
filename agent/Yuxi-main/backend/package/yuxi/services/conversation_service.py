@@ -1,5 +1,4 @@
 from yuxi.repositories.health_consultation_repository import (
-    CONSULTATION_SLUG,
     EDUCATION_HEALTH_AGENTS,
     HEALTH_AGENT_BACKENDS,
 )
@@ -76,7 +75,7 @@ async def get_thread_message_audits_view(
         str(current_uid),
     )
     unverified_family_runs: set[str] = set()
-    if conversation.agent_id == CONSULTATION_SLUG:
+    if conversation.agent_id in EDUCATION_HEALTH_AGENTS:
         from yuxi.services.health_family_kb_service import TOOL_NAME, validate_family_kb_audit
 
         family_audits = (

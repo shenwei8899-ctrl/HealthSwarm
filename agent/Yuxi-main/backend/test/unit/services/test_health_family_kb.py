@@ -94,7 +94,9 @@ async def test_search_distinguishes_stale_milvus_hit_from_no_hit(monkeypatch):
         yield session
 
     monkeypatch.setattr(service.pg_manager, "get_async_session_context", session_context)
-    monkeypatch.setattr(service, "_authorized_run", AsyncMock())
+    monkeypatch.setattr(
+        service, "_authorized_run", AsyncMock(return_value=(SimpleNamespace(agent_slug="health-consultation"), None))
+    )
     monkeypatch.setattr(service, "_require_fixed_kb", AsyncMock())
     monkeypatch.setattr(
         service.knowledge_base,
@@ -124,7 +126,9 @@ async def test_search_maps_hydrated_orphan_hits_to_source_invalidated(monkeypatc
         yield session
 
     monkeypatch.setattr(service.pg_manager, "get_async_session_context", session_context)
-    monkeypatch.setattr(service, "_authorized_run", AsyncMock())
+    monkeypatch.setattr(
+        service, "_authorized_run", AsyncMock(return_value=(SimpleNamespace(agent_slug="health-consultation"), None))
+    )
     monkeypatch.setattr(service, "_require_fixed_kb", AsyncMock())
     monkeypatch.setattr(
         service.knowledge_base,
@@ -226,7 +230,9 @@ async def test_audit_output_must_match_completed_family_tool_content(monkeypatch
             "output": {"type": "tool", "status": "success", "content": content},
         },
     )
-    session = SimpleNamespace(scalar=AsyncMock(return_value=SimpleNamespace(id="run-1")))
+    session = SimpleNamespace(
+        scalar=AsyncMock(return_value=SimpleNamespace(id="run-1", agent_slug="health-consultation"))
+    )
     validate = AsyncMock(return_value=[source])
     monkeypatch.setattr(service, "_validate_payload", validate)
     assert await service.validate_family_kb_audit(session, audit) is True

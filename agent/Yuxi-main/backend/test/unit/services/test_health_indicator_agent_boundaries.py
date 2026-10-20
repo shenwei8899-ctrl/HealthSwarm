@@ -82,7 +82,11 @@ async def test_actual_graph_ignores_user_tool_and_prompt_overrides(
 
     assert await agent_class().get_graph(context=context) == "compiled graph"
     graph = assemble.call_args.kwargs
-    assert [tool.name for tool in graph["tools"]] == [record_tool, "query_reviewed_nutrition_knowledge"]
+    assert [tool.name for tool in graph["tools"]] == [
+        record_tool,
+        "query_reviewed_nutrition_knowledge",
+        "query_family_nutrition_knowledge",
+    ]
     assert graph["system_prompt"] == f"published {slug}" and graph["checkpointer"] == "PG"
     assert [type(item).__name__ for item in graph["middleware"]] == [
         "SteerMiddleware",

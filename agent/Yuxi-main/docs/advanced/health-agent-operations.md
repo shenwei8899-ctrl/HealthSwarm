@@ -41,6 +41,25 @@ Worker 的 `YUXI_HEALTH_RUN_TIMEOUT_SECONDS` 默认值为 `300` 秒，适用于�
 
 用户取消、失去 lease 和基础设施取消分别沿其既有流程处理。数据库不可用时，终态提交及清理由既有恢复机制处理；接收到超时错误后仍应查询同一 Request/Run 的最终状态。该预算约束执行时间，用量或费用上限须另行审批。边界与隔离复验见[执行预算决定](../develop-guides/decisions/implemented/2026-10-10-health-run-execution-budget.md)。
 
+## 绑定指标助手的专题科普库
+
+部署管理员在 API 与 Worker 的同一环境文件中填写知识库 ID，使用逗号分隔，每个指标角色最多五个库。ID 来自知识库元数据，顺序决定交错选取片段的优先级。变量为空、存在空项或重复 ID 时，工具返回 `knowledge_unavailable`。
+
+| 角色 | 环境变量 | 资料范围 |
+|---|---|---|
+| 成员专属营养咨询 | `HEALTH_FAMILY_NUTRITION_KB_ID` | 原有单个家庭营养与食养库 |
+| 血糖记录助手 | `HEALTH_BLOOD_GLUCOSE_KB_IDS` | 血糖食养、高血糖、糖尿病一般科普 |
+| 血脂记录助手 | `HEALTH_BLOOD_LIPIDS_KB_IDS` | 血脂食养与高血脂一般科普，按业务范围补充体重代谢资料 |
+| 血压记录助手 | `HEALTH_BLOOD_PRESSURE_KB_IDS` | 血压食养、高血压与心血管一般科普 |
+
+例如 `HEALTH_BLOOD_GLUCOSE_KB_IDS=kb_example_glucose_food,kb_example_glucose_education`。部署时用实际 ID 替换示例并重建 API 和 Worker，使两端读取相同配置。一般 Agent 的知识库选择项不会修改健康角色的固定清单。
+
+工具 `query_family_nutrition_knowledge` 按真实运行角色选择清单，对已存在的 Milvus 库执行只读 BM25，关闭外部 embedding、rerank 和图检索，合计最多返回四个当前片段。返回片段还须对应 PostgreSQL 中已索引文件及当前分片；管理页面显示的文件数量包括尚未索引的资料，须分别核对。
+
+配置完成后用合成成员验证当前授权、同 Run 引用及结果回读，再检查撤回同意、撤权、绑定更改、文件改版或删除使旧正文不可用。多库回执与当前有序清单不一致时返回 `source_invalidated`；任一配置库不可用时拒绝本次检索。缺少模型用途政策时保持未启用，不以绑定知识库替代政策或成员同意。
+
+三个指标助手仍只处理本人授权记录和一般科普，引用用 `[资料:source_id]` 与文件名，审核证据用独立的 `[证据:citation_id]`。专题资料不能直接生成个人目标、诊断、用药或配餐结果。角色映射与来源校验由[科普服务](https://github.com/shenwei8899-ctrl/HealthSwarm/blob/main/agent/Yuxi-main/backend/package/yuxi/services/health_family_kb_service.py)拥有。
+
 ## 登记科普资料的审核范围
 
 平台管理员使用 `POST /api/health/v1/nutrition-evidence` 登记专业审核后的资料版本。既有来源、审核人、审核凭据及带时区的审核和有效日期继续必填；可选的 `reviewed_scope` 对象登记以下使用条件。字段校验由[发布 DTO](https://github.com/shenwei8899-ctrl/HealthSwarm/blob/main/agent/Yuxi-main/backend/package/yuxi/services/health_evidence_types.py)拥有，许可真实性及专业内容由资料负责人和专业审核人确认。

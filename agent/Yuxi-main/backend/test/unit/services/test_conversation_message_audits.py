@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from yuxi.repositories.health_consultation_repository import CONSULTATION_SLUG
 from yuxi.services import conversation_service
 from yuxi.services import health_family_kb_service
 from yuxi.services.health_vision_types import HealthVisionError
@@ -247,7 +248,7 @@ async def test_family_knowledge_audits_are_checked_before_truncated_timeline(mon
             return SimpleNamespace(all=lambda: [SimpleNamespace(id=1)])
 
     async def fake_require_user_conversation(_repository, _thread_id, _uid):
-        return SimpleNamespace(id=7, agent_id=conversation_service.CONSULTATION_SLUG)
+        return SimpleNamespace(id=7, agent_id=CONSULTATION_SLUG)
 
     async def reject_stale_audit(_session, _audit):
         raise HealthVisionError("source_invalidated", "资料版本已失效", 410)
@@ -355,7 +356,7 @@ async def test_unpublished_family_knowledge_audit_redacts_whole_run(monkeypatch,
             return SimpleNamespace(id="run-1")
 
     async def fake_require_user_conversation(_repository, _thread_id, _uid):
-        return SimpleNamespace(id=7, agent_id=conversation_service.CONSULTATION_SLUG)
+        return SimpleNamespace(id=7, agent_id=CONSULTATION_SLUG)
 
     monkeypatch.setattr(conversation_service, "ConversationRepository", FakeConversationRepository)
     monkeypatch.setattr(conversation_service, "require_user_conversation", fake_require_user_conversation)

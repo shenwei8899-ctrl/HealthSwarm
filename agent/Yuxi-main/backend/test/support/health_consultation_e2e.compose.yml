@@ -6,10 +6,15 @@ services:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-health_consultation_e2e} || exit 1"]
   api:
     image: ${YUXI_TEST_API_IMAGE:-yuxi-api:0.7.3}
+    environment: &indicator-topic-env
+      HEALTH_BLOOD_GLUCOSE_KB_IDS: pytest_indicator_glucose,pytest_indicator_common
+      HEALTH_BLOOD_LIPIDS_KB_IDS: pytest_indicator_lipids,pytest_indicator_common
+      HEALTH_BLOOD_PRESSURE_KB_IDS: pytest_indicator_pressure,pytest_indicator_common
     ports: !override
       - "127.0.0.1:${YUXI_API_PORT}:5050"
   worker:
     image: ${YUXI_TEST_API_IMAGE:-yuxi-api:0.7.3}
+    environment: *indicator-topic-env
   storage-migrator:
     image: ${YUXI_TEST_API_IMAGE:-yuxi-api:0.7.3}
   sandbox-provisioner:

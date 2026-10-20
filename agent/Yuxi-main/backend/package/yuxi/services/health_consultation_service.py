@@ -104,9 +104,21 @@ INDICATOR_PROMPTS = {
     PRESSURE_SLUG: BLOOD_PRESSURE_PROMPT,
 }
 INDICATOR_TOOLS = {
-    GLUCOSE_SLUG: ("get_member_blood_glucose_records", "query_reviewed_nutrition_knowledge"),
-    LIPIDS_SLUG: ("get_member_blood_lipids_records", "query_reviewed_nutrition_knowledge"),
-    PRESSURE_SLUG: ("get_member_blood_pressure_records", "query_reviewed_nutrition_knowledge"),
+    GLUCOSE_SLUG: (
+        "get_member_blood_glucose_records",
+        "query_reviewed_nutrition_knowledge",
+        "query_family_nutrition_knowledge",
+    ),
+    LIPIDS_SLUG: (
+        "get_member_blood_lipids_records",
+        "query_reviewed_nutrition_knowledge",
+        "query_family_nutrition_knowledge",
+    ),
+    PRESSURE_SLUG: (
+        "get_member_blood_pressure_records",
+        "query_reviewed_nutrition_knowledge",
+        "query_family_nutrition_knowledge",
+    ),
 }
 
 
