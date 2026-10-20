@@ -716,6 +716,15 @@ class KnowledgeFileRepository:
             "processing_count": int(row.processing_count or 0),
         }
 
+    async def create(self, file_id: str, data: dict[str, Any]) -> KnowledgeFile:
+        """仅新增文件；全局 ID 冲突由数据库拒绝，保留已有记录。"""
+        sanitized_data = self._sanitize_data(data)
+        async with pg_manager.get_async_session_context() as session:
+            record = KnowledgeFile(file_id=file_id, **sanitized_data)
+            session.add(record)
+            await session.flush()
+            return record
+
     async def upsert(self, file_id: str, data: dict[str, Any]) -> KnowledgeFile:
         sanitized_data = self._sanitize_data(data)
         async with pg_manager.get_async_session_context() as session:

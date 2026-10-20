@@ -1,9 +1,9 @@
 import hashlib
-import time
 from urllib.parse import quote
+from uuid import uuid4
 
 from yuxi.knowledge.chunking.ragflow_like.presets import resolve_chunk_processing_params
-from yuxi.utils import hashstr, logger
+from yuxi.utils import logger
 from yuxi.utils.datetime_utils import utc_isoformat
 
 _DROPPED_PROCESSING_PARAM_KEYS = {
@@ -85,9 +85,7 @@ async def prepare_item_metadata(item: str, content_type: str, kb_id: str, params
         item_path = pre_info["path"]  # MinIO path
         content_hash = pre_info["content_hash"]
 
-        # 使用 item(url) 生成 ID，保证同一 URL 即使多次添加 ID 也不同（配合 time）
-        # 或者我们应该基于 hash？不，基于 time 更符合上传逻辑
-        file_id = f"file_{hashstr(item + str(time.time()), 6)}"
+        file_id = f"file_{uuid4().hex}"
 
         metadata = {
             "kb_id": kb_id,
@@ -143,7 +141,7 @@ async def prepare_item_metadata(item: str, content_type: str, kb_id: str, params
         if not isinstance(file_sizes, dict):
             file_sizes = {}
         file_size = file_sizes.get(item)
-        file_id = f"file_{hashstr(str(item_path) + str(time.time()), 6)}"
+        file_id = f"file_{uuid4().hex}"
 
     else:
         raise ValueError(f"Unsupported content_type: {content_type}")

@@ -58,6 +58,13 @@ class TestMinIOClientStatFile:
 class TestAddFileRecordSizeFallback:
     """Test that add_file_record fills size from MinIO when not provided."""
 
+    @pytest.fixture(autouse=True)
+    def fake_metadata_create(self, monkeypatch):
+        """隔离数据库新增，只验证本组拥有的文件大小回退。"""
+        from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
+
+        monkeypatch.setattr(KnowledgeFileRepository, "create", AsyncMock())
+
     def _make_test_kb(self, work_dir="/tmp/test_kb"):
         from yuxi.knowledge.base import KnowledgeBase
 
@@ -70,9 +77,6 @@ class TestAddFileRecordSizeFallback:
                 pass
 
             async def _initialize_kb_instance(self, instance):
-                pass
-
-            async def _persist_file_meta(self, file_id, meta):
                 pass
 
             async def index_file(self, kb_id, file_id, operator_id=None):

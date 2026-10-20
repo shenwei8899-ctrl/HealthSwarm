@@ -199,6 +199,7 @@ class KnowledgeBase(ABC):
             File metadata record
         """
         from yuxi.knowledge.utils.kb_utils import prepare_item_metadata
+        from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
 
         params = params or {}
         content_type = params.get("content_type", "file")
@@ -233,7 +234,7 @@ class KnowledgeBase(ABC):
         if operator_id:
             metadata["created_by"] = operator_id
 
-        await self._persist_file_meta(file_id, metadata)
+        await KnowledgeFileRepository().create(file_id=file_id, data=self._file_meta_to_record_data(metadata))
 
         return metadata
 
