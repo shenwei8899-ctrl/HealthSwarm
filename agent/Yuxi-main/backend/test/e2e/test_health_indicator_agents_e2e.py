@@ -1,6 +1,7 @@
-"""独立指标Agent经真实HTTP、Worker、SSE和PG的两工具验收。"""
+"""独立指标Agent经真实HTTP、Worker、SSE和PG的记录与审核知识验收。"""
 
 import os
+import json
 import socket
 import subprocess
 import sys
@@ -35,6 +36,7 @@ from yuxi.storage.postgres.models_health import (
     NutritionEvidenceCitation,
 )
 from yuxi.storage.redis import close_async_redis_client
+from yuxi.storage.postgres.models_knowledge import KnowledgeBase, KnowledgeFile, KnowledgeChunk
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -47,6 +49,135 @@ CASES = (
     ("blood_lipids", add_blood_lipids, correct_blood_lipids, HealthBloodLipidsUse),
     ("blood_pressure", add_blood_pressure, correct_blood_pressure, HealthBloodPressureUse),
 )
+
+
+@pytest.mark.parametrize("kind", ["blood_glucose", "blood_lipids", "blood_pressure"])
+async def test_indicator_topic_tool_real_worker_and_source_invalidation(indicator_runtime, kind):
+    """真实双库 BM25、Worker 工具审计和最终消息连通，改版拒绝回读。"""
+    from pymilvus import utility
+    from yuxi.knowledge.implementations.milvus import MilvusKB
+    from yuxi.knowledge.cache import delete_cached_kb_config
+
+    runtime = indicator_runtime
+    subject = await create_weight_subject(runtime.client, runtime.users)
+    subject.requests = runtime.requests
+    token = uuid4().hex
+    kb_ids = [f"pytest_indicator_{kind.removeprefix('blood_')}", "pytest_indicator_common"]
+    executor = MilvusKB(work_dir=f"test/.tmp/indicator-topic-{token}")
+    created_collections = []
+    created_kbs = []
+    try:
+        consent = await runtime.client.post(
+            f"{ROOT}/members/{subject.member_id}/processing-consents",
+            headers=subject.headers,
+            json={
+                "purpose": "consultation",
+                "accepted": True,
+                "processor": runtime.configuration["consultation"]["processor"],
+                "policy_version": runtime.configuration["policy_version"],
+            },
+        )
+        assert consent.status_code == 200, consent.text
+        for kb_id in kb_ids:
+            assert not utility.has_collection(kb_id, using=executor.connection_alias), "拒绝接管已有测试集合"
+            file_id, chunk_id = str(uuid4()), str(uuid4())
+            content = f"topic{token} synthetic education {kb_id}"
+            async with pg_manager.get_async_session_context() as session:
+                assert await session.scalar(select(KnowledgeBase).where(KnowledgeBase.kb_id == kb_id)) is None
+                session.add(
+                    KnowledgeBase(
+                        kb_id=kb_id,
+                        name=kb_id,
+                        kb_type="milvus",
+                        embedding_model_spec="siliconflow-cn:BAAI/bge-m3",
+                    )
+                )
+                await session.flush()
+                session.add(
+                    KnowledgeFile(
+                        file_id=file_id,
+                        kb_id=kb_id,
+                        filename=f"{kb_id}.md",
+                        status="indexed",
+                        content_hash="synthetic-v1",
+                    )
+                )
+                await session.flush()
+                session.add(
+                    KnowledgeChunk(
+                        chunk_id=chunk_id,
+                        file_id=file_id,
+                        kb_id=kb_id,
+                        chunk_index=0,
+                        content=content,
+                    )
+                )
+                await session.commit()
+                created_kbs.append(kb_id)
+            await delete_cached_kb_config(kb_id)
+            collection = executor._create_new_collection(
+                kb_id, SimpleNamespace(dimension=1024, model_id="BAAI/bge-m3"), kb_id
+            )
+            created_collections.append(collection)
+            collection.insert(
+                [
+                    {
+                        "id": chunk_id,
+                        "content": content,
+                        "chunk_id": chunk_id,
+                        "file_id": file_id,
+                        "chunk_index": 0,
+                        "embedding": [0.0] * 1023 + [1.0],
+                    }
+                ]
+            )
+            collection.flush()
+            collection.load()
+        bound = await indicator_entry(subject, f"{kind}_review", f"health-{kind.replace('_', '-')}")
+        request_id, run_id, task = await run_task(
+            subject.client, subject.headers, bound, f"INDICATOR_E2E:{token}:{kind}:education", runtime.requests
+        )
+        assert task["execution_status"] == "completed", task
+        answer = task["result"]["answer"]
+        async with pg_manager.get_async_session_context() as session:
+            run = await session.get(AgentRun, run_id)
+            message = await session.get(Message, run.output_message_id)
+            assert message.content == answer and message.id == task["final_message_id"]
+            audits = list(
+                await session.scalars(
+                    select(Message).where(
+                        Message.run_id == run_id,
+                        Message.message_type == "tool_audit",
+                        Message.extra_metadata["tool_name"].as_string() == "query_family_nutrition_knowledge",
+                    )
+                )
+            )
+            assert len(audits) == 1 and audits[0].execution_status == "completed"
+            payload = json.loads(audits[0].content)
+            assert payload["kb_ids"] == kb_ids and len(payload["sources"]) == 2
+            for source, kb_id in zip(payload["sources"], kb_ids):
+                assert source["kb_id"] == kb_id and f"[资料:{source['source_id']}]" in answer
+                assert source["filename"] in answer
+        calls = (await runtime.replay.get("/observations", params={"token": token})).json()["calls"]
+        assert calls == [{"kind": kind, "mode": "education", "phase": phase} for phase in ("education", "answer")]
+        read = await subject.client.get(f"{ROOT}/tasks/{request_id}", headers=subject.headers)
+        assert read.status_code == 200 and read.json()["result"]["answer"] == answer, read.text
+        async with pg_manager.get_async_session_context() as session:
+            chunk = await session.scalar(select(KnowledgeChunk).where(KnowledgeChunk.kb_id == kb_ids[1]))
+            chunk.content = "synthetic changed source"
+            await session.commit()
+        changed = await subject.client.get(f"{ROOT}/tasks/{request_id}", headers=subject.headers)
+        assert changed.status_code == 410 and answer not in changed.text, changed.text
+    finally:
+        await drain_requests(subject.client, subject.headers, runtime.requests)
+        for collection in created_collections:
+            collection.drop()
+        async with pg_manager.get_async_session_context() as session:
+            await session.execute(delete(KnowledgeBase).where(KnowledgeBase.kb_id.in_(created_kbs)))
+            await session.commit()
+        for kb_id in created_kbs:
+            await delete_cached_kb_config(kb_id)
+        await cleanup_weight_subject(subject)
 
 
 @pytest.mark.parametrize("kind,add_record,correct_record,use_model", CASES)
@@ -240,9 +371,10 @@ async def assert_indicator_result(subject, projected, run_id, kind, use_model, r
         assert run.manifest["resources"]["tools"] == [
             f"get_member_{kind}_records",
             "query_reviewed_nutrition_knowledge",
+            "query_family_nutrition_knowledge",
         ]
         assert [skill["slug"] for skill in run.manifest["resources"]["skills"]] == [f"family-{kind.replace('_', '-')}"]
-        assert run.manifest["resources"]["skills"][0]["version"] == "2026.10.13.1"
+        assert run.manifest["resources"]["skills"][0]["version"] == "2026.10.20.1"
         uses = list(await session.scalars(select(use_model).where(use_model.run_id == run_id)))
         assert (
             len(uses) == 1 and uses[0].member_id == subject.member_id and uses[0].source_member_id == subject.source_id
@@ -360,7 +492,11 @@ async def indicator_runtime(isolated_health):  # noqa: F811
                 )
                 assert approved.status_code == 200 and approved.json()["consultation"]["available"], approved.text
                 yield SimpleNamespace(
-                    client=client, users=users, configuration=approved.json(), replay=replay, requests=requests
+                    client=client,
+                    users=users,
+                    configuration=approved.json(),
+                    replay=replay,
+                    requests=requests,
                 )
         finally:
             try:

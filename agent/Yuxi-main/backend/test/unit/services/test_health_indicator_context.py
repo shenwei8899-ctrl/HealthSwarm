@@ -40,7 +40,7 @@ async def test_indicator_context_discards_other_data_and_user_resources(monkeypa
     )
     run = SimpleNamespace(agent_slug=slug, input_payload={"health_processing": approved})
     result = await consultation.prepare_consultation_context(context, None, run)
-    assert result.tools == [tool, "query_reviewed_nutrition_knowledge"]
+    assert result.tools == [tool, "query_reviewed_nutrition_knowledge", "query_family_nutrition_knowledge"]
     assert result.skills == result.preload_skills == [skill]
     assert result.system_prompt == consultation.INDICATOR_PROMPTS[slug]
     assert result.knowledges == result.mcps == []

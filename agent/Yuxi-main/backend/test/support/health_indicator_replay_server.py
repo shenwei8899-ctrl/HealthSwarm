@@ -1,4 +1,4 @@
-"""两工具指标Agent的独立合成协议重放，不代理供应商或读取数据库。"""
+"""三工具指标Agent的独立合成协议重放，不代理供应商或读取数据库。"""
 
 import json
 import re
@@ -22,7 +22,7 @@ def replay_response(authorization, body):
     messages = body.get("messages", [])
     user = next((message for message in reversed(messages) if message.get("role") == "user"), {})
     marker = re.fullmatch(
-        r"INDICATOR_E2E:([0-9a-f]{32}):(blood_glucose|blood_lipids|blood_pressure):(read|updated|missing)",
+        r"INDICATOR_E2E:([0-9a-f]{32}):(blood_glucose|blood_lipids|blood_pressure):(read|updated|missing|education)",
         str(user.get("content", "")),
     )
     if marker is None:
@@ -30,13 +30,19 @@ def replay_response(authorization, body):
     token, kind, mode = marker.groups()
     names = [tool.get("function", {}).get("name") for tool in body.get("tools", [])]
     record_tool = f"get_member_{kind}_records"
-    if len(names) != 2 or set(names) != {record_tool, "query_reviewed_nutrition_knowledge"}:
+    if len(names) != 3 or set(names) != {
+        record_tool,
+        "query_reviewed_nutrition_knowledge",
+        "query_family_nutrition_knowledge",
+    }:
         raise ValueError("fixed_indicator_tools_required")
     if not any(
         message.get("role") == "system" and f"slug: family-{kind.replace('_', '-')}" in str(message.get("content"))
         for message in messages
     ):
         raise ValueError("fixed_indicator_skill_required")
+    if mode == "education":
+        return education_response(messages, token, kind, mode)
     record_call = f"indicator-{token}-{kind}-{mode}-records"
     knowledge_call = f"indicator-{token}-{kind}-{mode}-knowledge"
     outputs = {
@@ -74,6 +80,48 @@ def replay_response(authorization, body):
         + (f" [证据:{citations[0]['citation_id']}]" if citations else " 当前审核依据不足，请补充资料。")
     )
     return token, kind, mode, "answer", {"role": "assistant", "content": content}
+
+
+def education_response(messages, token, kind, mode):
+    """专题回放独立核对双库、来源和合成正文，拒绝跨角色结果。"""
+    call_id = f"indicator-{token}-{kind}-education"
+    outputs = [
+        message for message in messages if message.get("role") == "tool" and message.get("tool_call_id") == call_id
+    ]
+    if not outputs:
+        return (
+            token,
+            kind,
+            mode,
+            "education",
+            tool_delta("query_family_nutrition_knowledge", {"query": f"topic{token}"}, call_id),
+        )
+    payload = json.loads(outputs[-1]["content"])
+    expected = [f"pytest_indicator_{kind.removeprefix('blood_')}", "pytest_indicator_common"]
+    if (
+        payload.get("scope") != "general_education"
+        or payload.get("status") != "ok"
+        or payload.get("kb_ids") != expected
+        or len(payload.get("sources", [])) != 2
+        or [source.get("kb_id") for source in payload["sources"]] != expected
+    ):
+        raise ValueError("role_scoped_topic_sources_required")
+    references = []
+    for source, kb_id in zip(payload["sources"], expected):
+        if (
+            source.get("content") != f"topic{token} synthetic education {kb_id}"
+            or source.get("filename") != f"{kb_id}.md"
+            or not re.fullmatch(r"[0-9a-f-]{36}", str(source.get("source_id")))
+        ):
+            raise ValueError("actual_topic_source_required")
+        references.append(f"《{source['filename']}》[资料:{source['source_id']}]")
+    return (
+        token,
+        kind,
+        mode,
+        "answer",
+        {"role": "assistant", "content": "合成一般科普，仅验证来源引用；" + "；".join(references)},
+    )
 
 
 def validate_records(payload, kind, mode):

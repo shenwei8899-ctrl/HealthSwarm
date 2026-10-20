@@ -61,7 +61,13 @@ def test_fixed_skills_and_roles_do_not_publish_unimplemented_agents():
     ]
     assert roles["health-glucose"]["status"] == "partial"
     assert roles["health-glucose"]["entry_agent"] == "health-blood-glucose"
-    assert roles["health-glucose"]["missing"] == ["21天计划", "打卡反馈", "审核控糖规则"]
+    assert roles["health-glucose"]["missing"] == [
+        "21天计划",
+        "打卡反馈",
+        "审核控糖规则",
+        "专题库生产绑定与检索验收",
+        "真实模型质量验收",
+    ]
     for slug in ("health-blood-lipids", "health-blood-pressure"):
         assert roles[slug]["status"] == "partial" and roles[slug]["entry_agent"] == slug
 

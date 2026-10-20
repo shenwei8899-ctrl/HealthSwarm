@@ -4,6 +4,8 @@
 类型：feature
 Owner：backend/package/yuxi/services/health_consultation_service.py
 
+固定工具和科普来源范围由后续[指标专题库决定](./2026-10-20-indicator-topic-knowledge.md)扩展为三工具；本记录保留初始两工具阶段的验收依据。
+
 ## 问题
 
 用户要求三个独立 Agent，范围已确认为本人记录回顾、资料追问和审核知识解释。现有独立指标服务具备授权、原始数值投影和来源版本校验，综合咨询尚无三个独立入口。

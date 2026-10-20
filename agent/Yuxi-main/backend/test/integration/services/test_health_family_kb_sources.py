@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -12,7 +13,8 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from server.routers.health_vision_router import health_vision
-from server.utils.auth_middleware import get_required_user
+from server.routers.chat_router import chat
+from server.utils.auth_middleware import get_db, get_required_user, get_superadmin_user
 from test.integration.services.test_schema_migration_version import _create_isolated_manager, _drop_isolated_schema
 from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
 from yuxi.services import health_family_kb_service as service, health_task_service
@@ -55,7 +57,10 @@ def cleanup_test_sandboxes():
     yield
 
 
-async def test_persisted_family_source_is_required_and_invalidates_after_reindex(monkeypatch):
+@pytest.mark.parametrize(
+    "agent_slug", ["health-consultation", "health-blood-glucose", "health-blood-lipids", "health-blood-pressure"]
+)
+async def test_persisted_family_source_is_required_and_invalidates_after_reindex(monkeypatch, agent_slug):
     """真实 PG 审计准许当前答复；任务 HTTP 在分片改写或删除后均拒绝旧正文。"""
     schema, admin_engine, engine, manager = await _create_isolated_manager("pytest_health_family_kb")
     try:
@@ -65,7 +70,10 @@ async def test_persisted_family_source_is_required_and_invalidates_after_reindex
         manager.AsyncSession = sessions
         uid, member_id, project_id, thread_id, run_id, request_id = [str(uuid4()) for _ in range(6)]
         kb_id, file_id, chunk_id, source_id = [str(uuid4()) for _ in range(4)]
+        secondary_kb_id, secondary_file_id, secondary_chunk_id = [str(uuid4()) for _ in range(3)]
         monkeypatch.setenv(service.KB_ID_ENV, kb_id)
+        if agent_slug != "health-consultation":
+            monkeypatch.setenv(service.INDICATOR_KB_ENVS[agent_slug], f"{kb_id},{secondary_kb_id}")
         async with sessions.begin() as session:
             session.add(User(uid=uid, username=uid, password_hash="synthetic"))
             await session.flush()
@@ -80,13 +88,12 @@ async def test_persisted_family_source_is_required_and_invalidates_after_reindex
                 )
             )
             session.add(KnowledgeBase(kb_id=kb_id, name="合成家庭营养库", kb_type="milvus"))
+            session.add(KnowledgeBase(kb_id=secondary_kb_id, name="合成专题补充库", kb_type="milvus"))
             await session.flush()
-            conversation = Conversation(
-                uid=uid, thread_id=thread_id, agent_id="health-consultation", project_id=project_id
-            )
+            conversation = Conversation(uid=uid, thread_id=thread_id, agent_id=agent_slug, project_id=project_id)
             session.add(conversation)
             await session.flush()
-            session.add(HealthGrant(member_id=member_id, actor_uid=uid, scopes=["ai_use"]))
+            session.add(HealthGrant(member_id=member_id, actor_uid=uid, scopes=["ai_use", "profile_view"]))
             session.add(
                 HealthProcessingConsent(
                     member_id=member_id,
@@ -107,10 +114,28 @@ async def test_persisted_family_source_is_required_and_invalidates_after_reindex
             session.add(
                 KnowledgeFile(file_id=file_id, kb_id=kb_id, filename="合成科普.md", status="indexed", content_hash="v1")
             )
+            session.add(
+                KnowledgeFile(
+                    file_id=secondary_file_id,
+                    kb_id=secondary_kb_id,
+                    filename="合成专题补充.md",
+                    status="indexed",
+                    content_hash="v1",
+                )
+            )
             await session.flush()
             session.add(
                 KnowledgeChunk(
                     chunk_id=chunk_id, file_id=file_id, kb_id=kb_id, chunk_index=0, content="合成一般科普资料。"
+                )
+            )
+            session.add(
+                KnowledgeChunk(
+                    chunk_id=secondary_chunk_id,
+                    file_id=secondary_file_id,
+                    kb_id=secondary_kb_id,
+                    chunk_index=0,
+                    content="合成专题补充资料。",
                 )
             )
             session.add(
@@ -119,7 +144,7 @@ async def test_persisted_family_source_is_required_and_invalidates_after_reindex
                     conversation_id=conversation.id,
                     conversation_thread_id=thread_id,
                     runtime_scope_id=thread_id,
-                    agent_slug="health-consultation",
+                    agent_slug=agent_slug,
                     uid=uid,
                     status="completed",
                     request_id=request_id,
@@ -151,7 +176,7 @@ async def test_persisted_family_source_is_required_and_invalidates_after_reindex
                 AgentRunRequest(
                     request_id=request_id,
                     uid=uid,
-                    agent_slug="health-consultation",
+                    agent_slug=agent_slug,
                     conversation_thread_id=thread_id,
                     input_message_id=input_message.id,
                     input_payload=run.input_payload,
@@ -164,13 +189,22 @@ async def test_persisted_family_source_is_required_and_invalidates_after_reindex
             file = await session.scalar(select(KnowledgeFile).where(KnowledgeFile.file_id == file_id))
             chunk = await session.scalar(select(KnowledgeChunk).where(KnowledgeChunk.chunk_id == chunk_id))
             source = service._project_source(kb_id, file, chunk, source_id)
+            sources = [source]
+            if agent_slug != "health-consultation":
+                secondary_file = await session.scalar(
+                    select(KnowledgeFile).where(KnowledgeFile.file_id == secondary_file_id)
+                )
+                secondary_chunk = await session.scalar(
+                    select(KnowledgeChunk).where(KnowledgeChunk.chunk_id == secondary_chunk_id)
+                )
+                sources.append(service._project_source(secondary_kb_id, secondary_file, secondary_chunk, str(uuid4())))
             tool_call_id = str(uuid4())
             payload = {
                 "status": "ok",
                 "scope": "general_education",
                 "query": "合成一般科普",
-                "kb_id": kb_id,
-                "sources": [source],
+                **({"kb_id": kb_id} if agent_slug == "health-consultation" else {"kb_ids": [kb_id, secondary_kb_id]}),
+                "sources": sources,
             }
             family_audit = Message(
                 conversation_id=conversation.id,
@@ -216,7 +250,19 @@ async def test_persisted_family_source_is_required_and_invalidates_after_reindex
         monkeypatch.setattr(health_task_service, "require_consultation", current_consultation)
         app = FastAPI()
         app.include_router(health_vision, prefix="/api")
+        app.include_router(chat, prefix="/api")
         app.dependency_overrides[get_required_user] = lambda: SimpleNamespace(uid=uid)
+        app.dependency_overrides[get_superadmin_user] = lambda: SimpleNamespace(uid=uid)
+
+        async def isolated_session():
+            async with sessions.begin() as session:
+                yield session
+
+        app.dependency_overrides[get_db] = isolated_session
+
+        async def read_audits():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                return await client.get(f"/api/chat/thread/{thread_id}/audits")
 
         async def read_task():
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
@@ -232,54 +278,103 @@ async def test_persisted_family_source_is_required_and_invalidates_after_reindex
             assert (await read_public_consultation_answer(session, run, uid)).content == answer
         task = await read_task()
         assert task.status_code == 200 and task.json()["result"]["answer"] == answer, task.text
+        audit_response = await read_audits()
+        assert audit_response.status_code == 200 and source_id in audit_response.text, audit_response.text
 
-        legacy_run_id = str(uuid4())
+        # 未完成工具的审计正文与结构化输出均不能成为公开来源。
         async with sessions.begin() as session:
-            session.add(
-                AgentRun(
-                    id=legacy_run_id,
-                    conversation_id=conversation.id,
-                    conversation_thread_id=thread_id,
-                    runtime_scope_id=thread_id,
-                    agent_slug="health-consultation",
-                    uid=uid,
-                    status="completed",
-                    request_id=str(uuid4()),
-                    manifest={"resources": {"tools": ["get_confirmed_profile"]}},
+            audit = await session.get(Message, family_audit_id)
+            audit.execution_status = "running"
+        pending = await read_audits()
+        assert pending.status_code == 200 and source_id not in pending.text, pending.text
+        async with sessions.begin() as session:
+            audit = await session.get(Message, family_audit_id)
+            audit.execution_status = "completed"
+
+        if agent_slug != "health-consultation":
+            # 当前角色撤掉补充库后，旧回执整体失效；空配置也不能放行历史。
+            for changed_binding in (kb_id, ""):
+                monkeypatch.setenv(service.INDICATOR_KB_ENVS[agent_slug], changed_binding)
+                changed = await read_task()
+                assert changed.status_code == 410 and answer not in changed.text, changed.text
+                changed_audits = await read_audits()
+                assert changed_audits.status_code == 410 and source_id not in changed_audits.text
+                async with sessions.begin() as session:
+                    with pytest.raises(HealthVisionError, match="source_invalidated"):
+                        await service.validate_family_kb_checkpoint(session, context, binding, tool_message)
+                    with pytest.raises(HealthVisionError, match="source_invalidated"):
+                        await service.validate_family_kb_audit(session, await session.get(Message, family_audit_id))
+            monkeypatch.setenv(service.INDICATOR_KB_ENVS[agent_slug], f"{kb_id},{secondary_kb_id}")
+
+        # 各角色公开结果仍重读真实授权和同意，不因科普工具可用而跳过。
+        async with sessions.begin() as session:
+            consent = await session.get(HealthProcessingConsent, (member_id, uid, "consultation"))
+            consent.revoked_at = datetime.now(UTC).replace(tzinfo=None)
+        async with sessions.begin() as session:
+            run = await session.get(AgentRun, run_id)
+            with pytest.raises(HealthVisionError, match="consent_required"):
+                await read_public_consultation_answer(session, run, uid)
+        async with sessions.begin() as session:
+            consent = await session.get(HealthProcessingConsent, (member_id, uid, "consultation"))
+            consent.revoked_at = None
+            grant = await session.get(HealthGrant, (member_id, uid))
+            grant.scopes = []
+        async with sessions.begin() as session:
+            run = await session.get(AgentRun, run_id)
+            with pytest.raises(HealthVisionError, match="not_found"):
+                await read_public_consultation_answer(session, run, uid)
+        async with sessions.begin() as session:
+            grant = await session.get(HealthGrant, (member_id, uid))
+            grant.scopes = ["ai_use", "profile_view"]
+
+        if agent_slug == "health-consultation":
+            legacy_run_id = str(uuid4())
+            async with sessions.begin() as session:
+                session.add(
+                    AgentRun(
+                        id=legacy_run_id,
+                        conversation_id=conversation.id,
+                        conversation_thread_id=thread_id,
+                        runtime_scope_id=thread_id,
+                        agent_slug=agent_slug,
+                        uid=uid,
+                        status="completed",
+                        request_id=str(uuid4()),
+                        manifest={"resources": {"tools": ["get_confirmed_profile"]}},
+                    )
                 )
-            )
-        async with sessions.begin() as session:
-            run = await session.get(AgentRun, run_id)
-            with pytest.raises(HealthVisionError, match="not_found"):
-                await HealthConsultationRepository(session).authorize(uid, thread_id)
-            with pytest.raises(HealthVisionError, match="not_found"):
-                await read_public_consultation_answer(session, run, uid)
-        async with sessions.begin() as session:
-            await session.delete(await session.get(AgentRun, legacy_run_id))
+            async with sessions.begin() as session:
+                run = await session.get(AgentRun, run_id)
+                with pytest.raises(HealthVisionError, match="not_found"):
+                    await HealthConsultationRepository(session).authorize(uid, thread_id)
+                with pytest.raises(HealthVisionError, match="not_found"):
+                    await read_public_consultation_answer(session, run, uid)
+            async with sessions.begin() as session:
+                await session.delete(await session.get(AgentRun, legacy_run_id))
 
-        async with sessions.begin() as session:
-            old_profile_audit = Message(
-                conversation_id=conversation.id,
-                role="tool",
-                message_type=TOOL_AUDIT_MESSAGE_TYPE,
-                run_id=run_id,
-                request_id=request_id,
-                operation_id=str(uuid4()),
-                execution_status="completed",
-                content="合成旧档案工具结果",
-                extra_metadata={"tool_name": "get_confirmed_profile"},
-            )
-            session.add(old_profile_audit)
-            await session.flush()
-            old_profile_audit_id = old_profile_audit.id
-        async with sessions.begin() as session:
-            run = await session.get(AgentRun, run_id)
-            with pytest.raises(HealthVisionError, match="not_found"):
-                await HealthConsultationRepository(session).authorize(uid, thread_id)
-            with pytest.raises(HealthVisionError, match="not_found"):
-                await read_public_consultation_answer(session, run, uid)
-        async with sessions.begin() as session:
-            await session.delete(await session.get(Message, old_profile_audit_id))
+            async with sessions.begin() as session:
+                old_profile_audit = Message(
+                    conversation_id=conversation.id,
+                    role="tool",
+                    message_type=TOOL_AUDIT_MESSAGE_TYPE,
+                    run_id=run_id,
+                    request_id=request_id,
+                    operation_id=str(uuid4()),
+                    execution_status="completed",
+                    content="合成旧档案工具结果",
+                    extra_metadata={"tool_name": "get_confirmed_profile"},
+                )
+                session.add(old_profile_audit)
+                await session.flush()
+                old_profile_audit_id = old_profile_audit.id
+            async with sessions.begin() as session:
+                run = await session.get(AgentRun, run_id)
+                with pytest.raises(HealthVisionError, match="not_found"):
+                    await HealthConsultationRepository(session).authorize(uid, thread_id)
+                with pytest.raises(HealthVisionError, match="not_found"):
+                    await read_public_consultation_answer(session, run, uid)
+            async with sessions.begin() as session:
+                await session.delete(await session.get(Message, old_profile_audit_id))
 
         async with sessions.begin() as session:
             chunk = await session.scalar(select(KnowledgeChunk).where(KnowledgeChunk.chunk_id == chunk_id))
@@ -295,6 +390,8 @@ async def test_persisted_family_source_is_required_and_invalidates_after_reindex
         changed = await read_task()
         assert changed.status_code == 410 and changed.json()["code"] == "source_invalidated", changed.text
         assert answer not in changed.text
+        changed_audits = await read_audits()
+        assert changed_audits.status_code == 410 and source_id not in changed_audits.text
 
         async with sessions.begin() as session:
             chunk = await session.scalar(select(KnowledgeChunk).where(KnowledgeChunk.chunk_id == chunk_id))
@@ -308,6 +405,8 @@ async def test_persisted_family_source_is_required_and_invalidates_after_reindex
         deleted = await read_task()
         assert deleted.status_code == 410 and deleted.json()["code"] == "source_invalidated", deleted.text
         assert answer not in deleted.text
+        deleted_audits = await read_audits()
+        assert deleted_audits.status_code == 410 and source_id not in deleted_audits.text
     finally:
         await _drop_isolated_schema(schema, admin_engine, engine)
 
