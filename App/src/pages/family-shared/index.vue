@@ -1,6 +1,6 @@
 <script setup>
 import { reactive, ref, computed, watch } from 'vue'
-import { onShow, onHide, onUnload } from '@dcloudio/uni-app'
+import { onLoad, onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import AppNavBar from '../../components/AppNavBar.vue'
 import ArchiveField from '../../components/ArchiveField.vue'
 import { request } from '../../services/request.js'
@@ -14,7 +14,9 @@ const unavailable = computed(() => state.busy || state.blocked)
 const editable = key => state.member?.editable_fields?.includes(key) === true
 watch(() => state.member, member => { editing.value = false; metric.value = null; draft.value = profileDraft(member?.profile); name.value = member?.name || ''; relationship.value = member?.relationship || '' })
 function discard() { client.discard(); draft.value = {}; metric.value = null; editing.value = false; name.value = ''; relationship.value = ''; metricError.value = '' }
-onShow(() => client.refresh()); onHide(discard); onUnload(discard)
+let requestedMember
+onLoad(options => { requestedMember = options.memberId })
+onShow(() => client.refresh(undefined, requestedMember)); onHide(discard); onUnload(discard)
 function saveProfile() {
   try {
     const changes = profileChanges(draft.value, state.member)
@@ -50,7 +52,7 @@ function voidRecord(row) {
   } })
 }
 const metricLabel = row => metricKinds.find(kind => kind.key===row.kind)?.label || row.kind
-function back() { uni.navigateBack({ fail: () => uni.reLaunch({url:'/pages/account/index'}) }) }
+function back() { uni.navigateBack({ fail: () => uni.reLaunch({url:'/pages/my/index'}) }) }
 </script>
 <template><view class="screen shared-page">
   <AppNavBar><view class="nav-row"><button class="icon-button" @click="back">‹</button><text class="nav-title">家庭共享档案</text></view></AppNavBar>

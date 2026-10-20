@@ -6,6 +6,7 @@ import { ref } from 'vue'
 import { onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import { wechatAuth } from '../../services/wechat-auth.js'
 import { getSession } from '../../services/session.js'
+import { resolveAppEntry } from '../../services/app-entry.js'
 import { isMockMode, canUseBusinessLogin, isCommerceEnabled } from '../../services/config.js'
 import CommerceAccess from '../../components/CommerceAccess.vue'
 import CommerceMemberEntry from '../../components/CommerceMemberEntry.vue'
@@ -24,7 +25,7 @@ onShow(async () => {
   const mine = ++generation
   if (isMockMode || !getSession()?.token) return
   loggingIn.value = true
-  try { await wechatAuth.restore(); if (visible && mine === generation) uni.navigateTo({ url: '/pages/account/index' }) }
+  try { const url = await resolveAppEntry(); if (visible && mine === generation) uni.redirectTo({ url }) }
   catch (error) { if (visible && mine === generation) loginError.value = error.message }
   finally { if (visible && mine === generation) loggingIn.value = false }
 })
@@ -51,7 +52,8 @@ async function continueLogin() {
     if(binding && (!binding.identifier || !binding.password)) throw new Error('请填写已有账号与密码')
     if (canUseBusinessLogin) await wechatAuth.loginWithPassword(binding.identifier, binding.password)
     else await mockService.login(binding)
-    if(visible && mine === generation) { loginOpen.value=false; uni.navigateTo({url:'/pages/account/index'}) }
+    const url = await resolveAppEntry()
+    if(visible && mine === generation) { loginOpen.value=false; uni.redirectTo({url}) }
     return
   }
   await mockService.login(isMockMode?testAccount.value:undefined)

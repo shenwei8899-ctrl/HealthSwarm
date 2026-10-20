@@ -1,6 +1,7 @@
 import { isMockMode, isCommerceEnabled } from './config.js'
 const apiPages = new Set(['pages/index/index', 'pages/account/index', 'pages/family-shared/index',
   'pages/records/index', 'pages/meal-photo/index', 'pages/indicators/index', 'pages/chat/agent', 'pages/health/vision', 'pages/health/plans',
+  'pages/family-select/index', 'pages/my/index', 'pages/profile/index', 'pages/settings/privacy',
   'pages/onboarding/index', 'pages/chat/index', 'pages/shop/index', 'pages/recipe/index',
   'pages/orders/index', 'pages/orders/detail', 'pages/address/index', 'pages/address/edit'])
 const commercePages = new Set(['pages/purchase/index'])

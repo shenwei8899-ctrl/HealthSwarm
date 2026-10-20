@@ -116,13 +116,13 @@ function accountPage(overrides = {}) {
   const deps = { ref, computed, selfMember, basicProfileInput, getSession: () => stored, sessionRevision: () => String(revision),
     wechatAuth: { restore: async () => { revision++; return { ...stored, families: [{ id: 'own', name: '合成家庭' }] } }, cancelPending() {}, logout() { stored = null; revision++ } },
     request: async options => { calls.push(options); return { data: family } },
-    onShow: callback => { show = callback }, onHide: callback => { hide = callback }, onUnload() {}, ...overrides }
-  const source = readFileSync(new URL('../src/pages/account/index.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
+    onMounted() {}, onShow: callback => { show = callback }, onHide: callback => { hide = callback }, onUnload() {}, ...overrides }
+  const source = readFileSync(new URL('../src/components/SelfAccountDetails.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const page = new Function('deps', `const {${Object.keys(deps).join(',')}} = deps;\n${source}\nreturn { member, form, account, busy, uncertain, error, unsaved, save, confirm, load, createFamily, familyName, healthMembers, selectedHealthId, healthLink, healthError, healthUncertain, healthDiagnostics, healthEntries, healthEntryText, openHealthTask, readHealthMembers, selectHealthMember, readHealthDiagnostics, createHealthMember, linkSelfProfile }`)(deps)
   return { ...page, show: () => show(), hide: () => hide(), calls, redirects, navigation, family, expire: () => { stored = null; revision++ } }
 }
 
-test('actual account page confirms only the saved version and sends only own basic fields', async () => {
+test('actual self-profile panel confirms only the saved version and sends only own basic fields', async () => {
   const page = accountPage(); await page.show(); page.form.value.goal = '新目标'
   await page.confirm(); assert.equal(page.calls.length, 1)
   await page.save(); const saved = page.calls.find(call => call.method === 'PUT')
@@ -264,4 +264,12 @@ test('closing and reopening binding form preserves access without retaining its 
   page.password.value = 'synthetic-password'; page.closeLoginSheet()
   assert.equal(page.password.value, ''); assert.equal(page.loginOpen.value, false)
   page.start(); assert.equal(page.loginOpen.value, true)
+})
+
+test('self-profile mount and show share restoration without invalidating their own session', async () => {
+  const page=accountPage()
+  await Promise.all([page.show(),page.show()])
+  assert.equal(page.calls.filter(call=>call.path==='/api/family/own').length,1)
+  assert.equal(page.error.value,'')
+  assert.equal(page.member.value.id,'self')
 })

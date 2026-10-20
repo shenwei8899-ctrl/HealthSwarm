@@ -19,15 +19,15 @@ test('family overview omits bottom navigation and its reserved space while prese
 })
 test('community entry is a tool chip immediately after today plan and keeps its popup action',()=>{
   const source=readFileSync(new URL('../src/pages/chat/index.vue',import.meta.url),'utf8')
-  const strip=source.match(/<view class="tool-row">([\s\S]*?)<\/scroll-view>/)[1]
-  const entries=[...strip.matchAll(/<button\b[^>]*class="[^"]*tool-chip[^\"]*"[^>]*>[\s\S]*?<\/button>/g)].map(match=>match[0])
+  const layout=readFileSync(new URL('../src/components/NutritionistLayout.vue',import.meta.url),'utf8')
+  const entries=new Function('return '+layout.match(/const shortcuts = (\[[\s\S]*?\n\])/)[1])()
   assert.equal(entries.length,5)
-  assert.match(entries[3],/今日饮食计划/)
-  assert.match(entries[4],/加入社群/)
-  assert.match(entries[4],/@click="communityOpen=true"/)
-  assert.ok(!source.includes('<button class="community-entry"'))
+  assert.equal(entries[3].key,'today')
+  assert.equal(entries[4].key,'community')
+  assert.ok(source.includes("key==='community'"))
+  assert.ok(source.includes('communityOpen.value=true'))
   assert.ok(source.includes('v-if="communityOpen"'))
-  assert.match(source,/\.tool-chip,\.tool-divider\s*\{\s*flex-shrink:\s*0;/)
+  assert.ok(layout.includes('flex-shrink:0'))
 })
 const setup=()=>{const storage=new Map();globalThis.uni={getStorageSync:k=>storage.get(k),setStorageSync:(k,v)=>storage.set(k,JSON.parse(JSON.stringify(v)))};return normalizeProfile({members:[{id:1,name:'我',age:28,relation:'本人',healthStatus:'none',allergyStatus:'none',intoleranceStatus:'none',avoidanceStatus:'none',doctorStatus:'none'},{id:2,name:'妈妈',age:55,healthStatus:'set',conditions:['高血压'],allergyStatus:'none',intoleranceStatus:'none',avoidanceStatus:'none',doctorStatus:'none'},{id:3,name:'爸爸',age:58,healthStatus:'set',conditions:['糖尿病'],allergyStatus:'set',allergies:['鱼类'],intoleranceStatus:'set',intolerances:['大豆不耐受'],avoidanceStatus:'none',doctorStatus:'none'}],defaultDiners:[1,2]})}
 test('applicable members, not everyone, drive three-meal safety and cancellation state',()=>{const p=setup();saveProfile(p);const before=todayPlan(p,'晚餐');assert.ok(before.dishes.some(d=>d.name==='清蒸鲈鱼'));setMealMembers(p,'晚餐',[1,3]);const after=todayPlan(p,'晚餐');assert.ok(!after.dishes.some(d=>/鱼|豆腐/.test(d.name)));assert.equal(after.blocked.length,0);assert.equal(todayPlan(p,'早餐').count,2);assert.deepEqual(todayPlan(p,'早餐').members.map(m=>m.id),[1,2]);assert.deepEqual(after.members.map(m=>m.id),[1,3])})

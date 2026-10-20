@@ -10,13 +10,18 @@ export async function loadCloudProfile() {
   const revision = sessionRevision()
   if (!session.householdId) {
     let families = (await request({ path: '/api/family' })).data
+    const pendingCreation='cloud-family-creation-uncertain'
     if (!families.length) {
+      if(scopedStorage.getStorageSync(pendingCreation))throw new Error('家庭创建结果尚未确认，请重新读取档案，不要重复创建。')
+      scopedStorage.setStorageSync(pendingCreation,true)
       try { await request({ path: '/api/family', method: 'POST', data: { name: '我的家' } }) }
-      catch (error) { if (error.code !== 'NETWORK_ERROR' && Number(error.code) < 500 && Number(error.code) !== 409) throw error }
+      catch (error) { if (error.code !== 'NETWORK_ERROR' && Number(error.code) < 500 && Number(error.code) !== 409) { scopedStorage.setStorageSync(pendingCreation,null); throw error } }
       families = (await request({ path: '/api/family' })).data
     }
     if (sessionRevision() !== revision) throw new Error('账号已变化，请重新进入。')
-    if (families.length !== 1) throw Object.assign(new Error('请先在账号页选择当前家庭。'), { code: 'FAMILY_SELECTION_REQUIRED' })
+    if (!families.length) throw new Error('家庭创建结果尚未确认，请重新读取档案，不要重复创建。')
+    if (families.length !== 1) throw Object.assign(new Error('请先选择当前家庭。'), { code: 'FAMILY_SELECTION_REQUIRED' })
+    scopedStorage.setStorageSync(pendingCreation,null)
     session = { ...session, householdId: families[0].id }
     setSession(session)
   }
@@ -25,7 +30,9 @@ export async function loadCloudProfile() {
   if (ticket !== sessionRevision()) throw new Error('账号已变化，请重新进入。')
   if (data.source !== 'api' || data.householdId !== session.householdId || !Array.isArray(data.members)) throw new Error('云端档案返回不完整，请重试。')
   const profile = normalizeProfile(data)
-  const {data:config} = await request({path:'/api/health/v1/configuration'})
+  let config = {}
+  try { config = (await request({path:'/api/health/v1/configuration'})).data }
+  catch(error) { if ([401,403].includes(Number(error.code))) throw error }
   if (ticket !== sessionRevision()) throw new Error('账号已变化，请重新进入。')
   profile.analysisPolicy = config.meal_plan?.available === true && config.meal_plan.processor && config.policy_version
     ? {processor:config.meal_plan.processor,policy_version:config.policy_version} : null
