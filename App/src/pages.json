@@ -270,6 +270,13 @@
       }
     },
     {
+      "path": "pages/settings/health-profile",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "我的健康资料"
+      }
+    },
+    {
       "path": "pages/settings/privacy",
       "style": {
         "navigationStyle": "custom",
