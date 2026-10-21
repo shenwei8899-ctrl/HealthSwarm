@@ -24,12 +24,22 @@
             <a-empty v-if="isCurrentSegmentEmpty" description="暂无配置项" class="config-empty" />
             <template v-for="(value, key) in filteredConfigurableItems" :key="key">
               <a-form-item :label="getConfigLabel(key, value)" :name="key" class="config-item">
-                <p v-if="value.description" class="config-description">{{ value.description }}</p>
+                <p
+                  v-if="value.description && !(value.kind === 'knowledges' && managedKnowledge)"
+                  class="config-description"
+                >
+                  {{ value.description }}
+                </p>
+
+                <HealthManagedKnowledge
+                  v-if="value.kind === 'knowledges' && managedKnowledge"
+                  :binding="managedKnowledge"
+                />
 
                 <!-- <div>{{ value }}</div> -->
                 <!-- 模型选择 -->
                 <div
-                  v-if="value.kind === 'llm'"
+                  v-else-if="value.kind === 'llm'"
                   class="model-selector"
                   :class="{ 'is-readonly': isReadOnlyConfig }"
                 >
@@ -415,6 +425,7 @@ import { message } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
 import { AlertTriangle, Check, Plus, Search, RotateCw, RotateCcw, Settings } from '@lucide/vue'
 import ModelSelectorComponent from '@/components/ModelSelectorComponent.vue'
+import HealthManagedKnowledge from '@/components/HealthManagedKnowledge.vue'
 import { useAgentStore } from '@/stores/agent'
 import {
   getAgentConfigOptionDescription as getOptionDescription,
@@ -445,6 +456,7 @@ const agentStore = useAgentStore()
 const router = useRouter()
 
 const { selectedAgent, selectedAgentId, agentConfig, configurableItems } = storeToRefs(agentStore)
+const managedKnowledge = computed(() => selectedAgent.value?.managed_knowledge)
 
 // console.log(availableTools.value)
 
@@ -499,6 +511,7 @@ const segmentConfigKeys = computed(() => {
 
 /** 隐藏空资源分组；已有不可见选择仍保留清理入口。 */
 const hasSelectableOptions = (key, value) => {
+  if (value.kind === 'knowledges' && managedKnowledge.value) return true
   if (value?.type !== 'list') return true
   return getSelectionOptions(key, value).length > 0 || getHiddenSelection(key).length > 0
 }

@@ -60,3 +60,16 @@ test('没有候选项时仍保留历史固定选择的提示与清空入口', ()
   assert.ok(form.filteredConfigurableItems.value.knowledges)
   assert.deepEqual(state.agentConfig.value.knowledges, ['hidden-kb'])
 })
+
+test('健康 Agent 即使通用候选为空也展示后台绑定，切换普通 Agent 后恢复通用筛选', () => {
+  const { state, form } = createForm([])
+  state.selectedAgent.value.managed_knowledge = {
+    status: 'configured',
+    items: [{ id: 'fixed', name: '后台库', status: 'configured' }]
+  }
+  assert.ok(form.filteredConfigurableItems.value.knowledges)
+  assert.equal(form.isCurrentSegmentEmpty.value, false)
+  assert.deepEqual(state.agentConfig.value.knowledges, [])
+  state.selectedAgent.value = { can_manage: true }
+  assert.deepEqual(form.filteredConfigurableItems.value, {})
+})
