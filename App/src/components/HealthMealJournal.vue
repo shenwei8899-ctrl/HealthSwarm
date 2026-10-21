@@ -1,118 +1,33 @@
 <script setup>
-import { reactive, ref, computed } from 'vue'
-import { onShow, onHide, onUnload } from '@dcloudio/uni-app'
-import { createDietJournalClient, journalState, mealDate } from '../services/diet-journal-client.js'
-import { newHealthRequestId } from '../services/health-task-flow.js'
+import { computed,ref } from 'vue'
+import { onShow,onHide,onUnload } from '@dcloudio/uni-app'
+import { request } from '../services/request.js'
+import { sessionRevision } from '../services/session.js'
 import { scopedStorage } from '../services/storage.js'
+import { newHealthRequestId } from '../services/health-task-flow.js'
+import { mealDay,mealLabels,readDietRecord,feedbackUrl,portionNote } from '../services/cloud-meals.js'
+import { mealInput } from '../services/health-meal-input.js'
 import HealthMealEditor from './HealthMealEditor.vue'
-
-const state = reactive(journalState())
-const client = createDietJournalClient({ state })
-const mode = ref('list'), query = ref(''), reason = ref(''), accept = ref(false), meal = ref(null)
-const people = ref([]), mealType = ref('lunch')
-const labels = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐', snack: '加餐' }
-const mealOptions = Object.keys(labels)
-const selectedPeople = computed(() => people.value.filter(row => row.eaten))
-const unsavedPeople = computed(() => selectedPeople.value.filter(row => !state.saved.some(saved => saved.member_id === row.memberId)))
-const canSave = computed(() => unsavedPeople.value.length && unsavedPeople.value.every(row => row.items.length && row.items.every(item => Number(item.grams) > 0)))
-const totals = computed(() => state.detail?.snapshot?.nutrition?.totals || {})
-function discard() { client.discard(); meal.value = null; people.value = []; mode.value = 'list'; reason.value = ''; accept.value = false }
-onShow(() => { discard(); void client.open() })
-onHide(discard)
-onUnload(discard)
-function newMeal() {
-  mode.value = 'new'; accept.value = false; state.saved = []; state.results = []; state.notice = ''; state.error = ''
-  people.value = state.members.map(row => ({ memberId: row.id, name: row.display_name || row.name || row.relationship_label, eaten: row.id === state.memberId, items: [] }))
-  void client.searchRecipes('')
-}
-function addRecipe(person, recipe) {
-  if (state.pending || state.busy || person.items.some(row => row.recipe_version_id === recipe.id)) return
-  person.items.push({ item_id: newHealthRequestId(), name: recipe.name, recipe_version_id: recipe.id,
-    grams: '', share_ratio: 1, portion_source: 'manual' })
-}
-async function show(record) {
-  mode.value = 'detail'; accept.value = false; meal.value = null; reason.value = ''
-  await client.detail(record)
-  if (state.detail) meal.value = JSON.parse(JSON.stringify(state.detail.snapshot.meal))
-}
-async function correct() {
-  if (!reason.value.trim() || !meal.value) return
-  await client.correct(meal.value, reason.value.trim(), accept.value)
-  if (!state.pending && !state.error && state.detail) meal.value = JSON.parse(JSON.stringify(state.detail.snapshot.meal))
-}
-async function save(chat = false) {
-  if (!canSave.value && !state.pending) return
-  const now = new Date().toISOString()
-  await client.save(selectedPeople.value.map(row => ({ memberId: row.memberId, meal: {
-    meal_type: mealType.value, eaten_at: now, items: row.items.map(item => ({ ...item, grams: Number(item.grams) })) } })), accept.value)
-  if (chat && !state.pending && state.saved.length === 1) chatWithSaved()
-}
-function chatWithSaved(record = state.saved[0]) {
-  const saved = record
-  if (!saved || state.pending) return
-  const memberId = saved.member_id || state.memberId
-  scopedStorage.setStorageSync(`indicator-choice:${memberId}:diet_analysis`, { record_id: saved.id, source_version: saved.source_version })
-  uni.navigateTo({ url: `/pages/chat/agent?memberId=${encodeURIComponent(memberId)}&taskType=diet_analysis&indicatorChoice=1`,
-    fail() { state.error = '记录已保存，进入咨询失败；请点“继续聊聊”重试，不需要再次记餐。' } })
-}
+const props=defineProps({detailId:String,memberId:String})
+const members=ref([]),records=ref([]),scope=ref('all'),date=ref(mealDay(new Date().toISOString())),busy=ref(false),error=ref(''),detail=ref(null),editing=ref(false),meal=ref(null),reason=ref(''),accept=ref(false),next=ref({}),pending=ref(null),recipes=ref([])
+const visible=computed(()=>records.value.filter(r=>mealDay(r.snapshot.meal.eaten_at)===date.value&&(scope.value==='all'||r.member_id===scope.value)))
+let epoch=0
+const name=id=>{const m=members.value.find(m=>m.id===id);return m?.display_name||m?.name||m?.relationship_label||'成员'}
+function hide(){epoch++;members.value=[];records.value=[];detail.value=null;meal.value=null;editing.value=false;busy.value=false;error.value='';pending.value=null;next.value={};recipes.value=[];scope.value='all'}
+async function load(more=false){if(busy.value)return;const mine=++epoch,rev=sessionRevision(),current=()=>mine===epoch&&rev===sessionRevision();busy.value=true;error.value='';try{
+ if(!members.value.length){const {data}=await request({path:'/api/health/v1/members'});if(!current())return;members.value=data.filter(m=>m.scopes?.includes('diet_edit'));if(props.memberId&&!members.value.some(m=>m.id===props.memberId))throw new Error('该成员当前未授权读取饮食记录');if(props.memberId)scope.value=props.memberId}
+ if(!more){records.value=[];next.value={};recipes.value=[]}
+ const selected=scope.value==='all'?members.value:members.value.filter(m=>m.id===scope.value)
+ for(const m of selected){const offset=more?next.value[m.id]:0;if(offset==null&&more)continue;const {data}=await request({path:`/api/health/v1/members/${m.id}/diet-logs/page?limit=50&offset=${offset}`});if(!current())return;if(!Array.isArray(data.records))throw new Error('饮食记录返回不完整');records.value=[...records.value.filter(r=>!data.records.some(n=>n.id===r.id)),...data.records.map(r=>({...r,member_id:m.id}))];next.value={...next.value,[m.id]:data.next_offset}}
+ if(detail.value||props.detailId){const member=detail.value?.member_id||props.memberId,id=detail.value?.id||props.detailId;if(!member)throw new Error('此旧链接缺少成员信息，请从饮食记录列表重新打开');const fresh=await readDietRecord(member,id);if(!current())return;detail.value=fresh;date.value=mealDay(fresh.snapshot.meal.eaten_at);editing.value=false}
+ }catch(e){if(current())error.value=e.message}finally{if(mine===epoch)busy.value=false}}
+function select(id){if(busy.value)return;scope.value=id;void load()}
+async function show(row){if(busy.value)return;const mine=++epoch,rev=sessionRevision();busy.value=true;error.value='';detail.value=null;editing.value=false;try{const data=await readDietRecord(row.member_id,row.id);if(mine===epoch&&rev===sessionRevision()){detail.value=data;pending.value=scopedStorage.getStorageSync('meal-correction:'+row.id)||null}}catch(e){if(mine===epoch)error.value=e.message}finally{if(mine===epoch)busy.value=false}}
+function edit(){meal.value=JSON.parse(JSON.stringify(detail.value.snapshot.meal));reason.value='';accept.value=false;editing.value=true}
+async function save(){if(busy.value||(!pending.value&&!reason.value.trim()))return;const mine=++epoch,rev=sessionRevision();busy.value=true;error.value='';const source=detail.value;try{if(!pending.value){const id=newHealthRequestId();pending.value={path:'/api/health/v1/diet-logs/'+source.id,method:'PATCH',headers:{'Idempotency-Key':id,'If-Match':'"'+source.source_version+'"'},data:{expected_version:source.source_version,client_request_id:id,meal:mealInput(meal.value),reason:reason.value.trim(),accept_incomplete:accept.value}};scopedStorage.setStorageSync('meal-correction:'+source.id,pending.value)}await request(pending.value);if(mine!==epoch||rev!==sessionRevision())return;pending.value=null;scopedStorage.setStorageSync('meal-correction:'+source.id,null);const fresh=await readDietRecord(source.member_id,source.id);if(mine!==epoch||rev!==sessionRevision())return;detail.value=fresh;editing.value=false;records.value=records.value.map(r=>r.id===source.id?detail.value:r)}catch(e){if(mine===epoch){error.value=Number(e.code)===404?'当前服务器尚未提供记录更正服务，原记录保持不变。':e.message;if([400,404,409,422].includes(Number(e.code))){pending.value=null;scopedStorage.setStorageSync('meal-correction:'+source.id,null)}if(Number(e.code)===409){try{const fresh=await readDietRecord(source.member_id,source.id);if(mine!==epoch||rev!==sessionRevision())return;detail.value=fresh;editing.value=false;error.value='记录已变化，已读取当前版本；请重新核对后再修改。'}catch(readError){if(mine===epoch&&rev===sessionRevision()){detail.value=null;error.value=readError.message}}}}}finally{if(mine===epoch)busy.value=false}}
+async function searchRecipes(query=''){if(busy.value)return;const mine=++epoch,rev=sessionRevision();busy.value=true;error.value='';try{const {data}=await request({path:'/api/health/v1/recipes?q='+encodeURIComponent(query)});if(mine===epoch&&rev===sessionRevision())recipes.value=data}catch(e){if(mine===epoch)error.value=e.message}finally{if(mine===epoch)busy.value=false}}
+function chat(row=detail.value){uni.navigateTo({url:feedbackUrl(row.member_id,row)})}
+onShow(()=>load());onHide(hide);onUnload(hide)
 </script>
-
-<template>
-  <view class="journal">
-    <text class="display-title">实际饮食记录</text>
-    <text class="safe-note">按成员授权读取。没有记录表示未知，不记为零摄入。</text>
-    <text v-if="state.busy" class="safe-note">正在核对服务端记录…</text>
-    <text v-if="state.error" class="inline-error">{{state.error}}</text>
-    <text v-if="state.notice" class="safe-note">{{state.notice}}</text>
-    <button v-if="!state.members.length" class="secondary-button" :disabled="state.busy" @click="client.open()">重新读取授权成员</button>
-    <view v-if="mode==='list'">
-      <view class="choices"><button v-for="member in state.members" :key="member.id" :class="{active:state.memberId===member.id}" :disabled="state.busy" @click="client.select(member.id)">{{member.display_name||member.name||member.relationship_label}}</button></view>
-      <button v-if="state.memberId" class="primary-button" :disabled="state.busy" @click="newMeal">按菜谱记餐 / 家庭桌菜</button>
-      <button v-if="state.memberId" class="secondary-button" :disabled="state.busy" @click="uni.navigateTo({url:'/pages/meal-photo/index?memberId='+encodeURIComponent(state.memberId)})">拍照识别并核对记餐</button>
-      <text v-if="!state.records.length&&!state.busy" class="safe-note">本页没有可展示的已确认记录。</text>
-      <button v-for="record in state.records" :key="record.id" class="card record" :disabled="state.busy" @click="show(record)">
-        <text>{{labels[record.snapshot.meal.meal_type]}} · {{mealDate(record.snapshot.meal.eaten_at)}} · v{{record.source_version}}</text>
-        <text>{{record.snapshot.meal.items.filter(i=>!i.excluded).map(i=>i.name).join('、')}}</text>
-        <text>{{record.snapshot.nutrition.totals.energy_kcal ?? '未知'}} kcal ›</text>
-      </button>
-      <view class="choices"><button :disabled="state.busy||state.offset===0" @click="client.page(Math.max(0,state.offset-20))">上一页</button><button :disabled="state.busy||state.nextOffset===null" @click="client.page(state.nextOffset)">下一页</button><button :disabled="state.busy" @click="client.page()">刷新</button></view>
-    </view>
-    <view v-if="mode==='detail'&&state.detail&&meal" class="card editor">
-      <text class="section-title">更正实际摄入 · v{{state.detail.source_version}}</text>
-      <text>当前计算：{{totals.energy_kcal ?? '未知'}} kcal · 蛋白质 {{totals.protein_g ?? '未知'}} g</text>
-      <text class="safe-note">未知值保留为空。修改实际克数后，服务端重新计算当前记录。</text>
-      <HealthMealEditor :meal="meal" :disabled="state.busy||!!state.pending" :recipes="state.recipes" @search="client.searchRecipes"/>
-      <textarea v-model="reason" :disabled="state.busy||!!state.pending" placeholder="填写更正原因" class="text-area"/>
-      <label class="consent"><switch :checked="accept" :disabled="state.busy||!!state.pending" @change="accept=$event.detail.value"/>接受营养资料不完整，缺失项保持未知</label>
-      <button class="primary-button" :disabled="state.busy||state.conflict||!reason.trim()" @click="correct">{{state.pending?'重试原更正':'保存更正并重新计算'}}</button>
-      <button v-if="state.conflict" class="secondary-button" :disabled="state.busy" @click="show(state.detail)">读取当前版本后重新填写</button>
-      <button class="secondary-button" :disabled="state.busy||!!state.pending||state.conflict" @click="chatWithSaved(state.detail)">就这条已保存记录聊聊</button>
-    </view>
-    <view v-if="mode==='new'" class="editor">
-      <text class="section-title">每人实际吃了什么</text>
-      <text class="safe-note">取消勾选没吃的人。每人选择实际吃的菜与个人可食克数，不平均分配整桌。</text>
-      <picker :range="mealOptions.map(k=>labels[k])" :disabled="state.busy||!!state.pending" @change="mealType=mealOptions[$event.detail.value]"><view class="field-input">{{labels[mealType]}} ›</view></picker>
-      <input v-model="query" class="field-input" placeholder="搜索已发布菜谱" :disabled="state.busy||!!state.pending"/><button class="secondary-button" :disabled="state.busy||!!state.pending" @click="client.searchRecipes(query)">查找菜谱</button>
-      <text v-if="!state.recipes.length&&!state.busy" class="safe-note">暂无匹配的已发布菜谱，请先由负责人准备资料。</text>
-      <view v-for="person in people" :key="person.memberId" class="card editor">
-        <label><switch :checked="person.eaten" :disabled="state.busy||!!state.pending||state.saved.some(saved=>saved.member_id===person.memberId)" @change="person.eaten=$event.detail.value"/>{{person.name}} · 本次吃了</label>
-        <text v-if="state.saved.some(saved=>saved.member_id===person.memberId)" class="safe-note">已保存，本次不再提交</text>
-        <template v-if="person.eaten&&!state.saved.some(saved=>saved.member_id===person.memberId)">
-          <view class="choices"><button v-for="recipe in state.recipes" :key="recipe.id" :disabled="state.busy||!!state.pending" @click="addRecipe(person,recipe)">＋{{recipe.name}} · {{recipe.dataset_version}}</button></view>
-          <view v-for="(item,index) in person.items" :key="item.item_id" class="item"><text>{{item.name}}</text><input v-model="item.grams" type="digit" :disabled="state.busy||!!state.pending" placeholder="实际吃的可食克数"/><text>克</text><button :disabled="state.busy||!!state.pending" @click="person.items.splice(index,1)">移除</button></view>
-        </template>
-      </view>
-      <label class="consent"><switch :checked="accept" :disabled="state.busy||!!state.pending" @change="accept=$event.detail.value"/>接受营养资料不完整，缺失项保持未知</label>
-      <view v-for="result in state.results" :key="result.member_id" class="safe-note">{{people.find(p=>p.memberId===result.member_id)?.name}}：{{result.status==='saved'?'已保存':result.message}}</view>
-      <button v-if="unsavedPeople.length||state.pending" class="primary-button" :disabled="state.busy||(!canSave&&!state.pending)" @click="save()">{{state.pending?'重试未完成项':'一次保存实际摄入'}}</button>
-      <button v-if="state.canEditFailed" class="secondary-button" :disabled="state.busy" @click="client.editFailed()">修改未保存项</button>
-      <button v-if="selectedPeople.length===1&&!state.saved.length" class="secondary-button" :disabled="state.busy||!canSave" @click="save(true)">保存并聊聊</button>
-      <button v-if="state.saved.length===1&&!state.pending" class="secondary-button" @click="chatWithSaved()">继续聊聊</button>
-    </view>
-    <button v-if="mode!=='list'" class="secondary-button" :disabled="state.busy||!!state.pending" @click="mode='list';client.page()">返回记录列表</button>
-    <text v-if="state.pending" class="safe-note">保存尚未全部确认，请在此页重试原请求。不要重新新建相同餐次。</text>
-  </view>
-</template>
-<style scoped>
-.journal,.editor{display:flex;flex-direction:column;gap:20rpx}.journal{padding-top:32rpx}.editor{padding:22rpx}.choices{display:flex;gap:12rpx;flex-wrap:wrap;margin:16rpx 0}.choices button{padding:12rpx;font-size:24rpx;background:#eef0e8;border-radius:12rpx}.choices button.active{background:#246b50;color:white}.record{display:flex;flex-direction:column;align-items:flex-start;gap:12rpx;padding:24rpx;width:100%;margin:16rpx 0;font-size:26rpx}.item{display:flex;align-items:center;gap:12rpx;flex-wrap:wrap}.item input{background:#f1f4ef;border-radius:10rpx;padding:12rpx;width:210rpx}.consent{font-size:24rpx;line-height:1.7}.safe-note{text-align:left}button[disabled]{opacity:.5}
-</style>
+<template><view class="journal"><view class="hero"><text class="eyebrow">ORIGINAL RECORDS</text><text class="display-title">今天真正吃了什么</text><text>保留实际记录与更正版本，不代替 AI 反馈。</text></view><text v-if="busy" class="safe-note">正在读取饮食记录…</text><view v-if="error" class="card meal-card"><text class="inline-error">{{error}}</text><button :disabled="busy" @click="load()">重新读取</button></view><template v-if="!detail"><scroll-view scroll-x class="scope-tabs"><view class="scope-row"><button :class="{active:scope==='all'}" :disabled="busy" @click="select('all')">全家</button><button v-for="m in members" :key="m.id" :class="{active:scope===m.id}" :disabled="busy" @click="select(m.id)">{{name(m.id)}}</button></view></scroll-view><view class="card date-card"><picker mode="date" :value="date" @change="date=$event.detail.value"><text>{{date}} ›</text></picker><text>按北京时间归档</text></view><button class="secondary-button" @click="uni.navigateTo({url:'/pages/scan/index'})">拍照／选菜记餐</button><view class="meal-list"><view v-for="(label,key) in mealLabels" :key="key" class="card meal-card"><view class="meal-head"><text>{{label}}</text><text>{{visible.some(r=>r.snapshot.meal.meal_type===key)?'已记录':'未记录'}}</text></view><button v-for="r in visible.filter(r=>r.snapshot.meal.meal_type===key)" :key="r.id" :disabled="busy" @click="show(r)"><view class="photo-mark">{{r.snapshot.meal.photos?.length?'图':'记'}}</view><view><text>{{r.snapshot.meal.items.filter(i=>!i.excluded).map(i=>i.name).join('、')}}</text><text>{{name(r.member_id)}} · {{portionNote(r.snapshot.meal.items[0]||{})}} · v{{r.source_version}}</text></view><text>›</text></button><text v-if="!visible.some(r=>r.snapshot.meal.meal_type===key)" class="missing">未记录不代表没有进食，不会被当作 0 摄入。</text></view></view><button v-if="Object.values(next).some(n=>n!==null)" class="secondary-button" :disabled="busy" @click="load(true)">继续读取更早记录</button><text class="safe-note">{{Object.values(next).some(n=>n!==null)?'还有更早记录，可继续读取。':'已读取当前授权成员的全部记录。'}}</text></template><template v-else><view class="card meal-card"><text class="section-title">{{name(detail.member_id)}} · {{mealLabels[detail.snapshot.meal.meal_type]}} · v{{detail.source_version}}</text><text>{{mealDay(detail.snapshot.meal.eaten_at)}}</text><view v-for="item in detail.snapshot.meal.items.filter(i=>!i.excluded)" :key="item.item_id" class="detail-item"><text>{{item.name}}</text><text>{{item.grams??'未知'}}{{item.grams?' g':''}} · {{portionNote(item)}}</text></view><text>营养：{{detail.snapshot.nutrition.totals.energy_kcal??'未知'}} kcal</text><text class="safe-note">共享桌菜逐人记录，不平均分配整桌热量；粗略份量不换算成虚构克数。</text></view><template v-if="editing"><HealthMealEditor :meal="meal" :coarse="true" :disabled="busy||!!pending" :recipes="recipes" @search="searchRecipes"/><textarea v-model="reason" :disabled="busy||!!pending" class="text-area" placeholder="填写更正原因"/><label><switch :checked="accept" :disabled="busy||!!pending" @change="accept=$event.detail.value"/>接受缺失营养保持未知</label><button class="primary-button" :disabled="busy||(!pending&&!reason.trim())" @click="save">{{pending?'重试原更正':'确认更正并保存'}}</button><button class="secondary-button" :disabled="busy||!!pending" @click="editing=false">取消</button></template><template v-else><button class="primary-button" :disabled="busy||!!pending" @click="edit">更正这条记录</button><button v-if="pending" class="primary-button" :disabled="busy" @click="save">恢复上次更正请求</button><button class="secondary-button" :disabled="busy||!!pending" @click="chat()">聊聊这一餐</button></template><button class="secondary-button" :disabled="busy||!!pending" @click="detail=null;editing=false">返回记录列表</button></template></view></template>
+<style scoped>.hero{display:flex;flex-direction:column;gap:12rpx;margin:43rpx 0 24rpx}.hero .display-title{font-size:44rpx}.hero>text:last-child{color:#6c7d75;font-size:21rpx;line-height:1.6}.scope-tabs{white-space:nowrap}.scope-tabs .scope-row{display:inline-flex;gap:10rpx}.scope-tabs button{padding:13rpx 23rpx;border-radius:17rpx;background:#eef0e8;color:#65776f;font-size:20rpx}.scope-tabs button.active{background:#246b50;color:#fff}.date-card{display:flex;justify-content:space-between;margin-top:18rpx;padding:20rpx}.date-card text:first-child{font-size:23rpx;font-weight:800}.date-card text:last-child{color:#7b8983;font-size:18rpx}.meal-list{display:flex;flex-direction:column;gap:14rpx;margin-top:18rpx}.meal-card{padding:22rpx}.meal-head{display:flex;justify-content:space-between;margin-bottom:12rpx}.meal-head text:first-child{font-size:26rpx;font-weight:900}.meal-head text:last-child{color:#246b50;font-size:18rpx;font-weight:800}.meal-card button{width:100%;display:flex;align-items:center;gap:14rpx;padding:14rpx 0;text-align:left}.photo-mark{width:58rpx;height:58rpx;display:flex;align-items:center;justify-content:center;border-radius:18rpx;background:#f0f3f1;color:#246b50;font-weight:900}.meal-card button>view:nth-child(2){flex:1;display:flex;flex-direction:column;gap:6rpx}.meal-card button>view:nth-child(2) text:first-child{font-size:21rpx;font-weight:800}.meal-card button>view:nth-child(2) text:last-child,.missing{color:#7a8982;font-size:18rpx;line-height:1.5}.missing{display:block;padding:12rpx 0}.journal{padding-bottom:40rpx}.detail-item{padding:20rpx 0;border-top:1px solid #ebebef;display:flex;justify-content:space-between;font-size:26rpx}.journal .meal-card>text{display:block;margin:16rpx 0}.journal>button{margin-top:20rpx}.journal .missing{font-size:24rpx}.journal .meal-card button>view:nth-child(2) text:first-child{font-size:27rpx}.journal .meal-card button>view:nth-child(2) text:last-child{font-size:23rpx}</style>

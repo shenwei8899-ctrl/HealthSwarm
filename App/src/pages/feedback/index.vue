@@ -1,4 +1,6 @@
 <script setup>
+import CloudDietFeedback from '../../components/CloudDietFeedback.vue'
+import { isMockMode } from '../../services/config.js'
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed,ref,watch } from 'vue'
 import { nutritionFeedback } from '../../services/nutrition-feedback.js'
@@ -10,7 +12,7 @@ const advice=ref(null),adviceError=ref(''),adviceBusy=ref(false)
 let feedbackVersion=0,disposed=false
 onUnload(()=>{disposed=true;feedbackVersion++})
 const profile=ref(getProfile()),records=ref(getRecords()),scope=ref('all'),view=ref('当餐'),date=ref(localDate()),days=ref(7),meal=ref('晚餐')
-onShow(()=>{profile.value=getProfile();records.value=getRecords()})
+onShow(()=>{if(!isMockMode)return;profile.value=getProfile();records.value=getRecords()})
 const scoped=computed(()=>confirmedFor(records.value,scope.value))
 const daily=computed(()=>recordsOn(scoped.value,date.value))
 const current=computed(()=>daily.value.filter(r=>r.meal===meal.value))
@@ -18,7 +20,7 @@ const recordedMeals=computed(()=>new Set(daily.value.map(r=>r.meal)).size)
 const missing=computed(()=>['早餐','午餐','晚餐'].filter(m=>!daily.value.some(r=>r.meal===m)))
 const trend=computed(()=>vegetableTrend(scoped.value,days.value,new Date(date.value+'T12:00:00+08:00')))
 async function refreshAdvice(){
- const version=++feedbackVersion;advice.value=null;adviceError.value='';adviceBusy.value=true
+ if(!isMockMode)return;const version=++feedbackVersion;advice.value=null;adviceError.value='';adviceBusy.value=true
  try{const result=await nutritionFeedback(profile.value,records.value,{scope:scope.value,date:date.value,meal:meal.value});if(!disposed&&version===feedbackVersion)advice.value=result}
  catch(e){if(!disposed&&version===feedbackVersion)adviceError.value=e.message||'反馈生成失败，请重试'}
  finally{if(version===feedbackVersion)adviceBusy.value=false}
@@ -27,7 +29,7 @@ watch([scope,date,meal,records],refreshAdvice,{immediate:true})
 function goRecords(){uni.navigateTo({url:'/pages/records/index'})}
 </script>
 <template>
-  <view class="screen feedback-screen">
+  <CloudDietFeedback v-if="!isMockMode"/><view v-else class="screen feedback-screen">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">反馈</text><button class="link" @click="goRecords">看记录</button></view></AppNavBar>
     <view class="hero"><text class="eyebrow">让每次记录，都有回应</text><text class="display-title">从记下的餐食，了解日常饮食</text><text>选择成员，查看本人已确认吃过的菜品。</text></view>
     <scroll-view class="scope-tabs" scroll-x><view class="scope-row"><button :class="{active:scope==='all'}" @click="scope='all'">全家</button><button v-for="m in profile.members" :key="m.id" :class="{active:scope===m.id}" @click="scope=m.id">{{m.name}}</button></view></scroll-view>

@@ -4,6 +4,15 @@ import { scopedStorage } from './storage.js'
 import { saveProfile, normalizeProfile } from '../utils/profile.js'
 import { newHealthRequestId } from './health-task-flow.js'
 
+export async function readCloudReportStatus(memberId) {
+  const [observations,vision]=await Promise.all([
+    request({path:`/api/health/v1/members/${memberId}/observations`}),
+    request({path:`/api/health/v1/members/${memberId}/vision/page?kind=report&jobs_limit=1&drafts_limit=20`}),
+  ])
+  if(!Array.isArray(observations.data)||!Array.isArray(vision.data.drafts))throw new Error('报告状态返回不完整，请重新读取')
+  return observations.data.length?'done':vision.data.drafts.some(d=>d.review_status==='pending_confirmation')?'review':'empty'
+}
+
 export async function loadCloudProfile() {
   let session = getSession()
   if (!session?.token) throw Object.assign(new Error('请先登录健康业务账号'), { code: 401 })

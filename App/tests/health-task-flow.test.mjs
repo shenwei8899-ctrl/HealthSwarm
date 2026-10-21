@@ -80,7 +80,7 @@ test('saved-meal chat binds the exact version and retries only thread creation',
   const selection = { record_id: requestId, source_version: 2 }
   let attempts = 0
   const h = fixture({ send: async options => {
-    if (options.path.endsWith('/detail')) return { data: { id: requestId, source_version: 2 } }
+    if (options.path.includes('/diet-logs/page')) return { data: { records:[{ id: requestId, source_version: 2 }],next_offset:null } }
     if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [{ entry_type: 'diet_analysis', status: 'available' }] } }
     if (options.path.endsWith('/feedback-conversation')) {
       if (++attempts === 1) throw Object.assign(new Error('timeout'), { code: 'NETWORK_ERROR' })
@@ -100,7 +100,7 @@ test('saved-meal chat binds the exact version and retries only thread creation',
 
 test('changed meal source cannot create a feedback thread', async () => {
   const h = fixture({ send: async options => {
-    if (options.path.endsWith('/detail')) return { data: { id: requestId, source_version: 3 } }
+    if (options.path.includes('/diet-logs/page')) return { data: { records:[{ id: requestId, source_version: 3 }],next_offset:null } }
     if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [{ entry_type: 'diet_analysis', status: 'available' }] } }
     return fixtureBase(options)
   } })
@@ -114,7 +114,7 @@ test('meal feedback displays the verified receipt and rejects a different source
   const selection = { record_id: requestId, source_version: 2 }
   let wrongSource = false
   const h = fixture({ send: async options => {
-    if (options.path.endsWith('/detail')) return { data: { id: requestId, source_version: 2 } }
+    if (options.path.includes('/diet-logs/page')) return { data: { records:[{ id: requestId, source_version: 2 }],next_offset:null } }
     if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [{ entry_type: 'diet_analysis', status: 'available' }] } }
     if (options.path.endsWith('/feedback-conversation')) return { data: { member_id: memberId, thread_id: threadId, agent_slug: 'health-diet-analyst', feedback_selection: selection } }
     if (options.path.endsWith('/tasks/' + requestId)) return { data: { request_id: requestId, member_id: memberId, task_type: 'diet_analysis', thread_id: threadId, agent_slug: 'health-diet-analyst', request_status: 'dispatched', execution_status: 'completed', result: { result_type: 'meal_feedback', data: { status: 'saved', records: [{ ...selection, source_version: wrongSource ? 1 : 2 }], feedback: { diet_log_id: requestId, status: 'active', version: 1, details: { comment: '口味偏咸' } } } } } }
@@ -270,7 +270,7 @@ test('delegated feedback follows server permissions while indicators still requi
   const selection = { record_id: requestId, source_version: 2 }
   const h = fixture({ send: async options => {
     if (options.path.endsWith('/members')) return { data: [{ id: memberId, is_owner: false, scopes: ['diet_edit', 'ai_use'] }] }
-    if (options.path.endsWith('/detail')) return { data: { id: requestId, source_version: 2 } }
+    if (options.path.includes('/diet-logs/page')) return { data: { records:[{ id: requestId, source_version: 2 }],next_offset:null } }
     if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [{ entry_type: 'diet_analysis', status: 'available' }] } }
     if (options.path.endsWith('/feedback-conversation')) return { data: { member_id: memberId, thread_id: threadId, agent_slug: 'health-diet-analyst', feedback_selection: selection } }
     return fixtureBase(options)

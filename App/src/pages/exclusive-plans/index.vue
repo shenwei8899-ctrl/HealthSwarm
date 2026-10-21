@@ -1,4 +1,6 @@
 <script setup>
+import CloudExclusivePlans from '../../components/CloudExclusivePlans.vue'
+import { isMockMode } from '../../services/config.js'
 import { ensureExclusivePlan } from '../../services/exclusive-planning.js'
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed, ref } from 'vue'
@@ -9,7 +11,7 @@ import { reviewReasons } from '../../utils/demo.js'
 import { onShow } from '@dcloudio/uni-app'
 const loading=ref(false),error=ref('')
 const profile = ref(getProfile()),revision=ref(0)
-onShow(async()=>{profile.value=getProfile();revision.value++;await generatePlans()})
+onShow(async()=>{if(!isMockMode)return;profile.value=getProfile();revision.value++;await generatePlans()})
 async function generatePlans(){loading.value=true;error.value='';try{await Promise.all(EXCLUSIVE_PLANS.map(plan=>ensureExclusivePlan(plan,profile.value)));revision.value++}catch(e){error.value=e.message||'计划生成失败，请重试'}finally{loading.value=false}}
 const plans=computed(()=>{revision.value;return EXCLUSIVE_PLANS.map(p=>adaptExclusivePlan(p,profile.value))})
 const memberNames = computed(() => profile.value.members.map(member => member.name).join('、'))
@@ -19,7 +21,7 @@ function goMy() { uni.navigateTo({ url: '/pages/my/index' }) }
 </script>
 
 <template>
-  <view class="screen plans-screen">
+  <CloudExclusivePlans v-if="!isMockMode"/><view v-else class="screen plans-screen">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">AI专属计划</text><text></text></view></AppNavBar>
     <view class="plans-head">
       <text class="eyebrow">FOR YOUR FAMILY</text>

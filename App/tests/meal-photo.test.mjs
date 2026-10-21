@@ -20,7 +20,7 @@ function setup(overrides={}, memory=new Map()) {
     if(path.endsWith('/meal-drafts/draft'))return {data:draft()}
     if(path.endsWith('/calculate'))return {data:{calculation_id:'calc',draft_version:state.draft.version,complete:true,totals:{energy_kcal:'120'}}}
     if(path.endsWith('/confirm'))return {data:{target_ids:['record'],review_status:'confirmed'}}
-    if(path.endsWith('/detail'))return {data:{id:'record',source_version:2,snapshot:{nutrition:{totals:{energy_kcal:'120'}}}}}
+    if(path.includes('/diet-logs/page'))return {data:{records:[{id:'record',source_version:2,snapshot:{nutrition:{totals:{energy_kcal:'120'}}}}],next_offset:null}}
     throw new Error('unexpected '+path)
   }
   const client=createMealPhotoClient({state,send,revision:()=>rev,storage:{getStorageSync:k=>structuredClone(memory.get(k)),setStorageSync:(k,v)=>memory.set(k,structuredClone(v))},newId:()=>`key-${++next}`,upload:overrides.upload|| (async()=>({upload_id:'photo',purpose:'meal'}))})

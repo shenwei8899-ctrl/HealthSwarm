@@ -11,16 +11,16 @@ import { isCommerceEnabled } from '../services/config.js'
 const profile=ref(null),busy=ref(false),error=ref('')
 const name=computed(()=>profile.value?.members.find(m=>m.relation==='本人')?.name||getSession()?.accountName||'我')
 const unavailableFeatures = {
-  feedback: '反馈', exclusivePlan: 'AI专属计划', memories: 'AI 记住的事',
+  
   devices: '健康设备', supplier: '合作商合作',
 }
 const dietItems = [
   { icon: 'record', name: '饮食记录', desc: '查看云端已确认的记录与更正', url: '/pages/records/index' },
-  { icon: 'chat', name: '反馈', desc: '正式服务尚未接入', url: 'feedback' },
-  { icon: 'record', name: '实测指标', desc: '体重、血糖、血压与趋势回顾', url: '/pages/indicators/index' },
+  { icon: 'chat', name: '反馈', desc: '回顾已记录餐次与近期饮食', url: '/pages/feedback/index' },
+  { icon: 'record', name: '实测指标', desc: '体重、血糖、血压与血脂原值', url: '/pages/indicators/index' },
 ]
 const planItems = [
-  { icon: 'calendar', name: 'AI专属计划', desc: '正式服务尚未接入', url: 'exclusivePlan' },
+  { icon: 'calendar', name: 'AI专属计划', desc: '查看当前可用计划与安排', url: '/pages/exclusive-plans/index' },
   { icon: 'calendar', name: '我的餐单', desc: '查看已保存餐单与使用状态', url: '/pages/health/plans' },
   ...(isCommerceEnabled ? [
     { icon: 'calendar', name: '今日食材采购', desc: '来自当前保存的餐单', url: '/pages/purchase/index?source=daily' },
@@ -29,7 +29,7 @@ const planItems = [
 ]
 const profileItems = [
   { icon: 'user', name: '我的健康资料', desc: '维护本人资料与健康咨询权限', url: '/pages/settings/health-profile' },
-  { icon: 'memory', name: 'AI 记住的事', desc: '正式服务尚未接入', url: 'memories' },
+  { icon: 'memory', name: 'AI 记住的事', desc: '查看、修改与删除长期记忆', url: '/pages/memories/index' },
   { icon: 'device', name: '健康设备', desc: '设备连接尚未开放', url: 'devices' },
 ]
 const settingItems = [

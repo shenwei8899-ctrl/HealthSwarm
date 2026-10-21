@@ -313,10 +313,10 @@ test('API runtime namespaces cannot read mock data and unadapted routes are bloc
   setup();setSession({accountId:'A',householdId:'home'});scopedStorage.setStorageSync('demo-orders-v1',[{id:'demo'}])
   const api=await apiRuntime();api.session.setSession({accountId:'A',householdId:'home'})
   assert.equal(api.storage.scopedStorage.getStorageSync('demo-orders-v1'),undefined);assert.throws(()=>api.config.requireMock(),error=>error.code==='ADAPTER_NOT_READY')
-  assert.equal(api.navigation.canOpenPage('/pages/index/index'),true);assert.equal(api.navigation.canOpenPage('/pages/shop/index'),true);assert.equal(api.navigation.canOpenPage('/pages/exclusive-plans/index'),false)
+  assert.equal(api.navigation.canOpenPage('/pages/index/index'),true);assert.equal(api.navigation.canOpenPage('/pages/shop/index'),true);assert.equal(api.navigation.canOpenPage('/pages/exclusive-plans/index'),true)
   const replacements=[]
   const history={replaceState:(_state,_title,url)=>replacements.push(url)}
-  api.navigation.guardInitialH5Route({hash:'#/pages/exclusive-plans/index',pathname:'/preview/',search:''},history)
+  api.navigation.guardInitialH5Route({hash:'#/pages/exclusive-plans/detail?id=demo',pathname:'/preview/',search:''},history)
   assert.deepEqual(replacements,['/preview/#/pages/index/index'])
   api.navigation.guardInitialH5Route({hash:'#/pages/account/index',pathname:'/',search:''},history)
   assert.equal(replacements.length,1)

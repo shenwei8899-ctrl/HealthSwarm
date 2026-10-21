@@ -214,7 +214,7 @@ function showLoad() {
 }
 onMounted(showLoad); onShow(showLoad); onHide(discard); onUnload(discard)
 </script>
-<template><view class="self-details"><text v-if="error" class="error-note">{{error}}</text><button class="secondary-button" :disabled="busy" @click="load">重新读取本人资料</button><text v-if="!member&&!busy" class="helper">尚未读到可维护的本人成员，请先保存家庭档案或确认成员邀请。</text>      <view v-if="member" class="card section"><text class="section-title">本人基础资料</text>
+<template><view class="self-details"><text v-if="error" class="error-note">{{error}}</text><button class="secondary-button" :disabled="busy" @click="load">重新读取本人资料</button><text v-if="!member&&!busy" class="helper">尚未读到可维护的本人成员，请先保存家庭健康档案。</text>      <view v-if="member" class="card section"><text class="section-title">本人基础资料</text>
         <text class="helper">填写自己的资料，未填写的项目保持未知。保存后请核对，再确认当前版本。</text>
         <text class="label">性别</text><view class="choices"><button v-for="item in [{v:'female',n:'女'},{v:'male',n:'男'},{v:'unspecified',n:'暂不说明'}]" :key="item.v" :class="{ selected: form.sex === item.v }" :disabled="busy || uncertain" @click="form.sex=item.v">{{ item.n }}</button></view>
         <input v-model="form.birth_date" class="field-input" maxlength="10" placeholder="生日 YYYY-MM-DD" :disabled="busy || uncertain"/>

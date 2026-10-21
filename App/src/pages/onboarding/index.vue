@@ -1,4 +1,5 @@
 <script setup>
+import { sessionRevision } from '../../services/session.js'
 import { scopedStorage } from '../../services/storage.js'
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed, nextTick, ref, watch } from 'vue'
@@ -8,7 +9,7 @@ import OnboardingHealthFields from '../../components/OnboardingHealthFields.vue'
 import { backHome, getProfile, newMember, normalizeMember, normalizeProfile, saveProfile } from '../../utils/profile.js'
 import { dataWarnings } from '../../utils/health.js'
 import { isMockMode } from '../../services/config.js'
-import { loadCloudProfile, saveCloudProfile } from '../../services/cloud-profile.js'
+import { loadCloudProfile, saveCloudProfile, readCloudReportStatus } from '../../services/cloud-profile.js'
 const cloudLoading=ref(!isMockMode),cloudError=ref(''),cloudSaving=ref(false),cloudLoaded=ref(isMockMode)
 let initialProfile = getProfile()
 if (!initialProfile.members.length || !scopedStorage.getStorageSync('family-profile-v2') && !scopedStorage.getStorageSync('frontend-onboarding-progress-v1')) {
@@ -70,8 +71,8 @@ watch([profile, step, memberIndex, familyDiners], () => {
     version: 2, profile: profile.value, step: step.value, memberIndex: memberIndex.value, familyDiners: familyDiners.value,
   })
 }, { deep: true })
-onShow(() => {
-  if(!isMockMode)return
+onShow(async () => {
+  if(!isMockMode){if(!cloudLoaded.value)return;const revision=sessionRevision();const rows=await Promise.allSettled(profile.value.members.filter(m=>m.healthMemberId).map(async m=>({id:m.id,healthId:m.healthMemberId,status:await readCloudReportStatus(m.healthMemberId)})));if(revision!==sessionRevision())return;for(const row of rows){if(row.status!=='fulfilled')continue;const m=profile.value.members.find(m=>m.id===row.value.id&&m.healthMemberId===row.value.healthId);if(m)m.reportStatus=row.value.status}return}
   const fresh = getProfile()
   for (const m of profile.value.members) {
     const updated = fresh.members.find(n => n.id === m.id)

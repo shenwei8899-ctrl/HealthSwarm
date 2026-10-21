@@ -32,6 +32,7 @@ let dailyVersion=0
 const dinerMeal=ref('晚餐'),dinersOpen=ref(false),planRevision=ref(0),communityOpen=ref(false),updateNote=ref('')
 const profile = ref(getProfile())
 const records = ref(getRecords())
+const cloudRoute = ref({})
 const input = ref('')
 const thinking = ref(false)
 const voiceMode = ref(false), voiceBusy = ref(false), voiceRef = ref(null)
@@ -65,6 +66,7 @@ const selectedDinerPlan=computed(()=>{planRevision.value;return todayPlan(profil
 const hasActivePaidPlan=computed(()=>{planRevision.value;return Boolean(activePlanOrder())})
 const prompts = computed(() => ['今晚全家吃什么？', '给我安排明天早餐', '看看我的饮食记录', '糖尿病家庭怎么吃？'])
 onLoad(options => {
+  cloudRoute.value = options
   if (!isMockMode) return
   caseFeedback.value = options.caseFeedback === 'diabetes'
   if (options.recordId) scheduleReply(() => { messages.value.push({ role:'assistant', recordId:options.recordId, text:'这餐吃下来怎么样？有什么想告诉我的吗？你可以用文字或语音补充。' }); scrollToLatestReply() }, 280)
@@ -298,7 +300,7 @@ function shortcut(key){if(key==='today')inlineTodayOpen.value=!inlineTodayOpen.v
 </script>
 
 <template>
-  <CloudNutritionChat v-if="!isMockMode"/>
+  <CloudNutritionChat v-if="!isMockMode" :route="cloudRoute"/>
 <NutritionistLayout v-else :voice-busy="voiceBusy" :scroll-target="scrollTarget" @history="showHistory" @profile="go('/pages/my/index')" @shortcut="shortcut"><template #default>
     <view class="today-card"><view class="today-top"><view><text class="eyebrow">{{today.getMonth()+1}}月{{today.getDate()}}日 · 今日安排</text><text class="section-title">好好吃饭，从今天开始</text></view><text class="test-badge">{{isCommerceEnabled?'服务端餐单':'测试数据'}}</text></view><view class="today-meals"><view v-for="item in dailyPlans" :key="item.route" class="daily-meal-row"><view class="meal-card-head"><text class="meal-name">{{item.name}}</text><button v-if="!isCommerceEnabled" class="diner-capsule" @click="changeDiners(item)"><AppIcon name="family" :size="26"/> {{item.plan.count}}人用餐</button></view><text class="meal-summary">{{item.summary}}</text><view class="meal-foot"><text class="meal-source">{{item.plan.source}}</text><button class="meal-link" @click="openDailyMeal(item)">查看本餐安排 ›</button></view></view></view><button v-if="!hasActivePaidPlan" class="daily-buy" @click="go(isCommerceEnabled?'/pages/shop/index?commerce=1':'/pages/shop/index?daily=1')">{{isCommerceEnabled?'选购商城食材':'一键采购'}} <text>↗</text></button></view>
     <text v-if="menuBusy" class="safe-note">正在分析本餐建议…</text><view v-if="menuError" class="card"><text class="inline-error">{{menuError}}</text><button @click="refreshDailyMenus">重试分析</button></view>

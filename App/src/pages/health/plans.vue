@@ -3,12 +3,13 @@ import { reactive, ref } from 'vue'
 import { onLoad, onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import AppNavBar from '../../components/AppNavBar.vue'
 import { createHealthPlanClient, healthPlanState } from '../../services/health-plan-client.js'
+const initialPlan=ref('');
 const state = reactive(healthPlanState()), memberId = ref(''), replace = ref(false), reason = ref('')
 const client = createHealthPlanClient({ state })
 const reviewNames = { approved: '已专业批准', not_reviewed: '尚未专业审核', submitted: '待审核', returned: '需补充资料', invalidated: '原批准已失效' }
 const meals = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐' }
-onLoad(options => { memberId.value = options.memberId || '' })
-onShow(() => { replace.value = false; reason.value = ''; void client.open(memberId.value) })
+onLoad(options => { memberId.value = options.memberId || '';initialPlan.value=options.planId||'' })
+onShow(() => { replace.value = false; reason.value = ''; void client.open(memberId.value).then(()=>{const plan=state.plans.find(p=>p.plan_id===initialPlan.value);if(plan)void client.detail(plan)}) })
 onHide(() => client.discard()); onUnload(() => client.discard())
 function select(row) { replace.value = false; reason.value = ''; void client.detail(row) }
 </script>

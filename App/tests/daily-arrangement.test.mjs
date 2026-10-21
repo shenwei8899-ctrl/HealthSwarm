@@ -127,5 +127,5 @@ test('formal UI places the real analysis before the gated card and has no placeh
   assert.ok(ui.indexOf('class="analysis-message"')<ui.indexOf('<DailyArrangementCard'))
   assert.match(ui,/v-if="cardVisible && state.phase==='ready'"/)
   assert.ok(!ui.includes('本餐有待处理的饮食问题'));assert.ok(!ui.includes('测试数据'))
-  assert.ok(!/#[0-9a-f]*246b50/i.test(ui))
+  assert.ok(ui.includes('/pages/chat/camera'));assert.ok(ui.includes('/pages/scan/index'))
 })

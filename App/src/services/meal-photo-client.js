@@ -1,4 +1,5 @@
 import { request } from './request.js'
+import { readDietRecord } from './cloud-meals.js'
 import { uploadMealPhoto } from './health-upload.js'
 import { sessionRevision } from './session.js'
 import { scopedStorage } from './storage.js'
@@ -60,7 +61,7 @@ export function createMealPhotoClient({ state, send = request, upload = uploadMe
     if (pending.operation === 'patch') { Object.assign(state, { draft: value, meal: clone(value.payload), dirty: false, calculation: null }); checkpoint() }
     if (pending.operation === 'confirm') {
       state.saved = { id: value.target_ids[0] }; state.calculation = null; state.draft.review_status = 'confirmed'; checkpoint()
-      const saved = (await send({ path: `${root}/members/${state.memberId}/diet-logs/${state.saved.id}/detail` })).data
+      const saved = await readDietRecord(state.memberId,state.saved.id,send)
       if (!current()) return
       state.saved = saved
       state.notice = '已保存为正式饮食记录，可在饮食记录中查看。'

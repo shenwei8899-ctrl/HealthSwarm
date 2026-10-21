@@ -1,9 +1,27 @@
 <script setup>
 import { ref } from 'vue'
 import { newHealthRequestId } from '../services/health-task-flow.js'
-const props = defineProps({ meal: { type: Object, required: true }, disabled: Boolean, recipes: { type: Array, default: () => [] } })
+const props = defineProps({ meal: { type: Object, required: true }, disabled: Boolean, coarse: Boolean, recipes: { type: Array, default: () => [] } })
 const emit = defineEmits(['search'])
 const query = ref(''), mapping = ref(-1)
+const portions=['少量','一般','较多','不确定']
+function portion(item){return (item.uncertainties||[]).find(x=>x.startsWith('本人粗略份量：'))?.slice(7)||'不确定'}
+function setPortion(item,value){item.uncertainties=[...(item.uncertainties||[]).filter(x=>!x.startsWith('本人粗略份量：')),'本人粗略份量：'+value]}
+function rename(item){item.food_id=null;item.recipe_version_id=null;item.portion_reference_id=null;item.portion_count=null}
+function gramsValue(item) {
+  if (!props.coarse) return item.grams
+  if (item.grams == null || item.grams === '' || item.share_ratio == null) return ''
+  return Number(item.grams) * Number(item.share_ratio)
+}
+function changeGrams(item, value) {
+  if (props.disabled || item.portion_reference_id) return
+  item.grams = value
+  item.portion_source = 'manual'
+  if (props.coarse) {
+    item.share_ratio = value === '' ? null : 1
+    if (value === '') item.portion_source = 'unknown'
+  }
+}
 const types = ['breakfast', 'lunch', 'dinner', 'snack'], names = ['早餐', '午餐', '晚餐', '加餐']
 function localTime() {
   const time = Date.parse(props.meal.eaten_at)
@@ -30,8 +48,9 @@ function mapRecipe(recipe) {
     <view class="editor-row"><picker mode="date" :value="localTime().slice(0,10)" :disabled="disabled" @change="changeTime('date',$event.detail.value)"><view class="field-input">{{localTime().slice(0,10)}} ›</view></picker><picker mode="time" :value="localTime().slice(11,16)" :disabled="disabled" @change="changeTime('time',$event.detail.value)"><view class="field-input">{{localTime().slice(11,16)}} ›</view></picker></view>
     <picker :range="names" :value="types.indexOf(meal.meal_type)" :disabled="disabled" @change="meal.meal_type=types[$event.detail.value]"><view class="field-input">{{names[types.indexOf(meal.meal_type)]}} ›</view></picker>
     <view v-for="(item,index) in meal.items" :key="item.item_id" class="meal-item">
-      <input v-model="item.name" class="field-input" maxlength="120" :disabled="disabled" placeholder="菜品或食物名称"/>
-      <view class="editor-row"><label>可食克数<input v-model="item.grams" type="digit" class="field-input" :disabled="disabled||!!item.portion_reference_id" placeholder="未知留空" @input="item.portion_source='manual'"/></label><label>个人比例（0～1）<input v-model="item.share_ratio" type="digit" class="field-input" :disabled="disabled" placeholder="未知留空"/></label></view>
+      <input v-model="item.name" class="field-input" maxlength="120" :disabled="disabled" placeholder="菜品或食物名称" @input="rename(item)"/>
+      <picker v-if="coarse" :range="portions" :disabled="disabled" @change="setPortion(item,portions[$event.detail.value])"><view class="field-input">粗略份量：{{portion(item)}} ›</view></picker>
+      <view class="editor-row"><label>{{coarse?'实际克数（选填）':'可食克数'}}<input :value="gramsValue(item)" type="digit" class="field-input" :disabled="disabled||!!item.portion_reference_id" placeholder="未知留空" @input="changeGrams(item,$event.detail.value)"/></label><label v-if="!coarse">个人比例（0～1）<input v-model="item.share_ratio" type="digit" class="field-input" :disabled="disabled" placeholder="未知留空"/></label></view>
       <text v-if="item.portion_reference_id" class="safe-note">当前使用已发布份量参考，可更换菜谱后填写实际克数。</text>
       <label><switch :checked="!item.excluded" :disabled="disabled" @change="item.excluded=!$event.detail.value"/>本次实际吃了这一项</label>
       <button class="secondary-button" :disabled="disabled" @click="mapping=index;emit('search','')">选择 / 更换已发布菜谱</button>

@@ -1,4 +1,6 @@
 <script setup>
+const props=defineProps({editId:String,newAddress:Boolean});
+let opened=false;
 const back = () => uni.navigateBack();
 import { ref, computed, onMounted } from "vue";
 import { onShow } from "@dcloudio/uni-app";
@@ -39,7 +41,7 @@ const { busy, error, run } = useCommercePage(() => {
 function load() {
   return run(async (active) => {
     const [result, directory] = await Promise.all([commerce.addresses(), commerce.areas()]);
-    if (active()) { addresses.value = result; regions.value = directory; }
+    if (active()) { addresses.value = result; regions.value = directory; if(!opened&&(props.editId||props.newAddress)){const target=props.editId?result.find(a=>String(a.id)===props.editId):null;if(props.editId&&!target)throw new Error('地址不存在，请返回重新选择');edit(target);opened=true} }
   });
 }
 onMounted(load);

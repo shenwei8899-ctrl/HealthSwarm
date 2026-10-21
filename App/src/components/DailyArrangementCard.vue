@@ -1,12 +1,12 @@
 <script setup>
-defineProps({ arrangement: Object, disabled: Boolean })
+defineProps({ arrangement: Object, disabled: Boolean, family: Boolean })
 defineEmits(['open', 'members', 'shop'])
 const names = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐' }
 </script>
 
 <template>
   <view class="daily-arrangement-card">
-    <view class="daily-heading"><view><text class="eyebrow">{{arrangement.date}} · 今日安排</text><text class="section-title">好好吃饭，从今天开始</text></view><text class="saved-label">服务端餐单</text></view>
+    <view class="daily-heading"><view><text class="eyebrow">{{arrangement.date}} · {{family?'家庭安排':'今日安排'}}</text><text class="section-title">{{family?'按成员核对每一餐':'好好吃饭，从今天开始'}}</text></view><text class="saved-label">服务端餐单</text></view>
     <view v-for="meal in arrangement.meals" :key="meal.type" class="daily-row">
       <view class="meal-heading"><text>{{names[meal.type]}}</text><button :disabled="disabled" class="people-button" @click="$emit('members',meal)">{{meal.members.length}} 人用餐 <text>⌄</text></button></view>
       <text class="dish-summary">{{meal.dishes.map(dish=>dish.name).join(' · ')}}</text>

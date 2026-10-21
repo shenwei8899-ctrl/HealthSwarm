@@ -1,4 +1,8 @@
 <script setup>
+import CloudMealCapture from '../../components/CloudMealCapture.vue'
+import { isMockMode } from '../../services/config.js'
+const cloudRoute=ref({});
+onLoad(options=>{cloudRoute.value=options})
 import CommerceMealRecord from '../../components/CommerceMealRecord.vue'
 import CommerceAccess from '../../components/CommerceAccess.vue'
 const commerceOrderId=ref(''),commerceFlow=ref(false)
@@ -195,7 +199,8 @@ function help() {
 }
 </script>
 <template>
-  <CommerceAccess v-if="commerceFlow"><CommerceMealRecord :id="commerceOrderId"/></CommerceAccess>
+  <CloudMealCapture v-if="!isMockMode" :route="cloudRoute"/>
+  <CommerceAccess v-else-if="commerceFlow"><CommerceMealRecord :id="commerceOrderId"/></CommerceAccess>
   <view v-else class="screen scan-screen">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="goBack">‹</button><text class="nav-title">拍照记一餐</text><button class="icon-button" aria-label="估算说明" @click="help">?</button></view></AppNavBar>
     <FlowRibbon :current="6" class="scan-flow" />
