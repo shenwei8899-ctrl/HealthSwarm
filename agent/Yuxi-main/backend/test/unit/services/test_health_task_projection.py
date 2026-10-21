@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from yuxi.repositories import health_task_repository as repository
 from yuxi.repositories.health_task_repository import HealthTaskRepository
 from yuxi.services import health_task_service as service
+from yuxi.services import health_family_kb_service
 from yuxi.services.health_task_types import HealthTaskEntryInput, HealthTaskResult
 from yuxi.services.health_agent_personal_target_types import TargetAwareAnalystInput
 from yuxi.services.health_purchase_types import PurchaseSelection
@@ -410,6 +411,7 @@ async def test_completed_needs_input_is_not_interrupted_or_validated_result(monk
 @pytest.mark.asyncio
 async def test_ordinary_questions_require_whole_current_boundary(monkeypatch):
     """存在合法问题不能夹带模型自报批准或营养。"""
+    monkeypatch.setattr(health_family_kb_service, "validate_family_kb_answer", AsyncMock())
     run = SimpleNamespace(agent_slug="health-meal-planner")
     binding = SimpleNamespace(
         initial_planner_selection=None, family_planner_selection=None, safe_planner_selection=None
@@ -425,6 +427,7 @@ async def test_ordinary_questions_require_whole_current_boundary(monkeypatch):
 @pytest.mark.parametrize("case", ["run", "member", "source", "final"])
 async def test_ordinary_preview_requires_current_same_run_receipt_and_full_projection(monkeypatch, case):
     """模型保留合法回执ID也不能改营养，邻Run回执不能重用。"""
+    monkeypatch.setattr(health_family_kb_service, "validate_family_kb_answer", AsyncMock())
     preview_id, recipe_id = str(uuid4()), str(uuid4())
     spec = {
         "plan_date": "2026-10-10",

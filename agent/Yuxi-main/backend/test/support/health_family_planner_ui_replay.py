@@ -73,6 +73,7 @@ def _third_participation_delta(authorization, body, query, token):
         "preview_family_plan_swap",
         "preview_family_plan_regeneration",
         "preview_family_plan_participation",
+        "query_family_nutrition_knowledge",
     }:
         raise ValueError("fixed_family_tools_required")
     messages = body.get("messages", [])

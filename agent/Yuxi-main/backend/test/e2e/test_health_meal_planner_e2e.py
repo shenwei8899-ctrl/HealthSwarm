@@ -2,10 +2,12 @@
 
 import json
 import os
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+import pytest_asyncio
+from sqlalchemy import select, delete
 
 from test.e2e.test_health_consultation_e2e import collect_sse, drain_requests, isolated_health  # noqa: F401
 from test.integration.services.test_health_vision_http import ROOT, create_member, health_http  # noqa: F401
@@ -16,6 +18,7 @@ from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import AgentRun, AgentRunRequest, Message
 from yuxi.storage.postgres.models_health import DietLog, HealthMealPlan, HealthMealPlanPreview
+from yuxi.storage.postgres.models_knowledge import KnowledgeBase, KnowledgeFile, KnowledgeChunk
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -25,7 +28,72 @@ pytestmark = [
 ]
 
 
-async def test_planner_worker_authoritative_result_independent_consent_and_forged_receipts(isolated_health):  # noqa: F811
+@pytest_asyncio.fixture
+async def planner_recipe_library(isolated_health):  # noqa: F811
+    """固定隔离库用合成分片和本地向量，不调用外部嵌入。"""
+    from pymilvus import utility
+    from yuxi.knowledge.implementations.milvus import MilvusKB
+    from yuxi.knowledge.cache import delete_cached_kb_config
+
+    kb_id = "pytest_planner_recipes"
+    assert os.environ.get("HEALTH_RECIPE_KB_ID") == kb_id
+    executor = MilvusKB(work_dir=f"test/.tmp/planner-reference-{uuid4().hex}")
+    assert not utility.has_collection(kb_id, using=executor.connection_alias)
+    file_id, chunk_id = str(uuid4()), str(uuid4())
+    content = "syntheticrecipe steaming method only"
+    collection = None
+    created_kb = False
+    try:
+        async with pg_manager.get_async_session_context() as session:
+            assert await session.scalar(select(KnowledgeBase).where(KnowledgeBase.kb_id == kb_id)) is None
+            session.add(
+                KnowledgeBase(
+                    kb_id=kb_id, name=kb_id, kb_type="milvus", embedding_model_spec="siliconflow-cn:BAAI/bge-m3"
+                )
+            )
+            await session.flush()
+            session.add(
+                KnowledgeFile(
+                    file_id=file_id, kb_id=kb_id, filename="synthetic-recipe.md", status="indexed", content_hash="v1"
+                )
+            )
+            await session.flush()
+            session.add(KnowledgeChunk(chunk_id=chunk_id, file_id=file_id, kb_id=kb_id, chunk_index=0, content=content))
+            await session.commit()
+            created_kb = True
+        await delete_cached_kb_config(kb_id)
+        collection = executor._create_new_collection(
+            kb_id, SimpleNamespace(dimension=1024, model_id="BAAI/bge-m3"), kb_id
+        )
+        collection.insert(
+            [
+                {
+                    "id": chunk_id,
+                    "content": content,
+                    "chunk_id": chunk_id,
+                    "file_id": file_id,
+                    "chunk_index": 0,
+                    "embedding": [0.0] * 1023 + [1.0],
+                }
+            ]
+        )
+        collection.flush()
+        collection.load()
+        yield chunk_id
+    finally:
+        if collection is not None:
+            collection.drop()
+        if created_kb:
+            async with pg_manager.get_async_session_context() as session:
+                await session.execute(delete(KnowledgeBase).where(KnowledgeBase.kb_id == kb_id))
+                await session.commit()
+            await delete_cached_kb_config(kb_id)
+
+
+async def test_planner_worker_authoritative_result_independent_consent_and_forged_receipts(
+    isolated_health,  # noqa: F811
+    planner_recipe_library,
+):
     """当前Run回执成功投影；伪造审核字段和跨Run回执都不能成功。"""
     client, users, configuration, consultation_model = isolated_health
     headers, admin = users[0]["headers"], users[2]["headers"]
@@ -113,6 +181,7 @@ async def test_planner_worker_authoritative_result_independent_consent_and_forge
             ("invalid", "failed"),
             ("foreign", "failed"),
             ("questions", "completed"),
+            ("reference", "completed"),
         ):
             token, request = uuid4().hex, str(uuid4())
             requests.append(request)
@@ -135,7 +204,7 @@ async def test_planner_worker_authoritative_result_independent_consent_and_forge
                 )
                 if expected_status == "completed":
                     assert output.run_id == run_id and output.id == result.json()["final_message_id"]
-                if mode == "valid":
+                if mode in {"valid", "reference"}:
                     final = json.loads(output.content)
                     assert final == json.loads(result.json()["output"])
                     assert final["nutrition"]["totals"]["energy_kcal"] == "300.00"
@@ -157,6 +226,22 @@ async def test_planner_worker_authoritative_result_independent_consent_and_forge
                         worker_id="expired-worker",
                         model=run.input_payload["health_processing"]["model"],
                     )
+                    if mode == "reference":
+                        audits = list(
+                            await session.scalars(
+                                select(Message).where(
+                                    Message.run_id == run_id,
+                                    Message.message_type == "tool_audit",
+                                    Message.extra_metadata["tool_name"].as_string()
+                                    == "query_family_nutrition_knowledge",
+                                )
+                            )
+                        )
+                        assert len(audits) == 1 and audits[0].execution_status == "completed"
+                        reference = json.loads(audits[0].content)
+                        assert reference["scope"] == "recipe_reference"
+                        assert reference["sources"][0]["chunk_id"] == planner_recipe_library
+                        reference_request, reference_answer = request, output.content
                 elif mode == "questions":
                     assert json.loads(output.content)["status"] == "needs_input"
                 else:
@@ -183,6 +268,14 @@ async def test_planner_worker_authoritative_result_independent_consent_and_forge
             json={"client_request_id": save_key, "preview_id": first_preview},
         )
         assert saved.status_code == 201 and saved.json()["version"] == 1, saved.text
+        async with pg_manager.get_async_session_context() as session:
+            chunk = await session.scalar(
+                select(KnowledgeChunk).where(KnowledgeChunk.chunk_id == planner_recipe_library)
+            )
+            chunk.content = "syntheticrecipe changed source"
+            await session.commit()
+        stale_task = await client.get(f"{ROOT}/tasks/{reference_request}", headers=headers)
+        assert stale_task.status_code == 410 and reference_answer not in stale_task.text, stale_task.text
     finally:
         await drain_requests(client, headers, requests)
         reset = await client.put(

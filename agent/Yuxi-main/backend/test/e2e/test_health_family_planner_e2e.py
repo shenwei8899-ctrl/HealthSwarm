@@ -68,6 +68,7 @@ async def test_family_worker_two_turns_four_tools_and_final_selector_guards(fami
                     "preview_family_plan_swap",
                     "preview_family_plan_regeneration",
                     "preview_family_plan_participation",
+                    "query_family_nutrition_knowledge",
                 ]
                 assert [s["slug"] for s in run.manifest["resources"]["skills"]] == ["family-meal-planner"]
                 assert run.input_payload["health_processing"]["family_selection_hash"]

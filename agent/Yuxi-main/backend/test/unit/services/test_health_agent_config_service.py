@@ -7,7 +7,7 @@ import pytest
 
 from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS
 from yuxi.services import health_agent_config_service as service
-from yuxi.services.health_family_kb_service import INDICATOR_KB_ENVS, KB_ID_ENV
+from yuxi.services.health_family_kb_service import INDICATOR_KB_ENVS, KB_ID_ENV, RECIPE_KB_ID_ENV
 
 
 def agent(slug="health-consultation"):
@@ -24,7 +24,10 @@ def kb(kb_id, name="当前库名", **kwargs):
     )
 
 
-@pytest.mark.parametrize("slug,env", [("health-consultation", KB_ID_ENV), *INDICATOR_KB_ENVS.items()])
+@pytest.mark.parametrize(
+    "slug,env",
+    [("health-consultation", KB_ID_ENV), ("health-meal-planner", RECIPE_KB_ID_ENV), *INDICATOR_KB_ENVS.items()],
+)
 async def test_uses_runtime_binding_and_fresh_names(monkeypatch, slug, env):
     monkeypatch.setenv(env, "fixed-library")
     rows = AsyncMock(return_value=[kb("fixed-library")])
@@ -66,7 +69,7 @@ async def test_invalid_config_reports_unconfigured_without_query(monkeypatch, va
     rows.assert_not_called()
 
 
-@pytest.mark.parametrize("slug", ["health-meal-planner", "health-diet-analyst", "health-quality", "health-purchase"])
+@pytest.mark.parametrize("slug", ["health-diet-analyst", "health-quality", "health-purchase"])
 async def test_structured_roles_report_business_sources(slug):
     result = await service.get_managed_knowledge(None, agent(slug), None)
     assert result["status"] == "business_data"

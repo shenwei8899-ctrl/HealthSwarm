@@ -66,7 +66,11 @@ async def test_initial_worker_two_turns_receipts_and_final_guards(initial_runtim
             async with pg_manager.get_async_session_context() as session:
                 run = await session.get(AgentRun, run_id)
                 assert run.request_id == key and run.agent_slug == "health-meal-planner"
-                assert run.manifest["resources"]["tools"] == ["get_initial_plan_context", "preview_initial_meal_plan"]
+                assert run.manifest["resources"]["tools"] == [
+                    "get_initial_plan_context",
+                    "preview_initial_meal_plan",
+                    "query_family_nutrition_knowledge",
+                ]
                 assert [s["slug"] for s in run.manifest["resources"]["skills"]] == ["family-meal-planner"]
                 assert run.input_payload["health_processing"]["initial_selection_hash"]
                 if status == "completed":

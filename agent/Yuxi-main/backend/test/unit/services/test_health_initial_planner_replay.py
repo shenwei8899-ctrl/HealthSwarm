@@ -12,7 +12,10 @@ def protocol():
     return {
         "model": MODEL,
         "stream": True,
-        "tools": [{"function": {"name": n}} for n in ("get_initial_plan_context", "preview_initial_meal_plan")],
+        "tools": [
+            {"function": {"name": n}}
+            for n in ("get_initial_plan_context", "preview_initial_meal_plan", "query_family_nutrition_knowledge")
+        ],
         "messages": [
             {"role": "system", "content": "slug: family-meal-planner 初始"},
             {"role": "user", "content": "INITIAL_PLANNER_E2E:" + "a" * 32 + ":ready"},
@@ -20,8 +23,8 @@ def protocol():
     }
 
 
-def test_replay_only_two_tools():
-    """额外资源失败，恢复两工具可请求当前上下文。"""
+def test_replay_only_business_and_reference_tools():
+    """额外写入资源失败，固定业务和参考工具可请求当前上下文。"""
     body = protocol()
     body["tools"].append({"function": {"name": "save_plan"}})
     with pytest.raises(ValueError, match="fixed_initial_tools_required"):

@@ -45,7 +45,7 @@ def safe_execution(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_runtime_discards_user_resources_and_only_installs_three_safe_tools(safe_execution):
+async def test_runtime_discards_user_resources_and_installs_safe_tools_with_recipe_reference(safe_execution):
     """未受信任工具、Skill、模型与系统文字不能扩大该模式。"""
     context, run, _, session = safe_execution
     context.tools = ["search_meal_plan_recipes", "forged_write_tool"]
@@ -54,7 +54,12 @@ async def test_runtime_discards_user_resources_and_only_installs_three_safe_tool
     context.system_prompt = "forged prompt"
     context.model = "forged/model"
     await consultation.prepare_consultation_context(context, session, run)
-    assert context.tools == ["get_safe_plan_context", "preview_safe_plan_swap", "preview_safe_plan_regeneration"]
+    assert context.tools == [
+        "get_safe_plan_context",
+        "preview_safe_plan_swap",
+        "preview_safe_plan_regeneration",
+        "query_family_nutrition_knowledge",
+    ]
     assert context.model == "synthetic/fixed"
     assert context.skills == context.preload_skills == ["family-meal-planner"]
     assert context.knowledges == context.mcps == []
