@@ -27,7 +27,7 @@ def test_indicator_tool_is_in_graph_context_and_skill(role):
     assert service.TOOL_NAME in INDICATOR_TOOLS[role]
     assert "[资料:source_id]" in INDICATOR_PROMPTS[role]
     assert "个人目标、治疗或配餐依据" in INDICATOR_PROMPTS[role]
-    assert "2026.10.20.1" in str(INDICATOR_SKILL_SNAPSHOTS[role])
+    assert "2026.10.21.1" in str(INDICATOR_SKILL_SNAPSHOTS[role])
 
 
 @pytest.mark.parametrize("role", ROLES)
