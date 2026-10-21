@@ -10,6 +10,11 @@ from yuxi.storage.postgres.models_knowledge import KnowledgeBase
 
 
 class KnowledgeBaseRepository:
+    async def get_by_ids(self, session, kb_ids: tuple[str, ...]) -> list[KnowledgeBase]:
+        """在调用方事务内读取固定绑定的当前知识库元数据。"""
+        result = await session.scalars(select(KnowledgeBase).where(KnowledgeBase.kb_id.in_(kb_ids)))
+        return list(result.all())
+
     async def count_by_type(self) -> list[tuple[str, int]]:
         """按知识库类型聚合数量。"""
         async with pg_manager.get_async_session_context() as session:

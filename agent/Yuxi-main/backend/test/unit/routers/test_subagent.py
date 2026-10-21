@@ -42,7 +42,7 @@ class _ListRepo:
     get_definition_calls: list[str] = []
 
     def __init__(self, _db):
-        pass
+        self.db = _db
 
     async def ensure_default_agent(self):
         return self.items[0]
