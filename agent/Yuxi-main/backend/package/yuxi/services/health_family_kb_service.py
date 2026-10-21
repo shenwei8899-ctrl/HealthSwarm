@@ -18,6 +18,7 @@ from yuxi.repositories.health_consultation_repository import (
     GLUCOSE_SLUG,
     LIPIDS_SLUG,
     PRESSURE_SLUG,
+    PLANNER_SLUG,
     EDUCATION_HEALTH_AGENTS,
     HealthConsultationRepository,
 )
@@ -30,6 +31,8 @@ from yuxi.utils.datetime_utils import format_utc_datetime
 
 TOOL_NAME = "query_family_nutrition_knowledge"
 KB_ID_ENV = "HEALTH_FAMILY_NUTRITION_KB_ID"
+RECIPE_KB_ID_ENV = "HEALTH_RECIPE_KB_ID"
+KNOWLEDGE_HEALTH_AGENTS = EDUCATION_HEALTH_AGENTS | {PLANNER_SLUG}
 INDICATOR_KB_ENVS = {
     GLUCOSE_SLUG: "HEALTH_BLOOD_GLUCOSE_KB_IDS",
     LIPIDS_SLUG: "HEALTH_BLOOD_LIPIDS_KB_IDS",
@@ -84,7 +87,7 @@ async def search_family_nutrition_knowledge(context, query: str) -> dict:
     async with pg_manager.get_async_session_context() as session:
         run, _ = await _authorized_run(session, context)
         agent_slug = run.agent_slug
-        kb_ids = configured_education_kb_ids(agent_slug)
+        kb_ids = configured_health_kb_ids(agent_slug)
         for kb_id in kb_ids:
             await _require_fixed_kb(session, kb_id)
 
@@ -110,7 +113,7 @@ async def search_family_nutrition_knowledge(context, query: str) -> dict:
         raise HealthVisionError("knowledge_unavailable", "家庭营养科普资料暂不可用，请稍后再试", 503) from error
     async with pg_manager.get_async_session_context() as session:
         current_run, _ = await _authorized_run(session, context)
-        if current_run.agent_slug != agent_slug or configured_education_kb_ids(agent_slug) != kb_ids:
+        if current_run.agent_slug != agent_slug or configured_health_kb_ids(agent_slug) != kb_ids:
             raise HealthVisionError("source_invalidated", "科普知识库绑定已变化，请重新检索", 410)
         for kb_id in kb_ids:
             await _require_fixed_kb(session, kb_id)
@@ -152,7 +155,7 @@ async def search_family_nutrition_knowledge(context, query: str) -> dict:
 
     return {
         "status": "ok" if sources else "insufficient_material",
-        "scope": "general_education",
+        "scope": "recipe_reference" if agent_slug == PLANNER_SLUG else "general_education",
         "query": query,
         **({"kb_id": kb_ids[0]} if agent_slug == CONSULTATION_SLUG else {"kb_ids": list(kb_ids)}),
         "sources": sources,
@@ -176,7 +179,7 @@ async def validate_family_kb_checkpoint(session, context, binding, tool_message)
                 AgentRun.conversation_id == binding.conversation_id,
                 AgentRun.conversation_thread_id == context.thread_id,
                 AgentRun.uid == context.uid,
-                AgentRun.agent_slug.in_(EDUCATION_HEALTH_AGENTS),
+                AgentRun.agent_slug.in_(KNOWLEDGE_HEALTH_AGENTS),
             )
         )
     ).all()
@@ -222,7 +225,7 @@ async def validate_family_kb_audit(session, audit) -> bool:
             AgentRun.id == audit.run_id,
             AgentRun.conversation_id == audit.conversation_id,
             AgentRun.request_id == audit.request_id,
-            AgentRun.agent_slug.in_(EDUCATION_HEALTH_AGENTS),
+            AgentRun.agent_slug.in_(KNOWLEDGE_HEALTH_AGENTS),
             Conversation.agent_id == AgentRun.agent_slug,
             Conversation.uid == AgentRun.uid,
             Conversation.thread_id == AgentRun.conversation_thread_id,
@@ -272,6 +275,16 @@ async def validate_family_kb_model_answer(context, content: str) -> None:
         await _validate_answer_sources(session, run, binding, content, require_tool_audit=True)
 
 
+def configured_health_kb_ids(agent_slug: str) -> tuple[str, ...]:
+    """配餐资料独立绑定，其他角色沿用既有科普范围。"""
+    if agent_slug != PLANNER_SLUG:
+        return configured_education_kb_ids(agent_slug)
+    kb_id = os.getenv(RECIPE_KB_ID_ENV, "").strip()
+    if not kb_id or "," in kb_id:
+        raise HealthVisionError("knowledge_unavailable", "菜谱资料库尚未正确配置", 503)
+    return (kb_id,)
+
+
 def configured_family_kb_id() -> str:
     """配置缺失时拒绝检索，不按名称猜测或回退到其他知识库。"""
     kb_id = os.getenv(KB_ID_ENV, "").strip()
@@ -298,7 +311,7 @@ async def _authorized_run(session, context):
     from yuxi.services.health_consultation_service import require_consultation
 
     run = await HealthConsultationRepository(session).require_attempt(context, lock=True)
-    if run.agent_slug not in EDUCATION_HEALTH_AGENTS:
+    if run.agent_slug not in KNOWLEDGE_HEALTH_AGENTS:
         raise HealthVisionError("not_found", "科普工具仅用于成员咨询与指标助手", 404)
     snapshot = (run.input_payload or {}).get("health_processing")
     if not snapshot:
@@ -339,7 +352,7 @@ async def _validate_payload(
 ) -> list[dict]:
     """逐片段重读 PG 来源，拒绝审计正文篡改、改版与失效文件。"""
     try:
-        kb_ids = configured_education_kb_ids(agent_slug)
+        kb_ids = configured_health_kb_ids(agent_slug)
         for kb_id in kb_ids:
             await _require_fixed_kb(session, kb_id)
     except HealthVisionError as error:
@@ -352,7 +365,7 @@ async def _validate_payload(
         not isinstance(payload, dict)
         or set(payload) != {"status", "scope", "query", scope_key, "sources"}
         or payload[scope_key] != scope_value
-        or payload["scope"] != "general_education"
+        or payload["scope"] != ("recipe_reference" if agent_slug == PLANNER_SLUG else "general_education")
         or not isinstance(payload["query"], str)
         or not 1 <= len(payload["query"].strip()) <= 120
         or not isinstance(payload["sources"], list)
@@ -411,14 +424,25 @@ async def _validate_answer_sources(
     lock_sources: bool = False,
 ) -> None:
     """按同 Run 持久工具回执校验独立资料标识和当前来源。"""
-    if run.agent_slug not in EDUCATION_HEALTH_AGENTS:
+    if run.agent_slug not in KNOWLEDGE_HEALTH_AGENTS:
         if isinstance(content, str) and "[资料:" in content:
             raise HealthVisionError("citation_invalid", "该角色不能引用家庭营养知识库", 409)
         return
     if not isinstance(content, str):
         raise HealthVisionError("answer_invalid", "营养咨询答复必须为文本", 409)
-    env_name = KB_ID_ENV if run.agent_slug == CONSULTATION_SLUG else INDICATOR_KB_ENVS[run.agent_slug]
-    if not require_tool_audit and not os.getenv(env_name, "").strip() and "[资料:" not in content:
+    env_name = (
+        RECIPE_KB_ID_ENV
+        if run.agent_slug == PLANNER_SLUG
+        else KB_ID_ENV
+        if run.agent_slug == CONSULTATION_SLUG
+        else INDICATOR_KB_ENVS[run.agent_slug]
+    )
+    if (
+        run.agent_slug != PLANNER_SLUG
+        and not require_tool_audit
+        and not os.getenv(env_name, "").strip()
+        and "[资料:" not in content
+    ):
         return
     marker_ids = SOURCE_MARKER.findall(content)
     if content.count("[资料:") != len(marker_ids):
@@ -453,6 +477,11 @@ async def _validate_answer_sources(
             sources_by_id[source["source_id"]] = source
     if require_tool_audit and not saw_audit:
         raise HealthVisionError("source_invalidated", "家庭科普工具回执缺失", 410)
+    if run.agent_slug == PLANNER_SLUG:
+        # 配餐只发布程序回执；文档来源保留在工具审计，不伪装成已批准菜谱。
+        if marker_ids:
+            raise HealthVisionError("citation_invalid", "菜谱参考片段不能充当餐单批准依据", 409)
+        return
     if retrieved and not marker_ids:
         raise HealthVisionError("citation_invalid", "答复缺少本轮家庭资料引用", 409)
     for source_id in marker_ids:

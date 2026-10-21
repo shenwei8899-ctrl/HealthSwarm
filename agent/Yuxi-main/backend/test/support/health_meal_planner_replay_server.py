@@ -15,6 +15,7 @@ def replay_delta(authorization, body):
     if {t.get("function", {}).get("name") for t in body.get("tools", [])} != {
         "search_meal_plan_recipes",
         "preview_meal_plan",
+        "query_family_nutrition_knowledge",
     }:
         raise ValueError("fixed_tools_required")
     messages = body.get("messages", [])
@@ -22,7 +23,7 @@ def replay_delta(authorization, body):
         raise ValueError("fixed_skill_required")
     user = next((m for m in reversed(messages) if m.get("role") == "user"), {})
     match = re.fullmatch(
-        r"HEALTH_MEAL_PLANNER_E2E:([0-9a-f]{32}):(valid|invalid|foreign|questions)(?::([0-9a-f-]{36}))?",
+        r"HEALTH_MEAL_PLANNER_E2E:([0-9a-f]{32}):(valid|invalid|foreign|questions|reference)(?::([0-9a-f-]{36}))?",
         str(user.get("content", "")),
     )
     if not match:
@@ -30,12 +31,37 @@ def replay_delta(authorization, body):
     token, mode, foreign = match.groups()
     if mode == "questions":
         return {"role": "assistant", "content": json.dumps({"questions": ["合成测试：计划日期是什么？"]})}, True
-    search_id, preview_id = f"search-{token}", f"preview-{token}"
+    search_id, preview_id, reference_id = f"search-{token}", f"preview-{token}", f"reference-{token}"
     outputs = {
         m.get("tool_call_id"): json.loads(m["content"])
         for m in messages
-        if m.get("role") == "tool" and m.get("tool_call_id") in {search_id, preview_id}
+        if m.get("role") == "tool" and m.get("tool_call_id") in {search_id, preview_id, reference_id}
     }
+    if mode == "reference" and reference_id not in outputs:
+        return {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": reference_id,
+                    "type": "function",
+                    "function": {
+                        "name": "query_family_nutrition_knowledge",
+                        "arguments": json.dumps({"query": "syntheticrecipe"}),
+                    },
+                }
+            ],
+        }, False
+    if mode == "reference":
+        reference = outputs[reference_id]
+        if (
+            reference.get("scope") != "recipe_reference"
+            or reference.get("kb_ids") != ["pytest_planner_recipes"]
+            or len(reference.get("sources", [])) != 1
+        ):
+            raise ValueError("actual_recipe_reference_required")
+        if reference["sources"][0]["content"] != "syntheticrecipe steaming method only":
+            raise ValueError("synthetic_recipe_reference_required")
     if preview_id in outputs:
         result = outputs[preview_id]
         if (

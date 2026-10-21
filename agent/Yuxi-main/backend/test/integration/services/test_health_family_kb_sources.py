@@ -411,7 +411,8 @@ async def test_persisted_family_source_is_required_and_invalidates_after_reindex
         await _drop_isolated_schema(schema, admin_engine, engine)
 
 
-async def test_publication_holds_source_share_locks_until_transaction_finishes(monkeypatch):
+@pytest.mark.parametrize("agent_slug", ["health-consultation", "health-meal-planner"])
+async def test_publication_holds_source_share_locks_until_transaction_finishes(monkeypatch, agent_slug):
     """发布事务结束前，来源文件改写和分片删除都必须被真实 PG 行锁阻塞。"""
     schema, admin_engine, engine, manager = await _create_isolated_manager("pytest_health_family_kb_lock")
     writers: list[asyncio.Task] = []
@@ -422,7 +423,7 @@ async def test_publication_holds_source_share_locks_until_transaction_finishes(m
         uid, project_id, thread_id, run_id, request_id = [str(uuid4()) for _ in range(5)]
         kb_id, file_id, chunk_id, source_id = [str(uuid4()) for _ in range(4)]
         tool_call_id = str(uuid4())
-        monkeypatch.setenv(service.KB_ID_ENV, kb_id)
+        monkeypatch.setenv(service.RECIPE_KB_ID_ENV if agent_slug == service.PLANNER_SLUG else service.KB_ID_ENV, kb_id)
 
         async with sessions.begin() as session:
             session.add(User(uid=uid, username=uid, password_hash="synthetic"))
@@ -438,9 +439,7 @@ async def test_publication_holds_source_share_locks_until_transaction_finishes(m
             )
             session.add(KnowledgeBase(kb_id=kb_id, name="合成家庭营养库", kb_type="milvus"))
             await session.flush()
-            conversation = Conversation(
-                uid=uid, thread_id=thread_id, agent_id="health-consultation", project_id=project_id
-            )
+            conversation = Conversation(uid=uid, thread_id=thread_id, agent_id=agent_slug, project_id=project_id)
             session.add(conversation)
             await session.flush()
             file = KnowledgeFile(
@@ -465,7 +464,7 @@ async def test_publication_holds_source_share_locks_until_transaction_finishes(m
                 conversation_id=conversation.id,
                 conversation_thread_id=thread_id,
                 runtime_scope_id=thread_id,
-                agent_slug="health-consultation",
+                agent_slug=agent_slug,
                 uid=uid,
                 status="completed",
                 request_id=request_id,
@@ -476,9 +475,9 @@ async def test_publication_holds_source_share_locks_until_transaction_finishes(m
             source = service._project_source(kb_id, file, chunk, source_id)
             payload = {
                 "status": "ok",
-                "scope": "general_education",
+                "scope": "recipe_reference" if agent_slug == service.PLANNER_SLUG else "general_education",
                 "query": "发布锁一般科普",
-                "kb_id": kb_id,
+                **({"kb_ids": [kb_id]} if agent_slug == service.PLANNER_SLUG else {"kb_id": kb_id}),
                 "sources": [source],
             }
             payload_json = json.dumps(payload, ensure_ascii=False)
@@ -501,6 +500,8 @@ async def test_publication_holds_source_share_locks_until_transaction_finishes(m
             )
 
         answer = f"一般科普资料参见《{source['filename']}》[资料:{source_id}]"
+        if agent_slug == service.PLANNER_SLUG:
+            answer = json.dumps({"questions": ["请选择已发布菜谱"]})
         binding = SimpleNamespace(conversation_id=conversation.id, actor_uid=uid)
         writer_started = {name: asyncio.Event() for name in ("file", "chunk")}
         writer_committed = {name: asyncio.Event() for name in ("file", "chunk")}

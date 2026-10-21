@@ -840,6 +840,9 @@ async def save_messages_from_langgraph_state(
 
                     await validate_evidence_publication(conv_repo.db, locked_run, last_ai_message.content)
                 if complete_run and locked_run.agent_slug == PLANNER_SLUG:
+                    from yuxi.services.health_evidence_service import validate_evidence_publication
+
+                    await validate_evidence_publication(conv_repo.db, locked_run, last_ai_message.content)
                     from yuxi.services.health_family_planner_service import validate_family_planner_publication
 
                     await validate_family_planner_publication(conv_repo.db, locked_run, last_ai_message.content)

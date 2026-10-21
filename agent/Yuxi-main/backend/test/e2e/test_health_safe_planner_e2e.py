@@ -123,6 +123,7 @@ async def test_safe_worker_two_turn_checkpoint_three_tools_and_current_receipt_s
                     "get_safe_plan_context",
                     "preview_safe_plan_swap",
                     "preview_safe_plan_regeneration",
+                    "query_family_nutrition_knowledge",
                 ]
                 assert [skill["slug"] for skill in run.manifest["resources"]["skills"]] == ["family-meal-planner"]
                 assert len(run.input_payload["health_processing"]["safe_selection_hash"]) == 64

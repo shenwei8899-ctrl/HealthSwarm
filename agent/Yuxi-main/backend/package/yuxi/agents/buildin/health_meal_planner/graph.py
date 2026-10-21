@@ -19,6 +19,7 @@ from yuxi.agents.toolkits.meal_planner import (
     get_initial_plan_context,
     preview_initial_meal_plan,
 )
+from yuxi.agents.toolkits.health import query_family_nutrition_knowledge
 from yuxi.services.health_family_planner_types import FAMILY_PLANNER_TOOLS
 from yuxi.services.health_initial_meal_plan_types import INITIAL_PLANNER_TOOLS
 from yuxi.services.health_safe_planner_types import SAFE_PLANNER_TOOLS
@@ -64,21 +65,24 @@ class HealthMealPlannerAgent(BaseAgent):
         if not getattr(context, "_runtime_prepared", False):
             raise ValueError("构图需要已准备的 Context")
         await require_consultation_attempt(context)
-        if tuple(context.tools) == SAFE_PLANNER_TOOLS:
+        planner_tools = [name for name in context.tools if name != "query_family_nutrition_knowledge"]
+        if tuple(planner_tools) == SAFE_PLANNER_TOOLS:
             tools = [get_safe_plan_context, preview_safe_plan_swap, preview_safe_plan_regeneration]
-        elif tuple(context.tools) == INITIAL_PLANNER_TOOLS:
+        elif tuple(planner_tools) == INITIAL_PLANNER_TOOLS:
             tools = [get_initial_plan_context, preview_initial_meal_plan]
-        elif tuple(context.tools) == FAMILY_PLANNER_TOOLS:
+        elif tuple(planner_tools) == FAMILY_PLANNER_TOOLS:
             tools = [
                 get_family_plan_context,
                 preview_family_plan_swap,
                 preview_family_plan_regeneration,
                 preview_family_plan_participation,
             ]
-        elif context.tools == ["search_meal_plan_recipes", "preview_meal_plan"]:
+        elif planner_tools == ["search_meal_plan_recipes", "preview_meal_plan"]:
             tools = [search_meal_plan_recipes, preview_meal_plan]
         else:
             raise ValueError("配餐工具必须是服务器固定模式")
+        if "query_family_nutrition_knowledge" in context.tools:
+            tools.append(query_family_nutrition_knowledge)
         return create_agent(
             model=load_chat_model(fully_specified_name=context.model, session_id=context.thread_id),
             tools=tools,

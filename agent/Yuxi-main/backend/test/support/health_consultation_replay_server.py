@@ -15,6 +15,7 @@ SAFE_PLANNER_TOOLS = {
     "get_safe_plan_context",
     "preview_safe_plan_swap",
     "preview_safe_plan_regeneration",
+    "query_family_nutrition_knowledge",
 }
 TOOLS = {
     "get_confirmed_profile",
@@ -43,7 +44,7 @@ def safe_planner_replay_delta(authorization, body):
     ):
         raise ValueError("synthetic_safe_model_required")
     names = [t.get("function", {}).get("name") for t in body.get("tools", [])]
-    if len(names) != 3 or set(names) != SAFE_PLANNER_TOOLS:
+    if len(names) != 4 or set(names) != SAFE_PLANNER_TOOLS:
         raise ValueError("fixed_safe_tools_required")
     messages = body.get("messages", [])
     if not any(m.get("role") == "system" and "slug: family-meal-planner" in str(m.get("content")) for m in messages):

@@ -19,6 +19,7 @@ def replay_delta(authorization, body):
     if {t.get("function", {}).get("name") for t in body.get("tools", [])} != {
         "get_initial_plan_context",
         "preview_initial_meal_plan",
+        "query_family_nutrition_knowledge",
     }:
         raise ValueError("fixed_initial_tools_required")
     messages = body.get("messages", [])

@@ -7,6 +7,7 @@ services:
   api:
     image: ${YUXI_TEST_API_IMAGE:-yuxi-api:0.7.3}
     environment: &indicator-topic-env
+      HEALTH_RECIPE_KB_ID: pytest_planner_recipes
       HEALTH_BLOOD_GLUCOSE_KB_IDS: pytest_indicator_glucose,pytest_indicator_common
       HEALTH_BLOOD_LIPIDS_KB_IDS: pytest_indicator_lipids,pytest_indicator_common
       HEALTH_BLOOD_PRESSURE_KB_IDS: pytest_indicator_pressure,pytest_indicator_common

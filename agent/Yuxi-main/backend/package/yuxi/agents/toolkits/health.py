@@ -98,7 +98,7 @@ async def query_reviewed_nutrition_knowledge(query: str, runtime: ToolRuntime) -
 
 @tool(category="health", display_name="授权营养科普检索", args_schema=HealthKnowledgeInput)
 async def query_family_nutrition_knowledge(query: str, runtime: ToolRuntime) -> dict:
-    """仅检索服务器为当前健康角色固定的科普库，不构成个体化建议。"""
+    """检索当前角色固定资料；配餐只取菜谱参考，不替代批准目录或计算。"""
     from yuxi.services.health_family_kb_service import search_family_nutrition_knowledge
 
     return await search_family_nutrition_knowledge(runtime.context, query)

@@ -28,6 +28,7 @@ def synthetic_body(operation, *, receipt=False, energy=None):
                 "preview_family_plan_swap",
                 "preview_family_plan_regeneration",
                 "preview_family_plan_participation",
+                "query_family_nutrition_knowledge",
             )
         ],
         "messages": [

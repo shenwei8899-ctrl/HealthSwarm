@@ -263,6 +263,10 @@ def task_type_for_binding(slug, binding):
 
 async def validate_task_business_result(session, run, binding, payload, content):
     """复用无lease的发布校验Owner，普通草稿另核对同Run回执与复算全文。"""
+    if run.agent_slug == PLANNER_SLUG:
+        from yuxi.services.health_family_kb_service import validate_family_kb_answer
+
+        await validate_family_kb_answer(session, run, binding, content)
     if run.agent_slug == ANALYST_SLUG:
         await validate_analyst_publication(session, run, content)
         return

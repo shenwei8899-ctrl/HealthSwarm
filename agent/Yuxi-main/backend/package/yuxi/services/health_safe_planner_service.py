@@ -141,6 +141,11 @@ async def validate_safe_planner_history(session, binding):
             payload = json.loads(message.content)
             if message.message_type == TOOL_AUDIT_MESSAGE_TYPE:
                 name = (message.extra_metadata or {}).get("tool_name")
+                if name == "query_family_nutrition_knowledge":
+                    from yuxi.services.health_family_kb_service import validate_family_kb_audit
+
+                    await validate_family_kb_audit(session, message)
+                    continue
                 if name not in SAFE_PLANNER_TOOLS:
                     raise HealthVisionError("source_invalidated", "单成员历史工具不属于固定模式", 410)
                 await validate_safe_planner_tool_payload(

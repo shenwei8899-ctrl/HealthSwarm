@@ -48,6 +48,7 @@ Worker 的 `YUXI_HEALTH_RUN_TIMEOUT_SECONDS` 默认值为 `300` 秒，适用于�
 | 角色 | 环境变量 | 资料范围 |
 |---|---|---|
 | 成员专属营养咨询 | `HEALTH_FAMILY_NUTRITION_KB_ID` | 原有单个家庭营养与食养库 |
+| 基础配餐师 | `HEALTH_RECIPE_KB_ID` | 单个菜谱文档库，仅作烹饪与食材搭配参考 |
 | 血糖记录助手 | `HEALTH_BLOOD_GLUCOSE_KB_IDS` | 血糖食养、高血糖、糖尿病一般科普 |
 | 血脂记录助手 | `HEALTH_BLOOD_LIPIDS_KB_IDS` | 血脂食养与高血脂一般科普，按业务范围补充体重代谢资料 |
 | 血压记录助手 | `HEALTH_BLOOD_PRESSURE_KB_IDS` | 血压食养、高血压与心血管一般科普 |
@@ -59,6 +60,8 @@ Worker 的 `YUXI_HEALTH_RUN_TIMEOUT_SECONDS` 默认值为 `300` 秒，适用于�
 配置完成后用合成成员验证当前授权、同 Run 引用及结果回读，再检查撤回同意、撤权、绑定更改、文件改版或删除使旧正文不可用。多库回执与当前有序清单不一致时返回 `source_invalidated`；任一配置库不可用时拒绝本次检索。缺少模型用途政策时保持未启用，不以绑定知识库替代政策或成员同意。
 
 三个指标助手仍只处理本人授权记录和一般科普，引用用 `[资料:source_id]` 与文件名，审核证据用独立的 `[证据:citation_id]`。专题资料不能直接生成个人目标、诊断、用药或配餐结果。角色映射与来源校验由[科普服务](https://github.com/shenwei8899-ctrl/HealthSwarm/blob/main/agent/Yuxi-main/backend/package/yuxi/services/health_family_kb_service.py)拥有。
+
+基础配餐师的草稿、初始三餐、单成员改版和家庭改版模式共用该检索工具，返回 `recipe_reference` 片段。编辑页显示后台绑定与只读说明。文件与片段 ID 不能作为结构化菜谱版本；最终餐单只来自已发布菜谱和程序回执，文档不会自动发布、计算营养或批准餐单。资料来源在 checkpoint、工具审计、结果发布和任务回读时重验，改版、移除或更换绑定后旧回执失效。未配置库时检索明确失败，原有结构化配餐工具保持可用。`meal_plan` 处理政策及成员同意仍是实际运行前提。
 
 ## 登记科普资料的审核范围
 

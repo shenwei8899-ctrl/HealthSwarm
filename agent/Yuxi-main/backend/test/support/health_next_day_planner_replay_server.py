@@ -16,6 +16,7 @@ def replay_delta(authorization, body):
         raise ValueError("synthetic_model_required")
     if {t.get("function", {}).get("name") for t in body.get("tools", [])} != {
         "search_meal_plan_recipes",
+        "query_family_nutrition_knowledge",
         "preview_meal_plan",
     }:
         raise ValueError("fixed_tools_required")
