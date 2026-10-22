@@ -84,10 +84,13 @@ class MiniappMemberInput(BaseModel):
                 raise ValueError(f"请补充具体{label}内容")
         if dietary.healthStatus == "set" and "其他" in dietary.conditions and not dietary.otherCondition:
             raise ValueError("请补充具体基础病")
-        for field, label in (("goals", "饮食目标"), ("tastePreferences", "口味偏好"), ("cuisines", "菜系偏好")):
+        for field, label in (("goals", "饮食目标"), ("tastePreferences", "口味偏好")):
             values = getattr(dietary, field)
             if not values or any(value in {"其他", "自定义"} for value in values):
                 raise ValueError(f"请选择或补充{label}")
+        # 原小程序将菜系列为可后补；空数组表示未填写，不自动推断为“无特别要求”。
+        if any(value in {"其他", "自定义"} for value in dietary.cuisines):
+            raise ValueError("请补充具体菜系偏好")
         for state, field in (
             ("allergyStatus", "allergies"),
             ("intoleranceStatus", "intolerances"),
@@ -133,12 +136,19 @@ def miniapp_onboarding_ready(member, family):
 
     profile = member.profile or {}
     try:
-        MiniappMemberInput.model_validate({
-            "client_ref": member.id, "member_id": member.id, "version": member.version,
-            "name": member.name, "relation": "本人", "birth_date": profile.get("birth_date"),
-            "sex": profile.get("sex", "unspecified"), "height_cm": profile.get("height_cm"),
-            "dietary": profile.get("dietary_details", {}),
-        })
+        MiniappMemberInput.model_validate(
+            {
+                "client_ref": member.id,
+                "member_id": member.id,
+                "version": member.version,
+                "name": member.name,
+                "relation": "本人",
+                "birth_date": profile.get("birth_date"),
+                "sex": profile.get("sex", "unspecified"),
+                "height_cm": profile.get("height_cm"),
+                "dietary": profile.get("dietary_details", {}),
+            }
+        )
     except ValidationError:
         return False
     return member.confirmed_version == member.version

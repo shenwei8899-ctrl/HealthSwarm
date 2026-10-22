@@ -47,7 +47,6 @@ def complete_profile():
         "avoidanceStatus",
         "doctorStatus",
         "goals",
-        "cuisines",
         "tastePreferences",
     ],
 )
@@ -82,7 +81,7 @@ def test_unknown_status_rejected(field):
         ("doctorStatus", "clinicianGuidance", "  "),
         (None, "goals", ["  "]),
         (None, "goals", ["其他"]),
-        (None, "cuisines", []),
+        (None, "cuisines", ["自定义"]),
     ],
 )
 def test_empty_or_placeholder_details_rejected(state, field, value):

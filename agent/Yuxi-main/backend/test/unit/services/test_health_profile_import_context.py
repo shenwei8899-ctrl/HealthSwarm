@@ -249,6 +249,7 @@ async def test_latest_unusable_profile_still_advances_next_version(service_conte
     result = await health_profile_import_service.read_profile_import_context("admin", "health", limit=1, offset=2)
     assert result["current_profile"]["next_version"] == 6
     assert result["current_profile"]["reason"] == "expired"
+    service_context.profile.assert_awaited_once_with("health", allow_reported=False)
     assert [call.args[2] for call in service_context.authorize.call_args_list] == ["profile_edit", "profile_view"]
 
 

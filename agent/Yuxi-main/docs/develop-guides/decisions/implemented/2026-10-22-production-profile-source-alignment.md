@@ -1,0 +1,52 @@
+# 建档来源与生产运行版本对齐
+
+状态：implemented
+类型：bug-fix
+Owner：backend/package/yuxi/services/miniapp_planning_source.py
+
+## 问题
+
+生产 API 包含菜系可后补及本人已确认建档来源读取修正，而 Worker 和 Git 主线缺少这些修正。直接发布主线会回退已有行为，API 与 Worker 对同一来源的判断也不一致。每日恢复与明确重试修正已合入主线，仍需随一致版本发布。
+
+本次沿用生产已存在的行为：空菜系保留未知，不代填“无”；本人已确认来源没有专业快照时读取完整建档自述，明确返回 user_reported。专业快照存在时保持专业来源验证，失效或撤回不能退回自述规避。没有当前批准编码规则时只返回来源身份和缺口，不能产生正式专业数据。
+
+不修改 App，不批准正式用途或专业规则，不调用真实供应商，不新增专业资格。当前 App 仍把菜系作为必填的差异交由客户端负责人对齐。
+
+## 决策
+
+### 实现方案
+
+输入校验由 miniapp_profile_types 拥有；来源投影由 HealthQualityRepository 与 miniapp_planning_source 拥有，确认与归属复用 HealthFamilyProfileRepository。既有角色、Run、任务和存储模型保持不变。生产差异及关联修正已纳入源码并通过测试，发布时以同一候选版本运行 API 和 Worker。
+
+专业导入上下文显式使用 `allow_reported=False`，当前投影与下一版本均来自专业快照，首次导入仍为 1；家庭自述版本不占用专业版本。已确认但建档不完整、来源被编辑后未重新确认均返回 `not_ready` 和具体原因，不中断其它能力查询，也不返回可用 payload。编码规则复用 `HealthQualityRepository.rules` 核对知识库原件摘要与存在性，原件失效时停止生成自述投影。
+
+部署保留当前完整 Compose 链、原镜像和配置；记录变更前源码摘要、配置摘要与数据库备份。菜谱知识库使用既有 HEALTH_RECIPE_KB_ID 绑定已存在的菜谱库。血脂全部绑定经当前 PostgreSQL 核对存在，保留原绑定并纠正旧文档的误记。正式政策仍为空。
+
+## 替代方案
+
+直接用主线替换会回退线上修正；继续只补 API 会保留执行端差异；把自述当专业快照会丢失来源边界。选择复用既有来源投影及拒绝路径。
+
+## 验证
+
+| 验收主张 | 失败面 | 语义 Owner | 直接证据 / 命令 | 负向案例 | 当前结果 |
+| --- | --- | --- | --- | --- | --- |
+| 菜系可后补且未知不转成明确无；安全字段仍必填 | 保存和完成判断不一致 | miniapp_profile_types | 定向 unit 与真实 HTTP/PG 建档回读 | 恢复菜系必填；未知安全字段 | 通过 |
+| 本人确认来源只在缺少专业快照时走自述投影 | 失效专业来源被绕过 | HealthQualityRepository | 来源 unit、真实 HTTP/PG | 已有撤回专业快照、未确认、缺项、跨账号 | 通过 |
+| 专业首版与家庭版本独立 | 首次导入持续409或整页失败 | health_profile_import_service | profile-import-context HTTP/PG及最终落库 | 家庭版本大于1、基础档案缺小程序字段、过期快照 | 通过 |
+| 自述编码只使用当前规则原件 | 规则原件变更后沿用旧编码 | HealthQualityRepository.rules | 当前原件先ready、变更后not_ready的HTTP/PG | 原件摘要变化、删除 | 通过 |
+| API/Worker 对齐源码并保留用途关闭 | 覆盖生产修正、放开真实用户 | 发布脚本、Compose、PostgreSQL | 源码/配置摘要、ready、业务只读探针 | 发布失败恢复原配置/镜像 | Not run |
+| 菜谱绑定与当前库元数据一致 | 误删已有库或错误绑定 | health_family_kb_service、KnowledgeBase | 实际元数据、无外呼检索和引用来源校验 | 空绑定与失效来源已有回归 | Not run |
+
+## 后果
+
+生产检查已确认 health schema 28、无活跃 Run/Task、约 6 GiB 可用空间。恢复演练的历史空间结论保留检查日期；长期容量和异机备份仍待运维交付。此发布不等于全部专业质量、App 或真实交易验收。
+
+### 执行依据
+
+独立项目 `backend-release-e2e-20261022` 使用合成资料。全非 slow 后端 unit：4907 passed、59 skipped（217.82s）；执行进程清除隔离配置中的 `LANGFUSE_ENABLED=false`，测试采用假客户端，无真实观测平台外呼。首次执行该配置导致 Langfuse 8项失败，不属于业务代码失败。
+
+真实 HTTP/独立 PostgreSQL：专业导入上下文及每日安排26项、最终本人来源5项通过（后者36.13s）。新规则原件测试首次因夹具缺知识Schema失败，补建测试Schema后全部通过；首次专业导入确实持久化版本1，规则原件先可用、变更或删除后不再返回payload。
+
+实际 API／Worker／PostgreSQL 的恢复与完成链路7项全部通过（249.17s）：停页完成、杀死Worker后恢复、恢复前和发布前撤回拒绝、建档后三餐、改单餐、处理快照变化后的明确重试、暂时失败复用均按持久化事实核验。测试Worker使用服务UID，仅使用合成协议，无真实供应商调用或订单。
+
+工程契约检查（163 decisions / 307 docs）、检查器63项单元、变更Python的Ruff与格式检查、文档构建（29.76s）通过。日志仅本地保留在 `agent/.tmp/backend-release-20261022/`。源码工程已验收；生产部署与绑定检索仍待运行，不能把上述隔离证据当作生产已开放。
