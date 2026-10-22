@@ -63,6 +63,7 @@ class RecommendationPackageService
                 'agent_client_id'  => $clientId,
                 'agent_task_id'    => $payload['agent_task_id'],
                 'request_digest'   => $digest,
+                'agent_source_proof_json' => Json::encode($payload['agent_source_proof'] ?? []),
                 'user_id'          => $userId,
                 'user_ref'         => $payload['user_ref'],
                 'family_ref'       => $payload['family_ref'],

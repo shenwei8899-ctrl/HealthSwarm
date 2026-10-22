@@ -8,6 +8,7 @@ class PurchaseListService
 {
     public function confirmRecommendation($userId, $packageSn, $submittedVersion, $requestId)
     {
+        (new AgentMealSourceService())->assertSource($userId, 'recommendation_package', $packageSn, $submittedVersion);
         Db::startTrans();
         try {
             $package = Db::name('shop_recommendation_package')->where('package_sn', $packageSn)->lock(true)->find();
@@ -21,7 +22,7 @@ class PurchaseListService
                     'submitted_version' => (int)$submittedVersion,
                 ]);
             }
-            if ($package['status'] !== 'available' || $package['nutrition_status'] !== 'passed' || $package['trade_status'] !== 'passed') {
+            if (!in_array($package['status'], ['available', 'confirmed'], true) || $package['nutrition_status'] !== 'passed' || $package['trade_status'] !== 'passed') {
                 throw new DomainException('推荐包尚未通过营养和交易双校验', 40908, 409);
             }
             if ((int)$package['expires_at'] <= time()) {
@@ -176,6 +177,7 @@ class PurchaseListService
 
     public function addToCart($userId, $listSn, $baseVersion)
     {
+        (new AgentMealSourceService())->assertSource($userId, 'purchase_list', $listSn, $baseVersion);
         $list = Db::name('shop_purchase_list')->where('purchase_list_sn', $listSn)->find();
         if (!$list) throw new DomainException('采购清单不存在', 40403, 404);
         (new IdentityService())->assertOwner($userId, $list['user_id']);
@@ -186,9 +188,23 @@ class PurchaseListService
         $cart = new CartService();
         Db::startTrans();
         try {
+            Db::name('user')->where('id', (int)$userId)->lock(true)->find();
+            $needed = [];
             foreach ($matches as $match) {
-                $cart->add($userId,$match['sku_id'],$match['required_pack_count'],[
-                    'source_type'=>'purchase_list','source_ref'=>$listSn,'source_version'=>$baseVersion,'purchase_item_id'=>$match['item_id'],
+                $skuId = (string)$match['sku_id'];
+                if (!isset($needed[$skuId])) $needed[$skuId] = ['quantity'=>0,'item_id'=>$match['item_id']];
+                $needed[$skuId]['quantity'] += (int)$match['required_pack_count'];
+            }
+            foreach ($needed as $skuId => $requirement) {
+                $existing = Db::name('shop_carts')->where(['user_id'=>(int)$userId,'goods_sku_id'=>(int)$skuId,
+                    'sceneval'=>1,'source_type'=>'purchase_list','source_ref'=>$listSn])->find();
+                if ($existing && (int)$existing['source_version'] !== (int)$baseVersion) {
+                    throw new DomainException('购物车已有旧版本采购清单，请先移除后重新加入',40906,409);
+                }
+                $delta = max(0, $requirement['quantity'] - (int)($existing['nums'] ?? 0));
+                if (!$delta) continue;
+                $cart->add($userId,$skuId,$delta,[
+                    'source_type'=>'purchase_list','source_ref'=>$listSn,'source_version'=>$baseVersion,'purchase_item_id'=>$requirement['item_id'],
                 ]);
             }
             Db::commit();

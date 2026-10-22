@@ -19,7 +19,9 @@ class ManualFulfillmentService
                 Db::commit(); return ['order_sn'=>$sn,'status'=>'shipped'];
             }
             if ((int)$order['paystate']!==1 || (int)$order['orderstate']!==0 || (int)$order['shippingstate']!==0) throw new DomainException('当前订单不可安排发货',40910,409);
-            Db::name('shop_order')->where('id',$order['id'])->update(['shippingstate'=>1,'shippingtime'=>time(),'updatetime'=>time()]);
+            $ext=Db::name('shop_order_ext')->where('order_sn',$sn)->find();
+            if (($ext && in_array($ext['payment_status'], ['refunding','partially_refunded','refunded'], true)) || Db::name('shop_order_aftersales')->where('order_id',$order['id'])->where('status','in',[1,2])->count()) throw new DomainException('订单存在售后或退款，不能安排发货',40910,409);
+            Db::name('shop_order')->where('id',$order['id'])->update(['expressname'=>$carrier,'expressno'=>$tracking,'row_version'=>(int)$order['row_version']+1,'shippingstate'=>1,'shippingtime'=>time(),'updatetime'=>time()]);
             Db::name('shop_order_ext')->where('order_sn',$sn)->update(['business_status'=>'fulfilling','fulfillment_status'=>'shipped','updatetime'=>time()]);
             Db::name('shop_supplier_order')->where('platform_order_sn',$sn)->where('plan_batch_id',0)->where('status','in',['created','pushing','accepted','preparing'])->update(['status'=>'shipped','shipped_at'=>time(),'updatetime'=>time()]);
             Db::name('shop_fulfillment_event')->insert(['event_id'=>'manual_ship:'.$sn,'source_type'=>'admin','source_ref'=>(string)$adminId,'platform_order_sn'=>$sn,'carrier_code'=>$carrier,'tracking_no'=>$tracking,'source_status'=>'shipped','normalized_status'=>'shipped','occurred_at'=>time(),'description'=>'商家已安排发货','payload_json'=>Json::encode(['admin_id'=>$adminId]),'createtime'=>time()]);

@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>商城管理</title>
+<link rel="stylesheet" href="{$assetBase}/assets/css/backend/shop/console.css?v={$assetVersion}">
+<script>window.COMMERCE_CONSOLE={$consoleConfig};</script>
+<script defer src="{$assetBase}/assets/js/backend/shop/console.js?v={$assetVersion}"></script></head>
+<body><div id="commerce-admin">
+<aside class="cp-sidebar"><div class="cp-brand"><span class="cp-brandmark">商</span><div>商城管理<small>COMMERCE ADMIN</small></div></div><nav class="cp-nav" aria-label="主导航"></nav><div class="cp-sidefoot"><b>商城管理工作台</b><span id="environment-name"></span></div></aside>
+<div class="cp-right"><header class="cp-topbar"><div class="cp-crumb" id="breadcrumb">商城管理</div><div class="cp-profile" id="profile"></div></header><div class="cp-tabs"><button data-route="home">首页</button><span id="tabname"></span><span class="cp-protolabel" id="environment-banner"></span></div><nav id="context-navigation" class="cp-contextnav" aria-label="当前管理功能"></nav><main class="cp-main" id="main" aria-live="polite"><div class="cp-empty">正在加载商城管理…</div></main></div></div>
+<dialog id="editor" aria-labelledby="editor-title"><form id="edit-form"><div class="cp-panelhead"><h2 id="editor-title"></h2><button type="button" data-close aria-label="关闭">×</button></div><div id="editor-fields" class="cp-form"></div><div id="form-error" role="alert"></div><div class="cp-formfoot"><button type="button" class="cp-button" data-close>取消</button><button type="submit" class="cp-button cp-primary" id="save-button">保存</button></div></form></dialog><div id="toast" role="status" aria-live="polite"></div>
+</body></html>

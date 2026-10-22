@@ -50,6 +50,7 @@ class SupplierOrderService
             return [];
         }
         $items = Db::name('shop_plan_delivery_batch_item')->where('batch_id', $batch['id'])->where('status', 'scheduled')->select();
+        if (!$items) throw new DomainException('配送批次没有待备货商品，请检查批次明细',40932,409);
         $groups = [];
         $reservations = [];
         try {
@@ -134,9 +135,30 @@ class SupplierOrderService
 
     public function push($supplierOrderId)
     {
+        $id=(int)$supplierOrderId;
+        if ($id<=0) throw new DomainException('供应商订单不存在',40411,404);
+        // Serialize manual and worker retries without holding a row lock during HTTP.
+        $lock=Db::query('SELECT pg_try_advisory_lock(761003, ?) AS acquired',[$id]);
+        if (!in_array($lock[0]['acquired'],[true,1,'1','t'],true)) throw new DomainException('该供应商订单正在推送，请稍后刷新',40933,409);
+        try { return $this->pushLocked($id); }
+        finally { Db::query('SELECT pg_advisory_unlock(761003, ?)',[$id]); }
+    }
+
+    protected function pushLocked($supplierOrderId)
+    {
         $order = Db::name('shop_supplier_order')->where('id', (int)$supplierOrderId)->find();
-        if (!$order || !in_array($order['push_status'], ['pending', 'failed'], true)) {
-            return $order;
+        if (!$order) throw new DomainException('供应商订单不存在',40411,404);
+        if (in_array($order['push_status'],['success','manual'],true)) return $order;
+        if (!in_array($order['push_status'],['pending','failed'],true) || !in_array($order['status'],['created','pushing'],true)) throw new DomainException('当前供应商订单不能重推',40933,409);
+        $platform=Db::name('shop_order')->where('order_sn',$order['platform_order_sn'])->find();
+        $ext=Db::name('shop_order_ext')->where('order_sn',$order['platform_order_sn'])->find();
+        if (!$platform || (int)$platform['paystate']!==1 || (int)$platform['orderstate']!==0 || (!$order['plan_batch_id'] && (int)$platform['shippingstate']!==0)
+            || ($ext && in_array($ext['payment_status'],['refunding','partially_refunded','refunded'],true))
+            || Db::name('shop_order_aftersales')->where('order_id',$platform['id'])->where('status','in',[1,2])->count()) throw new DomainException('平台订单未付款、已关闭、已发货或处于售后，不能推单',40933,409);
+        if ($order['plan_batch_id']) {
+            $batch=Db::name('shop_plan_delivery_batch')->where('id',$order['plan_batch_id'])->find();
+            $plan=$batch?Db::name('shop_service_plan_order')->where('id',$batch['plan_order_id'])->find():null;
+            if (!$batch || !$plan || $plan['status']!=='active' || !in_array($batch['status'],['scheduled','preparing','supplier_pending','exception'],true)) throw new DomainException('配送批次已停止或已履约，不能推单',40933,409);
         }
         $supplier = Db::name('shop_supplier')->where('id', $order['supplier_id'])->where('status', 'normal')->find();
         if (!$supplier) {
@@ -173,10 +195,12 @@ class SupplierOrderService
                 'X-Signature' => $signature, 'Idempotency-Key' => $order['supplier_order_sn'],
             ]);
             Db::name('shop_supplier_order')->where('id', $order['id'])->update([
-                'status' => 'pushing', 'push_status' => 'success', 'push_attempts' => (int)$order['push_attempts'] + 1,
+                'push_status' => 'success', 'push_attempts' => (int)$order['push_attempts'] + 1,
                 'response_snapshot_json' => Json::encode($result['body']), 'row_version' => (int)$order['row_version'] + 1,
                 'updatetime' => time(),
             ]);
+            // A synchronous supplier callback may already have advanced fulfillment.
+            Db::name('shop_supplier_order')->where('id',$order['id'])->where('status','created')->update(['status'=>'pushing']);
             IntegrationLogger::write([
                 'request_id' => Identifiers::requestId(), 'partner_type' => 'supplier', 'partner_code' => $supplier['supplier_code'],
                 'direction' => 'outbound', 'interface_name' => 'supplier_order_push', 'method' => 'POST',

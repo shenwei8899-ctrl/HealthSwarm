@@ -8,7 +8,19 @@ use think\Db;
 
 class CommerceSession extends Base
 {
-    protected $noNeedLogin = ['wechat', 'login'];
+    protected $noNeedLogin = ['wechat', 'login', 'exchange'];
+
+    public function exchange()
+    {
+        header('Cache-Control: no-store');
+        return $this->execute(function () {
+            $this->requireMethod('POST');
+            $id = (new \addons\shop\library\v5\AgentMemberService())->exchange(
+                (string)$this->request->header('authorization'), $this->input(), $this->auth
+            );
+            return array_merge($this->sessionData(), ['agent_account_id' => $id]);
+        });
+    }
 
     private function sessionData()
     {
@@ -71,6 +83,17 @@ class CommerceSession extends Base
     public function detail()
     {
         return $this->execute(function () { $this->userId(); return $this->sessionData(); });
+    }
+
+    public function wechatPaymentIdentity()
+    {
+        header('Cache-Control: no-store');
+        return $this->execute(function () {
+            $this->requireMethod('POST');
+            return (new \addons\shop\library\v5\AgentWechatPaymentIdentityService())->bind(
+                $this->userId(), (string)$this->request->header('authorization'), $this->input()
+            );
+        });
     }
 
     public function logout()

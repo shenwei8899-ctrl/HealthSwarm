@@ -145,8 +145,10 @@ class Shop extends Addons
     protected function registerV5Routes()
     {
         $routes = [
+            ['api/v1/commerce/session/wechat-payment-identity', 'addons/shop/api.v1.commerce_session/wechatPaymentIdentity', 'POST'],
             ['api/v1/commerce/session/wechat', 'addons/shop/api.v1.commerce_session/wechat', 'POST'],
             ['api/v1/commerce/session/login', 'addons/shop/api.v1.commerce_session/login', 'POST'],
+            ['api/v1/commerce/session/exchange', 'addons/shop/api.v1.commerce_session/exchange', 'POST'],
             ['api/v1/commerce/session', 'addons/shop/api.v1.commerce_session/detail', 'GET'],
             ['api/v1/commerce/session', 'addons/shop/api.v1.commerce_session/logout', 'DELETE'],
             ['api/v1/commerce/areas', 'addons/shop/api.v1.commerce_address/areas', 'GET'],
@@ -174,6 +176,7 @@ class Shop extends Addons
             ['api/v1/refund/wechat/notify', 'addons/shop/api.v1.payment_notify/refund', 'POST'],
 
             ['api/v1/commerce/meals/current', 'addons/shop/api.v1.commerce_meal/current', 'GET'],
+            ['api/v1/commerce/meals/packages/:package_sn', 'addons/shop/api.v1.commerce_meal/detail', 'GET'],
             ['api/v1/commerce/meals/cart', 'addons/shop/api.v1.commerce_meal/cart', 'POST'],
             ['api/v1/commerce/orders/:order_sn/cooking', 'addons/shop/api.v1.commerce_meal/cooking', 'GET'],
             ['api/v1/commerce/local-test/orders/:order_sn/pay', 'addons/shop/api.v1.local_test_payment/pay', 'POST'],

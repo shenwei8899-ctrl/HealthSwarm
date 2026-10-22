@@ -8,7 +8,7 @@ class IntegrationLogger
 {
     protected static $sensitiveKeys = [
         'authorization', 'token', 'access_token', 'openid', 'mobile', 'phone',
-        'address', 'detail', 'secret', 'signature', 'credential', 'prepay_id',
+        'address', 'detail', 'secret', 'signature', 'credential', 'prepay_id', 'agent_source_proof',
     ];
 
     public static function write(array $data)

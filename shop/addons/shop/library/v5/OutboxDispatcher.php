@@ -6,12 +6,19 @@ use think\Db;
 
 class OutboxDispatcher
 {
-    public function dispatch($limit = 100)
+    public function dispatch($limit = 100, $eventId = null)
     {
-        $events = Db::name('shop_outbox_event')->where('status', 'in', ['pending', 'failed'])
-            ->where('next_retry_at', '<=', time())->order('id', 'asc')->limit((int)$limit)->select();
+        $query = Db::name('shop_outbox_event')->where('status', 'in', ['pending', 'failed'])->where('next_retry_at', '<=', time());
+        if ($eventId !== null) $query->where('id',(int)$eventId);
+        $events=$query->order('id','asc')->limit((int)$limit)->select();
         $processed = 0;
         foreach ($events as $event) {
+            $id=(int)$event['id'];
+            $lock=Db::query('SELECT pg_try_advisory_lock(761004, ?) AS acquired',[$id]);
+            if (!in_array($lock[0]['acquired'],[true,1,'1','t'],true)) continue;
+            try {
+            $event=Db::name('shop_outbox_event')->where('id',$id)->find();
+            if (!$event || !in_array($event['status'],['pending','failed'],true) || (int)$event['next_retry_at']>time()) continue;
             $processed++;
             if ($event['destination'] === 'miniapp') {
                 Db::name('shop_outbox_event')->where('id', $event['id'])->update(['status' => 'sent', 'sent_at' => time(), 'updatetime' => time()]);
@@ -63,6 +70,7 @@ class OutboxDispatcher
                     'last_error' => mb_substr($e->getMessage(), 0, 1000), 'updatetime' => time(),
                 ]);
             }
+            } finally { Db::query('SELECT pg_advisory_unlock(761004, ?)',[$id]); }
         }
         return $processed;
     }

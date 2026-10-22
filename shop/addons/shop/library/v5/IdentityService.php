@@ -14,7 +14,7 @@ class IdentityService
             'status'            => 'normal',
         ])->find();
         if (!$row) {
-            throw new DomainException('外部用户尚未绑定商城会员', 40405, 404, [
+            throw new DomainException('外部用户尚未绑定商城用户', 40405, 404, [
                 'client_id' => $clientId,
                 'user_ref'  => (string)$userRef,
             ]);

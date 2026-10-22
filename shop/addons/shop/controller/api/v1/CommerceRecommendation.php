@@ -12,6 +12,7 @@ class CommerceRecommendation extends Base
 {
     public function detail($package_sn = null)
     {
+        $package_sn = $package_sn ?? $this->request->route('package_sn');
         return $this->execute(function () use ($package_sn) {
             return (new RecommendationPackageService())->getBySn($package_sn, $this->userId());
         });
@@ -19,11 +20,12 @@ class CommerceRecommendation extends Base
 
     public function confirm($package_sn = null)
     {
+        $package_sn = $package_sn ?? $this->request->route('package_sn');
         return $this->execute(function () use ($package_sn) {
             $this->requireMethod('POST');
             $payload = $this->input();
             $userId = $this->userId();
-            return (new IdempotencyService())->run('commerce.recommendation.confirm', 'miniapp:' . $userId, $this->request->header('idempotency-key'), $payload, function () use ($userId, $package_sn, $payload) {
+            return (new IdempotencyService())->run('commerce.recommendation.confirm', 'miniapp:' . $userId, $this->request->header('idempotency-key'), ['package_sn' => $package_sn] + $payload, function () use ($userId, $package_sn, $payload) {
                 return (new PurchaseListService())->confirmRecommendation($userId, $package_sn, $payload['package_version'], $this->requestId);
             });
         });

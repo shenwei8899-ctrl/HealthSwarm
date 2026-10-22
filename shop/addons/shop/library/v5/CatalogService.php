@@ -33,7 +33,8 @@ class CatalogService
             if (!$ingredientIds) {
                 return ['items' => [], 'next_cursor' => '', 'has_more' => false, 'catalog_version' => $this->currentVersion()];
             }
-            $skuIds = Db::name('shop_ingredient_sku_map')->where('ingredient_id', 'in', $ingredientIds)->where('status', 'normal')->column('sku_id');
+            $filteredMaps = Db::name('shop_ingredient_sku_map')->where('ingredient_id', 'in', $ingredientIds)->where('status', 'normal')->where('review_status','approved')->select();
+            $skuIds = array_column(array_filter($filteredMaps, [CatalogEligibility::class,'current']), 'sku_id');
             $query->where('s.id', 'in', $skuIds ?: [0]);
         }
 
@@ -94,29 +95,40 @@ class CatalogService
     public function alternatives($skuId, array $filters = [])
     {
         $source = $this->getSku($skuId, true);
-        $map = Db::name('shop_ingredient_sku_map')->where('sku_id', (int)$skuId)->where('status', 'normal')->order('priority', 'desc')->find();
-        if (!$map) {
+        $map = null;
+        foreach (Db::name('shop_ingredient_sku_map')->where('sku_id', (int)$skuId)->where('status', 'normal')->where('review_status','approved')->order('priority', 'desc')->select() as $sourceMap) {
+            if (CatalogEligibility::current($sourceMap)) { $map=$sourceMap; break; }
+        }
+        if (!$map || !CatalogEligibility::current($map)) {
             return ['source' => $source, 'items' => []];
         }
         $rows = Db::name('shop_ingredient_sku_map')->where('ingredient_id', $map['ingredient_id'])
-            ->where('status', 'normal')->where('sku_id', '<>', (int)$skuId)
-            ->order('priority', 'desc')->limit(min(50, max(1, (int)(isset($filters['limit']) ? $filters['limit'] : 10))))->select();
+            ->where('status', 'normal')->where('review_status','approved')->where('sku_id', '<>', (int)$skuId)
+            ->order('priority', 'desc')->select();
+        $limit=min(50,max(1,(int)($filters['limit']??10)));
         $required = isset($filters['required_quantity_value']) ? (float)$filters['required_quantity_value'] : (float)$map['net_value'];
+        if (!is_finite($required) || $required <= 0) throw new DomainException('采购数量必须为正数',40004,400);
         $items = [];
         foreach ($rows as $candidate) {
+            if (!CatalogEligibility::current($candidate)) continue;
+            $convertedNet = CatalogEligibility::convert($candidate['net_value'], $candidate['net_unit'], $map['net_unit']);
+            if ($convertedNet === null) continue;
             try {
                 $item = $this->getSku($candidate['sku_id'], false);
             } catch (DomainException $e) {
                 continue;
             }
-            $net = max(0.001, (float)$candidate['net_value']);
+            $net = $convertedNet * (float)$candidate['convert_ratio'] * (1-(float)$candidate['loss_rate']);
+            if (!is_finite($net) || $net <= 0) continue;
             $packs = (int)ceil($required / $net);
+            if ($packs < 1 || $packs > (int)$item['available_quantity']) continue;
             $item['required_pack_count'] = $packs;
             $item['covered_value'] = number_format($packs * $net, 3, '.', '');
-            $item['covered_unit'] = $candidate['net_unit'];
+            $item['covered_unit'] = $map['net_unit'];
             $item['surplus_value'] = number_format(max(0, $packs * $net - $required), 3, '.', '');
             $item['alternative_reason'] = 'same_ingredient';
             $items[] = $item;
+            if (count($items)>=$limit) break;
         }
         return ['source' => $source, 'items' => $items];
     }
@@ -151,10 +163,18 @@ class CatalogService
         $maps = Db::name('shop_ingredient_sku_map')->alias('m')
             ->join('shop_ingredient i', 'i.id=m.ingredient_id')
             ->where('m.sku_id', $skuId)->where('m.status', 'normal')
-            ->field('i.ingredient_code,i.name,m.role,m.net_value,m.net_unit,m.convert_ratio,m.loss_rate')
+            ->where('i.status','normal')->field('i.ingredient_code,i.name,m.role,m.net_value,m.net_unit,m.convert_ratio,m.loss_rate,m.status,m.review_status,m.valid_from,m.valid_to')
             ->order('m.priority', 'desc')->select();
-        $nutrition = Db::name('shop_sku_nutrition_fact')->where('sku_id', $skuId)
-            ->where('status', 'normal')->order('valid_from', 'desc')->find();
+        $maps = array_values(array_filter($maps, [CatalogEligibility::class, 'current']));
+        $nutrition = null;
+        foreach (Db::name('shop_sku_nutrition_fact')->where('sku_id', $skuId)->where('status','normal')->order('valid_from','desc')->select() as $fact) {
+            if (CatalogEligibility::current($fact)) { $nutrition=$fact; break; }
+        }
+        $hasComponents = (bool)Db::name('shop_sku_ingredient_component')->where('sku_id',$skuId)->count();
+        $issues=[];
+        if (!$maps) $issues[]=['code'=>'ingredient_mapping_unapproved','message'=>'缺少已审核且有效的食材关联'];
+        if (!$nutrition) $issues[]=['code'=>'nutrition_missing','message'=>'缺少已审核且有效的营养资料'];
+        if (!$hasComponents) $issues[]=['code'=>'allergen_information_missing','message'=>'未录入成分来源及过敏原声明，不能视为无过敏原'];
         $allergenCodes = Db::name('shop_sku_ingredient_component')->alias('c')
             ->join('shop_ingredient i', 'i.id=c.ingredient_id')
             ->where('c.sku_id', $skuId)->where('c.allergen_flag', 1)->column('i.ingredient_code');
@@ -177,7 +197,10 @@ class CatalogService
             'ingredients'          => $maps,
             'allergen_codes'       => array_values($allergenCodes),
             'nutrition_facts'      => $nutrition ?: null,
-            'data_completeness'    => $row['data_completeness'],
+            'data_completeness'    => $issues ? 'partial' : $row['data_completeness'],
+            'purchase_ready'       => (bool)$maps,
+            'allergen_information_status' => $hasComponents ? 'recorded_unreviewed' : 'not_recorded',
+            'data_issues'          => $issues,
             'updated_at'           => date(DATE_ATOM, max((int)$row['sku_updated_at'], (int)$row['goods_updated_at'])),
             'valid_until'          => date(DATE_ATOM, time() + 300),
         ];

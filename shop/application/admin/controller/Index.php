@@ -32,6 +32,10 @@ class Index extends Backend
      */
     public function index()
     {
+        // The new commerce console is the default signed-in administration page.
+        if ($this->request->isGet()) {
+            $this->redirect(rtrim($this->request->root(), '/') . '/shop/v5/console/index');
+        }
         $cookieArr = ['adminskin' => "/^skin\-([a-z\-]+)\$/i", 'multiplenav' => "/^(0|1)\$/", 'multipletab' => "/^(0|1)\$/", 'show_submenu' => "/^(0|1)\$/"];
         foreach ($cookieArr as $key => $regex) {
             $cookieValue = $this->request->cookie($key);

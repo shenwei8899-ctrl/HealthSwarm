@@ -8,11 +8,18 @@ class RefundService
 {
     public function approveAftersale($aftersaleId, $adminId, $comment, $requestId)
     {
+        if ((int)$adminId<=0 || trim((string)$comment)==='') throw new DomainException('请填写审核意见',40001,400);
         Db::startTrans();
         try {
+            $initial=Db::name('shop_order_aftersales')->where('id',(int)$aftersaleId)->find();
+            if (!$initial) throw new DomainException('售后单不存在',40413,404);
+            // Match the order -> aftersale lock order used by cancellation/rejection.
+            $order=Db::name('shop_order')->where('id',$initial['order_id'])->lock(true)->find();
             $after=Db::name('shop_order_aftersales')->where('id',(int)$aftersaleId)->lock(true)->find();
             if(!$after || (int)$after['status']!==1)throw new DomainException('售后单不存在或已处理',40910,409);
-            $order=Db::name('shop_order')->where('id',$after['order_id'])->find();
+            if (!$order || (int)$order['paystate']!==1 || !in_array((int)$after['type'],[1,2,3],true)) throw new DomainException('订单或售后类型不允许审核通过',40910,409);
+            $item=Db::name('shop_order_goods')->where('id',$after['order_goods_id'])->where('order_sn',$order['order_sn'])->find();
+            if (!$item || (int)$after['nums']<=0 || (int)$after['nums']>(int)$item['nums']) throw new DomainException('售后商品或数量无效',40910,409);
             (new AftersalePolicyService())->assertAdminRefundAllowed($order['order_sn'],$after);
             if ((int)$after['type'] === 3) {
                 Db::name('shop_order_aftersales')->where('id',$after['id'])->update(['status'=>2,'mark'=>$comment,'row_version'=>(int)$after['row_version']+1,'updatetime'=>time()]);
@@ -23,6 +30,13 @@ class RefundService
             }
             $amountCent=(int)round((float)$after['refund']*100);
             $payment=Db::name('shop_payment_record')->where('order_sn',$order['order_sn'])->where('status','paid')->order('id','desc')->find();
+            if ($amountCent<=0 || !$payment || $payment['channel']!=='wechat') throw new DomainException('退款金额无效或缺少真实微信付款记录',40935,409);
+            $reserved=(int)Db::name('shop_refund_record')->where('order_sn',$order['order_sn'])->where('status','not in',['closed','cancelled'])->sum('refund_amount_cent');
+            $paidCent=min((int)$payment['amount_cent'],(int)round((float)$order['payamount']*100));
+            $itemExt=Db::name('shop_order_goods_ext')->where('order_goods_id',$item['id'])->find();
+            $lineCent=$itemExt?(int)$itemExt['line_amount_cent']:(int)round((float)$item['realprice']*100);
+            $itemLimit=(int)floor($lineCent*(int)$after['nums']/max(1,(int)$item['nums']));
+            if ($amountCent>$paidCent-$reserved || $amountCent>$itemLimit) throw new DomainException('退款金额超过实付或商品可退金额',40935,409);
             $refundSn=Identifiers::make('refund');$now=time();
             $refundId=Db::name('shop_refund_record')->insertGetId([
                 'refund_sn'=>$refundSn,'order_sn'=>$order['order_sn'],'payment_id'=>$payment?$payment['id']:0,'aftersale_id'=>$after['id'],
@@ -39,7 +53,7 @@ class RefundService
             Db::name('shop_order_aftersales')->where('id',$after['id'])->update(['status'=>2,'mark'=>$comment,'row_version'=>(int)$after['row_version']+1,'updatetime'=>$now]);
             if($after['batch_id'])Db::name('shop_plan_delivery_batch')->where('id',$after['batch_id'])->update(['aftersale_status'=>'approved','updatetime'=>$now]);
             Db::commit();
-        }catch(\Exception $e){Db::rollback();throw $e;}
+        }catch(\Throwable $e){Db::rollback();throw $e;}
 
         try {
             $this->submitWechat($refundSn);
@@ -52,11 +66,12 @@ class RefundService
 
     public function rejectAftersale($aftersaleId,$adminId,$comment)
     {
+        if ((int)$adminId<=0 || trim((string)$comment)==='') throw new DomainException('请填写审核意见',40001,400);
         Db::startTrans();
         try {
         $after=Db::name('shop_order_aftersales')->where('id',(int)$aftersaleId)->where('status',1)->find();
         if(!$after)throw new DomainException('售后单不存在或已处理',40910,409);
-        Db::name('shop_order')->where('id',$after['order_id'])->lock(true)->find();
+        if (!Db::name('shop_order')->where('id',$after['order_id'])->lock(true)->find()) throw new DomainException('售后关联订单不存在',40409,404);
         $after=Db::name('shop_order_aftersales')->where('id',$after['id'])->lock(true)->find();
         if((int)$after['status']!==1)throw new DomainException('售后单已处理',40910,409);
         Db::name('shop_order_aftersales')->where('id',$after['id'])->update(['status'=>3,'mark'=>$comment,'row_version'=>(int)$after['row_version']+1,'updatetime'=>time()]);
@@ -125,6 +140,6 @@ class RefundService
                 Db::name('shop_order_ext')->where('order_sn',$refund['order_sn'])->update(['payment_status'=>'partially_refunded','updatetime'=>time()]);
             }
             Db::commit();return Db::name('shop_refund_record')->where('id',$refund['id'])->find();
-        }catch(\Exception $e){Db::rollback();throw $e;}
+        }catch(\Throwable $e){Db::rollback();throw $e;}
     }
 }

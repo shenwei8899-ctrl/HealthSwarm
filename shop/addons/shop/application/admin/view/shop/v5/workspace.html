@@ -5,23 +5,24 @@
             <p>{$workspace.description|htmlentities}</p>
         </div>
         <div class="v5-heading-actions">
-            <span class="label label-success"><i class="fa fa-circle"></i> V5 服务正常</span>
+            <span class="label label-success"><i class="fa fa-circle"></i> 商城业务管理</span>
             <button type="button" class="btn btn-default btn-v5-refresh"><i class="fa fa-refresh"></i> 刷新</button>
         </div>
     </div>
 
     {if condition="$workspace.key eq 'dashboard'"}
     <div class="row v5-metrics">
-        <div class="col-xs-6 col-md-3"><div class="v5-metric"><span>今日实付</span><strong>¥{:number_format($dashboard.today_paid_cent/100, 2)}</strong><small>{$dashboard.today_order_count} 笔订单</small></div></div>
-        <div class="col-xs-6 col-md-3"><div class="v5-metric"><span>三天内待备货</span><strong>{$dashboard.prepare_batch_count}</strong><small>按送达日前 3 天锁库存</small></div></div>
-        <div class="col-xs-6 col-md-3"><div class="v5-metric v5-metric-warning"><span>待处理异常</span><strong>{$dashboard.open_exception_count}</strong><small>供应、履约与接口异常</small></div></div>
-        <div class="col-xs-6 col-md-3"><div class="v5-metric v5-metric-danger"><span>联调/履约待办</span><strong>{:$dashboard.agent_blocked_count+$dashboard.supplier_push_failed_count+$dashboard.pending_aftersale_count}</strong><small>推荐阻断、推单失败、售后</small></div></div>
+        <div class="col-xs-6 col-md-3"><div class="v5-metric"><span>今日订单实付（系统记录）</span><strong>¥{:number_format($dashboard.today_paid_cent/100, 2)}</strong><small>今日新增 {$dashboard.today_order_count} 笔订单</small></div></div>
+        <div class="col-xs-6 col-md-3"><div class="v5-metric"><span>待发货</span><strong>{$dashboard.pending_shipment_count}</strong><small>已付款、未发货的普通订单</small></div></div>
+        <div class="col-xs-6 col-md-3"><div class="v5-metric v5-metric-warning"><span>待审核售后</span><strong>{$dashboard.pending_aftersale_count}</strong><small>需要处理的售后申请</small></div></div>
+        <div class="col-xs-6 col-md-3"><div class="v5-metric v5-metric-danger"><span>供应商待办</span><strong>{$dashboard.supplier_attention_count}</strong><small>待人工对接或推送失败</small></div></div>
     </div>
     {/if}
 
+    {if condition="$workspace.key eq 'suppliers'"}<div class="alert alert-warning">在供应商行点击“API 与回调配置”，集中维护推单地址、双向密钥和回调来源IP。保存配置不会启用自动推单或处理历史订单；需要供应商档案和系统配置权限。</div>{/if}
     <div class="panel panel-default v5-main-panel">
         {if condition="$workspace.key eq 'settings'"}
-        <div class="alert alert-info v5-config-entry"><i class="fa fa-sliders"></i> 支付、消息、V5主密钥、计划服务费和专业审核开关沿用插件配置。 <a class="btn btn-xs btn-primary" href="{:url('addon/config',['name'=>'shop'])}">打开商城插件配置</a></div>
+        <div class="alert alert-info v5-config-entry"><i class="fa fa-sliders"></i> 支付、消息和商城接口基础参数沿用插件配置。 <a class="btn btn-xs btn-primary" href="{:url('addon/config',['name'=>'shop'])}">打开商城插件配置</a></div>
         {/if}
         <div class="panel-heading">
             <ul class="nav nav-tabs v5-tabs" role="tablist">
@@ -63,6 +64,14 @@
             </div>
         </div>
     </div>
+</div>
+
+<div class="modal fade v5-front-modal" id="v5-supplier-api-modal" tabindex="-1" role="dialog" aria-labelledby="v5-supplier-api-title">
+    <div class="modal-dialog modal-lg" role="document"><div class="modal-content">
+        <div class="modal-header"><button type="button" class="close" data-dismiss="modal" aria-label="关闭"><span>&times;</span></button><h4 class="modal-title" id="v5-supplier-api-title">供应商 API 与回调配置</h4></div>
+        <div class="modal-body"><div id="v5-supplier-api-content"></div></div>
+        <div class="modal-footer"><span class="text-muted pull-left">保存配置不启用对接，不处理历史订单</span><button type="button" class="btn btn-default" data-dismiss="modal">关闭</button><button type="button" class="btn btn-primary btn-v5-save-supplier-api">保存配置（不启用）</button></div>
+    </div></div>
 </div>
 
 <div class="modal fade" id="v5-import-modal" tabindex="-1" role="dialog">

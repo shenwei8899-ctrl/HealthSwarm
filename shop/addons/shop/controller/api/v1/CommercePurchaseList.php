@@ -26,6 +26,7 @@ class CommercePurchaseList extends Base
 
     public function detail($purchase_list_sn = null)
     {
+        $purchase_list_sn = $purchase_list_sn ?? $this->request->route('purchase_list_sn');
         return $this->execute(function () use ($purchase_list_sn) {
             return (new PurchaseListService())->getBySn($purchase_list_sn, $this->userId());
         });
@@ -33,11 +34,12 @@ class CommercePurchaseList extends Base
 
     public function pantry($purchase_list_sn = null)
     {
+        $purchase_list_sn = $purchase_list_sn ?? $this->request->route('purchase_list_sn');
         return $this->execute(function () use ($purchase_list_sn) {
             $this->requireMethod('PUT');
             $payload = $this->input();
             $userId = $this->userId();
-            return (new IdempotencyService())->run('commerce.purchase.pantry', 'miniapp:' . $userId, $this->request->header('idempotency-key'), $payload, function () use ($userId, $purchase_list_sn, $payload) {
+            return (new IdempotencyService())->run('commerce.purchase.pantry', 'miniapp:' . $userId, $this->request->header('idempotency-key'), ['purchase_list_sn' => $purchase_list_sn] + $payload, function () use ($userId, $purchase_list_sn, $payload) {
                 return (new PurchaseListService())->updatePantry($userId, $purchase_list_sn, $payload['version'], isset($payload['items']) ? $payload['items'] : []);
             });
         });
@@ -45,11 +47,12 @@ class CommercePurchaseList extends Base
 
     public function confirm($purchase_list_sn = null)
     {
+        $purchase_list_sn = $purchase_list_sn ?? $this->request->route('purchase_list_sn');
         return $this->execute(function () use ($purchase_list_sn) {
             $this->requireMethod('POST');
             $payload = $this->input();
             $userId = $this->userId();
-            return (new IdempotencyService())->run('commerce.purchase.confirm', 'miniapp:' . $userId, $this->request->header('idempotency-key'), $payload, function () use ($userId, $purchase_list_sn, $payload) {
+            return (new IdempotencyService())->run('commerce.purchase.confirm', 'miniapp:' . $userId, $this->request->header('idempotency-key'), ['purchase_list_sn' => $purchase_list_sn] + $payload, function () use ($userId, $purchase_list_sn, $payload) {
                 return (new PurchaseListService())->confirm($userId, $purchase_list_sn, $payload['version']);
             });
         });
@@ -57,25 +60,31 @@ class CommercePurchaseList extends Base
 
     public function rematch($purchase_list_sn = null)
     {
-        return $this->execute(function () use ($purchase_list_sn) { $p=$this->input(); $uid=$this->userId(); return (new IdempotencyService())->run('commerce.purchase.rematch','miniapp:'.$uid,$this->request->header('idempotency-key'),$p,function()use($uid,$purchase_list_sn,$p){return (new PurchaseListService())->rematch($uid,$purchase_list_sn,$p['version']);}); });
+        $purchase_list_sn = $purchase_list_sn ?? $this->request->route('purchase_list_sn');
+        return $this->execute(function () use ($purchase_list_sn) { $p=$this->input(); $uid=$this->userId(); return (new IdempotencyService())->run('commerce.purchase.rematch','miniapp:'.$uid,$this->request->header('idempotency-key'),['purchase_list_sn'=>$purchase_list_sn]+$p,function()use($uid,$purchase_list_sn,$p){return (new PurchaseListService())->rematch($uid,$purchase_list_sn,$p['version']);}); });
     }
 
     public function selectMatch($purchase_list_sn = null, $item_id = null)
     {
+        $item_id = $item_id ?? $this->request->route('item_id');
+        $purchase_list_sn = $purchase_list_sn ?? $this->request->route('purchase_list_sn');
         return $this->execute(function () use ($purchase_list_sn,$item_id) { $this->requireMethod('PUT');$p=$this->input();$uid=$this->userId();return(new IdempotencyService())->run('commerce.purchase.select_match','miniapp:'.$uid,$this->request->header('idempotency-key'),['purchase_list_sn'=>$purchase_list_sn,'item_id'=>$item_id]+$p,function()use($uid,$purchase_list_sn,$item_id,$p){return (new PurchaseListService())->selectMatch($uid,$purchase_list_sn,$item_id,$p['match_id'],$p['version']);}); });
     }
 
     public function cart($purchase_list_sn = null)
     {
-        return $this->execute(function () use ($purchase_list_sn) { $p=$this->input(); $uid=$this->userId(); return (new IdempotencyService())->run('commerce.purchase.cart','miniapp:'.$uid,$this->request->header('idempotency-key'),$p,function()use($uid,$purchase_list_sn,$p){return (new PurchaseListService())->addToCart($uid,$purchase_list_sn,$p['version']);}); });
+        $purchase_list_sn = $purchase_list_sn ?? $this->request->route('purchase_list_sn');
+        return $this->execute(function () use ($purchase_list_sn) { $p=$this->input(); $uid=$this->userId(); return (new IdempotencyService())->run('commerce.purchase.cart','miniapp:'.$uid,$this->request->header('idempotency-key'),['purchase_list_sn'=>$purchase_list_sn]+$p,function()use($uid,$purchase_list_sn,$p){return (new PurchaseListService())->addToCart($uid,$purchase_list_sn,$p['version']);}); });
     }
 
     public function checkout($purchase_list_sn = null)
     {
+        $purchase_list_sn = $purchase_list_sn ?? $this->request->route('purchase_list_sn');
         return $this->execute(function () use ($purchase_list_sn) {
             $this->requireMethod('POST');$p=$this->input();$uid=$this->userId();
             return(new IdempotencyService())->run('commerce.purchase.checkout','miniapp:'.$uid,$this->request->header('idempotency-key'),['purchase_list_sn'=>$purchase_list_sn]+$p,function()use($uid,$purchase_list_sn,$p){
             $list=(new PurchaseListService())->getBySn($purchase_list_sn,$uid); $items=[];
+            if (!isset($p['version']) || (int)$p['version'] !== (int)$list['version']) throw new \addons\shop\library\v5\DomainException('采购清单版本已变化',40906,409);
             foreach($list['items'] as $item){foreach($item['matches'] as $m){if($m['is_selected'])$items[]=['sku_id'=>$m['sku_id'],'quantity'=>$m['required_pack_count']];}}
             $p['source_type']='purchase_list';$p['source_ref']=$purchase_list_sn;$p['source_version']=$list['version'];$p['items']=$items;
             return (new CheckoutService())->preview($uid,$p,['request_id'=>$this->requestId,'ip'=>$this->request->ip(),'device_id'=>$this->request->header('x-device-id')]);

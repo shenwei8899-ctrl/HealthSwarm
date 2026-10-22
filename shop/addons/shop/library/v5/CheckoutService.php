@@ -209,7 +209,9 @@ class CheckoutService
         if ($payload['source_type'] === 'cart') {
             if ((string)$payload['source_ref'] !== (string)$userId) throw new DomainException('购物车来源不匹配', 40301, 403);
             $sourceItems = (new CartService())->checkoutItems($userId, isset($payload['cart_items']) ? $payload['cart_items'] : []);
+            (new AgentMealSourceService())->assertCart($userId, $sourceItems);
         } elseif ($payload['source_type'] === 'purchase_list') {
+            (new AgentMealSourceService())->assertSource($userId, 'purchase_list', $payload['source_ref'], $payload['source_version']);
             $list = Db::name('shop_purchase_list')->where('purchase_list_sn', $payload['source_ref'])->find();
             if (!$list) {
                 throw new DomainException('采购清单不存在', 40403, 404);
@@ -222,6 +224,7 @@ class CheckoutService
                 ->where('i.purchase_list_id', $list['id'])->where('i.list_version_no', $list['current_version'])
                 ->field('m.sku_id,m.required_pack_count as quantity')->select();
         } elseif ($payload['source_type'] === 'recommendation_package') {
+            (new AgentMealSourceService())->assertSource($userId, 'recommendation_package', $payload['source_ref'], $payload['source_version']);
             $package = (new RecommendationPackageService())->getBySn($payload['source_ref'], $userId);
             if ((int)$package['package_version'] !== (int)$payload['source_version'] || $package['status'] !== 'available') {
                 throw new DomainException('推荐包不可结算或版本已变化', 40906, 409);
@@ -273,6 +276,9 @@ class CheckoutService
         }
         if ($session['source_type'] === 'cart') {
             (new CartService())->checkoutItems($session['user_id'], $pricing['cart_items'], true);
+            (new AgentMealSourceService())->assertCart($session['user_id'], $pricing['cart_items']);
+        } else {
+            (new AgentMealSourceService())->assertSource($session['user_id'], $session['source_type'], $session['source_ref'], $session['source_version']);
         }
         if ((int)$session['expires_at'] <= time()) {
             throw new DomainException('结算令牌已过期', 40918, 409);

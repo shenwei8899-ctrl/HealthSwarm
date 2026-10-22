@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS `__PREFIX__shop_recommendation_package` (
   `agent_client_id` varchar(64) NOT NULL,
   `agent_task_id` varchar(100) NOT NULL,
   `request_digest` char(64) NOT NULL DEFAULT '',
+  `agent_source_proof_json` mediumtext DEFAULT NULL,
   `user_id` bigint unsigned NOT NULL DEFAULT 0,
   `user_ref` varchar(100) NOT NULL DEFAULT '',
   `family_ref` varchar(100) NOT NULL DEFAULT '',
