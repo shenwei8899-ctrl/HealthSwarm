@@ -42,3 +42,8 @@ if [ "$ready" != true ]; then
 fi
 # 独立测试进程写入挂载的回执目录；API/Worker仍按Compose服务UID运行。
 "${compose[@]}" exec -T -u root api uv run --no-sync --group test python test/support/health_agent_replay_gate.py
+# 故障注入用例独占执行进程，由 fixture 启停实际 Worker；不与常驻 Worker 竞争。
+"${compose[@]}" stop worker
+# fixture 的 Worker 使用与 API 相同的服务 UID，避免创建 root 私有工作目录。
+"${compose[@]}" exec -T -e HEALTH_DAILY_RECOVERY_E2E=true api \
+  uv run --no-sync --group test pytest test/e2e/test_daily_arrangement_recovery_e2e.py test/e2e/test_daily_arrangement_completion_e2e.py -q

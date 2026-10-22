@@ -34,7 +34,12 @@ async def queue_daily_in_session(session, row):
 
 async def request_daily_resume(uid, fid, day, *, retry_failed=False):
     """HTTP只登记后台恢复；读取不会发起模型或采购请求。"""
-    from yuxi.services.daily_arrangement_service import authorize_sources, read_daily_arrangement
+    from yuxi.services.daily_arrangement_service import (
+        authorize_daily_agent_result,
+        authorize_sources,
+        read_daily_arrangement,
+        retained_purchase_payloads,
+    )
 
     task = None
     async with pg_manager.get_async_session_context() as session:
@@ -42,9 +47,29 @@ async def request_daily_resume(uid, fid, day, *, retry_failed=False):
         if row is not None:
             await authorize_sources(session, uid, row)
             if row.status == "failed" and retry_failed:
+                if row.selection.get("agent_result"):
+                    try:
+                        await authorize_daily_agent_result(session, uid, row.selection)
+                    except HealthVisionError as error:
+                        if error.code != "policy_changed":
+                            raise
+                        # 当前成员来源和同意已通过，明确重试才重建旧处理快照。
+                        row.selection = {
+                            **{
+                                key: value
+                                for key, value in row.selection.items()
+                                if key not in {"agent_result", "purchase_catalog_version"}
+                            },
+                            "purchase_payloads": retained_purchase_payloads(
+                                row.selection, row.selection["initial"].get("change_meal")
+                            ),
+                        }
                 row.status = "generating"
                 # 外部服务失败保留模型回执与已发布采购请求，只显式失败的分析才重做。
-                row.selection = {**row.selection, "recovery_count": 0}
+                row.selection = {
+                    **{key: value for key, value in row.selection.items() if key != "failure_message"},
+                    "recovery_count": 0,
+                }
                 if not row.selection.get("agent_result"):
                     attempt = row.selection.get("attempt", 0) + 1
                     row.selection = {**row.selection, "attempt": attempt, "retry_limit": attempt + 2}

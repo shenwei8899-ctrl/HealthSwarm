@@ -7,6 +7,11 @@ services:
   api:
     image: ${YUXI_TEST_API_IMAGE:-yuxi-api:0.7.3}
     environment: &indicator-topic-env
+      HEALTH_DAILY_RULE_CODE: synthetic-daily-fullchain
+      HEALTH_COMMERCE_URL: http://api:8774
+      HEALTH_COMMERCE_CLIENT_ID: synthetic
+      HEALTH_COMMERCE_CLIENT_SECRET: synthetic-catalog-secret
+      HEALTH_COMMERCE_SOURCE_SECRET: synthetic-daily-source-secret-32bytes
       HEALTH_RECIPE_KB_ID: pytest_planner_recipes
       HEALTH_BLOOD_GLUCOSE_KB_IDS: pytest_indicator_glucose,pytest_indicator_common
       HEALTH_BLOOD_LIPIDS_KB_IDS: pytest_indicator_lipids,pytest_indicator_common

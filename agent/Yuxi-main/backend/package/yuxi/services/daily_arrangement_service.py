@@ -29,7 +29,7 @@ from yuxi.services.health_task_service import create_health_task_entry, read_hea
 from yuxi.services.health_task_types import HealthTaskEntryInput
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_business import User
+from yuxi.storage.postgres.models_business import AgentRun, User
 from yuxi.storage.postgres.models_health import (
     HealthDailyArrangement,
     HealthFamilyProfileLink,
@@ -102,8 +102,8 @@ async def start_daily_arrangement(uid, fid, data):
     return result
 
 
-async def resume_daily_arrangement(uid, fid, day, *, retry_failed=False):
-    """POST继续原请求，最终保存与读取分离，GET不发起生成或下单。"""
+async def resume_daily_arrangement(uid, fid, day):
+    """Worker继续已登记请求；失败后的明确重试由HTTP登记用例拥有。"""
     async with pg_manager.get_async_session_context() as db:
         _, row = await DailyArrangementRepository(db, uid, fid).context(day, lock=True)
         if row is None:
@@ -111,25 +111,15 @@ async def resume_daily_arrangement(uid, fid, day, *, retry_failed=False):
         await authorize_sources(db, uid, row)
         if row.status == "ready":
             return row.snapshot
+        if row.selection.get("agent_result") and row.status != "failed":
+            await authorize_daily_agent_result(db, uid, row.selection)
         if row.status == "failed":
-            if not retry_failed:
-                return {
-                    "status": "failed",
-                    "date": day.isoformat(),
-                    "id": row.id,
-                    "message": row.selection.get("failure_message", "今日安排暂未完成，请重试。"),
-                }
-            attempt = row.selection.get("attempt", 0) + 1
-            row.selection = {
-                **{
-                    key: value
-                    for key, value in row.selection.items()
-                    if key not in {"agent_result", "purchase_catalog_version", "failure_message"}
-                },
-                "attempt": attempt,
-                "retry_limit": attempt + 2,
+            return {
+                "status": "failed",
+                "date": day.isoformat(),
+                "id": row.id,
+                "message": row.selection.get("failure_message", "今日安排暂未完成，请重试。"),
             }
-            row.status = "generating"
         selection, rid, sources, version, previous = (
             dict(row.selection),
             row.id,
@@ -372,6 +362,7 @@ async def resume_daily_arrangement(uid, fid, day, *, retry_failed=False):
             return row.snapshot
         if row.selection.get("attempt", 0) != attempt:
             return {"status": "generating", "date": day.isoformat(), "id": rid}
+        await authorize_daily_agent_result(db, uid, row.selection)
         row.snapshot, row.status, row.updated_at = snapshot, "ready", utc_now_naive()
         await authorize_sources(db, uid, row)
     return await read_daily_arrangement(uid, fid, day)
@@ -539,6 +530,29 @@ async def authorize_sources(db, uid, row, *, published=False, allow_changed=Fals
     if changed and not allow_changed:
         raise HealthVisionError("daily_sources_changed", "档案或默认就餐成员已更新，原安排需要重新分析", 409)
     return changed
+
+
+async def authorize_daily_agent_result(db, uid, selection):
+    """恢复和发布沿用原 Run 的处理快照，重验全部就餐成员的当前同意。"""
+    from yuxi.services.health_consultation_service import require_consultation
+
+    recovered = selection["agent_result"]
+    run = await db.get(AgentRun, recovered["run_id"])
+    if (
+        run is None
+        or run.uid != uid
+        or run.agent_slug != "health-meal-planner"
+        or run.status != "completed"
+        or run.request_id != recovered["task_key"]
+    ):
+        raise HealthVisionError("source_invalidated", "原配餐运行已失效，请重新生成安排", 409)
+    processing = run.input_payload.get("health_processing")
+    initial = InitialPlanSelection.model_validate(selection["initial"]).model_dump(mode="json")
+    if not processing or not processing.get("initial_selection_hash"):
+        raise HealthVisionError("source_invalidated", "原配餐来源已变化，请重新生成安排", 409)
+    binding, _ = await require_consultation(db, uid, run.conversation_thread_id, expected=processing, lock=True)
+    if not binding.initial_planner_selection or binding.initial_planner_selection["selection"] != initial:
+        raise HealthVisionError("source_invalidated", "原配餐来源已变化，请重新生成安排", 409)
 
 
 async def publish_daily_purchase(uid, fid, day, meal_type, arrangement_id, version):
