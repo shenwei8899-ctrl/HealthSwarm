@@ -43,8 +43,15 @@ export function protectedDestination(requested, entry) {
   return entry
 }
 function forward(method, options) {
+  // H5 按静态 API 调用导入路由能力；uni[method] 无法被编译器识别。
+  const navigate = {
+    navigateTo: () => uni.navigateTo(options),
+    redirectTo: () => uni.redirectTo(options),
+    reLaunch: () => uni.reLaunch(options),
+    switchTab: () => uni.switchTab(options),
+  }
   forwarding = true
-  try { uni[method](options) } finally { forwarding = false }
+  try { navigate[method]() } finally { forwarding = false }
 }
 export async function checkCurrentEntry(options) {
   if (isMockMode) return
