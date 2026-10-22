@@ -8,17 +8,24 @@ const idempotent = (data) => ({ headers: { 'Idempotency-Key': data.client_reques
 /** 健康接口统一走认证封装，不把私有对象地址暴露给页面。 */
 export const healthVisionApi = {
   agentRunSubmitUrl: '/api/agent/runs',
+  handoffPreview: (id) => apiGet(`${root}/tasks/${encodeURIComponent(id)}/handoff-preview`),
+  confirmHandoff: (id, data) =>
+    apiPost(`${root}/tasks/${encodeURIComponent(id)}/handoffs`, data, idempotent(data)),
   configuration: () => apiGet(`${root}/configuration`),
   configure: (data) => apiPut(`${root}/configuration`, data),
   members: () => apiGet(`${root}/members`),
   indicatorReview: (id, kind, data) =>
     apiPost(`${root}/members/${id}/indicator-reviews/${kind}`, data),
-  prepareNutritionImport: (data) => apiPost(`${root}/nutrition-setup/imports`, data, idempotent(data)),
-  prepareKnowledgeNutrition: (data) => apiPost(`${root}/nutrition-setup/knowledge`, data, idempotent(data)),
-  knowledgeNutritionStatus: (id) => apiGet(`${root}/nutrition-setup/knowledge/tasks/${encodeURIComponent(id)}`),
+  prepareNutritionImport: (data) =>
+    apiPost(`${root}/nutrition-setup/imports`, data, idempotent(data)),
+  prepareKnowledgeNutrition: (data) =>
+    apiPost(`${root}/nutrition-setup/knowledge`, data, idempotent(data)),
+  knowledgeNutritionStatus: (id) =>
+    apiGet(`${root}/nutrition-setup/knowledge/tasks/${encodeURIComponent(id)}`),
   dailySetupReadiness: () => apiGet(`${root}/nutrition-setup/readiness`),
   recipeCommerceSource: (id) => apiGet(`${root}/recipe-commerce-sources/${encodeURIComponent(id)}`),
-  publishRecipeCommerceSource: (id, data) => apiPut(`${root}/recipe-commerce-sources/${encodeURIComponent(id)}`, data),
+  publishRecipeCommerceSource: (id, data) =>
+    apiPut(`${root}/recipe-commerce-sources/${encodeURIComponent(id)}`, data),
   nutritionImport: (id) => apiGet(`${root}/nutrition-setup/imports/${id}`),
   createMember: (data) => apiPost(`${root}/members`, data),
   grant: (id, data) => apiPut(`${root}/members/${id}/grants`, data),
@@ -57,6 +64,12 @@ export const healthVisionApi = {
   mealPlan: (id) => apiGet(`${root}/meal-plans/${id}`),
   mealPlanApproval: (id, version) =>
     apiGet(`${root}/meal-plans/${id}/approval-state?${buildQuery({ version })}`),
+  professionalReviews: (id, inbox = false, offset = 0) =>
+    apiGet(`${root}/members/${id}/professional-reviews?${buildQuery({ inbox, offset })}`),
+  reviewWorkbench: (id) => apiGet(`${root}/professional-reviews/${id}/workbench`),
+  reviewAction: (id, action, data) => apiPost(`${root}/professional-reviews/${id}/${action}`, data),
+  checkMealPlan: (id, data) => apiPost(`${root}/meal-plans/${id}/quality-checks`, data),
+  qualityCheck: (id) => apiGet(`${root}/quality-checks/${id}`),
   saveMealPlan: (id, data) => apiPost(`${root}/members/${id}/meal-plans`, data, idempotent(data)),
   swapMealPlan: (id, data) =>
     apiPost(`${root}/meal-plans/${id}/swap`, data, {

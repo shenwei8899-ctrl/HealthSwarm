@@ -4,6 +4,7 @@ import { mealLabels, nutrientLabels, nutrientText } from '@/utils/healthVision'
 defineProps({
   snapshot: { type: Object, required: true },
   ruleChecked: { type: Boolean, default: false },
+  reviewContext: { type: Boolean, default: false },
   editable: { type: Boolean, default: false }
 })
 defineEmits(['swap'])
@@ -18,12 +19,15 @@ function gramsText(value) {
 
 <template>
   <section class="plan-snapshot">
-    <div class="status">
+    <p v-if="reviewContext" class="muted">
+      本次检查的历史餐单快照；审核状态以上方当前申请为准。计划摄入不计入实际饮食。
+    </p>
+    <div v-else class="status">
       <a-tag>草稿</a-tag
       ><a-tag color="orange">{{ ruleChecked ? '按批准规则检查' : '未个体适配' }}</a-tag
       ><a-tag color="orange">未专业审核</a-tag>
     </div>
-    <p class="muted">
+    <p v-if="!reviewContext" class="muted">
       {{
         ruleChecked
           ? '此预览按列明专业来源与批准规则检查，营养依据计划份量计算，仍需专业审核。'

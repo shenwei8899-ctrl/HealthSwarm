@@ -300,6 +300,63 @@ async def read_professional_review(uid, case_id):
         return await review_case_result(session, case, check)
 
 
+async def list_professional_reviews(uid, member_id, *, inbox=False, limit=20, offset=0):
+    """申请和复核列表逐项复用真实读取边界，不返回无权候选或总数。"""
+    async with pg_manager.get_async_session_context() as session:
+        health = HealthVisionRepository(session)
+        await health.authorize(member_id, uid, "profile_view")
+        await health.authorize(member_id, uid, "professional_review" if inbox else "diet_edit")
+        repo = HealthQualityRepository(session)
+        if inbox:
+            await repo.reviewer(uid)
+        ids = await repo.review_candidates(uid, member_id, inbox, limit, offset)
+    items = []
+    for case_id in ids[:limit]:
+        try:
+            item = await read_professional_review(uid, case_id)
+        except HealthVisionError as error:
+            if error.status not in {403, 404}:
+                raise
+            continue
+        items.append(
+            {
+                key: item[key]
+                for key in (
+                    "review_id",
+                    "version",
+                    "status",
+                    "plan_id",
+                    "plan_version",
+                    "safety_status",
+                    "invalidation_reason",
+                )
+            }
+        )
+    return {"items": items, "next_offset": offset + limit if len(ids) > limit else None}
+
+
+async def read_review_workbench(uid, case_id):
+    """工作台加载历史来源与当前可执行动作，专业批准继续使用原事务。"""
+    async with pg_manager.get_async_session_context() as session:
+        case, check, reviewer = await review_case_in_session(session, uid, case_id)
+        revision = await HealthQualityRepository(session).reviewed_plan_revision(check)
+        actions = []
+        if reviewer and case.status == "pending_review":
+            actions = ["return"]
+            if check.snapshot["safety_check"]["status"] == "passed":
+                actions.append("approve")
+        elif not reviewer and case.status in {"draft", "returned"}:
+            actions = ["submit"]
+        return {
+            "review": await review_case_result(session, case, check),
+            "check": quality_result(check),
+            "plan_snapshot": deepcopy(revision.snapshot) if revision else None,
+            "reviewed_basis": await HealthQualityRepository(session).reviewed_basis(check),
+            "allowed_actions": actions,
+            "is_applicant": not reviewer,
+        }
+
+
 async def change_professional_review(uid, case_id, action, data):
     """提交、退回和批准在相同版本与幂等边界内执行。"""
     async with pg_manager.get_async_session_context() as session:

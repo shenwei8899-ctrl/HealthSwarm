@@ -13,6 +13,7 @@ from server.utils.auth_middleware import get_admin_user, get_required_user
 from yuxi.services.conversation_purchase_types import ConversationPurchaseInput
 from yuxi.services.conversation_purchase_service import read_conversation_purchase, publish_conversation_purchase
 from yuxi.services.health_vision_service import health_vision_service as service
+from yuxi.services.health_handoff_service import HandoffConfirmation, preview_handoff, confirm_handoff
 from yuxi.services.health_vision_types import DietLogPage, VisionListPage
 from yuxi.services.health_diet_correction_types import DietLogCorrection
 from yuxi.services.health_diet_correction_service import correct_diet_log, diet_log_revisions
@@ -139,6 +140,8 @@ from yuxi.services.health_quality_service import (
     check_saved_plan,
     read_quality_check,
     read_professional_review,
+    list_professional_reviews,
+    read_review_workbench,
     change_professional_review,
     approved_plan_state,
     create_quality_conversation,
@@ -271,6 +274,29 @@ def require_request_key(request_id: UUID, header: str | None):
     """业务幂等键须与 HTTP 请求头一致。"""
     if header != str(request_id):
         raise HealthVisionError("request_key_mismatch", "Idempotency-Key 必须与 client_request_id 一致")
+
+
+@health_vision.get("/tasks/{request_id}/handoff-preview")
+async def task_handoff_preview(
+    response: Response,
+    request_id: str = Path(min_length=1, max_length=64),
+    user: User = Depends(get_required_user),
+):
+    """预览有效来源及目标用途，不创建新任务或处理同意。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await preview_handoff(user.uid, request_id)
+
+
+@health_vision.post("/tasks/{request_id}/handoffs", status_code=201)
+async def task_handoff_confirm(
+    data: HandoffConfirmation,
+    request_id: str = Path(min_length=1, max_length=64),
+    idempotency_key: str | None = Header(default=None),
+    user: User = Depends(get_required_user),
+):
+    """明确确认后创建固定目标会话，复用既有用途审批和独立同意。"""
+    require_request_key(data.client_request_id, idempotency_key)
+    return await confirm_handoff(user.uid, request_id, data)
 
 
 def require_match(version: int, header: str | None):
@@ -564,6 +590,27 @@ async def plan_quality_result(check_id: UUID, user: User = Depends(get_required_
 async def professional_review_result(review_id: UUID, user: User = Depends(get_required_user)):
     """申请人或有授权专业人员查看审核历史。"""
     return await read_professional_review(user.uid, str(review_id))
+
+
+@health_vision.get("/members/{member_id}/professional-reviews")
+async def professional_review_list(
+    member_id: UUID,
+    response: Response,
+    inbox: bool = False,
+    limit: int = Query(default=20, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(get_required_user),
+):
+    """列出当前成员的自有申请或有权复核对象。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await list_professional_reviews(user.uid, str(member_id), inbox=inbox, limit=limit, offset=offset)
+
+
+@health_vision.get("/professional-reviews/{review_id}/workbench")
+async def professional_review_workbench(review_id: UUID, response: Response, user: User = Depends(get_required_user)):
+    """读取受权原版本资料及当前动作，不由前端判断审核资格。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await read_review_workbench(user.uid, str(review_id))
 
 
 @health_vision.post("/professional-reviews/{review_id}/{action}")

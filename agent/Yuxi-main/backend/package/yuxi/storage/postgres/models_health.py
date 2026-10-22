@@ -164,6 +164,7 @@ class HealthConsultation(Base):
     purchase_selection = Column(JSON_VALUE)
     personal_target_selection = Column(JSON_VALUE)
     indicator_selection = Column(JSON_VALUE)
+    handoff_selection = Column(JSON_VALUE)
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 

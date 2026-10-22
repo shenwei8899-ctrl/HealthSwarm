@@ -12,11 +12,11 @@ async def read_indicator_review(uid, member_id, kind, selection):
         return await read_indicator_in_session(session, uid, member_id, kind, selection.model_dump(mode="json"))
 
 
-async def read_indicator_in_session(session, uid, member_id, kind, selection):
+async def read_indicator_in_session(session, uid, member_id, kind, selection, *, period=None):
     """创建咨询和直接回顾使用同一来源投影。"""
     repo = {
         "blood_glucose": HealthBloodGlucoseRepository,
         "blood_lipids": HealthBloodLipidsRepository,
         "blood_pressure": HealthBloodPressureRepository,
     }[kind](session)
-    return await repo.read(uid, member_id, selection=selection)
+    return await repo.read(uid, member_id, selection=selection, period=period)

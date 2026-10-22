@@ -52,6 +52,7 @@
       />
 
       <!-- 错误提示块 -->
+      <HealthAgentHandoff v-if="handoffRequestId" :request-id="handoffRequestId" />
       <div v-if="displayError" class="error-hint">
         <span v-if="getErrorMessage">{{ getErrorMessage }}</span>
         <span v-else-if="message.error_type === 'interrupted'">回答生成已中断</span>
@@ -127,6 +128,8 @@
 <script setup>
 import { computed, ref, onUnmounted } from 'vue'
 import RefsComponent from '@/components/RefsComponent.vue'
+import HealthAgentHandoff from '@/components/health/HealthAgentHandoff.vue'
+import { handoffSourceRequestId } from '@/utils/healthHandoff'
 import { Check, Copy, X } from '@lucide/vue'
 import ToolCallsGroupComponent from '@/components/ToolCallsGroupComponent.vue'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
@@ -319,6 +322,15 @@ const parsedData = computed(() => {
     reasoning_content: reasoningContent
   }
 })
+const handoffRequestId = computed(() =>
+  handoffSourceRequestId(
+    props.message,
+    props.run,
+    props.agentSlug,
+    props.isProcessing,
+    displayError.value
+  )
+)
 const dietAnalysisResult = computed(() =>
   publishedDietAnalysisResult(props.message, props.run, props.agentSlug, props.isProcessing)
 )

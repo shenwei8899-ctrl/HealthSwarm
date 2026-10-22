@@ -157,82 +157,85 @@ async def create_health_task_entry(uid: str, member_id: str, data: HealthTaskEnt
 async def read_health_task(uid: str, request_id: str) -> HealthTaskResult:
     """查询既有 Request 的当前执行事实，只公开完成且当前来源有效的结果。"""
     async with pg_manager.get_async_session_context() as session:
-        repo = HealthTaskRepository(session)
-        request, binding, run = await repo.request_context(uid, request_id)
-        task_type = task_type_for_binding(request.agent_slug, binding)
-        response = HealthTaskResult(
-            request_id=request.request_id,
-            task_type=task_type,
-            agent_slug=request.agent_slug,
-            thread_id=request.conversation_thread_id,
-            member_id=binding.member_id,
-            request_status=request.status,
-            execution_status=run.status if run else "not_dispatched",
-            run_id=run.id if run else None,
-            request_events_url=f"/api/agent/requests/{request.request_id}/events"
-            if request.status == "queued"
-            else None,
-            run_events_url=f"/api/agent/runs/{run.id}/events" if run else None,
-            query_url=f"/api/health/v1/tasks/{request.request_id}",
-        )
-        terminal = run.status if run else request.status
-        error_codes = {
-            "failed": "execution_failed",
-            "rejected": "request_rejected",
-            "cancelled": "execution_cancelled",
-            "interrupted": "execution_interrupted",
-        }
-        if terminal in error_codes:
-            response.result = HealthTaskError(code=error_codes[terminal])
-            return response
-        if run is None or run.status != "completed":
-            return response
+        return await read_health_task_in_session(session, uid, request_id)
 
-        message = await repo.final_message(run)
-        processing = (run.input_payload or {}).get("health_processing")
-        if not isinstance(processing, dict):
-            raise HealthVisionError("policy_changed", "健康任务缺少处理审批快照", 409)
-        current_binding, _ = await require_consultation(
-            session, uid, run.conversation_thread_id, expected=processing, lock=True
-        )
-        if current_binding.conversation_id != run.conversation_id or current_binding.member_id != binding.member_id:
-            raise HealthVisionError("source_invalidated", "健康任务来源绑定已变化", 410)
-        response.final_message_id = message.id
-        if run.agent_slug in EDUCATION_HEALTH_AGENTS:
-            evidence = HealthEvidenceRepository(session)
-            ids = answer_citation_ids(message.content)
-            citations = await evidence.validate_citations(ids, binding, uid, agent_slug=run.agent_slug, run_id=run.id)
-            from yuxi.services.health_family_kb_service import validate_family_kb_answer
 
-            await validate_family_kb_answer(session, run, current_binding, message.content)
-            from yuxi.services.conversation_purchase_service import offers_for_answer
-
-            answer, offers = await offers_for_answer(session, run, current_binding, message.content)
-            response.result = HealthTaskGeneralAnswer(
-                answer=answer, citations=[citations[citation_id] for citation_id in ids], purchase_offers=offers
-            )
-            return response
-
-        try:
-            payload = json.loads(message.content)
-            if not isinstance(payload, dict):
-                raise ValueError("结果不是业务对象")
-        except (TypeError, ValueError):
-            raise HealthVisionError("answer_unavailable", "健康任务最终结果无法解析", 409) from None
-        await validate_task_business_result(session, run, current_binding, payload, message.content)
-        if payload.get("status") == "needs_input" or payload.get("result_type") == "needs_input":
-            response.result = HealthTaskNeedsInput(questions=payload["questions"])
-        else:
-            result_type = {
-                PLANNER_SLUG: "meal_plan_preview",
-                ANALYST_SLUG: "diet_analysis",
-                QUALITY_SLUG: "quality_check",
-                PURCHASE_SLUG: "ingredient_requirements",
-            }[run.agent_slug]
-            if payload.get("result_type") == "meal_feedback":
-                result_type = "meal_feedback"
-            response.result = HealthTaskValidatedResult(result_type=result_type, data=payload)
+async def read_health_task_in_session(session, uid: str, request_id: str) -> HealthTaskResult:
+    """交接与普通结果读取在所属事务中共享同一校验。"""
+    repo = HealthTaskRepository(session)
+    request, binding, run = await repo.request_context(uid, request_id)
+    task_type = task_type_for_binding(request.agent_slug, binding)
+    response = HealthTaskResult(
+        request_id=request.request_id,
+        task_type=task_type,
+        agent_slug=request.agent_slug,
+        thread_id=request.conversation_thread_id,
+        member_id=binding.member_id,
+        request_status=request.status,
+        execution_status=run.status if run else "not_dispatched",
+        run_id=run.id if run else None,
+        request_events_url=f"/api/agent/requests/{request.request_id}/events" if request.status == "queued" else None,
+        run_events_url=f"/api/agent/runs/{run.id}/events" if run else None,
+        query_url=f"/api/health/v1/tasks/{request.request_id}",
+    )
+    terminal = run.status if run else request.status
+    error_codes = {
+        "failed": "execution_failed",
+        "rejected": "request_rejected",
+        "cancelled": "execution_cancelled",
+        "interrupted": "execution_interrupted",
+    }
+    if terminal in error_codes:
+        response.result = HealthTaskError(code=error_codes[terminal])
         return response
+    if run is None or run.status != "completed":
+        return response
+
+    message = await repo.final_message(run)
+    processing = (run.input_payload or {}).get("health_processing")
+    if not isinstance(processing, dict):
+        raise HealthVisionError("policy_changed", "健康任务缺少处理审批快照", 409)
+    current_binding, _ = await require_consultation(
+        session, uid, run.conversation_thread_id, expected=processing, lock=True
+    )
+    if current_binding.conversation_id != run.conversation_id or current_binding.member_id != binding.member_id:
+        raise HealthVisionError("source_invalidated", "健康任务来源绑定已变化", 410)
+    response.final_message_id = message.id
+    if run.agent_slug in EDUCATION_HEALTH_AGENTS:
+        evidence = HealthEvidenceRepository(session)
+        ids = answer_citation_ids(message.content)
+        citations = await evidence.validate_citations(ids, binding, uid, agent_slug=run.agent_slug, run_id=run.id)
+        from yuxi.services.health_family_kb_service import validate_family_kb_answer
+
+        await validate_family_kb_answer(session, run, current_binding, message.content)
+        from yuxi.services.conversation_purchase_service import offers_for_answer
+
+        answer, offers = await offers_for_answer(session, run, current_binding, message.content)
+        response.result = HealthTaskGeneralAnswer(
+            answer=answer, citations=[citations[citation_id] for citation_id in ids], purchase_offers=offers
+        )
+        return response
+
+    try:
+        payload = json.loads(message.content)
+        if not isinstance(payload, dict):
+            raise ValueError("结果不是业务对象")
+    except (TypeError, ValueError):
+        raise HealthVisionError("answer_unavailable", "健康任务最终结果无法解析", 409) from None
+    await validate_task_business_result(session, run, current_binding, payload, message.content)
+    if payload.get("status") == "needs_input" or payload.get("result_type") == "needs_input":
+        response.result = HealthTaskNeedsInput(questions=payload["questions"])
+    else:
+        result_type = {
+            PLANNER_SLUG: "meal_plan_preview",
+            ANALYST_SLUG: "diet_analysis",
+            QUALITY_SLUG: "quality_check",
+            PURCHASE_SLUG: "ingredient_requirements",
+        }[run.agent_slug]
+        if payload.get("result_type") == "meal_feedback":
+            result_type = "meal_feedback"
+        response.result = HealthTaskValidatedResult(result_type=result_type, data=payload)
+    return response
 
 
 def task_type_for_binding(slug, binding):

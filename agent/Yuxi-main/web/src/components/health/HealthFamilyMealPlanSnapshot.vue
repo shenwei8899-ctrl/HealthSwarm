@@ -4,12 +4,16 @@ import { mealLabels, nutrientLabels, nutrientText } from '@/utils/healthVision'
 const props = defineProps({
   snapshot: { type: Object, required: true },
   members: { type: Array, default: () => [] },
-  ruleChecked: { type: Boolean, default: false }
+  ruleChecked: { type: Boolean, default: false },
+  reviewContext: { type: Boolean, default: false }
 })
 
 /** 显示已授权成员名称，未知身份不从营养或份量推断。 */
 function memberName(id) {
-  return props.members.find((member) => member.id === id)?.display_name || '所选成员'
+  return (
+    props.members.find((member) => member.id === id)?.display_name ||
+    (props.reviewContext ? `成员 ${id}` : '所选成员')
+  )
 }
 /** 服务端计划克数保留未知值，绝不默认均分。 */
 function gramsText(value) {
@@ -21,12 +25,15 @@ function gramsText(value) {
 
 <template>
   <section class="family-snapshot" aria-label="家庭餐单快照">
-    <div class="status">
+    <p v-if="reviewContext" class="muted">
+      本次检查的历史家庭餐单；审核状态以上方当前申请为准。计划摄入不计入实际饮食。
+    </p>
+    <div v-else class="status">
       <a-tag>草稿</a-tag>
       <a-tag color="orange">{{ ruleChecked ? '按批准规则逐人检查' : '未个体适配' }}</a-tag>
       <a-tag color="orange">未专业审核</a-tag>
     </div>
-    <p class="muted">
+    <p v-if="!reviewContext" class="muted">
       按各成员明确的计划份量计算。家庭合计包含多人，个人只统计列明的参加餐次；保存后仍需专业审核，不计入实际饮食。
     </p>
     <h4>家庭计划合计（多人）</h4>

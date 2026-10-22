@@ -107,7 +107,10 @@ async def test_private_history_cannot_become_generic_when_original_safe_selectio
 
     async def scalar(statement):
         """独立目标依赖无行，safe依赖按本例真实谓词返回。"""
-        if "personal_target_selection_hash" in statement.compile().params.values():
+        if any(
+            key in statement.compile().params.values()
+            for key in ("personal_target_selection_hash", "handoff_selection_hash")
+        ):
             assert "agent_runs.conversation_id" in str(statement)
             assert binding.conversation_id in statement.compile().params.values()
             return None

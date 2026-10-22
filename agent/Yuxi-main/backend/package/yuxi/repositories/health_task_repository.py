@@ -1,5 +1,8 @@
 """健康任务只读取当前请求的执行Owner与权威最终消息。"""
 
+from sqlalchemy import select
+from yuxi.storage.postgres.models_health import HealthBloodGlucoseUse, HealthBloodLipidsUse, HealthBloodPressureUse
+
 from yuxi.repositories.agent_run_output_repository import AgentRunOutputRepository
 from yuxi.repositories.agent_run_repository import AgentRunRepository
 from yuxi.repositories.agent_run_request_repository import AgentRunRequestRepository
@@ -61,3 +64,15 @@ class HealthTaskRepository:
         ):
             raise HealthVisionError("answer_unavailable", "健康任务缺少有效最终结果", 409)
         return message
+
+    async def indicator_receipt(self, run_id, kind):
+        """交接必须对应该任务唯一冻结实测范围，不把一般科普扩为资料读取。"""
+        model = {
+            "blood_glucose": HealthBloodGlucoseUse,
+            "blood_lipids": HealthBloodLipidsUse,
+            "blood_pressure": HealthBloodPressureUse,
+        }[kind]
+        rows = list(await self.session.scalars(select(model).where(model.run_id == run_id)))
+        if len(rows) != 1:
+            raise HealthVisionError("handoff_source_not_ready", "请先完成明确范围的指标记录回顾", 409)
+        return rows[0]

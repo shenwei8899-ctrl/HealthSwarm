@@ -21,6 +21,63 @@ def replay_response(authorization, body):
         raise ValueError("synthetic_model_required")
     messages = body.get("messages", [])
     user = next((message for message in reversed(messages) if message.get("role") == "user"), {})
+    # 交接验收沿用独立饮食/配餐 oracle；统一合成处理方不会改变来源 Run 的审批摘要。
+    query = str(user.get("content", ""))
+    if query.startswith("HEALTH_DIET_ANALYSIS_E2E:"):
+        from health_diet_analysis_replay_server import MODEL as analyst_model, replay_delta
+
+        delta, answered = replay_delta("Bearer synthetic-analyst-key", {**body, "model": analyst_model})
+        return query.split(":")[1], "analyst", "handoff", "answer" if answered else "tool", delta
+    if query.startswith("HEALTH_MEAL_PLANNER_E2E:"):
+        from health_meal_planner_replay_server import MODEL as planner_model, replay_delta
+
+        systems = [str(m.get("content", "")) for m in messages if m.get("role") == "system"]
+        transferred = [
+            m.split("当前角色原有用途与工具边界继续生效：\n", 1)[1]
+            for m in systems
+            if "当前角色原有用途与工具边界继续生效：\n" in m
+        ]
+        summary = json.JSONDecoder().raw_decode(transferred[0])[0] if len(transferred) == 1 else {}
+        if summary.get("scope") != "confirmed_period" or summary.get("window", {}).get("period_days") != 7:
+            raise ValueError("frozen_period_handoff_required")
+        if (
+            "feedback" in summary
+            or "answer" in summary
+            or summary["nutrition"]["totals"]["sodium_mg"]["recorded_total"] is not None
+        ):
+            raise ValueError("minimal_facts_with_unknowns_required")
+        delta, answered = replay_delta("Bearer synthetic-planner-key", {**body, "model": planner_model})
+        return query.split(":")[1], "planner", "handoff", "answer" if answered else "tool", delta
+    handoff = re.fullmatch(r"HANDOFF_E2E:([0-9a-f]{32})", str(user.get("content", "")))
+    if handoff:
+        systems = [str(m.get("content", "")) for m in messages if m.get("role") == "system"]
+        transferred = [
+            m.split("当前角色原有用途与工具边界继续生效：\n", 1)[1]
+            for m in systems
+            if "当前角色原有用途与工具边界继续生效：\n" in m
+        ]
+        if len(transferred) != 1:
+            raise ValueError("confirmed_handoff_required")
+        summary = json.JSONDecoder().raw_decode(transferred[0])[0]
+        if set(summary) != {"kind", "period", "records", "truncated", "notice"}:
+            raise ValueError("minimal_handoff_required")
+        field, expected = {
+            "blood_glucose": ("glucose", 5.5),
+            "blood_lipids": ("tc", 4.8),
+            "blood_pressure": ("systolic", 120),
+        }[summary["kind"]]
+        if summary["records"][0][field] != expected:
+            raise ValueError("synthetic_record_required")
+        names = {tool.get("function", {}).get("name") for tool in body.get("tools", [])}
+        if "query_reviewed_nutrition_knowledge" not in names or f"get_member_{summary['kind']}_records" not in names:
+            raise ValueError("target_tools_required")
+        return (
+            handoff[1],
+            "handoff",
+            "confirmed",
+            "answer",
+            {"role": "assistant", "content": "已收到用户确认的合成指标记录，仍仅作一般科普解释。"},
+        )
     marker = re.fullmatch(
         r"INDICATOR_E2E:([0-9a-f]{32}):(blood_glucose|blood_lipids|blood_pressure):(read|updated|missing|education)",
         str(user.get("content", "")),
@@ -226,7 +283,9 @@ class IndicatorReplayHandler(BaseHTTPRequestHandler):
                 raise ValueError("invalid_length")
             body = json.loads(self.rfile.read(length))
             token, kind, mode, phase, delta = replay_response(self.headers.get("authorization"), body)
-        except (ValueError, KeyError, TypeError, IndexError):
+        except (ValueError, KeyError, TypeError, IndexError) as error:
+            reason = str(error)
+            print(reason if re.fullmatch(r"[a-z_]+", reason) else type(error).__name__, flush=True)
             self.write_json(422, {"error": "outside_synthetic_contract"})
             return
         with LOCK:

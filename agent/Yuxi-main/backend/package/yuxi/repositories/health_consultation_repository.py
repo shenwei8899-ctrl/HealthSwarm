@@ -153,6 +153,25 @@ class HealthConsultationRepository:
         if binding is None:
             raise HealthVisionError("not_found", "专属咨询不存在或无权访问", 404)
         conversation = await self.session.get(Conversation, binding.conversation_id)
+        if getattr(binding, "handoff_selection", None) is not None:
+            from yuxi.services.health_handoff_service import validate_handoff_selection
+
+            if conversation.agent_id not in {CONSULTATION_SLUG, PLANNER_SLUG}:
+                raise HealthVisionError("source_invalidated", "交接不属于支持的目标角色", 410)
+            await validate_handoff_selection(
+                self.session, uid, binding.member_id, conversation.agent_id, binding.handoff_selection
+            )
+        elif preview_history:
+            had_handoff = await self.session.scalar(
+                select(AgentRun.id)
+                .where(
+                    AgentRun.conversation_id == binding.conversation_id,
+                    AgentRun.input_payload["health_processing"]["handoff_selection_hash"].as_string().is_not(None),
+                )
+                .limit(1)
+            )
+            if had_handoff is not None:
+                raise HealthVisionError("source_invalidated", "历史交接来源已丢失，请重新确认", 410)
         target_selection = getattr(binding, "personal_target_selection", None)
         if target_selection is not None and (
             conversation.agent_id != ANALYST_SLUG

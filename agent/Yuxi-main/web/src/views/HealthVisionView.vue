@@ -11,6 +11,7 @@ import { message, Modal } from 'ant-design-vue'
 import { useUserStore } from '@/stores/user'
 import PageHeader from '@/components/shared/PageHeader.vue'
 import ReportReview from '@/components/health/ReportReview.vue'
+import HealthProfessionalReview from '@/components/health/HealthProfessionalReview.vue'
 import MealReview from '@/components/health/MealReview.vue'
 import HealthVisionAdmin from '@/components/health/HealthVisionAdmin.vue'
 import HealthVisionStatistics from '@/components/health/HealthVisionStatistics.vue'
@@ -99,6 +100,8 @@ const grantModal = ref(false)
 const grantActor = ref('')
 const grantScopes = ref([])
 const scopeLabels = {
+  profile_view: '查看档案',
+  professional_review: '专业复核（另需资格）',
   report_upload: '上传报告',
   report_view: '查看报告',
   profile_edit: '复核报告 / 维护档案',
@@ -117,6 +120,7 @@ const tabs = computed(() => [
   { key: 'profile', label: '本人档案' },
   { key: 'meal', label: '饮食照片' },
   { key: 'plans', label: '餐单草稿' },
+  { key: 'reviews', label: '专业复核' },
   { key: 'analysis', label: '饮食分析' },
   { key: 'indicators', label: '指标助手' },
   { key: 'records', label: '已确认记录' },
@@ -950,6 +954,14 @@ async function retryJob(job) {
             @plans="activeTab = 'plans'"
           />
         </div>
+        <HealthProfessionalReview
+          v-else-if="tab === 'reviews'"
+          :key="`reviews-${memberId}`"
+          :member-id="memberId"
+          :scopes="member?.scopes || []"
+          @profile="activeTab = 'profile'"
+          @plans="activeTab = 'plans'"
+        />
         <HealthMemoryDaily
           v-else-if="tab === 'memory'"
           :member-id="memberId"
