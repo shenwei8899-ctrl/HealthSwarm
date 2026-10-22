@@ -84,7 +84,7 @@ function saveExtras() {
   </view>
 
   <view class="health-card">
-    <view class="card-heading"><text class="card-title">菜系偏好</text><text class="multiple-hint">必填 · 可多选</text></view>
+    <view class="card-heading"><text class="card-title">菜系偏好</text><text class="multiple-hint">可后补 · 可多选</text></view>
     <view class="option-grid"><button v-for="item in cuisineOptions" :key="item" :class="{ selected: member.cuisines.includes(item) }" :aria-pressed="member.cuisines.includes(item)" @click="toggle(member.cuisines, item)">{{ item }}</button><button @click="openExtras('cuisines')">其他</button></view>
   </view>
 

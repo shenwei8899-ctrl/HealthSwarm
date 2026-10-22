@@ -12,9 +12,10 @@ export function onboardingIssue(member, throughStep = 2) {
   if (!['none', 'set'].includes(member.healthStatus)) return { step: 1, message: '请选择是否有已知基础病' }
   if (member.healthStatus === 'set' && (!member.conditions?.length || member.conditions.some(value => !value.trim()) ||
     member.conditions.includes('其他') && !member.otherCondition?.trim())) return { step: 1, message: '请补充具体基础病' }
-  for (const [field, label] of [['goals', '饮食目标'], ['tastePreferences', '口味偏好'], ['cuisines', '菜系偏好']]) {
+  for (const [field, label] of [['goals', '饮食目标'], ['tastePreferences', '口味偏好']]) {
     if (!answered(member[field])) return { step: 1, message: '请选择或补充' + label }
   }
+  if (member.cuisines?.length && !answered(member.cuisines)) return { step: 1, message: '请补充具体菜系偏好' }
   if (throughStep < 2) return null
   for (const cfg of Object.values(restrictionFields)) {
     if (!['none', 'set'].includes(member[cfg.status])) return { step: 2, message: '请选择' + cfg.title + '状态' }

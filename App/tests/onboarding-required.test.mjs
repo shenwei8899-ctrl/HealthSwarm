@@ -37,7 +37,6 @@ const missing = [
   ['出生日期', m => m.birthDate = '', 0],
   ['已知基础病', m => m.healthStatus = 'unknown', 1],
   ['口味偏好', m => m.tastePreferences = [], 1],
-  ['菜系偏好', m => m.cuisines = [], 1],
   ['饮食目标', m => m.goals = [], 1],
   ['食物过敏', m => m.allergyStatus = 'unknown', 2],
   ['食物不耐受', m => m.intoleranceStatus = 'unknown', 2],
@@ -61,6 +60,17 @@ test('a complete explicit no-restriction profile can finish without height weigh
   assert.equal(p.calls.saves[0].members[0].height, ''); p.dispose()
 })
 
+for (const cuisines of [[], ['不限菜系'], ['粤菜']]) {
+  test(`onboarding preserves optional cuisine without inferring a preference: ${JSON.stringify(cuisines)}`, async () => {
+    const member = completeMember(); member.cuisines = cuisines
+    const p = page([member]); p.step.value = 1; p.next()
+    assert.equal(p.step.value, 2); p.next(); await nextTick()
+    assert.equal(p.calls.saves.length, 1)
+    assert.deepEqual(p.calls.saves[0].members[0].cuisines, cuisines)
+    assert.deepEqual(p.calls.redirects, ['/pages/chat/index?from=onboarding']); p.dispose()
+  })
+}
+
 for (const mutate of [
   m => { m.healthStatus = 'set'; m.conditions = [] },
   m => { m.healthStatus = 'set'; m.conditions = ['其他']; m.otherCondition = '  ' },
@@ -71,6 +81,8 @@ for (const mutate of [
   m => m.birthDate = '2099-01-01',
   m => m.birthDate = '1995-02-30',
   m => m.goals = ['其他'],
+  m => m.cuisines = ['其他'],
+  m => m.cuisines = ['自定义'],
 ]) {
   test(`specific details and valid birthday are required: ${mutate.toString()}`, async () => {
     const member = completeMember(); mutate(member)
@@ -80,7 +92,7 @@ for (const mutate of [
 }
 
 test('personal mode cannot hide an incomplete retained member at final submission', async () => {
-  const relative = completeMember('relative'); relative.cuisines = []
+  const relative = completeMember('relative'); relative.tastePreferences = []
   const p = page([completeMember(), relative]); p.mode('个人使用'); p.step.value = 2; p.next(); await nextTick()
   assert.equal(p.calls.saves.length, 0); assert.equal(p.current.value.id, 'relative')
   assert.equal(p.profile.value.usageMode, '家庭使用'); assert.equal(p.step.value, 1); p.dispose()
