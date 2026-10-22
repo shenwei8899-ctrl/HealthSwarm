@@ -10,12 +10,13 @@ import { rememberInvitation, pendingInvitation, clearInvitation } from '../src/s
 
 function storage() {
   const values=new Map(),redirects=[]
-  globalThis.uni={getStorageSync:key=>values.get(key),setStorageSync:(key,value)=>values.set(key,structuredClone(value)),reLaunch:({url})=>redirects.push(url),navigateTo:({url})=>redirects.push(url)}
+  const navigate=options=>{redirects.push(options.url);options.success?.({errMsg:'navigate:ok'});options.complete?.({errMsg:'navigate:ok'})}
+  globalThis.uni={getStorageSync:key=>values.get(key),setStorageSync:(key,value)=>values.set(key,structuredClone(value)),reLaunch:navigate,navigateTo:navigate}
   return {values,redirects}
 }
 function navigation(resolveAppEntry) {
   const source=readFileSync(new URL('../src/services/navigation.js',import.meta.url),'utf8').replace(/^import .*$/gm,'').replace(/export /g,'')
-  return new Function('isMockMode','isCommerceEnabled','resolveAppEntry','captureInvitation','rememberInvitation',`${source};return {canOpenPage,protectedDestination,checkCurrentEntry,installRouteGuards}`)(false,true,resolveAppEntry,()=>{},rememberInvitation)
+  return new Function('isMockMode','isCommerceEnabled','resolveAppEntry','captureInvitation','rememberInvitation','storageContext','getSession',`${source};return {canOpenPage,protectedDestination,checkCurrentEntry,installRouteGuards}`)(false,true,resolveAppEntry,()=>{},rememberInvitation,storageContext,getSession)
 }
 test('onboarding cannot create a separate household while an invitation is pending',async()=>{
   storage();rememberInvitation('family_'+ 'b'.repeat(48))
@@ -79,6 +80,40 @@ test('App foreground restoration and page request retain identity revision until
   setSession({...getSession(),token:'new-token'},{preserveRevision:true})
   assert.notEqual(sessionRevision(),revision)
   delete globalThis.getCurrentPages
+})
+
+test('concurrent foreground checks issue one native navigation until completion',async()=>{
+  storage();const calls=[]
+  uni.reLaunch=options=>calls.push(options)
+  globalThis.getCurrentPages=()=>[{route:'pages/chat/index',options:{}}]
+  const nav=navigation(async()=>'/pages/onboarding/index')
+  const first=nav.checkCurrentEntry({path:'pages/chat/index'}),second=nav.checkCurrentEntry({path:'pages/chat/index'})
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(calls.length,1)
+  const third=nav.checkCurrentEntry({path:'pages/chat/index'})
+  calls[0].success({errMsg:'reLaunch:ok'});calls[0].complete({errMsg:'reLaunch:ok'})
+  await Promise.all([first,second,third]);delete globalThis.getCurrentPages
+})
+
+test('duplicate page navigations settle both callers through one native operation',async()=>{
+  storage();const calls=[],hooks={},settled=[]
+  uni.addInterceptor=(method,hook)=>hooks[method]=hook
+  uni.reLaunch=options=>calls.push(options)
+  const nav=navigation(async()=>'/pages/chat/index');nav.installRouteGuards()
+  for(const id of ['first','second'])hooks.reLaunch.invoke({url:'/pages/chat/index',success:()=>settled.push(id),complete:()=>settled.push(id+'-complete')})
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(calls.length,1)
+  calls[0].success({errMsg:'reLaunch:ok'});calls[0].complete({errMsg:'reLaunch:ok'})
+  await new Promise(resolve=>setImmediate(resolve))
+  assert.deepEqual(settled.sort(),['first','first-complete','second','second-complete'])
+})
+
+test('an account switch during entry resolution cancels the old navigation before native dispatch',async()=>{
+  storage();setSession({accountId:'A',householdId:'family-a',token:'token-a'})
+  let release;const calls=[],hooks={},failures=[]
+  uni.addInterceptor=(method,hook)=>hooks[method]=hook;uni.reLaunch=options=>calls.push(options)
+  const nav=navigation(()=>new Promise(resolve=>{release=resolve}));nav.installRouteGuards()
+  hooks.reLaunch.invoke({url:'/pages/chat/index',fail:result=>failures.push(result)})
+  setSession({accountId:'B',householdId:'family-b',token:'token-b'});release('/pages/chat/index')
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(calls.length,0);assert.equal(failures[0].code,'SESSION_CHANGED')
 })
 
 function invitationPage() {

@@ -37,9 +37,11 @@ export function request({ path, method = 'GET', data, headers = {}, timeout = 15
 }
 
 /** 仅向健康文件入口上传；鉴权与迟到响应规则和普通请求一致。 */
-export function uploadHealthFile({ filePath, memberId, purpose, size, onProgress = () => {}, onCancelReady = () => {} }) {
+export function uploadHealthFile({ filePath, fileName, memberId, purpose, size, limits = {}, onProgress = () => {}, onCancelReady = () => {} }) {
   if (!filePath || !memberId || !['report', 'meal'].includes(purpose)) return Promise.reject(new Error('请先选择成员与文件'))
-  if (Number(size) > 20 * 1024 * 1024) return Promise.reject(new Error('文件不能超过20MB'))
+  const pdf=/\.pdf$/i.test(fileName||filePath),limit=pdf?(limits.pdf_mb||20):(limits.image_mb||10)
+  if(pdf&&purpose!=='report')return Promise.reject(new Error('PDF仅用于报告识别'))
+  if (Number(size) > limit * 1024 * 1024) return Promise.reject(new Error(`${pdf?'PDF':'图片'}不能超过${limit}MiB`))
   const sameOrigin = typeof window !== 'undefined' && apiBaseUrl === ''
   const localApi = allowLocalHealthApi && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(apiBaseUrl)
   if (!sameOrigin && !localApi && !/^https:\/\//.test(apiBaseUrl)) return Promise.reject(Object.assign(new Error('上传服务尚未配置'), { code: 'API_NOT_CONFIGURED' }))

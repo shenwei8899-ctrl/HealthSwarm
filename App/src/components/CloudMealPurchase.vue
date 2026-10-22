@@ -29,6 +29,13 @@ const picked = computed(() => state.ready ? state.selected : selected.value)
 const total = computed(() => products.value.filter(item => picked.value.includes(item.id)).reduce((sum, item) => sum + item.priceCents * item.quantity, 0))
 const money = cents => (Number(cents || 0) / 100).toFixed(2)
 const active = scope => alive && scope === storageContext()
+function failure(e,scope){
+  if(!alive||ownerScope!==scope)return
+  if(scope!==storageContext()||[401,403,404,409,410].includes(Number(e.code))||e.code==='SESSION_CHANGED'){
+    preview.value=null;publication.value=null;selected.value=[];checkoutOpen.value=false;loginOpen.value=false;initialized=false;page.reset()
+  }
+  error.value=e.message;busy.value=false
+}
 const path = () => '/api/family/' + encodeURIComponent(getSession().householdId) + '/daily-arrangements/' + props.route.date + (props.route.meal === 'daily' ? '' : '/meals/' + props.route.meal) + '/purchase'
 const version = () => ({ arrangement_id: props.route.arrangement, version: Number(props.route.version), ...(props.route.meal === 'daily' ? { meals: props.route.meals } : {}) })
 const selectionKey = () => 'meal-purchase-selection:' + props.route.arrangement + ':' + props.route.meal + ':' + (props.route.meals || []).join(',')
@@ -59,7 +66,7 @@ async function refresh() {
       await page.load()
       if (active(scope) && addressId === state.address?.id && state.slots.some(slot => slot.id === slotId)) state.slotId = slotId
     }
-  } catch (e) { if (active(scope)) { preview.value = null; error.value = e.message } }
+  } catch (e) { if(active(scope))preview.value=null;failure(e,scope) }
   finally { if (active(scope)) busy.value = false }
 }
 function toggle(id) { if (busy.value || state.busy) return; if (state.ready) page.toggle(id); else selected.value = selected.value.includes(id) ? selected.value.filter(value => value !== id) : [...selected.value, id]; rememberSelection() }
@@ -84,7 +91,7 @@ async function checkout() {
     state.selected = page.plan.value.products.filter(item => previous.includes(item.id) || !previousIds.includes(item.id)).map(item => item.id)
     rememberSelection()
     await page.prepare()
-  } catch (e) { if (active(scope)) error.value = e.message }
+  } catch (e) { failure(e,scope) }
   finally { if (active(scope)) busy.value = false }
 }
 async function submit() {

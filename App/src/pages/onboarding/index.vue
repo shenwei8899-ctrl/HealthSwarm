@@ -3,7 +3,7 @@ import { sessionRevision } from '../../services/session.js'
 import { scopedStorage, storageScope } from '../../services/storage.js'
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed, nextTick, ref, watch } from 'vue'
-import { onLoad, onShow } from '@dcloudio/uni-app'
+import { onLoad, onShow, onUnload } from '@dcloudio/uni-app'
 import MemberFields from '../../components/MemberFields.vue'
 import OnboardingHealthFields from '../../components/OnboardingHealthFields.vue'
 import { backHome, getProfile, newMember, normalizeMember, normalizeProfile, saveProfile } from '../../utils/profile.js'
@@ -13,7 +13,10 @@ import { isMockMode } from '../../services/config.js'
 import { loadCloudProfile, saveCloudProfile, readCloudReportStatus } from '../../services/cloud-profile.js'
 const cloudLoading=ref(!isMockMode),cloudError=ref(''),cloudSaving=ref(false),cloudLoaded=ref(isMockMode)
 const cloudErrorCode = ref(null)
+const conflictDraft=ref(null),showConflictDraft=ref(false)
 let draftStorageKey = storageScope() + 'frontend-onboarding-progress-v1'
+let pageScope=storageScope()
+let readEpoch=0, alive=true
 let initialProfile = getProfile()
 if (!initialProfile.members.length || !scopedStorage.getStorageSync('family-profile-v2') && !scopedStorage.getStorageSync('frontend-onboarding-progress-v1')) {
   const self = normalizeMember({ ...newMember(0), name: '我', relation: '本人', age: '', claimedBy: 'creator' })
@@ -34,11 +37,15 @@ const copy = [
 ]
 watch(step, () => nextTick(() => uni.pageScrollTo?.({ scrollTop: 0, duration: 0 })))
 
-async function readCloud() {
+async function readCloud(restoreDraft = true) {
+    const mine=++readEpoch
     cloudLoading.value=true;cloudError.value='';cloudErrorCode.value=null
     try {
       const loaded = await loadCloudProfile()
+      if(!alive||mine!==readEpoch)return
       draftStorageKey = storageScope() + 'frontend-onboarding-progress-v1'
+      pageScope=storageScope()
+      conflictDraft.value=uni.getStorageSync(draftStorageKey+':conflict')||null
       profile.value = loaded
       invited.value = profile.value.isOwner === false
       if (invited.value) {
@@ -47,7 +54,7 @@ async function readCloud() {
       }
       const policy=profile.value.analysisPolicy
       const draft = scopedStorage.getStorageSync('frontend-onboarding-progress-v1')
-      if (draft?.profile?.householdId === profile.value.householdId && draft.profile.familyVersion === profile.value.familyVersion) {
+      if (restoreDraft && draft?.profile?.householdId === profile.value.householdId && draft.profile.familyVersion === profile.value.familyVersion) {
         profile.value = normalizeProfile(draft.profile); step.value = draft.step || 0
         profile.value.analysisPolicy=policy
       }
@@ -55,9 +62,11 @@ async function readCloud() {
       familyDiners.value=[...profile.value.defaultDiners]
       if (!invited.value) syncDiners()
       cloudLoaded.value=true
-    } catch(error) { cloudError.value=error.message;cloudErrorCode.value=error.code }
-    finally { cloudLoading.value=false }
+    } catch(error) { if(alive&&mine===readEpoch){if([401,403,404,410].includes(Number(error.code))||error.code==='SESSION_CHANGED')clearPrivate();cloudError.value=error.message;cloudErrorCode.value=error.code} }
+    finally { if(alive&&mine===readEpoch)cloudLoading.value=false }
 }
+function clearPrivate(){cloudLoaded.value=false;conflictDraft.value=null;showConflictDraft.value=false;profile.value=normalizeProfile({members:[]});familyDiners.value=[]}
+onUnload(()=>{alive=false;readEpoch++})
 onLoad(async options => {
   if (!isMockMode) { await readCloud(); return }
   if (options.member) {
@@ -82,11 +91,19 @@ function preserveProgress() {
   })))
 }
 watch([profile, step, memberIndex, familyDiners], preserveProgress, { deep: true })
-function recoverCloud() {
+async function recoverCloud() {
   if (Number(cloudErrorCode.value) === 401) { preserveProgress(); uni.reLaunch({ url: '/pages/index/index' }); return }
+  if (Number(cloudErrorCode.value) === 409) {
+    preserveProgress()
+    uni.setStorageSync(draftStorageKey+':conflict',JSON.parse(JSON.stringify(profile.value)))
+    await readCloud(false)
+    if (!cloudError.value) cloudError.value='档案已变化，已读取当前版本，请重新核对后保存。'
+    return
+  }
   if (cloudLoaded.value) next(); else void readCloud()
 }
 onShow(async () => {
+  if(!isMockMode&&pageScope!==storageScope()) {clearPrivate();await readCloud();return}
   if(!isMockMode){if(!cloudLoaded.value)return;const revision=sessionRevision();const rows=await Promise.allSettled(profile.value.members.filter(m=>m.healthMemberId).map(async m=>({id:m.id,healthId:m.healthMemberId,status:await readCloudReportStatus(m.healthMemberId)})));if(revision!==sessionRevision())return;for(const row of rows){if(row.status!=='fulfilled')continue;const m=profile.value.members.find(m=>m.id===row.value.id&&m.healthMemberId===row.value.healthId);if(m)m.reportStatus=row.value.status}return}
   const fresh = getProfile()
   for (const m of profile.value.members) {
@@ -125,15 +142,17 @@ async function commit() {
   if(isMockMode)saveProfile(profile.value)
   if (step.value < 2) { step.value++; return }
   if(!isMockMode){
+    const revision=sessionRevision()
     cloudSaving.value=true;cloudError.value=''
-    try { profile.value=await saveCloudProfile(profile.value) }
-    catch(error){cloudError.value=error.message;cloudErrorCode.value=error.code;preserveProgress();return}
+    try { const saved=await saveCloudProfile(profile.value);if(!alive)return;if(revision!==sessionRevision()){clearPrivate();cloudError.value='账号或家庭已变化，请重新读取档案。';return}profile.value=saved }
+    catch(error){if(!alive)return;preserveProgress();if([401,403,404,410].includes(Number(error.code))||error.code==='SESSION_CHANGED'||revision!==sessionRevision())clearPrivate();cloudError.value=error.message;cloudErrorCode.value=error.code;return}
     finally{cloudSaving.value=false}
   }
   if (!invited.value) {
     completed = true
     scopedStorage.setStorageSync('frontend-onboarded-v1', true)
     uni.setStorageSync(draftStorageKey, null)
+    uni.setStorageSync(draftStorageKey+':conflict',null)
   }
   uni.reLaunch({ url: '/pages/chat/index?from=onboarding' })
 }
@@ -159,7 +178,8 @@ function next() {
 <template>
   <view v-if="cloudLoading" class="screen"><text class="safe-note">正在读取云端档案…</text></view>
   <view v-if="cloudError" class="cloud-onboarding-error" role="alert"><text>{{cloudError}}</text><button @click="recoverCloud">{{Number(cloudErrorCode)===401?'重新登录':cloudLoaded?'重试保存':'重新读取档案'}}</button></view>
-  <view v-show="!cloudLoading && cloudLoaded" class="screen onboarding-screen" :class="{ 'health-step': step === 1 }">
+  <view v-if="conflictDraft&&cloudLoaded" class="cloud-onboarding-error"><text>上次未保存的填写内容已保留。当前表单已读取云端版本，请对照核对后再保存。</text><button @click="showConflictDraft=!showConflictDraft">{{showConflictDraft?'收起':'查看'}}上次未保存内容</button><template v-if="showConflictDraft"><MemberFields v-for="member in conflictDraft.members" :key="member.id" :member="member" :read-only="true" :sections="['basic','disease','preferences','restrictions']"/></template></view>
+  <view v-if="!cloudLoading && cloudLoaded && current" class="screen onboarding-screen" :class="{ 'health-step': step === 1 }">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="step > 0 ? step-- : backHome()">‹</button><text class="nav-title">{{ invited ? '受邀成员建档' : '家庭建档' }}</text><text v-if="step !== 1" class="step-count">{{ step + 1 }} / 3</text></view></AppNavBar>
     <text v-if="step === 1" class="step-caption">第 2 步，共 3 步</text>
     <view class="progress"><view :style="{ width: (step + 1) / 3 * 100 + '%' }"></view></view>

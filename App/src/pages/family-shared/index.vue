@@ -5,10 +5,11 @@ import AppNavBar from '../../components/AppNavBar.vue'
 import ArchiveField from '../../components/ArchiveField.vue'
 import { request } from '../../services/request.js'
 import { getSession, sessionRevision } from '../../services/session.js'
+import { scopedStorage } from '../../services/storage.js'
 import { archiveState, createFamilyArchivesClient } from '../../services/family-archives-client.js'
 import { profileFields, recordGroups, objectGroups, metricKinds, profileDraft, profileChanges, measurementTimestamp } from '../../services/family-archive-fields.js'
 const state = reactive(archiveState())
-const client = createFamilyArchivesClient({ send: request, session: { read: getSession, revision: sessionRevision }, state })
+const client = createFamilyArchivesClient({ send: request, session: { read: getSession, revision: sessionRevision }, state, storage: scopedStorage })
 const draft = ref({}), editing = ref(false), name = ref(''), relationship = ref(''), metric = ref(null), metricError = ref('')
 const unavailable = computed(() => state.busy || state.blocked)
 const editable = key => state.member?.editable_fields?.includes(key) === true
@@ -31,7 +32,7 @@ function toggleEditing() {
 function addRecord(group) { draft.value[group.key].push(Object.fromEntries(group.fields.map(f => [f.key, f.type==='select'?f.options[0][0]:'']))) }
 function newMetric(kind, record = null) {
   const local = new Date(record?.measured_at || Date.now()); local.setMinutes(local.getMinutes() - local.getTimezoneOffset())
-  metric.value = { kind, record, values: { ...(record?.values || {}) }, time: local.toISOString().slice(0,16), condition: record?.condition || (kind==='blood_glucose'?'fasting':''), note: '', source: record?.source || 'manual' }; metricError.value = ''
+  metric.value = { id: record?.id || uuid(), kind, record, values: { ...(record?.values || {}) }, time: local.toISOString().slice(0,16), condition: record?.condition || (kind==='blood_glucose'?'fasting':''), note: '', source: record?.source || 'manual' }; metricError.value = ''
 }
 const selectedMetric = computed(() => metricKinds.find(row => row.key === metric.value?.kind))
 function uuid() { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return(c==='x'?r:(r&3|8)).toString(16)}) }
@@ -42,7 +43,7 @@ async function saveMetric() {
     const measured_at = measurementTimestamp(form.time)
     if (form.record && !form.note.trim()) throw new Error('更正记录需要填写原因')
     const data = { values, measured_at, source: form.source, condition: form.condition, note: form.note }
-    if (!form.record) Object.assign(data, { id: uuid(), kind: form.kind })
+    if (!form.record) Object.assign(data, { id: form.id, kind: form.kind })
     await client.saveMeasurement(data, form.record)
   } catch (error) { metricError.value = error.message }
 }
@@ -59,6 +60,7 @@ function back() { uni.navigateBack({ fail: () => uni.reLaunch({url:'/pages/my/in
   <text class="helper">同家庭有效成员可共同查看和维护档案。AI、报告原图和订单仍需各自授权；编辑不代表本人已确认。</text>
   <text v-if="state.error" class="error" role="alert">{{state.error}}</text><text v-if="state.notice" class="notice">{{state.notice}}</text>
   <button class="secondary-button" :disabled="state.busy" @click="client.refresh(state.family?.id,state.member?.id)">{{state.busy?'正在读取…':'重新读取家庭档案'}}</button>
+  <view v-if="state.pendingMeasurement" class="card section"><text>上次实测记录结果尚未确认，请先恢复原请求，避免重复记录。</text><button class="secondary-button" :disabled="state.busy" @click="client.retryMeasurement()">读取并恢复原实测记录</button></view>
   <view class="choices"><button v-for="family in state.families" :key="family.id" :disabled="state.busy" :class="{selected:family.id===state.family?.id}" @click="client.refresh(family.id)">{{family.name}}</button></view>
   <text v-if="!state.families.length&&!state.busy" class="helper">没有可访问的家庭，请返回账号与家庭页面加入或创建。</text>
   <view v-if="state.family" class="choices"><button v-for="member in state.family.members.filter(m=>m.is_active)" :key="member.id" :disabled="state.busy" :class="{selected:member.id===state.member?.id}" @click="client.refresh(state.family.id,member.id)">{{member.name}}{{member.is_self?' · 本人':''}}{{!member.claimed?' · 未认领':''}}</button></view>

@@ -30,15 +30,16 @@ export function uploadMealPhoto(memberId, filePath) {
 }
 
 /** 原图通过鉴权接口下载到临时路径，不公开带凭据的图片链接。 */
-export function previewMealPhoto(uploadId) {
+export function previewMealPhoto(uploadId, pageIndex) {
   if (!healthImageApiReady()) return Promise.reject(new Error('图片服务未配置'))
   const scope = storageContext(), revision = sessionRevision(), session = getSession()
   return new Promise((resolve, reject) => uni.downloadFile({
-    url: apiBaseUrl.replace(/\/$/, '') + '/api/health/v1/uploads/' + encodeURIComponent(uploadId) + '/preview',
+    url: apiBaseUrl.replace(/\/$/, '') + '/api/health/v1/uploads/' + encodeURIComponent(uploadId) + '/preview' + (Number.isInteger(pageIndex)?'?page_index='+pageIndex:''),
     header: { Authorization: 'Bearer ' + (session?.token || '') },
     success(response) {
       if (scope !== storageContext() || revision !== sessionRevision()) return reject(new Error('账号已切换，原图已隐藏'))
-      if (response.statusCode !== 200) return reject(new Error('原图已失效或当前无权查看'))
+      if(response.statusCode===401)clearSession()
+      if (response.statusCode !== 200) return reject(Object.assign(new Error('原图已失效或当前无权查看'),{code:response.statusCode}))
       resolve(response.tempFilePath)
     }, fail() { reject(new Error('原图读取失败，请重试')) },
   }))

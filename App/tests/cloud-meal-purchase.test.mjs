@@ -7,7 +7,7 @@ import {newMealCommerceState,createMealCommerceController,commerceMealView} from
 function mount({daily=false}={}){
   const calls=[],hooks={},route={date:'2026-10-21',meal:'dinner',arrangement:'saved-1',version:'2'}
   if(daily){route.meal='daily';route.meals=['breakfast','lunch']}
-  let scope='A',linked=false,publicationVersion=2
+  let scope='A',linked=false,publicationVersion=2,denied=false
   const saved=new Map()
   const items=[{sku_id:'tomato',quantity:1,sku:{sku_id:'tomato',product_name:'合成番茄',price_cent:800,available_quantity:5,net_content:{value:500,unit:'g'},ingredients:[{ingredient_code:'tomato'}]}}]
   const purchase={status:'matched',available:true,catalog_version:'catalog-1',items,
@@ -25,6 +25,7 @@ function mount({daily=false}={}){
   }
   const send=async input=>{
     calls.push(input)
+    if(denied)throw Object.assign(new Error('采购用途授权已撤回'),{code:403})
     return {data:{arrangement_id:route.arrangement,version:input.method==='POST'?publicationVersion:2,
       purchase:input.method==='POST'?{...purchase,package_sn:'pack-1',package_version:1}:structuredClone(purchase)}}
   }
@@ -38,7 +39,7 @@ function mount({daily=false}={}){
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const vueScope=effectScope()
   const component=vueScope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {refresh,checkout,toggle,selected,preview,products,picked,total,state,loginOpen,error,purchaseReady}`)(deps))
-  return {...component,calls,pending(){purchase.available=false;purchase.confirmation_pending=true;items[0].sku.available_quantity=0},unavailable(){purchase.available=false;purchase.confirmation_pending=false},link(){linked=true},wrongVersion(){publicationVersion=3},switch(){scope='B'},
+  return {...component,calls,deny(){denied=true},pending(){purchase.available=false;purchase.confirmation_pending=true;items[0].sku.available_quantity=0},unavailable(){purchase.available=false;purchase.confirmation_pending=false},link(){linked=true},wrongVersion(){publicationVersion=3},switch(){scope='B'},
     dispose(){hooks.unmount();vueScope.stop()}}
 }
 
@@ -55,6 +56,14 @@ test('an unlinked commerce account only interrupts explicit checkout and keeps t
     assert.equal(f.loginOpen.value,true);assert.ok(f.preview.value)
     assert.equal(f.calls.some(call=>call?.method==='POST'),false)
   }finally{f.dispose()}
+})
+
+test('revoked purchase access during explicit publication clears preview and checkout state',async()=>{
+ const f=mount();try{
+  await f.refresh();f.link();f.deny();await f.checkout()
+  assert.equal(f.preview.value,null);assert.equal(f.state.quote,null);assert.equal(f.state.ready,false)
+  assert.equal(f.products.value.length,0);assert.match(f.error.value,/授权已撤回/)
+ }finally{f.dispose()}
 })
 test('explicit checkout publishes the saved version and quotes only this meal',async()=>{
   const f=mount();try{await f.refresh();f.link();await f.checkout()

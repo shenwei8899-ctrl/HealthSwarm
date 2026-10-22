@@ -23,6 +23,7 @@ function setupVision(override = () => {}) {
       if (options.path.includes('/vision/page')) return { data: { jobs: [], drafts: [], jobs_next_offset: null, drafts_next_offset: null } }
       if (options.path.endsWith('/meal-drafts/' + record)) return { data: structuredClone(draft) }
       if (options.path.endsWith('/calculate')) return { data: { calculation_id: 'calculation', draft_version: 1, complete: true, totals: { energy_kcal: '100' } } }
+      if (options.path.includes('/diet-logs/page?')) return {data:{records:[{id:record,source_version:1,snapshot:{meal}}],next_offset:null}}
       throw new Error('unexpected: ' + options.path)
     } })
   return { state, client, calls, stored, uploads: () => uploads, switchAccount() { revision++ } }
@@ -65,6 +66,35 @@ test('confirmation survives reopen without repeating the non-idempotent draft pa
   assert.deepEqual(h.calls.filter(row => row.path.endsWith('/confirm'))[0], h.calls.filter(row => row.path.endsWith('/confirm'))[1])
   assert.equal(h.state.confirmation.target_ids[0], record)
   assert.equal(h.calls.some(row => row.method === 'PATCH'), false)
+})
+
+test('confirmation is not shown as saved until the exact formal record has been reread',async()=>{
+  let reads=0,posts=0
+  const h=setupVision(options=>{
+    if(options.path.endsWith('/confirm')){posts++;return {data:{confirmation_id:'receipt',target_ids:[record],review_status:'confirmed'}}}
+    if(options.path.includes('/diet-logs/page?')){if(++reads===1)throw Object.assign(new Error('read lost'),{code:'NETWORK_ERROR'});return {data:{records:[{id:record,source_version:1}],next_offset:null}}}
+  })
+  await h.client.open(member,'meal');await h.client.draft({id:record});await h.client.calculate();await h.client.confirm(false)
+  assert.equal(h.state.confirmation,null);assert.equal(h.state.pending.operation,'read')
+  h.client.discard();await h.client.open(member,'meal');await h.client.retryPending()
+  assert.equal(posts,1);assert.equal(h.state.records[0].id,record);assert.equal(h.state.confirmation.confirmation_id,'receipt')
+})
+
+test('report page retry freezes the draft version, selected failed page and request key',async()=>{
+  let attempts=0
+  const h=setupVision(options=>{
+    if(options.path.endsWith('/report-extractions/'+record))return {data:{id:record,member_id:member,kind:'report',version:4,review_status:'pending_confirmation',payload:{fields:[],pages:[{page_index:1,status:'failed'}]}}}
+    if(options.path.endsWith('/report-page-tasks')){if(++attempts===1)throw Object.assign(new Error('lost response'),{code:'NETWORK_ERROR'});return {data:{task_id:'retry-task'}}}
+  })
+  await h.client.open(member,'report');await h.client.draft({id:record});await h.client.reprocessPages([1])
+  const first=h.calls.find(row=>row.path.endsWith('/report-page-tasks'));assert.equal(first.headers['If-Match'],'"4"');assert.deepEqual(first.data.page_indices,[1])
+  await h.client.retryPending();assert.deepEqual(h.calls.filter(row=>row.path.endsWith('/report-page-tasks')),[first,first])
+})
+
+test('configured image limit rejects an oversized picture before upload or task creation',async()=>{
+  const h=setupVision(options=>options.path.endsWith('/configuration')?{data:{meal:{available:true,processor:'processor'},policy_version:'policy',limits:{image_mb:2,meal_images:3}}}:null)
+  await h.client.open(member,'meal');await h.client.acceptConsent();await h.client.recognize([{name:'picture.jpg',path:'photo',size:3*1024*1024}])
+  assert.equal(h.uploads(),0);assert.match(h.state.error,/2MiB/);assert.equal(h.calls.some(row=>row.path.endsWith('/meal-photo-tasks')),false)
 })
 
 test('unknown draft patch blocks confirmation until the current candidate is reread', async () => {
@@ -173,7 +203,8 @@ test('upload rejects oversize content before transport and authenticates only th
     uploadFile(options) { calls.push(options); options.success({ statusCode: 201, data: JSON.stringify({ upload_id: record, purpose: 'meal', status: 'ready' }) }); return {} } }
   data.set('fn-session-v2:mock', { accountId: 'test', householdId: 'test-household', token: 'synthetic-token', clientRevision: 'one' })
   try {
-    await assert.rejects(uploadHealthFile({ filePath: 'local', memberId: member, purpose: 'meal', size: 21*1024*1024 }), /20MB/)
+    await assert.rejects(uploadHealthFile({ filePath: 'local', memberId: member, purpose: 'meal', size: 11*1024*1024 }), /10MiB/)
+    await assert.rejects(uploadHealthFile({ filePath: 'report.pdf', memberId: member, purpose: 'report', size: 21*1024*1024 }), /20MiB/)
     assert.equal(calls.length, 0)
     await uploadHealthFile({ filePath: 'local', memberId: member, purpose: 'meal', size: 100 })
     assert.equal(calls[0].header.Authorization, 'Bearer synthetic-token')

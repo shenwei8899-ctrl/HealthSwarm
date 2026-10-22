@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { onShow } from '@dcloudio/uni-app'
+import { onShow, onHide } from '@dcloudio/uni-app'
 import AppNavBar from './AppNavBar.vue'
 import MealNotes from './MealNotes.vue'
 import DinerPicker from './DinerPicker.vue'
@@ -15,43 +15,56 @@ const props=defineProps({route:Object})
 const meal=ref(null),profile=ref(null),busy=ref(false),error=ref(''),diners=ref(false)
 const state=reactive(dailyArrangementState())
 const names={breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}
-let alive=true,revision=0,scope=storageContext()
+let alive=true,revision=0,scope=storageContext(),loading=null
 const client=createDailyArrangementClient({state,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId})
 const plan=computed(()=>meal.value && ({...meal.value,sourceType:'api',blocked:[],safetyText:'按已保存档案及批准配方计算。已有明确医嘱时优先遵循。',
   memberNotes:meal.value.memberNotes.map(note=>({...note,id:note.memberId,dishes:note.dishes.map(dish=>({...dish,recipeId:dish.dishId,amount:dish.grams,unit:'g'})),notes:['配方与营养版本：'+JSON.stringify(meal.value.nutritionSource)]}))}))
-async function load(){
+function failure(e,mine,ticket){
+  if(!alive||mine!==revision)return
+  if(ticket!==storageContext()||[401,403,404,410].includes(Number(e.code))||e.code==='SESSION_CHANGED'){meal.value=null;profile.value=null;diners.value=false;client.reset()}
+  busy.value=false;error.value=e.message
+}
+function load(){
+  if(loading)return loading
   const mine=++revision,ticket=storageContext();busy.value=true;meal.value=null;error.value=''
+  loading=(async()=>{
   try{
     const r=props.route
     const {data}=await request({path:'/api/family/'+encodeURIComponent(getSession().householdId)+'/daily-arrangements/'+r.date+'/meals/'+r.meal+'?arrangement_id='+encodeURIComponent(r.arrangement)+'&version='+Number(r.version)})
-    if(!alive||mine!==revision||ticket!==storageContext())return
+    if(!alive||mine!==revision)return
+    if(ticket!==storageContext()){failure({code:'SESSION_CHANGED',message:'账号或家庭已变化，请重新读取。'},mine,ticket);return}
     if(data.arrangement_id!==r.arrangement||data.version!==Number(r.version)||data.meal?.type!==r.meal)throw new Error('本餐已更新，请返回今日安排重新读取。')
     meal.value=data.meal
-  }catch(e){if(alive&&mine===revision&&ticket===storageContext())error.value=e.message}
-  finally{if(alive&&mine===revision&&ticket===storageContext())busy.value=false}
+  }catch(e){failure(e,mine,ticket)}
+  finally{if(alive&&mine===revision){busy.value=false;loading=null}}
+  })()
+  return loading
 }
 async function editMembers(){
-  busy.value=true;error.value='';const ticket=storageContext()
-  try{const value=await loadCloudProfile();if(!alive||ticket!==storageContext())return;profile.value=value;diners.value=true}
-  catch(e){if(alive&&ticket===storageContext())error.value=e.message}
-  finally{if(alive&&ticket===storageContext())busy.value=false}
+  busy.value=true;error.value='';const ticket=storageContext(),mine=revision
+  try{const value=await loadCloudProfile();if(!alive||mine!==revision)return;if(ticket!==storageContext()){failure({code:'SESSION_CHANGED',message:'账号或家庭已变化，请重新读取。'},mine,ticket);return};profile.value=value;diners.value=true}
+  catch(e){failure(e,mine,ticket)}
+  finally{if(alive&&mine===revision)busy.value=false}
 }
 async function confirm(ids){
-  diners.value=false;busy.value=true;const ticket=storageContext()
+  diners.value=false;busy.value=true;const ticket=storageContext(),mine=revision
   try{
     await client.load(props.route.date)
-    if(!alive||ticket!==storageContext())return
-    if(!state.arrangement||state.arrangement.id!==props.route.arrangement||state.arrangement.version!==Number(props.route.version))throw new Error('本餐已更新，请返回今日安排核对。')
+    if(!alive||mine!==revision)return
+    if(ticket!==storageContext()){failure({code:'SESSION_CHANGED',message:'账号或家庭已变化，请重新读取。'},mine,ticket);return}
+    if(!state.arrangement||state.arrangement.id!==props.route.arrangement||state.arrangement.version!==Number(props.route.version)){meal.value=null;profile.value=null;throw new Error(state.error||'本餐已更新，请返回今日安排核对。')}
     await client.changeMembers(props.route.meal,ids)
-    if(!alive||ticket!==storageContext())return
-    if(state.error)throw new Error(state.error)
+    if(!alive||mine!==revision)return
+    if(ticket!==storageContext()){failure({code:'SESSION_CHANGED',message:'账号或家庭已变化，请重新读取。'},mine,ticket);return}
+    if(state.error){if(!state.arrangement||state.arrangement.version!==Number(props.route.version)){meal.value=null;profile.value=null};throw new Error(state.error)}
     uni.redirectTo({url:'/pages/chat/index'})
-  }catch(e){if(alive&&ticket===storageContext())error.value=e.message}
-  finally{if(alive&&ticket===storageContext())busy.value=false}
+  }catch(e){failure(e,mine,ticket)}
+  finally{if(alive&&mine===revision)busy.value=false}
 }
 function recipe(dish){const r=props.route;uni.navigateTo({url:'/pages/recipe/index?arrangement='+encodeURIComponent(r.arrangement)+'&meal='+r.meal+'&date='+r.date+'&version='+r.version+'&dish='+encodeURIComponent(dish.id)})}
 onMounted(load)
-onShow(()=>{if(scope!==storageContext()){scope=storageContext();revision++;meal.value=null;profile.value=null;client.reset();void load()}})
+onShow(()=>{if(scope!==storageContext()){scope=storageContext();revision++;loading=null;meal.value=null;profile.value=null;busy.value=false;client.reset()};void load()})
+onHide(()=>{revision++;loading=null;meal.value=null;profile.value=null;diners.value=false;busy.value=false;client.reset()})
 onUnmounted(()=>{alive=false;revision++;client.dispose()})
 </script>
 <template>

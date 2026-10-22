@@ -3,6 +3,7 @@ import { sessionRevision } from './session.js'
 import { scopedStorage } from './storage.js'
 import { newHealthRequestId } from './health-task-flow.js'
 import { mealInput } from './health-meal-input.js'
+import { readDietRecord } from './cloud-meals.js'
 
 const root = '/api/health/v1'
 const copy = value => JSON.parse(JSON.stringify(value))
@@ -10,7 +11,8 @@ const uncertain = error => error.code === 'NETWORK_ERROR' || Number(error.code) 
 export function visionState() {
   return { members: [], memberId: '', kind: 'report', busy: false, error: '', notice: '', jobs: [], drafts: [],
     jobsOffset: 0, draftsOffset: 0, jobsNext: null, draftsNext: null, job: null, draft: null, calculation: null,
-    recipes: [], pending: null, blocked: false, policy: null, consent: false, progress: 0, uploading: false, confirmation: null }
+    recipes: [], pending: null, blocked: false, policy: null, consent: false, progress: 0, uploading: false, confirmation: null,
+    records: [], limits: {image_mb:10,pdf_mb:20,report_pages:20,meal_images:3} }
 }
 
 /** 文件、任务、草稿与确认分别回读，页面切换和失权后不接收旧响应。 */
@@ -59,8 +61,10 @@ export function createHealthVisionClient({ state, send = request, upload = uploa
     if (!current()) return
     if (intent.operation === 'confirm') {
       if (value.review_status !== 'confirmed' || !Array.isArray(value.target_ids) || !value.confirmation_id) throw Object.assign(new Error('确认回执待核对，请重试原请求'), { code: 'NETWORK_ERROR' })
-      state.confirmation = value; state.draft = null; state.calculation = null
-      state.notice = '已确认保存服务端记录；再次进入会重新读取。'
+      state.draft = null; state.calculation = null
+      state.pending={operation:'read',receipt:copy(value)};saveIntent()
+      await readConfirmed(current,value)
+      return
     } else {
       if (!value.task_id) throw Object.assign(new Error('任务回执待核对，请重试原请求'), { code: 'NETWORK_ERROR' })
       state.job = value; state.notice = '任务已提交，可读取进度；离开后从任务列表恢复。'
@@ -70,8 +74,24 @@ export function createHealthVisionClient({ state, send = request, upload = uploa
   }
   async function perform(current) {
     const intent = copy(state.pending)
+    if(intent.operation==='read'){await readConfirmed(current,intent.receipt);return}
     const { data } = await send(intent.request)
     await receive(current, intent, data)
+  }
+  async function readConfirmed(current, receipt) {
+    let records=[]
+    if(state.kind==='meal') {
+      records=await Promise.all(receipt.target_ids.map(id=>readDietRecord(state.memberId,id,send)))
+    } else if(receipt.target_ids.length) {
+      const {data}=await send({path:`${root}/members/${state.memberId}/observations`})
+      if(!Array.isArray(data))throw new Error('正式指标返回不完整，请重新读取。')
+      records=receipt.target_ids.map(id=>data.find(row=>row.id===id))
+      if(records.some(row=>!row))throw Object.assign(new Error('确认已受理，正式指标尚未全部读到，请恢复原读取。'),{code:'NETWORK_ERROR'})
+    }
+    if(!current())return
+    state.records=records;state.confirmation=receipt;state.pending=null;saveIntent()
+    state.notice='已确认并重新读取正式记录。'
+    await page(current)
   }
   function prepare(operation, path, data) {
     state.pending = { operation, request: { path, method: 'POST', data,
@@ -90,10 +110,11 @@ export function createHealthVisionClient({ state, send = request, upload = uploa
         state.memberId = memberId ? state.members.find(row => row.id === memberId)?.id || '' : state.members[0]?.id || ''
         if (!state.memberId) { state.notice = '选定成员当前不可读取，请选择当前用途已授权成员。'; return }
         const pending = storage.getStorageSync(key())
-        if (pending?.request?.data?.client_request_id && pending.request.path.startsWith(root + '/')) state.pending = pending
+        if (pending?.operation==='read'&&pending.receipt?.confirmation_id || pending?.request?.data?.client_request_id && pending.request.path.startsWith(root + '/')) state.pending = pending
         const config = (await send({ path: root + '/configuration' })).data
         if (!current()) return
         const policy = config?.[state.kind]
+        state.limits={...state.limits,...config.limits}
         state.policy = policy?.available === true && policy.processor && config.policy_version
           ? { processor: policy.processor, policy_version: config.policy_version } : null
         await page(current, 0, 0)
@@ -109,14 +130,21 @@ export function createHealthVisionClient({ state, send = request, upload = uploa
       })
     },
     recognize(files, meal = {}) {
-      if (state.pending || !state.consent || !files.length || files.length > (state.kind === 'meal' ? 3 : 20)) return
+      if (state.pending || !state.consent || !files.length) return
+      if(files.length>(state.kind==='meal'?state.limits.meal_images:state.limits.report_pages)){state.error='文件数量超过当前识别限制。';return}
       return run(async current => {
+        for(const file of files) {
+          const pdf=/\.pdf$/i.test(file.name||file.path||'')
+          if(pdf&&state.kind!=='report')throw new Error('PDF仅用于报告识别。')
+          const limit=pdf?state.limits.pdf_mb:state.limits.image_mb
+          if(Number(file.size)>limit*1024*1024)throw new Error(`${pdf?'PDF':'图片'}不能超过${limit}MiB。`)
+        }
         const uploads = []
         for (const file of files) {
           if (!current()) return
           if (!file.uploadId) {
             state.uploading = true
-            const value = await upload({ filePath: file.path, size: file.size, memberId: state.memberId, purpose: state.kind,
+            const value = await upload({ filePath: file.path, fileName:file.name, limits:state.limits, size: file.size, memberId: state.memberId, purpose: state.kind,
               onProgress: progress => { if (current()) state.progress = progress }, onCancelReady: abort => { if (current()) abortUpload = abort } })
             if (!current()) return
             abortUpload = null; state.uploading = false
@@ -148,9 +176,21 @@ export function createHealthVisionClient({ state, send = request, upload = uploa
       })
     },
     retry(job) {
-      if (state.pending) return
+      if (state.pending || !['failed','cancelled'].includes(job.execution_status)) return
       return run(async current => {
         prepare('task', `${root}/vision-tasks/${job.task_id}/retry`, { client_request_id: newId() })
+        await perform(current)
+      })
+    },
+    reprocessPages(indices) {
+      if(state.kind!=='report'||!state.draft||state.draft.review_status!=='pending_confirmation'||state.pending||state.blocked||!indices.length)return
+      const selected=[...new Set(indices)].sort((a,b)=>a-b)
+      if(selected.some(index=>!state.draft.payload.pages?.some(page=>page.page_index===index&&page.status==='failed')))return
+      return run(async current=>{
+        const data={draft_id:state.draft.id,version:state.draft.version,client_request_id:newId(),page_indices:selected}
+        prepare('task',root+'/report-page-tasks',data)
+        state.pending.request.headers['If-Match']=`"${data.version}"`;saveIntent()
+        state.draft=null;state.calculation=null;state.confirmation=null;state.records=[]
         await perform(current)
       })
     },

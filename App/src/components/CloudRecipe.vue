@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { onShow } from '@dcloudio/uni-app'
+import { onShow, onHide } from '@dcloudio/uni-app'
 import AppNavBar from './AppNavBar.vue'
 import DishNutritionCard from './DishNutritionCard.vue'
 import { request } from '../services/request.js'
@@ -8,10 +8,12 @@ import { getSession } from '../services/session.js'
 import { storageContext } from '../services/storage.js'
 const props=defineProps({route:Object})
 const dish=ref(null),error=ref(''),busy=ref(false)
-let alive=true,revision=0,scope=storageContext()
+let alive=true,revision=0,loading=null,scope=storageContext()
 function back(){uni.navigateBack()}
-async function load(){
+function load(){
+ if(loading)return loading
  const mine=++revision,ticket=storageContext();busy.value=true;error.value='';dish.value=null
+ loading=(async()=>{
  try{
   const r=props.route
   const {data}=await request({path:'/api/family/'+encodeURIComponent(getSession().householdId)+'/daily-arrangements/'+r.date+'/meals/'+r.meal+'?arrangement_id='+encodeURIComponent(r.arrangement)+'&version='+Number(r.version)})
@@ -20,10 +22,13 @@ async function load(){
   const found=data.meal.dishes.find(item=>item.id===r.dish)
   if(!found?.steps?.length)throw new Error('此菜谱版本暂时无法读取，请返回重新核对。')
   dish.value=found
- }catch(e){if(alive&&mine===revision&&ticket===storageContext()){dish.value=null;error.value=e.message}}finally{if(alive&&mine===revision&&ticket===storageContext())busy.value=false}
+ }catch(e){if(alive&&mine===revision&&ticket===storageContext()){dish.value=null;error.value=e.message}}finally{if(alive&&mine===revision&&ticket===storageContext()){busy.value=false;loading=null}}
+ })()
+ return loading
 }
 onMounted(load)
-onShow(()=>{if(scope!==storageContext()){scope=storageContext();dish.value=null;void load()}})
+onShow(()=>{if(scope!==storageContext()){scope=storageContext();revision++;loading=null;dish.value=null;busy.value=false};void load()})
+onHide(()=>{revision++;loading=null;dish.value=null;busy.value=false})
 onUnmounted(()=>{alive=false;revision++})
 </script>
 <template>

@@ -6,6 +6,7 @@ import { createHealthTaskFlow,HEALTH_TEXT_TASKS } from '../src/services/health-t
 import { photoState,createMealPhotoClient } from '../src/services/meal-photo-client.js'
 import { createCloudMealSaver,mealDay,personalMeal,mealLabels } from '../src/services/cloud-meals.js'
 import { mealInput } from '../src/services/health-meal-input.js'
+import { dailyArrangementState } from '../src/services/daily-arrangement-client.js'
 const jsonClone=v=>v===undefined?undefined:JSON.parse(JSON.stringify(v))
 const member='11111111-1111-4111-8111-111111111111',thread='22222222-2222-4222-8222-222222222222',requestId='33333333-3333-4333-8333-333333333333'
 function mount(file,fields,extras={}){
@@ -15,6 +16,35 @@ function mount(file,fields,extras={}){
  return {...page,hooks,dispose(){hooks.unmount?.();hooks.unload?.();scope.stop()}}
 }
 function storage(){const m=new Map();return {getStorageSync:k=>jsonClone(m.get(k)),setStorageSync:(k,v)=>m.set(k,jsonClone(v)),getStorageInfoSync:()=>({keys:[...m.keys()]})}}
+
+for(const file of ['CloudMealDetail.vue','CloudRecipe.vue'])test(`${file} rereads after same-account foreground and hides revoked content`,async()=>{
+ let denied=false,reads=0
+ const p=mount(file,'load,error,'+(file==='CloudRecipe.vue'?'dish':'meal'),{storageContext:()=> 'same-account',getSession:()=>({householdId:'family'}),defineProps:()=>({route:{arrangement:'arrangement',date:'2026-10-22',version:1,meal:'lunch',dish:'dish'}}),
+  dailyArrangementState,scopedStorage:storage(),newHealthRequestId:()=>requestId,loadCloudProfile:async()=>({}),createDailyArrangementClient:()=>({reset(){},dispose(){}}),
+  request:async()=>{reads++;if(denied)throw Object.assign(new Error('授权撤回'),{code:403});return {data:{arrangement_id:'arrangement',version:1,meal:{type:'lunch',dishes:[{id:'dish',steps:['合成做法']}],memberNotes:[]}}}}
+ })
+ await p.load();denied=true;p.hooks.show();await new Promise(resolve=>setImmediate(resolve))
+ assert.equal(reads,2);assert.equal((p.dish||p.meal).value,null);assert.match(p.error.value,/授权/);p.dispose()
+})
+
+test('diet correction authorization loss removes the record and its editable private copy',async()=>{
+ const p=mount('HealthMealJournal.vue','save,detail,meal,reason,records,error,editing',{
+  sessionRevision:()=>1,scopedStorage:storage(),newHealthRequestId:()=>requestId,mealDay,mealLabels,readDietRecord:async()=>{},feedbackUrl:()=>'',portionNote:()=>'',mealInput,
+  request:async()=>{throw Object.assign(new Error('授权撤回'),{code:403})},
+ })
+ p.detail.value={id:'record',member_id:member,source_version:1,snapshot:{meal:{items:[]}}};p.meal.value={meal_type:'lunch',eaten_at:'2026-10-22T12:00:00+08:00',items:[]};p.reason.value='合成更正';p.records.value=[p.detail.value];p.editing.value=true
+ await p.save();assert.equal(p.detail.value,null);assert.equal(p.meal.value,null);assert.deepEqual(p.records.value,[]);assert.equal(p.editing.value,false);p.dispose()
+})
+
+test('member change authorization loss also removes the independently displayed meal snapshot',async()=>{
+ const p=mount('CloudMealDetail.vue','load,confirm,meal,error',{
+  storageContext:()=> 'same-account',getSession:()=>({householdId:'family'}),defineProps:()=>({route:{arrangement:'arrangement',date:'2026-10-22',version:1,meal:'lunch'}}),
+  dailyArrangementState,scopedStorage:storage(),newHealthRequestId:()=>requestId,loadCloudProfile:async()=>({}),
+  createDailyArrangementClient:({state})=>({load:async()=>{state.arrangement={id:'arrangement',version:1}},changeMembers:async()=>{state.arrangement=null;state.error='授权撤回'},reset(){},dispose(){}}),
+  request:async()=>({data:{arrangement_id:'arrangement',version:1,meal:{type:'lunch',memberNotes:[],dishes:[]}}}),
+ })
+ await p.load();await p.confirm([member]);assert.equal(p.meal.value,null);assert.match(p.error.value,/授权/);p.dispose()
+})
 
 function gramsEditor(coarse) {
  const source=readFileSync(new URL('../src/components/HealthMealEditor.vue',import.meta.url),'utf8')

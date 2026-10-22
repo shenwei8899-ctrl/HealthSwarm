@@ -1,6 +1,4 @@
 import { defineConfig, loadEnv } from 'vite'
-import { readFileSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import uniModule from '@dcloudio/vite-plugin-uni'
 
 // The current DCloud compiler publishes a CommonJS interop wrapper under ESM.
@@ -23,13 +21,14 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [uni(), {
       name: 'wechat-appid',
-      closeBundle() {
+      generateBundle(_options, bundle) {
         if (process.env.UNI_PLATFORM !== 'mp-weixin' || !appid) return
-        const path = resolve(process.env.UNI_OUTPUT_DIR || 'dist/build/mp-weixin', 'project.config.json')
-        const project = JSON.parse(readFileSync(path, 'utf8'))
+        const asset = bundle['project.config.json']
+        if (!asset || asset.type !== 'asset') return
+        const project = JSON.parse(String(asset.source))
         project.appid = appid
         project.setting = { ...project.setting, urlCheck: true }
-        writeFileSync(path, JSON.stringify(project, null, 2) + '\n')
+        asset.source = JSON.stringify(project, null, 2) + '\n'
       },
     }],
   }

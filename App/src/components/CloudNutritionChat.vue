@@ -141,7 +141,7 @@ async function load(retry=false){
   return loading
 }
 onMounted(load);onShow(()=>{if(!disposed)void load()})
-onHide(()=>{visible=false;voiceRef.value?.cancel();flow.hide();familyClient.reset();familyPanel.value=false;familySelection.value=null})
+onHide(()=>{visible=false;epoch++;loading=null;voiceRef.value?.cancel();flow.hide();client.reset();familyClient.reset();cardVisible.value=false;familyPanel.value=false;familySelection.value=null})
 onUnmounted(()=>{disposed=true;epoch++;draftVersion++;client.dispose();familyClient.dispose();flow.hide()})
 function openMeal(meal){uni.navigateTo({url:'/pages/shop/index?meal='+meal.type+'&date='+state.date+'&arrangement='+encodeURIComponent(state.arrangement.id)+'&version='+state.arrangement.version})}
 function shop(arrangement){if(arrangement)uni.navigateTo({url:'/pages/shop/index?daily=1&date='+arrangement.date+'&arrangement='+encodeURIComponent(arrangement.id)+'&version='+arrangement.version})}

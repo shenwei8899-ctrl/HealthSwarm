@@ -32,7 +32,7 @@ export function dailyArrangementState() {
 
 // 仅缓存请求标识；已保存菜单、分析和聊天正文每次从服务端读取。
 export function createDailyArrangementClient({ state, send, context, storage, newId, beforeStart = async () => {}, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), pollLimit = 60 }) {
-  let generation = 0, disposed = false, flight = null, flightContext = ''
+  let generation = 0, disposed = false, flight = null, flightContext = '', ownerScope = context().scope
   const current = (ticket, scope) => !disposed && ticket === generation && scope === context().scope
   const key = date => 'daily-arrangement-intent:' + date
   const root = () => '/api/family/' + encodeURIComponent(context().familyId) + '/daily-arrangements'
@@ -42,13 +42,14 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
     return value
   }
   function receive(value, date) {
-    state.phase = value.status
     if (value.status === 'ready') {
+      state.arrangement = null;state.phase='loading'
       state.arrangement = validateDailyArrangement(value, date)
       state.phase = 'ready'; state.pending = null
       state.error = value.update?.status === 'failed' ? value.update.message || '调整未完成，原安排已保留。' : ''
       storage.setStorageSync(key(date), null)
     } else {
+      state.phase = value.status
       state.arrangement = null
       if (value.status === 'failed' || value.status === 'unavailable') throw new Error(value.message || '今日安排暂未完成，请重试。')
     }
@@ -56,6 +57,9 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
   async function load(date, retry = false) {
     const input = context(), scope = input.scope
     if (disposed) return
+    if (ownerScope !== scope) {
+      generation++; flight = null; ownerScope = scope; Object.assign(state, dailyArrangementState())
+    }
     if (flight && flightContext === scope + ':' + date) return flight
     const ticket = ++generation
     flightContext = scope + ':' + date
@@ -77,7 +81,18 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
         const mutationKey='daily-arrangement-change:'+value.id
         const mutation=value.id && storage.getStorageSync(mutationKey)
         if(mutation) {
-          await send({path:root()+'/'+date+'/members',method:'POST',headers:{'Idempotency-Key':mutation.client_request_id},data:mutation})
+          try {
+            await send({path:root()+'/'+date+'/members',method:'POST',headers:{'Idempotency-Key':mutation.client_request_id},data:mutation})
+          } catch (error) {
+            if (!current(ticket,scope)) return
+            if (Number(error.code) !== 409) throw error
+            storage.setStorageSync(mutationKey,null)
+            value=await read(date,scope)
+            if (!current(ticket,scope)) return
+            receive(value,date)
+            state.error='成员调整或安排版本已变化，已读取当前安排，请重新核对后确认。'
+            return
+          }
           if(!current(ticket,scope))return
           storage.setStorageSync(mutationKey,null)
           value=await read(date,scope)
@@ -114,9 +129,17 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
           try { value = await read(date, scope) } catch (error) { if (!uncertain(error)) throw error }
         }
       } catch (error) {
-        if (current(ticket, scope)) { state.phase = state.arrangement ? 'ready' : 'error'; state.error = error.message || '暂时无法读取今日安排，请重试。' }
+        if (current(ticket, scope)) {
+          if ([401,403,404,410].includes(Number(error.code))) {
+            if (state.arrangement) storage.setStorageSync('daily-arrangement-change:'+state.arrangement.id,null)
+            storage.setStorageSync(key(date),null)
+            state.arrangement=null;state.pending=null;state.messages=[]
+          }
+          state.phase = state.arrangement ? 'ready' : 'error'; state.error = error.message || '暂时无法读取今日安排，请重试。'
+        }
       } finally {
         if (current(ticket, scope)) state.busy = false
+        else if(ticket===generation&&scope!==context().scope)Object.assign(state,dailyArrangementState())
         if (ticket === generation) flight = null
       }
     })()
@@ -150,9 +173,21 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
         return await load(state.date)
       } catch (error) { if (current(ticket, input.scope)) {
         if(!uncertain(error) && !String(error.message).includes('上次成员调整')) storage.setStorageSync('daily-arrangement-change:'+before.id,null)
+        if (Number(error.code) === 409) {
+          try {
+            const value=await read(state.date,input.scope)
+            if (!current(ticket,input.scope)) return
+            receive(value,state.date)
+            state.error='成员调整或安排版本已变化，已读取当前安排，请重新核对后确认。'
+          } catch (readError) {
+            if (current(ticket,input.scope)) {state.arrangement=null;state.phase='error';state.error=readError.message}
+          }
+          return
+        }
+        if ([401,403,404,410].includes(Number(error.code))) {state.arrangement=null;state.phase='error';state.pending=null}
         state.error = error.message
       } }
-      finally { if (current(ticket, input.scope)) state.busy = false }
+      finally { if (current(ticket, input.scope)) state.busy = false;else if(ticket===generation&&input.scope!==context().scope)Object.assign(state,dailyArrangementState()) }
     },
     reset() { generation++; flight = null; Object.assign(state, dailyArrangementState()) },
     dispose() { disposed = true; generation++; flight = null },

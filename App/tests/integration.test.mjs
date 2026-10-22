@@ -315,10 +315,19 @@ async function apiRuntime() {
   const config=dataUrl(readFileSync(new URL('../src/services/config.js',import.meta.url),'utf8').replace('import.meta.env',"({VITE_SERVICE_MODE:'api',VITE_API_BASE_URL:'https://integration.invalid'})").replace("'./local-login-policy.js'",JSON.stringify(new URL('../src/services/local-login-policy.js',import.meta.url).href)))
   const session=dataUrl(readFileSync(new URL('../src/services/session.js',import.meta.url),'utf8').replace("'./config.js'",JSON.stringify(config)))
   const storage=dataUrl(readFileSync(new URL('../src/services/storage.js',import.meta.url),'utf8').replace("'./config.js'",JSON.stringify(config)).replace("'./session.js'",JSON.stringify(session)))
-  const navigation=dataUrl(readFileSync(new URL('../src/services/navigation.js',import.meta.url),'utf8').replace("'./config.js'",JSON.stringify(config)).replace(/^import .*from '\.\/(app-entry|family-invitations)\.js'$/gm,''))
+  const navigation=dataUrl(readFileSync(new URL('../src/services/navigation.js',import.meta.url),'utf8').replace("'./config.js'",JSON.stringify(config)).replace("'./session.js'",JSON.stringify(session)).replace("'./storage.js'",JSON.stringify(storage)).replace(/^import .*from '\.\/(app-entry|family-invitations)\.js'$/gm,''))
   const transport=dataUrl(readFileSync(new URL('../src/services/request.js',import.meta.url),'utf8').replace("'./config.js'",JSON.stringify(config)).replace("'./session.js'",JSON.stringify(session)).replace("'./storage.js'",JSON.stringify(storage)))
   return {config:await import(config),session:await import(session),storage:await import(storage),navigation:await import(navigation),transport:await import(transport)}
 }
+
+test('WeChat AppID is applied to the emitted project asset without depending on a pre-existing output file',()=>{
+  const source=readFileSync(new URL('../vite.config.js',import.meta.url),'utf8').replace(/^import .*$/gm,'').replace('export default','return')
+  const appid='wx1234567890abcdef'
+  const config=new Function('defineConfig','loadEnv','uniModule','process',source)(fn=>fn({mode:'production'}),()=>({VITE_WECHAT_APPID:appid}),()=>({name:'uni'}),{env:{UNI_PLATFORM:'mp-weixin'},cwd:()=>'.'})
+  const plugin=config.plugins.at(-1),asset={type:'asset',source:JSON.stringify({appid:'old',setting:{es6:true}})}
+  plugin.generateBundle({},{});plugin.generateBundle({},{'project.config.json':asset})
+  assert.deepEqual(JSON.parse(asset.source),{appid,setting:{es6:true,urlCheck:true}})
+})
 
 test('API runtime namespaces cannot read mock data and unadapted routes are blocked',async()=>{
   setup();setSession({accountId:'A',householdId:'home'});scopedStorage.setStorageSync('demo-orders-v1',[{id:'demo'}])

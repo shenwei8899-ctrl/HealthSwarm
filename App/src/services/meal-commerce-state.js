@@ -75,7 +75,11 @@ export function createMealCommerceController({ state, api, scope, context }) {
     state.busy = true
     if (checkout) state.checkoutError = ''; else state.error = ''
     try { return await work(active) }
-    catch (error) { if (active()) { if (checkout) state.checkoutError = error.message; else state.error = error.message } return null }
+    catch (error) { if (active()) {
+      if([401,403,404,410].includes(Number(error.status??error.code)))reset()
+      else if(Number(error.status??error.code)===409){state.ready=false;invalidateQuote()}
+      if (checkout) state.checkoutError = error.message; else state.error = error.message
+    } return null }
     finally { sync(); if (active()) state.busy = false }
   }
   const sameMenu = (a, b) => a?.package_sn && a.package_sn === b?.package_sn && a.package_version === b?.package_version

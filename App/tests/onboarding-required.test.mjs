@@ -20,7 +20,7 @@ function page(members = [completeMember()], extras = {}) {
   const deps = { ref, computed, nextTick, watch, newMember, normalizeMember, normalizeProfile, dataWarnings, onboardingIssue,
     isMockMode: false, getProfile: () => structuredClone(profile), saveProfile() {}, backHome() {}, sessionRevision: () => 1, storageScope: () => '',
     scopedStorage: { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, value) },
-    onLoad() {}, onShow() {}, loadCloudProfile: async () => profile, readCloudReportStatus: async () => 'empty',
+    onLoad() {}, onShow() {}, onUnload() {}, loadCloudProfile: async () => profile, readCloudReportStatus: async () => 'empty',
     saveCloudProfile: async value => { calls.saves.push(JSON.parse(JSON.stringify(value))); return { ...value, onboarded: true } },
     uni: { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, structuredClone(value)), pageScrollTo() {}, showToast: value => calls.toasts.push(value.title),
       showModal() { throw new Error('Required fields must not be bypassable through a warning modal') },
@@ -28,7 +28,7 @@ function page(members = [completeMember()], extras = {}) {
   const script = readFileSync(new URL('../src/pages/onboarding/index.vue', import.meta.url), 'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const value = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${script};return {profile,step,current,cloudLoaded,cloudLoading,cloudError,cloudErrorCode,recoverCloud,preserveProgress,next,mode,selectMember};`)(deps))
+  const value = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${script};return {profile,step,current,cloudLoaded,cloudLoading,cloudError,cloudErrorCode,recoverCloud,preserveProgress,next,mode,selectMember,readCloud};`)(deps))
   value.cloudLoaded.value = true; value.cloudLoading.value = false
   return { ...value, calls, storage, dispose: () => scope.stop() }
 }
@@ -89,6 +89,42 @@ test('personal mode cannot hide an incomplete retained member at final submissio
 test('a restored last-step draft rechecks earlier required fields', async () => {
   const p = page(); p.step.value = 2; p.profile.value.members[0].birthDate = ''
   p.next(); await nextTick(); assert.equal(p.calls.saves.length, 0); assert.equal(p.step.value, 0); p.dispose()
+})
+
+test('onboarding conflict recovery rereads current versions and requires a new explicit save', async () => {
+  let reads=0
+  const fresh=normalizeProfile({householdId:'synthetic-family',familyVersion:2,usageMode:'个人使用',members:[{...completeMember(),version:2}],defaultDiners:['self']})
+  const p=page([completeMember()],{loadCloudProfile:async()=>{reads++;return fresh},saveCloudProfile:async()=>{throw Object.assign(new Error('档案已更新'),{code:409})}})
+  p.step.value=2;p.next();await nextTick()
+  p.recoverCloud();await new Promise(resolve=>setImmediate(resolve))
+  assert.equal(reads,1);assert.equal(p.profile.value.familyVersion,2)
+  assert.equal(p.calls.redirects.length,0);assert.match(p.cloudError.value,/重新|核对/)
+  p.dispose()
+})
+
+test('onboarding authorization loss hides the form while preserving edits in the original scope',async()=>{
+  const p=page([completeMember()],{saveCloudProfile:async()=>{throw Object.assign(new Error('用途授权已变化'),{code:403})}})
+  p.step.value=2;p.profile.value.members[0].name='尚未保存的合成内容';p.next();await nextTick()
+  assert.equal(p.cloudLoaded.value,false);assert.deepEqual(p.profile.value.members,[])
+  assert.equal(p.storage.get('frontend-onboarding-progress-v1').profile.members[0].name,'尚未保存的合成内容')
+  assert.equal(p.calls.redirects.length,0);p.dispose()
+})
+
+test('an earlier onboarding read cannot replace a newer family snapshot',async()=>{
+  let resolveOld,reads=0
+  const fresh=normalizeProfile({householdId:'synthetic-family',familyVersion:3,members:[completeMember()],defaultDiners:['self']})
+  const p=page([completeMember()],{loadCloudProfile:()=>++reads===1?new Promise(resolve=>resolveOld=resolve):Promise.resolve(fresh)})
+  const old=p.readCloud();await p.readCloud()
+  resolveOld({...fresh,familyVersion:1});await old
+  assert.equal(p.profile.value.familyVersion,3);p.dispose()
+})
+
+test('a completed save from an old session cannot mark the new account onboarded or navigate',async()=>{
+  let revision=1,resolveSave
+  const p=page([completeMember()],{sessionRevision:()=>revision,saveCloudProfile:()=>new Promise(resolve=>resolveSave=resolve)})
+  p.step.value=2;p.next();revision=2;resolveSave({...p.profile.value,onboarded:true});await nextTick()
+  assert.equal(p.cloudLoaded.value,false);assert.equal(p.storage.has('frontend-onboarded-v1'),false)
+  assert.equal(p.calls.redirects.length,0);p.dispose()
 })
 
 function component(file, member, exposed) {

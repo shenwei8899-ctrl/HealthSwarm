@@ -65,6 +65,19 @@ test('analysis text alone never reveals an incomplete card',async()=>{
   const f=setup(()=>partial);await f.client.load(day)
   assert.equal(f.state.phase,'error');assert.equal(f.state.arrangement,null)
 })
+
+test('an incomplete replacement cannot keep the old card marked ready',async()=>{
+ let partial=false
+ const f=setup(()=>{const value=ready();if(partial){value.version=2;value.meals.pop()}return value})
+ await f.client.load(day);partial=true;await f.client.load(day)
+ assert.equal(f.state.arrangement,null);assert.equal(f.state.phase,'error')
+})
+
+test('an incomplete create receipt is polled until the complete persisted arrangement is read',async()=>{
+ let reads=0
+ const f=setup(input=>{if(input.method==='POST'){const partial=ready();partial.meals.pop();return partial}return ++reads===1?{status:'absent',date:day}:ready()})
+ await f.client.load(day);assert.equal(f.state.phase,'ready');assert.equal(f.state.arrangement.meals.length,3);assert.equal(reads,2)
+})
 test('a lost create response queries the original daily result without submitting another generation',async()=>{
   let reads=0,starts=0
   const f=setup(input=>{
@@ -101,6 +114,36 @@ test('a failed revision keeps the published arrangement readable',async()=>{
   const f=setup(()=>({...ready(),update:{status:'failed',version:2,message:'调整失败，原安排保留'}}))
   await f.client.load(day)
   assert.equal(f.state.arrangement.version,1);assert.equal(f.state.phase,'ready');assert.match(f.state.error,/保留/)
+})
+
+for (const code of [401,403,404,410]) test(`daily authorization loss ${code} removes the previously published card`,async()=>{
+  let denied=false
+  const f=setup(()=>{if(denied)throw Object.assign(new Error('授权已失效'),{code});return ready()})
+  await f.client.load(day);denied=true;await f.client.load(day)
+  assert.equal(f.state.arrangement,null);assert.notEqual(f.state.phase,'ready')
+  assert.equal(f.calls.length,2)
+})
+
+test('an unknown member change followed by a conflict reads the current version and releases the old intent',async()=>{
+  let stage='ready',writes=0
+  const f=setup(input=>{
+    if(input.method==='POST'){writes++;throw Object.assign(new Error('原调整已变化'),{code:stage==='timeout'?'NETWORK_ERROR':409})}
+    const value=ready();if(stage==='conflict')value.version=2;return value
+  })
+  await f.client.load(day);stage='timeout';await f.client.changeMembers('lunch',['member-2'])
+  stage='conflict';await f.client.load(day)
+  assert.equal(f.state.arrangement.version,2);assert.match(f.state.error,/重新|核对|变化/)
+  const previousWrites=writes;await f.client.load(day);assert.equal(writes,previousWrites)
+})
+
+test('a direct member conflict replaces the old version before another confirmation',async()=>{
+  let changed=false
+  const f=setup(input=>{
+    if(input.method==='POST'){changed=true;throw Object.assign(new Error('版本冲突'),{code:409})}
+    const value=ready();if(changed)value.version=2;return value
+  })
+  await f.client.load(day);await f.client.changeMembers('lunch',['member-2'])
+  assert.equal(f.state.arrangement.version,2);assert.match(f.state.error,/重新|核对|变化/)
 })
 
 test('a pending revision retains the original version until replacement commits',async()=>{

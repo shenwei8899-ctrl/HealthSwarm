@@ -4,11 +4,11 @@ import { archiveState, createFamilyArchivesClient } from '../src/services/family
 import { profileDraft, profileChanges, measurementTimestamp } from '../src/services/family-archive-fields.js'
 import { createBusinessAuthClient } from '../src/services/business-auth-client.js'
 const member = { id:'unclaimed', is_active:true, is_self:true, claimed:false, profile_access:'family_shared', version:3, relationship_version:2, profile:{height_cm:165,medical_history:'synthetic'}, allowed_fields:['height_cm','medical_history'], editable_fields:['height_cm','medical_history'], authorization:{expires_at:'2020-01-01',fields:[]} }
-function harness(override) {
+function harness(override, storage) {
   let revision=1, stored={token:'synthetic',householdId:'f'}
   const state=archiveState(), calls=[]
   const send=async options=>{calls.push(options);if(override){const value=await override(options);if(value)return value}return {data:options.path==='/api/family'?[{id:'f',name:'shared'}]:options.path==='/api/family/f'?{id:'f',members:[structuredClone(member)]}:{items:[],total:0}}}
-  const client=createFamilyArchivesClient({send,state,session:{read:()=>stored,revision:()=>revision}})
+  const client=createFamilyArchivesClient({send,state,storage,session:{read:()=>stored,revision:()=>revision}})
   return {client,state,calls,switchAccount(){revision++;stored={token:'other',householdId:'other'}}}
 }
 test('unclaimed shared member stays readable with expired independent grant and writes owning versions',async()=>{
@@ -55,6 +55,19 @@ test('profile changes preserve untouched facts and never convert unknown numbers
 test('measurement dates reject impossible calendar values instead of normalizing them',()=>{
   for(const value of ['2026-02-31T10:00','2026-02-29T10:00','2026-04-31T10:00','2026-10-16T24:00','invalid'])assert.throws(()=>measurementTimestamp(value))
   assert.equal(measurementTimestamp('2024-02-29T10:00'),new Date('2024-02-29T10:00').toISOString())
+})
+
+test('unknown measurement creation survives rereading and replays the exact ID and frozen body',async()=>{
+  const values=new Map(),storage={getStorageSync:key=>values.get(key),setStorageSync:(key,value)=>values.set(key,structuredClone(value))}
+  let attempts=0
+  const handler=options=>{if(options.method==='POST'&&options.path.endsWith('/measurements')&&++attempts===1)throw Object.assign(new Error('lost response'),{code:'NETWORK_ERROR'})}
+  const data={id:'stable-measurement',kind:'blood_glucose',values:{glucose:5},measured_at:'2026-10-22T08:00:00+08:00',source:'manual'}
+  const first=harness(handler,storage);await first.client.refresh();await first.client.saveMeasurement(data)
+  assert.ok(first.state.pendingMeasurement);assert.equal(first.state.blocked,true)
+  const next=harness(handler,storage);await next.client.refresh();await next.client.retryMeasurement()
+  assert.deepEqual(first.calls.find(c=>c.method==='POST').data,next.calls.find(c=>c.method==='POST').data)
+  assert.equal(next.state.pendingMeasurement,null)
+  assert.equal([...values.values()].some(Boolean),false)
 })
 test('business login uses real auth contracts and stores no password or commerce identity',async()=>{
   let stored=null,revision=0;const calls=[]

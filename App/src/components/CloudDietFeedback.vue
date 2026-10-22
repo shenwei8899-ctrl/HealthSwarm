@@ -30,7 +30,7 @@ async function load(){if(busy.value)return;const mine=++epoch,context=storageCon
   }
   else{const {data}=await request({path:`/api/health/v1/members/${m.id}/diet-period-analysis`,method:'POST',data:{period_days:view.value==='当日'?1:days.value,end_date:date.value}});if(!valid())return;periods.value.push(data)}
  }
- }catch(e){if(valid())error.value=e.message}finally{if(mine===epoch)busy.value=false}}
+ }catch(e){if(mine===epoch){if(context!==storageContext()||[401,403,404,410].includes(Number(e.code))){hide();error.value='当前授权或来源已变化，请重新读取。'}else error.value=e.message}}finally{if(mine===epoch)busy.value=false}}
 function change(key,value){if(busy.value)return;if(key==='scope')scope.value=value;else if(key==='view')view.value=value;else if(key==='date')date.value=value;else if(key==='days')days.value=value;else meal.value=value;void load()}
 function hide(){epoch++;members.value=[];records.value=[];analyses.value=[];periods.value=[];busy.value=false;error.value=''}
 onShow(load);onHide(hide);onUnload(hide)
