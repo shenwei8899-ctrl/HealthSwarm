@@ -29,6 +29,8 @@ accessReject(function()use($verifier){$verifier->verify('Bearer synthetic-never-
 $verifier->claims['account']['id']=71;
 $verifier->claims['wechat_authenticated']=false;
 putenv('SHOP_AGENT_CLIENT_ID=access-fixture');putenv('SHOP_WECHAT_APP_ID=wx1111111111111111');
+// 基础安装夹具有固定ID样例；仅在上述专用测试库推进用户序列。
+Db::query("SELECT setval(pg_get_serial_sequence('fa_user','id'), (SELECT COALESCE(MAX(id),0)+1 FROM fa_user), false)");
 Db::startTrans();
 try {
     $auth=new \app\common\library\Auth();$service=new AgentMemberService($verifier);
