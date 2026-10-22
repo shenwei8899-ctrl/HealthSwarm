@@ -18,7 +18,6 @@ from yuxi.storage.postgres.models_health import (
     HealthFamilyProfileLink,
     HealthGrant,
     HealthProcessingConsent,
-    HealthRuleSnapshot,
     HealthMiniappProfileCoding,
 )
 from yuxi.utils.datetime_utils import utc_now_naive
@@ -44,8 +43,10 @@ async def bind_submitted_profile(session, uid, family, members, consent):
         )
         if link is None:
             health = FamilyMember(
-                id=str(uuid4()), owner_uid=uid, display_name=member.name,
-                relationship_label="本人" if member.subject_uid == uid else member.relationship
+                id=str(uuid4()),
+                owner_uid=uid,
+                display_name=member.name,
+                relationship_label="本人" if member.subject_uid == uid else member.relationship,
             )
             session.add(health)
             await session.flush()
@@ -59,7 +60,11 @@ async def bind_submitted_profile(session, uid, family, members, consent):
             session.add(link)
             session.add(HealthGrant(member_id=health.id, actor_uid=uid, scopes=["ai_use", "diet_edit", "profile_view"]))
         elif link.actor_uid != uid:
-            if link.source_kind != "miniapp_reported" or member.subject_uid != uid or link.actor_uid != family.owner_uid:
+            if (
+                link.source_kind != "miniapp_reported"
+                or member.subject_uid != uid
+                or link.actor_uid != family.owner_uid
+            ):
                 raise HealthVisionError("profile_link_conflict", "成员已有独立的分析来源，请使用原有授权", 409)
             health = await session.get(FamilyMember, link.member_id)
             if health is None or health.owner_uid != link.actor_uid:
@@ -72,7 +77,9 @@ async def bind_submitted_profile(session, uid, family, members, consent):
             link.actor_uid = uid
             own_grant = await session.get(HealthGrant, (link.member_id, uid))
             if own_grant is None:
-                session.add(HealthGrant(member_id=link.member_id, actor_uid=uid, scopes=["ai_use", "diet_edit", "profile_view"]))
+                session.add(
+                    HealthGrant(member_id=link.member_id, actor_uid=uid, scopes=["ai_use", "diet_edit", "profile_view"])
+                )
             else:
                 own_grant.scopes, own_grant.revoked_at = ["ai_use", "diet_edit", "profile_view"], None
             from yuxi.repositories.health_quality_repository import HealthQualityRepository
@@ -94,6 +101,15 @@ async def bind_submitted_profile(session, uid, family, members, consent):
 
 async def submitted_profile_projection(session, link):
     """从当前正式字段和批准编码规则投影，不伪造外部专业确认。"""
+    if link.source_kind == "self_confirmed":
+        from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
+
+        try:
+            await HealthFamilyProfileRepository(session).confirmed_source(link.member_id)
+        except HealthVisionError as error:
+            if error.code != "family_profile_unconfirmed":
+                raise
+            return {**external_projection(None, "profile", link.member_id), "reason": error.code}
     repo = FamilyRepository(session)
     family = await repo.get_family(link.family_id, link.actor_uid)
     member = await repo.member(link.family_id, link.source_member_id) if family else None
@@ -102,14 +118,6 @@ async def submitted_profile_projection(session, link):
     allowed = authorized_fields(family, member, link.actor_uid, family_sharing=True)
     if not {"birth_date", "dietary_details"} <= allowed:
         raise HealthVisionError("source_invalidated", "建档来源字段已不可读取", 410)
-    rule_code = os.environ.get("HEALTH_DAILY_RULE_CODE", "")
-    record = await session.scalar(
-        select(HealthRuleSnapshot)
-        .where(HealthRuleSnapshot.rule_code == rule_code)
-        .order_by(HealthRuleSnapshot.version.desc())
-        .limit(1)
-    )
-    rules = external_projection(record, "rules", rule_code)
     result = {
         "id": member.id,
         "version": member.version,
@@ -118,7 +126,18 @@ async def submitted_profile_projection(session, link):
         "reason": "profile_coding_rules_unavailable",
         "payload": None,
         "attestation": None,
+        "source_kind": "user_reported",
     }
+    if link.source_kind == "self_confirmed":
+        from yuxi.services.miniapp_profile_types import miniapp_onboarding_ready
+
+        if not miniapp_onboarding_ready(member, family):
+            return {**result, "reason": "family_profile_incomplete"}
+    from yuxi.repositories.health_quality_repository import HealthQualityRepository
+
+    rule_code = os.environ.get("HEALTH_DAILY_RULE_CODE", "")
+    record = await HealthQualityRepository(session).rules(rule_code)
+    rules = external_projection(record, "rules", rule_code)
     if rules["status"] != "ready":
         return result
     approved = QualityRules.model_validate(rules["payload"])

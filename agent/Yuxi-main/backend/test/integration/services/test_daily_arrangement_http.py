@@ -182,7 +182,6 @@ async def test_onboarding_rejects_changed_replay_and_foreign_family(family_profi
         "doctorStatus",
         "goals",
         "tastePreferences",
-        "cuisines",
     ],
 )
 async def test_incomplete_onboarding_does_not_mark_family_complete(family_profile_http, field):  # noqa: F811

@@ -55,16 +55,22 @@ class HealthQualityRepository:
             .limit(1)
         )
 
-    async def profile_projection(self, member_id):
+    async def profile_projection(self, member_id, *, allow_reported=True):
         """最高安全投影须仍对应本人当前确认来源，失败不回退旧版本。"""
         from yuxi.storage.postgres.models_health import HealthFamilyProfileLink
 
         link = await self.session.get(HealthFamilyProfileLink, member_id)
-        if link is not None and link.source_kind == "miniapp_reported":
+        if allow_reported and link is not None and link.source_kind == "miniapp_reported":
             from yuxi.services.miniapp_planning_source import submitted_profile_projection
 
             return await submitted_profile_projection(self.session, link)
-        result = external_projection(await self.profile(member_id), "profile", member_id)
+        snapshot = await self.profile(member_id)
+        # 本人身份关联不等于专业确认；仅无专业快照时读取已确认的建档自述。
+        if allow_reported and link is not None and link.source_kind == "self_confirmed" and snapshot is None:
+            from yuxi.services.miniapp_planning_source import submitted_profile_projection
+
+            return await submitted_profile_projection(self.session, link)
+        result = external_projection(snapshot, "profile", member_id)
         if result["status"] != "ready":
             return result
         try:

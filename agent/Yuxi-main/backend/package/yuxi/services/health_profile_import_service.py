@@ -17,7 +17,8 @@ async def read_profile_import_context(uid, member_id, *, limit=20, offset=0):
         sources = await HealthFamilyProfileRepository(session).read_import_source(
             uid, member_id, limit=limit, offset=offset
         )
-        profile = await HealthQualityRepository(session).profile_projection(member_id)
+        # 专业导入使用自己的版本序列，不能把自述档案版本当作专业首版。
+        profile = await HealthQualityRepository(session).profile_projection(member_id, allow_reported=False)
         return {
             "member_id": member_id,
             "current_profile": {
