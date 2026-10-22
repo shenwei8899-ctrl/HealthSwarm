@@ -4,54 +4,51 @@ import { diseaseOptions, preferenceGroups } from '../utils/health.js'
 
 const props = defineProps({ member: { type: Object, required: true } })
 const coreGoals = ['控糖', '控压', '控脂', '减脂', '增肌', '饮食均衡']
-const coreTastes = ['清淡', '少油', '少盐', '不吃辣', '无特别要求']
+const coreTastes = ['清淡', '少油', '少盐', '不吃辣', '不限口味']
 const healthStates = [
-  { value: 'unknown', label: '暂不填写' },
-  { value: 'none', label: '没有已知基础病' },
-  { value: 'set', label: '有基础病' },
+  { value: 'none', label: '确认没有' },
+  { value: 'set', label: '有／选择内容' },
 ]
-const editor = ref(''), draft = ref([]), draftCuisines = ref([]), custom = ref(''), customCuisine = ref('')
+const editor = ref(''), draft = ref([]), custom = ref('')
 const extraGoals = computed(() => props.member.goals.filter(value => !coreGoals.includes(value)))
 const extraTastes = computed(() => props.member.tastePreferences.filter(value => !coreTastes.includes(value)))
-const editorTitle = computed(() => editor.value === 'goals' ? '其他饮食目标' : '其他口味与菜系')
+const editorTitle = computed(() => editor.value === 'goals' ? '其他饮食目标' : editor.value === 'cuisines' ? '其他菜系' : '其他口味')
 const extraOptions = computed(() => {
   const field = editor.value === 'goals' ? 'goals' : 'tastePreferences'
   const core = editor.value === 'goals' ? coreGoals : coreTastes
   return [...new Set([...preferenceGroups[field].items.filter(value => !core.includes(value) && !['其他', '自定义'].includes(value)), ...draft.value])]
 })
-const cuisineOptions = computed(() => [...new Set([...preferenceGroups.cuisines.items.filter(value => value !== '自定义'), ...draftCuisines.value])])
+const cuisineOptions = computed(() => [...new Set([...preferenceGroups.cuisines.items.filter(value => value !== '自定义'), ...props.member.cuisines])])
 
 function toggle(list, value) {
   const index = list.indexOf(value)
-  index < 0 ? list.push(value) : list.splice(index, 1)
+  if (index >= 0) { list.splice(index, 1); return }
+  if (['不限口味', '不限菜系', '无特别要求'].includes(value)) list.splice(0, list.length)
+  else for (let i = list.length - 1; i >= 0; i--) if (['不限口味', '不限菜系', '无特别要求'].includes(list[i])) list.splice(i, 1)
+  list.push(value)
 }
 function setHealth(value) {
   props.member.healthStatus = value
-  props.member.health = value === 'none' ? '没有已知基础病' : value === 'unknown' ? '未填写' : '用户自述'
+  props.member.health = value === 'none' ? '没有已知基础病' : '用户自述'
 }
 function openExtras(field) {
   editor.value = field
-  draft.value = [...(field === 'goals' ? extraGoals.value : extraTastes.value)]
-  draftCuisines.value = [...props.member.cuisines]
-  custom.value = ''; customCuisine.value = ''
+  draft.value = [...(field === 'goals' ? extraGoals.value : field === 'cuisines' ? props.member.cuisines : extraTastes.value)]
+  custom.value = ''
 }
-function addCustom(cuisine = false) {
-  const input = cuisine ? customCuisine : custom
-  const value = input.value.trim()
+function addCustom() {
+  const value = custom.value.trim()
   if (!value) return
-  const list = cuisine ? draftCuisines.value : draft.value
-  if (!list.includes(value)) list.push(value)
-  input.value = ''
+  if (!draft.value.includes(value)) toggle(draft.value, value)
+  custom.value = ''
 }
 function saveExtras() {
   addCustom()
+  if (editor.value === 'cuisines') { props.member.cuisines = [...draft.value]; editor.value = ''; return }
   const field = editor.value === 'goals' ? 'goals' : 'tastePreferences'
   const core = editor.value === 'goals' ? coreGoals : coreTastes
   props.member[field] = [...new Set([...props.member[field].filter(value => core.includes(value)), ...draft.value])]
-  if (editor.value === 'tastePreferences') {
-    addCustom(true)
-    props.member.cuisines = [...draftCuisines.value]
-  }
+  if (editor.value === 'tastePreferences' && draft.value.some(value => !['不限口味', '无特别要求'].includes(value))) props.member[field] = props.member[field].filter(value => !['不限口味', '无特别要求'].includes(value))
   editor.value = ''
 }
 </script>
@@ -59,7 +56,7 @@ function saveExtras() {
 <template>
   <view class="health-card">
     <text class="card-title">基础健康</text>
-    <text class="health-question">是否有已知基础病？</text>
+    <text class="health-question">是否有已知基础病？（必填）</text>
     <view class="health-options" role="radiogroup" aria-label="基础病情况">
       <button v-for="item in healthStates" :key="item.value" class="health-option" :class="{ chosen: member.healthStatus === item.value }" role="radio" :aria-checked="member.healthStatus === item.value" @click="setHealth(item.value)">
         <view class="radio-mark"><view v-if="member.healthStatus === item.value" /></view><text>{{ item.label }}</text>
@@ -75,27 +72,27 @@ function saveExtras() {
   </view>
 
   <view class="health-card">
-    <view class="card-heading"><text class="card-title">饮食目标</text><text class="multiple-hint">可多选</text></view>
+    <view class="card-heading"><text class="card-title">饮食目标</text><text class="multiple-hint">必填 · 可多选</text></view>
     <view class="option-grid"><button v-for="item in coreGoals" :key="item" :class="{ selected: member.goals.includes(item) }" :aria-pressed="member.goals.includes(item)" @click="toggle(member.goals, item)">{{ item }}</button></view>
     <button class="other-row" @click="openExtras('goals')"><view><text>其他目标</text><text v-if="extraGoals.length" class="extra-summary">{{ extraGoals.join('、') }}</text></view><text class="chevron">›</text></button>
   </view>
 
   <view class="health-card">
-    <view class="card-heading"><text class="card-title">口味偏好</text><text class="multiple-hint">可多选</text></view>
-    <view class="option-grid"><button v-for="item in coreTastes" :key="item" :class="{ selected: member.tastePreferences.includes(item) }" :aria-pressed="member.tastePreferences.includes(item)" @click="toggle(member.tastePreferences, item)">{{ item }}</button><button :class="{ selected: extraTastes.length || member.cuisines.length }" @click="openExtras('tastePreferences')">其他</button></view>
-    <text v-if="extraTastes.length || member.cuisines.length" class="extra-summary taste-summary">{{ [...extraTastes, ...member.cuisines].join('、') }}</text>
+    <view class="card-heading"><text class="card-title">口味偏好</text><text class="multiple-hint">必填 · 可多选</text></view>
+    <view class="option-grid"><button v-for="item in coreTastes" :key="item" :class="{ selected: member.tastePreferences.includes(item) }" :aria-pressed="member.tastePreferences.includes(item)" @click="toggle(member.tastePreferences, item)">{{ item }}</button><button :class="{ selected: extraTastes.length }" @click="openExtras('tastePreferences')">其他</button></view>
+    <text v-if="extraTastes.length" class="extra-summary taste-summary">{{ extraTastes.join('、') }}</text>
   </view>
 
-  <view v-if="editor" class="sheet-mask" @click.self="editor = ''">
-    <view class="sheet extras-sheet">
+  <view class="health-card">
+    <view class="card-heading"><text class="card-title">菜系偏好</text><text class="multiple-hint">必填 · 可多选</text></view>
+    <view class="option-grid"><button v-for="item in cuisineOptions" :key="item" :class="{ selected: member.cuisines.includes(item) }" :aria-pressed="member.cuisines.includes(item)" @click="toggle(member.cuisines, item)">{{ item }}</button><button @click="openExtras('cuisines')">其他</button></view>
+  </view>
+
+  <view v-if="editor" class="sheet-mask" @click="editor = ''">
+    <view class="sheet extras-sheet" @click.stop>
       <view class="sheet-heading"><view><text class="support-copy">{{ member.name }} · 可多选</text><text class="card-title">{{ editorTitle }}</text></view><button class="close-sheet" aria-label="关闭其他选项" @click="editor = ''">×</button></view>
-      <view class="option-grid"><button v-for="item in extraOptions" :key="item" :class="{ selected: draft.includes(item) }" :aria-pressed="draft.includes(item)" @click="toggle(draft, item)">{{ item }}</button></view>
-      <view class="custom-row"><input v-model="custom" class="custom-input" :placeholder="editor === 'goals' ? '补充饮食目标' : '补充口味偏好'" /><button @click="addCustom()">添加</button></view>
-      <template v-if="editor === 'tastePreferences'">
-        <text class="field-label cuisine-label">菜系偏好，可稍后补充</text>
-        <view class="option-grid"><button v-for="item in cuisineOptions" :key="item" :class="{ selected: draftCuisines.includes(item) }" :aria-pressed="draftCuisines.includes(item)" @click="toggle(draftCuisines, item)">{{ item }}</button></view>
-        <view class="custom-row"><input v-model="customCuisine" class="custom-input" placeholder="补充菜系偏好" /><button @click="addCustom(true)">添加</button></view>
-      </template>
+      <view class="option-grid"><button v-for="item in editor === 'cuisines' ? cuisineOptions : extraOptions" :key="item" :class="{ selected: draft.includes(item) }" :aria-pressed="draft.includes(item)" @click="toggle(draft, item)">{{ item }}</button></view>
+      <view class="custom-row"><input v-model="custom" class="custom-input" :placeholder="editor === 'goals' ? '补充饮食目标' : editor === 'cuisines' ? '补充菜系偏好' : '补充口味偏好'" /><button @click="addCustom()">添加</button></view>
       <view class="sheet-actions"><button @click="editor = ''">取消</button><button class="selected" @click="saveExtras">保存</button></view>
     </view>
   </view>

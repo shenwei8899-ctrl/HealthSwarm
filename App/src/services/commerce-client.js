@@ -34,7 +34,7 @@ export function createCommerceClient({
     storage.set(key(), value);
   }
   // A direct member login authenticates commerce only; it never creates an Agent identity.
-  const isAgentMode = () => authMode === 'agent' && read().loginMode !== 'member';
+  const isAgentMode = () => authMode === 'agent';
   function configured() {
     if (allowProxy && url === "/commerce-api") return;
     if (
@@ -211,6 +211,7 @@ export function createCommerceClient({
     return loginWithMember(credentials);
   }
   async function loginMember(credentials) {
+    if (isAgentMode()) throw failure('请使用微信登录后继续采购', 'STANDALONE_LOGIN_DISABLED');
     if (!credentials?.account?.trim() || !credentials?.password) throw failure('请填写商城会员账号和密码', 'INVALID_CREDENTIALS');
     return loginWithMember({ account: credentials.account.trim(), password: credentials.password });
   }
@@ -241,6 +242,7 @@ export function createCommerceClient({
     return session;
   }
   async function exchangeAgent(payload = {}) {
+    if (Object.keys(payload).length) throw failure('商城会员由当前微信身份自动衔接', 'AUTOMATIC_IDENTITY_REQUIRED');
     const generation = ++loginGeneration, scope = parent.scope(), account = parent.read();
     if (!account?.token || !account.accountId || account.isDemo || account.authSource === 'commerce') throw failure('请先登录小程序账号', 401);
     const result = await send('/session/exchange', { method: 'POST', data: payload }, { Authorization: 'Bearer ' + account.token });
@@ -260,7 +262,7 @@ export function createCommerceClient({
     login, loginMember, logout, exchange: exchangeAgent,
     isMemberLogin: () => read().loginMode === 'member',
     cancelLogin: () => { ++loginGeneration; },
-    session: () => { const session = read().session; return session?.scope === parent.scope() ? session : null; },
+    session: () => { const session = read().session; return session?.scope === parent.scope() && (!isAgentMode() || read().loginMode === 'agent' && session.agentAccountId === String(parent.read()?.accountId)) ? session : null; },
     sessionRevision: () => read().session?.revision || read().session?.token || "guest",
     restore: async () => {
       let session = await connect(), result;
@@ -361,6 +363,10 @@ export function createCommerceClient({
           })),
       });
     },
+    quoteRecommendation: (sn, version, addressId, slotId) => mutate('/checkout/preview', 'POST', {
+      source_type:'recommendation_package', source_ref:sn, source_version:version,
+      address_id:addressId, delivery_slot_id:slotId,
+    }),
     createOrder: (token) =>
       mutate("/orders", "POST", { checkout_token: token }),
     orders: async (page = 1) => {

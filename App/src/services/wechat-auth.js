@@ -1,8 +1,8 @@
 import { request } from './request.js'
 import { getSession, setSession, clearSession, sessionRevision } from './session.js'
 import { createWechatAuthClient } from './wechat-auth-client.js'
+import { canUsePasswordLogin, canUseBusinessLogin } from './config.js'
 import { createBusinessAuthClient } from './business-auth-client.js'
-import { canUsePasswordLogin } from './config.js'
 
 let isWechat = false
 // #ifdef MP-WEIXIN
@@ -22,13 +22,12 @@ const client = createWechatAuthClient({
     })
   }),
 })
-const business = createBusinessAuthClient({ send: request,
-  session: { read: getSession, save: setSession, clear: clearSession, revision: sessionRevision } })
-export const wechatAuth = {
-  ...client,
-  loginWithPassword: business.login,
-  restore: () => getSession()?.authSource === 'business' ? business.restore() : client.restore(),
-  selectFamily: id => getSession()?.authSource === 'business' ? business.selectFamily(id) : client.selectFamily(id),
-  cancelPending() { business.cancelPending(); client.cancelPending() },
-  logout() { business.cancelPending(); client.logout() },
-}
+const business = canUseBusinessLogin ? createBusinessAuthClient({
+  send: request,
+  session: { read: getSession, save: setSession, clear: clearSession, revision: sessionRevision },
+}) : null
+// 所有页面共用同一登录、恢复与家庭选择入口；本机联调仍由后端验证密码和权限。
+export const wechatAuth = business ? {
+  ...business,
+  login: ({ identifier, password } = {}) => business.login(identifier, password),
+} : client

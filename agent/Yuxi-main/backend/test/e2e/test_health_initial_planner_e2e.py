@@ -69,6 +69,7 @@ async def test_initial_worker_two_turns_receipts_and_final_guards(initial_runtim
                 assert run.manifest["resources"]["tools"] == [
                     "get_initial_plan_context",
                     "preview_initial_meal_plan",
+                    "query_initial_nutrition_knowledge",
                     "query_family_nutrition_knowledge",
                 ]
                 assert [s["slug"] for s in run.manifest["resources"]["skills"]] == ["family-meal-planner"]

@@ -27,6 +27,7 @@ import { mockService } from '../src/services/mock.js'
 import { failNextMock, mockDelay } from '../src/services/mock-control.js'
 import { callApiAdapter } from '../src/services/index.js'
 import { request } from '../src/services/request.js'
+import { onboardingIssue } from '../src/utils/onboarding-validation.js'
 
 function setup() {
   const data = new Map(), calls = { modals: [], toasts: [] }
@@ -42,7 +43,7 @@ function planOrder() {
 function evaluatePage(path, extras, exposed) {
   let show, unload
   const deps = { ref, computed, nextTick, watch, ...profiles, ...orders, ...actions, ...mealState, ...customization, ...mealFlow, ...exclusive, ...bundles, ...demo, ...memory, ...healthCases, ...checkout, ...health, ...portions, ...planning, ...exclusivePlanning, ...contexts, isMockMode, isCommerceEnabled, callApiAdapter,
-    scopedStorage, storageScope:storageContext, mockDelay, service:mockService, mockService,
+    scopedStorage, storageScope, mockDelay, service:mockService, mockService, onboardingIssue,
     onHide() {}, onBackPress() {}, onLoad(callback) { callback(extras.options || {}) }, onShow(callback) { show=callback }, onUnload(callback) { unload=callback }, ...extras }
   const source=readFileSync(new URL('../src/pages/'+path,import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const scope=effectScope()
@@ -52,6 +53,12 @@ function evaluatePage(path, extras, exposed) {
 
 function onboardingPage(extras = {}) {
   return evaluatePage('onboarding/index.vue', extras, 'profile,step,memberIndex,current,visibleMembers,dinerCount,invited,mode,add,selectMember,toggleDiner,next')
+}
+
+function completeOnboardingMember(member) {
+  Object.assign(member, { birthDate: '1995-01-01', healthStatus: 'none', goals: ['饮食均衡'],
+    tastePreferences: ['不限口味'], cuisines: ['不限菜系'], allergyStatus: 'none',
+    intoleranceStatus: 'none', avoidanceStatus: 'none', doctorStatus: 'none' })
 }
 
 test('merged onboarding starts with one unknown self profile and no implicit relatives',()=>{
@@ -70,6 +77,7 @@ test('adding profiles does not select diners and explicit selections support mor
   assert.equal(page.dinerCount.value,1)
   for(const member of page.profile.value.members.slice(1))page.toggleDiner(member.id)
   assert.equal(page.dinerCount.value,5);assert.equal(page.profile.value.sharedDinerCount,5)
+  page.profile.value.members.forEach(completeOnboardingMember)
   page.next();assert.equal(page.step.value,1)
   assert.equal(profiles.getProfile().defaultDiners.length,5)
   assert.equal(demo.createPlan(profiles.getProfile()).count,5);page.dispose()
@@ -88,6 +96,7 @@ test('member tabs and personal mode preserve relatives and restore the family di
 test('at least one diner remains selected and all visible member names are validated',()=>{
   const {calls}=setup();setSession({accountId:'onboarding',householdId:'home'});const page=onboardingPage(),self=page.current.value
   page.mode('家庭使用');page.toggleDiner(self.id);assert.equal(page.dinerCount.value,1);assert.match(calls.toasts[0].title,/至少/)
+  completeOnboardingMember(self)
   page.add();const other=page.current.value;other.name='';page.selectMember(self.id);page.next()
   assert.equal(page.step.value,0);assert.equal(page.current.value.id,other.id)
   assert.equal(scopedStorage.getStorageSync('family-profile-v2'),undefined);page.dispose()
@@ -105,8 +114,9 @@ test('old four-step drafts migrate to three steps without losing member data or 
 
 test('three-step progress restores and completion does not resurrect the draft',async()=>{
   setup();setSession({accountId:'onboarding',householdId:'home'});let redirect
-  uni.redirectTo=options=>{redirect=options.url}
+  uni.reLaunch=options=>{redirect=options.url}
   let page=onboardingPage();page.mode('家庭使用');page.add();page.current.value.name='妈妈';page.toggleDiner(page.current.value.id)
+  page.profile.value.members.forEach(completeOnboardingMember)
   page.next();await nextTick();page.dispose()
   page=onboardingPage();assert.equal(page.step.value,1);assert.equal(page.current.value.name,'妈妈');assert.equal(page.dinerCount.value,2)
   page.next();assert.equal(page.step.value,2);await nextTick();page.next();await nextTick()
@@ -118,10 +128,11 @@ test('invited members start at basic information and keep the household draft an
   setup();setSession({accountId:'onboarding',householdId:'home'})
   const saved=profiles.normalizeProfile({usageMode:'家庭使用',members:[{...profiles.newMember(0),id:1,name:'我',relation:'本人'},{...profiles.newMember(1),id:2,name:'妈妈'}],defaultDiners:[1]})
   profiles.saveProfile(saved);const draft={profile:saved,step:2,memberIndex:0,version:2}
-  scopedStorage.setStorageSync('frontend-onboarding-progress-v1',draft);let redirect;uni.redirectTo=options=>{redirect=options.url}
+  scopedStorage.setStorageSync('frontend-onboarding-progress-v1',draft);let redirect;uni.reLaunch=options=>{redirect=options.url}
   const page=onboardingPage({options:{member:'2'}});assert.equal(page.invited.value,true);assert.equal(page.step.value,0);assert.equal(page.current.value.id,2)
+  completeOnboardingMember(page.current.value)
   page.current.value.height='160';page.next();page.next();page.next();await nextTick()
-  assert.equal(redirect,'/pages/profile/index');assert.deepEqual(profiles.getProfile().defaultDiners,[1])
+  assert.equal(redirect,'/pages/chat/index?from=onboarding');assert.deepEqual(profiles.getProfile().defaultDiners,[1])
   assert.deepEqual(scopedStorage.getStorageSync('frontend-onboarding-progress-v1'),draft);page.dispose()
 })
 
@@ -301,10 +312,10 @@ test('exclusive checkout waits for a complete generated plan in API mode',()=>{
 
 async function apiRuntime() {
   const dataUrl=source=>'data:text/javascript;base64,'+Buffer.from(source).toString('base64')
-  const config=dataUrl(readFileSync(new URL('../src/services/config.js',import.meta.url),'utf8').replace('import.meta.env',"({VITE_SERVICE_MODE:'api',VITE_API_BASE_URL:'https://integration.invalid'})"))
+  const config=dataUrl(readFileSync(new URL('../src/services/config.js',import.meta.url),'utf8').replace('import.meta.env',"({VITE_SERVICE_MODE:'api',VITE_API_BASE_URL:'https://integration.invalid'})").replace("'./local-login-policy.js'",JSON.stringify(new URL('../src/services/local-login-policy.js',import.meta.url).href)))
   const session=dataUrl(readFileSync(new URL('../src/services/session.js',import.meta.url),'utf8').replace("'./config.js'",JSON.stringify(config)))
   const storage=dataUrl(readFileSync(new URL('../src/services/storage.js',import.meta.url),'utf8').replace("'./config.js'",JSON.stringify(config)).replace("'./session.js'",JSON.stringify(session)))
-  const navigation=dataUrl(readFileSync(new URL('../src/services/navigation.js',import.meta.url),'utf8').replace("'./config.js'",JSON.stringify(config)))
+  const navigation=dataUrl(readFileSync(new URL('../src/services/navigation.js',import.meta.url),'utf8').replace("'./config.js'",JSON.stringify(config)).replace(/^import .*from '\.\/(app-entry|family-invitations)\.js'$/gm,''))
   const transport=dataUrl(readFileSync(new URL('../src/services/request.js',import.meta.url),'utf8').replace("'./config.js'",JSON.stringify(config)).replace("'./session.js'",JSON.stringify(session)).replace("'./storage.js'",JSON.stringify(storage)))
   return {config:await import(config),session:await import(session),storage:await import(storage),navigation:await import(navigation),transport:await import(transport)}
 }
@@ -313,13 +324,13 @@ test('API runtime namespaces cannot read mock data and unadapted routes are bloc
   setup();setSession({accountId:'A',householdId:'home'});scopedStorage.setStorageSync('demo-orders-v1',[{id:'demo'}])
   const api=await apiRuntime();api.session.setSession({accountId:'A',householdId:'home'})
   assert.equal(api.storage.scopedStorage.getStorageSync('demo-orders-v1'),undefined);assert.throws(()=>api.config.requireMock(),error=>error.code==='ADAPTER_NOT_READY')
-  assert.equal(api.navigation.canOpenPage('/pages/index/index'),true);assert.equal(api.navigation.canOpenPage('/pages/shop/index'),true);assert.equal(api.navigation.canOpenPage('/pages/exclusive-plans/index'),true)
+  assert.equal(api.navigation.canOpenPage('/pages/index/index'),true);assert.equal(api.navigation.canOpenPage('/pages/shop/index'),false);assert.equal(api.navigation.canOpenPage('/pages/exclusive-plans/index'),true)
   const replacements=[]
   const history={replaceState:(_state,_title,url)=>replacements.push(url)}
   api.navigation.guardInitialH5Route({hash:'#/pages/exclusive-plans/detail?id=demo',pathname:'/preview/',search:''},history)
   assert.deepEqual(replacements,['/preview/#/pages/index/index'])
   api.navigation.guardInitialH5Route({hash:'#/pages/account/index',pathname:'/',search:''},history)
-  assert.equal(replacements.length,1)
+  assert.equal(replacements.length,2)
 })
 
 test('HTTP transport detects expired sessions, timeout and obsolete responses without retrying writes',async()=>{

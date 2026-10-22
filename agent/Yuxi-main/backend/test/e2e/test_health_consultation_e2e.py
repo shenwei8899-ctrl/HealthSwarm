@@ -131,7 +131,7 @@ async def test_bound_consultation_fifo_preserves_confirmed_records_and_own_outpu
     assert "餐次反馈保存入口尚未接入" not in skill_text
     async with pg_manager.get_async_session_context() as session:
         skill = await session.scalar(select(Skill).where(Skill.slug == "family-nutritionist"))
-        assert skill is not None and skill.version == "2026.10.14.1"
+        assert skill is not None and skill.version == "2026.10.22.1"
         expected_skill = {
             "slug": "family-nutritionist",
             "version": skill.version,
@@ -317,6 +317,7 @@ async def test_bound_consultation_fifo_preserves_confirmed_records_and_own_outpu
                     assert run.manifest["model"]["spec"] == model_spec
                     assert run.manifest["resources"] == {
                         "tools": [
+                            "find_food_packages",
                             "get_confirmed_profile",
                             "get_confirmed_diet",
                             "get_complete_health_profile",

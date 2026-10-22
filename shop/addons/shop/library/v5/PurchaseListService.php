@@ -322,7 +322,8 @@ class PurchaseListService
                     'surplus_unit' => $match['covered_unit'],
                     'unit_price_cent' => $match['unit_price_cent'],
                     'total_price_cent' => $match['total_price_cent'],
-                    'match_score' => $match['match_score'],
+                    // 匹配器以基点排序，持久化为百分制以适配 numeric(8,4)。
+                    'match_score' => min(9999.9999, (float)$match['match_score'] / 100),
                     'match_reason_json' => Json::encode(['reason' => 'same_ingredient', 'snapshot' => $match['product_snapshot']]),
                     'trade_status' => 'passed',
                     'requires_agent_revalidation' => 0,

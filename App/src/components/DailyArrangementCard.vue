@@ -12,7 +12,7 @@ const names = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐' }
       <text class="dish-summary">{{meal.dishes.map(dish=>dish.name).join(' · ')}}</text>
       <view class="meal-bottom"><text>{{meal.members.map(member=>member.name).join('、')}}</text><button :disabled="disabled" @click="$emit('open',meal)">查看本餐安排 ›</button></view>
     </view>
-    <button class="shop-button" @click="$emit('shop')">选购商城食材 <text>↗</text></button>
+    <button class="shop-button" :disabled="disabled" @click="$emit('shop',arrangement)">一键选购 <text>↗</text></button>
   </view>
 </template>
 

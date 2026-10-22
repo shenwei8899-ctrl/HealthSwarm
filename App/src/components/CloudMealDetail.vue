@@ -4,6 +4,7 @@ import { onShow } from '@dcloudio/uni-app'
 import AppNavBar from './AppNavBar.vue'
 import MealNotes from './MealNotes.vue'
 import DinerPicker from './DinerPicker.vue'
+import CloudMealPurchase from './CloudMealPurchase.vue'
 import { request } from '../services/request.js'
 import { getSession } from '../services/session.js'
 import { scopedStorage, storageContext } from '../services/storage.js'
@@ -49,7 +50,6 @@ async function confirm(ids){
   finally{if(alive&&ticket===storageContext())busy.value=false}
 }
 function recipe(dish){const r=props.route;uni.navigateTo({url:'/pages/recipe/index?arrangement='+encodeURIComponent(r.arrangement)+'&meal='+r.meal+'&date='+r.date+'&version='+r.version+'&dish='+encodeURIComponent(dish.id)})}
-function purchase(){const r=props.route;uni.navigateTo({url:'/pages/shop/index?purchase=1&arrangement='+encodeURIComponent(r.arrangement)+'&meal='+r.meal+'&date='+r.date+'&version='+r.version})}
 onMounted(load)
 onShow(()=>{if(scope!==storageContext()){scope=storageContext();revision++;meal.value=null;profile.value=null;client.reset();void load()}})
 onUnmounted(()=>{alive=false;revision++;client.dispose()})
@@ -59,10 +59,11 @@ onUnmounted(()=>{alive=false;revision++;client.dispose()})
   <text v-if="busy" class="safe-note">正在核对已保存安排…</text><view v-if="error" class="card status"><text>{{error}}</text><button :disabled="busy" class="secondary-button" @click="load">重新读取本餐</button><button v-if="state.error" class="secondary-button" @click="uni.redirectTo({url:'/pages/chat/index'})">返回今日安排恢复调整</button></view>
   <template v-if="meal"><view class="page-heading"><text class="eyebrow">今日已保存安排</text><text class="display-title">{{names[route.meal]}}，好好吃</text><button class="diner-button" :disabled="busy" @click="editMembers">{{meal.members.map(m=>m.name).join('、')}} · 更改成员 ›</button></view>
    <view class="summary"><MealNotes :plan="plan"/></view><view class="section-head"><text class="section-title">本餐菜品与做法</text></view><button v-for="dish in meal.dishes" :key="dish.id" class="dish card" @click="recipe(dish)"><view><text>{{dish.name}}</text><text>{{dish.ingredients.map(i=>i.name).join(' · ')}}</text></view><text>查看做法 ›</text></button>
-   <view class="purchase card"><text class="section-title">准备本餐食材</text><text>购买前会重新核对库存与价格，也可以使用家中已有食材。</text><button class="primary-button" @click="purchase">查看本餐采购清单</button></view>
+   <CloudMealPurchase :key="route.arrangement + ':' + route.version + ':' + route.meal" :meal="meal" :route="route"/>
   </template><DinerPicker :open="diners" :members="profile?.members||[]" :selected="meal?.members.map(m=>m.id)||[]" :meal="names[route.meal]" @close="diners=false" @confirm="confirm"/>
  </view>
 </template>
 <style scoped>
 .cloud-meal-detail{background:#fafafa}.text-button{font-size:24rpx;color:#555}.page-heading{padding:36rpx 0}.diner-button{font-size:26rpx;text-align:left;padding:24rpx 0;color:#666}.summary{padding:8rpx 28rpx 28rpx;background:#eeeef1;border-radius:28rpx}.section-head{margin:42rpx 0 24rpx}.dish{display:flex;justify-content:space-between;align-items:center;text-align:left;width:100%;padding:28rpx;margin:18rpx 0;font-size:26rpx}.dish>view{min-width:0}.dish>view text{display:block}.dish>view text+text{font-size:23rpx;color:#888;margin-top:12rpx}.dish>text{font-size:23rpx;color:#777;flex-shrink:0;margin-left:24rpx}.purchase,.status{padding:28rpx;margin:30rpx 0}.purchase>text{display:block;line-height:1.8}.purchase>text+text{color:#777;font-size:25rpx;margin:16rpx 0}.summary :deep(.meal-notes){color:#333}.summary :deep(.nutrition-lines),.summary :deep(.estimate),.summary :deep(.cooked-weight),.summary :deep(.member-tab),.summary :deep(.details-toggle){color:#666}.summary :deep(.member-tab.active){background:#333;color:#fff}.summary :deep(.nutrition-section),.summary :deep(.portion-section){border-color:#d6d6dc}.cloud-meal-detail :deep(.helper),.cloud-meal-detail :deep(.secondary-button){color:#555}
 </style>
+<style scoped>.cloud-meal-detail{padding-bottom:calc(env(safe-area-inset-bottom) + 180rpx)}</style>

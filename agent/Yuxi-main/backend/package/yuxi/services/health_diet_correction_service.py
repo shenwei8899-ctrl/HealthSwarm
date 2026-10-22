@@ -7,6 +7,8 @@ from yuxi.repositories.health_consultation_repository import HealthConsultationR
 from yuxi.repositories.health_diet_correction_repository import HealthDietCorrectionRepository
 from yuxi.repositories.health_diet_analysis_repository import HealthDietAnalysisRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
+from yuxi.repositories.health_source_repository import HealthSourceRepository
+from yuxi.services.health_source_types import nutrition_source_references
 from yuxi.services.health_diet_analysis_service import analyze_confirmed_meal
 from yuxi.services.health_nutrition_service import CALCULATION_VERSION, calculate_nutrition, input_fingerprint
 from yuxi.services.health_vision_types import HealthVisionError, MealPayload
@@ -36,6 +38,7 @@ async def correct_diet_log(uid, record_id, data):
         payload = data.meal.model_dump(mode="json")
         _validate_evidence(payload, draft.original_payload)
         nutrition = calculate_nutrition(data.meal, *await repo.nutrition_inputs(data.meal))
+        await HealthSourceRepository(session).require_current_sources(nutrition_source_references(nutrition["sources"]))
         if not nutrition["complete"] and not data.accept_incomplete:
             raise HealthVisionError("nutrition_incomplete", "营养数据不完整；请补充或明确接受不完整日记")
         if not await repo.revisions(record_id):

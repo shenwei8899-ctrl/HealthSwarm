@@ -1,3 +1,4 @@
+import { canUseLocalBusinessLogin } from './local-login-policy.js'
 const env = import.meta.env || {}
 export const serviceMode = env.VITE_SERVICE_MODE === 'api' ? 'api' : 'mock'
 export const isMockMode = serviceMode === 'mock'
@@ -8,7 +9,7 @@ export function requireMock() {
   if (!isMockMode) throw Object.assign(new Error('服务暂不可用，请稍后重试'), { code: 'ADAPTER_NOT_READY' })
 }
 
-export const isCommerceEnabled = env.VITE_COMMERCE_MODE === "api"
+export const isCommerceEnabled = !isMockMode && env.VITE_COMMERCE_MODE === "api"
 export const commerceApiBaseUrl = env.VITE_COMMERCE_API_BASE_URL || ""
 
 let h5 = false
@@ -16,8 +17,14 @@ let h5 = false
 h5 = true
 // #endif
 export const allowSameOriginApi = h5 && !isMockMode && apiBaseUrl === ''
-// Existing Agent credentials can be used only in an explicitly enabled H5 development build.
-export const canUsePasswordLogin = h5 && !isMockMode && env.DEV === true && env.VITE_H5_PASSWORD_LOGIN === 'true'
+// 正式客户端不开放业务密码登录。
+export const canUsePasswordLogin = false
 
-// 保留线上 H5 已有业务账号登录，商城仍通过同一 Agent 会话关联。
-export const canUseBusinessLogin = h5 && !isMockMode
+let platform = '', hostname = ''
+// #ifdef MP-WEIXIN
+if (typeof uni !== 'undefined' && uni.getSystemInfoSync) platform = uni.getSystemInfoSync().platform
+// #endif
+// #ifdef H5
+if (typeof location !== 'undefined') hostname = location.hostname
+// #endif
+export const canUseBusinessLogin = canUseLocalBusinessLogin(env, { platform, hostname })

@@ -57,6 +57,7 @@ async def test_recipe_search_only_returns_current_reference_and_rechecks_auth(mo
         "read_only": True,
     }
     auth.side_effect = [auth.return_value, HealthVisionError("policy_changed", "撤回", 409)]
+    session.scalar.side_effect = [chunk, file]
     with pytest.raises(HealthVisionError, match="policy_changed"):
         await service.search_family_nutrition_knowledge(SimpleNamespace(), "蒸菜")
 

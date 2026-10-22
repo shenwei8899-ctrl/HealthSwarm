@@ -23,6 +23,21 @@ from yuxi.storage.postgres.models_business import AgentRun, Conversation
 from yuxi.storage.postgres.models_health import HealthConsultation, HealthInitialPlanPreview
 
 
+async def search_initial_nutrition_knowledge(context, query):
+    """在当前全员配餐授权下检索依据，不把片段当作批准配方或规则。"""
+    from yuxi.services.health_meal_plan_service import require_planner_run
+    from yuxi.services.health_family_kb_service import retrieve_family_nutrition_knowledge
+
+    async with pg_manager.get_async_session_context() as session:
+        _, binding = await require_planner_run(session, context)
+        require_initial_binding(binding)
+    result = await retrieve_family_nutrition_knowledge(query)
+    async with pg_manager.get_async_session_context() as session:
+        _, binding = await require_planner_run(session, context)
+        require_initial_binding(binding)
+    return result
+
+
 async def initial_planner_context_in_session(session, uid, anchor_id, selected):
     """全部参与者排序锁定并独立同意，再读取批准来源与实际目录。"""
     from yuxi.services.health_vision_service import health_vision_service
@@ -155,7 +170,12 @@ async def initial_answer_in_session(session, run, binding, answer):
     ):
         raise HealthVisionError("planner_receipt_invalid", "初始预览回执不属于当前运行", 409)
     await validate_initial_receipt(session, binding, preview)
-    return initial_preview_result(preview)
+    result = initial_preview_result(preview)
+    if answer.explanation.strip():
+        result["explanation"] = answer.explanation.strip()
+    if answer.knowledge_source_ids:
+        result["knowledge_sources"] = await initial_knowledge_sources(session, run, answer.knowledge_source_ids)
+    return result
 
 
 async def validate_initial_planner_publication(session, run, text):
@@ -179,7 +199,12 @@ async def validate_initial_planner_publication(session, run, text):
         raise HealthVisionError("source_invalidated", "初始运行绑定已变化", 410)
     try:
         payload = json.loads(text)
-        answer = PlannerAnswer(preview_id=payload.get("preview_id"), questions=payload.get("questions", []))
+        answer = PlannerAnswer(
+            preview_id=payload.get("preview_id"),
+            questions=payload.get("questions", []),
+            explanation=payload.get("explanation", ""),
+            knowledge_source_ids=[source["source_id"] for source in payload.get("knowledge_sources", [])],
+        )
     except (ValueError, TypeError):
         raise HealthVisionError("planner_output_invalid", "初始待发布结果无法解析", 409) from None
     if await initial_answer_in_session(session, run, binding, answer) != payload:
@@ -188,6 +213,31 @@ async def validate_initial_planner_publication(session, run, text):
 
 async def validate_initial_planner_tool_payload(session, binding, name, payload):
     """checkpoint只接纳本线程真实历史Run回执，并重查完整来源。"""
+    if name == "query_initial_nutrition_knowledge":
+        from yuxi.services.health_family_kb_service import validate_nutrition_knowledge_sources
+        from yuxi.storage.postgres.models_business import Message, TOOL_AUDIT_MESSAGE_TYPE
+
+        audits = (
+            await session.scalars(
+                select(Message)
+                .join(AgentRun, AgentRun.id == Message.run_id)
+                .where(
+                    Message.conversation_id == binding.conversation_id,
+                    Message.message_type == TOOL_AUDIT_MESSAGE_TYPE,
+                    Message.role == "tool",
+                    Message.execution_status == "completed",
+                    AgentRun.uid == binding.actor_uid,
+                    AgentRun.agent_slug == PLANNER_SLUG,
+                )
+            )
+        ).all()
+        if not any(
+            (audit.extra_metadata or {}).get("tool_name") == name and json.loads(audit.content) == payload
+            for audit in audits
+        ):
+            raise HealthVisionError("source_invalidated", "配餐依据缺少真实工具回执", 410)
+        await validate_nutrition_knowledge_sources(session, payload)
+        return
     if name == INITIAL_PLANNER_TOOLS[0]:
         if payload != initial_context_result(binding):
             raise HealthVisionError("source_invalidated", "初始上下文历史已变化", 410)
@@ -219,3 +269,30 @@ async def validate_initial_planner_tool_payload(session, binding, name, payload)
             raise HealthVisionError("source_invalidated", "初始checkpoint完整结果已变化", 410)
     except (ValidationError, KeyError, TypeError):
         raise HealthVisionError("source_invalidated", "初始checkpoint无法核对", 410) from None
+
+
+async def initial_knowledge_sources(session, run, selected_ids):
+    """说明只能引用同Run已完成工具回执，并重验当前片段。"""
+    from yuxi.repositories.tool_message_audit_repository import ToolMessageAuditRepository
+    from yuxi.services.health_family_kb_service import validate_nutrition_knowledge_sources
+
+    selected = [str(value) for value in selected_ids]
+    if len(selected) != len(set(selected)):
+        raise HealthVisionError("citation_invalid", "配餐依据重复", 409)
+    found = {}
+    for audit in await ToolMessageAuditRepository(session).list_for_run(run.id):
+        if (
+            audit.execution_status != "completed"
+            or (audit.extra_metadata or {}).get("tool_name") != "query_initial_nutrition_knowledge"
+        ):
+            continue
+        try:
+            payload = json.loads(audit.content)
+        except (ValueError, TypeError):
+            raise HealthVisionError("citation_invalid", "配餐依据回执无法解析", 409) from None
+        if any(source.get("source_id") in selected for source in payload.get("sources", [])):
+            for source in await validate_nutrition_knowledge_sources(session, payload):
+                found[source["source_id"]] = source
+    if set(selected) - found.keys():
+        raise HealthVisionError("citation_invalid", "配餐依据不属于当前运行", 409)
+    return [found[key] for key in selected]

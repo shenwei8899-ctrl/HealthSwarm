@@ -189,3 +189,33 @@ async def test_task_runtime_auth_precedes_probe(readiness_sources):
     with pytest.raises(HealthVisionError, match="已撤权"):
         await service.health_task_runtime_blockers(sources.uid, sources.member_id)
     sources.runtime.assert_not_awaited()
+
+
+def test_published_recipe_readiness_uses_actual_catalog_classifications():
+    """独立发布目录不写回规则，缺失或改hash仍明确不能预览。"""
+    from copy import deepcopy
+    from test.unit.services.test_health_initial_meal_generation import initial_fixture
+    from yuxi.services.health_quality_types import SwapRecipeClassification
+    from yuxi.services.health_readiness import nutrition_readiness
+
+    _, current, recipes, ingredients, references, _, _ = initial_fixture()
+    profile = next(iter(current["profiles"].values()))
+    rules = current["rules"]
+    for row in (profile, rules):
+        row.update(id="synthetic", version=1, content_hash="a" * 64, reason=None, attestation={})
+    entries = deepcopy(rules["payload"]["meal_generation"]["recipe_classifications"])
+    rules["payload"]["meal_generation"].update(catalog_mode="published", recipe_classifications=[])
+    published = [SwapRecipeClassification.model_validate(item) for item in entries]
+    ready = nutrition_readiness(profile, rules, recipes, ingredients, references, classifications=published)
+    assert ready["meal_preview"]["status"] == "can_attempt_preview"
+    assert rules["payload"]["meal_generation"]["recipe_classifications"] == []
+    unavailable = nutrition_readiness(profile, rules, recipes, ingredients, references, classifications=[])
+    assert unavailable["meal_preview"]["reason"] == "eligible_recipe_missing"
+    for entry in published:
+        entry.recipe_hash = "c" * 64
+    assert (
+        nutrition_readiness(profile, rules, recipes, ingredients, references, classifications=published)[
+            "meal_preview"
+        ]["status"]
+        == "not_ready"
+    )

@@ -47,14 +47,18 @@ export function createWechatAuthClient({ send, session, getCode, appId, isWechat
     const t = ticket()
     const response = await send({ path: '/api/auth/wechat/session' })
     current(t)
+    if (response.data?.wechat_authenticated !== true) {
+      session.clear()
+      throw Object.assign(new Error('请重新使用微信登录'), { code: 'WECHAT_LOGIN_REQUIRED' })
+    }
     const context = projectContext(response.data)
     if (context.accountId !== stored.accountId) {
       session.clear()
       throw Object.assign(new Error('会话身份不一致，请重新登录'), { code: 'SESSION_IDENTITY_CHANGED' })
     }
     const selected = context.families.find(f => f.id === stored.householdId)
-    const result = { ...stored, ...context, householdId: selected?.id || null }
-    session.save(result)
+    const result = { ...stored, ...context, authSource: 'wechat', householdId: selected?.id || null }
+    session.save(result, { preserveRevision: true })
     return result
   }
   async function selectFamily(id) {
@@ -63,7 +67,7 @@ export function createWechatAuthClient({ send, session, getCode, appId, isWechat
     const family = restored.families.find(f => f.id === id)
     if (!family) throw new Error('家庭不存在或当前账号无权访问')
     const result = { ...restored, householdId: family.id }
-    session.save(result)
+    session.save(result, { preserveRevision: true })
     return result
   }
   function logout() { generation++; session.clear() }
@@ -82,5 +86,5 @@ export function projectContext(data) {
 
 export function projectLogin(data) {
   if (typeof data?.access_token !== 'string' || !data.access_token || !Number.isFinite(data.expires_at) || data.expires_at <= Date.now() / 1000) throw new Error('登录服务返回的会话无效')
-  return { ...projectContext(data), token: data.access_token, expiresAt: data.expires_at, householdId: null, isDemo: false }
+  return { ...projectContext(data), token: data.access_token, expiresAt: data.expires_at, householdId: null, authSource: 'wechat', isDemo: false }
 }

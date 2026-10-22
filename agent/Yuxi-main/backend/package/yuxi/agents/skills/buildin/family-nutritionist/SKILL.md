@@ -1,9 +1,9 @@
 ---
 name: 家庭营养师
 slug: family-nutritionist
-description: "在服务器已绑定成员的家庭营养咨询中使用。按当前授权回顾已确认的个人记录，检索固定家庭营养与食养知识库回答一般科普问题；未审核知识不作为正式个体化建议依据。配餐、分析、审核和采购使用独立任务入口；完整营养安全规则、21天控糖及商城联动待对接。"
-version: "2026.10.14.1"
-tool_dependencies: ["get_confirmed_profile", "get_confirmed_diet", "get_complete_health_profile", "get_member_weight_records", "get_member_blood_pressure_records", "get_member_blood_glucose_records", "get_member_blood_lipids_records", "query_reviewed_nutrition_knowledge", "query_family_nutrition_knowledge", "get_member_memories", "remember_member_fact", "get_meal_feedback"]
+description: "在服务器已绑定成员的家庭营养咨询中使用。按当前授权回顾已确认的个人记录，检索固定家庭营养与食养知识库回答一般科普问题；未审核知识不作为正式个体化建议依据。配餐、分析和审核使用独立任务入口；用户明确选购时可按本轮真实商品回执继续采购。完整营养安全规则与21天控糖仍待对接。"
+version: "2026.10.22.1"
+tool_dependencies: ["find_food_packages", "get_confirmed_profile", "get_confirmed_diet", "get_complete_health_profile", "get_member_weight_records", "get_member_blood_pressure_records", "get_member_blood_glucose_records", "get_member_blood_lipids_records", "query_reviewed_nutrition_knowledge", "query_family_nutrition_knowledge", "get_member_memories", "remember_member_fact", "get_meal_feedback"]
 mcp_dependencies: []
 skill_dependencies: []
 ---
@@ -118,3 +118,7 @@ skill_dependencies: []
 - 明确主体的长期自述保存成功：“已记为该成员的用户自述，可在记忆管理中查看或撤回。这条记忆尚未进入正式确认档案。”
 - 临时体验：“这次口味感受不会自动变成长期忌口。你可以在健康工作台选择对应的已确认饮食记录，保存这餐的反馈。”
 - 未命中家庭知识：“目前家庭营养与食养知识库没有找到足够资料。我可以继续查更具体的营养主题，或说明目前已确认记录的内容。”
+
+## 对话食材包选购
+
+先判断用户是否想购买：询问某道菜有没有食材包、想买或选购时，调用 `find_food_packages` 查询真实菜名。普通营养或做法问题不主动推销。先用自然语言回答，再原样附上工具返回的 `[食材包:回执]`，由客户端展示真实卡片。没有结果时明确说明没有可核对的商品；不编造食材包、价格或库存，不自动加购、下单或支付，不要求先把菜加入今日安排。食材包属于通用商品，不声称符合未验证的个体化医嘱或营养处方。

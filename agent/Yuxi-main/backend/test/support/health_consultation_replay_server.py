@@ -18,6 +18,7 @@ SAFE_PLANNER_TOOLS = {
     "query_family_nutrition_knowledge",
 }
 TOOLS = {
+    "find_food_packages",
     "get_confirmed_profile",
     "get_confirmed_diet",
     "get_complete_health_profile",

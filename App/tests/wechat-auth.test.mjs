@@ -5,7 +5,7 @@ import { selfMember, basicProfileInput } from '../src/services/family-onboarding
 import { readFileSync } from 'node:fs'
 import { ref, computed } from 'vue'
 
-const context = { account: { id: 17, name: '合成用户' }, families: [] }
+const context = { wechat_authenticated: true, account: { id: 17, name: '合成用户' }, families: [] }
 const loginResult = { ...context, access_token: 'synthetic-token', expires_at: Date.now() / 1000 + 300, session_key: 'must-not-store', openid: 'must-not-store' }
 
 test('local password login validates the real Agent session before saving and does not retain credentials', async () => {
@@ -254,16 +254,18 @@ test('registered launch route remains the welcome page', () => {
   assert.equal(pages.pages[0].path, 'pages/index/index')
 })
 
-test('closing and reopening binding form preserves access without retaining its password', async () => {
+test('formal welcome has only WeChat entry and displays automatic registration errors without a binding form', async () => {
   const deps = { ref, onShow() {}, onHide() {}, onUnload() {}, isMockMode: false, canUseBusinessLogin: false, getSession: () => null,
-    wechatAuth: { cancelPending() {} }, mockService: { login: async () => { throw Object.assign(new Error('请绑定账号'), { businessCode: 'WECHAT_ACCOUNT_UNBOUND' }) } } }
+    wechatAuth: { cancelPending() {} }, service: { login: async () => { throw new Error('微信注册配置尚未就绪') } } }
   globalThis.uni = { showToast() {} }
-  const source = readFileSync(new URL('../src/pages/index/index.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
-  const page = new Function('deps', `const {${Object.keys(deps).join(',')}} = deps;\n${source}\nreturn { continueLogin, start, closeLoginSheet, loginOpen, password, needsBinding }`)(deps)
-  await page.continueLogin(); assert.equal(page.loginOpen.value, true)
-  page.password.value = 'synthetic-password'; page.closeLoginSheet()
-  assert.equal(page.password.value, ''); assert.equal(page.loginOpen.value, false)
-  page.start(); assert.equal(page.loginOpen.value, true)
+  const source = readFileSync(new URL('../src/pages/index/index.vue', import.meta.url), 'utf8')
+  const code = source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
+  const page = new Function('deps', `const {${Object.keys(deps)}}=deps;${code};return {continueLogin,loginOpen,loginError}`)(deps)
+  await page.continueLogin()
+  assert.equal(page.loginOpen.value, false)
+  assert.match(page.loginError.value, /配置尚未就绪/)
+  assert.match(source, /v-if="loginOpen && canUseBusinessLogin"/)
+  assert.doesNotMatch(source, /CommerceMemberEntry|商城账号登录/)
 })
 
 test('self-profile mount and show share restoration without invalidating their own session', async () => {

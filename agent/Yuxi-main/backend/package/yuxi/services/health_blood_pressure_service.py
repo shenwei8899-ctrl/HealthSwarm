@@ -26,8 +26,7 @@ async def blood_pressure_records_for_run(context):
         )
         repo = HealthBloodPressureRepository(session)
         result = await repo.read(
-            context.uid,
-            binding.member_id,
+            context.uid, binding.member_id,
             **({"selection": binding.indicator_selection} if getattr(binding, "indicator_selection", None) else {}),
         )
         await repo.record_use(run, result)

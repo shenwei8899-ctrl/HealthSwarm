@@ -1,27 +1,13 @@
 import { ref } from "vue";
 import { createCommerceClient } from "./commerce-client.js";
-import { getSession, setSession, clearSession } from "./session.js";
+import { getSession } from "./session.js";
 import { isMockMode, isCommerceEnabled } from "./config.js";
-import { getProfile, saveProfile, newMember, normalizeMember } from "../utils/profile.js";
-import { scopedStorage } from "./storage.js";
 import { storageContext, storageScope } from "./storage.js";
 import { commerceApiBaseUrl } from "./config.js";
 
 export const commerceSessionEpoch = ref(0);
-export const usesCommerceIdentity = isMockMode && isCommerceEnabled;
+export const usesCommerceIdentity = false;
 export const usesAgentIdentity = !isMockMode && isCommerceEnabled;
-function activateIdentity(result) {
-  if (!usesCommerceIdentity) return;
-  const accountId = "commerce:" + (result.identity_namespace || commerceApiBaseUrl) + ":" + result.userId;
-  // This is a local profile namespace, not an Agent household or cloud identity.
-  const householdId = "local-health:" + accountId;
-  if (getSession()?.authSource === "commerce" && getSession()?.accountId === accountId && getSession()?.householdId === householdId) return;
-  setSession({ accountId, householdId, authSource: "commerce", commerceMemberId: result.userId, localHealthOnly: true, isDemo: false });
-  if (!scopedStorage.getStorageSync("family-profile-v2")) {
-    const member = normalizeMember({ ...newMember(0), name: "我", relation: "本人", claimedBy: "creator" });
-    saveProfile({ householdName: "我的家", usageMode: "个人使用", sharedDinerCount: 1, members: [member], defaultDiners: [member.id], goals: [], tastes: [], memories: [] });
-  }
-}
 let isWechat = false;
 // #ifdef MP-WEIXIN
 isWechat = true;
@@ -46,10 +32,6 @@ export const commerce = createCommerceClient({
   storage: {
     get: (key) => uni.getStorageSync(key),
     set: (key, value) => { uni.setStorageSync(key, value); commerceSessionEpoch.value++; },
-  },
-  activateIdentity,
-  deactivateIdentity: (session) => {
-    if (usesCommerceIdentity && getSession()?.authSource === "commerce" && getSession()?.commerceMemberId === session?.userId) clearSession();
   },
   randomKey: () =>
     "mp-" +

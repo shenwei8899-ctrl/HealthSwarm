@@ -6,13 +6,13 @@ import AppIcon from './AppIcon.vue'
 import DinerPicker from './DinerPicker.vue'
 import HealthChatBusinessCard from './HealthChatBusinessCard.vue'
 import DailyArrangementCard from './DailyArrangementCard.vue'
+import ConversationFoodPackages from './ConversationFoodPackages.vue'
 import VoiceInput from './VoiceInput.vue'
 import { loadCloudProfile } from '../services/cloud-profile.js'
 import { createDailyArrangementClient, dailyArrangementState } from '../services/daily-arrangement-client.js'
 import { request } from '../services/request.js'
 import { storageContext, scopedStorage } from '../services/storage.js'
 import { getSession } from '../services/session.js'
-import { commerce } from '../services/commerce.js'
 import { createHealthTaskFlow, HEALTH_TEXT_TASKS, newHealthRequestId } from '../services/health-task-flow.js'
 import { persistChatImage, previewChatImage } from '../services/chat-images.js'
 import { readChatSnapshot, chatImageContent } from '../services/cloud-chat.js'
@@ -52,13 +52,13 @@ const flow=createHealthTaskFlow({daily:true,onChange:next=>{
     const result=next.result
     const message={id,requestId:next.requestId,role:'assistant',createdAt:new Date().toISOString(),citations:result.citations||[],
       text:result.type==='answer'?result.text:result.type==='needs_input'?result.questions.join('\n'):result.type==='error'?'这次回复未完成，请保留原问题，重新读取处理结果。':'餐单结果已返回，请核对后决定是否使用。',
-      memberId:next.memberId,error:result.type==='error',business:result.type==='business'?result:null}
+      memberId:next.memberId,purchaseOffers:result.purchaseOffers,purchaseRequestId:result.purchaseOffers?.length?next.requestId:'',error:result.type==='error',business:result.type==='business'?result:null}
     if(index<0)messages.value.push(message);else messages.value[index]={...messages.value[index],...message}
     if(!restoring)void scrollLatest()
   }
 }})
-const client=createDailyArrangementClient({state,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId,beforeStart:()=>commerce.connect()})
-const familyClient=createDailyArrangementClient({state:familyState,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId,beforeStart:()=>commerce.connect()})
+const client=createDailyArrangementClient({state,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId})
+const familyClient=createDailyArrangementClient({state:familyState,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId})
 async function familyPlan(text,retry=false){
   text=retry?familyIntent.value:String(text||'');if(!retry)familyIntent.value=text
   const scope=storageContext(),mine=epoch
@@ -144,7 +144,7 @@ onMounted(load);onShow(()=>{if(!disposed)void load()})
 onHide(()=>{visible=false;voiceRef.value?.cancel();flow.hide();familyClient.reset();familyPanel.value=false;familySelection.value=null})
 onUnmounted(()=>{disposed=true;epoch++;draftVersion++;client.dispose();familyClient.dispose();flow.hide()})
 function openMeal(meal){uni.navigateTo({url:'/pages/shop/index?meal='+meal.type+'&date='+state.date+'&arrangement='+encodeURIComponent(state.arrangement.id)+'&version='+state.arrangement.version})}
-function shop(){uni.navigateTo({url:'/pages/shop/index?commerce=1'})}
+function shop(arrangement){if(arrangement)uni.navigateTo({url:'/pages/shop/index?daily=1&date='+arrangement.date+'&arrangement='+encodeURIComponent(arrangement.id)+'&version='+arrangement.version})}
 function archives(){uni.navigateTo({url:'/pages/profile/index'})}
 async function members(ids){const type=selectedMeal.value.type;selectedMeal.value=null;await client.changeMembers(type,ids);cardVisible.value=state.phase==='ready';if(familyPanel.value&&familyState.date===state.date)await familyClient.load(state.date)}
 async function sendQuestion(){
@@ -217,7 +217,7 @@ function askPrompt(text){if(text==='看看我的饮食记录'){uni.navigateTo({u
     <text v-for="citation in message.citations||[]" :key="citation" class="citation">参考：{{citation}}</text>
     <text v-if="message.status==='unknown'" class="chat-error">提交结果待确认，请勿重复发送。</text>
     <text v-if="message.status==='failed'||message.status==='rejected'" class="chat-error">这条问题未完成，可核对后重新发送。</text><text v-if="message.status==='cancelled'" class="chat-error">已取消本次问题。</text>
-    <button v-if="message.error" @click="flow.refresh()">重新读取回复</button><HealthChatBusinessCard v-if="message.business" :result="message.business" :member-id="message.memberId||task.memberId"/>
+    <button v-if="message.error" @click="flow.refresh()">重新读取回复</button><ConversationFoodPackages v-if="message.purchaseRequestId" :offers="message.purchaseOffers" :request-id="message.purchaseRequestId"/><HealthChatBusinessCard v-if="message.business" :result="message.business" :member-id="message.memberId||task.memberId"/>
    </view>
   </view>
   <view v-if="familyPanel" class="dialogue-status"><text>家庭餐单 · {{familyState.date}}</text><text>按这餐实际参加的成员核对家庭安排，每位成员的资料和权限由服务端检查。</text><text v-if="familyState.busy">正在读取家庭安排…</text><text v-if="familyState.error" class="chat-error">{{familyState.error}}</text><button v-if="familyState.error" :disabled="familyState.busy" @click="familyPlan('',true)">重新读取家庭餐单</button><DailyArrangementCard v-if="familyState.phase==='ready'" :arrangement="familyState.arrangement" family :disabled="familyState.busy" @open="openFamilyMeal" @members="familySelection={type:$event.type,ids:$event.members.map(m=>m.id),question:''}" @shop="shop"/><button @click="familyPanel=false">收起家庭餐单</button></view>

@@ -50,7 +50,9 @@ def external_projection(row, kind, key):
             return result
     except (KeyError, TypeError, ValueError, ValidationError):
         return result
-    if row.revoked_at is not None:
+    if not getattr(row, "_knowledge_source_current", True):
+        result["reason"] = "knowledge_source_changed"
+    elif row.revoked_at is not None:
         result["reason"] = "revoked"
     elif row.attested_at > utc_now_naive():
         result["reason"] = "future_attestation"

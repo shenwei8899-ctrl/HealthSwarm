@@ -1,12 +1,16 @@
 <script>
 import { scopedStorage } from './services/storage.js'
-import { canOpenPage, launchRoute } from './services/navigation.js'
+import { checkCurrentEntry } from './services/navigation.js'
+import { captureInvitation } from './services/family-invitations.js'
+import { isMockMode } from './services/config.js'
 export default {
   onLaunch(options) {
-    if (options?.path && !canOpenPage(launchRoute(options))) uni.reLaunch({url:'/pages/index/index'})
+    captureInvitation(options)
+    if (!isMockMode && options?.path && options.path !== 'pages/index/index') uni.reLaunch({url:'/pages/index/index'})
     scopedStorage.setStorageSync('active-health-case-v1', null)
-    console.info('家庭营养师原型已启动')
+
   },
+  onShow(options) { void checkCurrentEntry(options) },
 }
 </script>
 

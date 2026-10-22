@@ -45,6 +45,15 @@ _TASK_DEFINITIONS = {
     definition.task_type: definition
     for definition in (
         TaskDefinition(
+            "nutrition_knowledge_prepare_v1", "yuxi.services.health_knowledge_import_service", "run_knowledge_nutrition"
+        ),
+        TaskDefinition(
+            "daily_arrangement_v1",
+            "yuxi.services.daily_arrangement_tasks",
+            "run_daily_arrangement",
+            failure_function="fail_daily_arrangement",
+        ),
+        TaskDefinition(
             "report_extract_v1",
             "yuxi.services.health_vision_tasks",
             "run_health_vision",

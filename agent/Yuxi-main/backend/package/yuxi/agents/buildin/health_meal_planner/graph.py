@@ -18,6 +18,7 @@ from yuxi.agents.toolkits.meal_planner import (
     preview_family_plan_participation,
     get_initial_plan_context,
     preview_initial_meal_plan,
+    query_initial_nutrition_knowledge,
 )
 from yuxi.agents.toolkits.health import query_family_nutrition_knowledge
 from yuxi.services.health_family_planner_types import FAMILY_PLANNER_TOOLS
@@ -69,7 +70,7 @@ class HealthMealPlannerAgent(BaseAgent):
         if tuple(planner_tools) == SAFE_PLANNER_TOOLS:
             tools = [get_safe_plan_context, preview_safe_plan_swap, preview_safe_plan_regeneration]
         elif tuple(planner_tools) == INITIAL_PLANNER_TOOLS:
-            tools = [get_initial_plan_context, preview_initial_meal_plan]
+            tools = [get_initial_plan_context, preview_initial_meal_plan, query_initial_nutrition_knowledge]
         elif tuple(planner_tools) == FAMILY_PLANNER_TOOLS:
             tools = [
                 get_family_plan_context,

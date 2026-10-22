@@ -23,6 +23,10 @@ docker compose --env-file .env.production -f docker-compose.production.yml up -d
 
 此命令必须在目标服务器环境执行，源码推送不代表已经部署。生产 entrypoint 执行幂等结构升级；新增 004_supplier_catalog_import_fields.sql 仅补导入字段，005_wechat_payment_lifecycle.sql 仅补支付映射/流水表。数据库卷和上传卷须保留。额外运行 prepare-miniapp.php 可在空地区字典时导入原行政区划；它不创建会员或商品。
 
+PostgreSQL 商城插件安装与升级还会执行 `database/postgresql/migrations/20261019_001_agent_meal_source.sql` 和 `20261021_commerce_catalog_review.sql`，在同一事务记录版本及校验和；已执行文件不可改写。这两份迁移包含 Agent 采购来源证明字段和目录审核结构，不能仅复制 PHP 服务而遗漏 SQL 文件。新增对象使用幂等 DDL 保留业务记录，历史数据重置脚本不进入此自动升级链。
+
+`SHOP_AGENT_SESSION_URL` 指向固定可信的 Agent `/api/auth/wechat/session` HTTPS 地址，`SHOP_AGENT_CLIENT_ID` 使用与 Agent 一致的稳定标识。正式 Compose 将它们注入 PHP 和调度进程；不要把 bearer、AppSecret 或 client secret 放进前端。缺少这些配置时，业务身份交换与带来源证明的采购不可用。先在独立环境验证身份交换、无效凭证拒绝及来源回查，再接入正式客户端。
+
 ## 商品导入与配送
 
 后台“商品与食材库”导入并确认供应商 Excel。发布正常、可见且有可售库存的 SKU 才会进入小程序商品目录；图片需要在正式 SHOP_MEDIA_BASE_URL 对应域名可访问。导入与上传需要 GD、fileinfo、mbstring、zip 等运行扩展，生产镜像及 12 MiB 上传限制已配置。

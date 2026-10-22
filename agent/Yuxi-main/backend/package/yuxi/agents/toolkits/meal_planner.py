@@ -35,6 +35,14 @@ async def preview_initial_meal_plan(runtime: ToolRuntime) -> dict:
     return await preview_initial_for_run(runtime.context)
 
 
+@tool(category="health", display_name="配餐营养依据检索", args_schema=RecipeSearch)
+async def query_initial_nutrition_knowledge(query: str, runtime: ToolRuntime) -> dict:
+    """从固定知识库检索搭配依据，数值与配方仍使用正式发布版本。"""
+    from yuxi.services.health_initial_planner_service import search_initial_nutrition_knowledge
+
+    return await search_initial_nutrition_knowledge(runtime.context, query)
+
+
 @tool(category="health", display_name="配餐菜谱检索", args_schema=RecipeSearch)
 async def search_meal_plan_recipes(query: str = "", runtime: ToolRuntime = None) -> dict:
     """检索已发布菜谱版本，返回实际原料及来源。"""

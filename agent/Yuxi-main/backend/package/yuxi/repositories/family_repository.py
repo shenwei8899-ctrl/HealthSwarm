@@ -76,6 +76,14 @@ class FamilyRepository:
         """只查找邀请的归属，调用方随后锁定家庭并重新核对。"""
         return await self.db.scalar(select(FamilyMember).where(FamilyMember.invite_hash == code_hash))
 
+    async def invitation_family(self, fid):
+        """签名已校验的邀请按家庭行锁串行接受与认领。"""
+        return await self.db.scalar(select(FamilyArchive).where(FamilyArchive.id == fid).with_for_update())
+
+    async def inviter_name(self, uid):
+        """邀请预览仅读取邀请人的公开称呼。"""
+        return await self.db.scalar(select(User.username).where(User.uid == uid))
+
     async def subject_member(self, fid, uid):
         """防止同一账户在同一家庭认领多个身份。"""
         return await self.db.scalar(

@@ -16,15 +16,15 @@ function setup(handler) {
 }
 const response = (account = '42') => ({ statusCode:200, data:{ code:0, data:{ user:{id:7,token:'member-7'},agent_account_id:account } } })
 
-test('Agent exchange uses bearer identity and preserves explicit existing member binding', async () => {
+test('Agent exchange sends only the current bearer and silently reuses its member', async () => {
   const f = setup(() => response())
-  await f.client.login({account:'existing-member',password:'synthetic-password'})
+  await f.client.exchange()
   assert.equal(f.calls[0].header.Authorization, 'Bearer agent-A')
-  assert.ok(f.calls[0].url.endsWith('/session/exchange'))
-  assert.deepEqual(f.calls[0].data, {account:'existing-member',password:'synthetic-password'})
+  assert.deepEqual(f.calls[0].data, {})
   assert.equal(f.client.session().userId, '7')
   assert.equal(f.client.session().agentAccountId, '42')
 })
+
 test('parallel first requests share one exchange', async () => {
   const f = setup(o => o.url.endsWith('/session/exchange') ? response() : {statusCode:200,data:{code:0,data:{items:[]}}})
   await Promise.all([f.client.cart(),f.client.cart()])
@@ -50,8 +50,9 @@ for (const change of ['switch','renew']) test('late exchange after '+change+' ca
   await assert.rejects(pending, e => e.code === 'SESSION_CHANGED')
   assert.equal(f.client.session(),null)
 })
-test('new membership requires explicit create request', async () => {
+test('explicit member credentials and create-member prompts cannot create another login path', async () => {
   const f = setup(() => response())
-  await f.client.exchange({create_member:true})
-  assert.deepEqual(f.calls[0].data,{create_member:true})
+  for (const value of [{create_member:true}, {account:'legacy',password:'synthetic'}])
+    await assert.rejects(f.client.exchange(value), e => e.code === 'AUTOMATIC_IDENTITY_REQUIRED')
+  assert.equal(f.calls.length,0)
 })

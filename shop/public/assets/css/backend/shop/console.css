@@ -11,3 +11,6 @@ html{color-scheme:light}body{margin:0;background:#f3f5f8;font-family:'Segoe UI',
 #commerce-admin .cp-contextnav{display:none}
 @media(max-width:500px){#commerce-admin .cp-contextnav:not(:empty){display:flex;gap:8px;padding:10px 14px;overflow-x:auto;background:#fff;border-bottom:1px solid #e7ebf1}#commerce-admin .cp-contextnav button{flex:0 0 auto;border:1px solid #dce3ec;border-radius:4px;background:#fff;color:#3b4a5c;padding:7px 10px;font:inherit}#commerce-admin .cp-contextnav button[aria-current=page]{color:#2476e5;background:#edf4ff;border-color:#b9d3f5}}
 #editor .cp-info-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}#editor .cp-info-grid dl{margin:0}#editor .cp-info-grid dt{font-size:12px;color:#718096}#editor .cp-info-grid dd{margin:3px 0 0;overflow-wrap:anywhere}#editor button:disabled{opacity:.5;cursor:default}
+
+/* Keep sign-out available beside the administrator name, including narrow screens. */
+#commerce-admin .cp-account{display:flex;align-items:center;gap:14px;flex-shrink:0}#commerce-admin .cp-logout{text-decoration:none;font-size:12px}#commerce-admin .cp-logout:hover{border-color:var(--shop-blue);color:var(--shop-blue)}#commerce-admin .cp-logout:focus-visible{outline:2px solid var(--shop-blue);outline-offset:2px}

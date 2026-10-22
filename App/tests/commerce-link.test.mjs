@@ -37,14 +37,17 @@ test('unified login exchanges only the Agent bearer, deduplicates parallel reque
   f.refresh(); assert.equal(f.client.session(), null); await f.client.connect()
   assert.equal(f.calls.filter(o => o.url.endsWith('/exchange')).length, 2)
 })
-test('unmapped unified identity requires explicit new-member confirmation and never guesses an account', async () => {
-  const f = unified(o => o.data?.create_member === true ? exchangeResponse('17') : { statusCode: 409, data: { code: 40940, message: 'choose membership' } })
-  await assert.rejects(f.client.connect(), e => e.code === 40940)
-  assert.equal(f.client.session(), null)
-  await f.client.login({ create_member: true })
-  assert.equal(f.client.session().userId, '7')
-  assert.deepEqual(f.calls[1].data, { create_member: true })
+test('unmapped unified identity retries automatic exchange without prompting for account details', async () => {
+  let ready=false
+  const f = unified(() => ready ? exchangeResponse('17') : { statusCode: 503, data: { code: 50301, message: 'not ready' } })
+  await assert.rejects(f.client.connect(), e => e.code === 50301)
+  assert.equal(f.client.session(),null)
+  ready=true
+  await f.client.connect()
+  assert.equal(f.client.session().userId,'7')
+  assert.deepEqual(f.calls.map(c=>c.data),[{},{}])
 })
+
 test('unified exchange rejects wrong identity and account changes while pending', async () => {
   const wrong = unified(() => exchangeResponse('18'))
   await assert.rejects(wrong.client.connect(), e => e.code === 'INVALID_IDENTITY')

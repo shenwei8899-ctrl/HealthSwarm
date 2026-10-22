@@ -33,6 +33,10 @@ async def proposal_source(session, preview):
         spec = MealPlanSpec.model_validate(preview.spec)
         snapshot = await calculate_in_session(session, spec)
         ingredients, recipes = await HealthQualityRepository(session).ingredients(spec)
+    except HealthVisionError as error:
+        if error.code != "knowledge_source_changed":
+            raise
+        raise HealthVisionError("source_invalidated", "提议使用的知识库来源已变化，请重新核对", 410) from None
     except (ValidationError, ValueError, KeyError, TypeError):
         raise HealthVisionError("source_invalidated", "提议来源无法复算", 410) from None
     if snapshot != preview.snapshot or any(not f["source_current"] for f in ingredients.values()):

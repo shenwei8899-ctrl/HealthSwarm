@@ -4,6 +4,7 @@ from copy import deepcopy
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import ValidationError
+from sqlalchemy import select
 
 from yuxi.repositories.health_meal_plan_repository import HealthMealPlanRepository
 from yuxi.repositories.health_quality_repository import HealthQualityRepository
@@ -17,7 +18,12 @@ from yuxi.services.health_quality_service import check_plan_in_session, quality_
 from yuxi.services.health_quality_types import QualityCheckInput, QualityRules
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_health import HealthInitialPlanPreview, HealthMealPlan, HealthMealPlanRevision
+from yuxi.storage.postgres.models_health import (
+    HealthInitialPlanPreview,
+    HealthMealPlan,
+    HealthMealPlanRevision,
+    HealthPublishedRecipeClassification,
+)
 from yuxi.utils.datetime_utils import utc_now_naive
 
 
@@ -59,9 +65,23 @@ async def initial_catalog_in_session(session, uid, member_id, selection):
         else None
     )
     ids = {str(c.recipe_version_id) for c in generation.recipe_classifications} if generation else set()
+    published = []
+    if generation and generation.catalog_mode == "published":
+        published = list((await session.scalars(select(HealthPublishedRecipeClassification))).all())
+        ids |= {row.recipe_version_id for row in published}
     quality = HealthQualityRepository(session)
     recipes = await HealthMealPlanRepository(session).recipes(ids)
     foods, refs = await quality.recipe_sources_by_recipe(ids)
+    current["published_classifications"] = [
+        {
+            "recipe_version_id": row.recipe_version_id,
+            "recipe_hash": row.recipe_hash,
+            "dish_type_code": row.dish_type_code,
+            "allowed_meal_types": row.allowed_meal_types,
+        }
+        for row in published
+        if row.recipe_hash == refs.get(row.recipe_version_id)
+    ]
     current["sources"]["catalog"] = {
         rid: {"recipe_hash": refs.get(rid), "ingredients": foods.get(rid)} for rid in sorted(ids)
     }
@@ -71,7 +91,27 @@ async def initial_catalog_in_session(session, uid, member_id, selection):
 async def initial_generation_in_session(session, uid, member_id, selection):
     """生成与输出之间重新核对固定当前投影，跨有效期不能写结果。"""
     current, recipes, foods, refs = await initial_catalog_in_session(session, uid, member_id, selection)
-    result = generate_initial_plan(selection, current, recipes, foods, refs)
+    purchase_validator = None
+    fixed_meals = None
+    if selection.base_plan_id:
+        base = await HealthMealPlanRepository(session).plan(uid, str(selection.base_plan_id))
+        if base.version != selection.base_plan_version:
+            raise HealthVisionError("source_version_conflict", "原餐单版本已更新", 409)
+        if (
+            base.spec.get("kind", "single") != selection.kind
+            or base.spec["plan_date"] != selection.plan_date.isoformat()
+        ):
+            raise HealthVisionError("source_version_conflict", "单餐调整的日期或成员模式不一致", 409)
+        fixed_meals = {
+            meal["meal_type"]: meal for meal in base.spec["meals"] if meal["meal_type"] != selection.change_meal
+        }
+    if selection.purchase_required:
+        from yuxi.services.daily_arrangement_projection import purchase_catalog
+
+        recipes, purchase_validator = await purchase_catalog(session, recipes, refs)
+    result = generate_initial_plan(
+        selection, current, recipes, foods, refs, purchase_validator=purchase_validator, fixed_meals=fixed_meals
+    )
     # 搜索可能跨越外部资料有效期；输出或写回执前重读当前投影。
     fresh = await initial_context_in_session(session, uid, member_id, selection)
     if any(fresh["sources"][k] != current["sources"][k] for k in ("profiles", "rules")):
@@ -142,6 +182,21 @@ async def save_initial_plan(uid, member_id, data):
         repo, quality = HealthMealPlanRepository(session), HealthQualityRepository(session)
         await quality.lock_request(uid, check_key)
         await repo.lock_request(uid, str(data.client_request_id))
+        receipt = await repo.receipt(uid, str(data.client_request_id))
+        if receipt is not None:
+            if receipt.fingerprint != fingerprint:
+                raise HealthVisionError("request_conflict", "同一请求不能改变初始餐单确认", 409)
+            plan = await repo.plan(uid, receipt.plan_id)
+            if plan.member_id != member_id or plan.version != 1:
+                raise HealthVisionError("source_invalidated", "已保存初版发生变化，请查看当前餐单", 410)
+            check = await quality.check_receipt(uid, check_key)
+            await validate_quality_check(session, uid, check)
+            return {
+                **plan_result(plan),
+                **initial_generation_snapshot(plan.snapshot, plan.snapshot["generation_origin"], current=True),
+                "applied_version": 1,
+                "quality_check": {**quality_result(check), "current": True},
+            }
         preview, selection = await validate_initial_preview(session, uid, str(data.preview_id), member_id=member_id)
         if preview.snapshot["status"] != "ready":
             raise HealthVisionError("initial_plan_not_ready", "此预览尚无可保存初版", 409)
@@ -149,47 +204,38 @@ async def save_initial_plan(uid, member_id, data):
             **deepcopy(preview.snapshot["plan_snapshot"]),
             "generation_origin": {k: deepcopy(preview.snapshot[k]) for k in ("sources", "safety_check")},
         }
-        receipt = await repo.receipt(uid, str(data.client_request_id))
-        if receipt is not None:
-            if receipt.fingerprint != fingerprint:
-                raise HealthVisionError("request_conflict", "同一请求不能改变初始餐单确认", 409)
-            plan = await repo.plan(uid, receipt.plan_id)
-            if plan.version != 1 or plan.spec != preview.snapshot["plan_spec"] or plan.snapshot != snapshot:
-                raise HealthVisionError("source_invalidated", "已保存初版发生变化，请查看当前餐单", 410)
-            check = await quality.check_receipt(uid, check_key)
-        else:
-            plan = HealthMealPlan(
+        plan = HealthMealPlan(
+            id=str(uuid4()),
+            actor_uid=uid,
+            member_id=member_id,
+            version=1,
+            spec=deepcopy(preview.snapshot["plan_spec"]),
+            snapshot=snapshot,
+            updated_at=utc_now_naive(),
+        )
+        session.add(plan)
+        await session.flush()
+        session.add(
+            HealthMealPlanRevision(
                 id=str(uuid4()),
+                plan_id=plan.id,
                 actor_uid=uid,
-                member_id=member_id,
+                request_id=str(data.client_request_id),
+                fingerprint=fingerprint,
                 version=1,
-                spec=deepcopy(preview.snapshot["plan_spec"]),
-                snapshot=snapshot,
-                updated_at=utc_now_naive(),
+                reason="用户确认批准目录初始餐单",
+                spec=deepcopy(plan.spec),
+                snapshot=deepcopy(plan.snapshot),
             )
-            session.add(plan)
-            await session.flush()
-            session.add(
-                HealthMealPlanRevision(
-                    id=str(uuid4()),
-                    plan_id=plan.id,
-                    actor_uid=uid,
-                    request_id=str(data.client_request_id),
-                    fingerprint=fingerprint,
-                    version=1,
-                    reason="用户确认批准目录初始餐单",
-                    spec=deepcopy(plan.spec),
-                    snapshot=deepcopy(plan.snapshot),
-                )
-            )
-            check = await check_plan_in_session(
-                session,
-                uid,
-                plan.id,
-                QualityCheckInput(client_request_id=check_key, version=1, rule_code=selection.rule_code),
-            )
-            if check.snapshot["safety_check"]["status"] != "passed":
-                raise HealthVisionError("quality_not_passed", "初始餐单当前来源复核未通过", 409)
+        )
+        check = await check_plan_in_session(
+            session,
+            uid,
+            plan.id,
+            QualityCheckInput(client_request_id=check_key, version=1, rule_code=selection.rule_code),
+        )
+        if check.snapshot["safety_check"]["status"] != "passed":
+            raise HealthVisionError("quality_not_passed", "初始餐单当前来源复核未通过", 409)
         await validate_quality_check(session, uid, check)
         return {
             **plan_result(plan),

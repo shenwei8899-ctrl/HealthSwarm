@@ -23,9 +23,9 @@ from yuxi.utils import logger
 from yuxi.utils.singleton import SingletonMeta
 
 AGENT_RUN_TERMINAL_STATUS_SQL = ", ".join(f"'{status}'" for status in AGENT_RUN_TERMINAL_STATUSES)
-BUSINESS_SCHEMA_VERSION = 12
+BUSINESS_SCHEMA_VERSION = 13
 KNOWLEDGE_SCHEMA_VERSION = 2
-HEALTH_SCHEMA_VERSION = 26
+HEALTH_SCHEMA_VERSION = 28
 SCHEMA_VERSION_TABLE = "yuxi_schema_migrations"
 AGENT_RUN_LEASE_SCHEMA_STATEMENTS = (
     "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS worker_id VARCHAR(128)",
@@ -568,6 +568,12 @@ class PostgresManager(metaclass=SingletonMeta):
         self._check_initialized()
         async with self.async_engine.begin() as conn:
             await conn.run_sync(lambda connection: BusinessBase.metadata.create_all(connection, tables=HEALTH_TABLES))
+            await conn.execute(
+                text(
+                        "ALTER TABLE health_family_profile_link ADD COLUMN IF NOT EXISTS "
+                        "source_kind VARCHAR(24) NOT NULL DEFAULT 'self_confirmed'"
+                )
+            )
             await conn.execute(text("ALTER TABLE diet_log ADD COLUMN IF NOT EXISTS version INTEGER"))
             await conn.execute(
                 text(

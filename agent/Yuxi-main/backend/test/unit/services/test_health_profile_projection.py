@@ -57,7 +57,7 @@ async def test_unlinked_legacy_projection_keeps_independent_contract(monkeypatch
     """无正式关联的既有专业资料不被伪造成本人档案。"""
     member_id = "synthetic-member"
     row = snapshot(member_id)
-    repo = HealthQualityRepository(None)
+    repo = HealthQualityRepository(SimpleNamespace(get=AsyncMock(return_value=None)))
     repo.profile = AsyncMock(return_value=row)
     monkeypatch.setattr(HealthFamilyProfileRepository, "confirmed_source", AsyncMock(return_value=None), raising=False)
 
@@ -73,7 +73,7 @@ async def test_current_source_preserves_professionally_unknown_fields(monkeypatc
     payload = profile_payload()
     payload["intolerances"] = {"state": "unknown", "codes": []}
     row = snapshot("synthetic-member", source=family_source(), payload=payload)
-    repo = HealthQualityRepository(None)
+    repo = HealthQualityRepository(SimpleNamespace(get=AsyncMock(return_value=None)))
     repo.profile = AsyncMock(return_value=row)
     monkeypatch.setattr(
         HealthFamilyProfileRepository, "confirmed_source", AsyncMock(return_value=family_source()), raising=False
@@ -107,7 +107,7 @@ async def test_source_difference_hides_latest_payload_without_fallback(monkeypat
     else:
         recorded["confirmed_version"] = True
     row = snapshot("synthetic-member", source=recorded)
-    repo = HealthQualityRepository(None)
+    repo = HealthQualityRepository(SimpleNamespace(get=AsyncMock(return_value=None)))
     repo.profile = AsyncMock(return_value=row)
     monkeypatch.setattr(
         HealthFamilyProfileRepository, "confirmed_source", AsyncMock(return_value=actual), raising=False
@@ -134,7 +134,7 @@ async def test_source_difference_hides_latest_payload_without_fallback(monkeypat
 )
 async def test_unconfirmed_or_unavailable_source_hides_payload(monkeypatch, code, status, reason):
     """来源错误只暴露明确未就绪状态，不公开旧专业正文。"""
-    repo = HealthQualityRepository(None)
+    repo = HealthQualityRepository(SimpleNamespace(get=AsyncMock(return_value=None)))
     repo.profile = AsyncMock(return_value=snapshot("synthetic-member", source=family_source()))
     monkeypatch.setattr(
         HealthFamilyProfileRepository,
@@ -152,7 +152,7 @@ async def test_unconfirmed_or_unavailable_source_hides_payload(monkeypatch, code
 @pytest.mark.asyncio
 async def test_unexpected_source_error_is_not_disguised_as_missing_data(monkeypatch):
     """来源查询的其他失败不能静默降为资料不足。"""
-    repo = HealthQualityRepository(None)
+    repo = HealthQualityRepository(SimpleNamespace(get=AsyncMock(return_value=None)))
     repo.profile = AsyncMock(return_value=snapshot("synthetic-member", source=family_source()))
     monkeypatch.setattr(
         HealthFamilyProfileRepository,
@@ -178,7 +178,7 @@ async def test_external_failure_is_not_replaced_by_formal_source(monkeypatch, fa
         row.revoked_at = datetime.now(UTC).replace(tzinfo=None)
     else:
         row.payload = {**row.payload, "age_years": 99}
-    repo = HealthQualityRepository(None)
+    repo = HealthQualityRepository(SimpleNamespace(get=AsyncMock(return_value=None)))
     repo.profile = AsyncMock(return_value=row)
     source = AsyncMock(return_value=family_source())
     monkeypatch.setattr(HealthFamilyProfileRepository, "confirmed_source", source, raising=False)
@@ -213,7 +213,7 @@ async def test_personal_targets_reject_stale_formal_source(monkeypatch, changed_
     @asynccontextmanager
     async def session_context():
         """该单测仅隔离事务设备，不模拟目标结论。"""
-        yield None
+        yield SimpleNamespace(get=AsyncMock(return_value=None))
 
     monkeypatch.setattr(health_personal_target_service.pg_manager, "get_async_session_context", session_context)
     selection = SimpleNamespace(rule_code="synthetic-rules", profile_version=1, rule_version=1)
@@ -231,7 +231,7 @@ async def test_initial_plan_context_exposes_stale_source_without_professional_pa
     selected = SimpleNamespace(profile_versions={changed_source: 1}, rule_code="synthetic-rules", rule_version=1)
 
     result = await health_initial_meal_plan_service.initial_context_in_session(
-        None, "synthetic-owner", changed_source, selected
+        SimpleNamespace(get=AsyncMock(return_value=None)), "synthetic-owner", changed_source, selected
     )
 
     assert result["profiles"][changed_source]["status"] == "not_ready"
@@ -261,7 +261,9 @@ async def test_saved_plan_quality_cannot_pass_with_stale_formal_source(monkeypat
     monkeypatch.setattr(health_quality_service, "calculate_in_session", AsyncMock(return_value=calculated))
     selection = SimpleNamespace(plan_id=plan.id, plan_version=1, rule_code="synthetic-rules")
 
-    current = await health_quality_service.quality_context_in_session(None, "synthetic-owner", selection)
+    current = await health_quality_service.quality_context_in_session(
+        SimpleNamespace(get=AsyncMock(return_value=None)), "synthetic-owner", selection
+    )
     result = health_quality_service.quality_snapshot(current)
 
     assert result["safety_check"]["status"] == "unknown"

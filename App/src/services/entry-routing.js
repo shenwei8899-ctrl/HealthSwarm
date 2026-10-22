@@ -1,5 +1,5 @@
 // Both login and session restoration use this decision; no demo completion flags.
-export function createEntryResolver({ auth, readProfile, session }) {
+export function createEntryResolver({ auth, readProfile, session, invitation = () => '', invitationRoute = code => '/pages/invite/index?token=' + encodeURIComponent(code) }) {
   let generation = 0
   return async function resolve() {
     const mine = ++generation
@@ -12,6 +12,8 @@ export function createEntryResolver({ auth, readProfile, session }) {
       }
     }
     current()
+    const pending = invitation()
+    if (pending) return invitationRoute(pending)
     const families = account.families || []
     if (!families.length) return '/pages/onboarding/index'
     let id = account.householdId

@@ -1,6 +1,6 @@
 <script setup>
 import { sessionRevision } from '../../services/session.js'
-import { scopedStorage } from '../../services/storage.js'
+import { scopedStorage, storageScope } from '../../services/storage.js'
 import AppNavBar from '../../components/AppNavBar.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 import { onLoad, onShow } from '@dcloudio/uni-app'
@@ -8,9 +8,12 @@ import MemberFields from '../../components/MemberFields.vue'
 import OnboardingHealthFields from '../../components/OnboardingHealthFields.vue'
 import { backHome, getProfile, newMember, normalizeMember, normalizeProfile, saveProfile } from '../../utils/profile.js'
 import { dataWarnings } from '../../utils/health.js'
+import { onboardingIssue } from '../../utils/onboarding-validation.js'
 import { isMockMode } from '../../services/config.js'
 import { loadCloudProfile, saveCloudProfile, readCloudReportStatus } from '../../services/cloud-profile.js'
 const cloudLoading=ref(!isMockMode),cloudError=ref(''),cloudSaving=ref(false),cloudLoaded=ref(isMockMode)
+const cloudErrorCode = ref(null)
+let draftStorageKey = storageScope() + 'frontend-onboarding-progress-v1'
 let initialProfile = getProfile()
 if (!initialProfile.members.length || !scopedStorage.getStorageSync('family-profile-v2') && !scopedStorage.getStorageSync('frontend-onboarding-progress-v1')) {
   const self = normalizeMember({ ...newMember(0), name: '我', relation: '本人', age: '', claimedBy: 'creator' })
@@ -25,27 +28,34 @@ const self = computed(() => profile.value.members.find(m => m.relation === '本�
 const visibleMembers = computed(() => invited.value ? [current.value] : profile.value.usageMode === '个人使用' ? [self.value] : profile.value.members)
 const dinerCount = computed(() => profile.value.defaultDiners.length)
 const copy = [
-  ['先认识每位成员', '添加需要照顾的人，资料可以逐步补充。'],
-  ['饮食目标与健康', '了解你的需要，逐步完善资料。'],
+  ['先认识每位成员', '填写每位成员的基本信息。'],
+  ['饮食目标与健康', '记录每位成员的健康情况、饮食目标和偏好。'],
   ['重要的限制，分开记录', '未填写不等于没有，记录过敏、不耐受、忌口和医嘱。'],
 ]
 watch(step, () => nextTick(() => uni.pageScrollTo?.({ scrollTop: 0, duration: 0 })))
 
 async function readCloud() {
-    cloudLoading.value=true;cloudError.value=''
+    cloudLoading.value=true;cloudError.value='';cloudErrorCode.value=null
     try {
-      profile.value = await loadCloudProfile()
+      const loaded = await loadCloudProfile()
+      draftStorageKey = storageScope() + 'frontend-onboarding-progress-v1'
+      profile.value = loaded
+      invited.value = profile.value.isOwner === false
+      if (invited.value) {
+        memberIndex.value = profile.value.members.findIndex(member => String(member.id) === profile.value.selfMemberId)
+        if (memberIndex.value < 0) throw new Error('尚未读到本人档案，请重新打开邀请并确认加入。')
+      }
       const policy=profile.value.analysisPolicy
       const draft = scopedStorage.getStorageSync('frontend-onboarding-progress-v1')
       if (draft?.profile?.householdId === profile.value.householdId && draft.profile.familyVersion === profile.value.familyVersion) {
         profile.value = normalizeProfile(draft.profile); step.value = draft.step || 0
         profile.value.analysisPolicy=policy
       }
-      if (!profile.value.defaultDiners.length) profile.value.defaultDiners = profile.value.members.map(member=>member.id)
+      if (!invited.value && !profile.value.defaultDiners.length) profile.value.defaultDiners = profile.value.members.map(member=>member.id)
       familyDiners.value=[...profile.value.defaultDiners]
-      syncDiners()
+      if (!invited.value) syncDiners()
       cloudLoaded.value=true
-    } catch(error) { cloudError.value=error.message }
+    } catch(error) { cloudError.value=error.message;cloudErrorCode.value=error.code }
     finally { cloudLoading.value=false }
 }
 onLoad(async options => {
@@ -66,11 +76,16 @@ onLoad(async options => {
   syncDiners()
   if (profile.value.usageMode === '个人使用') selectMember(self.value.id)
 })
-watch([profile, step, memberIndex, familyDiners], () => {
-  if (!invited.value && !completed) scopedStorage.setStorageSync('frontend-onboarding-progress-v1', {
+function preserveProgress() {
+  if (!invited.value && !completed && (isMockMode || cloudLoaded.value)) uni.setStorageSync(draftStorageKey, JSON.parse(JSON.stringify({
     version: 2, profile: profile.value, step: step.value, memberIndex: memberIndex.value, familyDiners: familyDiners.value,
-  })
-}, { deep: true })
+  })))
+}
+watch([profile, step, memberIndex, familyDiners], preserveProgress, { deep: true })
+function recoverCloud() {
+  if (Number(cloudErrorCode.value) === 401) { preserveProgress(); uni.reLaunch({ url: '/pages/index/index' }); return }
+  if (cloudLoaded.value) next(); else void readCloud()
+}
 onShow(async () => {
   if(!isMockMode){if(!cloudLoaded.value)return;const revision=sessionRevision();const rows=await Promise.allSettled(profile.value.members.filter(m=>m.healthMemberId).map(async m=>({id:m.id,healthId:m.healthMemberId,status:await readCloudReportStatus(m.healthMemberId)})));if(revision!==sessionRevision())return;for(const row of rows){if(row.status!=='fulfilled')continue;const m=profile.value.members.find(m=>m.id===row.value.id&&m.healthMemberId===row.value.healthId);if(m)m.reportStatus=row.value.status}return}
   const fresh = getProfile()
@@ -112,24 +127,28 @@ async function commit() {
   if(!isMockMode){
     cloudSaving.value=true;cloudError.value=''
     try { profile.value=await saveCloudProfile(profile.value) }
-    catch(error){cloudError.value=error.message;return}
+    catch(error){cloudError.value=error.message;cloudErrorCode.value=error.code;preserveProgress();return}
     finally{cloudSaving.value=false}
   }
   if (!invited.value) {
     completed = true
     scopedStorage.setStorageSync('frontend-onboarded-v1', true)
-    scopedStorage.setStorageSync('frontend-onboarding-progress-v1', null)
+    uni.setStorageSync(draftStorageKey, null)
   }
-  uni.redirectTo({ url: invited.value ? '/pages/profile/index' : '/pages/chat/index?from=onboarding' })
+  uni.reLaunch({ url: '/pages/chat/index?from=onboarding' })
 }
 function next() {
   if(cloudSaving.value||cloudLoading.value||cloudError.value&&!profile.value.householdId)return
-  for (const member of visibleMembers.value) {
-    const message = !member.name.trim() ? '请填写姓名／称呼' : step.value === 1 && member.healthStatus === 'set' &&
-      (!member.conditions.length || member.conditions.includes('其他') && !member.otherCondition.trim()) ? '请补充具体基础病' : ''
-    if (message) { selectMember(member.id); uni.showToast({ title: message, icon: 'none' }); return }
+  const members = step.value === 2 && !invited.value ? profile.value.members : visibleMembers.value
+  for (const member of members) {
+    const issue = onboardingIssue(member, step.value)
+    if (issue) {
+      if (!visibleMembers.value.some(value => value.id === member.id)) mode('家庭使用')
+      selectMember(member.id); step.value = issue.step
+      uni.showToast({ title: member.name + '：' + issue.message, icon: 'none' }); return
+    }
   }
-  const warnings = visibleMembers.value.flatMap(m => dataWarnings(m).map(w => `${m.name}：${w}`))
+  const warnings = members.flatMap(m => dataWarnings(m).map(w => `${m.name}：${w}`))
   if (warnings.length) {
     uni.showModal({ title: '请复核档案信息', content: warnings.join('；') + '。此提示不是医疗诊断。', cancelText: '返回修改', confirmText: '继续保存', success: result => { if (result.confirm) commit() } })
     return
@@ -139,12 +158,12 @@ function next() {
 </script>
 <template>
   <view v-if="cloudLoading" class="screen"><text class="safe-note">正在读取云端档案…</text></view>
-  <view v-if="cloudError" class="cloud-onboarding-error" role="alert"><text>{{cloudError}}</text><button @click="cloudLoaded ? next() : readCloud()">{{cloudLoaded?'重试保存':'重新读取档案'}}</button></view>
+  <view v-if="cloudError" class="cloud-onboarding-error" role="alert"><text>{{cloudError}}</text><button @click="recoverCloud">{{Number(cloudErrorCode)===401?'重新登录':cloudLoaded?'重试保存':'重新读取档案'}}</button></view>
   <view v-show="!cloudLoading && cloudLoaded" class="screen onboarding-screen" :class="{ 'health-step': step === 1 }">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="step > 0 ? step-- : backHome()">‹</button><text class="nav-title">{{ invited ? '受邀成员建档' : '家庭建档' }}</text><text v-if="step !== 1" class="step-count">{{ step + 1 }} / 3</text></view></AppNavBar>
     <text v-if="step === 1" class="step-caption">第 2 步，共 3 步</text>
     <view class="progress"><view :style="{ width: (step + 1) / 3 * 100 + '%' }"></view></view>
-    <view class="question-head"><text class="display-title">{{ copy[step][0] }}</text><text class="helper">{{ invited && step === 0 ? '先核对你的成员信息，资料可以逐步补充。' : copy[step][1] }}</text></view>
+    <view class="question-head"><text class="display-title">{{ copy[step][0] }}</text><text class="helper">{{ invited && step === 0 ? '先填写你的成员信息。' : copy[step][1] }}</text></view>
     <template v-if="step === 0 && !invited">
       <text class="label">使用方式</text>
       <view class="mode-grid"><button v-for="item in [{ value: '个人使用', label: '只为自己' }, { value: '家庭使用', label: '自己和家人' }]" :key="item.value" :class="{ active: profile.usageMode === item.value }" @click="mode(item.value)">{{ item.label }}</button></view>
@@ -163,7 +182,6 @@ function next() {
       </template>
       <text class="helper diner-summary">默认按 {{ dinerCount }} 人安排饮食，每餐可以单独调整。</text>
     </view>
-    <text v-if="step === 1" class="later-note">资料可稍后补充</text>
     <text v-if="!isMockMode && step===2 && profile.analysisPolicy" class="analysis-policy">点击“保存并分析”，将使用上述成员档案安排三餐。处理方：{{profile.analysisPolicy.processor}}；政策版本：{{profile.analysisPolicy.policy_version}}。</text>
     <button class="primary-button next" :disabled="cloudSaving||cloudLoading" @click="next"><text>{{ step === 2 ? (cloudSaving ? '正在保存…' : !isMockMode && profile.analysisPolicy ? '保存并分析今日饮食' : invited ? '保存，进入家庭' : '完成建档，进入首页') : '保存并继续' }}</text><text>{{ step === 1 ? '›' : '→' }}</text></button>
     <text v-if="isMockMode" class="demo-label">前端体验版 · 资料保存于本机，请勿输入真实病历</text>
@@ -180,7 +198,6 @@ function next() {
 .health-step .member-tabs{gap:14rpx;margin:0 0 30rpx}
 .health-step .member-tabs button{min-width:156rpx;min-height:60rpx;padding:12rpx 26rpx;background:#fff;border:1rpx solid #dcdce3;border-radius:14rpx;color:#1d1d1f;font-size:28rpx}
 .health-step .member-tabs button.active{background:#1d1d1f!important;border-color:#1d1d1f;color:#fff!important}
-.health-step .later-note{display:block;text-align:center;color:#92929c;font-size:23rpx;margin:24rpx 0 12rpx}
 .health-step .next{margin-top:0;border-radius:18rpx;min-height:72rpx;font-size:28rpx}
 .health-step .demo-label{font-size:20rpx;margin-top:20rpx}
 .onboarding-screen :deep(.field-card > .section-title){display:block;margin-bottom:18rpx}

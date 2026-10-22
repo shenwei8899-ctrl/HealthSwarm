@@ -80,86 +80,29 @@ def filter_family_kb_history(messages):
 
 
 async def search_family_nutrition_knowledge(context, query: str) -> dict:
-    """按真实 Run 角色检索固定库，返回经 PG 重验的有界科普片段。"""
+    """按真实 Run 角色检索，并在返回资料前重验授权与当前绑定。"""
     if not isinstance(query, str) or not 1 <= len(query.strip()) <= 120:
         raise HealthVisionError("knowledge_query_invalid", "请使用简短的营养科普主题词", 422)
-    query = query.strip()
     async with pg_manager.get_async_session_context() as session:
         run, _ = await _authorized_run(session, context)
         agent_slug = run.agent_slug
         kb_ids = configured_health_kb_ids(agent_slug)
-        for kb_id in kb_ids:
-            await _require_fixed_kb(session, kb_id)
-
-    hit_groups = []
-    try:
-        for kb_id in kb_ids:
-            retrieved = await knowledge_base.retrieve(
-                kb_id,
-                query,
-                final_top_k=MAX_SOURCES,
-                search_mode="keyword",
-                use_reranker=False,
-                use_graph_retrieval=False,
-                read_only=True,
-            )
-            hits = retrieved.get("results") if isinstance(retrieved, dict) else None
-            if not isinstance(hits, list):
-                raise ValueError("invalid knowledge results")
-            hit_groups.append([(kb_id, hit) for hit in hits[:MAX_SOURCES]])
-    except OrphanedMilvusHitsError as error:
-        raise HealthVisionError("source_invalidated", "家庭科普检索命中已失效，请稍后重试", 410) from error
-    except Exception as error:
-        raise HealthVisionError("knowledge_unavailable", "家庭营养科普资料暂不可用，请稍后再试", 503) from error
+    result = await _retrieve_nutrition_knowledge(query, kb_ids, agent_slug=agent_slug)
     async with pg_manager.get_async_session_context() as session:
         current_run, _ = await _authorized_run(session, context)
         if current_run.agent_slug != agent_slug or configured_health_kb_ids(agent_slug) != kb_ids:
             raise HealthVisionError("source_invalidated", "科普知识库绑定已变化，请重新检索", 410)
-        for kb_id in kb_ids:
-            await _require_fixed_kb(session, kb_id)
-        sources = []
-        seen_chunks = set()
-        # 每库取一条后再取下一轮，保持配置顺序并避免首库占满结果。
-        hits = [item for group in zip_longest(*hit_groups) for item in group if item is not None]
-        for kb_id, hit in hits:
-            if len(sources) == MAX_SOURCES:
-                break
-            if not isinstance(hit, dict) or hit.get("kb_id") != kb_id:
-                continue
-            chunk_id, file_id = hit.get("id"), hit.get("file_id")
-            if not isinstance(chunk_id, str) or not isinstance(file_id, str) or (kb_id, chunk_id) in seen_chunks:
-                continue
-            chunk = await session.scalar(
-                select(KnowledgeChunk).where(
-                    KnowledgeChunk.chunk_id == chunk_id,
-                    KnowledgeChunk.file_id == file_id,
-                    KnowledgeChunk.kb_id == kb_id,
-                )
-            )
-            file = await session.scalar(
-                select(KnowledgeFile).where(KnowledgeFile.file_id == file_id, KnowledgeFile.kb_id == kb_id)
-            )
-            if (
-                chunk is None
-                or file is None
-                or file.status != FileStatus.INDEXED
-                or not file.filename.strip()
-                or not chunk.content.strip()
-                or chunk.content != hit.get("content")
-            ):
-                continue
-            sources.append(_project_source(kb_id, file, chunk, str(uuid4())))
-            seen_chunks.add((kb_id, chunk_id))
-    if hits and not sources:
-        raise HealthVisionError("source_invalidated", "家庭科普检索命中已失效，请稍后重试", 410)
+    return result
 
-    return {
-        "status": "ok" if sources else "insufficient_material",
-        "scope": "recipe_reference" if agent_slug == PLANNER_SLUG else "general_education",
-        "query": query,
-        **({"kb_id": kb_ids[0]} if agent_slug == CONSULTATION_SLUG else {"kb_ids": list(kb_ids)}),
-        "sources": sources,
-    }
+
+async def retrieve_family_nutrition_knowledge(query: str) -> dict:
+    """供已授权营养业务检索固定家庭库，保持单库来源回执。"""
+    return await _retrieve_nutrition_knowledge(query, (configured_family_kb_id(),), agent_slug=CONSULTATION_SLUG)
+
+
+async def validate_nutrition_knowledge_sources(session, payload):
+    """消费配餐或导入候选前按固定家庭库重验并锁定来源。"""
+    return await _validate_payload(session, payload, lock_sources=True)
 
 
 async def validate_family_kb_checkpoint(session, context, binding, tool_message) -> None:
@@ -304,6 +247,83 @@ def configured_education_kb_ids(agent_slug: str) -> tuple[str, ...]:
     if not 1 <= len(ids) <= 5 or any(not value for value in ids) or len(set(ids)) != len(ids):
         raise HealthVisionError("knowledge_unavailable", "专题科普知识库尚未正确配置", 503)
     return ids
+
+
+async def _retrieve_nutrition_knowledge(query: str, kb_ids: tuple[str, ...], *, agent_slug: str) -> dict:
+    """按已确定范围检索，并从当前 PostgreSQL 分片重建有界来源。"""
+    if not isinstance(query, str) or not 1 <= len(query.strip()) <= 120:
+        raise HealthVisionError("knowledge_query_invalid", "请使用简短的营养科普主题词", 422)
+    query = query.strip()
+    async with pg_manager.get_async_session_context() as session:
+        for kb_id in kb_ids:
+            await _require_fixed_kb(session, kb_id)
+
+    hit_groups = []
+    try:
+        for kb_id in kb_ids:
+            retrieved = await knowledge_base.retrieve(
+                kb_id,
+                query,
+                final_top_k=MAX_SOURCES,
+                search_mode="keyword",
+                use_reranker=False,
+                use_graph_retrieval=False,
+                read_only=True,
+            )
+            hits = retrieved.get("results") if isinstance(retrieved, dict) else None
+            if not isinstance(hits, list):
+                raise ValueError("invalid knowledge results")
+            hit_groups.append([(kb_id, hit) for hit in hits[:MAX_SOURCES]])
+    except OrphanedMilvusHitsError as error:
+        raise HealthVisionError("source_invalidated", "家庭科普检索命中已失效，请稍后重试", 410) from error
+    except Exception as error:
+        raise HealthVisionError("knowledge_unavailable", "家庭营养科普资料暂不可用，请稍后再试", 503) from error
+    async with pg_manager.get_async_session_context() as session:
+        for kb_id in kb_ids:
+            await _require_fixed_kb(session, kb_id)
+        sources = []
+        seen_chunks = set()
+        # 每库取一条后再取下一轮，保持配置顺序并避免首库占满结果。
+        hits = [item for group in zip_longest(*hit_groups) for item in group if item is not None]
+        for kb_id, hit in hits:
+            if len(sources) == MAX_SOURCES:
+                break
+            if not isinstance(hit, dict) or hit.get("kb_id") != kb_id:
+                continue
+            chunk_id, file_id = hit.get("id"), hit.get("file_id")
+            if not isinstance(chunk_id, str) or not isinstance(file_id, str) or (kb_id, chunk_id) in seen_chunks:
+                continue
+            chunk = await session.scalar(
+                select(KnowledgeChunk).where(
+                    KnowledgeChunk.chunk_id == chunk_id,
+                    KnowledgeChunk.file_id == file_id,
+                    KnowledgeChunk.kb_id == kb_id,
+                )
+            )
+            file = await session.scalar(
+                select(KnowledgeFile).where(KnowledgeFile.file_id == file_id, KnowledgeFile.kb_id == kb_id)
+            )
+            if (
+                chunk is None
+                or file is None
+                or file.status != FileStatus.INDEXED
+                or not file.filename.strip()
+                or not chunk.content.strip()
+                or chunk.content != hit.get("content")
+            ):
+                continue
+            sources.append(_project_source(kb_id, file, chunk, str(uuid4())))
+            seen_chunks.add((kb_id, chunk_id))
+    if hits and not sources:
+        raise HealthVisionError("source_invalidated", "家庭科普检索命中已失效，请稍后重试", 410)
+
+    return {
+        "status": "ok" if sources else "insufficient_material",
+        "scope": "recipe_reference" if agent_slug == PLANNER_SLUG else "general_education",
+        "query": query,
+        **({"kb_id": kb_ids[0]} if agent_slug == CONSULTATION_SLUG else {"kb_ids": list(kb_ids)}),
+        "sources": sources,
+    }
 
 
 async def _authorized_run(session, context):

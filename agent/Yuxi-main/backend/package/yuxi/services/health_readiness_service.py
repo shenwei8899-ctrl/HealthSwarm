@@ -2,6 +2,16 @@
 
 import asyncio
 
+from yuxi.services.health_quality_types import QualityRules, SwapRecipeClassification
+from sqlalchemy import select
+from yuxi.storage.postgres.models_health import HealthPublishedRecipeClassification
+
+from yuxi.services.health_quality_checks import external_projection
+
+from yuxi.services.health_readiness import nutrition_readiness
+
+from yuxi.repositories.health_meal_plan_repository import HealthMealPlanRepository
+
 from yuxi.repositories.health_evidence_repository import HealthEvidenceRepository
 from yuxi.repositories.health_quality_repository import HealthQualityRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
@@ -27,6 +37,37 @@ from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.readiness_service import READINESS_PROBE_TIMEOUT_SECONDS, get_readiness
 from yuxi.storage.minio import get_minio_client
 from yuxi.storage.postgres.manager import pg_manager
+
+
+async def read_nutrition_readiness(uid, member_id, rule_code):
+    """权限与来源在同一事务核对，返回当前用途缺口而非全局完整档案标签。"""
+    async with pg_manager.get_async_session_context() as session:
+        await HealthVisionRepository(session).authorize(member_id, uid, "profile_view", lock=True)
+        repo = HealthQualityRepository(session)
+        await repo.lock_profile_sources([member_id])
+        profile = await repo.profile_projection(member_id)
+        rules = external_projection(await repo.rules(rule_code, lock=True), "rules", rule_code)
+        classifications = []
+        if rules["status"] == "ready":
+            generation = QualityRules.model_validate(rules["payload"]).meal_generation
+            classifications = list(generation.recipe_classifications) if generation else []
+            if generation and generation.catalog_mode == "published":
+                published = (await session.scalars(select(HealthPublishedRecipeClassification))).all()
+                classifications.extend(
+                    SwapRecipeClassification.model_validate(
+                        {
+                            "recipe_version_id": row.recipe_version_id,
+                            "recipe_hash": row.recipe_hash,
+                            "dish_type_code": row.dish_type_code,
+                            "allowed_meal_types": row.allowed_meal_types,
+                        }
+                    )
+                    for row in published
+                )
+        ids = {str(item.recipe_version_id) for item in classifications}
+        recipes = await HealthMealPlanRepository(session).recipes(ids)
+        ingredients, references = await repo.recipe_sources_by_recipe(ids)
+        return nutrition_readiness(profile, rules, recipes, ingredients, references, classifications=classifications)
 
 
 async def member_readiness(uid: str, member_id: str) -> HealthMemberReadiness:

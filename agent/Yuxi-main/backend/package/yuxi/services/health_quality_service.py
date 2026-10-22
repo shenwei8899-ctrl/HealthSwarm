@@ -36,6 +36,10 @@ async def quality_context_in_session(session, uid, selection, *, review=False):
         if input_fingerprint(recalculated) != input_fingerprint(saved_calculation):
             raise ValueError("已存营养与当前来源不符")
         ingredients, recipes = await repo.ingredients(spec)
+    except HealthVisionError as error:
+        if error.code != "knowledge_source_changed":
+            raise
+        raise HealthVisionError("source_invalidated", "知识库营养来源已变化，请重新核对", 410) from None
     except (ValidationError, ValueError, KeyError, TypeError):
         raise HealthVisionError("source_invalidated", "餐单或营养来源无法复算", 410) from None
     member_ids = plan_member_ids(plan.member_id, plan.spec)

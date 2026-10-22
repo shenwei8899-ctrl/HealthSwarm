@@ -6,12 +6,14 @@ import AppNavBar from '../../components/AppNavBar.vue'
 import { ref } from 'vue'
 import { onShow, onShareAppMessage } from '@dcloudio/uni-app'
 import { backHome,getProfile,newMember,normalizeMember,saveProfile } from '../../utils/profile.js'
+import { prepareFamilyShare } from '../../services/family-invitations.js'
 import { createInvite, shareInvite } from '../../utils/invitations.js'
-const profile=ref(getProfile())
+const profile=ref(getProfile()),cloudShare=ref(null)
+onShow(async()=>{if(isMockMode)return;cloudShare.value=null;uni.hideShareMenu?.();try{cloudShare.value=await prepareFamilyShare();uni.showShareMenu?.({menus:['shareAppMessage']})}catch{}})
 onShow(()=>profile.value=getProfile())
 function detail(m){uni.navigateTo({url:'/pages/profile/member?id='+m.id})}
 function add(){const m=normalizeMember(newMember(profile.value.members.length));profile.value.members.push(m);saveProfile(profile.value);uni.navigateTo({url:'/pages/profile/member?id='+m.id+'&edit=1'})}
-onShareAppMessage(()=>isMockMode?shareInvite(createInvite()):{title:'家庭营养师',path:'/pages/index/index'})
+onShareAppMessage(()=>isMockMode?shareInvite(createInvite()):cloudShare.value||{title:'家庭营养师',path:'/pages/index/index'})
 function share(){uni.showActionSheet({itemList:['转发家庭邀请卡片（模拟）'],success:()=>uni.navigateTo({url:'/pages/invite/index?token='+createInvite()})})}
 </script>
 <template><CloudFamilyOverview v-if="!isMockMode"/><view v-else class="screen family-overview"><AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">家庭健康档案</text><button class="icon-button" aria-label="家庭分享菜单" @click="share">···</button></view></AppNavBar><view class="hero"><text class="eyebrow">FAMILY HEALTH</text><text class="display-title">快速看全家。</text><text>每位成员的健康资料独立保存，点击卡片查看和维护。</text></view><button v-for="m in profile.members" :key="m.id" class="member-card card" @click="detail(m)"><view class="avatar" :style="{background:m.color}">{{m.name.slice(0,1)}}</view><view><text>{{m.name}}</text><text>{{ageLabel(m)}} · {{m.gender}}</text></view><text>›</text></button><button class="secondary-button add" @click="add">＋ 添加家庭成员</button></view></template>

@@ -85,15 +85,9 @@ function logistics() {
   });
 }
 function repurchase() {
-  return run(async (active) => {
-    const result = await commerce.repurchase(orderId.value);
-    if (active()) {
-      message.value = result.invalid_items?.length
-        ? "部分商品当前不可购买，其余商品已加入购物车。"
-        : "已加入购物车，请重新核对数量和价格。";
-      uni.navigateTo({ url: "/pages/shop/index?commerce=1" });
-    }
-  });
+  const names=(order.value?.items||[]).map(item=>item.name||item.product_name||item.title).filter(Boolean).join('、');
+  const question=names?'我想再买 '+names+' 对应的食材包，有哪些可选？':'我想再买上次订单里的食材包，请帮我核对。';
+  uni.navigateTo({url:'/pages/chat/index?question='+encodeURIComponent(question)});
 }
 function afterSale() {
   return run(async (active) => {

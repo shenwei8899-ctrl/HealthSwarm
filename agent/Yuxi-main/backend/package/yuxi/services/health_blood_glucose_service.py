@@ -26,8 +26,7 @@ async def blood_glucose_records_for_run(context):
         )
         repo = HealthBloodGlucoseRepository(session)
         result = await repo.read(
-            context.uid,
-            binding.member_id,
+            context.uid, binding.member_id,
             **({"selection": binding.indicator_selection} if getattr(binding, "indicator_selection", None) else {}),
         )
         await repo.record_use(run, result)

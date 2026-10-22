@@ -1,8 +1,9 @@
 <script setup>
 import { isCommerceEnabled } from '../../services/config.js'
-import CommerceShop from '../../components/CommerceShop.vue'
 import CommerceAccess from '../../components/CommerceAccess.vue'
 import CloudMealDetail from '../../components/CloudMealDetail.vue'
+import CloudDailyPurchase from '../../components/CloudDailyPurchase.vue'
+import ConversationPackagePurchase from '../../components/ConversationPackagePurchase.vue'
 import { request } from '../../services/request.js'
 const commerceRoute=ref({}), commercePage=ref(false)
 
@@ -208,8 +209,10 @@ function switchDish(dish){if(isCommerceEnabled){uni.showToast({title:'换菜服�
 function editProfile(){uni.navigateTo({url:isMockMode?'/pages/profile/index':'/pages/family-shared/index'})}
 </script>
 <template>
-<CloudMealDetail v-if="!isMockMode && commerceRoute.arrangement && commerceRoute.purchase!=='1'" :route="commerceRoute"/>
-<CommerceAccess v-else :enabled="isCommerceEnabled" @ready="reloadCommerce"><CommerceShop v-if="commercePage" :route="commerceRoute"/>
+<ConversationPackagePurchase v-if="!isMockMode && commerceRoute.conversation" :route="commerceRoute"/>
+<CloudDailyPurchase v-else-if="!isMockMode && commerceRoute.arrangement && commerceRoute.daily==='1'" :route="commerceRoute"/>
+<CloudMealDetail v-else-if="!isMockMode && commerceRoute.arrangement && commerceRoute.purchase!=='1'" :route="commerceRoute"/>
+<CommerceAccess v-else :enabled="isCommerceEnabled" @ready="reloadCommerce"><view v-if="commercePage" class="screen"><text>请返回 AI 首页选择餐单或询问食材包。</text><button @click="nutritionist">返回营养师</button></view>
 
   <view v-else class="screen shop-screen" :class="{'cloud-meal-screen':!isMockMode}">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">{{ daily ? '今日采购清单' : sourcePlan ? '食材商城' : meal + '安排与购买' }}</text><text class="pill">{{isCommerceEnabled?(plan.isLocalFixture?'本地联调':'商城'):'演示'}}</text></view></AppNavBar>

@@ -42,6 +42,7 @@ from yuxi.storage_migrations.v072_runtime_identity import (
 )
 from yuxi.storage_migrations.v011_family import upgrade_family_archives
 from yuxi.storage_migrations.v012_family_care import upgrade_family_care
+from yuxi.storage_migrations.v013_wechat_identity import upgrade_wechat_identity
 
 _QUIESCENCE_TOKEN_ENV = "YUXI_STORAGE_MIGRATION_QUIESCENCE_TOKEN"
 _QUIESCENCE_FILE_ENV = "YUXI_STORAGE_MIGRATION_QUIESCENCE_FILE"
@@ -71,7 +72,7 @@ async def main() -> None:
                 "business",
                 business_version,
                 BUSINESS_SCHEMA_VERSION,
-                upgrade_from=(2, 7, 8, 9, 10, 11),
+                upgrade_from=(2, 7, 8, 9, 10, 11, 12),
             )
             knowledge_version = versions.get("knowledge")
             _require_supported_version(
@@ -85,7 +86,35 @@ async def main() -> None:
                 "health",
                 health_version,
                 HEALTH_SCHEMA_VERSION,
-                upgrade_from=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23),
+                upgrade_from=(
+                    1,
+                    2,
+                    3,
+                    4,
+                    5,
+                    6,
+                    7,
+                    8,
+                    9,
+                    10,
+                    11,
+                    12,
+                    13,
+                    14,
+                    15,
+                    16,
+                    17,
+                    18,
+                    19,
+                    20,
+                    21,
+                    22,
+                    23,
+                    24,
+                    25,
+                    26,
+                    27,
+                ),
             )
 
             if business_version in {None, 2, 7, 8, 9, 10}:
@@ -108,6 +137,7 @@ async def main() -> None:
             if business_version != BUSINESS_SCHEMA_VERSION:
                 await upgrade_family_archives(pg_manager)
                 await upgrade_family_care(pg_manager)
+                await upgrade_wechat_identity(pg_manager)
 
             if knowledge_version is None:
                 await pg_manager.create_knowledge_tables()
@@ -142,6 +172,10 @@ async def main() -> None:
                 21,
                 22,
                 23,
+                24,
+                25,
+                26,
+                27,
             ):
                 await pg_manager.create_health_tables()
                 await pg_manager.record_schema_version("health", HEALTH_SCHEMA_VERSION)

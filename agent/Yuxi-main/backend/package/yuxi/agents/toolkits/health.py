@@ -88,6 +88,20 @@ class HealthKnowledgeInput(HealthReadInput):
     query: str = Field(min_length=1, max_length=120, description="营养科普短关键词，不传入成员身份或病历正文")
 
 
+class FoodPackageQuery(HealthReadInput):
+    """只查询用户想购买的菜品，成员、价格和商品身份均由服务器确定。"""
+
+    query: str = Field(min_length=1, max_length=80, pattern=r"\S", description="用户想购买的菜名，例如青椒肉丝；不包含健康资料")
+
+
+@tool(category="health", display_name="查询对话食材包", args_schema=FoodPackageQuery)
+async def find_food_packages(query: str, runtime: ToolRuntime) -> dict:
+    """用户想买或询问食材包时查询真实可售商品，查不到就说明没有，不自动下单。"""
+    from yuxi.services.conversation_purchase_service import find_conversation_packages
+
+    return await find_conversation_packages(runtime.context, query)
+
+
 @tool(category="health", display_name="审核营养科普检索", args_schema=HealthKnowledgeInput)
 async def query_reviewed_nutrition_knowledge(query: str, runtime: ToolRuntime) -> dict:
     """检索已发布且有效的通用科普片段，返回本次运行引用；不适用于个人方案。"""

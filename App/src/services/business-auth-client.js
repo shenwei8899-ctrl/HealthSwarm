@@ -21,7 +21,7 @@ export function createBusinessAuthClient({ send, session }) {
     const families = rows.map(row => ({ id: row.id, name: row.name, isOwner: row.is_owner === true }))
     const result = { ...stored, accountName: me.username || me.uid, families,
       householdId: families.some(row => row.id === stored.householdId) ? stored.householdId : null }
-    session.save(result)
+    session.save(result, { preserveRevision: true })
     return result
   }
   async function login(identifier, password) {
@@ -43,7 +43,8 @@ export function createBusinessAuthClient({ send, session }) {
   async function selectFamily(id) {
     const restored = await restore()
     if (!restored?.families.some(row => row.id === id)) throw new Error('家庭不存在或不可访问')
-    const result = { ...restored, householdId: id }; session.save(result); return result
+    const result = { ...restored, householdId: id }; session.save(result, { preserveRevision: true }); return result
   }
-  return { login, restore, selectFamily, cancelPending: () => { generation++ } }
+  return { login, restore, selectFamily, cancelPending: () => { generation++ },
+    logout: () => { generation++; session.clear() } }
 }

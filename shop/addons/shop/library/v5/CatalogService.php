@@ -163,15 +163,21 @@ class CatalogService
         $maps = Db::name('shop_ingredient_sku_map')->alias('m')
             ->join('shop_ingredient i', 'i.id=m.ingredient_id')
             ->where('m.sku_id', $skuId)->where('m.status', 'normal')
-            ->where('i.status','normal')->field('i.ingredient_code,i.name,m.role,m.net_value,m.net_unit,m.convert_ratio,m.loss_rate,m.status,m.review_status,m.valid_from,m.valid_to')
+            ->where('i.status','normal')->field('i.id as ingredient_id,i.ingredient_code,i.name,m.role,m.net_value,m.net_unit,m.convert_ratio,m.loss_rate,m.status,m.review_status,m.valid_from,m.valid_to')
             ->order('m.priority', 'desc')->select();
         $maps = array_values(array_filter($maps, [CatalogEligibility::class, 'current']));
         $nutrition = null;
         foreach (Db::name('shop_sku_nutrition_fact')->where('sku_id', $skuId)->where('status','normal')->order('valid_from','desc')->select() as $fact) {
             if (CatalogEligibility::current($fact)) { $nutrition=$fact; break; }
         }
-        $hasComponents = (bool)Db::name('shop_sku_ingredient_component')->where('sku_id',$skuId)->count();
+        $components = Db::name('shop_sku_ingredient_component')->where('sku_id', $skuId)->select();
+        $hasComponents = (bool)$components;
+        $approvedIngredientIds = array_map('intval', array_column($maps, 'ingredient_id'));
+        $unmappedComponents = array_filter($components, function ($component) use ($approvedIngredientIds) {
+            return !in_array((int)$component['ingredient_id'], $approvedIngredientIds, true);
+        });
         $issues=[];
+        if ($unmappedComponents) $issues[]=['code'=>'component_mapping_unapproved','message'=>'成分表包含未获有效审核映射的额外配料'];
         if (!$maps) $issues[]=['code'=>'ingredient_mapping_unapproved','message'=>'缺少已审核且有效的食材关联'];
         if (!$nutrition) $issues[]=['code'=>'nutrition_missing','message'=>'缺少已审核且有效的营养资料'];
         if (!$hasComponents) $issues[]=['code'=>'allergen_information_missing','message'=>'未录入成分来源及过敏原声明，不能视为无过敏原'];

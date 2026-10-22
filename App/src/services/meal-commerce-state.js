@@ -32,7 +32,9 @@ export function commerceMealView(menu, { members = [], meal = 'dinner', quantiti
   if (contextIssue) plan.blocked.push(contextIssue)
   plan.products = (menu.items || []).map(item => {
     const sku = item.sku
-    const requirements = (menu.ingredient_requirements || []).filter(r => same(r.ingredient_id, item.ingredient_id))
+    const codes = new Set((sku.ingredients || []).map(mapping => mapping.ingredient_code))
+    const requirements = (menu.ingredient_requirements || []).filter(r => item.ingredient_id
+      ? same(r.ingredient_id, item.ingredient_id) : codes.has(r.ingredient_code || r.ingredient_id))
     const required = requirements.length && requirements.every(r => Number.isFinite(Number(r.required_value)) && r.required_unit === requirements[0].required_unit)
       ? requirements.reduce((sum, r) => sum + Number(r.required_value), 0) : null
     const unit = units[sku.net_content?.unit] || sku.net_content?.unit || ''

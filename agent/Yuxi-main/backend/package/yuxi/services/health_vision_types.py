@@ -19,7 +19,7 @@ HEALTH_SCOPES = {
     "professional_review",
 }
 NUTRIENTS = {"energy_kcal": "kcal", "protein_g": "g", "fat_g": "g", "carbohydrate_g": "g", "sodium_mg": "mg"}
-HEALTH_TASK_TYPES = {"report_extract_v1", "meal_recognize_v1"}
+HEALTH_TASK_TYPES = {"report_extract_v1", "meal_recognize_v1", "daily_arrangement_v1", "nutrition_knowledge_prepare_v1"}
 MEAL_PROMPT_VERSION = "health-meal-v2"
 ReportPageErrorCode = Literal[
     "provider_unavailable",

@@ -41,6 +41,7 @@ class CartService
 
     public function add($userId, $skuId, $quantity, array $source = [])
     {
+        (new AgentMealSourceService())->assertCart($userId, [array_merge($source, ['sku_id' => (string)$skuId])]);
         Db::startTrans();
         try {
             Db::name('user')->where('id', (int)$userId)->lock(true)->find();

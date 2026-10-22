@@ -782,6 +782,7 @@ class Workspace extends Backend
             $data['price'] = 0;
             $data['marketprice'] = 0;
             $data['stocks'] = 0;
+            $data['status'] = 'hidden';
             $data['catalog_status'] = 'draft';
             $data['data_completeness'] = 'partial';
         }

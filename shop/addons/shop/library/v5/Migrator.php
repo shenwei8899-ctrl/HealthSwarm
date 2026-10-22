@@ -34,6 +34,9 @@ class Migrator
         }
 
         self::extendLegacyTables($prefix);
+        if ($isPostgres) {
+            self::applyPostgresqlMigrations($prefix);
+        }
         self::seedPolicy();
 
         $checksum = hash_file('sha256', $path);
@@ -48,6 +51,43 @@ class Migrator
         } else {
             $data['version'] = self::VERSION;
             Db::name('shop_schema_migration')->insert($data);
+        }
+    }
+
+    protected static function applyPostgresqlMigrations($prefix)
+    {
+        // 安装和插件升级共用版本记录；与幂等DDL在同一事务提交。
+        $root = ROOT_PATH . 'database' . DS . 'postgresql' . DS . 'migrations' . DS;
+        $paths = [$root . '20261019_001_agent_meal_source.sql', $root . '20261021_commerce_catalog_review.sql'];
+        foreach ($paths as $path) {
+            if (!is_file($path)) throw new \RuntimeException('Shop migration file missing: ' . basename($path));
+            $version = pathinfo($path, PATHINFO_FILENAME);
+            $checksum = hash_file('sha256', $path);
+            Db::startTrans();
+            try {
+                Db::query('SELECT pg_advisory_xact_lock(hashtext(?))', ['shop_migration:' . $prefix . ':' . $version]);
+                $applied = Db::name('shop_schema_migration')->where('version', $version)->find();
+                if ($applied) {
+                    if (!empty($applied['checksum']) && !hash_equals($applied['checksum'], $checksum)) {
+                        throw new \RuntimeException('Applied shop migration changed: ' . $version);
+                    }
+                    Db::commit();
+                    continue;
+                }
+                $sql = str_replace('fa_', $prefix, file_get_contents($path));
+                foreach (self::splitStatements($sql) as $statement) {
+                    if (in_array(strtoupper($statement), ['BEGIN', 'COMMIT'], true)) continue;
+                    Db::execute($statement);
+                }
+                Db::name('shop_schema_migration')->insert([
+                    'version' => $version, 'description' => basename($path),
+                    'checksum' => $checksum, 'executed_at' => time(),
+                ]);
+                Db::commit();
+            } catch (\Throwable $error) {
+                Db::rollback();
+                throw $error;
+            }
         }
     }
 

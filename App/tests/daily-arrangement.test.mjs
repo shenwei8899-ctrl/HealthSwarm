@@ -25,6 +25,37 @@ test('ready requires three complete saved meals and a genuine Agent request/run 
     const value=ready();mutate(value);assert.throws(()=>validateDailyArrangement(value,day))
   }
 })
+
+test('a saved matched menu can be viewed before a commerce member publishes its purchase package',()=>{
+  const value=ready()
+  for(const meal of value.meals) meal.purchase={status:'matched',catalog_version:'catalog-1',
+    ingredient_requirements:[{ingredient_id:'tomato',required_value:'300',required_unit:'g'}],
+    items:[{quantity:1,sku:{sku_id:'sku-1',price_cent:800}}]}
+  assert.equal(validateDailyArrangement(value,day).meals.length,3)
+  value.meals[0].purchase.items[0].sku.price_cent=null
+  assert.throws(()=>validateDailyArrangement(value,day))
+})
+
+test('stale profile sources create the next saved version and reopening does not regenerate it',async()=>{
+  let starts=0
+  const value=ready();value.version=2
+  const f=setup(input=>{
+    if(input.method==='POST'){starts++;return {status:'generating',id:value.id,date:day}}
+    return starts?value:{status:'stale',date:day,id:value.id}
+  })
+  await f.client.load(day)
+  assert.equal(f.state.arrangement.version,2)
+  await f.client.load(day)
+  assert.equal(starts,1)
+})
+
+test('automatic generation does not require a commerce member and the saved meal contains its purchase panel',()=>{
+  const chat=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
+  const detail=readFileSync(new URL('../src/components/CloudMealDetail.vue',import.meta.url),'utf8')
+  assert.doesNotMatch(chat,/beforeStart:\s*\(\)\s*=>\s*commerce\.connect/)
+  assert.match(detail,/<CloudMealPurchase\b/)
+  assert.doesNotMatch(detail,/查看本餐采购清单|function purchase\(/)
+})
 test('reopening a saved day only reads and does not submit generation',async()=>{
   const f=setup(()=>ready());await f.client.load(day);await f.client.load(day)
   assert.equal(f.state.phase,'ready');assert.equal(f.calls.length,2);assert.ok(f.calls.every(call=>!call.method))
@@ -116,7 +147,7 @@ test('lost member-change response is recovered with the exact original key on re
 
 test('saved meal viewing does not depend on a commerce login',()=>{
   const page=readFileSync(new URL('../src/pages/shop/index.vue',import.meta.url),'utf8')
-  assert.match(page,/<CloudMealDetail v-if="!isMockMode/)
+  assert.match(page,/<CloudMealDetail v-else-if="!isMockMode/)
   assert.match(page,/<CommerceAccess v-else/)
   const detail=readFileSync(new URL('../src/components/CloudMealDetail.vue',import.meta.url),'utf8')
   assert.ok(!detail.includes('commerce.session'))

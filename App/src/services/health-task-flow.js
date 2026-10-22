@@ -250,6 +250,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
         if (data.result?.result_type === 'general_education_answer' && data.result.scope === 'general_education' &&
           typeof data.result.answer === 'string' && Array.isArray(data.result.citations)) {
           state.result = { type: 'answer', text: data.result.answer,
+            purchaseOffers: Array.isArray(data.result.purchase_offers) ? data.result.purchase_offers : [],
             citations: data.result.citations.map(item => item.title).filter(Boolean) }
         } else if (data.result?.result_type === 'meal_feedback' && data.result.data) {
           const receipt = data.result.data

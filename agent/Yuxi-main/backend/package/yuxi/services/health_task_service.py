@@ -205,8 +205,11 @@ async def read_health_task(uid: str, request_id: str) -> HealthTaskResult:
             from yuxi.services.health_family_kb_service import validate_family_kb_answer
 
             await validate_family_kb_answer(session, run, current_binding, message.content)
+            from yuxi.services.conversation_purchase_service import offers_for_answer
+
+            answer, offers = await offers_for_answer(session, run, current_binding, message.content)
             response.result = HealthTaskGeneralAnswer(
-                answer=message.content, citations=[citations[citation_id] for citation_id in ids]
+                answer=answer, citations=[citations[citation_id] for citation_id in ids], purchase_offers=offers
             )
             return response
 

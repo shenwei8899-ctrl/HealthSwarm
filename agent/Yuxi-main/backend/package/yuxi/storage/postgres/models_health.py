@@ -52,6 +52,7 @@ class HealthFamilyProfileLink(Base):
     source_member_id = Column(String(36), ForeignKey("family_members.id"), nullable=False, unique=True)
     family_id = Column(String(36), ForeignKey("family_archives.id"), nullable=False)
     actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
+    source_kind = Column(String(24), nullable=False, default="self_confirmed", server_default="self_confirmed")
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
@@ -860,9 +861,80 @@ class NutritionImportBatch(Base):
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
+class HealthMiniappProfileReceipt(Base):
+    """建档保存的不可变请求摘要和成员引用映射。"""
+
+    __tablename__ = "health_miniapp_profile_receipt"
+    actor_uid = Column(String, ForeignKey("users.uid"), primary_key=True)
+    request_id = Column(String(36), primary_key=True)
+    family_id = Column(String(36), ForeignKey("family_archives.id"), nullable=False)
+    fingerprint = Column(String(64), nullable=False)
+    member_refs = Column(JSON_VALUE, nullable=False)
+
+
+class HealthPublishedRecipeClassification(Base):
+    """独立发布的配方分类，使新增菜谱不必重写整个营养规则。"""
+
+    __tablename__ = "health_published_recipe_classification"
+    recipe_version_id = Column(String(36), ForeignKey("health_recipe_version.id"), primary_key=True)
+    recipe_hash = Column(String(64), nullable=False)
+    dish_type_code = Column(String(80), nullable=False)
+    allowed_meal_types = Column(JSON_VALUE, nullable=False)
+    source_ref = Column(String(500), nullable=False)
+    published_by = Column(String, ForeignKey("users.uid"), nullable=False)
+
+
+class HealthMiniappProfileCoding(Base):
+    """自述文字到批准编码的机器解释，保留原档案和规则版本。"""
+
+    __tablename__ = "health_miniapp_profile_coding"
+    member_id = Column(String(36), ForeignKey("family_member.id"), primary_key=True)
+    profile_hash = Column(String(64), primary_key=True)
+    rule_hash = Column(String(64), primary_key=True)
+    coding = Column(JSON_VALUE, nullable=False)
+    processor = Column(String(500), nullable=False)
+    policy_version = Column(String(100), nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
+class HealthDailyArrangement(Base):
+    """每日唯一安排及生成请求引用；就绪快照不依赖客户端缓存。"""
+
+    __tablename__ = "health_daily_arrangement"
+    __table_args__ = (UniqueConstraint("actor_uid", "family_id", "plan_date", name="uq_health_daily_arrangement"),)
+    id = Column(String(36), primary_key=True)
+    actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
+    family_id = Column(String(36), ForeignKey("family_archives.id"), nullable=False)
+    plan_date = Column(Date, nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    status = Column(String(24), nullable=False)
+    request_id = Column(String(36), nullable=False)
+    selection = Column(JSON_VALUE, nullable=False)
+    sources = Column(JSON_VALUE, nullable=False)
+    snapshot = Column(JSON_VALUE, nullable=False, default=dict)
+    updated_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
+class HealthRecipeCommerceSource(Base):
+    """发布配方与商城食材编码、真实做法的明确版本映射。"""
+
+    __tablename__ = "health_recipe_commerce_source"
+    recipe_version_id = Column(String(36), ForeignKey("health_recipe_version.id"), primary_key=True)
+    recipe_hash = Column(String(64), nullable=False)
+    steps = Column(JSON_VALUE, nullable=False)
+    ingredient_codes = Column(JSON_VALUE, nullable=False)
+    source_ref = Column(String(500), nullable=False)
+    published_by = Column(String, ForeignKey("users.uid"), nullable=False)
+
+
 HEALTH_TABLES = [
     model.__table__
     for model in (
+        HealthMiniappProfileReceipt,
+        HealthMiniappProfileCoding,
+        HealthPublishedRecipeClassification,
+        HealthDailyArrangement,
+        HealthRecipeCommerceSource,
         FamilyMember,
         HealthGrant,
         HealthFamilyProfileLink,

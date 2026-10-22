@@ -22,6 +22,7 @@ def family_schema_upgrade(monkeypatch):
 
     monkeypatch.setattr(storage_migration, "upgrade_family_archives", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_family_care", upgrade)
+    monkeypatch.setattr(storage_migration, "upgrade_wechat_identity", upgrade)
 
 
 class _Session:
@@ -178,6 +179,9 @@ async def test_storage_migration_rejects_v071_schema_without_quiescence_proof(mo
         21,
         22,
         23,
+        24,
+        25,
+        26,
         storage_migration.HEALTH_SCHEMA_VERSION,
     ],
 )

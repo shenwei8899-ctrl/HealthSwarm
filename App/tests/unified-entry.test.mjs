@@ -25,46 +25,18 @@ function directMember() {
     switchFamily: () => { family = { accountId: '17', token: 'agent-token' }; scope = 'family-17' } }
 }
 
-test('homepage member login works without AppID or Agent login and restores the same member cart', async () => {
-  const h = directMember()
-  await h.client.loginMember({ account: ' member ', password: 'synthetic-password' })
-  assert.equal(h.family(), null)
-  assert.equal(h.client.isMemberLogin(), true)
-  assert.equal(h.client.session().userId, '23')
-  assert.equal(h.client.session().agentAccountId, undefined)
-  assert.deepEqual(h.calls[0].data, { account: 'member', password: 'synthetic-password' })
-  assert.match(h.calls[0].url, /\/session\/login$/)
-  await h.client.restore(); await h.client.cart()
-  assert.equal(h.calls.at(-1).header.token, 'synthetic-member-token')
-  assert.equal(h.calls.some(call => call.url.endsWith('/exchange')), false)
-  assert.equal(JSON.stringify([...h.values]).includes('synthetic-password'), false)
-  h.expire()
-  await assert.rejects(h.client.restore(), error => Number(error.code) === 401)
-  assert.equal(h.client.session(), null)
-  assert.equal(h.client.isMemberLogin(), true)
-  await assert.rejects(h.client.cart(), error => Number(error.code) === 401)
-  assert.equal(h.calls.some(call => call.url.endsWith('/exchange')), false)
+test('formal client rejects standalone login before sending credentials', async () => {
+  const h=directMember()
+  await assert.rejects(h.client.loginMember({account:'legacy',password:'synthetic'}),e=>e.code==='STANDALONE_LOGIN_DISABLED')
+  assert.equal(h.calls.length,0);assert.equal(h.client.session(),null)
 })
 
-test('failed or cancelled homepage login never creates a commerce session', async () => {
-  const bad = directMember(); bad.reject()
-  await assert.rejects(bad.client.loginMember({ account: 'member', password: 'bad' }))
-  assert.equal(bad.client.session(), null)
-  assert.equal(bad.family(), null)
-  const pending = directMember(); pending.delay()
-  const login = pending.client.loginMember({ account: 'member', password: 'synthetic-password' })
-  pending.client.cancelLogin(); pending.release()
-  await assert.rejects(login, error => error.code === 'SESSION_CHANGED')
-  assert.equal(pending.client.session(), null)
-  assert.equal(pending.client.isMemberLogin(), false)
-})
-
-test('entering a family account cannot reuse a directly authenticated member session', async () => {
-  const h = directMember()
-  await h.client.loginMember({ account: 'member', password: 'synthetic-password' })
-  h.switchFamily()
-  assert.equal(h.client.session(), null)
-  assert.equal(h.client.isMemberLogin(), false)
+test('old direct-member cache cannot become a formal business identity', async () => {
+  const h=directMember()
+  h.values.set('fn-commerce-v1:http%3A%2F%2F127.0.0.1%3A15050:guest',{loginMode:'member',session:{token:'old',userId:'23',scope:'guest'}})
+  assert.equal(h.client.session(),null)
+  await assert.rejects(h.client.cart(),e=>Number(e.code)===401)
+  assert.equal(h.calls.length,0)
 })
 
 function clients() {

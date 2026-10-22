@@ -63,9 +63,7 @@ def analyze_confirmed_meal(record, confirmation):
         "result_type": "diet_analysis",
         "status": "completed",
         "member_id": record.member_id,
-        "records": [
-            {"record_id": record.id, "source_version": getattr(record, "version", None) or confirmation.draft_version}
-        ],
+        "records": [{"record_id": record.id, "source_version": getattr(record, "version", None) or confirmation.draft_version}],
         "source": {
             "record_id": record.id,
             "confirmation_id": confirmation.id,

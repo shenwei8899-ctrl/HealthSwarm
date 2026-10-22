@@ -157,6 +157,7 @@ class HealthTaskGeneralAnswer(HealthDTO):
     scope: Literal["general_education"] = "general_education"
     answer: str
     citations: list[NutritionCitation]
+    purchase_offers: list[dict[str, JsonValue]] = Field(default_factory=list)
 
 
 class HealthTaskValidatedResult(HealthDTO):

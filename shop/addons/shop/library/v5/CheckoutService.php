@@ -226,7 +226,7 @@ class CheckoutService
         } elseif ($payload['source_type'] === 'recommendation_package') {
             (new AgentMealSourceService())->assertSource($userId, 'recommendation_package', $payload['source_ref'], $payload['source_version']);
             $package = (new RecommendationPackageService())->getBySn($payload['source_ref'], $userId);
-            if ((int)$package['package_version'] !== (int)$payload['source_version'] || $package['status'] !== 'available') {
+            if ((int)$package['package_version'] !== (int)$payload['source_version'] || !in_array($package['status'], ['available', 'confirmed'], true)) {
                 throw new DomainException('推荐包不可结算或版本已变化', 40906, 409);
             }
             $sourceItems = [];

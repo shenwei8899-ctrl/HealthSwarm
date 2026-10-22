@@ -38,6 +38,7 @@ def replay_body():
         "tools": [
             {"type": "function", "function": {"name": name}}
             for name in (
+                "find_food_packages",
                 "get_confirmed_profile",
                 "get_confirmed_diet",
                 "get_complete_health_profile",

@@ -13,6 +13,8 @@ from yuxi.config.options import health_vision_opts, invalidate_option_cache, upd
 from yuxi.models.providers.cache import ModelInfo, model_cache
 from yuxi.models.providers import repository as provider_repository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
+from yuxi.repositories.health_source_repository import HealthSourceRepository
+from yuxi.services.health_source_types import nutrition_source_references
 from yuxi.services.health_media_service import prepare_upload
 from yuxi.services.health_nutrition_service import (
     CALCULATION_VERSION,
@@ -718,6 +720,9 @@ class HealthVisionService:
                 ).all()
             }
             result = calculate_nutrition(payload, foods, recipes, portions)
+            await HealthSourceRepository(session).require_current_sources(
+                nutrition_source_references(result["sources"])
+            )
             calculation = NutritionCalculation(
                 id=str(uuid4()),
                 draft_id=draft.id,
@@ -797,6 +802,9 @@ class HealthVisionService:
                     raise HealthVisionError("calculation_stale", "请先计算当前草稿的营养预览", 409)
                 if not calculation.result["complete"] and not data.accept_incomplete:
                     raise HealthVisionError("nutrition_incomplete", "营养数据不完整；请补充或明确接受不完整日记")
+                await HealthSourceRepository(session).require_current_sources(
+                    nutrition_source_references(calculation.result["sources"])
+                )
                 target_id = str(uuid4())
                 targets.append(target_id)
                 session.add(
@@ -841,6 +849,7 @@ class HealthVisionService:
         """带来源和许可的食品版本只追加，不覆盖历史计算。"""
         try:
             async with pg_manager.get_async_session_context() as session:
+                await HealthSourceRepository(session).require_publication_source(uid, data.source)
                 record = FoodRecord(id=str(uuid4()), published_by=uid, **data.model_dump(mode="json"))
                 session.add(record)
                 await session.flush()
@@ -866,11 +875,15 @@ class HealthVisionService:
         """服务端由原料版本和净成品重量推导营养，不接受客户端营养值。"""
         try:
             async with pg_manager.get_async_session_context() as session:
+                sources = HealthSourceRepository(session)
+                await sources.require_publication_source(uid, data.source)
                 ingredients = []
                 for ingredient in data.ingredients:
                     food = await session.get(FoodRecord, str(ingredient.food_id))
                     if food is None:
                         raise HealthVisionError("ingredient_not_found", "食谱原料须使用已发布食品版本")
+                    if not (await sources.current_sources([food.source]))[food.source]:
+                        raise HealthVisionError("knowledge_source_changed", "配方原料的知识库来源已失效", 409)
                     ingredients.append(
                         {"food": self.serialize_food(food), "grams": str(ingredient.grams), "role": ingredient.role}
                     )
@@ -892,11 +905,17 @@ class HealthVisionService:
         """发布有来源的实测参考，既不自动应用，也不宣称用户已经称重。"""
         try:
             async with pg_manager.get_async_session_context() as session:
+                sources = HealthSourceRepository(session)
+                await sources.require_publication_source(uid, data.source)
                 target = await session.get(
                     FoodRecord if data.food_id else RecipeVersion, str(data.food_id or data.recipe_version_id)
                 )
                 if target is None:
                     raise HealthVisionError("portion_target_not_found", "份量参考须绑定已发布版本")
+                target_sources = [target.source]
+                if isinstance(target, RecipeVersion):
+                    target_sources.extend(item["food"]["source"] for item in target.ingredients)
+                await sources.require_current_sources(target_sources)
                 record = PortionReference(
                     id=str(uuid4()),
                     published_by=uid,

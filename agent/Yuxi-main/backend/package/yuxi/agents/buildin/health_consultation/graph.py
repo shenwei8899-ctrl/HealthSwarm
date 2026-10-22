@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage
 from yuxi.agents.base import BaseAgent
 from yuxi.agents.middlewares import SteerMiddleware, TokenUsageMiddleware
 from yuxi.agents.toolkits.health import (
+    find_food_packages,
     get_confirmed_diet,
     get_confirmed_profile,
     get_complete_health_profile,
@@ -72,6 +73,7 @@ class HealthConsultationAgent(BaseAgent):
     description = "按当前授权读取成员记录和通用科普，核对资料与证据引用，不生成治疗或个人配餐方案。"
     prompt_name = "CONSULTATION_PROMPT"
     consultation_tools = (
+        find_food_packages,
         get_confirmed_profile,
         get_confirmed_diet,
         get_complete_health_profile,

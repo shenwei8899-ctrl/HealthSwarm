@@ -54,6 +54,7 @@ from yuxi.utils.datetime_utils import format_utc_datetime
 
 CONFIRMED_TOOL_NAMES = ["get_confirmed_profile", "get_confirmed_diet"]
 HEALTH_TOOL_NAMES = [
+    "find_food_packages",
     *CONFIRMED_TOOL_NAMES,
     "get_complete_health_profile",
     "get_member_weight_records",
@@ -83,6 +84,7 @@ CONSULTATION_PROMPT = (
 """
     + "\n"
     + consultation_skill_prompt(CONSULTATION_SKILL_SNAPSHOT)
+    + "\n先判断用户是否有购买需求。用户问某道菜有没有食材包、想购买或选购时，调用 find_food_packages 查询该菜名；普通做法或营养问题不主动推销。先用自然语言回答，再原样附上工具给出的[食材包:回执]用于展示对应商品卡。查不到就说明没有，不能编造包、价格、库存或购买链接。查询不修改今日安排，不需要先把菜加入餐单，不自动加购、下单或支付。"
 )
 PLANNER_SKILL_SNAPSHOT = consultation_skill_snapshot(PLANNER_SKILLS)
 PLANNER_PROMPT = PLANNER_SKILL_SNAPSHOT["preloaded_skill_contents"]["family-meal-planner"]
@@ -910,8 +912,9 @@ async def prepare_consultation_context(context, db, run):
 
             tools = list(INITIAL_PLANNER_TOOLS)
             prompt += (
-                "\n本线程为服务器固定的初始配餐模式，仅用get_initial_plan_context和preview_initial_meal_plan。"
+                "\n本线程为服务器固定的初始配餐模式，先用get_initial_plan_context，检索搭配依据用query_initial_nutrition_knowledge，生成三餐用preview_initial_meal_plan。"
                 "日期/成员/版本不可更改；最终选择本Run初始preview_id或questions。"
+                "搭配说明引用检索内容时，通过knowledge_source_ids列出本Run真实来源ID；知识片段不能替代批准规则、配方或营养数值。"
             )
         elif getattr(binding, "family_planner_selection", None) is not None:
             from yuxi.services.health_family_planner_types import FAMILY_PLANNER_TOOLS
@@ -937,6 +940,7 @@ async def prepare_consultation_context(context, db, run):
         if "profile_view" in member_scopes and member.owner_uid == context.uid and member.relationship_label == "本人":
             allowed_tools.update(
                 (
+                    "find_food_packages",
                     "get_complete_health_profile",
                     "get_member_weight_records",
                     "get_member_blood_pressure_records",

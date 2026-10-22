@@ -24,6 +24,7 @@ from yuxi.services.family_schemas import (
     VersionInput,
 )
 from yuxi.services.family_service import FamilyService
+from yuxi.services.family_invitation_service import FamilyInvitationService
 from yuxi.storage.postgres.models_business import User
 
 
@@ -53,9 +54,27 @@ async def create_family(payload: FamilyInput, user: User = Depends(get_required_
 
 
 @family.post("/join")
-async def join_family(payload: JoinInput, service=Depends(family_service)):
-    """本人认领邀请关系。"""
-    return await service.join(payload.code)
+async def join_family(payload: JoinInput, user: User = Depends(get_required_user), service=Depends(family_service)):
+    """本人明确接受普通家庭邀请或绑定成员邀请。"""
+    return await FamilyInvitationService(service).accept(payload.code, user.username)
+
+
+@family.get("/invitations/{code}")
+async def invitation_preview(code: str, service=Depends(family_service)):
+    """登录后预览签名邀请的共享范围，不建立家庭关系。"""
+    return await FamilyInvitationService(service).preview(code)
+
+
+@family.post("/invitations/{code}/decline")
+async def invitation_decline(code: str, service=Depends(family_service)):
+    """本人可以拒绝邀请，不产生档案或成员关系。"""
+    return await FamilyInvitationService(service).decline(code)
+
+
+@family.post("/{fid}/invite")
+async def ordinary_invitation(fid: str, service=Depends(family_service)):
+    """家庭总览页转发不绑定成员的普通邀请。"""
+    return await FamilyInvitationService(service).create(fid)
 
 
 @family.get("/{fid}")

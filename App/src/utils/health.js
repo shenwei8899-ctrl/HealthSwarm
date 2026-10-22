@@ -3,8 +3,8 @@ import { birthDateError } from './member-age.js'
 export const diseaseOptions = ['糖尿病','高血压','高血脂','高尿酸／痛风','肾脏疾病','其他']
 export const preferenceGroups = {
   goals: { title: '饮食目标', items: ['控糖','控压','控脂','低嘌呤','减脂','增肌','补充蛋白质','饮食均衡','改善蔬菜摄入','其他'] },
-  tastePreferences: { title: '口味偏好', items: ['清淡','少油','少盐','偏甜','酸甜','咸鲜','微辣','香辣','麻辣','不吃辣','无特别要求','自定义'] },
-  cuisines: { title: '菜系偏好', items: ['家常菜','粤菜','川菜','湘菜','鲁菜','苏菜','徽菜','快手菜','无特别要求','自定义'] },
+  tastePreferences: { title: '口味偏好', items: ['清淡','少油','少盐','偏甜','酸甜','咸鲜','微辣','香辣','麻辣','不吃辣','不限口味','自定义'] },
+  cuisines: { title: '菜系偏好', items: ['家常菜','粤菜','川菜','湘菜','鲁菜','苏菜','徽菜','快手菜','不限菜系','自定义'] },
 }
 export const restrictionFields = {
   allergy: { title: '食物过敏', status: 'allergyStatus', field: 'allergies', items: ['麸质谷物','含坚果','含乳','含大豆','含花生','含蛋','鱼类','含甲壳类'] },

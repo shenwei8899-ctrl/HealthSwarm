@@ -14,7 +14,12 @@ def protocol():
         "stream": True,
         "tools": [
             {"function": {"name": n}}
-            for n in ("get_initial_plan_context", "preview_initial_meal_plan", "query_family_nutrition_knowledge")
+            for n in (
+                "get_initial_plan_context",
+                "preview_initial_meal_plan",
+                "query_initial_nutrition_knowledge",
+                "query_family_nutrition_knowledge",
+            )
         ],
         "messages": [
             {"role": "system", "content": "slug: family-meal-planner 初始"},

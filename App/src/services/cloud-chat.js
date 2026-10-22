@@ -21,7 +21,9 @@ export function chatMessages(value) {
         else if(data.result_type==='diet_analysis'&&Array.isArray(data.findings)){business={type:'business',kind:'diet_analysis',data};text='已保存饮食的回顾。'}
       }catch{}
     }
-    return [{ id: String(item.id), role, text, business, createdAt: item.created_at,
+    const purchaseRequestId = role === 'assistant' && /\[食材包:[A-Za-z0-9_-]{100,4096}\]/.test(text) ? item.request_id || item.extra_metadata?.request_id || '' : ''
+    if (role === 'assistant') text = text.replace(/\[食材包:[A-Za-z0-9_-]{100,4096}\]/g, '').trim()
+    return [{ id: String(item.id), role, text, business, purchaseRequestId, createdAt: item.created_at,
       requestId: item.request_id || item.extra_metadata?.request_id || '', status: item.delivery_status || 'saved',
       ...(images.length ? { image: { localPath: images[0] } } : {}) }]
   })

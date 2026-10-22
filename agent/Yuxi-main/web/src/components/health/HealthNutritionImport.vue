@@ -3,6 +3,8 @@ import { ref, watch, onBeforeUnmount } from 'vue'
 import { healthVisionApi as api } from '@/apis/health_vision_api'
 import { useUserStore } from '@/stores/user'
 const user = useUserStore()
+const knowledgeQuery = ref(''), knowledgeTask = ref(null), knowledgePending = ref(null)
+let pollTimer = null
 const kind = ref('food'),
   text = ref(''),
   report = ref(null),
@@ -27,6 +29,53 @@ function reset() {
   pending.value = null
   error.value = ''
   busy.value = false
+  knowledgeQuery.value = ''
+  knowledgeTask.value = null
+  knowledgePending.value = null
+  clearTimeout(pollTimer)
+}
+
+/** 后台提取保留原片段；页面只读取候选和异常，不自动发布。 */
+async function prepareKnowledge() {
+  if (busy.value) return
+  const ticket = epoch
+  busy.value = true
+  error.value = ''
+  try {
+    knowledgePending.value ||= { kind: kind.value, query: knowledgeQuery.value.trim(), client_request_id: crypto.randomUUID() }
+    knowledgeTask.value = await api.prepareKnowledgeNutrition(knowledgePending.value)
+    if (ticket !== epoch) return
+    await pollKnowledge(ticket)
+  } catch (exc) {
+    if (ticket === epoch) { error.value = exc.message; busy.value = false }
+  }
+}
+
+async function pollKnowledge(ticket) {
+  if (ticket !== epoch || !knowledgeTask.value) return
+  try {
+    const value = await api.knowledgeNutritionStatus(knowledgeTask.value.task_id)
+    if (ticket !== epoch) return
+    knowledgeTask.value = value
+    if (value.status === 'success') {
+      report.value = value.report
+      busy.value = false
+      knowledgePending.value = null
+      return
+    }
+    if (['failed', 'cancelled'].includes(value.status)) {
+      error.value = value.message
+      busy.value = false
+      knowledgePending.value = null
+      return
+    }
+  } catch (exc) {
+    if (ticket !== epoch) return
+    error.value = exc.message
+    busy.value = false
+    return
+  }
+  pollTimer = setTimeout(() => pollKnowledge(ticket), 2000)
 }
 /** 候选导入仅登记异常和待审清单。 */
 async function prepare() {
@@ -65,6 +114,9 @@ onBeforeUnmount(reset)
       g；缺失值用 null。
     </p>
     <p>这里只保存候选、异常和待审清单。资料通过专业审核后，再走原有发布流程。</p>
+    <a-input v-model:value="knowledgeQuery" :disabled="busy || !!knowledgePending" :maxlength="120" placeholder="从已有知识库整理，例如：燕麦的每百克营养或家常菜配方" />
+    <a-button :disabled="busy || !knowledgeQuery.trim()" @click="prepareKnowledge">{{ knowledgePending ? '重试读取原提取任务' : '从已有知识库整理候选' }}</a-button>
+    <p v-if="knowledgeTask && busy">后台正在整理资料，退出页面后任务仍会继续。任务 {{ knowledgeTask.task_id }}</p>
     <a-select
       v-model:value="kind"
       :disabled="busy || !!pending"
@@ -100,6 +152,14 @@ onBeforeUnmount(reset)
         </article>
       </div>
       <small>批次 {{ report.id }} 已保存；后续需补来源版本、许可、适用范围和专业审核。</small>
+      <details v-if="report.knowledge_sources?.length">
+        <summary>核对原文来源与数值证据</summary>
+        <article v-for="source in report.knowledge_sources" :key="source.source_id">
+          <strong>{{ source.filename }}</strong><p>{{ source.content }}</p>
+          <small>片段 {{ source.chunk_id }} · 版本 {{ source.chunk_hash }}</small>
+        </article>
+        <pre>{{ JSON.stringify(report.evidence, null, 2) }}</pre>
+      </details>
     </template>
   </section>
 </template>

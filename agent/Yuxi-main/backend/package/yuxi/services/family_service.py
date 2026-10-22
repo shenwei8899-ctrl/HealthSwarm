@@ -456,6 +456,8 @@ class FamilyService:
         if family.owner_uid == self.uid or await self.repo.subject_member(fid, self.uid):
             raise HTTPException(409, "当前账户已经是此家庭成员")
         member.subject_uid = self.uid
+        member.confirmed_version = None
+        member.confirmed_at = None
         await self.repo.audit(fid, mid, self.uid, "member.claim")
         await self.db.commit()
         return await self.family(fid)

@@ -11,9 +11,13 @@ export function validateDailyArrangement(value, date) {
     const matches = value.meals.filter(meal => meal.type === type)
     if (matches.length !== 1) throw new Error('三餐结果不完整，正在重新读取。')
     const meal = matches[0]
+    const purchase = meal.purchase
+    const matched = purchase?.status === 'matched' && purchase.catalog_version && purchase.ingredient_requirements?.length &&
+      purchase.items?.length && purchase.items.every(item => item.sku?.sku_id && Number.isInteger(item.quantity) && item.quantity > 0 && Number.isInteger(item.sku.price_cent))
+    const published = purchase?.package_sn && Number.isInteger(purchase.package_version) && purchase.package_version > 0
     if (!Array.isArray(meal.members) || !meal.members.length || !Array.isArray(meal.dishes) || !meal.dishes.length ||
       !meal.detail_ref || !meal.nutrition || !meal.nutritionSource || !Array.isArray(meal.memberNotes) ||
-      !meal.purchase?.package_sn || !Number.isInteger(meal.purchase.package_version) || meal.purchase.package_version < 1 ||
+      (!published && !matched) ||
       meal.members.some(member => !member.id || !member.name || !meal.memberNotes.some(note => note.memberId === member.id && note.dishes?.length)) ||
       meal.dishes.some(dish => !dish.id || !dish.name || !dish.recipeVersion || !dish.ingredients?.length || !dish.steps?.length)) {
       throw new Error('本餐详情尚未完整，正在重新读取。')
@@ -66,7 +70,7 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
           catch(error) { if(!uncertain(error)||attempt===2)throw error;await wait(1000);if(!current(ticket,scope))return }
         }
         if (!current(ticket, scope)) return
-        if(retry && (value.update?.status || value.status)!=='ready' && value.status!=='absent') {
+        if(retry && (value.update?.status || value.status)!=='ready' && !['absent','stale'].includes(value.status)) {
           value=(await send({path:root()+'/'+date+'/resume?retry_failed=true',method:'POST'})).data
         }
         if (!current(ticket, scope)) return
@@ -81,7 +85,7 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
         }
         receive(value, date)
         if (value.status === 'ready' && value.update?.status !== 'generating') return
-        if (value.status === 'absent' || retry && value.status === 'retryable') {
+        if (['absent','stale'].includes(value.status) || retry && value.status === 'retryable') {
           await beforeStart()
           if (!current(ticket, scope)) return
           const pending = storage.getStorageSync(key(date)) || { client_request_id: newId(), date }

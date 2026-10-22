@@ -62,6 +62,9 @@ class AgentSessionVerifier
 
     public function account($claims)
     {
+        if (($claims['wechat_authenticated'] ?? false) !== true) {
+            throw new DomainException('请使用微信登录小程序后继续采购', 40100, 401);
+        }
         $id = $claims['account']['id'] ?? null;
         $uid = $claims['account']['uid'] ?? null;
         if (!is_int($id) || $id <= 0 || !is_string($uid) || !preg_match('/^[A-Za-z0-9_-]{1,96}$/D', $uid)) {

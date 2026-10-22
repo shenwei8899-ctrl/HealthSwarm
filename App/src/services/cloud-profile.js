@@ -3,6 +3,7 @@ import { getSession, setSession, sessionRevision } from './session.js'
 import { scopedStorage } from './storage.js'
 import { saveProfile, normalizeProfile } from '../utils/profile.js'
 import { newHealthRequestId } from './health-task-flow.js'
+import { pendingInvitation } from './family-invitations.js'
 
 export async function readCloudReportStatus(memberId) {
   const [observations,vision]=await Promise.all([
@@ -15,12 +16,14 @@ export async function readCloudReportStatus(memberId) {
 
 export async function loadCloudProfile() {
   let session = getSession()
-  if (!session?.token) throw Object.assign(new Error('请先登录健康业务账号'), { code: 401 })
+  if (!session?.token) throw Object.assign(new Error('请先微信登录'), { code: 401 })
+  if (pendingInvitation()) throw Object.assign(new Error('请先查看并决定是否接受家庭邀请。'), {code:'INVITATION_PENDING'})
   const revision = sessionRevision()
   if (!session.householdId) {
     let families = (await request({ path: '/api/family' })).data
     const pendingCreation='cloud-family-creation-uncertain'
     if (!families.length) {
+      if (pendingInvitation()) throw Object.assign(new Error('请先处理家庭邀请。'), {code:'INVITATION_PENDING'})
       if(scopedStorage.getStorageSync(pendingCreation))throw new Error('家庭创建结果尚未确认，请重新读取档案，不要重复创建。')
       scopedStorage.setStorageSync(pendingCreation,true)
       try { await request({ path: '/api/family', method: 'POST', data: { name: '我的家' } }) }
@@ -52,8 +55,11 @@ export async function loadCloudProfile() {
 const dietaryKeys = ['healthStatus', 'conditions', 'otherCondition', 'allergyStatus', 'allergies', 'intoleranceStatus', 'intolerances', 'avoidanceStatus', 'avoidances', 'doctorStatus', 'clinicianGuidance', 'goals', 'cuisines', 'tastePreferences', 'flavors', 'recentNote', 'hypoglycemiaRisk', 'kidneyCondition']
 export function cloudProfileInput(profile, id = newHealthRequestId()) {
   const uuid = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i
-  return { client_request_id: id, family_version: profile.familyVersion, usage_mode: profile.usageMode, analysis_consent:profile.analysisPolicy||null,
-    default_diners: profile.defaultDiners.map(String), members: profile.members.map(member => ({
+  const selfOnly = profile.isOwner === false
+  const members = selfOnly ? profile.members.filter(member => String(member.id) === profile.selfMemberId) : profile.members
+  // 家庭建档使用服务端默认范围；仅本人编辑明确提交 self，避免将其扩为全家写入。
+  return { client_request_id: id, ...(selfOnly ? { scope: 'self' } : {}), family_version: profile.familyVersion, usage_mode: profile.usageMode, analysis_consent:profile.analysisPolicy||null,
+    default_diners: (selfOnly ? members.map(member => member.id) : profile.defaultDiners).map(String), members: members.map(member => ({
       client_ref: String(member.id), member_id: uuid.test(String(member.id)) ? String(member.id) : null,
       version: member.version || null, name: member.name, relation: member.relation,
       birth_date: member.birthDate || null, sex: member.gender === '女' ? 'female' : member.gender === '男' ? 'male' : 'unspecified',
@@ -64,15 +70,20 @@ export function cloudProfileInput(profile, id = newHealthRequestId()) {
 }
 
 export async function saveCloudProfile(profile) {
+  const session = getSession()
+  if (!session?.token) throw Object.assign(new Error('登录状态已失效，填写内容已保留，请重新登录后继续。'), { code: 401 })
+  if (!session.householdId) throw Object.assign(new Error('请先选择当前家庭。'), { code: 'FAMILY_SELECTION_REQUIRED' })
+  if (profile.householdId !== session.householdId) throw Object.assign(new Error('家庭已变化，请重新读取档案。'), { code: 'SESSION_CHANGED' })
   const scope = sessionRevision()
   const current = () => { if (scope !== sessionRevision()) throw Object.assign(new Error('账号已变化，请重新进入。'), {code:'SESSION_CHANGED'}) }
-  const path = '/api/family/' + encodeURIComponent(getSession().householdId) + '/miniapp-profile'
+  const path = '/api/family/' + encodeURIComponent(session.householdId) + '/miniapp-profile'
   let pending = scopedStorage.getStorageSync('cloud-onboarding-pending')
   if (!pending) { pending = { path, data: cloudProfileInput(profile) }; scopedStorage.setStorageSync('cloud-onboarding-pending', pending) }
   if (pending.path !== path) throw new Error('家庭已变化，请重新读取档案。')
   try {
     await request({ path, method: 'POST', data: pending.data, headers: { 'Idempotency-Key': pending.data.client_request_id }, timeout: 30000 })
   } catch (error) {
+    if (Number(error.code) === 401) throw error
     current()
     if (error.code !== 'NETWORK_ERROR' && Number(error.code) < 500) { scopedStorage.setStorageSync('cloud-onboarding-pending', null); throw error }
     // 先读服务端，再用原请求取得幂等收据；不依据本机草稿标记完成。

@@ -8,7 +8,7 @@ use think\Response;
 class Console extends Workspace
 {
     protected $layout = false;
-    protected $noNeedRight = ['index','bootstrap','listing','record','persist','overview','operate','account'];
+    protected $noNeedRight = ['index','bootstrap','listing','record','persist','overview','operate','account','publication'];
     protected function rights($resource)
     {
         $map=['goods'=>'product','skus'=>'product','categories'=>'product','specs'=>'product','spec_values'=>'product','inventory_logs'=>'product',
@@ -61,6 +61,9 @@ class Console extends Workspace
         $r=parent::resources();
         // Keep original integration flags, but remove them from daily merchandising forms.
         unset($r['goods']['fields']['agent_visible'],$r['categories']['fields']['agent_visible']);
+        $r['goods']['columns']['catalog_status']='发布状态';
+        $r['goods']['columns']['agent_visible']='商品接口可见';
+        $r['goods']['fields']['status']['required']=false;
         $r['goods']['fields']['content']=$this->f('商品详情','textarea');
         $r['goods']['fields']['images']=$this->f('商品轮播图','images');
         $r['categories']['fields']['status']['options']=['normal'=>'启用','hidden'=>'停用'];
@@ -126,6 +129,8 @@ class Console extends Workspace
         if(!in_array($resource,['goods','skus','categories','specs','spec_values','suppliers','supplier_skus'],true))$this->error('该资源不支持此保存方式');
         $row=$this->request->post('row/a',[]);
         foreach($row as $value)if(!is_scalar($value)&&$value!==null)$this->error('表单字段格式无效');
+        // Basic editing never changes publication. New products must first be saved as drafts.
+        if($resource==='goods')unset($row['status']);
         $optionalNumbers=['skus'=>['marketprice'],'categories'=>['weigh'],'suppliers'=>['priority'],'supplier_skus'=>['stock_quantity','priority']];
         foreach($optionalNumbers[$resource]??[] as $field)if(array_key_exists($field,$row)&&$row[$field]==='')$row[$field]=0;
         if($resource==='skus')foreach(['price','marketprice']as $field)if(isset($row[$field])&&(!is_scalar($row[$field])||!preg_match('/^\d{1,8}(?:\.\d{1,2})?$/D',(string)$row[$field])))$this->error('价格须为非负金额，最多两位小数');
@@ -160,9 +165,9 @@ class Console extends Workspace
         if($id<=0||!Db::name($tables[$resource])->where('id',$id)->find())$this->error('记录不存在，请刷新列表');
         if($resource==='goods'){
             $goods=Db::name('shop_goods')->where('id',$id)->find();if(!$goods)$this->error('商品不存在');
-            $skus=Db::name('shop_goods_sku')->where('goods_id',$id)->select();
+            $skus=Db::name('shop_goods_sku')->where('goods_id',$id)->order('id')->select();
             $relations=$skus?$this->relations(['sku_id'=>['in',array_column($skus,'id')]]):[];
-            $this->ok(['goods'=>array_intersect_key($goods,array_flip(['id','title','image','images','content','sale_type','category_id','status','goods_sn','agent_visible'])),'skus'=>$skus,'relations'=>$relations]);
+            $this->ok(['goods'=>array_intersect_key($goods,array_flip(['id','title','image','images','content','sale_type','category_id','status','goods_sn','agent_visible','catalog_status'])),'skus'=>$skus,'relations'=>$relations,'publication'=>(new \addons\shop\library\v5\ProductPublicationService())->describe($goods,$skus)]);
         }
         if($resource==='suppliers'){
             $row=Db::name('shop_supplier')->where('id',$id)->field('id,supplier_code,name,company_name,credit_code,contact_name,priority,status,interface_type')->find();if(!$row)$this->error('供应商不存在');
@@ -216,6 +221,18 @@ class Console extends Workspace
         $this->ok(['paid_cent'=>(int)$payments,'orders'=>Db::name('shop_order')->where('createtime','>=',$start)->where('createtime','<',$end)->count(),
             'pending'=>Db::name('shop_order')->where('order_type','normal')->where('paystate',1)->where('orderstate',0)->where('shippingstate',0)->count(),
             'aftersales'=>Db::name('shop_order_aftersales')->where('status',1)->count(),'test_payments_excluded'=>$test,'trend'=>$trend]);
+    }
+    public function publication()
+    {
+        if(!$this->request->isPost())$this->error('请求方式错误');
+        $this->requireResource('goods',true);$this->token();
+        $id=(int)$this->request->post('id',0);$state=$this->request->post('state','');
+        try{$result=(new \addons\shop\library\v5\ProductPublicationService())->change($id,$state,$this->request->post('revision',''));}
+        catch(\addons\shop\library\v5\DomainException $e){$this->error($e->getMessage(),null,['__token__'=>$this->request->token(),'issues'=>$e->getDetails()['issues']??[]]);}
+        catch(\Throwable $e){$this->error('发布未完成，请刷新商品后重试',null,['__token__'=>$this->request->token()]);}
+        \app\admin\model\AdminLog::setTitle($state==='normal'?'商品上架发布':'商品下架');
+        \app\admin\model\AdminLog::setContent(['goods_id'=>$id,'state'=>$state,'changed'=>$result['changed']]);
+        $this->ok($result,$state==='normal'?'商品已上架，可通过小程序商品接口查询':'商品已下架，小程序商品接口不再展示');
     }
     public function operate()
     {

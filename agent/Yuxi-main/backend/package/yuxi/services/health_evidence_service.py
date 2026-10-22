@@ -58,6 +58,9 @@ async def validate_evidence_publication(session, run, content):
     if not snapshot:
         raise HealthVisionError("policy_changed", "咨询缺少处理审批快照", 409)
     binding, _ = await require_consultation(session, run.uid, run.conversation_thread_id, expected=snapshot, lock=True)
+    from yuxi.services.conversation_purchase_service import offers_for_answer
+
+    await offers_for_answer(session, run, binding, content, publication=True)
     if binding.conversation_id != run.conversation_id or binding.actor_uid != run.uid:
         raise HealthVisionError("citation_invalid", "引用与当前咨询线程不符", 409)
     ids = answer_citation_ids(content)
