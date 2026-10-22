@@ -1,4 +1,4 @@
-import { canUseLocalBusinessLogin } from './local-login-policy.js'
+import { canUseLocalBusinessLogin, canUseH5TestBusinessLogin } from './local-login-policy.js'
 const env = import.meta.env || {}
 export const serviceMode = env.VITE_SERVICE_MODE === 'api' ? 'api' : 'mock'
 export const isMockMode = serviceMode === 'mock'
@@ -20,11 +20,12 @@ export const allowSameOriginApi = h5 && !isMockMode && apiBaseUrl === ''
 // 正式客户端不开放业务密码登录。
 export const canUsePasswordLogin = false
 
-let platform = '', hostname = ''
+let platform = '', hostname = '', origin = ''
 // #ifdef MP-WEIXIN
 if (typeof uni !== 'undefined' && uni.getSystemInfoSync) platform = uni.getSystemInfoSync().platform
 // #endif
 // #ifdef H5
-if (typeof location !== 'undefined') hostname = location.hostname
+if (typeof location !== 'undefined') { hostname = location.hostname; origin = location.origin }
 // #endif
-export const canUseBusinessLogin = canUseLocalBusinessLogin(env, { platform, hostname })
+export const canUseH5TestLogin = canUseH5TestBusinessLogin(env, { h5, origin })
+export const canUseBusinessLogin = canUseLocalBusinessLogin(env, { platform, hostname }) || canUseH5TestLogin

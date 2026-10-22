@@ -2,12 +2,35 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { ref } from 'vue'
-import { canUseLocalBusinessLogin } from '../src/services/local-login-policy.js'
+import { canUseLocalBusinessLogin, canUseH5TestBusinessLogin } from '../src/services/local-login-policy.js'
 import { createBusinessAuthClient } from '../src/services/business-auth-client.js'
 import { createEntryResolver } from '../src/services/entry-routing.js'
 
 const local = { VITE_LOCAL_BUSINESS_LOGIN: '1', VITE_SERVICE_MODE: 'api',
   VITE_ALLOW_LOCAL_HEALTH_API: '1', VITE_API_BASE_URL: 'http://127.0.0.1:15050' }
+
+test('H5 test login is opt-in, same-origin and unavailable to mini-program or another site', () => {
+  const env = { VITE_H5_TEST_LOGIN: '1', VITE_SERVICE_MODE: 'api', VITE_API_BASE_URL: '',
+    VITE_H5_TEST_ORIGIN: 'http://8.136.134.29' }
+  const runtime = { h5: true, origin: 'http://8.136.134.29' }
+  assert.equal(canUseH5TestBusinessLogin(env, runtime), true)
+  for (const change of [{ h5: false }, { origin: '' }, { origin: 'http://8.136.134.29:8080' },
+    { origin: 'https://8.136.134.29' }, { origin: 'http://8.136.134.29.evil.test' }]) {
+    assert.equal(canUseH5TestBusinessLogin(env, { ...runtime, ...change }), false)
+  }
+  for (const change of [{ VITE_H5_TEST_LOGIN: undefined }, { VITE_H5_TEST_LOGIN: '0' },
+    { VITE_SERVICE_MODE: 'mock' }, { VITE_API_BASE_URL: 'https://elsewhere.test' },
+    { VITE_API_BASE_URL: 'http://127.0.0.1:15050' }, { VITE_API_BASE_URL: undefined },
+    { VITE_H5_TEST_ORIGIN: undefined }]) {
+    assert.equal(canUseH5TestBusinessLogin({ ...env, ...change }, runtime), false)
+  }
+  for (const origin of ['null', 'file://', 'http://example.com/path', 'http://user:pass@example.com', 'http://example.com/']) {
+    assert.equal(canUseH5TestBusinessLogin({ ...env, VITE_H5_TEST_ORIGIN: origin }, { h5: true, origin }), false)
+  }
+  assert.equal(canUseLocalBusinessLogin({ ...env, VITE_LOCAL_BUSINESS_LOGIN: '1' }, { platform: 'devtools' }), false)
+  assert.equal(canUseH5TestBusinessLogin({ ...env, VITE_H5_TEST_ORIGIN: 'https://test.example.com' },
+    { h5: true, origin: 'https://test.example.com' }), true)
+})
 test('business login requires explicit local configuration and Developer Tools or localhost', () => {
   assert.equal(canUseLocalBusinessLogin(local, { platform: 'devtools' }), true)
   assert.equal(canUseLocalBusinessLogin(local, { hostname: 'localhost' }), true)
