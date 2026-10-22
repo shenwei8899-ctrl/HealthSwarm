@@ -157,6 +157,7 @@ class Shop extends Addons
             ['api/v1/commerce/addresses/:id/default', 'addons/shop/api.v1.commerce_address/selectDefault', 'PUT'],
             ['api/v1/commerce/addresses/:id', 'addons/shop/api.v1.commerce_address/update', 'PUT'],
             ['api/v1/commerce/addresses/:id', 'addons/shop/api.v1.commerce_address/remove', 'DELETE'],
+            ['api/v1/integration/ai/catalog/ingredients', 'addons/shop/api.v1.integration_ai_catalog/ingredients', 'GET'],
             ['api/v1/integration/ai/catalog/products', 'addons/shop/api.v1.integration_ai_catalog/products', 'GET'],
             ['api/v1/integration/ai/catalog/skus/:sku_id/alternatives', 'addons/shop/api.v1.integration_ai_catalog/alternatives', 'GET'],
             ['api/v1/integration/ai/catalog/skus/:sku_id', 'addons/shop/api.v1.integration_ai_catalog/sku', 'GET'],

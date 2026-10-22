@@ -147,13 +147,27 @@ class Console extends Workspace
         }
         return parent::save();
     }
+    protected function decorateScalarDisplayRows($resource, &$rows, array $definition)
+    {
+        parent::decorateScalarDisplayRows($resource, $rows, $definition);
+        if ($resource === 'members') (new \addons\shop\library\v5\MiniappUserAccessService())->decorateUsers($rows);
+    }
     protected function buildResourceQuery(array $definition,array $filter,$q,array $queryColumns)
     {
         $exact=[];
         foreach(['status','supplier_id','sku_id','goods_id','spec_id','category_id','user_id','paystate','orderstate','shippingstate'] as $key){
             if(array_key_exists($key,$filter)&&in_array($key,$queryColumns,true)&&is_scalar($filter[$key])&&$filter[$key]!==''){$exact[$key]=$filter[$key];unset($filter[$key]);}
         }
-        $query=parent::buildResourceQuery($definition,$filter,$q,$queryColumns);
+        $userSearch = $definition['table'] === 'user' && $q !== '';
+        $query=parent::buildResourceQuery($definition,$filter,$userSearch?'':$q,$queryColumns);
+        if ($userSearch) {
+            $pattern = '%' . strtr($q, ['!' => '!!', '%' => '!%', '_' => '!_']) . '%';
+            $linked = Db::name('shop_external_identity')->whereRaw("(external_user_ref LIKE :ref_q ESCAPE '!' OR external_account_name LIKE :name_q ESCAPE '!' OR external_account_id LIKE :id_q ESCAPE '!')", ['ref_q'=>$pattern,'name_q'=>$pattern,'id_q'=>$pattern])->column('user_id');
+            $match = "(username LIKE :username_q ESCAPE '!' OR nickname LIKE :nickname_q ESCAPE '!' OR mobile LIKE :mobile_q ESCAPE '!'";
+            if ($linked) $match .= ' OR id IN (' . implode(',',array_map('intval',$linked)) . ')';
+            if (ctype_digit($q)) $match .= ' OR id = ' . (int)$q;
+            $query->whereRaw($match.')',['username_q'=>$pattern,'nickname_q'=>$pattern,'mobile_q'=>$pattern]);
+        }
         foreach($exact as $key=>$value)$query->where($key,$value);
         return $query;
     }
@@ -194,7 +208,9 @@ class Console extends Workspace
             $this->ok($d);
         }
         if($resource==='members'){
-            $this->ok(['user'=>Db::name('user')->where('id',$id)->field('id,username,nickname,mobile,jointime,status')->find(),
+            $users=[Db::name('user')->where('id',$id)->field('id,username,nickname,mobile,jointime,status')->find()];
+            (new \addons\shop\library\v5\MiniappUserAccessService())->decorateUsers($users);
+            $this->ok(['user'=>$users[0],
                 'addresses'=>(new \addons\shop\library\v5\AddressService())->listRows($id)['items'],
                 'orders'=>$this->auth->check($this->rights('orders_all'))?Db::name('shop_order')->where('user_id',$id)->field('id,order_sn,saleamount,paystate,orderstate,createtime')->order('id','desc')->limit(50)->select():[]]);
         }
@@ -256,6 +272,7 @@ class Console extends Workspace
         if(!empty($safe['mobile'])&&!preg_match('/^1[3-9]\d{9}$/D',$safe['mobile']))$this->error('手机号格式不正确');
         if(!empty($safe['mobile'])&&Db::name('user')->where('mobile',$safe['mobile'])->where('id','<>',$id)->find())$this->error('手机号已被使用');
         if(!empty($safe['password'])&&(strlen($safe['password'])<8||strlen($safe['password'])>64))$this->error('密码长度须为8至64个字符');
+        if(!empty($safe['password']) && Db::name('shop_external_identity')->where('user_id',$id)->count()) $this->error('小程序关联账号使用原登录身份，不能在商城设置微信登录密码');
         if(empty($safe['password']))unset($safe['password']);
         $model=\app\admin\model\User::get($id);if(!$model)$this->error('用户不存在');
         Db::startTrans();try{$model->save($safe);Db::commit();}catch(\Throwable $e){Db::rollback();$this->error('保存失败，请检查内容后重试',null,['__token__'=>$this->request->token()]);}

@@ -6,9 +6,16 @@ use think\Db;
 
 class AgentMemberService
 {
+    protected $sessionVerifier;
+
+    public function __construct(AgentSessionVerifier $sessionVerifier = null)
+    {
+        $this->sessionVerifier = $sessionVerifier ?: new AgentSessionVerifier();
+    }
+
     public function exchange($authorization, array $payload, $auth)
     {
-        $identity = (new AgentSessionVerifier())->verify($authorization);
+        $identity = $this->sessionVerifier->verify($authorization);
         $client = trim((string)getenv('SHOP_AGENT_CLIENT_ID'));
         if ($client === '' || strlen($client) > 64) throw new DomainException('商城身份来源尚未配置', 50301, 503);
         $allowed = ['account', 'password', 'create_member'];
@@ -50,12 +57,13 @@ class AgentMemberService
             } else {
                 if (!$boundUser) {
                     $username = 'agent_' . substr(hash('sha256', $client . ':' . $identity['ref']), 0, 24);
-                    if (!$auth->register($username, bin2hex(random_bytes(24)))) throw new DomainException('会员创建结果待确认，请重新进入商城', 40901, 409);
+                    if (!$auth->register($username, bin2hex(random_bytes(24)), '', '', ['nickname' => !empty($identity['name']) ? mb_substr($identity['name'], 0, 50, 'UTF-8') : $username])) throw new DomainException('会员创建结果待确认，请重新进入商城', 40901, 409);
                 }
                 Db::name('shop_external_identity')->insert(array_merge($lookup, [
                     'user_id' => (int)$auth->id, 'status' => 'normal', 'createtime' => time(), 'updatetime' => time(),
                 ]));
             }
+            (new MiniappUserAccessService())->record($client, $identity, (int)$auth->id);
             Db::commit();
         } catch (\Throwable $e) {
             Db::rollback();

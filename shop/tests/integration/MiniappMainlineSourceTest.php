@@ -34,7 +34,7 @@ mainlineCheck((int)$auth->id===$uid,'Existing mapping must reuse member');
 $after=Db::name('user')->where('id',$uid)->find();
 mainlineCheck($user['password']===$after['password']&&$user['salt']===$after['salt'],'Credentials preserved');
 foreach($old as $table=>$rows)mainlineCheck($rows===Db::name($table)->where('user_id',$uid)->select(),'Existing business rows preserved');
-mainlineReject(function(){(new AgentSessionVerifier())->account(['account'=>['id'=>17,'uid'=>'existing']]);},40100);
+mainlineCheck((new AgentSessionVerifier())->account(['account'=>['id'=>17,'uid'=>'existing']]) === ['id'=>'17','ref'=>'uid:existing'], 'Verified business account identity remains distinct from WeChat payment proof');
 $sku=Db::name('shop_goods_sku')->where('sku_code','LOCAL-NORMAL-tomato')->find();
 $map=Db::name('shop_ingredient_sku_map')->where('sku_id',$sku['id'])->find();
 Db::name('shop_ingredient_sku_map')->where('id',$map['id'])->update(['convert_ratio'=>0.8,'loss_rate'=>0.1]);

@@ -6,12 +6,28 @@ class AgentSessionVerifier
 {
     public function verify($authorization)
     {
-        return $this->account($this->request($authorization));
+        $claims = $this->request($authorization);
+        return array_merge($this->account($claims), $this->sessionMetadata($claims));
+    }
+
+    protected function sessionMetadata(array $claims)
+    {
+        if (array_key_exists('wechat_authenticated', $claims) && !is_bool($claims['wechat_authenticated'])) {
+            throw new DomainException('小程序登录来源返回无效数据', 50202, 502);
+        }
+        $name = $claims['account']['name'] ?? '';
+        if (!is_string($name) || !mb_check_encoding($name, 'UTF-8')) throw new DomainException('小程序账号名称返回无效数据', 50202, 502);
+        return ['name' => mb_substr(trim($name), 0, 100, 'UTF-8'),
+            'login_channel' => !array_key_exists('wechat_authenticated', $claims) ? 'unknown' : ($claims['wechat_authenticated'] ? 'wechat' : 'other')];
     }
 
     public function verifyPaymentIdentity($authorization, $code)
     {
         $claims = $this->request($authorization, $code);
+        // Password sessions can enter commerce; payment still requires verified WeChat identity.
+        if (($claims['wechat_authenticated'] ?? false) !== true) {
+            throw new DomainException('请使用微信登录小程序后继续采购', 40100, 401);
+        }
         $account = $this->account($claims);
         if (!is_string($claims['appid'] ?? null) || !preg_match('/^wx[0-9a-f]{16}$/iD', $claims['appid']) ||
             !is_string($claims['openid'] ?? null) || !preg_match('/^[A-Za-z0-9_-]{1,128}$/D', $claims['openid'])) {
@@ -62,9 +78,6 @@ class AgentSessionVerifier
 
     public function account($claims)
     {
-        if (($claims['wechat_authenticated'] ?? false) !== true) {
-            throw new DomainException('请使用微信登录小程序后继续采购', 40100, 401);
-        }
         $id = $claims['account']['id'] ?? null;
         $uid = $claims['account']['uid'] ?? null;
         if (!is_int($id) || $id <= 0 || !is_string($uid) || !preg_match('/^[A-Za-z0-9_-]{1,96}$/D', $uid)) {

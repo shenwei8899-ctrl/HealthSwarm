@@ -3,10 +3,18 @@
 namespace addons\shop\controller\api\v1;
 
 use addons\shop\library\v5\CatalogService;
+use addons\shop\library\v5\IngredientCatalogService;
 
 class IntegrationAiCatalog extends IntegrationBase
 {
     protected $expectedClientType = 'agent';
+
+    public function ingredients()
+    {
+        return $this->execute(function () {
+            return (new IngredientCatalogService())->listIngredients($this->request->get());
+        }, $this->integrationLog('ai_catalog_ingredients', 'ingredient'));
+    }
 
     public function products()
     {
