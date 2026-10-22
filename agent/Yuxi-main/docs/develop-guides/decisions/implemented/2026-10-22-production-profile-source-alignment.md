@@ -34,8 +34,8 @@ Owner：backend/package/yuxi/services/miniapp_planning_source.py
 | 本人确认来源只在缺少专业快照时走自述投影 | 失效专业来源被绕过 | HealthQualityRepository | 来源 unit、真实 HTTP/PG | 已有撤回专业快照、未确认、缺项、跨账号 | 通过 |
 | 专业首版与家庭版本独立 | 首次导入持续409或整页失败 | health_profile_import_service | profile-import-context HTTP/PG及最终落库 | 家庭版本大于1、基础档案缺小程序字段、过期快照 | 通过 |
 | 自述编码只使用当前规则原件 | 规则原件变更后沿用旧编码 | HealthQualityRepository.rules | 当前原件先ready、变更后not_ready的HTTP/PG | 原件摘要变化、删除 | 通过 |
-| API/Worker 对齐源码并保留用途关闭 | 覆盖生产修正、放开真实用户 | 发布脚本、Compose、PostgreSQL | 源码/配置摘要、ready、业务只读探针 | 发布失败恢复原配置/镜像 | Not run |
-| 菜谱绑定与当前库元数据一致 | 误删已有库或错误绑定 | health_family_kb_service、KnowledgeBase | 实际元数据、无外呼检索和引用来源校验 | 空绑定与失效来源已有回归 | Not run |
+| API/Worker 对齐源码并保留用途关闭 | 覆盖生产修正、放开真实用户 | 发布脚本、Compose、PostgreSQL | 每端465文件摘要、完整环境/政策摘要、ready | 首次发布拒绝环境漂移，恢复原镜像/完整环境后重发 | 通过 |
+| 菜谱绑定与当前库元数据一致 | 误删已有库或错误绑定 | health_family_kb_service、KnowledgeBase | 两端实际只读关键词检索各4条、文件与分片当前内容、管理投影 | 本轮编码原件变更/删除负控；配餐参考空绑定与失效引用沿既有回归 | 通过 |
 
 ## 后果
 
@@ -49,4 +49,10 @@ Owner：backend/package/yuxi/services/miniapp_planning_source.py
 
 实际 API／Worker／PostgreSQL 的恢复与完成链路7项全部通过（249.17s）：停页完成、杀死Worker后恢复、恢复前和发布前撤回拒绝、建档后三餐、改单餐、处理快照变化后的明确重试、暂时失败复用均按持久化事实核验。测试Worker使用服务UID，仅使用合成协议，无真实供应商调用或订单。
 
-工程契约检查（163 decisions / 307 docs）、检查器63项单元、变更Python的Ruff与格式检查、文档构建（29.76s）通过。日志仅本地保留在 `agent/.tmp/backend-release-20261022/`。源码工程已验收；生产部署与绑定检索仍待运行，不能把上述隔离证据当作生产已开放。
+工程契约检查（163 decisions / 307 docs）、检查器63项单元、变更Python的Ruff与格式检查、文档构建通过。日志仅本地保留在 `agent/.tmp/backend-release-20261022/`。
+
+2026-10-22 生产部署 `37838ef`：同一镜像运行API/Worker，每端465文件摘要一致；business13/health28/knowledge2不变，正式政策仍为空。停写取得PG备份（14708544字节，目录可读取），8个依赖容器ID不变，80及18081 ready通过，最终发布31.9秒。两端菜谱库配置为 `kb_c8gapg07e7`，管理投影显示配置，禁用重排/图检索并阻断HTTP模型请求后关键词检索各4条，当前文件与分片内容核验通过。血脂4库均存在；`kb_zjt5veufwu` 为脂肪肝库，上版失效库判断已更正。
+
+首次发布因Worker沿用配置文件时带入较新的微信环境而被一致性检查拒绝。旧镜像恢复后，使用服务器既有私有运行快照重建完整原环境，摘要与本轮发布前一致；显式解析后的Compose再次逐项核对，避免env_file重新注入原先不存在的变量。原镜像、完整环境（含菜谱配置缺省状态）、源码和ready均恢复通过后重新发布。原备份与失败日志保留，重试生成独立备份，不覆盖首轮证据。环境快照、解析后的配置和备份均仅存服务器私有发布目录，未进入Git。
+
+该部署包含已有每日恢复/重试修正，未改变正式用途政策、原微信运行配置或专业数据。没有调用真实模型或写入订单；生产未运行饮食更正等业务写入测试，不能把隔离工程与只读上线验证描述成真实用户或完整客户端验收。
