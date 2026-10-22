@@ -182,6 +182,8 @@ async def test_storage_migration_rejects_v071_schema_without_quiescence_proof(mo
         24,
         25,
         26,
+        27,
+        28,
         storage_migration.HEALTH_SCHEMA_VERSION,
     ],
 )

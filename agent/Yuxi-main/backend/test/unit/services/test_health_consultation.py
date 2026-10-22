@@ -219,10 +219,12 @@ async def test_graph_binds_only_prepared_ai_consultation_tools(monkeypatch):
         thread_id="thread",
         model="synthetic/fixed",
         tools=["query_family_nutrition_knowledge", "get_member_memories", "forged_tool"],
+        system_prompt="untrusted client prompt must not replace the fixed role",
     )
     context._runtime_prepared = True
 
     assert await HealthConsultationAgent().get_graph(context=context) == "compiled graph"
+    assert assemble.call_args.kwargs["system_prompt"] == service.CONSULTATION_PROMPT
     assert [tool.name for tool in assemble.call_args.kwargs["tools"]] == [
         "query_family_nutrition_knowledge",
         "get_member_memories",

@@ -24,6 +24,7 @@ from yuxi.storage.postgres.models_health import (
     HealthReviewAction,
     HealthQualityConversation,
     HealthMealPlan,
+    HealthMealPlanRevision,
     HealthMealPlanAdoption,
     RecipeVersion,
     FoodRecord,
@@ -54,6 +55,25 @@ class HealthQualityRepository:
             .order_by(HealthProfileSnapshot.version.desc())
             .limit(1)
         )
+
+    async def reviewed_basis(self, check):
+        """调用方校验全部成员后，取本次检查所用的不可变专业依据。"""
+        sources = check.snapshot["sources"]
+        profiles = {}
+        for member_id, ref in sources["profiles"].items():
+            row = await self.session.get(HealthProfileSnapshot, ref["id"]) if ref["id"] else None
+            profiles[member_id] = (
+                {"version": row.version, "payload": row.payload, "attestation": row.attestation}
+                if row and row.member_id == member_id
+                else {"status": "historical_projection_unavailable", "reference": ref}
+            )
+        rule = await self.session.get(HealthRuleSnapshot, check.rule_id) if check.rule_id else None
+        return {
+            "profiles": profiles,
+            "rules": {"version": rule.version, "payload": rule.payload, "attestation": rule.attestation}
+            if rule
+            else None,
+        }
 
     async def profile_projection(self, member_id, *, allow_reported=True):
         """最高安全投影须仍对应本人当前确认来源，失败不回退旧版本。"""
@@ -173,6 +193,33 @@ class HealthQualityRepository:
             .order_by(HealthQualityCheck.created_at.desc(), HealthQualityCheck.id.desc())
             .limit(1)
             .execution_options(populate_existing=True)
+        )
+
+    async def review_candidates(self, uid, member_id, inbox, limit, offset):
+        """有界读取候选标识；服务逐项复验全员权限后才投影。"""
+        stmt = select(HealthProfessionalReview.id).where(HealthProfessionalReview.member_id == member_id)
+        if inbox:
+            stmt = stmt.where(
+                HealthProfessionalReview.actor_uid != uid,
+                HealthProfessionalReview.status != "draft",
+            )
+        else:
+            stmt = stmt.where(HealthProfessionalReview.actor_uid == uid)
+        return list(
+            (
+                await self.session.scalars(
+                    stmt.order_by(HealthProfessionalReview.id.desc()).offset(offset).limit(limit + 1)
+                )
+            ).all()
+        )
+
+    async def reviewed_plan_revision(self, check):
+        """审核资料使用当时餐单修订，不把新版内容当作旧版依据。"""
+        return await self.session.scalar(
+            select(HealthMealPlanRevision).where(
+                HealthMealPlanRevision.plan_id == check.plan_id,
+                HealthMealPlanRevision.version == check.plan_version,
+            )
         )
 
     async def reviewer(self, uid, *, lock=False):

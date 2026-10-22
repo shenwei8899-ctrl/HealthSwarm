@@ -28,6 +28,26 @@
 
 响应保留候选原文、规范化有效数据、逐行异常、批内重复和已发布版本冲突，以及待补来源/许可/版本/适用范围/专业审核事项。同键异参409，原样重放返回同批次；`GET /api/health/v1/nutrition-imports/{id}` 仅创建该批次的管理员可读。候选不写入正式食品或菜谱，`published_count=0`。后台“服务与食品数据”中的导入准备区域提供 JSON 输入与错误报告。分权审核、批量批准和真实数据运营交付另行验收。
 
+## 专业复核工作台
+
+健康识图的“专业复核”页按所选成员提供“我的申请”和“复核收件”。申请人从已保存餐单选择当前版本、输入资料负责人提供的已发布规则编号，创建检查后核对原餐单快照、档案及规则依据，填写理由和材料引用提交复核。审核人员须具备有效专业资格及全部相关成员的授权；页面只显示服务端允许的退回、批准动作。批准要求工程检查通过，申请人不能自审。
+
+退回时补充说明及材料可以在原申请重提。实际档案或餐单发生变化时，应通过“补充档案”“调整餐单”入口更新业务资料，再创建新检查和新申请；旧申请保留并标记失效。页面将历史依据与当前申请状态分别展示，旧批准不会随新版本复用。
+
+`GET /api/health/v1/members/{member_id}/professional-reviews?inbox=false&limit=20&offset=0` 返回 `items,next_offset`，`inbox=true` 要求专业资格。`GET /api/health/v1/professional-reviews/{review_id}/workbench` 返回 `review,check,plan_snapshot,reviewed_basis,allowed_actions,is_applicant`。两者均禁止缓存，列表逐项复验权限，无法读取的条目不返回。动作继续使用现有 `submit/return/approve` 接口；请求正文含 UUID `client_request_id`、当前 `version`、`reason`、`evidence_refs`。
+
+响应未知时保留同一请求重试；明确版本冲突或来源失效后重新读取，不能换键猜测操作结果。正式专业资格、资料和审核责任由业务负责人配置，本页面的工程验收不代表专业批准。
+
+## 用户主动跨助手交接
+
+有效完成的血糖、血脂、血压回顾可转入营养咨询；有效饮食分析可转入基础配餐。消息下的“转交其他助手”先展示服务端核对的最小事实、日期范围及目标用途。确认创建同一成员的独立会话，随后由用户继续提问；取消预览不创建会话，确认本身不调用模型。
+
+`GET /api/health/v1/tasks/{request_id}/handoff-preview` 返回固定来源及目标角色、成员、来源 Run/Message、`source_hash` 和 `summary`。`POST /api/health/v1/tasks/{request_id}/handoffs` 只接收 UUID `client_request_id`、预览的64位十六进制 `source_hash`、`confirmed:true`，同时要求相同 `Idempotency-Key`；返回既有咨询绑定结构。客户端不提交任意目标或健康摘要正文。
+
+目标用途的配置、授权和处理同意独立校验。指标来源必须有同 Run 的唯一实测回执，并保持原冻结日期范围与内容摘要；饮食来源只携带有效确认记录版本、程序计算值及缺失/覆盖边界。整段聊天、模型自由建议及其他指标不复制。未完成或多范围来源返回409，来源变化返回410，目标未配置返回503，缺少用途同意返回403。确认重放、执行、发布和历史读取均重新核对来源，交接会话不能继续作为另一跳来源。
+
+健康 Schema29为咨询绑定增加可空交接字段，旧会话保留原行为。发布必须先运行 storage-migrator，再一致更新 API、Worker和Web。正式App可依该协议接入；当前交付范围为后台Web，App及生产部署另行验收。
+
 ## 验证范围
 
 真实 HTTP/隔离 PostgreSQL 测试由 `backend/test/integration/services/test_health_independent_workflows_http.py` 覆盖并发幂等、逐人成败、权限、候选隔离和三类统计；更正与迁移见对应更正测试。App H5 与后台组件通过合成数据的浏览器操作及独立数据库结果核验。后台完整页面启动、生产发布、微信真机、真实模型和专业资料质量不由这些结果替代。
