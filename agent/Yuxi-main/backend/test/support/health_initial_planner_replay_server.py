@@ -33,12 +33,15 @@ def replay_delta(authorization, body):
         raise ValueError("fixed_initial_skill_required")
     user = next((m for m in reversed(messages) if m.get("role") == "user"), {})
     match = re.fullmatch(
-        r"INITIAL_PLANNER_E2E:([0-9a-f]{32}):(ready|invalid|foreign|questions)(?::([0-9a-f-]{36}))?",
+        r"INITIAL_PLANNER_E2E:([0-9a-f]{32}):(ready|daily|invalid|foreign|questions)(?::([0-9a-f-]{36}))?",
         str(user.get("content", "")),
     )
-    if not match:
+    daily_query = str(user.get("content", "")).startswith(
+        "请按本线程已绑定的成员、日期、档案和批准规则生成完整早餐、午餐、晚餐。"
+    )
+    if not match and not daily_query:
         raise ValueError("synthetic_input_required")
-    token, mode, foreign = match.groups()
+    token, mode, foreign = match.groups() if match else ("synthetic-daily", "daily_full", None)
     context_id, preview_id = f"context-{token}", f"preview-{token}"
     outputs = {
         m.get("tool_call_id"): json.loads(m["content"])
@@ -47,7 +50,11 @@ def replay_delta(authorization, body):
     }
     if context_id in outputs:
         current = outputs[context_id]
-        count = 2 if current["selection"]["kind"] == "family" else 1
+        count = (
+            len(current["selection"]["profile_versions"])
+            if daily_query
+            else (2 if current["selection"]["kind"] == "family" else 1)
+        )
         if (
             current.get("scope") != "initial_plan"
             or len(current["profiles"]) != count
@@ -56,11 +63,19 @@ def replay_delta(authorization, body):
             raise ValueError("initial_context_required")
         if preview_id in outputs:
             receipt = outputs[preview_id]
-            if receipt.get("status") != "ready" or receipt["plan_snapshot"]["nutrition"]["totals"]["energy_kcal"] != (
-                "396.00" if count == 2 else "330.00"
+            expected_energy = (
+                f"{110 * sum(len(meal['participant_ids']) for meal in current['selection']['meals'])}.00"
+                if daily_query
+                else ("396.00" if count == 2 else "330.00")
+            )
+            if (
+                receipt.get("status") != "ready"
+                or receipt["plan_snapshot"]["nutrition"]["totals"]["energy_kcal"] != expected_energy
             ):
                 raise ValueError("independent_initial_energy_required")
             answer = {"preview_id": foreign if mode == "foreign" else receipt["preview_id"]}
+            if mode in {"daily", "daily_full"}:
+                answer["explanation"] = "合成恢复检查：按现有程序计算的三餐继续保存。"
             if mode == "invalid":
                 answer["professional_review"] = "approved"
             return {"role": "assistant", "content": json.dumps(answer)}, True
