@@ -131,6 +131,33 @@ function chat(){let submits=0,exists=false,invalid=false;const saved=storage(),c
  const deps={HEALTH_TEXT_TASKS,loadCloudProfile:async()=>({onboarded:true,members:[{id:'self',relation:'本人',healthMemberId:member}]}),dailyArrangementState:()=>({phase:'idle',busy:false}),createDailyArrangementClient:({state})=>({load:async()=>{state.phase='ready';state.arrangement={}},reset(){},dispose(){}}),storageContext:()=> 'scope',scopedStorage:saved,getSession:()=>({accountId:'self',householdId:'family',token:'synthetic'}),commerce:{connect:async()=>{}},request:send,newHealthRequestId:()=>requestId,localDate:()=> '2026-10-20',readChatSnapshot:async()=>({messages:[],runs:[]}),chatImageContent:async image=>image.localPath,persistChatImage:async image=>({localPath:image.path}),createHealthTaskFlow:options=>createHealthTaskFlow({...options,send,session:()=>({accountId:'self',token:'synthetic'}),revision:()=>1,storage:saved,newId:()=>requestId,day:()=> '2026-10-20',subscribe:()=>()=>{}}),uni:{redirectTo(){},reLaunch(){}}}
  return {deps,calls,invalidate:()=>invalid=true}
 }
+
+test('unconfigured consultation gives the service reason without invoking member readiness',async()=>{
+ const h=chat();h.deps.loadCloudProfile=async()=>({onboarded:true,members:[{id:'self',relation:'本人'}],healthConfiguration:{consultation:{available:false,reason:'尚未配置开发测试模型'}}})
+ const p=mount('CloudNutritionChat.vue','load,chatError,task',h.deps);await p.load()
+ assert.match(p.chatError.value,/尚未配置开发测试模型/);assert.ok(!h.calls.length);assert.equal(p.task.value.available,undefined);p.dispose()
+})
+
+test('saved but unlinked profiles have a working reconfirmation route and cannot start planning',async()=>{
+ const h=chat(),routes=[];h.deps.uni.navigateTo=o=>routes.push(o.url)
+ h.deps.loadCloudProfile=async()=>({onboarded:true,members:[{id:'self',relation:'本人'}],defaultDiners:['self'],healthConfiguration:{consultation:{available:true},meal_plan:{available:true}}})
+ const p=mount('CloudNutritionChat.vue','load,chatError,confirmProfile,requirePlanningReady',h.deps);await p.load()
+ assert.match(p.chatError.value,/重新确认健康资料/);assert.throws(()=>p.requirePlanningReady(),e=>e.businessCode==='daily_member_sources_unavailable');p.confirmProfile();assert.deepEqual(routes,['/pages/onboarding/index?recover=1']);assert.ok(!h.calls.length);p.dispose()
+})
+
+test('both daily entry clients check configuration before starting, while reading stays allowed',async()=>{
+ const h=chat(),clients=[]
+ h.deps.createDailyArrangementClient=options=>{clients.push(options);return {load:async()=>{},reset(){},dispose(){}}}
+ h.deps.loadCloudProfile=async()=>({onboarded:true,members:[],healthConfiguration:{meal_plan:{available:false,reason:'模型未就绪'},consultation:{available:false,reason:'模型未就绪'}}})
+ const p=mount('CloudNutritionChat.vue','load',h.deps);await p.load()
+ assert.equal(clients.length,2);for(const client of clients)assert.throws(client.beforeStart,e=>e.businessCode==='daily_dependencies_not_ready'&&e.retryable===false);p.dispose()
+})
+
+test('another claimed family member must confirm their own analysis authorization',async()=>{
+ const h=chat();h.deps.loadCloudProfile=async()=>({onboarded:true,members:[{id:'self',relation:'本人',healthMemberId:member},{id:'parent',relation:'母亲',claimed:true}],defaultDiners:['self','parent'],healthConfiguration:{meal_plan:{available:true}}})
+ const p=mount('CloudNutritionChat.vue','load,requirePlanningReady',h.deps);await p.load()
+ assert.throws(()=>p.requirePlanningReady(),e=>e.businessCode==='daily_member_consent_required'&&/该成员登录/.test(e.message));p.dispose()
+})
 test('unknown chat retry settles the original bubble and removes only its original draft',async()=>{
  const h=chat(),p=mount('CloudNutritionChat.vue','load,question,draftImage,messages,sendQuestion,retryQuestion,flow,task',h.deps)
  await p.load();p.question.value='original';p.draftImage.value={localPath:'data:image/png;base64,QQ=='};await p.sendQuestion();assert.equal(p.messages.value[0].status,'unknown');assert.equal(p.question.value,'original')

@@ -46,6 +46,7 @@ export async function loadCloudProfile() {
   try { config = (await request({path:'/api/health/v1/configuration'})).data }
   catch(error) { if ([401,403].includes(Number(error.code))) throw error }
   if (ticket !== sessionRevision()) throw new Error('账号已变化，请重新进入。')
+  profile.healthConfiguration = config
   profile.analysisPolicy = config.meal_plan?.available === true && config.meal_plan.processor && config.policy_version
     ? {processor:config.meal_plan.processor,policy_version:config.policy_version} : null
   saveProfile(profile)
@@ -78,7 +79,9 @@ export async function saveCloudProfile(profile) {
   const current = () => { if (scope !== sessionRevision()) throw Object.assign(new Error('账号已变化，请重新进入。'), {code:'SESSION_CHANGED'}) }
   const path = '/api/family/' + encodeURIComponent(session.householdId) + '/miniapp-profile'
   let pending = scopedStorage.getStorageSync('cloud-onboarding-pending')
-  if (!pending) { pending = { path, data: cloudProfileInput(profile) }; scopedStorage.setStorageSync('cloud-onboarding-pending', pending) }
+  const submitted = cloudProfileInput(profile, pending?.data?.client_request_id)
+  const changed = !!pending && JSON.stringify(pending.data) !== JSON.stringify(submitted)
+  if (!pending) { pending = { path, data: submitted }; scopedStorage.setStorageSync('cloud-onboarding-pending', pending) }
   if (pending.path !== path) throw new Error('家庭已变化，请重新读取档案。')
   try {
     await request({ path, method: 'POST', data: pending.data, headers: { 'Idempotency-Key': pending.data.client_request_id }, timeout: 30000 })
@@ -95,5 +98,7 @@ export async function saveCloudProfile(profile) {
   const result = await loadCloudProfile()
   if (!result.onboarded) throw new Error('云端保存尚未确认，请重试原请求。')
   scopedStorage.setStorageSync('cloud-onboarding-pending', null)
+  // 旧键只能结清旧提交，不能把它的成功当作本次新同意或新编辑已经保存。
+  if (changed) throw Object.assign(new Error('上次提交已确认，本次修改尚未提交。请重新读取当前档案，核对本次修改和分析用途后再次保存。'), {code:409,businessCode:'previous_profile_submission_settled'})
   return result
 }

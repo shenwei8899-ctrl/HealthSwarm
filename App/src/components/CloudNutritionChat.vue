@@ -57,8 +57,15 @@ const flow=createHealthTaskFlow({daily:true,onChange:next=>{
     if(!restoring)void scrollLatest()
   }
 }})
-const client=createDailyArrangementClient({state,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId})
-const familyClient=createDailyArrangementClient({state:familyState,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId})
+const client=createDailyArrangementClient({state,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId,beforeStart:requirePlanningReady})
+const familyClient=createDailyArrangementClient({state:familyState,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId,beforeStart:requirePlanningReady})
+function requirePlanningReady(){
+  const capability=profile.value?.healthConfiguration?.meal_plan
+  if(capability?.available===false)throw Object.assign(new Error('营养服务暂未就绪：'+(capability.reason||'请先完成服务配置')+'。配置完成后重新读取即可。'),{businessCode:'daily_dependencies_not_ready',retryable:false})
+  const diners=profile.value?.defaultDiners
+  if(diners?.some(id=>profile.value.members.some(member=>member.id===id && !member.healthMemberId && member.claimed===true && member.relation!=='本人')))throw Object.assign(new Error('有已认领的家人尚未完成健康资料关联，请让该成员登录后确认自己的资料和分析授权，或在家庭档案中调整默认就餐成员。'),{businessCode:'daily_member_consent_required',retryable:false})
+  if(diners?.length && diners.some(id=>!profile.value.members.find(member=>member.id===id)?.healthMemberId))throw Object.assign(new Error('已保存的就餐成员尚未关联健康资料，请重新确认健康资料，核对后保存并授权本次分析。'),{businessCode:'daily_member_sources_unavailable',retryable:false})
+}
 async function familyPlan(text,retry=false){
   text=retry?familyIntent.value:String(text||'');if(!retry)familyIntent.value=text
   const scope=storageContext(),mine=epoch
@@ -88,7 +95,9 @@ async function restoreChat(type=desiredType){
   if(!profile.value)return
   const scope=storageContext(),ticket=epoch
   const id=props.route.memberId||profile.value.members.find(m=>m.relation==='本人')?.healthMemberId
-  if(!id){chatError.value='请在“我的 → 资料管理 → 我的健康资料”核对本人资料，完成后即可咨询。';return}
+  const capability=profile.value.healthConfiguration?.[type==='meal_preview'?'meal_plan':type]
+  if(capability?.available===false){flow.hide();task.value={};chatError.value='营养服务暂未就绪：'+(capability.reason||'请先完成服务配置')+'。配置完成后重新读取即可。';return}
+  if(!id){flow.hide();task.value={};chatError.value='已保存的档案尚未关联健康资料，请点击“重新确认健康资料”，核对后保存并授权本次分析。';return}
   const selection=type==='diet_analysis'?{record_id:props.route.recordId,source_version:Number(props.route.version)}:props.route.indicatorChoice==='1'?scopedStorage.getStorageSync(`indicator-choice:${id}:${type}`):null
   flowScope=scope;restoring=true
   try{
@@ -146,6 +155,7 @@ onUnmounted(()=>{disposed=true;epoch++;draftVersion++;client.dispose();familyCli
 function openMeal(meal){uni.navigateTo({url:'/pages/shop/index?meal='+meal.type+'&date='+state.date+'&arrangement='+encodeURIComponent(state.arrangement.id)+'&version='+state.arrangement.version})}
 function shop(arrangement){if(arrangement)uni.navigateTo({url:'/pages/shop/index?daily=1&date='+arrangement.date+'&arrangement='+encodeURIComponent(arrangement.id)+'&version='+arrangement.version})}
 function archives(){uni.navigateTo({url:'/pages/profile/index'})}
+function confirmProfile(){uni.navigateTo({url:'/pages/onboarding/index?recover=1'})}
 async function members(ids){const type=selectedMeal.value.type;selectedMeal.value=null;await client.changeMembers(type,ids);cardVisible.value=state.phase==='ready';if(familyPanel.value&&familyState.date===state.date)await familyClient.load(state.date)}
 async function sendQuestion(){
   if(!hasDraftContent.value||chatBusy.value||draftSaving.value||draftError.value)return
@@ -207,7 +217,7 @@ function askPrompt(text){if(text==='看看我的饮食记录'){uni.navigateTo({u
 <NutritionistLayout :voice-busy="voiceBusy" :scroll-target="scrollTarget" @history="history" @profile="uni.navigateTo({url:'/pages/my/index'})" @shortcut="shortcut">
  <template #default>
   <view v-if="state.busy&&!state.arrangement" class="dialogue-status"><text>正在读取今日安排…</text></view>
-  <view v-if="state.error" class="dialogue-status" role="alert"><text>今日安排暂未就绪</text><text>{{state.error}}</text><button :disabled="state.busy" @click="load(true)">重试并读取今日安排</button><button @click="archives">核对家庭档案</button></view>
+  <view v-if="state.error" class="dialogue-status" role="alert"><text>今日安排暂未就绪</text><text>{{profile?.healthConfiguration?.meal_plan?.available===false ? '营养服务暂未就绪：'+profile.healthConfiguration.meal_plan.reason+'。配置完成后重新读取即可。' : state.error}}</text><button :disabled="state.busy" @click="load(state.retryable!==false)">{{state.retryable===false?'重新检查就绪状态':'重试并读取今日安排'}}</button><button v-if="profile?.healthConfiguration?.meal_plan?.available!==false && state.errorCode==='daily_member_sources_unavailable'" @click="confirmProfile">重新确认健康资料</button><button v-else @click="archives">核对家庭档案</button></view>
   <view v-if="state.phase==='ready'" class="analysis-message"><text class="analysis-label">家庭营养师</text><text class="analysis-copy">{{state.arrangement.analysis.text}}</text></view>
   <DailyArrangementCard v-if="cardVisible && state.phase==='ready'" :arrangement="state.arrangement" :disabled="state.busy" @open="openMeal" @members="selectedMeal=$event" @shop="shop"/>
   <view v-if="!messages.length" class="welcome-message"><view class="welcome-symbol"><AppIcon name="chat" :size="54"/></view><text class="welcome-title">今天，想怎么吃？</text><text>告诉我你想吃什么，我们一起安排适合家人的三餐。</text></view>
@@ -221,7 +231,7 @@ function askPrompt(text){if(text==='看看我的饮食记录'){uni.navigateTo({u
    </view>
   </view>
   <view v-if="familyPanel" class="dialogue-status"><text>家庭餐单 · {{familyState.date}}</text><text>按这餐实际参加的成员核对家庭安排，每位成员的资料和权限由服务端检查。</text><text v-if="familyState.busy">正在读取家庭安排…</text><text v-if="familyState.error" class="chat-error">{{familyState.error}}</text><button v-if="familyState.error" :disabled="familyState.busy" @click="familyPlan('',true)">重新读取家庭餐单</button><DailyArrangementCard v-if="familyState.phase==='ready'" :arrangement="familyState.arrangement" family :disabled="familyState.busy" @open="openFamilyMeal" @members="familySelection={type:$event.type,ids:$event.members.map(m=>m.id),question:''}" @shop="shop"/><button @click="familyPanel=false">收起家庭餐单</button></view>
-  <text v-if="chatBusy" class="reply-progress">营养师正在分析…</text><text v-if="chatError" class="chat-error" role="alert">{{chatError}}</text>
+  <text v-if="chatBusy" class="reply-progress">营养师正在分析…</text><text v-if="chatError" class="chat-error" role="alert">{{chatError}}</text><button v-if="chatError && profile && !profile.members.find(m=>m.relation==='本人')?.healthMemberId && profile.healthConfiguration?.consultation?.available!==false" @click="confirmProfile">重新确认健康资料</button>
   <view v-if="task.error||task.notice||task.canRetry||canCancel" class="dialogue-status"><text>{{task.error||task.notice}}</text><button v-if="task.requestId" @click="flow.refresh()">重新读取本次回复</button><button v-if="task.canRetry" @click="retryQuestion">重试原问题</button><button v-if="canCancel" @click="flow.cancelRequest()">取消当前问题</button></view>
   <button v-if="task.invalidated&&!route.taskType" class="secondary-button" @click="restartChat">开始新咨询</button>
   <view v-if="task.consentOption" class="dialogue-status"><text>本次咨询处理方：{{task.consentOption.processor}}；政策版本：{{task.consentOption.policyVersion}}。</text><checkbox-group @change="consentChecked=$event.detail.value.includes('yes')"><label><checkbox value="yes" :checked="consentChecked"/>同意本次咨询的数据处理</label></checkbox-group><button :disabled="!consentChecked||chatBusy" @click="consent">同意并继续咨询</button></view>

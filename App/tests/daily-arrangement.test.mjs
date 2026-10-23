@@ -19,6 +19,36 @@ function setup(handler) {
     send:async input=>{calls.push(structuredClone(input));return {data:await handler(input,calls)}},newId:()=>'request-'+ ++count,wait:async()=>{},pollLimit:3})
   return {client,state,calls,data,switch(){scope='B';familyId='family-B'}}
 }
+
+for(const code of ['daily_member_sources_unavailable','daily_profile_source_unavailable','daily_rules_unavailable','daily_dependencies_not_ready'])test(`setup error ${code} stops even when the old API labels its 503 retryable`,async()=>{
+ const f=setup(()=>{throw Object.assign(new Error('依赖尚未就绪'),{code:503,businessCode:code,retryable:true})})
+ await f.client.load(day)
+ assert.equal(f.calls.length,1);assert.equal(f.state.errorCode,code);assert.equal(f.state.retryable,false);assert.equal(f.state.phase,'error')
+})
+
+test('a setup failure during creation is not read back or replayed as an uncertain write',async()=>{
+ const f=setup(input=>{if(!input.method)return {status:'absent',date:day};throw Object.assign(new Error('规则未就绪'),{code:503,businessCode:'daily_rules_unavailable',retryable:true})})
+ await f.client.load(day);assert.equal(f.calls.length,2);assert.equal(f.state.retryable,false);assert.equal(f.state.errorCode,'daily_rules_unavailable')
+})
+
+test('retrying a failed task checks configuration before sending resume',async()=>{
+ const state=dailyArrangementState(),calls=[]
+ const client=createDailyArrangementClient({state,send:async input=>{calls.push(input);return {data:{status:'failed',date:day,id:'failed'}}},context:()=>({scope:'A',familyId:'family'}),storage:{getStorageSync(){},setStorageSync(){}},newId:()=> 'id',beforeStart:()=>{throw Object.assign(new Error('模型尚未配置'),{businessCode:'daily_dependencies_not_ready',retryable:false})}})
+ await client.load(day,true);assert.equal(calls.length,1);assert.equal(state.retryable,false);assert.equal(state.errorCode,'daily_dependencies_not_ready')
+})
+
+test('an explicitly retryable business 503 still recovers the saved arrangement',async()=>{
+ let reads=0
+ const f=setup(()=>{if(++reads===1)throw Object.assign(new Error('临时不可用'),{code:503,businessCode:'upstream_busy',retryable:true});return ready()})
+ await f.client.load(day)
+ assert.equal(reads,2);assert.equal(f.state.phase,'ready');assert.equal(f.state.errorCode,'');assert.equal(f.state.retryable,true)
+})
+
+test('an unclassified gateway 503 remains recoverable',async()=>{
+ let reads=0
+ const f=setup(()=>{if(++reads===1)throw Object.assign(new Error('gateway'),{code:503,retryable:false});return ready()})
+ await f.client.load(day);assert.equal(reads,2);assert.equal(f.state.phase,'ready')
+})
 test('ready requires three complete saved meals and a genuine Agent request/run reference',()=>{
   assert.equal(validateDailyArrangement(ready(),day).id,'saved-1')
   for(const mutate of [v=>v.meals.pop(),v=>v.saved=false,v=>v.validation.status='pending',v=>v.procurement.checked=false,v=>v.analysis.source='demo',v=>v.analysis.run_id='',v=>v.meals[0].dishes[0].steps=[],v=>v.meals[0].memberNotes=[],v=>delete v.meals[0].purchase,v=>v.meals[0].purchase.package_version=0]){

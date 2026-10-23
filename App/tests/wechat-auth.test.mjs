@@ -255,7 +255,7 @@ test('registered launch route remains the welcome page', () => {
 })
 
 test('formal welcome has only WeChat entry and displays automatic registration errors without a binding form', async () => {
-  const deps = { ref, onShow() {}, onHide() {}, onUnload() {}, isMockMode: false, canUseBusinessLogin: false, getSession: () => null,
+  const deps = { ref, onShow() {}, onHide() {}, onUnload() {}, isMockMode: false, canUseBusinessLogin: false, isCommerceEnabled: false, getSession: () => null,
     wechatAuth: { cancelPending() {} }, service: { login: async () => { throw new Error('微信注册配置尚未就绪') } } }
   globalThis.uni = { showToast() {} }
   const source = readFileSync(new URL('../src/pages/index/index.vue', import.meta.url), 'utf8')

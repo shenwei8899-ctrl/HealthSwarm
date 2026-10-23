@@ -11,6 +11,8 @@ export function requireMock() {
 
 export const isCommerceEnabled = !isMockMode && env.VITE_COMMERCE_MODE === "api"
 export const commerceApiBaseUrl = env.VITE_COMMERCE_API_BASE_URL || ""
+export const phoneBindingDemo = isCommerceEnabled && env.VITE_PHONE_BINDING_DEMO === '1'
+export const wechatAppId = env.VITE_WECHAT_APPID || ''
 
 let h5 = false
 // #ifdef H5
