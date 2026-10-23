@@ -323,6 +323,9 @@ async def test_actual_graph_binds_and_executes_fixed_blood_glucose_tool(monkeypa
             ]
         )
     )
+    from test.support.health_budget_stub import stub_agent_budget
+
+    stub_agent_budget(monkeypatch, model)
     monkeypatch.setattr(graph_module, "load_chat_model", lambda **kwargs: model)
     monkeypatch.setattr(graph_module.SteerMiddleware, "_jump_if_steer_requested", AsyncMock(return_value=None))
     monkeypatch.setattr(health_consultation_service, "require_consultation_attempt", AsyncMock())

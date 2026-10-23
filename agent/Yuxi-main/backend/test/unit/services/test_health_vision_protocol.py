@@ -6,10 +6,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from test.support.health_budget_stub import synthetic_budget  # noqa: F401
+
 from yuxi.services.health_vision_provider import parse_report_page, redact_report_blocks
 from yuxi.services.health_vision_service import processor_identity
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.models.providers.cache import ModelInfo
+
+pytestmark = pytest.mark.usefixtures("synthetic_budget")
 
 
 @pytest.mark.asyncio
@@ -34,7 +38,7 @@ async def test_paddle_upload_poll_jsonl_and_real_evidence_contract(httpx_mock):
         }
     }
     httpx_mock.add_response(method="GET", url=result_url, content=json.dumps(row).encode())
-    context = SimpleNamespace(raise_if_cancelled=AsyncMock())
+    context = SimpleNamespace(task_id="synthetic-task", raise_if_cancelled=AsyncMock())
     checkpoint = AsyncMock()
     result = await parse_report_page(
         b"synthetic-page-bytes",
@@ -73,7 +77,7 @@ async def test_paddle_rejects_untrusted_or_plaintext_result_address(httpx_mock, 
             b"test",
             {"page_index": 0},
             {"api_token": "synthetic"},
-            SimpleNamespace(raise_if_cancelled=AsyncMock()),
+            SimpleNamespace(task_id="synthetic-task", raise_if_cancelled=AsyncMock()),
             AsyncMock(),
             authorize=AsyncMock(),
         )

@@ -13,6 +13,7 @@ from test.e2e.test_health_consultation_e2e import collect_sse, drain_requests, i
 from test.integration.services.test_health_agent_personal_targets_http import bound_targets
 from test.integration.services.test_health_diet_analysis_http import confirm_analysis_meal
 from test.integration.services.test_health_vision_http import ROOT, health_http  # noqa: F401
+from test.support.health_budget_e2e import approve_synthetic_budget
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import AUDIT_MESSAGE_TYPES, AgentRun, Message, TOOL_AUDIT_MESSAGE_TYPE
 from yuxi.storage.postgres.models_health import DietLog, HealthConsultation, HealthRuleSnapshot
@@ -75,6 +76,7 @@ async def test_bound_target_real_worker_current_reference_and_source_withdrawal(
             },
         )
         assert response.status_code == 200 and response.json()["diet_analysis"]["available"], response.text
+        await approve_synthetic_budget(client, admin, f"{provider}:deterministic-bound-target-20261010")
         approved = response.json()["diet_analysis"]
         consent = await client.post(
             f"{ROOT}/members/{member}/processing-consents",

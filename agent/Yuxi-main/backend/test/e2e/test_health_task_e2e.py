@@ -29,6 +29,7 @@ from test.integration.services.test_health_safe_planner_http import safe_runtime
 from test.integration.services.test_health_safe_plan_regeneration_http import selection as safe_selection
 from test.integration.services.test_health_task_http import entry, owned_counts, verified_task_cleanup  # noqa: F401
 from test.integration.services.test_health_vision_http import ROOT, create_member, health_http  # noqa: F401
+from test.support.health_budget_e2e import approve_synthetic_budget
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import AgentRun, AgentRunAttempt, AgentRunRequest, Message
 from yuxi.storage.postgres.models_health import (
@@ -166,6 +167,8 @@ async def test_four_roles_current_results_questions_failure_and_revocation(isola
                 },
             )
             assert configured.status_code == 200 and configured.json()[purpose]["available"], configured.text
+            if kind == "diet_analysis":
+                await approve_synthetic_budget(client, admin, f"{provider}:{model}")
             configuration = configured.json()
         consent = {
             "purpose": purpose,
@@ -507,6 +510,7 @@ async def test_target_analyst_task_keeps_current_targets_separate_and_invalidate
             },
         )
         assert configured.status_code == 200 and configured.json()["diet_analysis"]["available"], configured.text
+        await approve_synthetic_budget(client, admin, f"{provider}:deterministic-bound-target-20261010")
         consent = {
             "purpose": "diet_analysis",
             "accepted": True,

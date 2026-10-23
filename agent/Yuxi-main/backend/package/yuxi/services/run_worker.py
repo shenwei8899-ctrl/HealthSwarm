@@ -1601,9 +1601,16 @@ async def process_agent_run(ctx, run_id: str):
             raise RetryableRunError(str(e)) from e
 
         logger.error(f"Run failed {run_id}: {e}")
+        from yuxi.services.health_vision_types import HealthVisionError
+
+        public_error_type = (
+            e.code
+            if isinstance(e, HealthVisionError) and e.code in {"budget_exceeded", "budget_price_unavailable"}
+            else "worker_error"
+        )
         error_chunk = {
             "status": "error",
-            "error_type": "worker_error",
+            "error_type": public_error_type,
             "error_message": str(e),
             "request_id": request_id,
             "retryable": False,
@@ -1613,7 +1620,7 @@ async def process_agent_run(ctx, run_id: str):
             "failed",
             thread_id=thread_id,
             chunk=error_chunk,
-            error_type="worker_error",
+            error_type=public_error_type,
             error_message=str(e),
             current_user=user,
             worker_id=worker_id,

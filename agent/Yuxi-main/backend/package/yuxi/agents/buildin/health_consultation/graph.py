@@ -8,6 +8,7 @@ from langchain_core.messages import HumanMessage
 
 from yuxi.agents.base import BaseAgent
 from yuxi.agents.middlewares import SteerMiddleware, TokenUsageMiddleware
+from yuxi.agents.middlewares.health_budget import HealthAiBudgetMiddleware
 from yuxi.agents.toolkits.health import (
     find_food_packages,
     get_confirmed_diet,
@@ -115,6 +116,9 @@ class HealthConsultationAgent(BaseAgent):
             middleware=[
                 SteerMiddleware(),
                 HealthAuthorizationMiddleware(model_info),
+                HealthAiBudgetMiddleware(
+                    "consultation" if self.prompt_name == "CONSULTATION_PROMPT" else "indicator_review"
+                ),
                 HealthCitationMiddleware(),
                 TokenUsageMiddleware(),
             ],

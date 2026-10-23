@@ -16,6 +16,7 @@ from sqlalchemy import select, text
 
 from test.e2e.test_health_consultation_e2e import wait_until
 from test.integration.services.test_health_vision_http import ROOT, confirmation, create_member, health_http  # noqa: F401
+from test.support.health_budget_e2e import approve_synthetic_budget
 from yuxi.services.health_vision_service import PRIVATE_BUCKET
 from yuxi.storage.minio import get_minio_client
 from yuxi.storage.postgres.manager import pg_manager
@@ -74,6 +75,7 @@ async def isolated_meal(health_http):  # noqa: F811
             },
         )
         assert configured.status_code == 200 and configured.json()["meal"]["available"], configured.text
+        await approve_synthetic_budget(client, admin, spec)
         yield client, users, configured.json(), spec
     finally:
         await finish_meal_fixture(client, users, provider_id)

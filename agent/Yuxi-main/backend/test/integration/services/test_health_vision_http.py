@@ -17,6 +17,7 @@ import pytest_asyncio
 from PIL import Image
 from sqlalchemy import delete, select
 
+from test.support.health_budget_stub import stub_agent_budget
 from yuxi.services.health_vision_service import PRIVATE_BUCKET
 from yuxi.services.task_service import tasker
 from yuxi.storage.minio import get_minio_client
@@ -484,8 +485,8 @@ async def test_closed_consultation_rejects_requests_before_message_queue_or_run(
     assert bound.status_code == 201
     thread_id = bound.json()["thread_id"]
     for overrides, expected_status in (
-        ({}, 503),
-        ({"model_spec": "unapproved/default"}, 503),
+        ({}, 403),
+        ({"model_spec": "unapproved/default"}, 403),
         ({"thread_id": str(uuid4())}, 404),
         ({"image_content": "c3ludGhldGlj"}, 422),
         ({"resume": {"answer": "synthetic"}}, 422),
@@ -502,12 +503,38 @@ async def test_closed_consultation_rejects_requests_before_message_queue_or_run(
             },
         )
         assert response.status_code == expected_status, response.text
+        if expected_status == 403:
+            assert "请先同意当前咨询用途" in str(response.json())
     async with pg_manager.get_async_session_context() as session:
         conversation = await session.scalar(select(Conversation).where(Conversation.thread_id == thread_id))
         assert not (await session.scalars(select(Message).where(Message.conversation_id == conversation.id))).all()
         for model in (AgentRunRequest, AgentRun):
             assert not (await session.scalars(select(model).where(model.uid == owner["uid"]))).all()
         assert await session.get(HealthProcessingConsent, (member, owner["uid"], "consultation")) is None
+        session.add(
+            HealthProcessingConsent(
+                member_id=member,
+                actor_uid=owner["uid"],
+                purpose="consultation",
+                processor="synthetic-closed",
+                policy_version="synthetic-closed",
+            )
+        )
+    response = await client.post(
+        "/api/agent/runs",
+        headers=owner["headers"],
+        json={
+            "agent_slug": "health-consultation",
+            "thread_id": thread_id,
+            "query": "解释合成指标",
+            "meta": {"request_id": str(uuid4())},
+        },
+    )
+    assert response.status_code == 503, response.text
+    async with pg_manager.get_async_session_context() as session:
+        assert not (await session.scalars(select(Message).where(Message.conversation_id == conversation.id))).all()
+        for model in (AgentRunRequest, AgentRun):
+            assert not (await session.scalars(select(model).where(model.uid == owner["uid"]))).all()
 
 
 async def test_consultation_tools_read_confirmed_records_under_current_pg_lease_and_scopes(health_http, monkeypatch):
@@ -605,7 +632,8 @@ async def test_consultation_tools_read_confirmed_records_under_current_pg_lease_
             content="Error invoking tool: Extra inputs are not permitted",
         )
     ]
-    await consultation_service.require_consultation_attempt(context, error_history)
+    with pytest.raises(HealthVisionError, match="source_invalidated"):
+        await consultation_service.require_consultation_attempt(context, error_history)
     with pytest.raises(HealthVisionError, match="consultation_history_invalid"):
         await consultation_service.require_consultation_attempt(
             context,
@@ -643,6 +671,7 @@ async def test_consultation_tools_read_confirmed_records_under_current_pg_lease_
         )
     )
     monkeypatch.setattr(graph_module, "load_chat_model", lambda **kwargs: model)
+    stub_agent_budget(monkeypatch, model)
     monkeypatch.setattr(graph_module.SteerMiddleware, "_jump_if_steer_requested", AsyncMock(return_value=None))
     backend = graph_module.HealthConsultationAgent()
     graph_context = BaseContext(**vars(context))
@@ -683,7 +712,14 @@ async def test_consultation_tools_read_confirmed_records_under_current_pg_lease_
         grant = await session.get(HealthGrant, (member, owner["uid"]))
         grant.scopes = ["ai_use", "diet_edit"]
     with pytest.raises(HealthVisionError, match="not_found"):
+        await consultation_service.confirmed_consultation_records(context, "report")
+    with pytest.raises(HealthVisionError, match="source_invalidated"):
         await consultation_service.require_consultation_attempt(context, history)
+    async with pg_manager.get_async_session_context() as session:
+        run = await session.get(AgentRun, run_id)
+        run.status = "completed"
+        run.worker_id = None
+        run.lease_expires_at = None
 
 
 async def test_consultation_private_history_memory_dashboard_and_sse_recheck_revocation(health_http, monkeypatch):
@@ -703,18 +739,36 @@ async def test_consultation_private_history_memory_dashboard_and_sse_recheck_rev
     assert response.status_code == 201
     thread_id, run_id = response.json()["thread_id"], str(uuid4())
     marker = "synthetic-health-private-content"
+    run_request_id = str(uuid4())
+    snapshot = {"model": "synthetic/fixed", "processor": "synthetic-fingerprint", "policy_version": "synthetic-policy"}
     async with pg_manager.get_async_session_context() as session:
+        session.add(
+            HealthProcessingConsent(
+                member_id=member,
+                actor_uid=owner["uid"],
+                purpose="consultation",
+                processor=snapshot["processor"],
+                policy_version=snapshot["policy_version"],
+            )
+        )
         administrator = await session.scalar(select(User).where(User.uid == admin["uid"]))
         administrator.role = "superadmin"
         conversation = await session.scalar(select(Conversation).where(Conversation.thread_id == thread_id))
-        message = Message(conversation_id=conversation.id, role="assistant", content=marker, message_type="text")
+        message = Message(
+            conversation_id=conversation.id,
+            role="assistant",
+            content=marker,
+            message_type="text",
+            request_id=run_request_id,
+            delivery_status="complete",
+        )
         session.add(message)
         await session.flush()
         session.add(MessageFeedback(message_id=message.id, uid=owner["uid"], rating="dislike", reason=marker))
         session.add(
             AgentRun(
                 id=run_id,
-                request_id=str(uuid4()),
+                request_id=run_request_id,
                 uid=owner["uid"],
                 agent_slug="health-consultation",
                 conversation_thread_id=thread_id,
@@ -722,10 +776,12 @@ async def test_consultation_private_history_memory_dashboard_and_sse_recheck_rev
                 runtime_scope_id=thread_id,
                 status="completed",
                 output_message_id=message.id,
-                input_payload={},
+                input_payload={"model_spec": snapshot["model"], "health_processing": snapshot},
                 error_message=marker,
             )
         )
+        await session.flush()
+        message.run_id = run_id
     for suffix in ("history", "state?include_messages=true"):
         before = await client.get(f"/api/chat/thread/{thread_id}/{suffix}", headers=owner["headers"])
         assert before.status_code == 200, before.text
@@ -733,7 +789,9 @@ async def test_consultation_private_history_memory_dashboard_and_sse_recheck_rev
     before_feedback = await client.get(feedback_path, headers=owner["headers"])
     assert before_feedback.status_code == 200 and before_feedback.json()["feedback"]["reason"] == marker
     before_cancel = await client.post(f"/api/agent/runs/{run_id}/cancel", headers=owner["headers"])
-    assert before_cancel.status_code == 200 and before_cancel.json()["run"]["error_message"] == marker
+    assert before_cancel.status_code == 200
+    assert before_cancel.json()["run"]["error_message"] == "健康解释执行失败，请重新咨询"
+    assert marker not in before_cancel.text
     stranger_feedback = await client.get(feedback_path, headers=users[1]["headers"])
     assert stranger_feedback.status_code == 404 and marker not in stranger_feedback.text
     async with pg_manager.get_async_session_context() as session:
@@ -750,12 +808,17 @@ async def test_consultation_private_history_memory_dashboard_and_sse_recheck_rev
     from unittest.mock import AsyncMock
 
     events = [
-        {"seq": "1-0", "event_type": "message", "payload": {"synthetic": marker}},
-        {"seq": "2-0", "event_type": "message", "payload": {"synthetic": marker + "-second"}},
+        {
+            "seq": seq,
+            "event_type": "custom",
+            "payload": {"payload": {"name": "yuxi.health_progress", "chunk": {"phase": "running", "private": marker}}},
+        }
+        for seq in ("1-0", "2-0")
     ]
     monkeypatch.setattr(agent_run_service, "list_run_stream_events", AsyncMock(return_value=events))
     stream = agent_run_service.stream_agent_run_events(run_id=run_id, after_seq="0-0", current_uid=owner["uid"])
-    assert marker in await anext(stream)
+    first_payload = await anext(stream)
+    assert "health_progress" in first_payload and marker not in first_payload
     revoked = await client.put(
         f"{ROOT}/members/{member}/grants", headers=owner["headers"], json={"actor_uid": owner["uid"], "scopes": []}
     )

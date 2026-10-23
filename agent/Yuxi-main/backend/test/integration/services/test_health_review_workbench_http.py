@@ -99,3 +99,49 @@ async def test_workbench_unknown_quality_has_no_approval_action(health_http):  #
     assert (
         await client.get(f"{ROOT}/members/{uuid4()}/professional-reviews", headers=users[0]["headers"])
     ).status_code == 404
+
+
+async def test_lost_submit_response_replays_current_returned_state_without_resubmitting(health_http):  # noqa: F811
+    """提交响应丢失后原样重放返回最新退回态，不能替用户再次提交。"""
+    client, users = health_http
+    owner, reviewer = users[0]["headers"], users[1]["headers"]
+    data = await setup_quality(client, users)
+    case = data["case"]["review_id"]
+    url = f"{ROOT}/professional-reviews/{case}"
+    original = action_body(1)
+    submitted = await client.post(url + "/submit", headers=owner, json=original)
+    assert submitted.status_code == 200 and submitted.json()["version"] == 2
+    # 服务端已提交，但客户端未采用响应；期间审核人已经退回。
+    returned = await action(client, reviewer, case, "return", 2)
+    assert returned["status"] == "returned" and returned["version"] == 3
+    replay = await client.post(url + "/submit", headers=owner, json=original)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["status"] == "returned" and replay.json()["version"] == 3
+
+    changed = await client.post(url + "/submit", headers=owner, json={**original, "reason": "合成补充的新说明"})
+    assert changed.status_code == 409 and changed.json()["code"] == "request_conflict"
+    stale = await client.post(url + "/submit", headers=owner, json=action_body(1))
+    assert stale.status_code == 409 and stale.json()["code"] == "version_conflict"
+    current = await client.get(url + "/workbench", headers=owner)
+    assert current.headers["Cache-Control"] == "no-store"
+    assert current.json()["allowed_actions"] == ["submit"]
+    assert len(current.json()["review"]["actions"]) == 2
+
+    supplement = action_body(current.json()["review"]["version"])
+    supplement.update(reason="合成补充材料后明确重新提交", evidence_refs=["synthetic:supplement-v2"])
+    resubmitted = await client.post(url + "/submit", headers=owner, json=supplement)
+    assert resubmitted.status_code == 200 and resubmitted.json()["version"] == 4
+    final = (await client.get(url + "/workbench", headers=owner)).json()
+    assert final["review"]["status"] == "pending_review" and final["allowed_actions"] == []
+    async with pg_manager.get_async_session_context() as session:
+        actions = list(
+            await session.scalars(
+                select(HealthReviewAction)
+                .where(HealthReviewAction.review_id == case)
+                .order_by(HealthReviewAction.version)
+            )
+        )
+        assert [a.status for a in actions] == ["pending_review", "returned", "pending_review"]
+        assert [a.version for a in actions] == [2, 3, 4]
+        assert sum(a.request_id == original["client_request_id"] for a in actions) == 1
+        assert actions[-1].evidence_refs == supplement["evidence_refs"]

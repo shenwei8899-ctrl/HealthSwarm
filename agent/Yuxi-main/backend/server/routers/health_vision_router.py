@@ -147,6 +147,8 @@ from yuxi.services.health_quality_service import (
     create_quality_conversation,
 )
 from yuxi.services.health_vision_statistics import vision_statistics
+from yuxi.services.health_ai_budget_types import HealthAiOpeningInput, HealthAiPriceInput
+from yuxi.services import health_ai_budget_service
 from yuxi.services.health_task_service import create_health_task_entry, read_health_task
 from yuxi.services.health_task_types import HealthTaskEntryInput, HealthTaskEntryResult, HealthTaskResult
 from yuxi.services.health_capability_service import member_capabilities
@@ -970,6 +972,24 @@ async def revoke_nutrition_evidence(evidence_id: UUID, user: User = Depends(get_
 async def configure(data: VisionConfigurationInput, user: User = Depends(get_admin_user)):
     """管理员审批模型和处理政策。"""
     return await service.configure(user.uid, data)
+
+
+@health_vision.get("/budget")
+async def get_health_ai_budget(user: User = Depends(get_admin_user)):
+    """管理员读取五类用途共用的月额度和最近费用记录。"""
+    return await health_ai_budget_service.budget_status()
+
+
+@health_vision.post("/budget/prices", status_code=201)
+async def approve_health_ai_price(data: HealthAiPriceInput, user: User = Depends(get_admin_user)):
+    """登记已核验的人民币计费依据，不启用用途或替成员同意。"""
+    return await health_ai_budget_service.approve_price(user.uid, data)
+
+
+@health_vision.post("/budget/opening", status_code=201)
+async def initialize_health_ai_budget(data: HealthAiOpeningInput, user: User = Depends(get_admin_user)):
+    """确认启用当月已有支出及未决费用，重复请求不能重置余额。"""
+    return await health_ai_budget_service.initialize_budget(user.uid, data)
 
 
 @health_vision.get("/members", response_model=list[HealthMemberSummary])

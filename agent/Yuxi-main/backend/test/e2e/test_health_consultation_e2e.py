@@ -19,6 +19,7 @@ from test.integration.services.test_health_vision_http import (
     field,
     health_http,  # noqa: F401
 )
+from test.support.health_budget_e2e import approve_synthetic_budget
 from yuxi.config import get_user_data_dir
 from yuxi.services.agent_run_manifest_service import compute_manifest_fingerprint
 from yuxi.storage.postgres.manager import pg_manager
@@ -73,6 +74,7 @@ async def isolated_health(health_http):  # noqa: F811
             },
         )
         assert configured.status_code == 200 and configured.json()["consultation"]["available"], configured.text
+        await approve_synthetic_budget(client, users[2]["headers"], model_spec)
         yield client, users, configured.json(), model_spec
     finally:
         reset = await client.put(f"{ROOT}/configuration", headers=users[2]["headers"], json={})

@@ -20,6 +20,7 @@ from sqlalchemy import select, text
 from test.e2e.test_health_consultation_e2e import wait_until
 from test.e2e.test_health_meal_e2e import drain_meal_tasks
 from test.integration.services.test_health_vision_http import ROOT, confirmation, create_member, health_http  # noqa: F401
+from test.support.health_budget_e2e import approve_synthetic_budget
 from yuxi.services.health_vision_service import PRIVATE_BUCKET
 from yuxi.services.health_vision_provider import parse_report_page
 from yuxi.services.health_vision_types import HealthVisionError
@@ -87,6 +88,7 @@ async def isolated_report(health_http):  # noqa: F811
             },
         )
         assert configured.status_code == 200 and configured.json()["report"]["available"], configured.text
+        await approve_synthetic_budget(client, admin, f"{provider}:{MODEL}", ocr=True)
         yield client, users, configured.json()
     finally:
         try:
@@ -146,7 +148,7 @@ async def test_pdf_report_partial_page_reprocess_evidence_and_once_confirmation(
                     previews[0],
                     {"page_index": 0},
                     {"api_url": "https://api:8768/api/v2/ocr/jobs", "api_token": "synthetic-health-ocr-key"},
-                    SimpleNamespace(raise_if_cancelled=AsyncMock()),
+                    SimpleNamespace(task_id=str(uuid4()), raise_if_cancelled=AsyncMock()),
                     checkpoint,
                     authorize=AsyncMock(),
                 )

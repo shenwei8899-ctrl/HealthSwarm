@@ -943,6 +943,8 @@ def _public_health_error(error_type: str | None) -> dict[str, str]:
         "output_persistence_error": "答复来源或输出校验未通过，请重新咨询",
         "health_execution_timeout": "咨询执行超时，请重新咨询",
         "worker_lease_expired": "咨询执行已停止，请重新咨询",
+        "budget_exceeded": "健康 AI 本月剩余额度不足或待核账，可使用人工录入",
+        "budget_price_unavailable": "健康 AI 计费依据未就绪，可使用人工录入",
     }
     code = error_type if error_type in errors else "health_execution_failed"
     return {"type": code, "message": errors.get(code, "健康解释执行失败，请重新咨询")}

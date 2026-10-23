@@ -94,6 +94,13 @@ async def test_explicit_handoff_worker_replay_and_source_invalidation(
         assert responses[1].json() == target and target["thread_id"] != bound["thread_id"]
         after = await owned_counts(subject.uid)
         assert after[3:] == before[3:] and after[1] == before[1] + 1, after
+        # 确认响应未知后原样重放，以及返回页面读取历史，均恢复同一会话。
+        replayed = await client.post(url + "/handoffs", headers=confirmed_headers, json=body)
+        assert replayed.status_code == 201 and replayed.json() == target
+        for _ in range(2):
+            history = await client.get(f"/api/chat/thread/{target['thread_id']}/history", headers=owner)
+            assert history.status_code == 200 and history.json()["history"] == []
+        assert await owned_counts(subject.uid) == after
         async with pg_manager.get_async_session_context() as session:
             bindings = list(
                 await session.scalars(select(HealthConsultation).where(HealthConsultation.actor_uid == subject.uid))

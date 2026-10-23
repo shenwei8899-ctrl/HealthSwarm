@@ -172,6 +172,10 @@ async def test_health_schema_upgrade_keeps_v1_food_and_is_idempotent(durable_tas
     """真实 PG 从旧健康表增加两张表，不覆盖既有食品版本。"""
     manager = durable_task_schema
     new_tables = {RecipeVersion.__table__, PortionReference.__table__}
+    # 后续新增的菜谱分类等子表也不属于旧版，先排除其外键依赖。
+    for table in Base.metadata.sorted_tables:
+        if any(key.column.table in new_tables for key in table.foreign_keys):
+            new_tables.add(table)
     async with manager.async_engine.begin() as connection:
         await connection.run_sync(
             lambda conn: Base.metadata.create_all(
@@ -317,8 +321,10 @@ async def test_executor_result_binding_and_orphan_cleanup(
             ]
         }
 
-    async def field_response(spec, prompt, content, context):
+    async def field_response(spec, prompt, content, context, *, authorize=None):
         """独立断言外发指标文本和真实证据绑定，不伪造云识别效果。"""
+        if authorize is not None:
+            await authorize()
         blocks = json.loads(content[0]["text"])
         assert len(blocks) == 1 and blocks[0]["block_id"].endswith("_metric")
         assert "合成杨铁柱" not in content[0]["text"]
@@ -354,8 +360,10 @@ async def test_executor_result_binding_and_orphan_cleanup(
     monkeypatch.setattr(Option, "get", option_get)
     monkeypatch.setattr(model_cache, "get_model_info", lambda _spec: info)
 
-    async def model_response(_spec, images, context):
+    async def model_response(_spec, images, context, *, authorize=None):
         """图像候选替身无营养值，不声称真实视觉模型效果。"""
+        if authorize is not None:
+            await authorize()
         assert len(images) == 1 and images[0].startswith(b"\x89PNG")
         return {
             "items": [{"item_id": str(uuid4()), "name": "合成候选食物"}],
