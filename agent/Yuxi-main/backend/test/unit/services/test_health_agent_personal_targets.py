@@ -316,6 +316,9 @@ async def test_actual_bound_graph_four_tools_and_runtime_identity_reject_rule_ar
             ]
         )
     )
+    from test.support.health_budget_stub import stub_agent_budget
+
+    budget_calls = stub_agent_budget(monkeypatch, model)
     monkeypatch.setattr(graph_module, "load_chat_model", lambda **kwargs: model)
     monkeypatch.setattr(graph_module.SteerMiddleware, "_jump_if_steer_requested", AsyncMock(return_value=None))
     ownership = AsyncMock()
@@ -345,7 +348,8 @@ async def test_actual_bound_graph_four_tools_and_runtime_identity_reject_rule_ar
     assert result["messages"][-1].content == '{"status": "needs_input"}'
     assert any(message.type == "tool" and message.status == "error" for message in result["messages"])
     reader.assert_awaited_once_with(context)
-    assert ownership.await_count == 4
+    assert ownership.await_count == 7  # 三次模型轮次增加预留后授权检查。
+    assert budget_calls.await_count == 3
 
 
 @pytest.mark.parametrize(

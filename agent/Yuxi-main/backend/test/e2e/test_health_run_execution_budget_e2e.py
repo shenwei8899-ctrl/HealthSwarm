@@ -11,6 +11,7 @@ import pytest
 import pytest_asyncio
 from arq.constants import default_queue_name, in_progress_key_prefix
 from arq.jobs import Job
+from test.support.health_budget_e2e import approve_synthetic_budget
 from yuxi.services.arq_worker import YuxiWorker
 from sqlalchemy import select, text
 
@@ -71,6 +72,7 @@ async def budget_runtime(isolated_health):  # noqa: F811
             },
         )
         assert configured.status_code == 200, configured.text
+        await approve_synthetic_budget(client, users[2]["headers"], f"{provider}:{MODEL}")
         async with httpx.AsyncClient(base_url="http://localhost:8778", timeout=5) as replay:
             yield client, users, configured.json(), replay
     finally:

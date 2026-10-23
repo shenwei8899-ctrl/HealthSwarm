@@ -14,6 +14,7 @@ from sqlalchemy import select, text
 from test.e2e.test_health_consultation_e2e import isolated_health, collect_sse, drain_requests  # noqa: F401
 from test.integration.services.test_health_vision_http import ROOT, create_member, health_http  # noqa: F401
 from test.integration.services.test_health_diet_analysis_http import confirm_analysis_meal
+from test.support.health_budget_e2e import approve_synthetic_budget
 from yuxi.agents.context import BaseContext
 from yuxi.repositories.conversation_repository import ConversationRepository
 from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
@@ -247,6 +248,7 @@ async def test_dialog_feedback_runs_actual_worker_and_preserves_original_snapsho
     )
     assert created.status_code == 200, created.text
     model = f"{provider}:deterministic-meal-feedback-20261007"
+    await approve_synthetic_budget(client, admin, model)
     await approve_analysis(client, headers, admin, member, model, configuration["policy_version"])
     requests = []
     try:

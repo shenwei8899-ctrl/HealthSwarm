@@ -9,6 +9,7 @@ from langchain.agents.middleware import AgentMiddleware
 from yuxi.agents.base import BaseAgent
 from yuxi.agents.buildin.health_consultation.graph import HealthAuthorizationMiddleware
 from yuxi.agents.middlewares import SteerMiddleware, TokenUsageMiddleware
+from yuxi.agents.middlewares.health_budget import HealthAiBudgetMiddleware
 from yuxi.agents.toolkits.diet_analyst import (
     list_analysis_meals,
     analyze_confirmed_meal,
@@ -71,6 +72,7 @@ class HealthDietAnalystAgent(BaseAgent):
             middleware=[
                 SteerMiddleware(),
                 HealthAuthorizationMiddleware(model_cache.get_model_info(context.model)),
+                HealthAiBudgetMiddleware("diet_analysis"),
                 DietAnalysisResultMiddleware(),
                 TokenUsageMiddleware(),
             ],

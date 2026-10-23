@@ -6,9 +6,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from test.support.health_budget_stub import synthetic_budget  # noqa: F401
+
 from yuxi.services.health_vision_provider import parse_report_page
 from yuxi.services.health_vision_tasks import report_page_checkpoint
 from yuxi.services.health_vision_types import HealthVisionError
+
+pytestmark = pytest.mark.usefixtures("synthetic_budget")
 
 URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
 PAGE = {"page_index": 1, "upload_id": "synthetic-upload", "upload_page_index": 0}
@@ -49,7 +53,7 @@ async def test_resume_polls_existing_job_without_post_and_keeps_evidence(httpx_m
         b"must-not-be-uploaded",
         PAGE,
         {"api_token": "synthetic"},
-        SimpleNamespace(raise_if_cancelled=AsyncMock()),
+        SimpleNamespace(task_id="synthetic-task", raise_if_cancelled=AsyncMock()),
         checkpoint,
         authorize=AsyncMock(),
         provider_job_id="synthetic-existing",
@@ -69,7 +73,7 @@ async def test_initial_authorization_denial_prevents_upload(httpx_mock):
             b"must-not-upload",
             PAGE,
             {"api_token": "synthetic"},
-            SimpleNamespace(raise_if_cancelled=AsyncMock()),
+            SimpleNamespace(task_id="synthetic-task", raise_if_cancelled=AsyncMock()),
             AsyncMock(),
             authorize=AsyncMock(side_effect=HealthVisionError("not_found", "无权访问", 404)),
         )
@@ -86,7 +90,7 @@ async def test_expired_checkpoint_never_creates_second_paid_request(httpx_mock, 
             b"test",
             PAGE,
             {"api_token": "synthetic"},
-            SimpleNamespace(raise_if_cancelled=AsyncMock()),
+            SimpleNamespace(task_id="synthetic-task", raise_if_cancelled=AsyncMock()),
             AsyncMock(),
             authorize=AsyncMock(),
             provider_job_id="synthetic-existing",
@@ -104,7 +108,7 @@ async def test_provider_failure_is_checkpointed_before_rejecting(httpx_mock):
             b"test",
             PAGE,
             {"api_token": "synthetic"},
-            SimpleNamespace(raise_if_cancelled=AsyncMock()),
+            SimpleNamespace(task_id="synthetic-task", raise_if_cancelled=AsyncMock()),
             checkpoint,
             authorize=AsyncMock(),
             provider_job_id="synthetic-existing",
@@ -127,7 +131,7 @@ async def test_untrusted_job_identifier_cannot_change_poll_path(httpx_mock, iden
             b"test",
             PAGE,
             {"api_token": "synthetic"},
-            SimpleNamespace(raise_if_cancelled=AsyncMock()),
+            SimpleNamespace(task_id="synthetic-task", raise_if_cancelled=AsyncMock()),
             AsyncMock(),
             authorize=AsyncMock(),
             provider_job_id=identifier if resumed else None,

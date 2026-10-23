@@ -279,6 +279,9 @@ async def test_actual_graph_only_binds_fixed_read_tools_and_checks_each_model_tu
             ]
         )
     )
+    from test.support.health_budget_stub import stub_agent_budget
+
+    budget_calls = stub_agent_budget(monkeypatch, model)
     monkeypatch.setattr(graph_module, "load_chat_model", lambda **kwargs: model)
     monkeypatch.setattr(graph_module.SteerMiddleware, "_jump_if_steer_requested", AsyncMock(return_value=None))
     ownership = AsyncMock()
@@ -306,6 +309,7 @@ async def test_actual_graph_only_binds_fixed_read_tools_and_checks_each_model_tu
     assert tool_lists and all(set(names) == set(service.HEALTH_TOOL_NAMES) for names in tool_lists)
     assert system_prompts and all(prompt == service.CONSULTATION_PROMPT for prompt in system_prompts)
     assert all("slug: family-nutritionist" in prompt and "## 咨询流程" in prompt for prompt in system_prompts)
-    assert ownership.await_count == 4  # 构图一次、非法参数后修正调用，共三次模型轮次。
+    assert ownership.await_count == 7  # 构图一次，每个模型轮次在预留前后各校验一次。
+    assert budget_calls.await_count == 3
     assert any(message.type == "tool" and message.status == "error" for message in result["messages"])
     assert executor.await_args.args == (context, "report")

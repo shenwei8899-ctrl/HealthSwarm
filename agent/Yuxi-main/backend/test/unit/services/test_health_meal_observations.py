@@ -131,5 +131,7 @@ async def test_model_cannot_invent_photo_or_nutrition(monkeypatch, change):
     call = AsyncMock(return_value=({"items": [raw]}, {"model": "fixed"}))
     monkeypatch.setattr(provider, "call_json_model", call)
     with pytest.raises(HealthVisionError) as rejected:
-        await provider.recognize_meal("synthetic/fixed", [b"first", b"second"], SimpleNamespace())
+        await provider.recognize_meal(
+            "synthetic/fixed", [b"first", b"second"], SimpleNamespace(), authorize=AsyncMock()
+        )
     assert rejected.value.code == "model_schema_invalid" and call.await_count == 1

@@ -178,6 +178,7 @@ async def main() -> None:
                 26,
                 27,
                 28,
+                29,
             ):
                 await pg_manager.create_health_tables()
                 await pg_manager.record_schema_version("health", HEALTH_SCHEMA_VERSION)

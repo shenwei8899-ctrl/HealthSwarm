@@ -24,6 +24,7 @@ from test.integration.services.test_health_task_http import entry, verified_task
 from test.integration.services.test_health_vision_http import ROOT, health_http  # noqa: F401
 from test.integration.services.test_health_weight_http import cleanup_weight_subject, create_weight_subject
 from test.support.health_validated_publication_replay_server import MODEL, PORT
+from test.support.health_budget_e2e import approve_synthetic_budget
 from yuxi.services.agent_run_service import get_agent_run_progress
 from yuxi.services.health_evidence_service import validate_evidence_publication
 from yuxi.services.health_vision_types import HealthVisionError
@@ -622,6 +623,7 @@ async def publication_runtime(isolated_health):  # noqa: F811
                     },
                 )
                 assert approved.status_code == 200 and approved.json()["consultation"]["available"], approved.text
+                await approve_synthetic_budget(client, users[2]["headers"], f"{provider}:{MODEL}")
                 yield SimpleNamespace(
                     client=client, users=users, configuration=approved.json(), replay=replay, requests=requests
                 )

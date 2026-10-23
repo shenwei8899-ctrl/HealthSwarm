@@ -24,6 +24,7 @@ from test.integration.services.test_health_task_http import entry, owned_counts,
 from test.integration.services.test_health_vision_http import ROOT, create_member, health_http  # noqa: F401
 from test.integration.services.test_health_weight_http import cleanup_weight_subject, create_weight_subject
 from test.support.health_indicator_replay_server import MODEL, PORT
+from test.support.health_budget_e2e import approve_synthetic_budget
 from yuxi.services.run_queue_service import get_redis_client
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import AgentRun, FamilyMeasurement, Message
@@ -374,7 +375,7 @@ async def assert_indicator_result(subject, projected, run_id, kind, use_model, r
             "query_family_nutrition_knowledge",
         ]
         assert [skill["slug"] for skill in run.manifest["resources"]["skills"]] == [f"family-{kind.replace('_', '-')}"]
-        assert run.manifest["resources"]["skills"][0]["version"] == "2026.10.20.1"
+        assert run.manifest["resources"]["skills"][0]["version"] == "2026.10.21.1"
         uses = list(await session.scalars(select(use_model).where(use_model.run_id == run_id)))
         assert (
             len(uses) == 1 and uses[0].member_id == subject.member_id and uses[0].source_member_id == subject.source_id
@@ -491,6 +492,7 @@ async def indicator_runtime(isolated_health):  # noqa: F811
                     },
                 )
                 assert approved.status_code == 200 and approved.json()["consultation"]["available"], approved.text
+                await approve_synthetic_budget(client, users[2]["headers"], f"{provider}:{MODEL}")
                 yield SimpleNamespace(
                     client=client,
                     users=users,

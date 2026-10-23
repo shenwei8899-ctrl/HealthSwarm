@@ -30,9 +30,8 @@ from yuxi.services.health_vision_types import (
 )
 from yuxi.services.task_service import Tasker, process_task
 from yuxi.storage.minio import get_minio_client
-from yuxi.storage.postgres.models_business import Base, Department, TaskRecord, User
+from yuxi.storage.postgres.models_business import Base, Department, ModelProvider, TaskRecord, User
 from yuxi.storage.postgres.models_health import (
-    HEALTH_TABLES,
     HealthGrant,
     HealthObservation,
     HealthProcessingConsent,
@@ -86,9 +85,7 @@ async def test_report_reprocess_versions_permissions_and_receipts(durable_task_s
     """两次真实执行只替换外部模型协议，PG 版本、授权和对象归属独立回读。"""
     manager = durable_task_schema
     async with manager.async_engine.begin() as connection:
-        await connection.run_sync(
-            lambda conn: Base.metadata.create_all(conn, tables=[Department.__table__, User.__table__, *HEALTH_TABLES])
-        )
+        await connection.run_sync(Base.metadata.create_all)
     monkeypatch.setattr(service_module, "pg_manager", manager)
     monkeypatch.setattr(tasks_module, "pg_manager", manager)
     local_tasker = Tasker()
@@ -105,6 +102,18 @@ async def test_report_reprocess_versions_permissions_and_receipts(durable_task_s
         provider_type="openai",
     )
     processor = processor_identity("report", info)
+    async with manager.get_async_session_context() as session:
+        session.add(
+            ModelProvider(
+                provider_id=info.provider_id,
+                display_name=info.display_name,
+                provider_type=info.provider_type,
+                api_key=info.api_key,
+                base_url=info.base_url,
+                is_enabled=True,
+                enabled_models=[{"id": info.model_id, "type": "chat", "display_name": info.display_name}],
+            )
+        )
     options = {"report_model": info.spec, "policy_version": "synthetic-policy", "approved_report_processor": processor}
 
     async def option_get(_self, db=None):
@@ -157,8 +166,10 @@ async def test_report_reprocess_versions_permissions_and_receipts(durable_task_s
             ]
         }
 
-    async def field_response(spec, prompt, content, context):
+    async def field_response(spec, prompt, content, context, *, authorize=None):
         """独立验证文本页归属，所有返回指标都是合成数据。"""
+        if authorize is not None:
+            await authorize()
         blocks = json.loads(content[0]["text"])
         assert len(blocks) == 1
         index = blocks[0]["page_index"]
@@ -364,7 +375,15 @@ async def test_report_reprocess_versions_permissions_and_receipts(durable_task_s
             assert current.payload["fields"][0]["evidence"] == revised["payload"]["fields"][0]["evidence"]
             assert current.payload["fields"][1]["source"] == "manual"
             if outcome in {"success", "legacy", "multi_attempt", "actor_changed"}:
-                assert task.status == "success" and task.result == {"result_id": draft_id}
+                assert task.status == "success"
+                assert task.result == {
+                    "result_id": draft_id,
+                    "provider_usage": {
+                        "schema_version": 1,
+                        "scope": "successful_attempt_model_calls",
+                        "calls": [None],
+                    },
+                }
                 assert current.version == 3 and current.job_id == second_job.id
                 assert current.payload["fields"][0]["value_raw"] == "7.1"
                 assert current.payload["fields"][2]["evidence"]["page_index"] == 1

@@ -1,0 +1,85 @@
+# 合成环境联调请求模板；逐块发送，不自动执行全部写入。
+# baseUrl只填联调API地址。令牌、成员、版本及ID由当前账号回读，不提交实际凭据。
+@baseUrl = http://localhost:25075
+@ownerToken = REPLACE_SYNTHETIC_OWNER_TOKEN
+@reviewerToken = REPLACE_SYNTHETIC_REVIEWER_TOKEN
+@memberId = 11111111-1111-4111-8111-111111111111
+@planId = 22222222-2222-4222-8222-222222222222
+@reviewId = 33333333-3333-4333-8333-333333333333
+@checkId = REPLACE_RETURNED_CHECK_ID
+@sourceRequestId = 44444444-4444-4444-8444-444444444444
+@threadId = REPLACE_RETURNED_THREAD_ID
+@ruleCode = REPLACE_CURRENT_APPROVED_RULE_CODE
+@planVersion = 1
+@reviewVersion = 1
+@checkKey = 55555555-5555-4555-8555-555555555555
+@actionKey = 66666666-6666-4666-8666-666666666666
+@handoffKey = 77777777-7777-4777-8777-777777777777
+@sourceHash = REPLACE_SERVER_PREVIEW_SOURCE_HASH
+
+### 1 我的申请；next_offset为null才结束，空页不代表末页
+GET {{baseUrl}}/api/health/v1/members/{{memberId}}/professional-reviews?inbox=false&limit=20&offset=0
+Authorization: Bearer {{ownerToken}}
+
+### 2 由已有餐单和已发布规则创建检查；只需正文client_request_id，无额外幂等头
+POST {{baseUrl}}/api/health/v1/meal-plans/{{planId}}/quality-checks
+Authorization: Bearer {{ownerToken}}
+Content-Type: application/json
+
+{"client_request_id":"{{checkKey}}","version":{{planVersion}},"rule_code":"{{ruleCode}}"}
+
+### 2b 使用第2步返回的check_id读取检查，取review.review_id填入reviewId
+GET {{baseUrl}}/api/health/v1/quality-checks/{{checkId}}
+Authorization: Bearer {{ownerToken}}
+
+### 3 工作台读取当前审核版本、allowed_actions及历史来源
+GET {{baseUrl}}/api/health/v1/professional-reviews/{{reviewId}}/workbench
+Authorization: Bearer {{ownerToken}}
+
+### 4 申请人明确提交或退回后重提；使用新动作键和回读的审核版本
+# 响应未知保留本次键、版本和正文原样重放；重放结果为当前状态。
+POST {{baseUrl}}/api/health/v1/professional-reviews/{{reviewId}}/submit
+Authorization: Bearer {{ownerToken}}
+Content-Type: application/json
+
+{"client_request_id":"{{actionKey}}","version":{{reviewVersion}},"reason":"合成联调申请说明","evidence_refs":["synthetic:app-review-evidence-v1"]}
+
+### 5 专业人员收件；须有效资格及全部相关成员授权
+GET {{baseUrl}}/api/health/v1/members/{{memberId}}/professional-reviews?inbox=true&limit=20&offset=0
+Authorization: Bearer {{reviewerToken}}
+
+### 6 专业人员回读；使用响应review.version，不沿用申请人旧版本
+GET {{baseUrl}}/api/health/v1/professional-reviews/{{reviewId}}/workbench
+Authorization: Bearer {{reviewerToken}}
+
+### 7 明确退回；发送前更新actionKey与reviewVersion
+POST {{baseUrl}}/api/health/v1/professional-reviews/{{reviewId}}/return
+Authorization: Bearer {{reviewerToken}}
+Content-Type: application/json
+
+{"client_request_id":"{{actionKey}}","version":{{reviewVersion}},"reason":"合成联调请补充材料","evidence_refs":["synthetic:review-return-v1"]}
+
+### 8 明确批准；仅allowed_actions含approve时显示，发送前更新actionKey与reviewVersion
+POST {{baseUrl}}/api/health/v1/professional-reviews/{{reviewId}}/approve
+Authorization: Bearer {{reviewerToken}}
+Content-Type: application/json
+
+{"client_request_id":"{{actionKey}}","version":{{reviewVersion}},"reason":"合成联调已核对材料","evidence_refs":["synthetic:review-approval-v1"]}
+
+### 9 交接预览只读；sourceRequestId是已完成源任务request_id，不是run_id
+# 取消即关闭预览，不发送下一条确认请求。
+GET {{baseUrl}}/api/health/v1/tasks/{{sourceRequestId}}/handoff-preview
+Authorization: Bearer {{ownerToken}}
+
+### 10 明确确认；hash来自第9步，同意目标用途后才可成功
+# 响应未知原键原正文重放；不发送target_agent、member_id或摘要正文。
+POST {{baseUrl}}/api/health/v1/tasks/{{sourceRequestId}}/handoffs
+Authorization: Bearer {{ownerToken}}
+Content-Type: application/json
+Idempotency-Key: {{handoffKey}}
+
+{"client_request_id":"{{handoffKey}}","source_hash":"{{sourceHash}}","confirmed":true}
+
+### 11 返回或重进目标会话只读；threadId使用第10步响应，不重新确认或自动创建Run
+GET {{baseUrl}}/api/chat/thread/{{threadId}}/history
+Authorization: Bearer {{ownerToken}}

@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from test.e2e.test_health_consultation_e2e import isolated_health, collect_sse, drain_requests  # noqa: F401
 from test.integration.services.test_health_vision_http import ROOT, create_member, health_http  # noqa: F401
 from test.integration.services.test_health_diet_analysis_http import confirm_analysis_meal
+from test.support.health_budget_e2e import approve_synthetic_budget
 from yuxi.agents.context import BaseContext
 from yuxi.services.health_diet_analysis_service import analyst_meal_records, read_diet_analysis, read_period_analysis
 from yuxi.services.health_diet_analysis_types import DietAnalysisPeriod, DietAnalysisSelection
@@ -298,6 +299,7 @@ async def test_analysis_worker_independent_consent_and_authoritative_result(isol
             },
         )
         assert configured.status_code == 200 and configured.json()["diet_analysis"]["available"], configured.text
+        await approve_synthetic_budget(client, admin, f"{provider}:deterministic-diet-analysis-20261007")
         config = configured.json()
         consent_fields = {"accepted": True, "policy_version": config["policy_version"]}
         assert (

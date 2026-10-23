@@ -19,6 +19,7 @@ from sqlalchemy import delete, select, text
 from test.e2e.test_health_consultation_e2e import drain_requests, wait_until
 from test.integration.services.test_health_vision_http import cleanup_health_test_resources
 from test.support.health_consultation_replay_server import MODEL
+from test.support.health_budget_e2e import approve_synthetic_budget
 from yuxi.config import get_user_data_dir
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import (
@@ -261,6 +262,7 @@ async def create_fixture():
             )
             require_status(policy, 200)
             assert policy.json()["consultation"]["available"]
+            await approve_synthetic_budget(client, admin, provider_id + ":" + MODEL)
             state["configuration"] = policy.json()
             state["browser_question"] = "请根据本人已确认的基础档案，说明目前可以用于营养咨询的信息。"
             state["browser_expected_answer"] = (

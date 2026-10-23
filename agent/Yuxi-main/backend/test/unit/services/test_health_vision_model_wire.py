@@ -6,9 +6,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from test.support.health_budget_stub import synthetic_budget  # noqa: F401
+
 from yuxi.models.providers.cache import ModelInfo, model_cache
 from yuxi.services.health_vision_provider import call_json_model, recognize_meal
 from yuxi.services.health_vision_types import HealthVisionError
+
+pytestmark = pytest.mark.usefixtures("synthetic_budget")
 
 
 def configured_model(monkeypatch, model_id):
@@ -56,7 +60,12 @@ async def test_frozen_meal_snapshot_omits_json_mode_but_validates_json(httpx_moc
         url="https://synthetic.invalid/v1/chat/completions",
         json=completion(json.dumps({"items": [candidate]}, ensure_ascii=False), model_id),
     )
-    result = await recognize_meal(spec, [b"synthetic-image"], SimpleNamespace(raise_if_cancelled=AsyncMock()))
+    result = await recognize_meal(
+        spec,
+        [b"synthetic-image"],
+        SimpleNamespace(task_id="synthetic-task", raise_if_cancelled=AsyncMock()),
+        authorize=AsyncMock(),
+    )
     requests = httpx_mock.get_requests()
     assert len(requests) == 1
     wire = json.loads(requests[0].content)
@@ -99,7 +108,11 @@ async def test_report_field_model_keeps_json_object_mode(httpx_mock, monkeypatch
         json=completion('{"fields":[]}', "report-fixed"),
     )
     result, metadata = await call_json_model(
-        spec, "只输出 JSON", [{"type": "text", "text": "合成指标"}], SimpleNamespace(raise_if_cancelled=AsyncMock())
+        spec,
+        "只输出 JSON",
+        [{"type": "text", "text": "合成指标"}],
+        SimpleNamespace(task_id="synthetic-task", raise_if_cancelled=AsyncMock()),
+        authorize=AsyncMock(),
     )
     wire = json.loads(httpx_mock.get_request().content)
     assert wire.get("response_format") == {"type": "json_object"}
@@ -119,7 +132,11 @@ async def test_report_json_mode_rejects_fence_without_extra_call(httpx_mock, mon
     )
     with pytest.raises(HealthVisionError) as rejected:
         await call_json_model(
-            spec, "只输出 JSON", [{"type": "text", "text": "合成指标"}], SimpleNamespace(raise_if_cancelled=AsyncMock())
+            spec,
+            "只输出 JSON",
+            [{"type": "text", "text": "合成指标"}],
+            SimpleNamespace(task_id="synthetic-task", raise_if_cancelled=AsyncMock()),
+            authorize=AsyncMock(),
         )
     assert rejected.value.code == "model_schema_invalid"
     requests = httpx_mock.get_requests()
@@ -138,7 +155,12 @@ async def test_meal_complete_json_fence_preserves_candidate_without_extra_call(h
         url="https://synthetic.invalid/v1/chat/completions",
         json=completion(f'  ```{language}\n{{"items":[{{"name":"合成米饭"}}]}}\n```  ', model_id),
     )
-    result = await recognize_meal(spec, [b"synthetic-image"], SimpleNamespace(raise_if_cancelled=AsyncMock()))
+    result = await recognize_meal(
+        spec,
+        [b"synthetic-image"],
+        SimpleNamespace(task_id="synthetic-task", raise_if_cancelled=AsyncMock()),
+        authorize=AsyncMock(),
+    )
     assert result["items"][0]["name"] == "合成米饭"
     assert result["items"][0]["grams"] is None
     assert result["items"][0]["share_ratio"] is None
@@ -168,7 +190,12 @@ async def test_meal_fence_does_not_repair_or_guess_invalid_output(httpx_mock, mo
         method="POST", url="https://synthetic.invalid/v1/chat/completions", json=completion(content, model_id)
     )
     with pytest.raises(HealthVisionError) as rejected:
-        await recognize_meal(spec, [b"synthetic-image"], SimpleNamespace(raise_if_cancelled=AsyncMock()))
+        await recognize_meal(
+            spec,
+            [b"synthetic-image"],
+            SimpleNamespace(task_id="synthetic-task", raise_if_cancelled=AsyncMock()),
+            authorize=AsyncMock(),
+        )
     assert rejected.value.code == "model_schema_invalid"
     assert len(httpx_mock.get_requests()) == 1
 
@@ -192,6 +219,11 @@ async def test_meal_non_json_or_extra_nutrition_is_rejected_without_second_call(
         method="POST", url="https://synthetic.invalid/v1/chat/completions", json=completion(content, model_id)
     )
     with pytest.raises(HealthVisionError) as rejected:
-        await recognize_meal(spec, [b"synthetic-image"], SimpleNamespace(raise_if_cancelled=AsyncMock()))
+        await recognize_meal(
+            spec,
+            [b"synthetic-image"],
+            SimpleNamespace(task_id="synthetic-task", raise_if_cancelled=AsyncMock()),
+            authorize=AsyncMock(),
+        )
     assert rejected.value.code == "model_schema_invalid"
     assert len(httpx_mock.get_requests()) == 1

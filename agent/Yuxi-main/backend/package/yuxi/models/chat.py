@@ -35,6 +35,15 @@ def load_chat_model(
     fully_specified_name = resolve_chat_model_spec(fully_specified_name)
     info = _require_chat_model_info(fully_specified_name)
 
+    return load_chat_model_from_info(info, session_id=session_id, uid=uid, **kwargs)
+
+
+def load_chat_model_from_info(
+    info: ModelInfo, *, session_id: str | None = None, uid: str | None = None, **kwargs
+) -> BaseChatModel:
+    """从已绑定的不可变配置构造实例，不再次读取可变模型缓存。"""
+    fully_specified_name = info.spec
+
     kwargs.update(model_execution_budget_options())
 
     api_key = info.api_key

@@ -121,7 +121,13 @@ async def run_health_vision(context):
         if job.kind == "meal":
             async with pg_manager.get_async_session_context() as session:
                 await check_job_access(session, await session.get(VisionJob, job.id))
-            result = await recognize_meal(snapshot["model"], images, context)
+
+            async def authorize_meal_call():
+                """预算等待结束后重验成员授权、用途配置和任务 lease。"""
+                async with pg_manager.get_async_session_context() as session:
+                    await check_job_access(session, await session.get(VisionJob, job.id))
+
+            result = await recognize_meal(snapshot["model"], images, context, authorize=authorize_meal_call)
             payload = MealPayload(
                 meal_type=snapshot["meal_type"],
                 eaten_at=snapshot["eaten_at"],
@@ -210,6 +216,7 @@ async def run_health_vision(context):
                         prompt,
                         [{"type": "text", "text": json.dumps(safe_blocks, ensure_ascii=False)}],
                         context,
+                        authorize=authorize_external_call,
                     )
                     usages.append(metadata)
                     token_usages[-1] = metadata.get("usage")
@@ -359,6 +366,10 @@ async def fail_health_vision(session, task_record, error: str):
     if job:
         code = error.split(":", 1)[0]
         allowed = {
+            "budget_exceeded",
+            "budget_price_unavailable",
+            "budget_context_invalid",
+            "budget_call_replayed",
             "provider_not_configured",
             "provider_unavailable",
             "provider_timeout",
