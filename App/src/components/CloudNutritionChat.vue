@@ -20,12 +20,14 @@ import { localDate } from '../utils/meal-state.js'
 
 const props=defineProps({route:{type:Object,default:()=>({})}})
 const state=reactive(dailyArrangementState()),profile=ref(null),cardVisible=ref(false),selectedMeal=ref(null)
+const profileLoading=ref(false)
+const needsProfileLink=computed(()=>profile.value&&!props.route.memberId&&!profile.value.members.some(m=>m.relation==='本人'&&m.healthMemberId))
 const question=ref(''),chatError=ref(''),messages=ref([]),task=ref({}),consentChecked=ref(false)
 const voiceMode=ref(false),voiceBusy=ref(false),voiceRef=ref(null),communityOpen=ref(false),scrollTarget=ref(''),inlineTodayOpen=ref(false)
 const draftImage=ref(null),draftSaving=ref(false),draftError=ref('')
 const familyState=reactive(dailyArrangementState()),familyPanel=ref(false),familySelection=ref(null),familyIntent=ref('')
 const prompts=['今晚全家吃什么？','给我安排明天早餐','看看我的饮食记录','糖尿病家庭怎么吃？']
-const chatBusy=computed(()=>sending.value||familyState.busy||task.value.busy||task.value.loading||['queued','dispatched','pending','running','cancel_requested'].includes(task.value.status))
+const chatBusy=computed(()=>profileLoading.value||sending.value||familyState.busy||task.value.busy||task.value.loading||['queued','dispatched','pending','running','cancel_requested'].includes(task.value.status))
 const sending=ref(false),hasDraftContent=computed(()=>!!question.value.trim()||!!draftImage.value)
 const canCancel=computed(()=>task.value.requestId&&!task.value.submitUnknown&&['queued','dispatched','pending','running'].includes(task.value.status))
 let disposed=false,visible=true,loading=null,epoch=0,pageScope=storageContext(),flowScope=pageScope,draftVersion=0,openingCamera=false,pendingUser=null,submittedDraft=null,desiredType='consultation',restoring=false
@@ -77,7 +79,7 @@ async function familyMembers(ids){
 }
 function openFamilyMeal(meal){uni.navigateTo({url:'/pages/shop/index?meal='+meal.type+'&date='+familyState.date+'&arrangement='+encodeURIComponent(familyState.arrangement.id)+'&version='+familyState.arrangement.version})}
 async function scrollLatest(){await nextTick();scrollTarget.value='';await nextTick();if(messages.value.length)scrollTarget.value='message-'+messages.value.at(-1).id}
-function clearPrivate(){epoch++;loading=null;flow.hide();client.reset();familyClient.reset();familyPanel.value=false;familySelection.value=null;messages.value=[];question.value='';chatError.value='';profile.value=null;task.value={};selectedMeal.value=null;removeDraft();pendingUser=null;submittedDraft=null;voiceRef.value?.cancel();voiceBusy.value=false;voiceMode.value=false;cardVisible.value=false}
+function clearPrivate(){epoch++;loading=null;profileLoading.value=false;flow.hide();client.reset();familyClient.reset();familyPanel.value=false;familySelection.value=null;messages.value=[];question.value='';chatError.value='';profile.value=null;task.value={};selectedMeal.value=null;removeDraft();pendingUser=null;submittedDraft=null;voiceRef.value?.cancel();voiceBusy.value=false;voiceMode.value=false;cardVisible.value=false}
 function rememberThread(){
   if(flowScope!==storageContext()||props.route.taskType||!task.value.entry?.thread_id||!task.value.memberId)return
   const key=`homepage-chat-threads:${task.value.memberId}:${localDate()}`,old=scopedStorage.getStorageSync(key)||[]
@@ -123,10 +125,13 @@ async function load(retry=false){
   if(pageScope!==storageContext()){clearPrivate();pageScope=storageContext();flowScope=pageScope}
   if(loading)return loading
   const mine=++epoch,scope=storageContext()
+  profileLoading.value=true
   loading=(async()=>{try{
     const next=await loadCloudProfile()
     if(disposed||mine!==epoch||scope!==storageContext())return
     profile.value=next
+    profileLoading.value=false
+    chatError.value=''
     if(props.route.question&&!question.value)question.value=String(props.route.question).slice(0,4000)
     if(props.route.indicatorChoice==='1'&&!question.value)question.value='请回顾我选择的实测记录，说明还需要补充哪些测量信息。'
     if(!next.onboarded){uni.redirectTo({url:'/pages/onboarding/index'});return}
@@ -137,18 +142,20 @@ async function load(retry=false){
     if(scope!==storageContext()){clearPrivate();uni.reLaunch({url:'/pages/index/index'});return}
     cardVisible.value=state.phase==='ready'
   }catch(e){if(!disposed&&mine===epoch){if([401,403].includes(Number(e.code))||!getSession()?.token){clearPrivate();if(!getSession()?.token){uni.reLaunch({url:'/pages/index/index'});return}}state.error=e.message;state.phase='error';state.busy=false}}
-  finally{if(mine===epoch)loading=null}})()
+  finally{if(mine===epoch){loading=null;profileLoading.value=false}}})()
   return loading
 }
 onMounted(load);onShow(()=>{if(!disposed)void load()})
-onHide(()=>{visible=false;epoch++;loading=null;voiceRef.value?.cancel();flow.hide();client.reset();familyClient.reset();cardVisible.value=false;familyPanel.value=false;familySelection.value=null})
+onHide(()=>{visible=false;epoch++;loading=null;profileLoading.value=false;voiceRef.value?.cancel();flow.hide();client.reset();familyClient.reset();cardVisible.value=false;familyPanel.value=false;familySelection.value=null})
 onUnmounted(()=>{disposed=true;epoch++;draftVersion++;client.dispose();familyClient.dispose();flow.hide()})
 function openMeal(meal){uni.navigateTo({url:'/pages/shop/index?meal='+meal.type+'&date='+state.date+'&arrangement='+encodeURIComponent(state.arrangement.id)+'&version='+state.arrangement.version})}
 function shop(arrangement){if(arrangement)uni.navigateTo({url:'/pages/shop/index?daily=1&date='+arrangement.date+'&arrangement='+encodeURIComponent(arrangement.id)+'&version='+arrangement.version})}
 function archives(){uni.navigateTo({url:'/pages/profile/index'})}
+function consultationProfile(){uni.navigateTo({url:'/pages/settings/health-profile'})}
 async function members(ids){const type=selectedMeal.value.type;selectedMeal.value=null;await client.changeMembers(type,ids);cardVisible.value=state.phase==='ready';if(familyPanel.value&&familyState.date===state.date)await familyClient.load(state.date)}
 async function sendQuestion(){
   if(!hasDraftContent.value||chatBusy.value||draftSaving.value||draftError.value)return
+  if(!profile.value){chatError.value=state.error||'咨询资料尚未读到，请重新读取咨询资料后再发送。';return}
   const scope=storageContext(),text=question.value.trim(),image=draftImage.value&&{...draftImage.value}
   sending.value=true;chatError.value=''
   try{
@@ -157,7 +164,7 @@ async function sendQuestion(){
     if(!task.value.memberId||task.value.taskType!==type)await restoreChat(type)
     if(disposed||!visible||scope!==storageContext())return
     if(task.value.canRetry){chatError.value='上次问题的提交结果尚未确认，请先点击“重试原问题”或重新读取。';return}
-    if(!task.value.available)return
+    if(!task.value.available){chatError.value=task.value.error||task.value.notice||chatError.value||'咨询暂未就绪，请重新读取咨询资料后再发送。';return}
     if(!task.value.entry?.thread_id){await flow.createEntry();rememberThread();if(task.value.entry?.thread_id)await restoreChat(type)}
     rememberThread()
     if(disposed||!visible||scope!==storageContext()||!task.value.entry?.thread_id)return
@@ -176,7 +183,18 @@ async function sendQuestion(){
   finally{pendingUser=null;sending.value=false}
 }
 async function retryQuestion(){chatError.value='';await flow.submit('',true);await scrollLatest()}
-async function restartChat(){chatError.value='';await restoreChat();if(task.value.available&&!task.value.entry?.thread_id){await flow.createEntry();rememberThread()}}
+async function restartChat(){
+  if(chatBusy.value||draftSaving.value)return
+  const scope=storageContext()
+  if(task.value.status==='failed'){
+    const text=question.value,image=draftImage.value,error=draftError.value
+    flow.invalidateThread()
+    question.value=text;draftImage.value=image;draftError.value=error
+  }
+  chatError.value='';await restoreChat()
+  if(disposed||!visible||scope!==storageContext())return
+  if(task.value.available&&!task.value.entry?.thread_id){await flow.createEntry();rememberThread()}
+}
 async function consent(){if(!consentChecked.value)return;consentChecked.value=false;await flow.acceptConsent(true);await sendQuestion()}
 function sendVoice(text){question.value=text;voiceBusy.value=false;void sendQuestion()}
 function removeDraft(){draftVersion++;draftImage.value=null;draftSaving.value=false;draftError.value=''}
@@ -221,9 +239,11 @@ function askPrompt(text){if(text==='看看我的饮食记录'){uni.navigateTo({u
    </view>
   </view>
   <view v-if="familyPanel" class="dialogue-status"><text>家庭餐单 · {{familyState.date}}</text><text>按这餐实际参加的成员核对家庭安排，每位成员的资料和权限由服务端检查。</text><text v-if="familyState.busy">正在读取家庭安排…</text><text v-if="familyState.error" class="chat-error">{{familyState.error}}</text><button v-if="familyState.error" :disabled="familyState.busy" @click="familyPlan('',true)">重新读取家庭餐单</button><DailyArrangementCard v-if="familyState.phase==='ready'" :arrangement="familyState.arrangement" family :disabled="familyState.busy" @open="openFamilyMeal" @members="familySelection={type:$event.type,ids:$event.members.map(m=>m.id),question:''}" @shop="shop"/><button @click="familyPanel=false">收起家庭餐单</button></view>
-  <text v-if="chatBusy" class="reply-progress">营养师正在分析…</text><text v-if="chatError" class="chat-error" role="alert">{{chatError}}</text>
+  <text v-if="chatBusy" class="reply-progress">{{profileLoading?'正在读取咨询资料…':'营养师正在分析…'}}</text><text v-if="chatError" class="chat-error" role="alert">{{chatError}}</text>
+  <button v-if="!profile&&!profileLoading" class="secondary-button" @click="load()">重新读取咨询资料</button>
+  <button v-if="needsProfileLink" class="secondary-button" @click="consultationProfile">核对并关联本人咨询资料</button>
   <view v-if="task.error||task.notice||task.canRetry||canCancel" class="dialogue-status"><text>{{task.error||task.notice}}</text><button v-if="task.requestId" @click="flow.refresh()">重新读取本次回复</button><button v-if="task.canRetry" @click="retryQuestion">重试原问题</button><button v-if="canCancel" @click="flow.cancelRequest()">取消当前问题</button></view>
-  <button v-if="task.invalidated&&!route.taskType" class="secondary-button" @click="restartChat">开始新咨询</button>
+  <button v-if="(task.invalidated||task.status==='failed')&&!route.taskType" class="secondary-button" :disabled="chatBusy||draftSaving" @click="restartChat">开始新咨询</button>
   <view v-if="task.consentOption" class="dialogue-status"><text>本次咨询处理方：{{task.consentOption.processor}}；政策版本：{{task.consentOption.policyVersion}}。</text><checkbox-group @change="consentChecked=$event.detail.value.includes('yes')"><label><checkbox value="yes" :checked="consentChecked"/>同意本次咨询的数据处理</label></checkbox-group><button :disabled="!consentChecked||chatBusy" @click="consent">同意并继续咨询</button></view>
   <view class="quick-prompts"><text>问问AI</text><button v-for="prompt in prompts" :key="prompt" :disabled="chatBusy" @click="askPrompt(prompt)">{{prompt}}</button></view>
  </template>
