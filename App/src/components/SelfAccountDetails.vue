@@ -182,6 +182,8 @@ async function readHealthMembersAfterCreate(ticket, id) {
   if (!Array.isArray(data) || !data.some(item => item.id === id && item.is_owner === true)) throw new Error('新建成员尚未回读到，请重新读取成员列表')
   healthMembers.value = data.filter(item => item.is_owner === true)
   selectedHealthId.value = id; healthLink.value = null; healthDiagnostics.value = null; healthUncertain.value = false
+  const linked = await request({ path: `/api/health/v1/members/${encodeURIComponent(id)}/family-profile-link` })
+  if (active(ticket) && selectedHealthId.value === id) healthLink.value = linked.data
 }
 async function linkSelfProfile() {
   const id = selectedHealthId.value, familyId = account.value?.householdId, sourceId = member.value?.id

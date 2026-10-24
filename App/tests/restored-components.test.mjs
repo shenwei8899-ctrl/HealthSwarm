@@ -131,6 +131,48 @@ function chat(){let submits=0,exists=false,invalid=false;const saved=storage(),c
  const deps={HEALTH_TEXT_TASKS,loadCloudProfile:async()=>({onboarded:true,members:[{id:'self',relation:'本人',healthMemberId:member}]}),dailyArrangementState:()=>({phase:'idle',busy:false}),createDailyArrangementClient:({state})=>({load:async()=>{state.phase='ready';state.arrangement={}},reset(){},dispose(){}}),storageContext:()=> 'scope',scopedStorage:saved,getSession:()=>({accountId:'self',householdId:'family',token:'synthetic'}),commerce:{connect:async()=>{}},request:send,newHealthRequestId:()=>requestId,localDate:()=> '2026-10-20',readChatSnapshot:async()=>({messages:[],runs:[]}),chatImageContent:async image=>image.localPath,persistChatImage:async image=>({localPath:image.path}),createHealthTaskFlow:options=>createHealthTaskFlow({...options,send,session:()=>({accountId:'self',token:'synthetic'}),revision:()=>1,storage:saved,newId:()=>requestId,day:()=> '2026-10-20',subscribe:()=>()=>{}}),uni:{redirectTo(){},reLaunch(){}}}
  return {deps,calls,invalidate:()=>invalid=true}
 }
+
+test('chat blocks sending until the actual profile load settles and shows why',async()=>{
+ const h=chat();let finish
+ h.deps.loadCloudProfile=()=>new Promise(resolve=>{finish=resolve})
+ const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,chatBusy',h.deps)
+ const loading=p.load();p.question.value='请介绍均衡饮食';await p.sendQuestion()
+ assert.equal(p.chatBusy.value,true)
+ assert.equal(h.calls.length,0);assert.equal(p.question.value,'请介绍均衡饮食')
+ finish({onboarded:true,members:[{id:'self',relation:'本人',healthMemberId:member}]});await loading
+ assert.equal(p.chatBusy.value,false);p.dispose()
+})
+
+test('failed initial profile load keeps the draft and exposes a retryable error on send',async()=>{
+ const h=chat();h.deps.loadCloudProfile=async()=>{throw new Error('合成网络中断')}
+ const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,chatError',h.deps)
+ await p.load();p.question.value='请介绍均衡饮食';await p.sendQuestion()
+ assert.match(p.chatError.value,/合成网络中断/)
+ assert.equal(p.question.value,'请介绍均衡饮食');assert.equal(h.calls.length,0);p.dispose()
+})
+
+test('a failed consultation can restart with a new thread while keeping an edited draft',async()=>{
+ const h=chat(),saved=storage(),newThread='44444444-4444-4444-8444-444444444444',calls=[]
+ const send=async o=>{
+  calls.push(o)
+  if(o.path.endsWith('/members'))return {data:[{id:member,is_owner:true}]}
+  if(o.path.endsWith('/readiness'))return {data:{capabilities:{member_id:member},entries:[{entry_type:'consultation',status:'available'}]}}
+  if(o.path.endsWith('/daily-conversations'))return {data:{days:[{date:'2026-10-20',thread_id:thread}]}}
+  if(o.path.includes('/tasks/'))return {data:{member_id:member,thread_id:thread,request_id:requestId,task_type:'consultation',agent_slug:'health-consultation',request_status:'dispatched',execution_status:'failed'}}
+  if(o.path.endsWith('/task-entries'))return {data:{member_id:member,task_type:'consultation',client_request_id:requestId,entry_status:'ready',thread_id:newThread,agent_slug:'health-consultation',request_submit_url:'/api/agent/runs'}}
+  throw Error(o.path)
+ }
+ h.deps.scopedStorage=saved
+ h.deps.createHealthTaskFlow=options=>createHealthTaskFlow({...options,send,session:()=>({token:'synthetic',accountId:'self'}),revision:()=>1,storage:saved,newId:()=>requestId,day:()=> '2026-10-20',subscribe:()=>()=>{}})
+ const p=mount('CloudNutritionChat.vue','load,flow,task,question,draftImage,draftError,restartChat',h.deps)
+ await p.load();await p.flow.restoreRequest(requestId);assert.equal(p.task.value.status,'failed')
+ p.question.value='修改后的问题';p.draftImage.value={localPath:'data:image/png;base64,QQ=='}
+ await p.restartChat()
+ assert.equal(p.task.value.entry.thread_id,newThread);assert.equal(p.question.value,'修改后的问题')
+ assert.equal(p.draftImage.value.localPath,'data:image/png;base64,QQ==')
+ assert.equal(calls.filter(c=>c.path.endsWith('/task-entries')).length,1)
+ assert.equal(calls.some(c=>c.path==='/api/agent/runs'),false);p.dispose()
+})
 test('unknown chat retry settles the original bubble and removes only its original draft',async()=>{
  const h=chat(),p=mount('CloudNutritionChat.vue','load,question,draftImage,messages,sendQuestion,retryQuestion,flow,task',h.deps)
  await p.load();p.question.value='original';p.draftImage.value={localPath:'data:image/png;base64,QQ=='};await p.sendQuestion();assert.equal(p.messages.value[0].status,'unknown');assert.equal(p.question.value,'original')

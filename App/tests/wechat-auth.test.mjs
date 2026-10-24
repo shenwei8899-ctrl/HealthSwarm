@@ -118,7 +118,7 @@ function accountPage(overrides = {}) {
     request: async options => { calls.push(options); return { data: family } },
     onMounted() {}, onShow: callback => { show = callback }, onHide: callback => { hide = callback }, onUnload() {}, ...overrides }
   const source = readFileSync(new URL('../src/components/SelfAccountDetails.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
-  const page = new Function('deps', `const {${Object.keys(deps).join(',')}} = deps;\n${source}\nreturn { member, form, account, busy, uncertain, error, unsaved, save, confirm, load, createFamily, familyName, healthMembers, selectedHealthId, healthLink, healthError, healthUncertain, healthDiagnostics, healthEntries, healthEntryText, openHealthTask, readHealthMembers, selectHealthMember, readHealthDiagnostics, createHealthMember, linkSelfProfile }`)(deps)
+  const page = new Function('deps', `const {${Object.keys(deps).join(',')}} = deps;\n${source}\nreturn { member, form, account, busy, uncertain, error, unsaved, save, confirm, load, createFamily, familyName, healthMembers, healthBusy, selectedHealthId, healthLink, healthError, healthUncertain, healthDiagnostics, healthEntries, healthEntryText, openHealthTask, readHealthMembers, selectHealthMember, readHealthDiagnostics, createHealthMember, linkSelfProfile }`)(deps)
   return { ...page, show: () => show(), hide: () => hide(), calls, redirects, navigation, family, expire: () => { stored = null; revision++ } }
 }
 
@@ -181,6 +181,21 @@ test('unknown health member creation blocks another create until members are rea
   await page.show(); await page.createHealthMember(); await page.createHealthMember()
   assert.equal(writes, 1); assert.equal(page.healthUncertain.value, true)
   await page.readHealthMembers(); assert.equal(page.healthUncertain.value, false)
+})
+
+test('new health member can be explicitly linked immediately after verified creation', async () => {
+ const id='11111111-1111-4111-8111-111111111111',calls=[]
+ const page=accountPage({request:async options=>{
+  calls.push(options)
+  if(options.path==='/api/health/v1/members')return {data:options.method==='POST'?{id}:[{id,is_owner:true}]}
+  if(options.path.endsWith('/family-profile-link'))return {data:{member_id:id,source_member_id:null}}
+  return {data:{id:'own',members:[{id:'self',is_self:true,is_active:true,version:2,confirmed:true,ready:false,profile:{}}]}}
+ }})
+ await page.show();await page.createHealthMember()
+ assert.equal(page.selectedHealthId.value,id);assert.deepEqual(page.healthLink.value,{member_id:id,source_member_id:null})
+ assert.equal(page.healthBusy.value,false);assert.equal(page.healthUncertain.value,false)
+ assert.equal(calls.filter(c=>c.method==='POST').length,1)
+ assert.equal(calls.some(c=>c.path.endsWith('/family-profile-link')&&c.method==='POST'),false)
 })
 
 test('health status uses both server diagnostics and never treats basic ready as task readiness', async () => {
