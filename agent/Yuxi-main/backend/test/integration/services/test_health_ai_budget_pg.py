@@ -571,3 +571,60 @@ async def test_budget_http_admin_boundary_and_persistent_status(budget_db, monke
         assert reset.status_code == 409
     async with budget_db.get_async_session_context() as session:
         assert (await session.scalars(select(HealthAiMonth))).one().occupied_cny == Decimal("10")
+
+
+async def test_advisory_without_price_or_opening_marks_month_incomplete(budget_db, monkeypatch):
+    """未知价格和期初不阻止聊天；并发调用只留一个待核账月，不造零价调用。"""
+    async with budget_db.get_async_session_context() as session:
+        await session.execute(text("DELETE FROM health_ai_month"))
+        await session.execute(text("DELETE FROM health_ai_opening"))
+    monkeypatch.setenv("HEALTH_AI_BUDGET_MODE", "advisory")
+    reservations = await asyncio.gather(*(budget.reserve("consultation", f"run-{i}", "synthetic") for i in range(12)))
+    assert all(item.call_id is None and item.price is None for item in reservations)
+    async with budget_db.get_async_session_context() as session:
+        month = (await session.scalars(select(HealthAiMonth))).one()
+        assert month.blocked and month.occupied_cny == 0
+        assert not (await session.scalars(select(HealthAiCall))).all()
+    status = await budget.budget_status()
+    assert status["occupied_cny"] is status["remaining_cny"] is None
+    assert not status["initialized"] and not status["blocked"]
+    with pytest.raises(HealthVisionError, match="budget_opening_conflict"):
+        await budget.initialize_budget(
+            "synthetic-admin",
+            HealthAiOpeningInput(occupied_cny=0, evidence="参考调用后不能靠期初覆盖未核费用", verified=True),
+        )
+    async with budget_db.get_async_session_context() as session:
+        assert (await session.scalars(select(HealthAiMonth))).one().blocked
+
+
+async def test_returning_to_strict_cannot_reuse_balance_before_advisory(budget_db, monkeypatch):
+    """参考模式用量未经核账时，恢复严格模式必须拒绝旧余额。"""
+    await seed_price(budget_db)
+    first = await budget.reserve("consultation", "strict-first", "synthetic")
+    await budget.settle(first, {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18})
+    monkeypatch.setenv("HEALTH_AI_BUDGET_MODE", "advisory")
+    for purpose in ["consultation", "indicator_review", "diet_analysis"]:
+        await budget.settle(await budget.reserve(purpose, "advisory-run", "synthetic"))
+    monkeypatch.setenv("HEALTH_AI_BUDGET_MODE", "strict")
+    with pytest.raises(HealthVisionError, match="budget_exceeded"):
+        await budget.reserve("consultation", "strict-after", "synthetic")
+    status = await budget.budget_status()
+    assert status["blocked"] and status["occupied_cny"] is status["remaining_cny"] is None
+    async with budget_db.get_async_session_context() as session:
+        assert (await session.scalars(select(HealthAiMonth))).one().occupied_cny == Decimal("0.09")
+        assert len((await session.scalars(select(HealthAiCall))).all()) == 1
+
+
+@pytest.mark.parametrize("purpose", ["meal", "report"])
+async def test_advisory_keeps_vision_price_reservation_and_usage(budget_db, monkeypatch, purpose):
+    """本次放宽聊天用途，识图仍在解析之前记录原有价格和用量。"""
+    monkeypatch.setenv("HEALTH_AI_BUDGET_MODE", "advisory")
+    with pytest.raises(HealthVisionError, match="budget_price_unavailable"):
+        await budget.reserve(purpose, "vision-no-price", "synthetic")
+    await seed_price(budget_db)
+    reservation = await budget.reserve(purpose, "vision-with-price", "synthetic")
+    assert reservation.call_id is not None
+    await budget.settle(reservation, {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18})
+    async with budget_db.get_async_session_context() as session:
+        row = await session.get(HealthAiCall, reservation.call_id)
+        assert (row.status, row.input_tokens, row.output_tokens) == ("settled", 11, 7)
