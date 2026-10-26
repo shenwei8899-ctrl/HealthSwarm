@@ -11,6 +11,7 @@ export const HEALTH_TEXT_TASKS = Object.freeze({
   blood_lipids_review: '血脂记录回顾', blood_pressure_review: '血压记录回顾',
   diet_analysis: '已保存餐次反馈',
   meal_preview: '本餐安排',
+  initial_meal_preview: '单日专属计划',
 })
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const terminalStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'rejected'])
@@ -103,12 +104,12 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       if (!Array.isArray(members.data) || !members.data.some(row => row.id === memberId && (!indicatorTask || row.is_owner === true)) ||
         readiness.data?.capabilities?.member_id !== memberId || !Array.isArray(readiness.data?.entries)) throw mismatch()
       const entry = readiness.data.entries.find(row => row.entry_type === taskType)
-      state.available = entry?.status === 'available'
+      state.available = entry?.status === 'available' || (taskType === 'initial_meal_preview' && selection && entry?.status === 'needs_input' && entry?.reason_code === 'selection_required')
       if (!state.available) state.notice = ({budget_price_unavailable:'营养咨询计费配置尚未就绪，请联系管理员。',budget_exceeded:'本月健康 AI 可用额度不足或待核账，请稍后再试。',consent_required:'此项服务已停用，请在隐私设置中管理。',missing_scopes:'该成员尚未授权此项健康服务，请核查成员授权。',configuration_unavailable:'此项服务尚未配置，资料仍可查看和修改。',dependency_not_ready:'此项服务所需的运行服务或专业资料尚未就绪。',agent_unavailable:'营养助手尚未就绪，请稍后再试。',skill_unavailable:'营养助手资料尚未就绪。'})[entry?.configuration_reason_code||entry?.reason_code] || '请打开该成员的家庭档案核对资料与授权。'
       if (entry?.reason_code === 'consent_required' && taskType !== 'consultation') {
         const policy = (await send({ path: '/api/health/v1/configuration' })).data
         if (!current(ticket)) return
-        const purpose = taskType === 'diet_analysis' ? 'diet_analysis' : taskType === 'meal_preview' ? 'meal_plan' : 'consultation'
+        const purpose = taskType === 'diet_analysis' ? 'diet_analysis' : ['meal_preview','initial_meal_preview'].includes(taskType) ? 'meal_plan' : 'consultation'
         const configured = policy?.[purpose]
         if (configured?.available === true && typeof configured.processor === 'string' &&
           configured.processor && typeof policy.policy_version === 'string' && policy.policy_version) {

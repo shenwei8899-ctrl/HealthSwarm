@@ -1,8 +1,13 @@
 <script setup>
-import { computed, reactive } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import AppNavBar from './AppNavBar.vue'
 import FoodImageSlot from './FoodImageSlot.vue'
+import InitialMealPlan from './InitialMealPlan.vue'
+import { createHealthPlanClient, healthPlanState } from '../services/health-plan-client.js'
+const active = ref(false)
+const dayState = reactive(healthPlanState()), dayClient = createHealthPlanClient({state:dayState})
+function dayDetail(plan) { uni.navigateTo({url:'/pages/health/plans?memberId='+encodeURIComponent(dayState.memberId)+'&planId='+encodeURIComponent(plan.plan_id)}) }
 import { createExclusivePlanClient, exclusivePlanState, planTiers, planTierNames, planMoney } from '../services/exclusive-planning.js'
 import { createPlanConsent } from '../services/exclusive-plan-consent.js'
 import { request } from '../services/request.js'
@@ -12,7 +17,7 @@ const consent = reactive({loading:false,busy:false,members:[],error:'',processor
 const consentClient = createPlanConsent({state:consent,send:request,family:()=>getSession()?.householdId,revision:sessionRevision,startAnalysis:startMemberAnalysis})
 async function open() { await client.open(); if(['consent_required','daily_member_sources_unavailable','daily_member_consent_required'].includes(state.errorCode)) await consentClient.load() }
 async function confirmConsent() { if(await consentClient.accept()) await open() }
-function stop() {client.stop();consentClient.stop()}
+function stop() {active.value=false;dayClient.discard();client.stop();consentClient.stop()}
 const state = reactive(exclusivePlanState()), client = createExclusivePlanClient(state)
 const plan = computed(() => state.plans.find(p => p.tier_code === state.tier))
 const names = computed(() => state.group?.members?.map(m => m.name).join('、') || '全家')
@@ -20,11 +25,23 @@ const progress = computed(() => Math.min(95, Math.round((state.group?.completed_
 const back = () => uni.navigateBack()
 const preferences = () => uni.navigateTo({url:'/pages/profile/index'})
 function detail() { if (plan.value) uni.navigateTo({url:'/pages/exclusive-plans/detail?plan_sn='+encodeURIComponent(plan.value.plan_sn)+'&plan_version='+plan.value.plan_version}) }
-onShow(open); onHide(stop); onUnload(stop)
+onShow(()=>{active.value=true;open();dayClient.open()}); onHide(stop); onUnload(stop)
 </script>
 <template>
   <view class="screen exclusive-screen">
     <AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="back">‹</button><text class="nav-title">AI 专属计划</text></view></AppNavBar>
+    <view class="plan-surface single-day-plans">
+      <text class="plan-section-title">单日三餐</text>
+      <text class="plan-caption">选择成员和日期，核对三餐后确认保存。</text>
+      <view class="day-members"><button v-for="member in dayState.members" :key="member.id" :class="{chosen:dayState.memberId===member.id}" :disabled="dayState.busy" @click="dayClient.open(member.id)">{{member.display_name}}</button></view>
+      <text v-if="dayState.busy" class="plan-caption">正在读取已保存餐单…</text>
+      <text v-if="dayState.error" class="plan-caption">{{dayState.error}}</text>
+      <button v-if="dayState.error" class="plan-text-link" :disabled="dayState.busy" @click="dayClient.open(dayState.memberId)">重新读取单日餐单</button>
+      <InitialMealPlan v-if="active && dayState.memberId" :member-id="dayState.memberId" @saved="dayClient.page(0)"/>
+      <button v-for="saved in dayState.plans" :key="saved.plan_id" class="plan-text-link" @click="dayDetail(saved)">{{saved.plan_date}} 的已保存三餐 · 版本 {{saved.version}} ›</button>
+      <text v-if="!dayState.busy && !dayState.error && !dayState.plans.length" class="plan-caption">还没有已保存的单日餐单。</text>
+      <button v-if="dayState.nextOffset!==null" class="plan-text-link" :disabled="dayState.busy" @click="dayClient.page(dayState.nextOffset)">更多单日餐单</button>
+    </view>
     <view class="plan-heading"><view class="plan-title"><text class="plan-title-line">全家的三餐，</text><text class="plan-title-line">从容安排。</text></view><text class="plan-caption">21 天 · 为{{names}}安排</text></view>
     <template v-if="state.status==='ready' && state.plans.length">
       <view class="tier-switch"><button v-for="tier in planTiers" :key="tier" :class="{chosen:state.tier===tier}" :aria-pressed="state.tier===tier" @click="client.select(tier)">{{planTierNames[tier]}}</button></view>
@@ -51,5 +68,6 @@ onShow(open); onHide(stop); onUnload(stop)
 </template>
 <style scoped>
 @import '../styles/exclusive-plan.css';
+.single-day-plans{display:flex;flex-direction:column;gap:20rpx}.day-members{display:flex;flex-wrap:wrap;gap:12rpx}.day-members button{padding:14rpx 20rpx;background:#edf0f4;border-radius:16rpx;font-size:26rpx}.day-members .chosen{background:#246b50;color:#fff}
 .tier-switch{display:flex;padding:7rpx;background:#edf0f4;border-radius:20rpx;margin:8rpx 0 26rpx}.tier-switch button{flex:1;font-size:28rpx;font-weight:400;line-height:68rpx;background:transparent;border-radius:16rpx;color:#6f7890}.tier-switch button.chosen{background:#fff;color:#171d29;box-shadow:0 2rpx 10rpx #202d4010}.plan-card-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:24rpx;margin-bottom:24rpx}.plan-card-heading>view{display:flex;flex-direction:column;gap:12rpx}.plan-prices{display:flex;justify-content:space-between;gap:20rpx;margin:28rpx 0}.plan-prices>view{display:flex;flex-direction:column;gap:8rpx}.price-right{text-align:right}.plan-price{font-size:46rpx;font-weight:600;letter-spacing:-1rpx}.plan-subprice{font-size:30rpx;font-weight:500}.plan-tools{display:flex;align-items:center;justify-content:center;gap:28rpx;margin:26rpx 0;color:#c3c8d2}.plan-tools button{background:transparent;color:#0878f9;font-size:27rpx;padding:16rpx 8rpx}.plan-orbit{width:108rpx;height:108rpx;line-height:108rpx;text-align:center;background:#f0f5ff;color:#1779f5;border-radius:32rpx;font-size:40rpx}.plan-progress{width:100%;height:7rpx;background:#eef2f7;border-radius:8rpx;overflow:hidden;margin:8rpx 0}.plan-progress>view{height:100%;background:#1683fa;transition:width .35s}.featured-plan{margin-top:0}
 </style>
