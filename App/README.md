@@ -26,7 +26,7 @@ pnpm build:h5
 pnpm build:mp-weixin
 ```
 
-微信开发者工具导入 `dist/build/mp-weixin`。实际 AppID 在微信公众平台注册小程序后取得，在本机 `.env.local` 填写 `VITE_WECHAT_APPID` 再重新构建；构建会将公开 AppID 写入产物并开启合法域名校验。源码 `src/manifest.json` 的 AppID 保持留空，未配置时只支持游客构建，不能完成真实登录。HBuilderX 也可导入本项目源码，安装依赖后选择运行到微信开发者工具。
+微信开发者工具导入 `dist/build/mp-weixin`。也可导入当前 `App` 目录，根目录 `project.config.json` 已通过 `miniprogramRoot` 指向上述构建目录；两种方式都需先执行 `pnpm build:mp-weixin`，源码修改后重新构建。若提示根目录缺少 `app.json`，检查构建是否完成以及该路径是否正确，不要在源码根目录手写 `app.json`。实际 AppID 在微信公众平台注册小程序后取得，在本机 `.env.local` 填写 `VITE_WECHAT_APPID` 再重新构建；构建会将公开 AppID 写入产物并开启合法域名校验。源码 `src/manifest.json` 的 AppID 保持留空，未配置时只支持游客构建，不能完成真实登录。HBuilderX 也可导入本项目源码，安装依赖后选择运行到微信开发者工具。
 
 `dist` 是生成产物，修改应在 `src` 内完成，不直接编辑产物。
 

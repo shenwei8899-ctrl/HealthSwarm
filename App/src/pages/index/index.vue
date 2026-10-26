@@ -39,11 +39,15 @@ async function loginDestination() {
   if (isCommerceEnabled) await commerce.connect()
   return resolveAppEntry()
 }
+function openEntry(url) {
+  return new Promise((resolve, reject) => uni.reLaunch({ url, success: resolve,
+    fail: () => reject(new Error('登录成功，但页面打开失败，请重试。')) }))
+}
 async function restore() {
   if (isPhoneLogin) { await phoneLogin().restore(); return }
   if (isMockMode || !getSession()?.token || loggingIn.value) return
   const mine = generation; loggingIn.value = true; loginError.value = ''
-  try { const url = await loginDestination(); if (visible && mine === generation && url !== '/pages/index/index') uni.reLaunch({url}) }
+  try { const url = await loginDestination(); if (visible && mine === generation && url !== '/pages/index/index') await openEntry(url) }
   catch (e) { if (visible && mine === generation) loginError.value = e.message }
   finally { if (visible && mine === generation) loggingIn.value = false }
 }
@@ -68,7 +72,10 @@ async function continueLogin() {
       }
       url=scopedStorage.getStorageSync('frontend-onboarded-v1')?'/pages/chat/index':'/pages/onboarding/index'
     } else url=await loginDestination()
-    if (visible && mine === generation) { loginOpen.value=false; uni.reLaunch({url}) }
+    if (visible && mine === generation) {
+      await openEntry(url)
+      if (visible && mine === generation) loginOpen.value = false
+    }
   } catch (e) { if (visible && mine === generation) loginError.value=e.message||'微信登录未完成，请重试。' }
   finally { if (visible && mine === generation) loggingIn.value=false }
 }
@@ -78,7 +85,7 @@ async function continueLogin() {
 <!-- #ifdef MP-WEIXIN -->
 <button v-if="isPhoneLogin" class="primary-button" open-type="getPhoneNumber" :disabled="loggingIn || phoneUncertain" :loading="loggingIn" @getphonenumber="authorizePhone">{{loggingIn?'正在登录…':'微信登录，开始使用'}}</button>
 <!-- #endif -->
-<button v-if="!isPhoneLogin" class="primary-button" :disabled="loggingIn" @click="start">{{loggingIn?'正在登录…':canUseBusinessLogin?'测试账号登录，开始使用':'微信登录，开始使用'}}</button><text v-if="loginError" class="login-error" role="alert">{{loginError}}</text><button v-if="isPhoneLogin && (loginError || phoneUncertain)" class="secondary-button" :disabled="loggingIn" @click="retryPhoneLogin">重新检查登录状态</button><text v-if="isPhoneLogin" class="safe-note">微信授权手机号后继续使用，手机号绑定到当前账号。</text><text v-if="phoneBindingDemo" class="safe-note">隔离环境演示</text><text v-if="canUseBusinessLogin" class="safe-note">{{canUseH5TestLogin?'功能测试 · 使用独立测试账号':'本机联调 · 使用真实业务账号'}}</text><text v-if="isMockMode" class="safe-note">前端体验版 · 登录、推荐与交易均为模拟</text></view><view v-if="loginOpen && canUseBusinessLogin" class="sheet-mask" @click="closeLoginSheet"><view class="sheet" @click.stop><view class="sheet-head"><text class="section-title">测试账号登录</text><button aria-label="关闭登录" @click="closeLoginSheet">×</button></view><text class="demo-label">使用业务账号连接真实服务，资料会保存到服务端。</text><input v-model="identifier" class="field-input" maxlength="100" placeholder="业务测试账号" aria-label="业务测试账号" :disabled="loggingIn"/><input v-model="password" class="field-input" password maxlength="128" placeholder="密码" aria-label="密码" :disabled="loggingIn" confirm-type="done" @confirm="continueLogin"/><text v-if="loginError" class="login-error" role="alert">{{loginError}}</text><button class="primary-button" :disabled="loggingIn || !identifier.trim() || !password" @click="continueLogin">{{loggingIn?'正在登录…':'登录并继续'}}</button></view></view><view v-if="loginOpen && isMockMode" class="sheet-mask" @click.self="closeLoginSheet"><view class="sheet"><view class="sheet-head"><text class="section-title">模拟微信登录</text><button @click="closeLoginSheet">×</button></view><text class="demo-label">此处仅创建本机测试身份，不是真实微信授权。</text><input v-model="testAccount" class="field-input" maxlength="40" placeholder="测试账号名称"/><button class="primary-button" :disabled="loggingIn" @click="continueLogin">模拟登录并继续</button></view></view></view>
+<button v-if="!isPhoneLogin" class="primary-button" :disabled="loggingIn" @click="start">{{loggingIn?'正在登录…':canUseBusinessLogin?'测试账号登录，开始使用':'微信登录，开始使用'}}</button><text v-if="loginError" class="login-error" role="alert">{{loginError}}</text><button v-if="isPhoneLogin && (loginError || phoneUncertain)" class="secondary-button" :disabled="loggingIn" @click="retryPhoneLogin">重新检查登录状态</button><text v-if="isPhoneLogin" class="safe-note">微信授权手机号后继续使用，手机号绑定到当前账号。</text><text v-if="phoneBindingDemo" class="safe-note">隔离环境演示</text><text v-if="canUseBusinessLogin" class="safe-note">{{canUseH5TestLogin?'功能测试 · 使用独立测试账号':'本机联调 · 使用真实业务账号'}}</text><text v-if="isMockMode" class="safe-note">前端体验版 · 登录、推荐与交易均为模拟</text></view><view v-if="loginOpen && canUseBusinessLogin" class="sheet-mask" @click="closeLoginSheet"><view class="sheet" @click.stop><view class="sheet-head"><text class="section-title">测试账号登录</text><button aria-label="关闭登录" @click="closeLoginSheet">×</button></view><text class="demo-label">使用业务账号连接真实服务，资料会保存到服务端。</text><input v-model="identifier" class="field-input" maxlength="100" placeholder="业务测试账号" aria-label="业务测试账号" :disabled="loggingIn"/><input v-model="password" class="field-input" password maxlength="128" placeholder="密码" aria-label="密码" :disabled="loggingIn" confirm-type="done" @confirm="continueLogin"/><text v-if="loginError" class="login-error" role="alert">{{loginError}}</text><button class="primary-button" :disabled="loggingIn || !identifier.trim() || !password" @click="continueLogin">{{loggingIn?'正在登录…':'登录并继续'}}</button></view></view><view v-if="loginOpen && isMockMode" class="sheet-mask" @click="closeLoginSheet"><view class="sheet" @click.stop><view class="sheet-head"><text class="section-title">模拟微信登录</text><button @click="closeLoginSheet">×</button></view><text class="demo-label">此处仅创建本机测试身份，不是真实微信授权。</text><input v-model="testAccount" class="field-input" maxlength="40" placeholder="测试账号名称"/><text v-if="loginError" class="login-error" role="alert">{{loginError}}</text><button class="primary-button" :disabled="loggingIn" :loading="loggingIn" @click="continueLogin">{{loggingIn?'正在登录…':'模拟登录并继续'}}</button></view></view></view>
 </template>
 <style scoped>
 .welcome-screen.screen{position:relative;z-index:0;isolation:isolate;display:flex;flex-direction:column;min-height:100vh;min-height:100svh;padding:24rpx 40rpx calc(env(safe-area-inset-bottom) + 38rpx);background:#67472f;color:#fff;overflow:hidden}

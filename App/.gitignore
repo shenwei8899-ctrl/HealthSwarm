@@ -8,4 +8,5 @@ unpackage/
 .env.local
 .env.*.local
 .codex/
+project.private.config.json
 
