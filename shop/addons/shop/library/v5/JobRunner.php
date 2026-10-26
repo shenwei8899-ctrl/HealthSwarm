@@ -206,7 +206,7 @@ class JobRunner
     public function preparePlanBatches()
     {
         $rows = Db::name('shop_plan_delivery_batch')->alias('b')->join('shop_service_plan_order po', 'po.id=b.plan_order_id')
-            ->where('po.status', 'active')->where('b.status', 'scheduled')->where('b.inventory_lock_at', '<=', time())
+            ->where('po.status', 'in', ['active','paused'])->where('b.status', 'scheduled')->where('b.inventory_lock_at', '<=', time())
             ->field('b.id')->limit(50)->select();
         foreach ($rows as $row) {
             try {
@@ -232,35 +232,9 @@ class JobRunner
 
     public function reconcilePlanDelivery()
     {
-        $orders = Db::name('shop_service_plan_order')->where('status', 'in', ['active', 'paused', 'exception_handling', 'completed'])
-            ->limit(100)->select();
-        $changed = 0;
-        foreach ($orders as $planOrder) {
-            $completed = (int)Db::name('shop_plan_delivery_batch')->where('plan_order_id', $planOrder['id'])->where('status', 'delivered')->count();
-            $fulfilled = (int)Db::name('shop_plan_delivery_batch')->where('plan_order_id', $planOrder['id'])->where('status', 'delivered')->sum('allocated_pay_amount_cent');
-            $isComplete = $completed >= (int)$planOrder['total_batches'];
-            if ($completed === (int)$planOrder['completed_batches'] && $fulfilled === (int)$planOrder['fulfilled_amount_cent'] && (!$isComplete || $planOrder['status'] === 'completed')) {
-                continue;
-            }
-            $update = [
-                'completed_batches' => $completed, 'fulfilled_amount_cent' => $fulfilled,
-                'row_version' => (int)$planOrder['row_version'] + 1, 'updatetime' => time(),
-            ];
-            if ($isComplete) {
-                $update['status'] = 'completed';
-            }
-            Db::name('shop_service_plan_order')->where('id', $planOrder['id'])->update($update);
-            if ($isComplete) {
-                Db::name('shop_order')->where('id', $planOrder['order_id'])->update([
-                    'shippingstate' => 2, 'orderstate' => 3, 'receivetime' => time(), 'updatetime' => time(),
-                ]);
-                Db::name('shop_order_ext')->where('order_id', $planOrder['order_id'])->update([
-                    'business_status' => 'completed', 'fulfillment_status' => 'completed', 'updatetime' => time(),
-                ]);
-            }
-            $changed++;
-        }
-        return $changed;
+        $orders=Db::name('shop_service_plan_order')->where('status','in',['active','paused','exception_handling','cancelling'])->limit(100)->select();
+        foreach ($orders as $plan) (new PlanOrderService())->reconcileCompletion($plan['order_sn']);
+        return count($orders);
     }
 
     public function compensateRefunds()

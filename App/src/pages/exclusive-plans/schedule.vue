@@ -1,71 +1,53 @@
 <script setup>
-import { ensureExclusivePlan } from '../../services/exclusive-planning.js'
-import { isMockMode } from '../../services/config.js'
+import { ref } from 'vue'
+import { onLoad, onShow } from '@dcloudio/uni-app'
 import AppNavBar from '../../components/AppNavBar.vue'
-import { computed, ref } from 'vue'
-import { onLoad,onShow } from '@dcloudio/uni-app'
-import { service as mockService } from '../../services/index.js'
-import { getProfile,backHome } from '../../utils/profile.js'
-import { createDeliveryBatches, defaultPlanStartDate, getExclusivePlan,adaptExclusivePlan } from '../../utils/exclusive-plans.js'
-
-const id = ref('balanced')
-const profile = ref(getProfile())
-const revision = ref(0)
-const loading = ref(false)
-const error = ref('')
-const plan = computed(() => { revision.value; return adaptExclusivePlan(getExclusivePlan(id.value), profile.value, startDate.value) })
-const startDate = ref(defaultPlanStartDate())
-const address = ref('')
-let requestVersion = 0
-onShow(async()=>{profile.value=getProfile();const selected=mockService.selectedAddress();address.value=selected?selected.name+' · '+selected.phone+'\n'+selected.region+' '+selected.detail:'';await generatePlan()})
-const ready = computed(() => plan.value.sourceType === (isMockMode ? 'demo' : 'api') && (isMockMode || plan.value.fixturePlans?.length === 21))
-const batches = computed(() => ready.value ? createDeliveryBatches(plan.value, startDate.value, 21) : [])
-const total = computed(() => ((plan.value.totalEstimateCents || plan.value.estimateCents) / 100).toFixed(2))
-onLoad(options => { id.value = options.id || 'balanced'; if(options.start) startDate.value = options.start })
-async function generatePlan() {
-  const version = ++requestVersion
-  loading.value = true; error.value = ''
-  try { await ensureExclusivePlan(getExclusivePlan(id.value), profile.value, { startDate: startDate.value }); if(version===requestVersion) revision.value++ }
-  catch (cause) { if(version===requestVersion) error.value = cause.message || '计划生成失败，请重试' }
-  finally { if(version===requestVersion) loading.value = false }
+import PlanDeliveryPicker from '../../components/PlanDeliveryPicker.vue'
+import { commerce } from '../../services/commerce.js'
+import { useCommercePage } from '../../services/commerce-page.js'
+import { priceText, validPlanRoute } from '../../services/plan-presentation.js'
+const route = ref(null), selection = ref(null), quote = ref(null), pending = ref(false)
+const { busy, error, run } = useCommercePage(() => { quote.value = null; selection.value = null; pending.value = false })
+onLoad(options => { try { route.value = validPlanRoute(options) } catch (e) { error.value = e.message } })
+onShow(() => { quote.value = null; pending.value = !!commerce.pendingOrder() })
+function change(value) { selection.value = value; quote.value = null }
+function preview() {
+  if (!selection.value || !route.value) return
+  return run(async active => {
+    quote.value = null
+    if (commerce.pendingOrder()) { pending.value = true; return }
+    const s = selection.value
+    const result = await commerce.quotePlan(route.value.sn, route.value.version, s.address_id, s.first_delivery_date, s.delivery_slot_id)
+    if (active()) quote.value = result
+  })
 }
-function changeDate(event) { if(startDate.value===event.detail.value)return; startDate.value = event.detail.value; return generatePlan() }
-function chooseAddress(){uni.navigateTo({url:'/pages/address/index'})}
-function pay() {
-  if(loading.value || error.value || !ready.value)return uni.showToast({title:'请先生成此日期的计划',icon:'none'})
-  if(plan.value.blocked.length)return uni.showToast({title:'请先处理计划问题',icon:'none'})
-  if(!address.value)return uni.showToast({title:'请先选择配送地址',icon:'none'})
-  uni.navigateTo({ url: '/pages/shop/index?meal=dinner&source=exclusive-plan&checkout=1&plan=' + plan.value.id + '&start=' + startDate.value + '&batches=21' })
+function submit(recover = false) {
+  return run(async active => {
+    if (!recover && (!quote.value || Date.parse(quote.value.expires_at) <= Date.now())) { quote.value = null; throw new Error('报价已过期，请重新核对金额') }
+    try {
+      const result = recover ? await commerce.retryOrder() : await commerce.createOrder(quote.value.checkout_token)
+      if (active()) { quote.value = null; uni.redirectTo({url:'/pages/orders/detail?id='+encodeURIComponent(result.order_sn)}) }
+    } finally { if (active()) pending.value = !!commerce.pendingOrder() }
+  })
 }
+const back = () => uni.navigateBack()
 </script>
-
 <template>
-  <view class="screen schedule-screen">
-    <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">确认配送</text><text class="pill">21 次</text></view></AppNavBar>
-    <view class="schedule-head"><text class="eyebrow">AI专属计划 · 配送安排</text><text class="display-title">先确定送到哪里，<br />再安排 21 批。</text><text>顺序固定为“地址 → 第1批预计送达日 → 21批配送”。{{isMockMode?'日期与菜品均为测试数据。':'配送日期与费用需在结算时确认。'}}</text></view>
-    <text v-if="loading" class="safe-note">正在分析所选日期的计划…</text><view v-if="error" class="card"><text class="inline-error">{{error}}</text><button @click="generatePlan">重试生成</button></view>
-    <button class="address-card card" @click="chooseAddress"><view><text class="section-title">配送地址</text><text>{{address||'还没有收货地址'}}</text></view><text>{{address?'更换':'新增'}} ›</text></button>
-    <view class="date-card card">
-      <view><text class="section-title">第1批预计送达日</text><text>{{address?'选择可预约日期':'请先选地址'}}</text></view>
-      <picker v-if="address" mode="date" :value="startDate" :start="defaultPlanStartDate()" @change="changeDate"><view class="date-select"><text>{{ startDate }}</text><text>›</text></view></picker>
-      <text class="date-note">计划生效日 = 第1批食材的预计送达日，不是支付日。可预约日期正式版由履约服务返回。</text>
-    </view>
-    <view class="batch-head"><view><text class="section-title">配送批次</text><text>{{ plan.name }} · 共21次</text></view><text>每日一批</text></view>
-    <view class="batch-list">
-      <view v-for="batch in batches" :key="batch.index" class="batch-row">
-        <view class="batch-line"><text></text></view>
-        <view class="batch-copy"><view><text>第{{ batch.index }}天</text><text>{{ batch.date }} 送达</text></view><text>{{ batch.dishes.join('、') }}</text></view>
-      </view>
-    </view>
-    <view class="schedule-note">实际商品、库存、配送范围与时间需在正式商城再次确认。本页不创建真实订阅或配送。</view>
-    <view class="bottom-bar"><view><text>一次支付总价 · 预估</text><text>¥{{ total }}</text><text>首批预计送达 {{ startDate }}</text></view><button class="primary-button" :disabled="loading || !!error || !ready || plan.blocked.length>0" @click="pay">核对商品与价格，去结算 →</button></view>
+  <view class="screen exclusive-screen schedule-screen">
+    <AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="back">‹</button><text class="nav-title">配送安排</text></view></AppNavBar>
+    <view class="plan-heading"><view class="plan-title"><text class="plan-title-line">为接下来的三餐，</text><text class="plan-title-line">做好准备。</text></view><text class="plan-caption">每日一批 · 提前一天送达</text></view>
+    <view v-if="pending" class="plan-surface"><text class="plan-section-title">上次下单结果待确认</text><button class="plan-primary" :disabled="busy" @click="submit(true)">查询原订单</button></view>
+    <PlanDeliveryPicker v-if="route && !pending" :sn="route.sn" :version="route.version" :disabled="busy" @change="change"/>
+    <view v-if="error" class="plan-notice">{{error}}</view>
+    <template v-if="quote && !pending">
+      <view class="plan-surface"><text class="plan-section-title">这一次的费用</text><view class="plan-row"><text>21 批食材</text><text>{{priceText(quote.goods_amount_cent)}}</text></view><view class="plan-row"><text>计划服务费</text><text>{{priceText(quote.service_fee_cent)}}</text></view><view class="plan-row"><text>21 批配送费</text><text>{{priceText(quote.shipping_fee_cent)}}</text></view><view v-if="quote.discount_amount_cent" class="plan-row"><text>优惠</text><text>−{{priceText(quote.discount_amount_cent)}}</text></view><view class="plan-row total-row"><text>一次支付</text><text>{{priceText(quote.payable_amount_cent)}}</text></view></view>
+      <view class="plan-surface"><text class="plan-section-title">21 次配送</text><view v-for="batch in quote.delivery_batches" :key="batch.batch_no" class="batch-row"><text class="batch-number">{{batch.batch_no}}</text><view><text>{{batch.delivery_date}} 送达</text><text class="plan-tiny">{{batch.meal_date}} 食用</text></view><text class="plan-tiny">{{priceText(batch.allocated_pay_amount_cent)}}</text></view></view>
+      <text class="plan-notice">未截单、未备货的批次可暂停或取消。取消按购买时分摊金额退回，已执行批次的优惠不追回。</text>
+    </template>
+    <view v-if="route && !pending" class="plan-fixed"><button v-if="!quote" class="plan-primary" :disabled="busy || !selection" @click="preview">{{busy?'正在核对…':'核对配送与金额'}}</button><button v-else class="plan-primary" :disabled="busy" @click="submit(false)">确认下单 · {{priceText(quote.payable_amount_cent)}}</button></view>
   </view>
 </template>
-
 <style scoped>
-.schedule-screen { padding-bottom: calc(env(safe-area-inset-bottom) + 190rpx); }.schedule-head { margin-top: 46rpx; }.schedule-head .display-title { display: block; font-size: 50rpx; line-height: 1.25; }.schedule-head > text:last-child { display: block; margin-top: 18rpx; color: #687a72; font-size: 22rpx; line-height: 1.65; }
-.address-card{width:100%;display:flex;align-items:center;justify-content:space-between;margin-top:28rpx;padding:24rpx;text-align:left}.address-card>view{display:flex;flex-direction:column;gap:9rpx}.address-card>view text:last-child{max-width:470rpx;color:#6c7e75;font-size:19rpx;line-height:1.5;white-space:pre-line}.address-card>text:last-child{color:#246b50;font-size:20rpx;font-weight:800}
-.date-card { margin-top: 30rpx; padding: 26rpx; }.date-card > view:first-child { display: flex; align-items: center; justify-content: space-between; }.date-card > view:first-child > text:last-child { color: #7c8b84; font-size: 18rpx; }.date-select { display: flex; align-items: center; justify-content: space-between; min-height: 80rpx; margin-top: 18rpx; padding: 0 20rpx; border-radius: 18rpx; background: #eef1e5; color: #1f5f49; }.date-select text:first-child { font-family:inherit; font-size: 29rpx; font-weight: 800; }.date-select text:last-child { font-size: 34rpx; }.date-note { display: block; margin-top: 15rpx; color: #859089; font-size: 18rpx; }
-.batch-head { display: flex; align-items: flex-end; justify-content: space-between; margin: 42rpx 0 20rpx; }.batch-head > view { display: flex; flex-direction: column; gap: 7rpx; }.batch-head > view text:last-child,.batch-head > text { color: #77877f; font-size: 19rpx; }.batch-list { padding: 4rpx 0 6rpx; }.batch-row { display: grid; grid-template-columns: 32rpx 1fr; min-height: 112rpx; }.batch-line { position: relative; }.batch-line::after { content: ''; position: absolute; left: 12rpx; top: 22rpx; bottom: -22rpx; width: 2rpx; background: #cfd8ce; }.batch-row:last-child .batch-line::after { display: none; }.batch-line text { position: relative; z-index: 2; width: 20rpx; height: 20rpx; display: block; margin: 17rpx 0 0 3rpx; border: 4rpx solid #f5f5f7; border-radius: 50%; background: #7da58c; }.batch-copy { padding: 10rpx 0 24rpx 8rpx; }.batch-copy > view { display: flex; align-items: baseline; gap: 14rpx; }.batch-copy > view text:first-child { color: #1d1d1f; font-size: 24rpx; font-weight: 800; }.batch-copy > view text:last-child { color: #5f754e; font-size: 22rpx; font-weight: 700; }.batch-copy > text { display: block; margin-top: 10rpx; color: #7b8983; font-size: 20rpx; line-height: 1.55; }.schedule-note { margin-top: 18rpx; padding: 20rpx; border-radius: 20rpx; background: #efe1d4; color: #775d52; font-size: 18rpx; line-height: 1.6; }
-.bottom-bar { position: fixed; z-index: 10; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 18rpx; padding: 20rpx 30rpx calc(env(safe-area-inset-bottom) + 20rpx); border-top: 1rpx solid rgba(24,54,46,.08); background: rgba(255,253,247,.97); }.bottom-bar > view { width: 190rpx; display: flex; flex-direction: column; gap: 4rpx; color: #718179; font-size: 17rpx; }.bottom-bar > view text:nth-child(2) { color: #a64e39; font-family:inherit; font-size: 31rpx; font-weight: 800; }.bottom-bar .primary-button { flex: 1; min-height: 82rpx; margin: 0; font-size: 23rpx; }
+@import '../../styles/exclusive-plan.css';
+.schedule-screen{padding-bottom:calc(170rpx + env(safe-area-inset-bottom))}.batch-row{display:flex;gap:24rpx;align-items:center;padding:22rpx 0;border-bottom:1rpx solid #eff1f5;font-size:28rpx}.batch-row:last-child{border:0}.batch-row>view{flex:1}.batch-row>view>text{display:block}.batch-number{width:48rpx;height:48rpx;line-height:48rpx;text-align:center;background:#edf5ff;border-radius:50%;color:#267ddf;font-size:25rpx}.total-row{font-weight:500}.total-row>text:last-child{font-size:36rpx}
 </style>

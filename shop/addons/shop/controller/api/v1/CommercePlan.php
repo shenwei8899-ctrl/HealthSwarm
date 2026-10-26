@@ -13,16 +13,26 @@ class CommercePlan extends Base
     public function index()
     {
         return $this->execute(function () {
-            $items = Db::name('shop_service_plan')->where('user_id', $this->userId())->order('id', 'desc')
-                ->field('plan_sn,plan_name,plan_days,delivery_frequency,current_version,nutrition_status,trade_status,review_gate_status,estimated_amount_cent,status,createtime')->select();
-            return ['items' => $items];
+            $group = trim((string)$this->request->get('group_ref',''));
+            if ($group === '') throw new \addons\shop\library\v5\DomainException('请指定当前推荐组',40001,400);
+            $rows=Db::name('shop_service_plan')->where('user_id',$this->userId())->where('recommendation_group_ref',$group)->order('id','asc')->select();
+            $items=[];
+            foreach ($rows as $row) {
+                $item=(new ServicePlanService())->getBySn($row['plan_sn'],$this->userId());
+                if ($item['estimate_valid_until']<=time() || $item['trade_validation_status']!=='passed') $item=(new ServicePlanService())->revalidateTrade($row['plan_sn'],$this->userId(),$item['plan_version']);
+                unset($item['days'],$item['trade_draft']);
+                $items[]=$item;
+            }
+            return ['recommendation_group_ref'=>$group,'items'=>$items];
         });
     }
 
     public function detail($plan_sn = null)
     {
         return $this->execute(function () use ($plan_sn) {
-            return (new ServicePlanService())->getBySn($plan_sn, $this->userId());
+            $plan=(new ServicePlanService())->getBySn($plan_sn,$this->userId());
+            $this->assertVersion($plan,$this->request->get('plan_version'));
+            return $plan;
         });
     }
 
@@ -51,7 +61,7 @@ class CommercePlan extends Base
             $plan = (new ServicePlanService())->getBySn($plan_sn, $userId);
             $payload['source_type'] = 'service_plan';
             $payload['source_ref'] = $plan_sn;
-            $payload['source_version'] = $plan['plan_version'];
+            $this->assertVersion($plan,$payload['source_version'] ?? null);
             return (new IdempotencyService())->run('commerce.plan.checkout','miniapp:'.$userId,$this->request->header('idempotency-key'),$payload,function()use($userId,$payload){
                 return (new CheckoutService())->preview($userId, $payload, [
                     'request_id' => $this->requestId, 'ip' => $this->request->ip(),
@@ -64,11 +74,33 @@ class CommercePlan extends Base
 
     public function tradeValidate($plan_sn = null)
     {
-        return $this->execute(function () use ($plan_sn) { $this->requireMethod('POST');$p=$this->input();$uid=$this->userId();return(new IdempotencyService())->run('commerce.plan.trade_validate','miniapp:'.$uid,$this->request->header('idempotency-key'),['plan_sn'=>$plan_sn]+$p,function()use($uid,$plan_sn,$p){if(!empty($p['address_id']))(new DeliveryService())->validateAddress($uid,$p['address_id'],isset($p['delivery_slot_id'])?$p['delivery_slot_id']:0);return(new ServicePlanService())->revalidateTrade($plan_sn,$uid);}); });
+        return $this->execute(function () use ($plan_sn) { $this->requireMethod('POST');$p=$this->input();$uid=$this->userId();return(new IdempotencyService())->run('commerce.plan.trade_validate','miniapp:'.$uid,$this->request->header('idempotency-key'),['plan_sn'=>$plan_sn]+$p,function()use($uid,$plan_sn,$p){if(!empty($p['address_id']))(new DeliveryService())->validateAddress($uid,$p['address_id'],isset($p['delivery_slot_id'])?$p['delivery_slot_id']:0);return(new ServicePlanService())->revalidateTrade($plan_sn,$uid,$p['plan_version'] ?? 0);}); });
+    }
+
+    public function availableDates($plan_sn = null)
+    {
+        return $this->execute(function () use ($plan_sn) {
+            $plan=(new ServicePlanService())->getBySn($plan_sn,$this->userId());
+            $this->assertVersion($plan,$this->request->get('plan_version'));
+            $delivery=(new DeliveryService())->validateAddress($this->userId(),$this->request->get('address_id'),$this->request->get('delivery_slot_id',0));
+            return (new \addons\shop\library\v5\PlanScheduleService())->availableDates((new \addons\shop\library\v5\PlanPolicyService())->current(),$delivery);
+        });
     }
 
     public function schedulePreview($plan_sn = null)
     {
-        return $this->execute(function () use ($plan_sn) {$p=$this->input();$plan=(new ServicePlanService())->getBySn($plan_sn,$this->userId());if(empty($p['first_delivery_date'])||!preg_match('/^\d{4}-\d{2}-\d{2}$/',$p['first_delivery_date']))throw new \addons\shop\library\v5\DomainException('首批配送日期格式错误',40011,400);$delivery=(new DeliveryService())->validateAddress($this->userId(),$p['address_id'],isset($p['delivery_slot_id'])?$p['delivery_slot_id']:0);$first=strtotime($p['first_delivery_date'].' 00:00:00');if($first<strtotime(date('Y-m-d')))throw new \addons\shop\library\v5\DomainException('首批配送日期不能早于今天',40011,400);$items=[];for($i=0;$i<21;$i++){$date=strtotime('+'.$i.' day',$first);$items[]=['batch_no'=>$i+1,'delivery_date'=>date('Y-m-d',$date),'meal_date'=>date('Y-m-d',strtotime('+1 day',$date)),'inventory_lock_at'=>date(DATE_ATOM,strtotime('-3 day',$date)),'address'=>$delivery['snapshot'],'slot'=>$delivery['slot']];}return ['plan_sn'=>$plan_sn,'plan_version'=>$plan['plan_version'],'total_batches'=>21,'items'=>$items];});
+        return $this->execute(function () use ($plan_sn) {
+            $this->requireMethod('POST');$p=$this->input();
+            $plan=(new ServicePlanService())->getBySn($plan_sn,$this->userId());
+            $this->assertVersion($plan,$p['plan_version'] ?? null);
+            $delivery=(new DeliveryService())->validateAddress($this->userId(),$p['address_id'] ?? 0,$p['delivery_slot_id'] ?? 0);
+            $schedule=(new \addons\shop\library\v5\PlanScheduleService())->preview((new \addons\shop\library\v5\PlanPolicyService())->current(),$delivery,$p['first_delivery_date'] ?? '');
+            return ['plan_sn'=>$plan_sn,'plan_version'=>$plan['plan_version']]+$schedule;
+        });
+    }
+
+    protected function assertVersion(array $plan, $selected)
+    {
+        if (!$selected || (int)$selected!==$plan['plan_version']) throw new \addons\shop\library\v5\DomainException('计划已变化，请重新查看后选择',40906,409,['current_version'=>$plan['plan_version']]);
     }
 }

@@ -41,14 +41,47 @@ class SupplierOrderService
 
     public function createForBatch($batchId, $requestId)
     {
+        // 与暂停、取消共用 plan_order -> batch 行锁，禁止读完旧状态后继续备货。
+        $batch=Db::name('shop_plan_delivery_batch')->where('id',(int)$batchId)->find();
+        if (!$batch) return [];
+        Db::startTrans();
+        try {
+            $owner=Db::name('shop_service_plan_order')->where('id',$batch['plan_order_id'])->find();
+            Db::name('shop_order')->where('id',$owner['order_id'])->lock(true)->find();
+            Db::name('shop_service_plan_order')->where('id',$batch['plan_order_id'])->lock(true)->find();
+            $locked=Db::name('shop_plan_delivery_batch')->where('id',$batchId)->lock(true)->find();
+            if (!$locked || (int)$locked['cutoff_at']>time()) { Db::commit(); return []; }
+            $result=$this->prepareBatch($batchId,$requestId);
+            Db::commit();return $result;
+        } catch (\Throwable $error) {
+            Db::rollback();
+            Db::startTrans();
+            try {
+                Db::name('shop_order')->where('id',$owner['order_id'])->lock(true)->find();
+                Db::name('shop_service_plan_order')->where('id',$batch['plan_order_id'])->lock(true)->find();
+                $current=Db::name('shop_plan_delivery_batch')->where('id',$batchId)->lock(true)->find();
+                if ($current && in_array($current['status'],['scheduled','exception'],true)) {
+                    Db::name('shop_plan_delivery_batch')->where('id',$batchId)->update(['inventory_status'=>'failed','supplier_status'=>'blocked','status'=>'exception','row_version'=>Db::raw('row_version+1'),'updatetime'=>time()]);
+                    (new ExceptionService())->open('batch_prepare:'.$batchId,'supply_chain','batch_prepare_failed',$error->getMessage(),['resource_type'=>'plan_batch','resource_ref'=>$batch['batch_sn'],'order_sn'=>$owner['order_sn'],'batch_id'=>$batchId],[],'high');
+                }
+                Db::commit();
+            } catch (\Throwable $projectionError) { Db::rollback();throw $projectionError; }
+            throw $error;
+        }
+    }
+
+    protected function prepareBatch($batchId, $requestId)
+    {
         $batch = Db::name('shop_plan_delivery_batch')->where('id', (int)$batchId)->find();
         if (!$batch || !in_array($batch['status'], ['scheduled', 'exception'], true)) {
             return [];
         }
         $planOrder = Db::name('shop_service_plan_order')->where('id', $batch['plan_order_id'])->find();
-        if (!$planOrder || $planOrder['status'] !== 'active') {
+        if (!$planOrder || !in_array($planOrder['status'],['active','paused'],true)) {
             return [];
         }
+        $version=Db::name('shop_service_plan_version')->where('id',$planOrder['plan_version_id'])->find();
+        if (!empty($planOrder['user_cancellable'])) (new AgentMealSourceService())->validateProof(Json::decode($version['agent_source_proof_json'],[]));
         $items = Db::name('shop_plan_delivery_batch_item')->where('batch_id', $batch['id'])->where('status', 'scheduled')->select();
         if (!$items) throw new DomainException('配送批次没有待备货商品，请检查批次明细',40932,409);
         $groups = [];

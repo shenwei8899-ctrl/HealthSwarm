@@ -17,16 +17,26 @@ class AftersaleService
         if(!$order)throw new DomainException('订单不存在',40409,404);
         $items=Db::name('shop_order_goods')->where('order_sn',$order['order_sn'])->select();
         $isPlan=$order['order_type']==='plan';
-        foreach($items as &$item){$ext=Db::name('shop_order_goods_ext')->where('order_goods_id',$item['id'])->find();$item['delivery_batch_id']=$ext?(string)$ext['plan_batch_id']:null;$item['eligible']=(int)$order['paystate']===1 && in_array((int)$item['salestate'],[0,6],true);}
+        foreach($items as &$item){
+            $ext=Db::name('shop_order_goods_ext')->where('order_goods_id',$item['id'])->find();
+            $item['delivery_batch_id']=$ext?(string)$ext['plan_batch_id']:null;
+            $item['eligible']=(int)$order['paystate']===1 && in_array((int)$item['salestate'],[0,6],true);
+            if ($isPlan) {
+                $batch=$ext?Db::name('shop_plan_delivery_batch')->where('id',$ext['plan_batch_id'])->find():null;
+                $item['eligible']=$item['eligible'] && $batch && !in_array($batch['status'],['refund_pending','refunded','cancelled'],true);
+            }
+        }
         return ['order_sn'=>$orderSn,'order_type'=>$order['order_type'],'items'=>$items,
             'allowed_reason_codes'=>$isPlan?['platform_non_delivery','wrong_item','missing_item','quality_issue','legal_mandatory']:['not_received','wrong_item','missing_item','quality_issue','damaged','other'],
-            'plan_non_refundable_after_payment'=>$isPlan];
+            'plan_non_refundable_after_payment'=>false];
     }
 
     public function create($userId,array $payload,$requestId)
     {
         foreach(['order_sn','order_item_id','type','quantity','reason_code'] as $f)if(empty($payload[$f]))throw new DomainException('缺少必填字段: '.$f,40001,400);
-        $order=Db::name('shop_order')->where('order_sn',$payload['order_sn'])->where('user_id',(int)$userId)->find();
+        Db::startTrans();
+        try {
+        $order=Db::name('shop_order')->where('order_sn',$payload['order_sn'])->where('user_id',(int)$userId)->lock(true)->find();
         $item=$order?Db::name('shop_order_goods')->where('id',(int)$payload['order_item_id'])->where('order_sn',$order['order_sn'])->find():null;
         if(!$order||!$item)throw new DomainException('订单商品不存在',40409,404);
         if((int)$order['paystate']!==1||!in_array((int)$item['salestate'],[0,6],true))throw new DomainException('当前商品不可申请售后',40910,409);
@@ -43,8 +53,6 @@ class AftersaleService
         $typeMap=['refund_only'=>1,'return_refund'=>2,'reship'=>3];
         if(!isset($typeMap[$payload['type']]))throw new DomainException('售后类型无效',40001,400);
         $sn=Identifiers::make('aftersale');$now=time();
-        Db::startTrans();
-        try{
             $id=Db::name('shop_order_aftersales')->insertGetId([
                 'aftersale_sn'=>$sn,'user_id'=>$userId,'order_id'=>$order['id'],'order_goods_id'=>$item['id'],'type'=>$typeMap[$payload['type']],
                 'nums'=>$qty,'realprice'=>number_format($refundCent/100,2,'.',''),'shippingfee'=>0,'refund'=>number_format($refundCent/100,2,'.',''),
@@ -70,7 +78,7 @@ class AftersaleService
     public function cancel($userId,$sn)
     {
         $row=$this->detail($userId,$sn);if((int)$row['status']!==1)throw new DomainException('当前售后单不可撤销',40910,409);
-        Db::startTrans();try{Db::name('shop_order')->where('id',$row['order_id'])->lock(true)->find();$locked=Db::name('shop_order_aftersales')->where('id',$row['id'])->lock(true)->find();if((int)$locked['status']!==1)throw new DomainException('当前售后单不可撤销',40910,409);Db::name('shop_order_aftersales')->where('id',$row['id'])->update(['status'=>4,'cancelled_at'=>time(),'row_version'=>(int)$locked['row_version']+1,'updatetime'=>time()]);Db::name('shop_order_goods')->where('id',$row['order_goods_id'])->update(['salestate'=>0]);$this->restoreOrderAfterResolution($row['order_id']);Db::commit();}catch(\Exception $e){Db::rollback();throw $e;}return $this->detail($userId,$sn);
+        Db::startTrans();try{Db::name('shop_order')->where('id',$row['order_id'])->lock(true)->find();$locked=Db::name('shop_order_aftersales')->where('id',$row['id'])->lock(true)->find();if((int)$locked['status']!==1)throw new DomainException('当前售后单不可撤销',40910,409);Db::name('shop_order_aftersales')->where('id',$row['id'])->update(['status'=>4,'cancelled_at'=>time(),'row_version'=>(int)$locked['row_version']+1,'updatetime'=>time()]);Db::name('shop_order_goods')->where('id',$row['order_goods_id'])->update(['salestate'=>0]);(new AftersalePolicyService())->refreshBatchStatus($row['batch_id']);$this->restoreOrderAfterResolution($row['order_id']);Db::commit();}catch(\Exception $e){Db::rollback();throw $e;}return $this->detail($userId,$sn);
     }
 
     /** All rejected/cancelled requests restore the actual receipt state. */

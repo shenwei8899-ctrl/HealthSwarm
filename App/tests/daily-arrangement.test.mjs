@@ -203,3 +203,28 @@ test('formal UI places the real analysis before the gated card and has no placeh
   assert.ok(!ui.includes('本餐有待处理的饮食问题'));assert.ok(!ui.includes('测试数据'))
   assert.ok(ui.includes('/pages/chat/camera'));assert.ok(ui.includes('/pages/scan/index'))
 })
+
+
+test('a setup failure during creation is not read back or replayed as an uncertain write',async()=>{
+ const f=setup(input=>{if(!input.method)return {status:'absent',date:day};throw Object.assign(new Error('规则未就绪'),{code:503,businessCode:'daily_rules_unavailable',retryable:true})})
+ await f.client.load(day);assert.equal(f.calls.length,2);assert.equal(f.state.retryable,false);assert.equal(f.state.errorCode,'daily_rules_unavailable')
+})
+
+test('retrying a failed task checks configuration before sending resume',async()=>{
+ const state=dailyArrangementState(),calls=[]
+ const client=createDailyArrangementClient({state,send:async input=>{calls.push(input);return {data:{status:'failed',date:day,id:'failed'}}},context:()=>({scope:'A',familyId:'family'}),storage:{getStorageSync(){},setStorageSync(){}},newId:()=> 'id',beforeStart:()=>{throw Object.assign(new Error('模型尚未配置'),{businessCode:'daily_dependencies_not_ready',retryable:false})}})
+ await client.load(day,true);assert.equal(calls.length,1);assert.equal(state.retryable,false);assert.equal(state.errorCode,'daily_dependencies_not_ready')
+})
+
+test('an explicitly retryable business 503 still recovers the saved arrangement',async()=>{
+ let reads=0
+ const f=setup(()=>{if(++reads===1)throw Object.assign(new Error('临时不可用'),{code:503,businessCode:'upstream_busy',retryable:true});return ready()})
+ await f.client.load(day)
+ assert.equal(reads,2);assert.equal(f.state.phase,'ready');assert.equal(f.state.errorCode,'');assert.equal(f.state.retryable,true)
+})
+
+test('an unclassified gateway 503 remains recoverable',async()=>{
+ let reads=0
+ const f=setup(()=>{if(++reads===1)throw Object.assign(new Error('gateway'),{code:503,retryable:false});return ready()})
+ await f.client.load(day);assert.equal(reads,2);assert.equal(f.state.phase,'ready')
+})

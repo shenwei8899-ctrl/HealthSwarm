@@ -48,3 +48,12 @@ test('logout or account switching during a profile read prevents late routing in
   finish({householdId:'family-1',onboarded:true})
   await assert.rejects(pending,e=>e.code==='SESSION_CHANGED')
 })
+
+
+test('unconfirmed users can repair or confirm the exact family profile without bypassing AI onboarding',async()=>{
+  const { protectedDestination } = await import('../src/services/navigation.js')
+  const entry='/pages/onboarding/index'
+  for(const path of ['/pages/profile/index','/pages/profile/member?id=mother','/pages/family-shared/index?memberId=mother'])assert.equal(protectedDestination(path,entry),path)
+  assert.equal(protectedDestination('/pages/chat/agent?memberId=mother',entry),entry)
+  assert.equal(protectedDestination('/pages/profile/member?id=mother','/pages/index/index'),'/pages/index/index')
+})

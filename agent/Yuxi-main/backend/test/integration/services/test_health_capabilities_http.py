@@ -60,13 +60,14 @@ pytestmark = [
 PURPOSES = ("consultation", "meal_plan", "diet_analysis", "quality_review", "purchase")
 BASIC_TASKS = ("consultation", "meal_preview", "diet_analysis")
 SELECTED_TASKS = (
+    "multi_day_plan",
     "initial_meal_preview",
     "family_meal_revision",
     "safe_meal_revision",
     "quality_check",
     "purchase_requirements",
 )
-UNSUPPORTED_TASKS = ("glucose_plan", "multi_day_plan", "automatic_family_coordination")
+UNSUPPORTED_TASKS = ("glucose_plan", "automatic_family_coordination")
 AGENTS = ("health-consultation", "health-meal-planner", "health-diet-analyst", "health-quality", "health-purchase")
 SKILLS = (
     "family-nutritionist",
@@ -623,6 +624,7 @@ def assert_ready_entries(result):
     tasks = task_map(result)
     assert set(tasks) == set(BASIC_TASKS + SELECTED_TASKS + UNSUPPORTED_TASKS)
     expected_purposes = {
+        "multi_day_plan": "meal_plan",
         "consultation": "consultation",
         "meal_preview": "meal_plan",
         "diet_analysis": "diet_analysis",
@@ -633,6 +635,7 @@ def assert_ready_entries(result):
         "purchase_requirements": "purchase",
     }
     expected_selections = {
+        "multi_day_plan": ["family_id"],
         "initial_meal_preview": ["kind", "plan_date", "rule_code", "rule_version", "profile_versions", "meals"],
         "family_meal_revision": ["plan_id", "version", "rule_code", "rule_version", "profile_versions"],
         "safe_meal_revision": ["plan_id", "version", "rule_code", "rule_version", "profile_version"],

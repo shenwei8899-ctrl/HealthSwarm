@@ -46,6 +46,7 @@ async def member_capabilities(uid: str, member_id: str) -> MemberCapabilities:
         indicator_scopes = ("ai_use", "profile_view")
         professional_scopes = ("ai_use", "diet_edit", "profile_view")
         selection_fields = {
+            "multi_day_plan": ("family_id",),
             "initial_meal_preview": ("kind", "plan_date", "rule_code", "rule_version", "profile_versions", "meals"),
             "family_meal_revision": ("plan_id", "version", "rule_code", "rule_version", "profile_versions"),
             "safe_meal_revision": ("plan_id", "version", "rule_code", "rule_version", "profile_version"),
@@ -72,6 +73,7 @@ async def member_capabilities(uid: str, member_id: str) -> MemberCapabilities:
             ("meal_preview", PLANNER_SLUG, PLANNER_SKILLS, "meal_plan", ordinary_scopes),
             ("diet_analysis", ANALYST_SLUG, ANALYST_SKILLS, "diet_analysis", ("ai_use", "diet_edit")),
             ("initial_meal_preview", PLANNER_SLUG, PLANNER_SKILLS, "meal_plan", professional_scopes),
+            ("multi_day_plan", PLANNER_SLUG, PLANNER_SKILLS, "meal_plan", professional_scopes),
             ("family_meal_revision", PLANNER_SLUG, PLANNER_SKILLS, "meal_plan", professional_scopes),
             ("safe_meal_revision", PLANNER_SLUG, PLANNER_SKILLS, "meal_plan", professional_scopes),
             ("quality_check", QUALITY_SLUG, QUALITY_SKILLS, "quality_review", professional_scopes),
@@ -150,7 +152,7 @@ async def member_capabilities(uid: str, member_id: str) -> MemberCapabilities:
                 capability.status = "available"
             tasks.append(capability)
 
-        for task_type in ("glucose_plan", "multi_day_plan", "automatic_family_coordination"):
+        for task_type in ("glucose_plan", "automatic_family_coordination"):
             tasks.append(
                 HealthTaskCapability(
                     task_type=task_type, status="unavailable", reason_code="external_contract_required"

@@ -76,7 +76,7 @@ class RefundService
         if((int)$after['status']!==1)throw new DomainException('售后单已处理',40910,409);
         Db::name('shop_order_aftersales')->where('id',$after['id'])->update(['status'=>3,'mark'=>$comment,'row_version'=>(int)$after['row_version']+1,'updatetime'=>time()]);
         Db::name('shop_order_goods')->where('id',$after['order_goods_id'])->update(['salestate'=>6]);
-        if($after['batch_id'])Db::name('shop_plan_delivery_batch')->where('id',$after['batch_id'])->update(['aftersale_status'=>'rejected','updatetime'=>time()]);
+        (new AftersalePolicyService())->refreshBatchStatus($after['batch_id']);
         (new AftersaleService())->restoreOrderAfterResolution($after['order_id']);
         Db::commit();
         return Db::name('shop_order_aftersales')->where('id',$after['id'])->find();
@@ -124,22 +124,43 @@ class RefundService
     {
         Db::startTrans();
         try{
+            $initial=Db::name('shop_refund_record')->where('refund_sn',$refundSn)->find();
+            if ($initial) Db::name('shop_order')->where('order_sn',$initial['order_sn'])->lock(true)->find();
             $refund=Db::name('shop_refund_record')->where('refund_sn',$refundSn)->lock(true)->find();
             if(!$refund)throw new DomainException('退款记录不存在',40414,404);
             $success=strtoupper($status)==='SUCCESS';
             if($refund['status']==='success'){Db::commit();return $refund;}
             Db::name('shop_refund_record')->where('id',$refund['id'])->update(['status'=>$success?'success':'failed','channel_refund_id'=>$channelRefundId?:null,'notify_id'=>$notifyId,'success_at'=>$success?time():0,'updatetime'=>time()]);
             if($success){
+                if (!(int)$refund['aftersale_id']) {
+                    $this->completePlanCancellation($refund);
+                    Db::commit();return Db::name('shop_refund_record')->where('id',$refund['id'])->find();
+                }
                 $after=Db::name('shop_order_aftersales')->where('id',$refund['aftersale_id'])->find();
                 Db::name('shop_order_goods')->where('id',$after['order_goods_id'])->update(['salestate'=>5]);
+                Db::name('shop_order_aftersales')->where('id',$after['id'])->update(['status'=>5,'updatetime'=>time()]);
                 if($after['batch_id']){
                     Db::name('shop_plan_delivery_batch')->where('id',$after['batch_id'])->setInc('exception_refunded_amount_cent',$refund['refund_amount_cent']);
                     $batch=Db::name('shop_plan_delivery_batch')->where('id',$after['batch_id'])->find();
                     Db::name('shop_service_plan_order')->where('id',$batch['plan_order_id'])->setInc('exception_refunded_amount_cent',$refund['refund_amount_cent']);
+                    (new AftersalePolicyService())->refreshBatchStatus($after['batch_id']);
                 }
                 Db::name('shop_order_ext')->where('order_sn',$refund['order_sn'])->update(['payment_status'=>'partially_refunded','updatetime'=>time()]);
             }
             Db::commit();return Db::name('shop_refund_record')->where('id',$refund['id'])->find();
         }catch(\Throwable $e){Db::rollback();throw $e;}
+    }
+
+    protected function completePlanCancellation(array $refund)
+    {
+        $allocations=Db::name('shop_refund_allocation')->where('refund_id',$refund['id'])->where('allocation_type','plan_remaining')->select();
+        if (!$allocations) throw new DomainException('退款缺少批次分摊',40935,409);
+        $order=Db::name('shop_service_plan_order')->where('order_sn',$refund['order_sn'])->lock(true)->find();
+        foreach ($allocations as $allocation) {
+            Db::name('shop_plan_delivery_batch')->where('id',$allocation['batch_id'])->where('cancellation_refund_sn',$refund['refund_sn'])->where('status','refund_pending')->update(['status'=>'refunded','row_version'=>Db::raw('row_version+1'),'updatetime'=>time()]);
+        }
+        (new PlanOrderService())->reconcileCompletion($refund['order_sn']);
+        $refunded=(int)Db::name('shop_refund_record')->where('order_sn',$refund['order_sn'])->where('status','success')->sum('refund_amount_cent');
+        Db::name('shop_order_ext')->where('order_sn',$refund['order_sn'])->update(['payment_status'=>$refunded>=(int)$order['total_amount_cent']?'refunded':'partially_refunded','updatetime'=>time()]);
     }
 }

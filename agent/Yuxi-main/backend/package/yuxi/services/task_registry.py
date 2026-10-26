@@ -48,6 +48,12 @@ _TASK_DEFINITIONS = {
             "nutrition_knowledge_prepare_v1", "yuxi.services.health_knowledge_import_service", "run_knowledge_nutrition"
         ),
         TaskDefinition(
+            "exclusive_plan_v1",
+            "yuxi.services.exclusive_plan_tasks",
+            "run_exclusive_plan",
+            failure_function="fail_exclusive_plan",
+        ),
+        TaskDefinition(
             "daily_arrangement_v1",
             "yuxi.services.daily_arrangement_tasks",
             "run_daily_arrangement",

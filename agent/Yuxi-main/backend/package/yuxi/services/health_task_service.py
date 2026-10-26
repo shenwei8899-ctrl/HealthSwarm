@@ -52,7 +52,7 @@ async def create_health_task_entry(uid: str, member_id: str, data: HealthTaskEnt
     """创建固定模式线程，缺选择或外部契约时不写入任何任务。"""
     chosen = data.root
     base = {"task_type": chosen.task_type, "member_id": member_id, "client_request_id": chosen.client_request_id}
-    unsupported = chosen.task_type in {"glucose_plan", "multi_day_plan", "automatic_family_coordination"}
+    unsupported = chosen.task_type in {"glucose_plan", "automatic_family_coordination"}
     needs_selection = (
         chosen.task_type
         in {
@@ -61,6 +61,7 @@ async def create_health_task_entry(uid: str, member_id: str, data: HealthTaskEnt
             "safe_meal_revision",
             "quality_check",
             "purchase_requirements",
+            "multi_day_plan",
         }
         and chosen.selection is None
     )
@@ -87,6 +88,17 @@ async def create_health_task_entry(uid: str, member_id: str, data: HealthTaskEnt
             missing_dependencies=missing_runtime,
         )
 
+    if chosen.task_type == "multi_day_plan":
+        from yuxi.services.exclusive_plan_service import start_exclusive_plan
+        from yuxi.services.exclusive_plan_types import ExclusivePlanInput
+
+        group = await start_exclusive_plan(
+            uid,
+            str(chosen.selection.family_id),
+            ExclusivePlanInput(client_request_id=chosen.client_request_id),
+            required_member=member_id,
+        )
+        return HealthTaskEntryResult(**base, entry_status="ready", exclusive_plan=group)
     if chosen.task_type == "purchase_requirements":
         selected = PurchaseInput(client_request_id=chosen.client_request_id, **chosen.selection.model_dump(mode="json"))
         entry = await create_consultation(
@@ -186,7 +198,12 @@ async def read_health_task_in_session(session, uid: str, request_id: str) -> Hea
         "interrupted": "execution_interrupted",
     }
     if terminal in error_codes:
-        response.result = HealthTaskError(code=error_codes[terminal])
+        code = (
+            run.error_type
+            if run is not None and run.error_type in {"budget_price_unavailable", "budget_exceeded"}
+            else error_codes[terminal]
+        )
+        response.result = HealthTaskError(code=code)
         return response
     if run is None or run.status != "completed":
         return response

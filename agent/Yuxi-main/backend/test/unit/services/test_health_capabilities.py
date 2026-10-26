@@ -108,6 +108,7 @@ async def test_missing_professional_sources_keep_ordinary_available_and_selectio
     }
     assert {task_type for task_type, task in tasks.items() if task.status == "needs_input"} == {
         "initial_meal_preview",
+        "multi_day_plan",
         "family_meal_revision",
         "safe_meal_revision",
         "quality_check",
@@ -116,7 +117,6 @@ async def test_missing_professional_sources_keep_ordinary_available_and_selectio
     assert all(task.reason_code == "selection_required" for task in result.tasks if task.status == "needs_input")
     assert {task_type for task_type, task in tasks.items() if task.reason_code == "external_contract_required"} == {
         "glucose_plan",
-        "multi_day_plan",
         "automatic_family_coordination",
     }
     assert len(tasks) == 14
@@ -169,7 +169,7 @@ async def test_missing_professional_sources_keep_ordinary_available_and_selectio
             ],
         ),
         "glucose_plan": (None, []),
-        "multi_day_plan": (None, []),
+        "multi_day_plan": ("meal_plan", ["selection.family_id"]),
         "automatic_family_coordination": (None, []),
     }
     assert result.dependencies.model_dump() == {
@@ -265,7 +265,7 @@ async def test_configuration_reason_is_stable_and_purpose_specific(capability_so
     result = await service_module.member_capabilities(sources.uid, sources.member_id)
     tasks = {task.task_type: task for task in result.tasks}
     assert tasks["consultation"].status == tasks["diet_analysis"].status == "available"
-    for task_type in ("meal_preview", "initial_meal_preview", "family_meal_revision", "safe_meal_revision"):
+    for task_type in ("meal_preview", "initial_meal_preview", "multi_day_plan", "family_meal_revision", "safe_meal_revision"):
         assert (tasks[task_type].status, tasks[task_type].reason_code, tasks[task_type].configuration_reason_code) == (
             "unavailable",
             "configuration_unavailable",

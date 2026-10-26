@@ -23,6 +23,7 @@ def generate_initial_plan(
     max_states=MAX_SEARCH_STATES,
     purchase_validator=None,
     fixed_meals=None,
+    recipe_priority=None,
 ):
     """有界搜索共同菜谱与独立份量，只有全部实际参加者通过才返回方案。"""
     result = {
@@ -73,8 +74,13 @@ def generate_initial_plan(
     from yuxi.services.health_quality_types import SwapRecipeClassification
 
     catalog = {str(c.recipe_version_id): c for c in rules.meal_generation.recipe_classifications}
-    catalog.update({str(c.recipe_version_id): c for row in current.get("published_classifications", [])
-        for c in [SwapRecipeClassification.model_validate(row)]})
+    catalog.update(
+        {
+            str(c.recipe_version_id): c
+            for row in current.get("published_classifications", [])
+            for c in [SwapRecipeClassification.model_validate(row)]
+        }
+    )
     options, layout = [], []
     for meal in selection.meals:
         if fixed_meals and meal.meal_type in fixed_meals:
@@ -107,7 +113,9 @@ def generate_initial_plan(
                         eligible = False
                         break
                 if eligible:
-                    candidates.append((Decimal(0), rid, rid))
+                    candidates.append((Decimal((recipe_priority or {}).get(rid, 0)), rid, rid))
+            if recipe_priority:
+                candidates.sort()
             if not candidates:
                 return {
                     **result,

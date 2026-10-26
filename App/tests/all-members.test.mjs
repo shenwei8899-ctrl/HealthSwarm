@@ -153,29 +153,21 @@ test('saved chat context produces the same generated meal across pages',async()=
   assert.equal(todayPlan(profile,'晚餐').generationId,returned.generationId)
 })
 
-test('delivery schedule regenerates the selected date before checkout',async()=>{
-  setup()
-  let load,show,finish
-  const cache=new Map(),navigations=[]
-  const pending=[]
-  const deps={ref,computed,isMockMode:false,AppNavBar:null,backHome(){},getProfile:()=>({members:[]}),getExclusivePlan:id=>({id}),
-    adaptExclusivePlan:(template,profile,date)=>cache.get(date)||{...template,name:'待生成',sourceType:null,fixturePlans:[],days:[],blocked:['未生成'],totalEstimateCents:0,estimateCents:0},
-    ensureExclusivePlan:(template,profile,{startDate})=>new Promise(resolve=>pending.push(()=>{const plan={id:template.id,name:'日期计划',sourceType:'api',fixturePlans:Array.from({length:21},()=>[]),days:Array.from({length:21},()=>({meals:[]})),blocked:[],totalEstimateCents:2100,estimateCents:100};cache.set(startDate,plan);resolve(plan)})),
-    createDeliveryBatches:(plan,date)=>[{date}],defaultPlanStartDate:()=> '2026-10-20',mockService:{selectedAddress:()=>({name:'收货人',phone:'13800000000',region:'上海',detail:'测试地址'})},
-    onLoad:callback=>load=callback,onShow:callback=>show=callback}
+test('delivery selection quotes the selected plan version without regenerating menus',async()=>{
+  let load,show
+  const requests=[],navigations=[]
+  const {validPlanRoute}=await import('../src/services/plan-presentation.js')
+  const deps={ref,validPlanRoute,priceText:()=>'',onLoad:callback=>load=callback,onShow:callback=>show=callback,
+    useCommercePage:()=>({busy:ref(false),error:ref(''),run:async fn=>fn(()=>true)}),
+    commerce:{pendingOrder:()=>null,quotePlan:async(...args)=>{requests.push(args);return {checkout_token:'q',expires_at:new Date(Date.now()+60000).toISOString()}},createOrder:async token=>{assert.equal(token,'q');return {order_sn:'order-real'}}}}
+  globalThis.uni={redirectTo:options=>navigations.push(options.url)}
   const source=readFileSync(new URL('../src/pages/exclusive-plans/schedule.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
-  const page=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;\n${source}\nreturn {startDate,ready,batches,loading,error,changeDate,pay}`)(deps)
-  globalThis.uni.navigateTo=options=>navigations.push(options.url)
-  globalThis.uni.showToast=()=>{}
-  load({id:'balanced'})
-  const initial=show();pending.shift()();await initial
-  assert.equal(page.batches.value[0].date,'2026-10-20')
-  const changed=page.changeDate({detail:{value:'2026-10-21'}})
-  assert.equal(page.ready.value,false);assert.equal(page.batches.value.length,0)
-  page.pay();assert.deepEqual(navigations,[])
-  pending.shift()();await changed
-  assert.equal(page.batches.value[0].date,'2026-10-21')
-  page.pay();assert.match(navigations[0],/start=2026-10-21/)
+  const page=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;\n${source}\nreturn {selection,quote,change,preview,submit}`)(deps)
+  load({plan_sn:'real-plan',plan_version:'4'});show()
+  page.change({address_id:7,first_delivery_date:'2026-11-03',delivery_slot_id:2})
+  await page.preview();assert.deepEqual(requests,[['real-plan',4,7,'2026-11-03',2]])
+  page.change({address_id:7,first_delivery_date:'2026-11-04',delivery_slot_id:2});assert.equal(page.quote.value,null)
+  await page.preview();await page.submit();assert.deepEqual(navigations,['/pages/orders/detail?id=order-real'])
 })
 
 test('late old results cannot overwrite a newer profile result',async()=>{

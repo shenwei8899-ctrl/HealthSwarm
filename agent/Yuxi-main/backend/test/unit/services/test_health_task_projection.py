@@ -12,7 +12,6 @@ from pydantic import ValidationError
 from yuxi.repositories import health_task_repository as repository
 from yuxi.repositories.health_task_repository import HealthTaskRepository
 from yuxi.services import health_task_service as service
-from yuxi.services import health_family_kb_service
 from yuxi.services.health_task_types import HealthTaskEntryInput, HealthTaskResult
 from yuxi.services.health_agent_personal_target_types import TargetAwareAnalystInput
 from yuxi.services.health_purchase_types import PurchaseSelection
@@ -341,7 +340,7 @@ async def test_uncompleted_query_never_reads_partial_answer_or_error_text(monkey
         request_id="request", agent_slug="health-consultation", conversation_thread_id=THREAD, status="dispatched"
     )
     binding = SimpleNamespace(member_id=MEMBER)
-    run = SimpleNamespace(id="run", status=status, error_message="private health text")
+    run = SimpleNamespace(id="run", status=status, error_type=None, error_message="private health text")
     final = AsyncMock(side_effect=AssertionError("非完成运行禁止读取正文"))
 
     @asynccontextmanager
@@ -411,7 +410,8 @@ async def test_completed_needs_input_is_not_interrupted_or_validated_result(monk
 @pytest.mark.asyncio
 async def test_ordinary_questions_require_whole_current_boundary(monkeypatch):
     """存在合法问题不能夹带模型自报批准或营养。"""
-    monkeypatch.setattr(health_family_kb_service, "validate_family_kb_answer", AsyncMock())
+    # 本用例只核对普通配餐回执；家人知识库的独立校验由其专属测试负责。
+    monkeypatch.setattr("yuxi.services.health_family_kb_service.validate_family_kb_answer", AsyncMock())
     run = SimpleNamespace(agent_slug="health-meal-planner")
     binding = SimpleNamespace(
         initial_planner_selection=None, family_planner_selection=None, safe_planner_selection=None
@@ -427,7 +427,8 @@ async def test_ordinary_questions_require_whole_current_boundary(monkeypatch):
 @pytest.mark.parametrize("case", ["run", "member", "source", "final"])
 async def test_ordinary_preview_requires_current_same_run_receipt_and_full_projection(monkeypatch, case):
     """模型保留合法回执ID也不能改营养，邻Run回执不能重用。"""
-    monkeypatch.setattr(health_family_kb_service, "validate_family_kb_answer", AsyncMock())
+    # 本用例只核对普通配餐回执；家人知识库的独立校验由其专属测试负责。
+    monkeypatch.setattr("yuxi.services.health_family_kb_service.validate_family_kb_answer", AsyncMock())
     preview_id, recipe_id = str(uuid4()), str(uuid4())
     spec = {
         "plan_date": "2026-10-10",
@@ -458,3 +459,20 @@ async def test_ordinary_preview_requires_current_same_run_receipt_and_full_proje
     with pytest.raises(HealthVisionError) as error:
         await service.validate_task_business_result("session", run, binding, payload, "unused")
     assert error.value.code == ("planner_receipt_invalid" if case in {"run", "member"} else "source_invalidated")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code",["budget_price_unavailable","budget_exceeded"])
+async def test_terminal_budget_error_keeps_safe_type_not_private_upstream_text(monkeypatch,code):
+    """真实任务投影保留预算失败类型，同时禁止回传上游原始错误。"""
+    request=SimpleNamespace(request_id="request",agent_slug="health-consultation",conversation_thread_id=THREAD,status="dispatched")
+    binding=SimpleNamespace(member_id=MEMBER)
+    run=SimpleNamespace(id="run",status="failed",error_type=code,error_message="private-provider-detail")
+    @asynccontextmanager
+    async def context():
+        yield "session"
+    monkeypatch.setattr(service.pg_manager,"get_async_session_context",context)
+    monkeypatch.setattr(service,"HealthTaskRepository",lambda _:SimpleNamespace(request_context=AsyncMock(return_value=(request,binding,run))))
+    result=await service.read_health_task("actor","request")
+    assert result.result.code==code and result.result.retryable is False
+    assert "private-provider-detail" not in result.model_dump_json()

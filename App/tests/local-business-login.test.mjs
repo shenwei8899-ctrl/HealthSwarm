@@ -97,7 +97,7 @@ test('new business user goes to onboarding; wrong credentials and late responses
 
 test('local welcome submits credentials, clears password and enters the server-selected page', async () => {
   const calls = [], redirects = []
-  const deps = { ref, onShow() {}, onHide() {}, onUnload() {}, isMockMode: false, canUseBusinessLogin: true,
+  const deps = { ref, onShow() {}, onHide() {}, onUnload() {}, isMockMode: false, canUseBusinessLogin: true, isCommerceEnabled: false, phoneBindingDemo: false,
     getSession: () => null, wechatAuth: { cancelPending() {} },
     service: { login: async data => calls.push(data) }, resolveAppEntry: async () => '/pages/onboarding/index' }
   globalThis.uni = { reLaunch: options => redirects.push(options.url) }

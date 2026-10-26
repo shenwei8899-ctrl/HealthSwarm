@@ -104,15 +104,15 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
         readiness.data?.capabilities?.member_id !== memberId || !Array.isArray(readiness.data?.entries)) throw mismatch()
       const entry = readiness.data.entries.find(row => row.entry_type === taskType)
       state.available = entry?.status === 'available'
-      if (!state.available) state.notice = '当前成员的这项服务暂不可用，可在“我的 → 资料管理 → 我的健康资料”核对资料与咨询权限。'
-      if (entry?.reason_code === 'consent_required') {
+      if (!state.available) state.notice = ({budget_price_unavailable:'营养咨询计费配置尚未就绪，请联系管理员。',budget_exceeded:'本月健康 AI 可用额度不足或待核账，请稍后再试。',consent_required:'此项服务已停用，请在隐私设置中管理。',missing_scopes:'该成员尚未授权此项健康服务，请核查成员授权。',configuration_unavailable:'此项服务尚未配置，资料仍可查看和修改。',dependency_not_ready:'此项服务所需的运行服务或专业资料尚未就绪。',agent_unavailable:'营养助手尚未就绪，请稍后再试。',skill_unavailable:'营养助手资料尚未就绪。'})[entry?.configuration_reason_code||entry?.reason_code] || '请打开该成员的家庭档案核对资料与授权。'
+      if (entry?.reason_code === 'consent_required' && taskType !== 'consultation') {
         const policy = (await send({ path: '/api/health/v1/configuration' })).data
         if (!current(ticket)) return
-        const purpose = taskType === 'diet_analysis' ? 'diet_analysis' : 'consultation'
+        const purpose = taskType === 'diet_analysis' ? 'diet_analysis' : taskType === 'meal_preview' ? 'meal_plan' : 'consultation'
         const configured = policy?.[purpose]
         if (configured?.available === true && typeof configured.processor === 'string' &&
           configured.processor && typeof policy.policy_version === 'string' && policy.policy_version) {
-          state.consentOption = { processor: configured.processor, policyVersion: policy.policy_version, ...(purpose === 'diet_analysis' ? {purpose} : {}) }
+          state.consentOption = { processor: configured.processor, policyVersion: policy.policy_version, ...(purpose !== 'consultation' ? {purpose} : {}) }
           state.notice = '请先核对当前咨询处理方和政策版本，再明确选择是否同意。'
         }
       }
@@ -245,7 +245,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       state.runId = data.run_id || ''
       const known = state.requests.some(row => row.request_id === expectedId)
       state.requests = known ? state.requests.map(row => row.request_id === expectedId ? { ...row, status: state.status } : row) : [...state.requests, { request_id: expectedId, status: state.status }]
-      if (data.result?.result_type === 'error') state.result = { type: 'error', code: data.result.code }
+      if (data.result?.result_type === 'error') state.result = { type: 'error', code: data.result.code, retryable: data.result.retryable === true }
       else if (data.execution_status === 'completed') {
         if (data.result?.result_type === 'general_education_answer' && data.result.scope === 'general_education' &&
           typeof data.result.answer === 'string' && Array.isArray(data.result.citations)) {

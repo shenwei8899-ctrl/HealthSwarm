@@ -390,7 +390,7 @@ function retryOrder() {
   padding: 14rpx 0;
 }
 .cart-row button {
-  font-size: 24rpx;
+  font-size:25rpx;
   padding: 10rpx;
 }
 .address-button {
@@ -399,10 +399,10 @@ function retryOrder() {
 }
 .text-button {
   font-size: 26rpx;
-  color: #246b50;
+  color: #292a2e;
 }
 .selected {
-  background: #246b50;
+  background: #292a2e;
   color: white;
 }
 </style>

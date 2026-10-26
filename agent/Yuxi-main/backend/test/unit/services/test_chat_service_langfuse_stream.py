@@ -1168,3 +1168,33 @@ def test_execution_requires_worker_snapshot(mode):
             svc.stream_agent_chat(**kwargs, agent_slug="test-agent", input_message=build_chat_input_message("hello"))
         else:
             svc.stream_agent_resume(**kwargs, resume_input={"answer": "ok"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode",["chat","resume"])
+@pytest.mark.parametrize("code",["budget_price_unavailable","budget_exceeded"])
+async def test_health_budget_error_survives_stream_boundary_without_private_detail(monkeypatch,mode,code):
+    """流执行与恢复保留预算错误码，并维持私有正文屏蔽。"""
+    from yuxi.services.health_vision_types import HealthVisionError
+    calls=[]
+    class Agent:
+        context_schema=_FakeContext
+        async def stream_messages_with_state(self,*args,**kwargs):
+            raise HealthVisionError(code,"private-provider-detail",503)
+            yield
+        stream_resume_with_state=stream_messages_with_state
+    @asynccontextmanager
+    async def context():
+        yield _FakeSession()
+    async def save(*args,**kwargs):
+        calls.append(kwargs["error_type"])
+    _patch_stream_scaffolding(monkeypatch,agent=Agent())
+    monkeypatch.setattr(svc,"EDUCATION_HEALTH_AGENTS",{"test-agent"})
+    monkeypatch.setattr(svc,"HEALTH_AGENT_BACKENDS",{"test-agent":"ChatbotAgent"})
+    monkeypatch.setattr(svc.pg_manager,"get_async_session_context",context)
+    monkeypatch.setattr(svc,"save_partial_message",save)
+    kwargs={"prepared_execution":prepared_execution(),"thread_id":"thread-1","meta":{"request_id":"req-1"},"current_user":SimpleNamespace(id=1,uid="user-1",role="user",department_id="dept-1"),"db":_FakeSession()}
+    stream=svc.stream_agent_chat(**kwargs,agent_slug="test-agent",input_message=build_chat_input_message("hello")) if mode=="chat" else svc.stream_agent_resume(**kwargs,resume_input="continue")
+    chunks=[json.loads(chunk.decode()) async for chunk in stream]
+    assert calls==[code] and chunks[-1]["error_type"]==code
+    assert "private-provider-detail" not in json.dumps(chunks[-1])

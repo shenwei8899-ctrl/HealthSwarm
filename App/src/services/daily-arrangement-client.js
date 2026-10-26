@@ -1,6 +1,8 @@
 const meals = ['breakfast', 'lunch', 'dinner']
 const copy = value => JSON.parse(JSON.stringify(value))
-const uncertain = error => error?.code === 'NETWORK_ERROR' || Number(error?.code) >= 500
+// 旧服务统一把503标为retryable；这些依赖需要用户或管理员补齐，重放不会恢复。
+const setupErrors = new Set(['daily_member_sources_unavailable', 'daily_profile_source_unavailable', 'daily_rules_unavailable', 'daily_dependencies_not_ready', 'daily_member_consent_required'])
+const uncertain = error => error?.code === 'NETWORK_ERROR' || Number(error?.code) >= 500 && !setupErrors.has(error?.businessCode) && (!error?.businessCode || error.retryable === true)
 
 export function validateDailyArrangement(value, date) {
   if (value?.status !== 'ready' || value.date !== date || !value.id || !Number.isInteger(value.version) || value.version < 1 ||
@@ -27,7 +29,7 @@ export function validateDailyArrangement(value, date) {
 }
 
 export function dailyArrangementState() {
-  return { phase: 'idle', date: '', arrangement: null, error: '', busy: false, pending: null, messages: [] }
+  return { phase: 'idle', date: '', arrangement: null, error: '', errorCode: '', retryable: true, busy: false, pending: null, messages: [] }
 }
 
 // 仅缓存请求标识；已保存菜单、分析和聊天正文每次从服务端读取。
@@ -64,7 +66,7 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
     const ticket = ++generation
     flightContext = scope + ':' + date
     if (state.date !== date || state.arrangement?.date !== date) state.arrangement = null
-    state.date = date; state.busy = true; state.error = ''; state.phase = state.arrangement ? 'ready' : 'loading'
+    state.date = date; state.busy = true; state.error = ''; state.errorCode = ''; state.retryable = true; state.phase = state.arrangement ? 'ready' : 'loading'
     flight = (async () => {
       try {
         if (!input.familyId) throw new Error('请先保存家庭档案。')
@@ -75,6 +77,8 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
         }
         if (!current(ticket, scope)) return
         if(retry && (value.update?.status || value.status)!=='ready' && !['absent','stale'].includes(value.status)) {
+          await beforeStart()
+          if (!current(ticket, scope)) return
           value=(await send({path:root()+'/'+date+'/resume?retry_failed=true',method:'POST'})).data
         }
         if (!current(ticket, scope)) return
@@ -136,6 +140,7 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
             state.arrangement=null;state.pending=null;state.messages=[]
           }
           state.phase = state.arrangement ? 'ready' : 'error'; state.error = error.message || '暂时无法读取今日安排，请重试。'
+          state.errorCode = error.businessCode || ''; state.retryable = !setupErrors.has(error.businessCode) && (!error.businessCode || error.retryable === true)
         }
       } finally {
         if (current(ticket, scope)) state.busy = false

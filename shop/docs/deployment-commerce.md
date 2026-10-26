@@ -29,6 +29,8 @@ PostgreSQL 商城插件安装与升级还会执行 `database/postgresql/migratio
 
 ## 商品导入与配送
 
+小程序手机号绑定使用独立的 `SHOP_WECHAT_PHONE_ENABLED`、`SHOP_WECHAT_PHONE_APP_ID` 和 `SHOP_WECHAT_PHONE_APP_SECRET`。仅在后台配置完成且 AppID 与小程序一致后启用；AppSecret 保存在部署环境中。生产 Compose 将这三个配置传给 PHP 和调度进程。安装与升级通过 Migrator 执行 `20261023_wechat_phone.sql`，保留版本校验和；已部署数据库应先核对两张手机号表，再运行幂等升级。缺少配置时接口明确返回未配置状态，不接受客户端直接提交手机号作为微信验证结果。
+
 后台“商品与食材库”导入并确认供应商 Excel。发布正常、可见且有可售库存的 SKU 才会进入小程序商品目录；图片需要在正式 SHOP_MEDIA_BASE_URL 对应域名可访问。导入与上传需要 GD、fileinfo、mbstring、zip 等运行扩展，生产镜像及 12 MiB 上传限制已配置。
 
 地区字典可选择的地区和实际配送范围分别管理。检查后显式配置全国省级覆盖：

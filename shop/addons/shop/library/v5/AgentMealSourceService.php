@@ -13,6 +13,7 @@ class AgentMealSourceService
         $linked = $client !== '' && Db::name('shop_external_identity')->where([
             'client_id' => $client, 'user_id' => (int)$userId, 'status' => 'normal',
         ])->find();
+        if ($type === 'service_plan') return $this->assertPlan($userId, $ref, $version, $client);
         if ($type === 'purchase_list') {
             $list = Db::name('shop_purchase_list')->where('purchase_list_sn', $ref)->find();
             if (!$list) throw new DomainException('采购清单不存在', 40403, 404);
@@ -81,6 +82,66 @@ class AgentMealSourceService
         }
         if (!$proof) return; // Unrelated legacy consumers retain their contract.
         (new IdentityService())->assertOwner($userId, (new IdentityService())->resolveUserId($row['agent_client_id'], $row['user_ref']));
+        $this->validateProof($proof);
+        if ($linked) {
+            $package = (new RecommendationPackageService())->getBySn($ref, $userId);
+            return array_map('strval', array_column($package['items'], 'sku_id'));
+        }
+    }
+
+    public function assertPlan($userId, $ref, $version, $client = null)
+    {
+        $row = Db::name('shop_service_plan')->where('plan_sn',$ref)->find();
+        if (!$row) throw new DomainException('专属计划不存在',40404,404);
+        (new IdentityService())->assertOwner($userId,$row['user_id']);
+        if ((int)$row['current_version'] !== (int)$version || $row['status'] !== 'available') throw new DomainException('计划版本或状态已变化，请重新查看',40906,409);
+        if ($row['nutrition_status'] !== 'passed' || $row['trade_status'] !== 'passed' || !in_array($row['review_gate_status'],['allowed','not_required'],true)) throw new DomainException('计划尚未通过校验',40908,409);
+        $v = Db::name('shop_service_plan_version')->where('plan_id',$row['id'])->where('version_no',$version)->find();
+        $proof = Json::decode($v['agent_source_proof_json'] ?? '{}',[]);
+        $source = Json::decode($proof['payload'] ?? '{}',[]);
+        if (($source['kind'] ?? '') !== 'service_plan' || ($source['group_id'] ?? '') !== $row['recommendation_group_ref'] ||
+            ($source['tier_code'] ?? '') !== $row['tier_code'] || ($source['basis_hash'] ?? '') !== $row['basis_hash'] ||
+            ($source['policy_version'] ?? '') !== $row['tier_policy_version'] || (int)($source['plan_version'] ?? 0) !== (int)$version ||
+            ($client && $row['agent_client_id'] !== $client)) throw new DomainException('专属计划来源不匹配',40301,403);
+        (new IdentityService())->assertOwner($userId,(new IdentityService())->resolveUserId($row['agent_client_id'],$row['user_ref']));
+        $policy = (new PlanPolicyService())->current();
+        if ($policy['version'] !== $row['tier_policy_version']) throw new DomainException('计划规则已更新，请重新查看',40906,409);
+        $draft = Json::decode($v['pricing_draft_json'],[]);
+        $ids = [];
+        foreach ($draft['days'] as $day) foreach ($day['items'] as $item) {
+            $sku = (new CatalogService())->getSku($item['sku_id'],true);
+            self::assertComposition($item['product_snapshot'],$sku);
+            if (!in_array((string)$sku['sku_id'],array_map('strval',$policy['config']['tiers'][$row['tier_code']]['allowed_sku_ids']),true)) throw new DomainException('计划商品档位已变化',40946,409);
+            $ids[] = (string)$sku['sku_id'];
+        }
+        $this->validateProof($proof);
+        return array_values(array_unique($ids));
+    }
+
+    /** 价格可以重报，食材、过敏原或包装变化须重新验证。 */
+    public static function assertComposition(array $saved, array $current)
+    {
+        foreach (['ingredients','allergen_codes','net_content'] as $key) {
+            $before = $saved[$key] ?? null;
+            $after = $current[$key] ?? null;
+            if ($key === 'allergen_codes') { $before=$before ?? []; $after=$after ?? []; sort($before); sort($after); }
+            if ($key === 'ingredients') {
+                $fields = array_flip(['ingredient_code','net_value','net_unit','convert_ratio','loss_rate']);
+                $normalize = function ($items) use ($fields) {
+                    $result=[];
+                    foreach ($items ?? [] as $map) $result[$map['ingredient_code']]=array_map('strval',array_intersect_key($map,$fields));
+                    ksort($result); return $result;
+                };
+                $before=$normalize($before);$after=$normalize($after);
+            }
+            if (!$before && $key !== 'allergen_codes' || Json::canonical($before) !== Json::canonical($after)) throw new DomainException('计划商品成分或包装已变化，请重新核对',40946,409);
+        }
+        if (in_array('component_mapping_unapproved',array_column($current['data_issues'] ?? [],'code'),true)) throw new DomainException('商品食材关联尚未审核',40946,409);
+    }
+
+    public function validateProof(array $proof)
+    {
+        if (!$proof) throw new DomainException('缺少计划来源凭据',40301,403);
         $sessionUrl = trim((string)getenv('SHOP_AGENT_SESSION_URL'));
         $parts = parse_url($sessionUrl);
         $hosts = ['localhost', '127.0.0.1'];
@@ -103,10 +164,7 @@ class AgentMealSourceService
         if ($status !== 200 || ($data['available'] ?? null) !== true) {
             throw new DomainException('餐单采用、授权或采购换算已失效，或来源服务暂不可用，请重新核对', 40944, 409);
         }
-        if ($linked) {
-            $package = (new RecommendationPackageService())->getBySn($ref, $userId);
-            return array_map('strval', array_column($package['items'], 'sku_id'));
-        }
+        return $data;
     }
 
     public function assertCart($userId, array $items)

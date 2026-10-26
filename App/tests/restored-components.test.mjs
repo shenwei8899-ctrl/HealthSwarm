@@ -17,6 +17,34 @@ function mount(file,fields,extras={}){
 }
 function storage(){const m=new Map();return {getStorageSync:k=>jsonClone(m.get(k)),setStorageSync:(k,v)=>m.set(k,jsonClone(v)),getStorageInfoSync:()=>({keys:[...m.keys()]})}}
 
+test('confirmed dishes save without an extra nutrition switch and preserve unknown nutrition',async()=>{
+ const cache=storage(),calls=[];let serial=0,submitted=null
+ const send=async options=>{
+  calls.push(options)
+  if(options.path.endsWith('/manual-drafts')){submitted=options.data.meal;return {data:{id:'draft',member_id:member,version:1}}}
+  if(options.path.endsWith('/calculate'))return {data:{draft_version:1,calculation_id:'calculation',totals:{kcal:null},complete:false}}
+  if(options.path.endsWith('/confirm')){assert.equal(options.data.accept_incomplete,true);return {data:{review_status:'confirmed',target_ids:['record']}}}
+  if(options.path.includes('/diet-logs/page'))return {data:{records:[{id:'record',source_version:1,totals:{kcal:null},items:submitted.items}],next_offset:null}}
+  throw new Error(options.path)
+ }
+ const p=mount('CloudMealCapture.vue','load,people,dishes,save,saved,canSave',{
+  photoState,createMealPhotoClient:()=>({open:async()=>{},discard(){}}),
+  createCloudMealSaver:()=>createCloudMealSaver({send,storage:cache,revision:()=>1,newId:()=>String(++serial)}),
+  personalMeal,mealLabels,mealDay,scopedStorage:cache,storageContext:()=> 'scope',getSession:()=>({householdId:'family'}),
+  request:async()=>({data:[{id:member,display_name:'我',scopes:['diet_edit']}]}),commerce:{},uni:{},
+ })
+ try{
+  await p.load();p.dishes.value=[{name:'香菇鸡肉'},{name:'青菜'}]
+  await p.save();assert.equal(calls.length,0,'unconfirmed dishes still cannot save')
+  p.people.value[0].dishes=['香菇鸡肉'];p.people.value[0].portion='一般'
+  assert.equal(p.canSave.value,true);await p.save()
+  assert.equal(p.saved.value.rows[0].record.totals.kcal,null)
+  assert.equal(submitted.items[0].grams,null);assert.equal(submitted.items[0].share_ratio,null)
+  assert.equal(submitted.items[0].portion_source,'unknown');assert.equal(submitted.items.length,1)
+  assert.ok(calls.some(c=>c.path.endsWith('/confirm')))
+ }finally{p.dispose()}
+})
+
 for(const file of ['CloudMealDetail.vue','CloudRecipe.vue'])test(`${file} rereads after same-account foreground and hides revoked content`,async()=>{
  let denied=false,reads=0
  const p=mount(file,'load,error,'+(file==='CloudRecipe.vue'?'dish':'meal'),{storageContext:()=> 'same-account',getSession:()=>({householdId:'family'}),defineProps:()=>({route:{arrangement:'arrangement',date:'2026-10-22',version:1,meal:'lunch',dish:'dish'}}),
@@ -128,51 +156,9 @@ test('feedback pagination reports a stalled cursor instead of claiming no saved 
 
 function chat(){let submits=0,exists=false,invalid=false;const saved=storage(),calls=[]
  const send=async o=>{calls.push(jsonClone(o));if(o.path.endsWith('/members'))return {data:[{id:member,is_owner:true}]};if(o.path.endsWith('/readiness'))return {data:{capabilities:{member_id:member},entries:[{entry_type:'consultation',status:'available'}]}};if(o.path.endsWith('/daily-conversations'))return {data:{days:[{date:'2026-10-20',thread_id:thread}]}};if(o.path==='/api/agent/runs'){if(++submits===1)throw Object.assign(new Error('timeout'),{code:503});exists=true;return {data:{request_id:requestId,thread_id:thread}}}if(o.path.includes('/tasks/')){if(invalid)throw Object.assign(new Error('withdrawn'),{code:410});if(!exists)throw Object.assign(new Error('not yet'),{code:404});return {data:{member_id:member,thread_id:thread,request_id:requestId,task_type:'consultation',agent_slug:'health-consultation',request_status:'dispatched',execution_status:'completed',result:{result_type:'general_education_answer',scope:'general_education',answer:'private previous answer',citations:[]}}}};throw new Error(o.path)}
- const deps={HEALTH_TEXT_TASKS,loadCloudProfile:async()=>({onboarded:true,members:[{id:'self',relation:'本人',healthMemberId:member}]}),dailyArrangementState:()=>({phase:'idle',busy:false}),createDailyArrangementClient:({state})=>({load:async()=>{state.phase='ready';state.arrangement={}},reset(){},dispose(){}}),storageContext:()=> 'scope',scopedStorage:saved,getSession:()=>({accountId:'self',householdId:'family',token:'synthetic'}),commerce:{connect:async()=>{}},request:send,newHealthRequestId:()=>requestId,localDate:()=> '2026-10-20',readChatSnapshot:async()=>({messages:[],runs:[]}),chatImageContent:async image=>image.localPath,persistChatImage:async image=>({localPath:image.path}),createHealthTaskFlow:options=>createHealthTaskFlow({...options,send,session:()=>({accountId:'self',token:'synthetic'}),revision:()=>1,storage:saved,newId:()=>requestId,day:()=> '2026-10-20',subscribe:()=>()=>{}}),uni:{redirectTo(){},reLaunch(){}}}
+ const deps={HEALTH_TEXT_TASKS,loadCloudProfile:async()=>({onboarded:true,selfMemberId:'self',members:[{id:'self',relation:'本人',healthMemberId:member}]}),dailyArrangementState:()=>({phase:'idle',busy:false}),createDailyArrangementClient:({state})=>({load:async()=>{state.phase='ready';state.arrangement={}},reset(){},dispose(){}}),storageContext:()=> 'scope',scopedStorage:saved,getSession:()=>({accountId:'self',householdId:'family',token:'synthetic'}),commerce:{connect:async()=>{}},request:send,newHealthRequestId:()=>requestId,localDate:()=> '2026-10-20',readChatSnapshot:async()=>({messages:[],runs:[]}),chatImageContent:async image=>image.localPath,persistChatImage:async image=>({localPath:image.path}),createHealthTaskFlow:options=>createHealthTaskFlow({...options,send,session:()=>({accountId:'self',token:'synthetic'}),revision:()=>1,storage:saved,newId:()=>requestId,day:()=> '2026-10-20',subscribe:()=>()=>{}}),uni:{redirectTo(){},reLaunch(){},showToast(){}}}
  return {deps,calls,invalidate:()=>invalid=true}
 }
-
-test('chat blocks sending until the actual profile load settles and shows why',async()=>{
- const h=chat();let finish
- h.deps.loadCloudProfile=()=>new Promise(resolve=>{finish=resolve})
- const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,chatBusy',h.deps)
- const loading=p.load();p.question.value='请介绍均衡饮食';await p.sendQuestion()
- assert.equal(p.chatBusy.value,true)
- assert.equal(h.calls.length,0);assert.equal(p.question.value,'请介绍均衡饮食')
- finish({onboarded:true,members:[{id:'self',relation:'本人',healthMemberId:member}]});await loading
- assert.equal(p.chatBusy.value,false);p.dispose()
-})
-
-test('failed initial profile load keeps the draft and exposes a retryable error on send',async()=>{
- const h=chat();h.deps.loadCloudProfile=async()=>{throw new Error('合成网络中断')}
- const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,chatError',h.deps)
- await p.load();p.question.value='请介绍均衡饮食';await p.sendQuestion()
- assert.match(p.chatError.value,/合成网络中断/)
- assert.equal(p.question.value,'请介绍均衡饮食');assert.equal(h.calls.length,0);p.dispose()
-})
-
-test('a failed consultation can restart with a new thread while keeping an edited draft',async()=>{
- const h=chat(),saved=storage(),newThread='44444444-4444-4444-8444-444444444444',calls=[]
- const send=async o=>{
-  calls.push(o)
-  if(o.path.endsWith('/members'))return {data:[{id:member,is_owner:true}]}
-  if(o.path.endsWith('/readiness'))return {data:{capabilities:{member_id:member},entries:[{entry_type:'consultation',status:'available'}]}}
-  if(o.path.endsWith('/daily-conversations'))return {data:{days:[{date:'2026-10-20',thread_id:thread}]}}
-  if(o.path.includes('/tasks/'))return {data:{member_id:member,thread_id:thread,request_id:requestId,task_type:'consultation',agent_slug:'health-consultation',request_status:'dispatched',execution_status:'failed'}}
-  if(o.path.endsWith('/task-entries'))return {data:{member_id:member,task_type:'consultation',client_request_id:requestId,entry_status:'ready',thread_id:newThread,agent_slug:'health-consultation',request_submit_url:'/api/agent/runs'}}
-  throw Error(o.path)
- }
- h.deps.scopedStorage=saved
- h.deps.createHealthTaskFlow=options=>createHealthTaskFlow({...options,send,session:()=>({token:'synthetic',accountId:'self'}),revision:()=>1,storage:saved,newId:()=>requestId,day:()=> '2026-10-20',subscribe:()=>()=>{}})
- const p=mount('CloudNutritionChat.vue','load,flow,task,question,draftImage,draftError,restartChat',h.deps)
- await p.load();await p.flow.restoreRequest(requestId);assert.equal(p.task.value.status,'failed')
- p.question.value='修改后的问题';p.draftImage.value={localPath:'data:image/png;base64,QQ=='}
- await p.restartChat()
- assert.equal(p.task.value.entry.thread_id,newThread);assert.equal(p.question.value,'修改后的问题')
- assert.equal(p.draftImage.value.localPath,'data:image/png;base64,QQ==')
- assert.equal(calls.filter(c=>c.path.endsWith('/task-entries')).length,1)
- assert.equal(calls.some(c=>c.path==='/api/agent/runs'),false);p.dispose()
-})
 test('unknown chat retry settles the original bubble and removes only its original draft',async()=>{
  const h=chat(),p=mount('CloudNutritionChat.vue','load,question,draftImage,messages,sendQuestion,retryQuestion,flow,task',h.deps)
  await p.load();p.question.value='original';p.draftImage.value={localPath:'data:image/png;base64,QQ=='};await p.sendQuestion();assert.equal(p.messages.value[0].status,'unknown');assert.equal(p.question.value,'original')
@@ -234,7 +220,7 @@ test('editing recognized dish names retains the original photo draft and leaves 
 
 
 test('family meal question confirms actual participants and uses family arrangement instead of personal planner',async()=>{
- const h=chat(),actions=[];h.deps.loadCloudProfile=async()=>({onboarded:true,members:[{id:'self',relation:'本人',healthMemberId:member},{id:'parent',relation:'母亲'}]})
+ const h=chat(),actions=[];h.deps.loadCloudProfile=async()=>({onboarded:true,selfMemberId:'self',members:[{id:'self',relation:'本人',healthMemberId:member},{id:'parent',relation:'母亲'}]})
  h.deps.createDailyArrangementClient=({state})=>({load:async date=>{actions.push({action:'load',date});state.phase='ready';state.date=date;state.arrangement={}},changeMembers:async(type,ids)=>actions.push({action:'members',type,ids}),reset(){},dispose(){}})
  const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,familySelection,familyMembers,familyPanel',h.deps);await p.load();p.question.value='今晚全家吃什么？';await p.sendQuestion();assert.equal(p.familyPanel.value,true);assert.deepEqual(p.familySelection.value.ids,['self','parent']);assert.equal(p.familySelection.value.type,'dinner');await p.familyMembers(['self','parent']);assert.deepEqual(actions.find(a=>a.action==='members'),{action:'members',type:'dinner',ids:['self','parent']});assert.equal(actions.filter(a=>a.action==='load').length,3);assert.ok(!h.calls.some(c=>c.path==='/api/agent/runs'||c.path.endsWith('/task-entries')));assert.equal(p.question.value,'');p.dispose()
 })
@@ -247,4 +233,117 @@ test('extra family date or food constraints are preserved and never silently sen
 test('family retry uses the original intent date and enables failed-task recovery',async()=>{
  const h=chat(),actions=[];h.deps.createDailyArrangementClient=({state})=>({load:async(date,retry)=>{actions.push({date,retry});state.phase='error';state.error='synthetic failure'},reset(){},dispose(){}})
  const p=mount('CloudNutritionChat.vue','load,familyPlan,question',h.deps);await p.load();await p.familyPlan('今晚全家吃什么？');p.question.value='another question';await p.familyPlan('',true);assert.equal(actions.at(-1).retry,true);assert.equal(actions.at(-1).date,actions.at(-2).date);assert.equal(p.question.value,'another question');p.dispose()
+})
+
+test('correction saves unknown nutrition and retries the exact original payload after uncertain transport',async()=>{
+ const cache=storage(),calls=[];let attempts=0
+ const record={id:'record',member_id:member,source_version:1,snapshot:{meal:{meal_type:'lunch',eaten_at:'2026-10-25T12:00:00+08:00',items:[{item_id:'dish',name:'青菜',grams:null,share_ratio:null,portion_source:'unknown',excluded:false}]},nutrition:{totals:{energy_kcal:null}}}}
+ const p=mount('HealthMealJournal.vue','detail,meal,edit,save,reason,pending,editing,eatenWeight',{
+  defineProps:()=>({}),sessionRevision:()=>1,scopedStorage:cache,mealDay,mealLabels,newHealthRequestId:()=>requestId,mealInput,
+  readDietRecord:async()=>({...record,source_version:2}),request:async o=>{calls.push(jsonClone(o));if(++attempts===1)throw new Error('timeout');return {data:{}}},
+ })
+ try{
+  p.detail.value=record;p.edit();p.reason.value='核对菜品';await p.save()
+  assert.equal(calls[0].data.accept_incomplete,true);assert.equal(calls[0].data.meal.items[0].grams,null);assert.equal(calls[0].data.meal.items[0].share_ratio,null)
+  assert.ok(p.pending.value);p.meal.value.items[0].grams=888;p.reason.value='later edit';await p.save()
+  assert.deepEqual(calls[1],calls[0]);assert.equal(p.pending.value,null);assert.equal(p.editing.value,false);assert.equal(p.detail.value.snapshot.nutrition.totals.energy_kcal,null)
+  assert.equal(p.eatenWeight({grams:200,share_ratio:.5}),'100 g');assert.equal(p.eatenWeight({grams:200,share_ratio:null}),'重量未知')
+ }finally{p.dispose()}
+})
+
+function checkoutHarness(cache,options={}){
+ const calls=[],state=reactive({ready:false,busy:false,selected:[],slots:[{id:2}],address:{id:options.address||1},slotId:2,quote:null})
+ const product={id:1,priceCents:100,quantity:1};let scope='account:family:session:1'
+ const route={arrangement:'arrangement',version:1,date:'2026-10-25',meal:options.meal||'lunch',...(options.meal==='daily'?{meals:['breakfast','lunch']}:{})}
+ const p=mount('CloudMealPurchase.vue','refresh,checkout,chooseAddress,checkoutOpen,error,preview',{
+  defineProps:()=>({route,meal:{members:[]}}),scopedStorage:cache,storageContext:()=>scope,getSession:()=>({householdId:'family'}),
+  commerceMealView:()=>({products:[product]}),commerce:{session:()=>({token:'ok'}),connect:async()=>{calls.push('connect')}},
+  useMealCommercePage:()=>({state,plan:computed(()=>({products:[product]})),invalidateQuote(){state.quote=null},reset(){state.ready=false},dispose(){},
+   async load(){state.ready=true;state.selected=[1];calls.push('load')},async prepare(){state.quote={address_id:state.address.id};calls.push('quote')},}),
+  request:async o=>{calls.push(o.method||'GET');if(options.revoked)throw Object.assign(Error('revoked'),{code:403});return {data:{arrangement_id:route.arrangement,version:options.version||1,purchase:{available:!options.unavailable,items:[],package_sn:'package',package_version:1}}}},
+  uni:{navigateTo:o=>{calls.push(o.url);if(options.failNavigation)o.fail()}},
+ })
+ return {p,calls,state,setScope:v=>scope=v}
+}
+for(const meal of ['lunch','daily'])test(`${meal} checkout returns from address selection, revalidates and quotes the new address once`,async()=>{
+ const cache=storage(),first=checkoutHarness(cache,{meal});await first.p.refresh();await first.p.checkout();first.p.chooseAddress();assert.equal(first.state.quote,null);first.p.dispose()
+ const returned=checkoutHarness(cache,{meal,address:2})
+ try{await returned.p.refresh();assert.equal(returned.p.checkoutOpen.value,true);assert.equal(returned.state.quote.address_id,2);assert.deepEqual(returned.calls,['GET','connect','POST','load','quote']);await returned.p.refresh();assert.equal(returned.calls.filter(c=>c==='POST').length,1);assert.equal(returned.calls.filter(c=>c==='quote').length,1)}finally{returned.p.dispose()}
+})
+for(const problem of ['expired','session','version','revoked','unavailable','failed-navigation'])test(`address return cannot restore checkout after ${problem}`,async()=>{
+ const cache=storage(),first=checkoutHarness(cache,{failNavigation:problem==='failed-navigation'});await first.p.refresh();first.p.chooseAddress();first.p.dispose()
+ const key=cache.getStorageInfoSync().keys.find(k=>k.startsWith('meal-checkout-address-return:'))
+ if(problem==='expired'){const value=cache.getStorageSync(key);value.at=Date.now()-16*60*1000;cache.setStorageSync(key,value)}
+ const h=checkoutHarness(cache,{version:problem==='version'?2:1,revoked:problem==='revoked',unavailable:problem==='unavailable'});if(problem==='session')h.setScope('account:family:session:2')
+ try{await h.p.refresh();assert.equal(h.p.checkoutOpen.value,false);assert.ok(!h.calls.includes('POST'));assert.ok(!h.calls.includes('quote'));assert.equal(cache.getStorageSync(key),null)}finally{h.p.dispose()}
+})
+
+
+test('unconfigured consultation gives the service reason without invoking member readiness',async()=>{
+ const h=chat();h.deps.loadCloudProfile=async()=>({onboarded:true,selfMemberId:'self',members:[{id:'self',relation:'本人'}],healthConfiguration:{consultation:{available:false,reason:'尚未配置开发测试模型'}}})
+ const p=mount('CloudNutritionChat.vue','load,chatError,task',h.deps);await p.load()
+ assert.match(p.chatError.value,/尚未配置开发测试模型/);assert.ok(!h.calls.length);assert.equal(p.task.value.available,undefined);p.dispose()
+})
+
+test('saved but unlinked profiles have a working reconfirmation route and cannot start planning',async()=>{
+ const h=chat(),routes=[];h.deps.uni.navigateTo=o=>routes.push(o.url)
+ h.deps.loadCloudProfile=async()=>({onboarded:true,selfMemberId:'self',members:[{id:'self',relation:'本人'}],defaultDiners:['self'],healthConfiguration:{consultation:{available:true},meal_plan:{available:true}}})
+ const p=mount('CloudNutritionChat.vue','load,chatError,memberArchive,requirePlanningReady',h.deps);await p.load()
+ assert.match(p.chatError.value,/家庭档案/);assert.throws(()=>p.requirePlanningReady(),e=>e.businessCode==='daily_member_sources_unavailable');p.memberArchive();assert.deepEqual(routes,['/pages/profile/member?id=self']);assert.ok(!h.calls.length);p.dispose()
+})
+
+test('both daily entry clients check configuration before starting, while reading stays allowed',async()=>{
+ const h=chat(),clients=[]
+ h.deps.createDailyArrangementClient=options=>{clients.push(options);return {load:async()=>{},reset(){},dispose(){}}}
+ h.deps.loadCloudProfile=async()=>({onboarded:true,selfMemberId:'self',members:[],healthConfiguration:{meal_plan:{available:false,reason:'模型未就绪'},consultation:{available:false,reason:'模型未就绪'}}})
+ const p=mount('CloudNutritionChat.vue','load',h.deps);await p.load()
+ assert.equal(clients.length,2);for(const client of clients)assert.throws(client.beforeStart,e=>e.businessCode==='daily_dependencies_not_ready'&&e.retryable===false);p.dispose()
+})
+
+test('another claimed family member must confirm their own analysis authorization',async()=>{
+ const h=chat();h.deps.loadCloudProfile=async()=>({onboarded:true,selfMemberId:'self',members:[{id:'self',relation:'本人',healthMemberId:member},{id:'parent',relation:'母亲',claimed:true}],defaultDiners:['self','parent'],healthConfiguration:{meal_plan:{available:true}}})
+ const p=mount('CloudNutritionChat.vue','load,requirePlanningReady',h.deps);await p.load()
+ assert.throws(()=>p.requirePlanningReady(),e=>e.businessCode==='daily_member_consent_required'&&/该成员登录/.test(e.message));p.dispose()
+})
+
+test('chat blocks sending until the actual profile load settles and shows why',async()=>{
+ const h=chat();let finish
+ h.deps.loadCloudProfile=()=>new Promise(resolve=>{finish=resolve})
+ const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,chatBusy',h.deps)
+ const loading=p.load();p.question.value='请介绍均衡饮食';await p.sendQuestion()
+ assert.equal(p.chatBusy.value,true)
+ assert.equal(h.calls.length,0);assert.equal(p.question.value,'请介绍均衡饮食')
+ finish({onboarded:true,selfMemberId:'self',members:[{id:'self',relation:'本人',healthMemberId:member}]});await loading
+ assert.equal(p.chatBusy.value,false);p.dispose()
+})
+
+test('failed initial profile load keeps the draft and exposes a retryable error on send',async()=>{
+ const h=chat();h.deps.loadCloudProfile=async()=>{throw new Error('合成网络中断')}
+ const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,chatError',h.deps)
+ await p.load();p.question.value='请介绍均衡饮食';await p.sendQuestion()
+ assert.match(p.chatError.value,/合成网络中断/)
+ assert.equal(p.question.value,'请介绍均衡饮食');assert.equal(h.calls.length,0);p.dispose()
+})
+
+test('a failed consultation can restart with a new thread while keeping an edited draft',async()=>{
+ const h=chat(),saved=storage(),newThread='44444444-4444-4444-8444-444444444444',calls=[]
+ const send=async o=>{
+  calls.push(o)
+  if(o.path.endsWith('/members'))return {data:[{id:member,is_owner:true}]}
+  if(o.path.endsWith('/readiness'))return {data:{capabilities:{member_id:member},entries:[{entry_type:'consultation',status:'available'}]}}
+  if(o.path.endsWith('/daily-conversations'))return {data:{days:[{date:'2026-10-20',thread_id:thread}]}}
+  if(o.path.includes('/tasks/'))return {data:{member_id:member,thread_id:thread,request_id:requestId,task_type:'consultation',agent_slug:'health-consultation',request_status:'dispatched',execution_status:'failed'}}
+  if(o.path.endsWith('/task-entries'))return {data:{member_id:member,task_type:'consultation',client_request_id:requestId,entry_status:'ready',thread_id:newThread,agent_slug:'health-consultation',request_submit_url:'/api/agent/runs'}}
+  throw Error(o.path)
+ }
+ h.deps.scopedStorage=saved
+ h.deps.createHealthTaskFlow=options=>createHealthTaskFlow({...options,send,session:()=>({token:'synthetic',accountId:'self'}),revision:()=>1,storage:saved,newId:()=>requestId,day:()=> '2026-10-20',subscribe:()=>()=>{}})
+ const p=mount('CloudNutritionChat.vue','load,flow,task,question,draftImage,draftError,restartChat',h.deps)
+ await p.load();await p.flow.restoreRequest(requestId);assert.equal(p.task.value.status,'failed')
+ p.question.value='修改后的问题';p.draftImage.value={localPath:'data:image/png;base64,QQ=='}
+ await p.restartChat()
+ assert.equal(p.task.value.entry.thread_id,newThread);assert.equal(p.question.value,'修改后的问题')
+ assert.equal(p.draftImage.value.localPath,'data:image/png;base64,QQ==')
+ assert.equal(calls.filter(c=>c.path.endsWith('/task-entries')).length,1)
+ assert.equal(calls.some(c=>c.path==='/api/agent/runs'),false);p.dispose()
 })

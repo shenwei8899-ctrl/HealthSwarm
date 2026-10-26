@@ -6,7 +6,7 @@ use think\Db;
 
 class ProductMatchService
 {
-    public function matchRequirement(array $requirement)
+    public function matchRequirement(array $requirement, array $allowedSkus = null, array $planIngredientCodes = null)
     {
         foreach (['ingredient_code', 'required_value', 'required_unit'] as $field) {
             if (!isset($requirement[$field]) || $requirement[$field] === '') {
@@ -27,11 +27,13 @@ class ProductMatchService
         $unitCompatible = false;
         $catalog = new CatalogService();
         foreach ($maps as $map) {
+            if ($allowedSkus !== null && !in_array((string)$map['sku_id'], array_map('strval', $allowedSkus), true)) continue;
             $netValue = CatalogEligibility::convert($map['net_value'], $map['net_unit'], $requirement['required_unit']);
             if ($netValue === null) continue;
             $unitCompatible = true;
             try {
                 $sku = $catalog->getSku($map['sku_id'], false);
+                if ($planIngredientCodes !== null && (array_diff(array_column($sku['ingredients'],'ingredient_code'),$planIngredientCodes) || array_diff($sku['allergen_codes'] ?? [],$planIngredientCodes))) continue;
             } catch (DomainException $e) {
                 continue;
             }

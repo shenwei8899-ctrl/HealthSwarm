@@ -314,3 +314,11 @@ test('cancel sends the running Run ID and a new queued question can be selected 
   assert.equal(h.flow.getState().requestId, requestId)
   assert.deepEqual(h.flow.getState().requests.map(row => row.request_id), [requestId, second])
 })
+
+
+for(const code of ['budget_price_unavailable','budget_exceeded'])test(`terminal ${code} stops polling and keeps structured failure`,async()=>{
+ const h=fixture({send:async options=>options.path.endsWith('/tasks/'+requestId)?{data:{request_id:requestId,member_id:memberId,task_type:taskType,thread_id:threadId,agent_slug:'health-blood-glucose',request_status:'dispatched',execution_status:'failed',result:{result_type:'error',code,retryable:false}}}:fixtureBase(options)})
+ await h.flow.open(memberId,taskType);await h.flow.createEntry();await h.flow.submit('你好')
+ assert.deepEqual(h.flow.getState().result,{type:'error',code,retryable:false});assert.equal(h.flow.getState().status,'failed')
+ assert.equal(h.scheduled.length,0)
+})

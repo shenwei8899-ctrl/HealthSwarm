@@ -303,6 +303,18 @@ export function createCommerceClient({
         throw failure("没有待确认的下单操作，请刷新订单", "NO_PENDING_ORDER");
       return mutate("/orders", "POST", pending[2]);
     },
+    servicePlans: group => request('/service-plans' + query({group_ref:group})),
+    servicePlan: (sn, version) => request('/service-plans/' + id(sn) + query({plan_version:version})),
+    planDates: (sn, version, addressId, slotId = 0) => request('/service-plans/' + id(sn) + '/available-dates' + query({plan_version:version,address_id:addressId,delivery_slot_id:slotId})),
+    planSchedule: (sn, version, addressId, firstDate, slotId = 0) => mutate('/service-plans/' + id(sn) + '/schedule-preview','POST',{plan_version:version,address_id:addressId,first_delivery_date:firstDate,delivery_slot_id:slotId}),
+    quotePlan: (sn, version, addressId, firstDate, slotId = 0) => mutate('/service-plans/' + id(sn) + '/checkout','POST',{source_version:version,address_id:addressId,first_delivery_date:firstDate,delivery_slot_id:slotId}),
+    planOrder: sn => request('/plan-orders/' + id(sn)),
+    planBatches: sn => request('/plan-orders/' + id(sn) + '/batches'),
+    pausePlan: (sn, version) => mutate('/plan-orders/' + id(sn) + '/pause','POST',{version}),
+    planResumeDates: (sn, addressId, slotId = 0) => request('/plan-orders/' + id(sn) + '/resume-dates' + query({address_id:addressId,delivery_slot_id:slotId})),
+    previewResumePlan: (sn, payload) => mutate('/plan-orders/' + id(sn) + '/resume','POST',payload),
+    previewCancelPlan: (sn, version) => mutate('/plan-orders/' + id(sn) + '/cancel-remaining-preview','POST',{version}),
+    confirmPlanChange: (sn, changeId) => mutate('/plan-orders/' + id(sn) + '/change-confirm','POST',{change_request_sn:changeId}),
     products: (cursor) =>
       request("/products" + query({ limit: 30, cursor }), { auth: false }),
     meal: (meal = "dinner", date) => request("/meals/current" + query({ meal, date })),
@@ -344,8 +356,8 @@ export function createCommerceClient({
       ),
     selectAddress: (addressId) =>
       mutate("/addresses/" + id(addressId) + "/default", "PUT"),
-    slots: (addressId) =>
-      request("/delivery/slots" + query({ address_id: addressId })),
+    slots: (addressId, purpose) =>
+      request("/delivery/slots" + query({ address_id: addressId, ...(purpose ? {purpose} : {}) })),
     quote: async (lines, addressId, slotId = 0, menu = null) => {
       const session = await connect();
       return mutate("/checkout/preview", "POST", {

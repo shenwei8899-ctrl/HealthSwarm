@@ -3,14 +3,15 @@
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import text
+from sqlalchemy import text, select
+from sqlalchemy.dialects.postgresql import insert
 
-from yuxi.services.family_service import FamilyService, member_view, is_adult
+from yuxi.services.family_service import FamilyService, member_view, is_adult, guardian_active
 from yuxi.services.health_nutrition_service import input_fingerprint
-from yuxi.services.miniapp_profile_types import miniapp_onboarding_ready
+from yuxi.services.miniapp_profile_types import MiniappMemberInput, miniapp_onboarding_ready, miniapp_profile_complete
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import FamilyMember, FamilyProfileRevision
-from yuxi.storage.postgres.models_health import HealthMiniappProfileReceipt
+from yuxi.storage.postgres.models_health import HealthMiniappProfileReceipt, HealthProcessingConsent, HealthGrant
 from yuxi.utils.datetime_utils import utc_now_naive
 
 
@@ -19,6 +20,141 @@ async def read_miniapp_profile(uid, fid):
     async with pg_manager.get_async_session_context() as db:
         service = FamilyService(db, uid)
         family, _ = await service.context(fid)
+        return await profile_result(service, family)
+
+
+async def start_miniapp_analysis(uid, fid, data):
+    """核对已保存成员后，同事务建立来源和用途同意；重放不恢复撤回记录。"""
+    from pydantic import ValidationError
+    from yuxi.services.health_vision_types import HealthVisionError
+    from yuxi.services.miniapp_planning_source import bind_submitted_profile
+
+    digest = input_fingerprint(data.model_dump(mode="json"))
+    async with pg_manager.get_async_session_context() as db:
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"miniapp-profile:{uid}:{data.client_request_id}"},
+        )
+        service = FamilyService(db, uid)
+        family, member = await service.context(fid, str(data.member_id))
+        if member.subject_uid != uid and not guardian_active(member, uid):
+            raise HealthVisionError("member_consent_required", "请由成员本人或已验证的监护人确认分析同意", 403)
+        receipt = await db.get(HealthMiniappProfileReceipt, (uid, str(data.client_request_id)))
+        if receipt:
+            if receipt.family_id != fid or receipt.fingerprint != digest:
+                raise HealthVisionError("request_conflict", "同一确认请求不能改变成员、版本或用途", 409)
+            return await profile_result(service, family)
+        automatic = data.action == "open_consultation"
+        if automatic and member.subject_uid != uid:
+            raise HealthVisionError("member_unavailable", "只能自动衔接当前账号本人的营养咨询", 403)
+        service.require_version(member, data.expected_version)
+        profile = member.profile or {}
+        try:
+            MiniappMemberInput.model_validate(
+                {
+                    "client_ref": member.id,
+                    "member_id": member.id,
+                    "version": member.version,
+                    "name": member.name,
+                    "relation": member.relationship,
+                    "birth_date": profile.get("birth_date"),
+                    "sex": profile.get("sex") or "unspecified",
+                    "height_cm": profile.get("height_cm"),
+                    "dietary": profile.get("dietary_details") or {},
+                }
+            )
+        except ValidationError as exc:
+            labels = {
+                "birth_date": "出生日期",
+                "height_cm": "身高",
+                "sex": "性别",
+                "name": "姓名或称呼",
+                "statedWeightKg": "体重",
+                "dietary": "饮食与健康资料",
+            }
+            messages = list(
+                dict.fromkeys(
+                    error["msg"].removeprefix("Value error, ")
+                    if error["type"] == "value_error"
+                    else "请核对" + labels.get(str(error["loc"][-1]), "饮食与健康资料")
+                    for error in exc.errors()
+                )
+            )
+            raise HealthVisionError("profile_incomplete", "请补充资料：" + "；".join(messages), 422) from None
+        if automatic:
+            from yuxi.services.health_vision_service import health_vision_service
+
+            # 本人读取完整且当前的服务端资料即可衔接咨询，不要求额外确认步骤。
+            if member.confirmed_version != member.version:
+                member.confirmed_version, member.confirmed_at = member.version, utc_now_naive()
+            config = await health_vision_service.configuration(db)
+            configured = config["consultation"]
+            if not configured["available"]:
+                raise HealthVisionError("configuration_unavailable", "营养咨询服务暂未就绪，档案已保存", 503)
+            processing = {
+                "purpose": "consultation",
+                "processor": configured["processor"],
+                "policy_version": config["policy_version"],
+            }
+            health_id = await service.repo.linked_health_member(fid, member.id)
+            existing = None
+            if health_id:
+                grant = await db.get(HealthGrant, (health_id, uid), populate_existing=True)
+                if grant is not None and (grant.revoked_at is not None or "ai_use" not in grant.scopes):
+                    return await profile_result(service, family)
+                if grant is not None:
+                    # 与主动停用的写入按同一用途行排序，不反向获取健康成员锁。
+                    await db.execute(
+                        insert(HealthProcessingConsent)
+                        .values(
+                            member_id=health_id,
+                            actor_uid=uid,
+                            purpose="consultation",
+                            processor=processing["processor"],
+                            policy_version=processing["policy_version"],
+                            granted_at=utc_now_naive(),
+                        )
+                        .on_conflict_do_nothing(index_elements=["member_id", "actor_uid", "purpose"])
+                    )
+                    existing = await db.scalar(
+                        select(HealthProcessingConsent)
+                        .where(
+                            HealthProcessingConsent.member_id == health_id,
+                            HealthProcessingConsent.actor_uid == uid,
+                            HealthProcessingConsent.purpose == "consultation",
+                        )
+                        .with_for_update()
+                        .execution_options(populate_existing=True)
+                    )
+            if existing is not None and existing.revoked_at is not None:
+                return await profile_result(service, family)
+            if (
+                existing is not None
+                and existing.processor == processing["processor"]
+                and existing.policy_version == processing["policy_version"]
+            ):
+                return await profile_result(service, family)
+        else:
+            processing = {"purpose": data.purpose, "processor": data.processor, "policy_version": data.policy_version}
+        await bind_submitted_profile(db, uid, family, [member], processing)
+        member.confirmed_version, member.confirmed_at = member.version, utc_now_naive()
+        db.add(
+            HealthMiniappProfileReceipt(
+                actor_uid=uid,
+                request_id=str(data.client_request_id),
+                family_id=fid,
+                fingerprint=digest,
+                member_refs={member.id: member.id},
+            )
+        )
+        await service.repo.audit(
+            fid,
+            member.id,
+            uid,
+            "miniapp.consultation.open" if automatic else "miniapp.analysis.consent",
+            member.version,
+        )
+        await db.flush()
         return await profile_result(service, family)
 
 
@@ -37,6 +173,14 @@ async def save_miniapp_profile(uid, fid, data):
             if receipt.family_id != fid or receipt.fingerprint != digest:
                 raise HTTPException(409, "同一保存请求不能改变建档内容")
             return await profile_result(service, family)
+        if data.analysis_consent is not None and data.analysis_consent.get("purpose") not in {
+            "consultation",
+            "meal_plan",
+        }:
+            raise HTTPException(
+                409,
+                "当前小程序版本不能确认分析同意，请更新小程序后在成员家庭档案中明确确认；本次未保存资料或改变授权。",
+            )
         member_only = data.scope == "self"
         if family.owner_uid != uid and not member_only:
             raise HTTPException(403, "请由家庭创建者维护默认就餐设置")
@@ -112,7 +256,9 @@ async def save_miniapp_profile(uid, fid, data):
         if data.analysis_consent is not None:
             from yuxi.services.miniapp_planning_source import bind_submitted_profile
 
-            await bind_submitted_profile(db, uid, family, submitted, data.analysis_consent)
+            # 建档页的用途复选框只确认本人；监护人分析须从具体儿童档案明确确认。
+            analysis_members = [member for member in submitted if member.subject_uid == uid]
+            await bind_submitted_profile(db, uid, family, analysis_members, data.analysis_consent)
         if not member_only:
             family.settings = {
                 **(family.settings or {}),
@@ -146,30 +292,35 @@ async def profile_result(service, family):
             actor = member
         view = member_view(family, member, service.uid)
         profile = view.get("profile") or {}
-        dietary = profile.get("dietary_details") or {}
-        if not dietary:
-            dietary = {
-                "recentNote": profile.get("medical_history") or "",
-                "doctorStatus": "set" if profile.get("doctor_instructions") else "unknown",
-                "clinicianGuidance": profile.get("doctor_instructions") or "",
-                "allergyStatus": "unknown"
-                if profile.get("allergens") is None
-                else "set"
-                if profile["allergens"]
-                else "none",
-                "allergies": profile.get("allergens") or [],
-                "avoidanceStatus": "unknown"
-                if profile.get("avoidances") is None
-                else "set"
-                if profile["avoidances"]
-                else "none",
-                "avoidances": profile.get("avoidances") or [],
-            }
+        dietary = {
+            "recentNote": profile.get("medical_history") or "",
+            "doctorStatus": "set" if profile.get("doctor_instructions") else "unknown",
+            "clinicianGuidance": profile.get("doctor_instructions") or "",
+            "allergyStatus": "unknown"
+            if profile.get("allergens") is None
+            else "set"
+            if profile["allergens"]
+            else "none",
+            "allergies": profile.get("allergens") or [],
+            "avoidanceStatus": "unknown"
+            if profile.get("avoidances") is None
+            else "set"
+            if profile["avoidances"]
+            else "none",
+            "avoidances": profile.get("avoidances") or [],
+            "goals": [profile["goal"]] if profile.get("goal") else [],
+            **(profile.get("dietary_details") or {}),
+        }
         members.append(
             {
                 "id": member.id,
                 "healthMemberId": await service.repo.linked_health_member(family.id, member.id),
                 "version": member.version,
+                "relationshipVersion": member.relationship_version,
+                "isSelf": member.subject_uid == service.uid,
+                "canConfirmAnalysis": member.subject_uid == service.uid or guardian_active(member, service.uid),
+                "confirmed": member.confirmed_version == member.version,
+                "editableFields": view["editable_fields"],
                 "claimed": member.subject_uid is not None,
                 "name": member.name,
                 "relation": "本人" if member.subject_uid == service.uid else member.relationship,
@@ -188,6 +339,7 @@ async def profile_result(service, family):
         "usageMode": settings.get("usage_mode", "家庭使用"),
         "defaultDiners": settings.get("default_diners", []),
         "onboarded": miniapp_onboarding_ready(actor, family),
+        "completeProfile": miniapp_profile_complete(actor),
         "selfMemberId": actor.id if actor else None,
         "isOwner": family.owner_uid == service.uid,
         "members": members,

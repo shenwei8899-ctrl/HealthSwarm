@@ -669,6 +669,16 @@ class Workspace extends Backend
         }
         $allowed = array_keys(isset($definition['fields']) ? $definition['fields'] : []);
         $data = array_intersect_key($row, array_flip($allowed));
+        if ($resource === 'plan_rules') {
+            $this->token();
+            if (!$this->auth->check('shop/v5/workspace/settings')) $this->error('无权发布专属计划规则');
+            if ($id) $this->error('已发布规则不可修改，请新增版本');
+            $config=json_decode($data['config_json'] ?? '',true);
+            if (!is_array($config)) $this->error('请填写完整的规则配置');
+            try { $published=(new \addons\shop\library\v5\PlanPolicyService())->publish($data['policy_version'] ?? '',$config,(int)($data['effective_at'] ?? 0)); }
+            catch (DomainException $e) { $this->error($e->getMessage(),null,['__token__'=>$this->request->token()]); }
+            $this->success('规则已发布',null,$published+['__token__'=>$this->request->token()]);
+        }
         foreach ($definition['fields'] as $field => $meta) {
             if (!empty($meta['required']) && (!isset($data[$field]) || trim((string)$data[$field]) === '')) {
                 $this->error($meta['title'] . '不能为空');
@@ -701,6 +711,7 @@ class Workspace extends Backend
         }
         if ($resource === 'delivery_areas' && !empty($data['supplier_id']) && !Db::name('shop_supplier')->where('id',(int)$data['supplier_id'])->find()) $this->error('供应商不存在；通用配送区域请填0或留空');
         if ($resource === 'delivery_slots') {
+            if ($id && isset($data['service_scope']) && $data['service_scope']!==Db::name('shop_delivery_slot')->where('id',$id)->value('service_scope')) $this->error('配送名额用途创建后不可切换，请新增时段');
             if (!Db::name('shop_delivery_area')->where('id',(int)$data['area_id'])->find()) $this->error('配送区域不存在');
             foreach (['start_time','end_time'] as $field) if (!preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/D',(string)$data[$field])) $this->error('配送时间请使用HH:mm格式');
             if ($data['end_time'] <= $data['start_time']) $this->error('结束时间必须晚于开始时间');
@@ -1152,7 +1163,7 @@ class Workspace extends Backend
             'analytics'=>['title'=>'经营统计','description'=>'查询商城订单记录和经营指标；金额以系统交易记录为准','tabs'=>[['label'=>'订单记录','resource'=>'orders_all'],['label'=>'日指标','resource'=>'metrics']]],
             'marketing'=>['title'=>'优惠券','description'=>'维护已有优惠券和领取记录','tabs'=>[['label'=>'优惠券','resource'=>'coupons'],['label'=>'领取记录','resource'=>'user_coupons']]],
             'delivery_rules'=>['title'=>'配送设置','description'=>'设置配送地区、时段和运费','tabs'=>[['label'=>'配送区域','resource'=>'delivery_areas'],['label'=>'配送时段','resource'=>'delivery_slots'],['label'=>'运费模板','resource'=>'freights']]],
-            'settings'=>['title'=>'接口与支付配置','description'=>'维护商城集成调用方和支付基础配置，供应商密钥在供应商档案中维护','tabs'=>[['label'=>'集成调用方','resource'=>'integration_clients']]],
+            'settings'=>['title'=>'接口与支付配置','description'=>'维护商城集成调用方和支付基础配置，供应商密钥在供应商档案中维护','tabs'=>[['label'=>'集成调用方','resource'=>'integration_clients'],['label'=>'专属计划规则','resource'=>'plan_rules']]],
             'audit'=>['title'=>'权限与操作日志','description'=>'维护管理员角色权限，查看后台操作记录','tabs'=>[['label'=>'角色权限','resource'=>'roles'],['label'=>'操作日志','resource'=>'admin_logs']]],
             'technical'=>['title'=>'技术维护','description'=>'供技术人员排查系统异常、接口调用和任务执行情况','tabs'=>[['label'=>'系统异常','resource'=>'exceptions'],['label'=>'推单异常','resource'=>'exceptions_supplier'],['label'=>'接口日志','resource'=>'integration_logs'],['label'=>'事件补偿','resource'=>'outbox_events'],['label'=>'任务记录','resource'=>'job_runs']]],
         ];
@@ -1285,6 +1296,7 @@ class Workspace extends Backend
             'delivery_slots' => $this->r('shop_delivery_slot', ['id'=>'ID','area_id'=>'区域ID','slot_code'=>'时段编码','name'=>'名称','start_time'=>'开始','end_time'=>'结束','cutoff_minutes'=>'提前截单分钟','capacity'=>'容量','used_capacity'=>'已用','weekday_mask'=>'星期','extra_fee_cent'=>'附加费(分)','status'=>'状态'], ['slot_code','name'], [
                 'area_id'=>$this->f('区域ID','number',true), 'slot_code'=>$this->f('时段编码','text',true), 'name'=>$this->f('名称','text',true),
                 'start_time'=>$this->f('开始时间','text',true), 'end_time'=>$this->f('结束时间','text',true),
+                'service_scope'=>$this->f('名额用途','select',true,['normal'=>'普通订单','plan'=>'专属计划（每日独立容量）']),
                 'cutoff_minutes'=>$this->f('提前截单分钟','number'), 'capacity'=>$this->f('容量','number'),
                 'weekday_mask'=>$this->f('配送星期'), 'blackout_dates_json'=>$this->f('停运日期JSON','textarea'),
                 'extra_fee_cent'=>$this->f('附加费(分)','number'), 'status'=>$this->f('状态','select',true,$status),
@@ -1301,6 +1313,11 @@ class Workspace extends Backend
                 'allowed_ip_json'=>$this->f('IP白名单JSON','textarea'), 'callback_whitelist_json'=>$this->f('回调白名单JSON','textarea'),
                 'clock_skew_seconds'=>$this->f('允许时间偏差秒','number',true), 'status'=>$this->f('状态','select',true,$status),
             ], true),
+            'plan_rules' => $this->r('shop_plan_policy', ['id'=>'ID','policy_version'=>'规则版本','status'=>'状态','effective_at'=>'生效时间','createtime'=>'发布时间'], ['policy_version'], [
+                'policy_version'=>$this->f('新规则版本','text',true),
+                'config_json'=>$this->f('完整配置（商品范围、重复限制、预算、费用与配送）','textarea',true),
+                'effective_at'=>$this->f('生效时间戳','number',true),
+            ]),
             'policies' => $this->r('shop_policy_version', ['id'=>'ID','policy_type'=>'政策类型','policy_version'=>'政策版本','title'=>'标题','content_hash'=>'内容哈希','effective_at'=>'生效时间','status'=>'状态','updatetime'=>'更新时间'], ['policy_type','policy_version','title'], [
                 'policy_type'=>$this->f('政策类型','select',true,['plan_non_refund'=>'专属计划不退款']), 'policy_version'=>$this->f('政策版本','text',true),
                 'title'=>$this->f('标题','text',true), 'content'=>$this->f('完整政策正文','textarea',true),

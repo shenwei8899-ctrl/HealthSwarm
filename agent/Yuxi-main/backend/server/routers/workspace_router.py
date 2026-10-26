@@ -225,10 +225,13 @@ async def download_workspace_knowledge_file(
         _raise_knowledge_read_error(error)
 
     filename = data["filename"]
+    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"}
+    if data.get("content_hash"):
+        headers["X-Yuxi-Source-Hash"] = data["content_hash"]
     return StreamingResponse(
         io.BytesIO(data["content"]),
         media_type=data["media_type"],
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+        headers=headers,
     )
 
 

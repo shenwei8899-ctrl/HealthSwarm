@@ -38,6 +38,15 @@ def readiness_sources(capability_sources, monkeypatch):  # noqa: F811
     }
     sources.runtime = AsyncMock(return_value=runtime)
     monkeypatch.setattr(service, "health_runtime_readiness", sources.runtime)
+    from yuxi.services import health_ai_budget_service, health_vision_service
+
+    monkeypatch.setattr(health_vision_service, "current_health_model_info", AsyncMock(return_value=object()))
+
+    monkeypatch.setattr(
+        health_ai_budget_service,
+        "model_budget_readiness",
+        AsyncMock(return_value={"available": True, "reason_code": None, "reason": None}),
+    )
     return sources
 
 

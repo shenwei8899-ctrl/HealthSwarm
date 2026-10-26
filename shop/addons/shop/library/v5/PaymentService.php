@@ -18,6 +18,7 @@ class PaymentService
             if (!$order) throw new DomainException('订单不存在',40409,404);
             if ((int)$order['paystate']===1) throw new DomainException('订单已支付',40923,409);
             if ((int)$order['orderstate']!==0 || (int)$order['expiretime']<=time()) throw new DomainException('订单已失效',40924,409);
+            if ($order['order_type']==='plan') (new PlanOrderService())->assertPayable($order);
             $latest=Db::name('shop_payment_record')->where('order_sn',$orderSn)->order('id','desc')->find();
             if ($latest && ($latest['channel']!=='wechat' || $latest['status']==='closed')) throw new DomainException('支付单已关闭或渠道不同，请重新下单',40938,409);
             $payment=Db::name('shop_payment_record')->where('order_sn',$orderSn)->where('status','in',['created','paying'])->order('id','desc')->find();
@@ -41,6 +42,7 @@ class PaymentService
             if ((int)$order['orderstate']!==0 || (int)$order['expiretime']<=time()) throw new DomainException('订单已失效',40924,409);
             $payment=Db::name('shop_payment_record')->where('payment_sn',$paymentSn)->find();
             if (!$payment || !in_array($payment['status'],['created','paying'],true)) throw new DomainException('支付意图已关闭，请重新下单',40938,409);
+            if ($order['order_type']==='plan') (new PlanOrderService())->assertPayable($order);
             $cached=Db::name('shop_payment_transaction')->where('order_sn',$orderSn)->where('channel_transaction_id','PREPAY:'.$orderSn)->where('status','PENDING')->find();
             if ($cached && (int)$cached['updatetime'] > time()-6600) {
                 $params=Json::decode($cached['request_json'],[]);
@@ -138,7 +140,7 @@ class PaymentService
                 ]);
             }
             if ($closed) {
-                (new ExceptionService())->open('paid_after_close:'.$orderSn,'payment','paid_after_close','已关闭订单收到付款，需核对退款',['order_sn'=>$orderSn,'resource_ref'=>$orderSn],[],'high');
+                if ($newlySynchronized || $recoverInitialState) (new ExceptionService())->open('paid_after_close:'.$orderSn,'payment','paid_after_close','已关闭订单收到付款，需核对退款',['order_sn'=>$orderSn,'resource_ref'=>$orderSn],[],'high');
                 Db::commit();
                 return true;
             }

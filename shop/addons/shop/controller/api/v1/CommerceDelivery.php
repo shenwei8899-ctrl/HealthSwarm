@@ -13,7 +13,8 @@ class CommerceDelivery extends Base
             $addressId=(int)$this->request->get('address_id');
             $delivery=(new DeliveryService())->availability($this->userId(),$addressId);
             if (!$delivery['supported']) return $delivery + ['date'=>$this->request->get('date'),'items'=>[]];
-            $rows=Db::name('shop_delivery_slot')->where('area_id',$delivery['area']['id'])->where('status','normal')->order('start_time','asc')->select();
+            $purpose=$this->request->get('purpose')==='plan'?'plan':'normal';
+            $rows=Db::name('shop_delivery_slot')->where('service_scope',$purpose)->where('area_id',$delivery['area']['id'])->where('status','normal')->order('start_time','asc')->select();
             foreach($rows as &$row){$row['available']=(int)$row['capacity']===0||(int)$row['used_capacity']<(int)$row['capacity'];$row['remaining_capacity']=(int)$row['capacity']===0?null:max(0,(int)$row['capacity']-(int)$row['used_capacity']);}
             return $delivery + ['date'=>$this->request->get('date'),'items'=>$rows];
         });

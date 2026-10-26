@@ -27,6 +27,7 @@ const voiceMode=ref(false),voiceBusy=ref(false),voiceRef=ref(null),communityOpen
 const draftImage=ref(null),draftSaving=ref(false),draftError=ref('')
 const familyState=reactive(dailyArrangementState()),familyPanel=ref(false),familySelection=ref(null),familyIntent=ref('')
 const prompts=['今晚全家吃什么？','给我安排明天早餐','看看我的饮食记录','糖尿病家庭怎么吃？']
+const failureText={budget_price_unavailable:'营养咨询服务的计费配置尚未就绪，请联系管理员。原问题已保留。',budget_exceeded:'本月健康 AI 可用额度不足或待核账，请稍后再试。原问题已保留。',execution_cancelled:'本次处理已取消。',execution_interrupted:'本次处理已中断，可稍后重新发送。'}
 const chatBusy=computed(()=>profileLoading.value||sending.value||familyState.busy||task.value.busy||task.value.loading||['queued','dispatched','pending','running','cancel_requested'].includes(task.value.status))
 const sending=ref(false),hasDraftContent=computed(()=>!!question.value.trim()||!!draftImage.value)
 const canCancel=computed(()=>task.value.requestId&&!task.value.submitUnknown&&['queued','dispatched','pending','running'].includes(task.value.status))
@@ -53,14 +54,21 @@ const flow=createHealthTaskFlow({daily:true,onChange:next=>{
     const id=next.requestId+'-answer',index=messages.value.findIndex(m=>m.requestId===next.requestId&&m.role==='assistant')
     const result=next.result
     const message={id,requestId:next.requestId,role:'assistant',createdAt:new Date().toISOString(),citations:result.citations||[],
-      text:result.type==='answer'?result.text:result.type==='needs_input'?result.questions.join('\n'):result.type==='error'?'这次回复未完成，请保留原问题，重新读取处理结果。':'餐单结果已返回，请核对后决定是否使用。',
-      memberId:next.memberId,purchaseOffers:result.purchaseOffers,purchaseRequestId:result.purchaseOffers?.length?next.requestId:'',error:result.type==='error',business:result.type==='business'?result:null}
+      text:result.type==='answer'?result.text:result.type==='needs_input'?result.questions.join('\n'):result.type==='error'?(failureText[result.code]||'本次处理失败，原问题已保留，可稍后重新发送。'):'餐单结果已返回，请核对后决定是否使用。',
+      memberId:next.memberId,purchaseOffers:result.purchaseOffers,purchaseRequestId:result.purchaseOffers?.length?next.requestId:'',error:result.type==='error',errorCode:result.code,retryable:result.retryable===true,business:result.type==='business'?result:null}
     if(index<0)messages.value.push(message);else messages.value[index]={...messages.value[index],...message}
     if(!restoring)void scrollLatest()
   }
 }})
-const client=createDailyArrangementClient({state,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId})
-const familyClient=createDailyArrangementClient({state:familyState,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId})
+const client=createDailyArrangementClient({state,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId,beforeStart:requirePlanningReady})
+const familyClient=createDailyArrangementClient({state:familyState,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId,beforeStart:requirePlanningReady})
+function requirePlanningReady(){
+  const capability=profile.value?.healthConfiguration?.meal_plan
+  if(capability?.available===false)throw Object.assign(new Error('营养服务暂未就绪：'+(capability.reason||'请先完成服务配置')+'。配置完成后重新读取即可。'),{businessCode:'daily_dependencies_not_ready',retryable:false})
+  const diners=profile.value?.defaultDiners
+  if(diners?.some(id=>profile.value.members.some(member=>member.id===id && !member.healthMemberId && member.claimed===true && member.relation!=='本人')))throw Object.assign(new Error('有已认领的家人尚未完成健康资料关联，请让该成员登录后确认自己的资料和分析授权，或在家庭档案中调整默认就餐成员。'),{businessCode:'daily_member_consent_required',retryable:false})
+  if(diners?.length && diners.some(id=>!profile.value.members.find(member=>member.id===id)?.healthMemberId))throw Object.assign(new Error('请在家庭档案中选择尚未确认的就餐成员，核对资料并明确同意对应分析。'),{businessCode:'daily_member_sources_unavailable',retryable:false})
+}
 async function familyPlan(text,retry=false){
   text=retry?familyIntent.value:String(text||'');if(!retry)familyIntent.value=text
   const scope=storageContext(),mine=epoch
@@ -89,8 +97,10 @@ function rememberThread(){
 async function restoreChat(type=desiredType){
   if(!profile.value)return
   const scope=storageContext(),ticket=epoch
-  const id=props.route.memberId||profile.value.members.find(m=>m.relation==='本人')?.healthMemberId
-  if(!id){chatError.value='请在“我的 → 资料管理 → 我的健康资料”核对本人资料，完成后即可咨询。';return}
+  const id=props.route.memberId||profile.value.members.find(m=>m.id===profile.value.selfMemberId)?.healthMemberId
+  const capability=profile.value.healthConfiguration?.[type==='meal_preview'?'meal_plan':type]
+  if(capability?.available===false){flow.hide();task.value={};chatError.value='营养服务暂未就绪：'+(capability.reason||'请先完成服务配置')+'。配置完成后重新读取即可。';return}
+  if(!id){flow.hide();task.value={};chatError.value=profile.value.consultationError||'请先补全本人家庭档案，保存后即可开始对话；也可打开家庭档案核对资料。';return}
   const selection=type==='diet_analysis'?{record_id:props.route.recordId,source_version:Number(props.route.version)}:props.route.indicatorChoice==='1'?scopedStorage.getStorageSync(`indicator-choice:${id}:${type}`):null
   flowScope=scope;restoring=true
   try{
@@ -134,9 +144,9 @@ async function load(retry=false){
     chatError.value=''
     if(props.route.question&&!question.value)question.value=String(props.route.question).slice(0,4000)
     if(props.route.indicatorChoice==='1'&&!question.value)question.value='请回顾我选择的实测记录，说明还需要补充哪些测量信息。'
-    if(!next.onboarded){uni.redirectTo({url:'/pages/onboarding/index'});return}
+    if(!next.completeProfile&&!next.onboarded){uni.redirectTo({url:'/pages/onboarding/index'});return}
     const resume=scopedStorage.getStorageSync('homepage-chat-task')
-    desiredType=Object.hasOwn(HEALTH_TEXT_TASKS,props.route.taskType)?props.route.taskType:resume?.memberId===next.members.find(m=>m.relation==='本人')?.healthMemberId&&resume?.date===localDate()?resume.type:'consultation'
+    desiredType=Object.hasOwn(HEALTH_TEXT_TASKS,props.route.taskType)?props.route.taskType:resume?.memberId===next.members.find(m=>m.id===next.selfMemberId)?.healthMemberId&&resume?.date===localDate()?resume.type:'consultation'
     await Promise.all([client.load(localDate(),retry===true),restoreChat()])
     if(disposed||mine!==epoch)return
     if(scope!==storageContext()){clearPrivate();uni.reLaunch({url:'/pages/index/index'});return}
@@ -151,7 +161,7 @@ onUnmounted(()=>{disposed=true;epoch++;draftVersion++;client.dispose();familyCli
 function openMeal(meal){uni.navigateTo({url:'/pages/shop/index?meal='+meal.type+'&date='+state.date+'&arrangement='+encodeURIComponent(state.arrangement.id)+'&version='+state.arrangement.version})}
 function shop(arrangement){if(arrangement)uni.navigateTo({url:'/pages/shop/index?daily=1&date='+arrangement.date+'&arrangement='+encodeURIComponent(arrangement.id)+'&version='+arrangement.version})}
 function archives(){uni.navigateTo({url:'/pages/profile/index'})}
-function consultationProfile(){uni.navigateTo({url:'/pages/settings/health-profile'})}
+function memberArchive(){const member=props.route.memberId?profile.value?.members.find(m=>m.healthMemberId===props.route.memberId):profile.value?.members.find(m=>m.id===profile.value.selfMemberId);if(!member){chatError.value='当前成员档案不可访问，请返回家庭档案核查。';return}uni.navigateTo({url:'/pages/profile/member?id='+encodeURIComponent(member.id)})}
 async function members(ids){const type=selectedMeal.value.type;selectedMeal.value=null;await client.changeMembers(type,ids);cardVisible.value=state.phase==='ready';if(familyPanel.value&&familyState.date===state.date)await familyClient.load(state.date)}
 async function sendQuestion(){
   if(!hasDraftContent.value||chatBusy.value||draftSaving.value||draftError.value)return
@@ -164,10 +174,11 @@ async function sendQuestion(){
     if(!task.value.memberId||task.value.taskType!==type)await restoreChat(type)
     if(disposed||!visible||scope!==storageContext())return
     if(task.value.canRetry){chatError.value='上次问题的提交结果尚未确认，请先点击“重试原问题”或重新读取。';return}
-    if(!task.value.available){chatError.value=task.value.error||task.value.notice||chatError.value||'咨询暂未就绪，请重新读取咨询资料后再发送。';return}
+    if(!task.value.available){chatError.value=task.value.error||task.value.notice||chatError.value||'请先补全该成员档案，保存后即可开始对话。';return}
     if(!task.value.entry?.thread_id){await flow.createEntry();rememberThread();if(task.value.entry?.thread_id)await restoreChat(type)}
     rememberThread()
-    if(disposed||!visible||scope!==storageContext()||!task.value.entry?.thread_id)return
+    if(disposed||!visible||scope!==storageContext())return
+    if(!task.value.entry?.thread_id){chatError.value=task.value.error||task.value.notice||'咨询尚未建立，请重新读取后再发送。';return}
     const images=image?[await chatImageContent(image)]:[]
     if(disposed||!visible||scope!==storageContext())return
     const user=reactive({id:newHealthRequestId(),role:'user',text,createdAt:new Date().toISOString(),status:'sending',...(image?{image}: {})})
@@ -180,7 +191,7 @@ async function sendQuestion(){
     if(accepted&&!['failed','rejected'].includes(task.value.status)){if(question.value.trim()===text)question.value='';if(draftImage.value?.localPath===(image?.localPath||''))removeDraft()}
     else chatError.value=task.value.error||'回复尚未完成，原问题和图片已保留。'
   }catch(e){if(!disposed&&scope===storageContext())chatError.value=e.message}
-  finally{pendingUser=null;sending.value=false}
+  finally{pendingUser=null;sending.value=false;if(!disposed&&visible&&scope===storageContext()&&chatError.value)uni.showToast({title:chatError.value,icon:'none',duration:3500})}
 }
 async function retryQuestion(){chatError.value='';await flow.submit('',true);await scrollLatest()}
 async function restartChat(){
@@ -216,7 +227,7 @@ async function shortcut(key){
   else if(key==='camera')uni.navigateTo({url:'/pages/scan/index'})
   else if(key==='community')communityOpen.value=true
   else if(key==='plans')uni.navigateTo({url:'/pages/exclusive-plans/index'})
-  else{inlineTodayOpen.value=!inlineTodayOpen.value;if(inlineTodayOpen.value&&!state.arrangement)await client.load(localDate())}
+  else{inlineTodayOpen.value=!inlineTodayOpen.value;if(inlineTodayOpen.value&&!state.arrangement)await client.load(localDate());if(inlineTodayOpen.value){await nextTick();scrollTarget.value='';await nextTick();scrollTarget.value='inline-today'}}
 }
 function askPrompt(text){if(text==='看看我的饮食记录'){uni.navigateTo({url:'/pages/records/index'});return}desiredType=/安排|吃什么/.test(text)?'meal_preview':'consultation';question.value=text;void sendQuestion()}
 
@@ -225,30 +236,30 @@ function askPrompt(text){if(text==='看看我的饮食记录'){uni.navigateTo({u
 <NutritionistLayout :voice-busy="voiceBusy" :scroll-target="scrollTarget" @history="history" @profile="uni.navigateTo({url:'/pages/my/index'})" @shortcut="shortcut">
  <template #default>
   <view v-if="state.busy&&!state.arrangement" class="dialogue-status"><text>正在读取今日安排…</text></view>
-  <view v-if="state.error" class="dialogue-status" role="alert"><text>今日安排暂未就绪</text><text>{{state.error}}</text><button :disabled="state.busy" @click="load(true)">重试并读取今日安排</button><button @click="archives">核对家庭档案</button></view>
-  <view v-if="state.phase==='ready'" class="analysis-message"><text class="analysis-label">家庭营养师</text><text class="analysis-copy">{{state.arrangement.analysis.text}}</text></view>
+  <view v-if="state.error" class="dialogue-status" role="alert"><text>今日安排暂未就绪</text><text>{{profile?.healthConfiguration?.meal_plan?.available===false ? '营养服务暂未就绪：'+profile.healthConfiguration.meal_plan.reason+'。配置完成后重新读取即可。' : state.error}}</text><button :disabled="state.busy" @click="load(state.retryable!==false)">{{state.retryable===false?'重新检查就绪状态':'重试并读取今日安排'}}</button><button @click="archives">核对家庭档案</button></view>
+  <view v-if="state.phase==='ready'" class="analysis-message"><view class="ai-avatar"><AppIcon name="chat" :size="30"/></view><text class="analysis-copy">{{state.arrangement.analysis.text}}</text></view>
   <DailyArrangementCard v-if="cardVisible && state.phase==='ready'" :arrangement="state.arrangement" :disabled="state.busy" @open="openMeal" @members="selectedMeal=$event" @shop="shop"/>
-  <view v-if="!messages.length" class="welcome-message"><view class="welcome-symbol"><AppIcon name="chat" :size="54"/></view><text class="welcome-title">今天，想怎么吃？</text><text>告诉我你想吃什么，我们一起安排适合家人的三餐。</text></view>
+  <view v-if="!messages.length && state.phase!=='ready'" class="welcome-message"><view class="welcome-symbol"><AppIcon name="chat" :size="54"/></view><text class="welcome-title">今天，想怎么吃？</text><text>告诉我你想吃什么，我们一起安排适合家人的三餐。</text></view>
   <view v-for="message in messages" :id="'message-'+message.id" :key="message.id" class="message-row" :class="message.role">
    <view v-if="message.role==='assistant'" class="ai-avatar"><AppIcon name="chat" :size="28"/></view>
-   <view class="bubble"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><text v-if="message.text">{{message.text}}</text>
+   <view class="message-content"><view class="bubble"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><text v-if="message.text">{{message.text}}</text>
     <text v-for="citation in message.citations||[]" :key="citation" class="citation">参考：{{citation}}</text>
     <text v-if="message.status==='unknown'" class="chat-error">提交结果待确认，请勿重复发送。</text>
-    <text v-if="message.status==='failed'||message.status==='rejected'" class="chat-error">这条问题未完成，可核对后重新发送。</text><text v-if="message.status==='cancelled'" class="chat-error">已取消本次问题。</text>
-    <button v-if="message.error" @click="flow.refresh()">重新读取回复</button><ConversationFoodPackages v-if="message.purchaseRequestId" :offers="message.purchaseOffers" :request-id="message.purchaseRequestId"/><HealthChatBusinessCard v-if="message.business" :result="message.business" :member-id="message.memberId||task.memberId"/>
-   </view>
+    <text v-if="message.status==='failed'||message.status==='rejected'" class="chat-error">服务器已收到本条问题，但处理未完成。</text><text v-if="message.status==='cancelled'" class="chat-error">已取消本次问题。</text>
+    <HealthChatBusinessCard v-if="message.business" :result="message.business" :member-id="message.memberId||task.memberId"/>
+   </view><ConversationFoodPackages v-if="message.purchaseRequestId" :offers="message.purchaseOffers" :request-id="message.purchaseRequestId"/></view>
   </view>
   <view v-if="familyPanel" class="dialogue-status"><text>家庭餐单 · {{familyState.date}}</text><text>按这餐实际参加的成员核对家庭安排，每位成员的资料和权限由服务端检查。</text><text v-if="familyState.busy">正在读取家庭安排…</text><text v-if="familyState.error" class="chat-error">{{familyState.error}}</text><button v-if="familyState.error" :disabled="familyState.busy" @click="familyPlan('',true)">重新读取家庭餐单</button><DailyArrangementCard v-if="familyState.phase==='ready'" :arrangement="familyState.arrangement" family :disabled="familyState.busy" @open="openFamilyMeal" @members="familySelection={type:$event.type,ids:$event.members.map(m=>m.id),question:''}" @shop="shop"/><button @click="familyPanel=false">收起家庭餐单</button></view>
   <text v-if="chatBusy" class="reply-progress">{{profileLoading?'正在读取咨询资料…':'营养师正在分析…'}}</text><text v-if="chatError" class="chat-error" role="alert">{{chatError}}</text>
   <button v-if="!profile&&!profileLoading" class="secondary-button" @click="load()">重新读取咨询资料</button>
-  <button v-if="needsProfileLink" class="secondary-button" @click="consultationProfile">核对并关联本人咨询资料</button>
-  <view v-if="task.error||task.notice||task.canRetry||canCancel" class="dialogue-status"><text>{{task.error||task.notice}}</text><button v-if="task.requestId" @click="flow.refresh()">重新读取本次回复</button><button v-if="task.canRetry" @click="retryQuestion">重试原问题</button><button v-if="canCancel" @click="flow.cancelRequest()">取消当前问题</button></view>
+  <view v-if="task.error||task.notice||task.canRetry||canCancel" class="dialogue-status"><text>{{task.error||task.notice}}</text><button v-if="task.requestId&&task.result?.type!=='error'" @click="flow.refresh()">重新读取本次回复</button><button v-if="task.canRetry" @click="retryQuestion">重试原问题</button><button v-if="canCancel" @click="flow.cancelRequest()">取消当前问题</button></view>
   <button v-if="(task.invalidated||task.status==='failed')&&!route.taskType" class="secondary-button" :disabled="chatBusy||draftSaving" @click="restartChat">开始新咨询</button>
-  <view v-if="task.consentOption" class="dialogue-status"><text>本次咨询处理方：{{task.consentOption.processor}}；政策版本：{{task.consentOption.policyVersion}}。</text><checkbox-group @change="consentChecked=$event.detail.value.includes('yes')"><label><checkbox value="yes" :checked="consentChecked"/>同意本次咨询的数据处理</label></checkbox-group><button :disabled="!consentChecked||chatBusy" @click="consent">同意并继续咨询</button></view>
-  <view class="quick-prompts"><text>问问AI</text><button v-for="prompt in prompts" :key="prompt" :disabled="chatBusy" @click="askPrompt(prompt)">{{prompt}}</button></view>
+  <button v-if="profile&&(!task.available||needsProfileLink)" class="secondary-button" @click="memberArchive">查看该成员档案</button><view v-if="task.consentOption" class="dialogue-status"><text>本次咨询处理方：{{task.consentOption.processor}}；政策版本：{{task.consentOption.policyVersion}}。</text><checkbox-group @change="consentChecked=$event.detail.value.includes('yes')"><label><checkbox value="yes" :checked="consentChecked"/>同意本次咨询的数据处理</label></checkbox-group><button :disabled="!consentChecked||chatBusy" @click="consent">同意并继续咨询</button></view>
+  <view v-if="!messages.length && state.phase!=='ready'" class="quick-prompts"><text>问问AI</text><button v-for="prompt in prompts" :key="prompt" :disabled="chatBusy" @click="askPrompt(prompt)">{{prompt}}</button></view>
+  <view v-if="inlineTodayOpen" id="inline-today" class="inline-today"><view class="inline-today-head"><text>今日饮食计划</text><button aria-label="收起今日饮食计划" @click="inlineTodayOpen=false">收起</button></view><DailyArrangementCard v-if="state.phase==='ready'" :arrangement="state.arrangement" :disabled="state.busy" @open="openMeal" @members="selectedMeal=$event" @shop="shop"/><text v-else class="composer-note">{{state.error||'今日安排仍在读取，请稍后重试。'}}</text></view>
  </template>
  <template #composer>
-  <view v-if="inlineTodayOpen" class="inline-today card"><text class="section-title">今日饮食计划</text><button v-for="meal in state.arrangement?.meals||[]" :key="meal.type" @click="openMeal(meal)"><text>{{({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'})[meal.type]}}</text><text>{{meal.dishes.map(d=>d.name).join('、')}} ›</text></button><text v-if="!state.arrangement" class="composer-note">{{state.error||'今日安排仍在读取，请稍后重试。'}}</text></view>
+
   <view v-if="draftImage" class="image-draft"><view class="draft-thumbnail"><image :src="draftImage.localPath||draftImage.path" mode="aspectFill" @click="previewChatImage(draftImage)"/><button aria-label="移除待发送图片" @click="removeDraft">×</button></view><view><text>{{draftSaving?'正在准备图片…':draftError||'可直接发送图片，也可以补充文字'}}</text><button v-if="draftError" @click="prepareDraft()">重新准备图片</button></view></view>
   <view class="composer"><button class="input-icon" aria-label="打开相机或选择照片" :disabled="chatBusy||voiceBusy||draftSaving" @click="camera"><AppIcon name="camera" :size="38"/></button><VoiceInput v-if="voiceMode" ref="voiceRef" :disabled="chatBusy||draftSaving" @send="sendVoice" @busy="voiceBusy=$event"/><input v-else v-model="question" :disabled="chatBusy" placeholder="问问家庭营养师…" confirm-type="send" @confirm="sendQuestion"/>
    <button v-if="voiceMode" class="input-icon" aria-label="切换文字输入" :disabled="voiceBusy" @click="voiceMode=false"><view class="keyboard-icon"><view/><view/><view/></view></button>
@@ -263,9 +274,22 @@ function askPrompt(text){if(text==='看看我的饮食记录'){uni.navigateTo({u
 </NutritionistLayout>
 </template>
 <style scoped>
-.dialogue-status{padding:28rpx;background:#f5f5f7;border-radius:24rpx;margin:24rpx 0;color:#555;font-size:27rpx;line-height:1.7}.dialogue-status>text{display:block}.dialogue-status button{margin-top:18rpx;min-height:72rpx;text-decoration:underline;color:#222}.analysis-message{padding:30rpx 4rpx 24rpx}.analysis-label{display:block;font-size:23rpx;color:#888;margin-bottom:16rpx}.analysis-copy{display:block;white-space:pre-line;font-size:29rpx;line-height:1.8;color:#28282c}.welcome-message{display:flex;flex-direction:column;align-items:center;text-align:center;padding:56rpx 16rpx 36rpx;gap:20rpx}.welcome-symbol{height:96rpx;width:96rpx;border-radius:30rpx;background:#eaf2ed;color:seagreen;display:flex;align-items:center;justify-content:center}.welcome-title{font-size:40rpx;font-weight:600}.welcome-message>text:last-child{font-size:27rpx;color:#63636b;line-height:1.7;white-space:pre-line}.message-row{display:flex;gap:14rpx;margin:24rpx 0}.message-row.user{justify-content:flex-end;padding-left:60rpx}.ai-avatar{width:52rpx;height:52rpx;display:flex;align-items:center;justify-content:center;border-radius:18rpx;background:#eaf2ed;color:seagreen;flex-shrink:0}.bubble{max-width:570rpx;padding:24rpx;border-radius:4rpx 24rpx 24rpx;background:#f5f5f7;font-size:28rpx;line-height:1.75;white-space:pre-line}.user .bubble{border-radius:24rpx 4rpx 24rpx 24rpx;background:#eaf2ed}.reply-progress,.chat-error{display:block;margin-top:20rpx;color:#777;font-size:25rpx}.composer{display:flex;align-items:center;gap:12rpx;padding:12rpx;border:1rpx solid #dedee3;border-radius:24rpx;background:#fafafa}.composer input{flex:1;min-width:0;height:68rpx;font-size:29rpx}.input-icon,.send-button{width:68rpx;height:68rpx;display:flex;align-items:center;justify-content:center;color:#63636b;flex-shrink:0}.send-button{border-radius:50%;background:#1d1d1f;color:#fff}.composer-note{display:block;font-size:20rpx;color:#999;text-align:center;margin-top:12rpx}.composer :deep(.voice-input){flex:1}.quick-prompts{display:flex;flex-direction:column;gap:14rpx;padding:16rpx 0 32rpx}.quick-prompts>text{font-size:28rpx;font-weight:600}.quick-prompts button{min-height:80rpx;padding:16rpx 0;text-align:left;font-size:26rpx}
+.dialogue-status{padding:28rpx;background:#f5f5f7;border-radius:24rpx;margin:24rpx 0;color:#555;font-size:27rpx;line-height:1.7}.dialogue-status>text{display:block}.dialogue-status button{margin-top:18rpx;min-height:72rpx;text-decoration:underline;color:#222}.analysis-message{padding:30rpx 4rpx 24rpx}.analysis-label{display:block;font-size:25rpx;color:#767680;margin-bottom:16rpx}.analysis-copy{display:block;white-space:pre-line;font-size:29rpx;line-height:1.8;color:#28282c}.welcome-message{display:flex;flex-direction:column;align-items:center;text-align:center;padding:56rpx 16rpx 36rpx;gap:20rpx}.welcome-symbol{height:96rpx;width:96rpx;border-radius:30rpx;background:#f0f1f4;color:#244365;display:flex;align-items:center;justify-content:center}.welcome-title{font-size:40rpx;font-weight:500}.welcome-message>text:last-child{font-size:27rpx;color:#63636b;line-height:1.7;white-space:pre-line}.message-row{display:flex;gap:14rpx;margin:24rpx 0}.message-row.user{justify-content:flex-end;padding-left:60rpx}.ai-avatar{width:52rpx;height:52rpx;display:flex;align-items:center;justify-content:center;border-radius:18rpx;background:#f0f1f4;color:#244365;flex-shrink:0}.bubble{max-width:570rpx;padding:24rpx;border-radius:4rpx 24rpx 24rpx;background:#f5f5f7;font-size:28rpx;line-height:1.75;white-space:pre-line}.user .bubble{border-radius:24rpx 4rpx 24rpx 24rpx;background:#f0f1f4}.reply-progress,.chat-error{display:block;margin-top:20rpx;color:#777;font-size:25rpx}.composer{display:flex;align-items:center;gap:12rpx;padding:12rpx;border:1rpx solid #dedee3;border-radius:24rpx;background:#fafafa}.composer input{flex:1;min-width:0;height:68rpx;font-size:29rpx}.input-icon,.send-button{width:68rpx;height:68rpx;display:flex;align-items:center;justify-content:center;color:#63636b;flex-shrink:0}.send-button{border-radius:50%;background:#1d1d1f;color:#fff}.composer-note{display:block;font-size:25rpx;color:#767680;text-align:center;margin-top:12rpx}.composer :deep(.voice-input){flex:1}.quick-prompts{display:flex;flex-direction:column;gap:14rpx;padding:16rpx 0 32rpx}.quick-prompts>text{font-size:28rpx;font-weight:500}.quick-prompts button{min-height:80rpx;padding:16rpx 0;text-align:left;font-size:26rpx}
 </style>
 
 <style scoped>
-.chat-message-image{display:block;width:360rpx;max-width:100%;border-radius:16rpx;margin-bottom:12rpx}.citation{display:block;margin-top:14rpx;font-size:23rpx;color:#63636b}.image-draft{display:flex;gap:20rpx;align-items:center;padding:12rpx 0 20rpx;font-size:24rpx;color:#63636b}.draft-thumbnail{position:relative;flex-shrink:0}.draft-thumbnail image{width:110rpx;height:110rpx;border-radius:16rpx}.draft-thumbnail button{position:absolute;top:-12rpx;right:-12rpx;width:40rpx;height:40rpx;border-radius:50%;background:#fff}.image-draft>view+view{flex:1}.inline-today{max-height:320rpx;overflow:auto;padding:24rpx;margin-bottom:18rpx}.inline-today>button{display:flex;justify-content:space-between;gap:16rpx;width:100%;padding:20rpx 0;text-align:left;font-size:25rpx}.keyboard-icon{width:42rpx;height:32rpx;border:3rpx solid currentColor;border-radius:7rpx;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4rpx}.keyboard-icon>view{width:26rpx;border-top:3rpx dotted currentColor}.keyboard-icon>view:last-child{width:18rpx;border-top-style:solid}
+.chat-message-image{display:block;width:360rpx;max-width:100%;border-radius:16rpx;margin-bottom:12rpx}.citation{display:block;margin-top:14rpx;font-size:25rpx;color:#63636b}.image-draft{display:flex;gap:20rpx;align-items:center;padding:12rpx 0 20rpx;font-size:25rpx;color:#63636b}.draft-thumbnail{position:relative;flex-shrink:0}.draft-thumbnail image{width:110rpx;height:110rpx;border-radius:16rpx}.draft-thumbnail button{position:absolute;top:-12rpx;right:-12rpx;width:40rpx;height:40rpx;border-radius:50%;background:#fff}.image-draft>view+view{flex:1}.inline-today{max-height:320rpx;overflow:auto;padding:24rpx;margin-bottom:18rpx}.inline-today>button{display:flex;justify-content:space-between;gap:16rpx;width:100%;padding:20rpx 0;text-align:left;font-size:25rpx}.keyboard-icon{width:42rpx;height:32rpx;border:3rpx solid currentColor;border-radius:7rpx;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4rpx}.keyboard-icon>view{width:26rpx;border-top:3rpx dotted currentColor}.keyboard-icon>view:last-child{width:18rpx;border-top-style:solid}
+</style>
+
+<style scoped>
+/* Approved v5 presentation. */
+.welcome-message{padding:48rpx 16rpx 30rpx}.welcome-symbol{border-radius:50%;background:#f1f4f8;color:#244365}.welcome-title{font-size:38rpx;font-weight:400}.welcome-message>text:last-child{font-size:28rpx}.ai-avatar{width:64rpx;height:64rpx;border-radius:50%;background:#f1f4f8;color:#244365}.bubble{font-size:30rpx;line-height:1.65;padding:22rpx 24rpx;max-width:calc(100% - 80rpx);border-radius:6rpx 22rpx 22rpx;background:#f5f6f8}.user .bubble{background:#e8f2ff;border-radius:22rpx 6rpx 22rpx 22rpx}.message-row.user{padding-left:30rpx}.composer{background:#f7f8fa;border:0;border-radius:999rpx;padding:12rpx;gap:10rpx}.composer input{background:#fff;border:1rpx solid #eceef2;border-radius:999rpx;padding:0 20rpx;font-size:29rpx;height:76rpx}.input-icon{background:#fff;border:1rpx solid #eceef2;border-radius:50%;width:72rpx;height:72rpx;color:#303238}.composer-note{font-size:23rpx;color:#737580}.analysis-copy{font-size:30rpx;line-height:1.75}.quick-prompts button{padding:20rpx 24rpx;border:1rpx solid #e7e8ed;border-radius:20rpx;background:#fff;font-size:28rpx}.dialogue-status{font-size:28rpx;line-height:1.65}
+</style>
+
+<style scoped>
+.analysis-message{display:flex;align-items:flex-start;gap:16rpx;padding:30rpx 0 0}.analysis-message .ai-avatar{width:76rpx;height:76rpx;background:#f4f6f9}.analysis-copy{flex:1;min-width:0;background:#f5f6f8;border-radius:8rpx 22rpx 22rpx;padding:20rpx 24rpx;font-size:29rpx;line-height:1.7;color:#4b505b}.composer{padding:10rpx;gap:10rpx;background:#f5f6f8}.composer input{font-size:28rpx;min-height:44px;height:44px}.input-icon,.send-button{min-width:44px;min-height:44px;width:44px;height:44px}.bubble{font-size:29rpx;line-height:1.7}.inline-today{padding:0;margin:24rpx 0;max-height:none;overflow:visible}.inline-today-head{display:flex;justify-content:space-between;align-items:center;color:#737f96;font-size:26rpx}.inline-today-head button{min-height:44px;color:#0674ed;font-size:26rpx}.inline-today :deep(.daily-arrangement-card){margin-top:0}
+</style>
+
+<style scoped>
+.message-content{min-width:0;max-width:calc(100% - 80rpx);flex:1}.message-content>.bubble{max-width:100%;box-sizing:border-box}.user .message-content{flex:0 1 auto}.message-content :deep(.package-card){margin-top:14rpx}.analysis-message{padding-top:38rpx}
 </style>

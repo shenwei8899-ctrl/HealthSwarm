@@ -81,7 +81,6 @@ def test_unknown_status_rejected(field):
         ("doctorStatus", "clinicianGuidance", "  "),
         (None, "goals", ["  "]),
         (None, "goals", ["其他"]),
-        (None, "cuisines", ["自定义"]),
     ],
 )
 def test_empty_or_placeholder_details_rejected(state, field, value):
@@ -115,3 +114,25 @@ def test_explicit_none_and_neutral_preferences_are_valid():
 def test_partial_dietary_edit_still_preserves_unknown():
     """共享档案字段模型继续表达草稿和局部更新。"""
     assert DietaryDetails().healthStatus == "unknown"
+
+
+@pytest.mark.parametrize("omitted", [True, False])
+def test_cuisine_preference_remains_optional_as_in_live_release(omitted):
+    """线上已允许不选择菜系，本次发布保持该行为。"""
+    data = complete_profile()
+    dietary = data["members"][0]["dietary"]
+    if omitted:
+        del dietary["cuisines"]
+    else:
+        dietary["cuisines"] = []
+    value = MiniappProfileInput.model_validate(data)
+    assert value.members[0].dietary.cuisines == []
+
+
+@pytest.mark.parametrize("placeholder", ["其他", "自定义"])
+def test_unexplained_cuisine_placeholder_remains_invalid(placeholder):
+    """可后补不等于接受未具体填写的自定义选项。"""
+    data = complete_profile()
+    data["members"][0]["dietary"]["cuisines"] = [placeholder]
+    with pytest.raises(ValidationError):
+        MiniappProfileInput.model_validate(data)

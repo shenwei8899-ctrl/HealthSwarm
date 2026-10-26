@@ -1372,7 +1372,13 @@ async def stream_agent_chat(
         logger.exception(f"Error streaming messages: {e}")
 
         error_msg = f"Error streaming messages: {e}"
-        error_type = "unexpected_error"
+        from yuxi.services.health_vision_types import HealthVisionError
+
+        error_type = (
+            e.code
+            if isinstance(e, HealthVisionError) and e.code in {"budget_exceeded", "budget_price_unavailable"}
+            else "unexpected_error"
+        )
 
         full_msg = AIMessage(content="".join(accumulated_content)) if accumulated_content else None
 
@@ -1659,6 +1665,13 @@ async def stream_agent_resume(
 
     except Exception as e:
         logger.exception(f"Error during resume: {e}")
+        from yuxi.services.health_vision_types import HealthVisionError
+
+        error_type = (
+            e.code
+            if isinstance(e, HealthVisionError) and e.code in {"budget_exceeded", "budget_price_unavailable"}
+            else "resume_error"
+        )
 
         async with pg_manager.get_async_session_context() as new_db:
             new_conv_repo = ConversationRepository(new_db)
@@ -1666,7 +1679,7 @@ async def stream_agent_resume(
                 new_conv_repo,
                 thread_id,
                 error_message=f"Error during resume: {e}",
-                error_type="resume_error",
+                error_type=error_type,
                 trace_info=trace_info,
                 run_id=meta.get("run_id"),
                 request_id=meta.get("request_id"),
@@ -1676,7 +1689,7 @@ async def stream_agent_resume(
         await _persist_model_request_timing(model_request_recorder, meta)
         yield make_resume_chunk(
             error_message="健康解释执行失败，请重新咨询" if withhold_health_output else f"Error during resume: {e}",
-            error_type="resume_error",
+            error_type=error_type,
             status="error",
         )
     finally:

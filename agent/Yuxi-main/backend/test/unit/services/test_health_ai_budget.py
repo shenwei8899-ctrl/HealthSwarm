@@ -44,3 +44,19 @@ def test_price_requires_complete_verified_cny_bound(changes):
     }
     with pytest.raises(ValidationError):
         HealthAiPriceInput.model_validate(data)
+
+
+def test_deepseek_disabled_thinking_is_fixed_budget_target():
+    """允许已验证的官方非思考参数，配置变化仍生成不同的计费目标。"""
+    from yuxi.models.providers.cache import ModelInfo
+    from yuxi.services.health_ai_budget_service import model_target
+    from dataclasses import replace
+    info=ModelInfo(provider_id="synthetic",model_id="deepseek-flash",model_type="chat",display_name="合成",api_key="synthetic-key",base_url="https://api.deepseek.com/v1",provider_type="openai",request_body_overrides={"thinking":{"type":"disabled"}})
+    assert len(model_target(info))==64
+    assert model_target(info)!=model_target(replace(info,request_body_overrides={}))
+    assert model_target(info)!=model_target(replace(info,api_key="rotated-synthetic"))
+    for overridden in [{"thinking":{"type":"disabled"},"max_tokens":99999},{"model":"other"},{"thinking":{"type":"enabled"}}]:
+        with pytest.raises(Exception,match="budget_price_unavailable"):
+            model_target(replace(info,request_body_overrides=overridden))
+    with pytest.raises(Exception,match="budget_price_unavailable"):
+        model_target(replace(info,base_url="https://synthetic.invalid/v1"))

@@ -113,5 +113,5 @@ async function preview(id) { previewPath.value='';const epoch=pageGeneration,mem
 </view>
 </template>
 <style scoped>
-.photo-flow,.section{display:flex;flex-direction:column;gap:22rpx}.photo-flow{padding-bottom:80rpx}.section{padding:24rpx}.choices{display:flex;flex-wrap:wrap;gap:14rpx;align-items:center}.choices button{background:#eef0e8;padding:12rpx;font-size:24rpx;border-radius:12rpx}.choices .active{background:#246b50;color:white}.safe-note{text-align:left}.field-input{width:100%;box-sizing:border-box}.section text{overflow-wrap:anywhere}button[disabled]{opacity:.5}
+.photo-flow,.section{display:flex;flex-direction:column;gap:22rpx}.photo-flow{padding-bottom:80rpx}.section{padding:24rpx}.choices{display:flex;flex-wrap:wrap;gap:14rpx;align-items:center}.choices button{background:#f0f1f4;padding:12rpx;font-size:25rpx;border-radius:12rpx}.choices .active{background:#292a2e;color:white}.safe-note{text-align:left}.field-input{width:100%;box-sizing:border-box}.section text{overflow-wrap:anywhere}button[disabled]{opacity:.5}
 </style>

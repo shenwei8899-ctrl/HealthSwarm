@@ -145,6 +145,9 @@ class Shop extends Addons
     protected function registerV5Routes()
     {
         $routes = [
+            ['api/v1/commerce/account/phone/config', 'addons/shop/api.v1.commerce_phone/config', 'GET'],
+            ['api/v1/commerce/account/phone', 'addons/shop/api.v1.commerce_phone/detail', 'GET'],
+            ['api/v1/commerce/account/phone/wechat', 'addons/shop/api.v1.commerce_phone/bind', 'POST'],
             ['api/v1/commerce/session/wechat-payment-identity', 'addons/shop/api.v1.commerce_session/wechatPaymentIdentity', 'POST'],
             ['api/v1/commerce/session/wechat', 'addons/shop/api.v1.commerce_session/wechat', 'POST'],
             ['api/v1/commerce/session/login', 'addons/shop/api.v1.commerce_session/login', 'POST'],
@@ -164,7 +167,9 @@ class Shop extends Addons
             ['api/v1/integration/ai/recommendation-packages', 'addons/shop/api.v1.integration_ai_recommendation/create', 'POST'],
             ['api/v1/integration/ai/recommendation-packages/:package_sn/dish-swap-versions', 'addons/shop/api.v1.integration_ai_recommendation/swap', 'POST'],
             ['api/v1/integration/ai/recommendation-packages/:package_sn', 'addons/shop/api.v1.integration_ai_recommendation/detail', 'GET'],
+            ['api/v1/integration/ai/plan-policy', 'addons/shop/api.v1.integration_ai_plan/policy', 'GET'],
             ['api/v1/integration/ai/service-plans', 'addons/shop/api.v1.integration_ai_plan/create', 'POST'],
+            ['api/v1/integration/ai/service-plans/:plan_sn/trade-validate', 'addons/shop/api.v1.integration_ai_plan/tradeValidate', 'POST'],
             ['api/v1/integration/ai/service-plans/:plan_sn/versions', 'addons/shop/api.v1.integration_ai_plan/version', 'POST'],
             ['api/v1/integration/ai/service-plans/:plan_sn', 'addons/shop/api.v1.integration_ai_plan/detail', 'GET'],
             ['api/v1/integration/ai/plan-orders/:order_sn/resume-validations', 'addons/shop/api.v1.integration_ai_plan/resumeValidation', 'POST'],
@@ -200,6 +205,7 @@ class Shop extends Addons
             ['api/v1/commerce/purchase-lists/:purchase_list_sn/cart', 'addons/shop/api.v1.commerce_purchase_list/cart', 'POST'],
             ['api/v1/commerce/purchase-lists/:purchase_list_sn/checkout', 'addons/shop/api.v1.commerce_purchase_list/checkout', 'POST'],
             ['api/v1/commerce/service-plans', 'addons/shop/api.v1.commerce_plan/index', 'GET'],
+            ['api/v1/commerce/service-plans/:plan_sn/available-dates', 'addons/shop/api.v1.commerce_plan/availableDates', 'GET'],
             ['api/v1/commerce/service-plans/:plan_sn/calendar', 'addons/shop/api.v1.commerce_plan/calendar', 'GET'],
             ['api/v1/commerce/service-plans/:plan_sn/purchase-policy', 'addons/shop/api.v1.commerce_plan/policy', 'GET'],
             ['api/v1/commerce/service-plans/:plan_sn/checkout', 'addons/shop/api.v1.commerce_plan/checkout', 'POST'],
@@ -225,6 +231,9 @@ class Shop extends Addons
             ['api/v1/commerce/orders/:order_sn/repurchase', 'addons/shop/api.v1.commerce_order/repurchase', 'POST'],
             ['api/v1/commerce/orders/:order_sn/timeline', 'addons/shop/api.v1.commerce_order/timeline', 'GET'],
             ['api/v1/commerce/plan-orders/:order_sn', 'addons/shop/api.v1.commerce_order/planDetail', 'GET'],
+            ['api/v1/commerce/plan-orders/:order_sn/cancel-remaining-preview', 'addons/shop/api.v1.commerce_order/cancelRemaining', 'POST'],
+            ['api/v1/commerce/plan-orders/:order_sn/change-confirm', 'addons/shop/api.v1.commerce_order/confirmPlanChange', 'POST'],
+            ['api/v1/commerce/plan-orders/:order_sn/resume-dates', 'addons/shop/api.v1.commerce_order/resumeDates', 'GET'],
             ['api/v1/commerce/plan-orders/:order_sn/batches', 'addons/shop/api.v1.commerce_order/batches', 'GET'],
             ['api/v1/commerce/plan-orders/:order_sn/pause', 'addons/shop/api.v1.commerce_order/pause', 'POST'],
             ['api/v1/commerce/plan-orders/:order_sn/resume', 'addons/shop/api.v1.commerce_order/resume', 'POST'],

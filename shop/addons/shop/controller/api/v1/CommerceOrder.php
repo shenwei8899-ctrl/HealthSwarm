@@ -135,7 +135,7 @@ class CommerceOrder extends Base
                 throw new DomainException('订单不存在', 40409, 404);
             }
             if ($order['order_type'] === 'plan') {
-                throw new DomainException('专属计划付款后不支持取消；未付款订单等待自动关闭', 40930, 409);
+                throw new DomainException('专属计划请使用取消剩余批次入口；未付款订单等待自动关闭', 40930, 409);
             }
             if ((int)$order['paystate'] !== 0 || (int)$order['orderstate'] !== 0) {
                 throw new DomainException('当前订单不允许取消', 40934, 409);
@@ -170,7 +170,34 @@ class CommerceOrder extends Base
         $order_sn = $order_sn ?? $this->request->route('order_sn');
         return $this->execute(function () use ($order_sn) {
             $payload = $this->input();
-            $uid=$this->userId();return (new IdempotencyService())->run('commerce.plan.resume','miniapp:'.$uid,$this->request->header('idempotency-key'),['order_sn'=>$order_sn]+$payload,function()use($uid,$order_sn,$payload){return (new PlanOrderService())->requestResume($uid,$order_sn,$payload['version'],$this->requestId);});
+            $uid=$this->userId();return (new IdempotencyService())->run('commerce.plan.resume','miniapp:'.$uid,$this->request->header('idempotency-key'),['order_sn'=>$order_sn]+$payload,function()use($uid,$order_sn,$payload){return (new \addons\shop\library\v5\PlanChangeService())->preview($uid,$order_sn,'resume',$payload,$this->requestId);});
+        });
+    }
+
+    public function cancelRemaining($order_sn = null)
+    {
+        return $this->execute(function () use ($order_sn) {
+            $this->requireMethod('POST');$p=$this->input();$uid=$this->userId();
+            return (new IdempotencyService())->run('commerce.plan.cancel_remaining','miniapp:'.$uid,$this->request->header('idempotency-key'),['order_sn'=>$order_sn]+$p,function () use ($uid,$order_sn,$p) {
+                return (new \addons\shop\library\v5\PlanChangeService())->preview($uid,$order_sn,'cancel_remaining',$p,$this->requestId);
+            },300);
+        });
+    }
+
+    public function confirmPlanChange($order_sn = null)
+    {
+        return $this->execute(function () use ($order_sn) {
+            $this->requireMethod('POST');$p=$this->input();$uid=$this->userId();
+            return (new IdempotencyService())->run('commerce.plan.confirm_change','miniapp:'.$uid,$this->request->header('idempotency-key'),['order_sn'=>$order_sn]+$p,function () use ($uid,$order_sn,$p) {
+                return (new \addons\shop\library\v5\PlanChangeService())->confirm($uid,$order_sn,$p['change_request_sn'] ?? '',$this->requestId);
+            });
+        });
+    }
+
+    public function resumeDates($order_sn = null)
+    {
+        return $this->execute(function () use ($order_sn) {
+            return (new \addons\shop\library\v5\PlanChangeService())->resumeDates($this->userId(),$order_sn,$this->request->get('address_id'),$this->request->get('delivery_slot_id',0));
         });
     }
 

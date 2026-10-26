@@ -193,9 +193,7 @@ async def validate_source_proof(proof):
     secret = os.environ.get("HEALTH_COMMERCE_SOURCE_SECRET", "")
     if len(secret) < 32:
         raise HealthVisionError("commerce_unavailable", "餐单来源校验服务未就绪", 503)
-    expected = hmac.new(
-        secret.encode(), proof.payload.encode(), "sha256"
-    ).hexdigest()
+    expected = hmac.new(secret.encode(), proof.payload.encode(), "sha256").hexdigest()
     if not hmac.compare_digest(expected, proof.signature):
         raise HealthVisionError("source_proof_invalid", "来源凭据无效", 403)
     try:
@@ -203,6 +201,11 @@ async def validate_source_proof(proof):
         user = await UserRepository().get_by_uid(source["uid"])
         if user is None or user.is_deleted or user.is_login_locked() or not user.department_id:
             raise HealthVisionError("source_invalidated", "餐单采购账号当前不可用", 410)
+        if source.get("kind") == "service_plan":
+            from yuxi.services.exclusive_plan_tasks import validate_exclusive_source
+
+            await validate_exclusive_source(source)
+            return {"available": True}
         if source.get("kind") == "conversation_package":
             from yuxi.services.conversation_purchase_service import validate_conversation_source
 

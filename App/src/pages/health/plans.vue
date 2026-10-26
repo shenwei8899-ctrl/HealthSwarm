@@ -9,12 +9,12 @@ const client = createHealthPlanClient({ state })
 const reviewNames = { approved: '已专业批准', not_reviewed: '尚未专业审核', submitted: '待审核', returned: '需补充资料', invalidated: '原批准已失效' }
 const meals = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐' }
 onLoad(options => { memberId.value = options.memberId || '';initialPlan.value=options.planId||'' })
-onShow(() => { replace.value = false; reason.value = ''; void client.open(memberId.value).then(()=>{const plan=state.plans.find(p=>p.plan_id===initialPlan.value);if(plan)void client.detail(plan)}) })
+onShow(() => { replace.value = false; reason.value = ''; void client.open(memberId.value).then(()=>{if(initialPlan.value)void client.detail(initialPlan.value)}) })
 onHide(() => client.discard()); onUnload(() => client.discard())
 function select(row) { replace.value = false; reason.value = ''; void client.detail(row) }
 </script>
 <template>
-  <view class="screen health-plans"><AppNavBar><view class="nav-row"><button class="icon-button" @click="uni.navigateBack()">‹</button><text class="nav-title">餐单与正式采用</text></view></AppNavBar>
+  <view class="screen health-plans"><AppNavBar><view class="nav-row"><button class="icon-button" @click="uni.navigateBack()">‹</button><text class="nav-title">我的餐单</text></view></AppNavBar>
     <view class="page-heading"><text class="display-title">核对好，再采用</text><text class="subtitle">草稿保存、专业批准、正式采用和实际摄入分别记录。</text></view>
     <text v-if="state.error" class="inline-error">{{state.error}}</text><text v-if="state.notice" class="safe-note">{{state.notice}}</text><text v-if="state.busy" class="safe-note">正在重新核对服务端餐单与批准…</text>
     <button v-if="!state.members.length" class="secondary-button" :disabled="state.busy" @click="client.open(memberId)">重新读取成员与餐单</button>
@@ -31,4 +31,4 @@ function select(row) { replace.value = false; reason.value = ''; void client.det
     </view>
   </view>
 </template>
-<style scoped>.health-plans{padding-bottom:60rpx}.section,.meal,.plan-row{display:flex;flex-direction:column;gap:18rpx}.section{padding:28rpx;margin:24rpx 0}.meal{padding:22rpx;background:#f4f7f3;border-radius:18rpx;font-size:26rpx}.choices{display:flex;gap:12rpx;flex-wrap:wrap;margin-top:20rpx}.choices button{font-size:24rpx;padding:12rpx 18rpx;background:#eef2ed}.choices button.active{background:#246b50;color:#fff}.plan-row{padding:24rpx;background:#f4f7f3;text-align:left;font-size:26rpx}.plan-row text:last-child,.helper{font-size:25rpx;color:#63636b;line-height:1.65}.section-title{font-size:31rpx;font-weight:600}.safe-note{text-align:left}label{font-size:25rpx;line-height:1.7}button[disabled]{opacity:.5}</style>
+<style scoped>.health-plans{padding-bottom:60rpx}.section,.meal,.plan-row{display:flex;flex-direction:column;gap:18rpx}.section{padding:28rpx;margin:24rpx 0}.meal{padding:22rpx;background:#fafafa;border-radius:18rpx;font-size:26rpx}.choices{display:flex;gap:12rpx;flex-wrap:wrap;margin-top:20rpx}.choices button{font-size:25rpx;padding:12rpx 18rpx;background:#f5f5f7}.choices button.active{background:#292a2e;color:#fff}.plan-row{padding:24rpx;background:#fafafa;text-align:left;font-size:26rpx}.plan-row text:last-child,.helper{font-size:25rpx;color:#63636b;line-height:1.65}.section-title{font-size:31rpx;font-weight:500}.safe-note{text-align:left}label{font-size:25rpx;line-height:1.7}button[disabled]{opacity:.5}</style>

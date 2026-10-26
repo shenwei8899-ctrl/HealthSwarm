@@ -19,8 +19,8 @@ from yuxi.services.daily_arrangement_service import (
 from yuxi.services.daily_arrangement_projection import save_recipe_commerce_source
 from yuxi.services.daily_arrangement_purchase import read_daily_summary, publish_daily_summary
 from yuxi.services.daily_arrangement_tasks import request_daily_resume
-from yuxi.services.miniapp_profile_service import read_miniapp_profile, save_miniapp_profile
-from yuxi.services.miniapp_profile_types import MiniappProfileInput
+from yuxi.services.miniapp_profile_service import read_miniapp_profile, save_miniapp_profile, start_miniapp_analysis
+from yuxi.services.miniapp_profile_types import MiniappProfileInput, MiniappAnalysisInput, MiniappConsultationOpenInput
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.health_knowledge_import_service import (
     KnowledgeNutritionInput,
@@ -110,12 +110,14 @@ async def profile_get(fid: UUID, user=Depends(get_required_user)):
 @daily_arrangement.post("/family/{fid}/miniapp-profile")
 async def profile_save(
     fid: UUID,
-    data: MiniappProfileInput,
+    data: MiniappProfileInput | MiniappAnalysisInput | MiniappConsultationOpenInput,
     key: str | None = Header(default=None, alias="Idempotency-Key"),
     user=Depends(get_required_user),
 ):
     """同键保存完整建档。"""
     require_key(data.client_request_id, key)
+    if isinstance(data, (MiniappAnalysisInput, MiniappConsultationOpenInput)):
+        return await start_miniapp_analysis(str(user.uid), str(fid), data)
     return await save_miniapp_profile(str(user.uid), str(fid), data)
 
 

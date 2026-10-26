@@ -15,6 +15,8 @@ ConfigurationReasonCode = Literal[
     "ocr_credentials_missing",
     "ocr_not_configured",
     "processor_approval_changed",
+    "budget_price_unavailable",
+    "budget_exceeded",
 ]
 
 

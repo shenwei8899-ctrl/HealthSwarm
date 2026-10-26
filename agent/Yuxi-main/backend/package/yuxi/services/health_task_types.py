@@ -104,9 +104,23 @@ class QualityTaskEntry(HealthDTO):
 class UnsupportedTaskEntry(HealthDTO):
     """外部契约未就绪的任务不接受健康数据或生成运行。"""
 
-    task_type: Literal["glucose_plan", "multi_day_plan", "automatic_family_coordination"]
+    task_type: Literal["glucose_plan", "automatic_family_coordination"]
     client_request_id: UUID
     selection: None = None
+
+
+class ExclusiveTaskSelection(HealthDTO):
+    """专属计划显式绑定家庭，而非单日历史。"""
+
+    family_id: UUID
+
+
+class ExclusiveTaskEntry(HealthDTO):
+    """统一入口转交专属计划的持久任务。"""
+
+    task_type: Literal["multi_day_plan"]
+    client_request_id: UUID
+    selection: ExclusiveTaskSelection | None = None
 
 
 class HealthTaskEntryInput(RootModel):
@@ -121,6 +135,7 @@ class HealthTaskEntryInput(RootModel):
         | FamilyTaskEntry
         | SafeTaskEntry
         | QualityTaskEntry
+        | ExclusiveTaskEntry
         | UnsupportedTaskEntry,
         Field(discriminator="task_type"),
     ]
@@ -141,6 +156,7 @@ class HealthTaskEntryResult(HealthDTO):
         Literal["selection_required", "external_contract_required", "runtime_dependency_unavailable"] | None
     ) = None
     missing_dependencies: list[Literal["postgres", "redis", "worker"]] = Field(default_factory=list)
+    exclusive_plan: dict[str, JsonValue] | None = None
 
 
 class HealthTaskNeedsInput(HealthDTO):
@@ -174,7 +190,14 @@ class HealthTaskError(HealthDTO):
     """只返回固定执行结局，不投影患者或上游错误正文。"""
 
     result_type: Literal["error"] = "error"
-    code: Literal["execution_failed", "request_rejected", "execution_cancelled", "execution_interrupted"]
+    code: Literal[
+        "execution_failed",
+        "request_rejected",
+        "execution_cancelled",
+        "execution_interrupted",
+        "budget_price_unavailable",
+        "budget_exceeded",
+    ]
     retryable: Literal[False] = False
 
 

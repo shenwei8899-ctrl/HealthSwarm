@@ -20,6 +20,7 @@ class CheckoutService
         if ($payload['source_type'] === 'service_plan') {
             $pricing = $this->pricePlan($userId, $payload, $delivery);
         } else {
+            if (($delivery['slot']['service_scope'] ?? 'normal')!=='normal') throw new DomainException('请选择普通订单配送时段',40915,409);
             $pricing = $this->priceCommerce($userId, $payload, $delivery);
         }
         if (!empty($pricing['warnings'])) {
@@ -32,7 +33,7 @@ class CheckoutService
         $token = 'checkout_' . bin2hex(random_bytes(24));
         $tokenHash = hash('sha256', $token);
         $now = time();
-        $expiresAt = $now + 900;
+        $expiresAt = $now + ($payload['source_type'] === 'service_plan' ? $pricing['policy_snapshot']['config']['quote_ttl_seconds'] : 900);
         $mealSnapshot = (new MealCommerceService())->quoteSnapshot($userId, $payload, $pricing);
         if ($mealSnapshot) $pricing['meal_snapshot'] = $mealSnapshot;
         $pricing['address_snapshot'] = $delivery['snapshot'];
@@ -52,20 +53,6 @@ class CheckoutService
                 'status' => 'active', 'expires_at' => $expiresAt,
                 'createtime' => $now, 'updatetime' => $now,
             ]);
-            if ($payload['source_type'] === 'service_plan') {
-                $policy = $pricing['non_refund_policy'];
-                Db::name('shop_order_consent')->insert([
-                    'consent_sn' => Identifiers::make('consent'), 'user_id' => $userId,
-                    'order_id' => 0, 'checkout_token_hash' => $tokenHash,
-                    'consent_type' => 'plan_non_refund', 'policy_version' => $policy['policy_version'],
-                    'policy_title' => $policy['title'], 'policy_content_hash' => $policy['content_hash'],
-                    'displayed_at' => isset($context['displayed_at']) ? (int)$context['displayed_at'] : $now,
-                    'confirmed_at' => $now, 'confirm_action' => 'explicit_click',
-                    'ip_hash' => !empty($context['ip']) ? hash('sha256', $context['ip']) : '',
-                    'device_hash' => !empty($context['device_id']) ? hash('sha256', $context['device_id']) : '',
-                    'request_id' => isset($context['request_id']) ? $context['request_id'] : '', 'createtime' => $now,
-                ]);
-            }
             Db::commit();
         } catch (\Exception $e) {
             Db::rollback();
@@ -111,13 +98,7 @@ class CheckoutService
 
     protected function pricePlan($userId, array $payload, array $delivery)
     {
-        if (empty($payload['non_refund_ack'])) {
-            throw new DomainException('购买专属计划前必须主动确认不退款提示', 40919, 409);
-        }
-        $policy = (new ServicePlanService())->policy();
-        if (empty($payload['non_refund_policy_version']) || $payload['non_refund_policy_version'] !== $policy['policy_version']) {
-            throw new DomainException('退款政策版本已更新，请重新阅读并确认', 40920, 409, ['current_policy' => $policy]);
-        }
+        $policy = (new PlanPolicyService())->current();
         if (empty($payload['first_delivery_date']) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $payload['first_delivery_date'])) {
             throw new DomainException('首批配送日期格式错误', 40011, 400);
         }
@@ -129,11 +110,13 @@ class CheckoutService
         if ((int)$plan['current_version'] !== (int)$payload['source_version'] || $plan['status'] !== 'available') {
             throw new DomainException('专属计划不可结算或版本已变化', 40906, 409);
         }
+        (new AgentMealSourceService())->assertSource($userId,'service_plan',$plan['plan_sn'],$payload['source_version']);
+        $schedule=(new PlanScheduleService())->preview($policy,$delivery,$payload['first_delivery_date']);
         $version = Db::name('shop_service_plan_version')->where('plan_id', $plan['id'])->where('version_no', $plan['current_version'])->find();
         $draft = Json::decode($version['pricing_draft_json'], []);
         $days = [];
         $warnings = isset($draft['issues']) ? $draft['issues'] : [];
-        $goodsTotal = 0;
+        $goodsTotal = 0;$quantities=[];
         foreach ((array)$draft['days'] as $day) {
             $dayTotal = 0;
             $items = [];
@@ -141,12 +124,15 @@ class CheckoutService
                 try {
                     $sku = (new CatalogService())->getSku($draftItem['sku_id'], false);
                     $quantity = max(1, (int)$draftItem['quantity']);
+                    AgentMealSourceService::assertComposition($draftItem['product_snapshot'],$sku);
+                    $quantities[$sku['sku_id']]=($quantities[$sku['sku_id']] ?? 0)+$quantity;
+                    if ($quantities[$sku['sku_id']]>(int)$sku['available_quantity']) throw new DomainException('计划商品库存不足',40904,409);
                     $line = $sku['price_cent'] * $quantity;
                     $items[] = [
                         'sku_id' => $sku['sku_id'], 'goods_id' => $sku['product_id'],
                         'quantity' => $quantity, 'unit_price_cent' => $sku['price_cent'],
                         'line_amount_cent' => $line, 'ingredient_code' => $draftItem['ingredient_code'],
-                        'snapshot' => $sku,
+                        'snapshot' => $sku, 'ingredient_codes'=>$draftItem['ingredient_codes'] ?? [$draftItem['ingredient_code']],
                     ];
                     $dayTotal += $line;
                 } catch (DomainException $e) {
@@ -159,34 +145,26 @@ class CheckoutService
         if (count($days) !== 21) {
             throw new DomainException('计划交易草案不是完整21天', 40921, 409);
         }
-        $config = get_addon_config('shop');
-        $serviceFee = isset($config['v5_plan_service_fee_cent']) ? max(0, (int)$config['v5_plan_service_fee_cent']) : 0;
-        $slotFee = $delivery['slot'] ? (int)$delivery['slot']['extra_fee_cent'] : 0;
-        $shippingFee = $slotFee * 21;
+        $serviceFee = $policy['config']['service_fee_cent'];
+        $shippingFee = array_sum(array_column($schedule['items'],'shipping_fee_cent'));
         $discount = 0;
         $payable = $goodsTotal + $shippingFee + $serviceFee - $discount;
         $goodsAllocation = $this->allocate($goodsTotal, array_column($days, 'goods_amount_cent'));
-        $shippingAllocation = $this->allocate($shippingFee, array_fill(0, 21, 1));
+        $shippingAllocation = array_column($schedule['items'],'shipping_fee_cent');
         $serviceAllocation = $this->allocate($serviceFee, array_fill(0, 21, 1));
         $discountAllocation = $this->allocate($discount, array_column($days, 'goods_amount_cent'));
-        $first = strtotime($payload['first_delivery_date'] . ' 00:00:00');
-        if (!$first) {
-            throw new DomainException('首批配送日期无效', 40011, 400);
-        }
+        $members=(int)Db::name('shop_service_plan_member')->where('plan_id',$plan['id'])->count();
+        PlanPolicyService::assertBudget($policy['config']['tiers'][$plan['tier_code']],$members,$goodsTotal,$serviceFee,$shippingFee);
         $batches = [];
         foreach ($days as $index => $day) {
-            $deliveryDate = strtotime('+' . $index . ' day', $first);
             $amount = $goodsAllocation[$index] + $shippingAllocation[$index] + $serviceAllocation[$index] - $discountAllocation[$index];
-            $batches[] = [
-                'batch_no' => $index + 1, 'delivery_date' => date('Y-m-d', $deliveryDate),
-                'meal_date' => date('Y-m-d', strtotime('+1 day', $deliveryDate)),
-                'inventory_lock_at' => strtotime('-3 day', $deliveryDate),
+            $batches[] = array_merge($schedule['items'][$index], [
                 'goods_amount_cent' => $goodsAllocation[$index],
                 'shipping_fee_cent' => $shippingAllocation[$index],
                 'service_fee_cent' => $serviceAllocation[$index],
                 'discount_amount_cent' => $discountAllocation[$index],
                 'allocated_pay_amount_cent' => $amount, 'items' => $day['items'],
-            ];
+            ]);
         }
         foreach ($warnings as $warning) {
             if (!empty($warning['blocking'])) {
@@ -199,7 +177,7 @@ class CheckoutService
             'goods_amount_cent' => $goodsTotal, 'discount_amount_cent' => $discount,
             'shipping_fee_cent' => $shippingFee, 'service_fee_cent' => $serviceFee,
             'payable_amount_cent' => $payable, 'delivery_batches' => $batches,
-            'non_refund_policy' => $policy, 'warnings' => $warnings,
+            'policy_snapshot' => $policy, 'warnings' => $warnings,
         ];
     }
 
@@ -284,13 +262,18 @@ class CheckoutService
             throw new DomainException('结算令牌已过期', 40918, 409);
         }
         if ($session['source_type'] === 'service_plan') {
-            $plan = Db::name('shop_service_plan')->where('plan_sn', $session['source_ref'])->find();
+            (new PlanScheduleService())->lockCapacity();
+            $plan = Db::name('shop_service_plan')->where('plan_sn', $session['source_ref'])->lock(true)->find();
             if (!$plan || (int)$plan['current_version'] !== (int)$session['source_version'] || $plan['status'] !== 'available') {
                 throw new DomainException('计划版本或状态已变化，请重新结算', 40906, 409);
             }
-            $policy = (new ServicePlanService())->policy();
-            if ($policy['policy_version'] !== $pricing['non_refund_policy']['policy_version']) {
-                throw new DomainException('退款政策已更新，请重新确认', 40920, 409);
+            $fresh=$this->pricePlan($session['user_id'],[
+                'source_ref'=>$session['source_ref'],'source_version'=>$session['source_version'],
+                'first_delivery_date'=>$pricing['delivery_batches'][0]['delivery_date'],
+            ],$delivery);
+            foreach (['fresh','pricing'] as $name) { foreach (${$name}['delivery_batches'] as &$batch) { foreach ($batch['items'] as &$item) unset($item['snapshot']); unset($item); } unset($batch); }
+            foreach (['policy_snapshot','delivery_batches','payable_amount_cent'] as $key) {
+                if (Json::canonical($fresh[$key])!==Json::canonical($pricing[$key])) throw new DomainException('价格、供货或配送规则已变化，请重新确认报价',40922,409);
             }
             return;
         }
@@ -324,11 +307,6 @@ class CheckoutService
 
     protected function createPlanOrder(array $session, array $pricing, array $payload, $requestId)
     {
-        $consent = Db::name('shop_order_consent')->where('checkout_token_hash', $session['checkout_token_hash'])
-            ->where('consent_type', 'plan_non_refund')->find();
-        if (!$consent) {
-            throw new DomainException('缺少专属计划不退款确认凭证', 40919, 409);
-        }
         return $this->persistOrder($session, $pricing, $payload, $requestId, 'plan', []);
     }
 
@@ -370,7 +348,7 @@ class CheckoutService
                 }
             }
             Db::name('shop_checkout_session')->where('id', $session['id'])->where('status', 'active')->update(['status' => 'consumed', 'updatetime' => $now]);
-            (new DeliveryService())->reserveSlot($orderSn, (int)($pricing['delivery_slot_id'] ?? 0), $pricing['delivery_area_id']);
+            if ($orderType !== 'plan') (new DeliveryService())->reserveSlot($orderSn, (int)($pricing['delivery_slot_id'] ?? 0), $pricing['delivery_area_id']);
             if ($session['source_type'] === 'cart') {
                 foreach ($pricing['cart_items'] as $cartItem) {
                     Db::name('shop_carts')->where('id', $cartItem['cart_item_id'])->where('user_id', $session['user_id'])->where('row_version', $cartItem['version'])->delete();
@@ -394,7 +372,6 @@ class CheckoutService
     {
         $plan = Db::name('shop_service_plan')->where('plan_sn', $session['source_ref'])->find();
         $version = Db::name('shop_service_plan_version')->where('plan_id', $plan['id'])->where('version_no', $session['source_version'])->find();
-        $consentId = Db::name('shop_order_consent')->where('checkout_token_hash', $session['checkout_token_hash'])->value('id');
         $planOrderSn = Identifiers::make('po');
         $planOrderId = Db::name('shop_service_plan_order')->insertGetId([
             'plan_order_sn' => $planOrderSn, 'order_id' => $orderId, 'order_sn' => $orderSn,
@@ -404,14 +381,15 @@ class CheckoutService
             'total_amount_cent' => $pricing['payable_amount_cent'], 'goods_amount_cent' => $pricing['goods_amount_cent'],
             'shipping_fee_cent' => $pricing['shipping_fee_cent'], 'service_fee_cent' => $pricing['service_fee_cent'],
             'discount_amount_cent' => $pricing['discount_amount_cent'], 'fulfilled_amount_cent' => 0,
-            'exception_refunded_amount_cent' => 0, 'user_cancellable' => 0,
-            'non_refund_consent_id' => $consentId, 'status' => 'pending_payment', 'row_version' => 1,
+            'exception_refunded_amount_cent' => 0, 'user_cancellable' => 1,
+            'non_refund_consent_id' => 0, 'policy_snapshot_json'=>Json::encode($pricing['policy_snapshot']), 'status' => 'pending_payment', 'row_version' => 1,
             'createtime' => $now, 'updatetime' => $now,
         ]);
         foreach ($pricing['delivery_batches'] as $batch) {
             $batchId = Db::name('shop_plan_delivery_batch')->insertGetId([
                 'batch_sn' => Identifiers::make('batch'), 'plan_order_id' => $planOrderId,
                 'batch_no' => $batch['batch_no'], 'schedule_version' => 1,
+                'delivery_area_id'=>$batch['delivery_area_id'],
                 'meal_date' => $batch['meal_date'], 'delivery_date' => $batch['delivery_date'],
                 'inventory_lock_at' => $batch['inventory_lock_at'], 'delivery_slot_id' => $pricing['delivery_slot_id'],
                 'cutoff_at' => $batch['inventory_lock_at'], 'address_snapshot_json' => Json::encode($pricing['address_snapshot']),
@@ -427,7 +405,7 @@ class CheckoutService
                     'batch_id' => $batchId, 'goods_id' => $item['goods_id'], 'sku_id' => $item['sku_id'],
                     'quantity' => $item['quantity'], 'unit_price_cent' => $item['unit_price_cent'],
                     'line_amount_cent' => $item['line_amount_cent'], 'discount_allocated_cent' => 0,
-                    'ingredient_codes_json' => Json::encode([$item['ingredient_code']]),
+                    'ingredient_codes_json' => Json::encode($item['ingredient_codes']),
                     'sku_snapshot_json' => Json::encode($item['snapshot']), 'status' => 'scheduled',
                     'createtime' => $now, 'updatetime' => $now,
                 ]);

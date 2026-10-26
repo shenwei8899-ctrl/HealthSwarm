@@ -7,4 +7,4 @@ defineEmits(['update:modelValue'])
   <input v-else-if="['number','date'].includes(field.type)" :aria-label="field.label" :disabled="disabled" class="field-input" :type="field.type==='number'?'digit':'text'" :placeholder="field.type==='date'?'YYYY-MM-DD':'未填写'" :value="modelValue??''" @input="$emit('update:modelValue',$event.detail.value)"/>
   <textarea v-else :aria-label="field.label" :disabled="disabled" class="text-area" :maxlength="2000" auto-height placeholder="未填写" :value="modelValue??''" @input="$emit('update:modelValue',$event.detail.value)"/>
 </view></template>
-<style scoped>.archive-field{margin:22rpx 0}.archive-field>text{display:block;font-size:26rpx;margin-bottom:10rpx;color:#46594e}.text-area{min-height:88rpx;width:100%;box-sizing:border-box}</style>
+<style scoped>.archive-field{margin:22rpx 0}.archive-field>text{display:block;font-size:26rpx;margin-bottom:10rpx;color:#6e6e78}.text-area{min-height:88rpx;width:100%;box-sizing:border-box}</style>

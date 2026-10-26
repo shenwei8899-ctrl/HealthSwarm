@@ -1,4 +1,5 @@
 <script setup>
+import CookingGuide from './CookingGuide.vue'
 import { ref, onMounted, onUnmounted } from 'vue'
 import { onShow, onHide } from '@dcloudio/uni-app'
 import AppNavBar from './AppNavBar.vue'
@@ -30,19 +31,12 @@ onMounted(load)
 onShow(()=>{if(scope!==storageContext()){scope=storageContext();revision++;loading=null;dish.value=null;busy.value=false};void load()})
 onHide(()=>{revision++;loading=null;dish.value=null;busy.value=false})
 onUnmounted(()=>{alive=false;revision++})
+
 </script>
 <template>
- <view class="screen cloud-recipe"><AppNavBar><view class="nav-row"><button class="icon-button" @click="back">‹</button><text class="nav-title">菜品做法</text><text></text></view></AppNavBar>
-  <text v-if="busy" class="safe-note">正在读取已保存菜谱…</text><view v-if="error" class="card recipe-error"><text>{{error}}</text><button class="secondary-button" @click="load">重新读取</button></view>
-  <template v-if="dish"><view class="recipe-title"><text class="eyebrow">本餐已保存菜谱</text><text class="display-title">{{dish.name}}</text></view><DishNutritionCard :nutrition="dish.nutrition"/>
-   <view class="recipe-section"><text class="section-title">所需食材 · 本餐合计</text><view class="card ingredient-list"><text v-for="ingredient in dish.ingredients" :key="ingredient.food_id">{{ingredient.name}} {{ingredient.planned_grams}}g</text></view></view>
-   <view class="recipe-section"><text class="section-title">制作步骤</text><view v-for="(step,index) in dish.steps" :key="index" class="card recipe-step"><text class="step-number">{{String(index+1).padStart(2,'0')}}</text><text>{{step}}</text></view></view>
-   <view class="recipe-source"><text>营养依据</text><text>{{dish.nutritionSource?.source}} · {{dish.nutritionSource?.edition}} · {{dish.nutritionSource?.dataset_version}}</text></view>
-  </template><button class="primary-button" @click="back">返回本餐安排</button>
+ <view class="screen cloud-recipe"><AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回本餐" @click="back">‹</button><text class="nav-title">菜品做法</text><view class="nav-spacer"/></view></AppNavBar>
+  <text v-if="busy" class="safe-note">正在读取菜谱…</text><view v-if="error" class="card recipe-error" role="alert"><text>{{error}}</text><button class="secondary-button" @click="load">重新读取</button></view>
+  <template v-if="dish"><view class="recipe-heading"><text>跟着步骤，</text><text>做好这一餐。</text></view><CookingGuide :dishes="[dish]" :selected="dish.id" action="返回本餐安排" @action="back"/></template>
  </view>
 </template>
-<style scoped>.cloud-recipe{background:#fafafa}.recipe-title{padding:40rpx 0}.recipe-section{margin:34rpx 0}.ingredient-list{padding:24rpx;margin-top:18rpx}.ingredient-list text{display:block;font-size:28rpx;line-height:1.9;color:#555}.recipe-step{display:flex;gap:24rpx;padding:28rpx;margin-top:18rpx;font-size:28rpx;line-height:1.8}.step-number{color:#999;flex-shrink:0}.recipe-source{padding:24rpx 0;font-size:23rpx;line-height:1.8;color:#888}.recipe-source text{display:block}.recipe-error{padding:28rpx}.cloud-recipe .secondary-button{color:#333}.cloud-recipe :deep(.nutrition-card){background:#f0f0f3;color:#333}</style>
-
-<style scoped>
-.cloud-recipe :deep(.dish-nutrition-card){background:#f1f1f3}.cloud-recipe :deep(.nutrition-title),.cloud-recipe :deep(.nutrition-value){color:#333}.cloud-recipe :deep(.nutrition-badge){background:#e6e6ea;color:#555}.cloud-recipe :deep(.nutrition-label),.cloud-recipe :deep(.nutrition-unit),.cloud-recipe :deep(.nutrition-note),.cloud-recipe :deep(.nutrition-basis){color:#777}
-</style>
+<style scoped>.cloud-recipe{background:#fafbfc}.nav-spacer{width:80rpx}.recipe-heading{padding:28rpx 4rpx 30rpx}.recipe-heading text{display:block;font-size:50rpx;font-weight:500;line-height:1.35;letter-spacing:-1rpx}.recipe-error{padding:28rpx;font-size:27rpx;line-height:1.6}.recipe-error button{margin-top:20rpx}</style>

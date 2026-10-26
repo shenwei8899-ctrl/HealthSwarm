@@ -10,7 +10,7 @@ class DeliveryService
     {
         if (!$slotId) return;
         $slot=Db::name('shop_delivery_slot')->where('id',$slotId)->lock(true)->find();
-        if (!$slot || $slot['status'] !== 'normal' || ($areaId !== null && (int)$slot['area_id'] !== (int)$areaId)) {
+        if (!$slot || ($slot['service_scope'] ?? 'normal')!=='normal' || $slot['status'] !== 'normal' || ($areaId !== null && (int)$slot['area_id'] !== (int)$areaId)) {
             throw new DomainException('配送时段不可用，请重新结算',40915,409);
         }
         if ((int)$slot['capacity']>0 && (int)$slot['used_capacity']>=(int)$slot['capacity']) throw new DomainException('配送时段容量已满',40916,409);

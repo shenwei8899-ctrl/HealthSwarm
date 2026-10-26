@@ -1,4 +1,4 @@
-"""正式13/14→当前版本迁移保留旧预览和家庭绑定，重复执行幂等。"""
+"""正式13/14/30→当前版本迁移保留旧预览和家庭绑定，重复执行幂等。"""
 
 from datetime import datetime
 from uuid import uuid4
@@ -45,9 +45,9 @@ def cleanup_test_sandboxes():
     yield
 
 
-@pytest.mark.parametrize("source_version", [13, 14])
+@pytest.mark.parametrize("source_version", [13, 14, 30])
 async def test_formal_upgrade_preserves_old_previews_and_family_binding(monkeypatch, tmp_path, source_version):
-    """还原13/14存量结构，实际main增量分支保留旧数据并可重复执行。"""
+    """还原13/14/30存量结构，实际main增量分支保留旧数据并可重复执行。"""
     schema, admin, engine, manager = await _create_isolated_manager("pytest_initial_plan_schema")
     try:
         await manager.create_business_tables()
@@ -125,7 +125,11 @@ async def test_formal_upgrade_preserves_old_previews_and_family_binding(monkeypa
                     )
                 )
         async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE health_consultation DROP COLUMN initial_planner_selection"))
+            if source_version < 30:
+                await conn.execute(text("ALTER TABLE health_consultation DROP COLUMN initial_planner_selection"))
+            else:
+                await conn.execute(text("DROP TABLE health_exclusive_plan_group"))
+                await conn.execute(text("DROP TABLE health_recipe_commerce_source"))
             if source_version == 14:
                 await conn.execute(text("ALTER TABLE health_initial_plan_preview DROP COLUMN run_id"))
                 await conn.execute(text("ALTER TABLE health_initial_plan_preview DROP COLUMN conversation_id"))
@@ -136,7 +140,8 @@ async def test_formal_upgrade_preserves_old_previews_and_family_binding(monkeypa
         ):
             await manager.record_schema_version(domain, version)
 
-        await remove_schema21_safe_planner_structures(engine)
+        if source_version < 30:
+            await remove_schema21_safe_planner_structures(engine)
 
         async def unrelated(*_args, **_kwargs):
             """隔离与健康DDL无关的文件和运行收敛副作用。"""
@@ -165,6 +170,8 @@ async def test_formal_upgrade_preserves_old_previews_and_family_binding(monkeypa
                     == HEALTH_SCHEMA_VERSION
                 )
                 assert await session.scalar(text("SELECT to_regclass('health_initial_plan_preview')")) is not None
+                assert await session.scalar(text("SELECT to_regclass('health_exclusive_plan_group')")) is not None
+                assert await session.scalar(text("SELECT to_regclass('health_recipe_commerce_source')")) is not None
                 old = await session.get(HealthMealPlanPreview, preview_id)
                 bound = await session.get(HealthConsultation, conversation_id)
                 assert old.spec == spec and old.snapshot == snapshot and old.created_at == stamp and old.run_id is None

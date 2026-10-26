@@ -10,6 +10,11 @@ class IntegrationAiPlan extends IntegrationBase
 {
     protected $expectedClientType = 'agent';
 
+    public function policy()
+    {
+        return $this->execute(function () { return (new \addons\shop\library\v5\PlanPolicyService())->readiness(); });
+    }
+
     public function create()
     {
         return $this->execute(function () {
@@ -19,6 +24,18 @@ class IntegrationAiPlan extends IntegrationBase
                 return (new ServicePlanService())->create($this->clientId(), $payload, $this->requestId);
             });
         }, $this->integrationLog('ai_plan_create', 'service_plan'));
+    }
+
+    public function tradeValidate($plan_sn = null)
+    {
+        return $this->execute(function () use ($plan_sn) {
+            $this->requireMethod('POST');$payload=$this->input();
+            $owner=\think\Db::name('shop_service_plan')->where('plan_sn',$plan_sn)->value('agent_client_id');
+            if (!$owner || $owner!==$this->clientId()) throw new \addons\shop\library\v5\DomainException('专属计划不存在',40404,404);
+            return (new IdempotencyService())->run('ai.plan.trade_validate',$this->clientId(),$this->request->header('idempotency-key'),['plan_sn'=>$plan_sn]+$payload,function () use ($plan_sn,$payload) {
+                return (new ServicePlanService())->revalidateTrade($plan_sn,null,$payload['plan_version'] ?? 0);
+            });
+        });
     }
 
     public function version($plan_sn = null)

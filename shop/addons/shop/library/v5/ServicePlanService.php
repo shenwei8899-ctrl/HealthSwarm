@@ -6,18 +6,37 @@ use think\Db;
 
 class ServicePlanService
 {
-    public function revalidateTrade($planSn, $userId = null)
+    /** 重匹配未购买报价，菜单与购买时快照不变。 */
+    public function revalidateTrade($planSn, $userId = null, $selectedVersion = null)
     {
-        $plan=Db::name('shop_service_plan')->where('plan_sn',$planSn)->find();
-        if(!$plan)throw new DomainException('专属计划不存在',40404,404);
-        if($userId!==null)(new IdentityService())->assertOwner($userId,$plan['user_id']);
-        $version=Db::name('shop_service_plan_version')->where('plan_id',$plan['id'])->where('version_no',$plan['current_version'])->find();
-        $draft=Json::decode($version['pricing_draft_json'],[]);$issues=[];$total=0;
-        foreach((array)(isset($draft['days'])?$draft['days']:[]) as $day){foreach((array)$day['items'] as $item){try{$sku=(new CatalogService())->getSku($item['sku_id'],false);$total+=(int)$sku['price_cent']*max(1,(int)$item['quantity']);}catch(DomainException $e){$issues[]=['issue_code'=>'sku_unavailable','sku_id'=>(string)$item['sku_id'],'day_no'=>$day['day_no'],'message'=>$e->getMessage(),'requires_agent_revalidation'=>true];}}}
-        $trade=$issues?'failed':'passed';$reviewAllowed=$plan['review_gate_status']==='not_required'||$plan['review_gate_status']==='allowed';
-        $status=$trade==='passed'&&$plan['nutrition_status']==='passed'&&$reviewAllowed?'available':'blocked';
-        if(!Db::name('shop_service_plan_order')->where('plan_id',$plan['id'])->where('status','in',['active','paused','exception_handling','completed'])->find())Db::name('shop_service_plan')->where('id',$plan['id'])->update(['trade_status'=>$trade,'estimated_amount_cent'=>$total,'status'=>$status,'version'=>(int)$plan['version']+1,'updatetime'=>time()]);
-        return ['plan_sn'=>$planSn,'plan_version'=>(int)$plan['current_version'],'trade_validation_status'=>$trade,'status'=>$status,'estimated_amount_cent'=>$total,'issues'=>$issues];
+        Db::startTrans();
+        try {
+            $plan=Db::name('shop_service_plan')->where('plan_sn',$planSn)->lock(true)->find();
+            if (!$plan) throw new DomainException('专属计划不存在',40404,404);
+            if ($userId!==null) (new IdentityService())->assertOwner($userId,$plan['user_id']);
+            if ($selectedVersion!==null && (int)$selectedVersion!==(int)$plan['current_version']) throw new DomainException('计划已更新，请重新查看',40906,409);
+            $version=Db::name('shop_service_plan_version')->where('plan_id',$plan['id'])->where('version_no',$plan['current_version'])->find();
+            $payload=Json::decode($version['source_payload_json'],[]);
+            $this->validatePayload($payload,(int)$plan['current_version']>1);
+            $draft=$this->buildTradeDraft($payload['days'],$plan['tier_code'],$plan['tier_policy_version']);
+            $this->checkBudget($payload,$draft);
+            $trade=empty($draft['issues'])?'passed':'failed';
+            $status=$trade==='passed' && $plan['nutrition_status']==='passed' && in_array($plan['review_gate_status'],['not_required','allowed'],true)?'available':'blocked';
+            if ($plan['status']==='ordered') $status='ordered';
+            Db::name('shop_service_plan_version')->where('id',$version['id'])->update(['pricing_draft_json'=>Json::encode($draft),'trade_status'=>$trade]);
+            Db::name('shop_service_plan')->where('id',$plan['id'])->update(['trade_status'=>$trade,'status'=>$status,'estimated_amount_cent'=>$draft['total_amount_cent'],
+                'estimate_valid_until'=>time()+(new PlanPolicyService())->current($plan['tier_policy_version'])['config']['estimate_ttl_seconds'],'version'=>(int)$plan['version']+1,'updatetime'=>time()]);
+            Db::commit();
+            return $this->getBySn($planSn,$userId);
+        } catch (\Throwable $error) {Db::rollback();throw $error;}
+    }
+
+    protected function checkBudget(array $payload, array &$draft)
+    {
+        if ($draft['issues']) return;
+        $policy=(new PlanPolicyService())->current($payload['tier_policy_version']);
+        try {PlanPolicyService::assertBudget($policy['config']['tiers'][$payload['tier_code']],count($payload['member_refs']),$draft['total_amount_cent'],$policy['config']['service_fee_cent']);}
+        catch (DomainException $error) {$draft['issues'][]=['issue_code'=>'tier_budget','message'=>$error->getMessage(),'blocking'=>true];}
     }
 
     public function create($clientId, array $payload, $requestId)
@@ -27,7 +46,8 @@ class ServicePlanService
         $existing=Db::name('shop_service_plan')->where('agent_client_id',$clientId)->where('agent_task_id',$payload['agent_task_id'])->find();
         if($existing){if($existing['request_digest']&&!hash_equals($existing['request_digest'],$digest))throw new DomainException('相同Agent任务号对应了不同请求内容',40901,409);return $this->getBySn($existing['plan_sn']);}
         $userId = (new IdentityService())->resolveUserId($clientId, $payload['user_ref']);
-        $draft = $this->buildTradeDraft($payload['days']);
+        $draft = $this->buildTradeDraft($payload['days'], $payload['tier_code'], $payload['tier_policy_version']);
+        $this->checkBudget($payload,$draft);
         $nutrition = $payload['nutrition_validation'];
         $nutritionStatus = isset($nutrition['status']) ? $nutrition['status'] : 'pending';
         $config = get_addon_config('shop');
@@ -44,6 +64,10 @@ class ServicePlanService
                 'plan_sn' => $planSn, 'agent_client_id' => $clientId, 'agent_task_id' => $payload['agent_task_id'],
                 'request_digest' => $digest,
                 'user_id' => $userId, 'user_ref' => $payload['user_ref'], 'family_ref' => $payload['family_ref'],
+                'recommendation_group_ref'=>$payload['recommendation_group_ref'], 'tier_code'=>$payload['tier_code'],
+                'tier_policy_version'=>$payload['tier_policy_version'], 'basis_hash'=>$payload['basis_hash'],
+                'display_json'=>Json::encode($payload['display'] ?? []),
+                'estimate_valid_until'=>time()+(new PlanPolicyService())->current($payload['tier_policy_version'])['config']['estimate_ttl_seconds'],
                 'plan_name' => $payload['plan_name'], 'plan_days' => 21, 'delivery_frequency' => 'daily',
                 'delivery_lead_days' => 1, 'current_version' => 1,
                 'requires_professional_review' => $requiresReview ? 1 : 0,
@@ -58,7 +82,7 @@ class ServicePlanService
                 Db::name('shop_service_plan_member')->insert([
                     'plan_id' => $planId, 'member_ref' => $memberRef,
                     'profile_version_ref' => isset($payload['profile_version_refs'][$index]) ? $payload['profile_version_refs'][$index] : '',
-                    'role' => $index === 0 ? 'primary' : 'member', 'display_alias' => '',
+                    'role' => $index === 0 ? 'primary' : 'member', 'display_alias' => mb_substr((string)($payload['member_aliases'][$memberRef] ?? ''),0,64),
                     'status' => 'normal', 'createtime' => $now, 'updatetime' => $now,
                 ]);
             }
@@ -82,6 +106,9 @@ class ServicePlanService
             if (!$plan || $plan['agent_client_id'] !== $clientId) {
                 throw new DomainException('专属计划不存在', 40404, 404);
             }
+            foreach (['recommendation_group_ref','tier_code','tier_policy_version','basis_hash','user_ref','family_ref'] as $field) {
+                if ($plan[$field]!==$payload[$field]) throw new DomainException('新档案或推荐组必须建立独立计划',40906,409);
+            }
             if ((int)$payload['base_version'] !== (int)$plan['current_version']) {
                 throw new DomainException('专属计划版本冲突', 40906, 409, ['current_version' => (int)$plan['current_version']]);
             }
@@ -90,7 +117,8 @@ class ServicePlanService
             if ($paid) {
                 throw new DomainException('已支付计划内容不可修改', 40913, 409);
             }
-            $draft = $this->buildTradeDraft($payload['days']);
+            $draft = $this->buildTradeDraft($payload['days'], $payload['tier_code'], $payload['tier_policy_version']);
+        $this->checkBudget($payload,$draft);
             $nutrition = $payload['nutrition_validation'];
             $nutritionStatus = isset($nutrition['status']) ? $nutrition['status'] : 'pending';
             $config = get_addon_config('shop');
@@ -133,6 +161,9 @@ class ServicePlanService
         }
         $version = Db::name('shop_service_plan_version')->where('plan_id', $plan['id'])
             ->where('version_no', $plan['current_version'])->find();
+        if ($userId !== null) {
+            (new AgentMealSourceService())->validateProof(Json::decode($version['agent_source_proof_json'] ?? '{}', []));
+        }
         $days = Db::name('shop_service_plan_day')->where('plan_version_id', $version['id'])->order('day_no', 'asc')->select();
         foreach ($days as &$day) {
             $day['ingredient_requirements'] = Json::decode($day['ingredient_requirements_json'], []);
@@ -144,7 +175,20 @@ class ServicePlanService
             }
             unset($day['ingredient_requirements_json']);
         }
+        $draft=Json::decode($version['pricing_draft_json'], []);
+        $first=0;foreach ($draft['days'][0]['items'] ?? [] as $item) $first+=(int)$item['total_price_cent'];
+        $members=Db::name('shop_service_plan_member')->where('plan_id',$plan['id'])->field('member_ref,profile_version_ref,display_alias')->select();
+        $policy=(new PlanPolicyService())->current($plan['tier_policy_version']);
         return [
+            'recommendation_group_ref'=>$plan['recommendation_group_ref'],'tier_code'=>$plan['tier_code'],
+            'tier_name'=>PlanPolicyService::TIERS[$plan['tier_code']], 'tier_policy_version'=>$plan['tier_policy_version'],
+            'members'=>$members,'display'=>Json::decode($plan['display_json'],[]),
+            'difference'=>$policy['config']['tiers'][$plan['tier_code']]['difference'],
+            'first_batch_goods_cent'=>$plan['trade_status']==='passed' && (int)$plan['estimate_valid_until']>time() ? $first : null, 'estimated_goods_cent'=>(int)$plan['estimated_amount_cent'],
+            'service_fee_cent'=>$policy['config']['service_fee_cent'],'shipping_fee_cent'=>null,
+            'estimated_total_cent'=>null,
+            'estimated_subtotal_cent'=>$plan['trade_status']==='passed' && (int)$plan['estimate_valid_until']>time() ? (int)$plan['estimated_amount_cent']+$policy['config']['service_fee_cent'] : null,
+            'estimate_includes_shipping'=>false, 'estimate_valid_until'=>(int)$plan['estimate_valid_until'],
             'plan_sn' => $plan['plan_sn'], 'plan_name' => $plan['plan_name'],
             'plan_version' => (int)$plan['current_version'], 'plan_days' => 21,
             'delivery_frequency' => 'daily', 'delivery_lead_days' => 1,
@@ -160,20 +204,22 @@ class ServicePlanService
 
     public function policy()
     {
-        $policy = Db::name('shop_policy_version')->where('policy_type', 'plan_non_refund')
-            ->where('status', 'active')->where('effective_at', '<=', time())->order('effective_at', 'desc')->find();
-        if (!$policy) {
-            throw new DomainException('专属计划交易政策尚未配置', 50301, 503);
-        }
-        return [
-            'policy_version' => $policy['policy_version'], 'title' => $policy['title'],
-            'content' => $policy['content'], 'content_hash' => $policy['content_hash'],
-            'confirmation_required' => true,
-        ];
+        $policy=(new PlanPolicyService())->current();
+        return ['policy_version'=>$policy['version'],'content_hash'=>$policy['hash'],
+            'confirmation_required'=>false,'cancel_remaining_allowed'=>true,
+            'summary'=>'可取消尚未截单或备货的剩余批次，退款金额以实时预览为准'];
     }
 
     protected function validatePayload(array $payload, $isVersion = false)
     {
+        PlanRequirements::validate($payload);
+        $policy=(new PlanPolicyService())->current();
+        if ($policy['version']!==$payload['tier_policy_version']) throw new DomainException('计划规则已更新',40906,409);
+        PlanRequirements::validateTier($payload,$policy);
+        $source=Json::decode($payload['agent_source_proof']['payload'] ?? '',[]);
+        if (($source['content_hash'] ?? '')!==PlanRequirements::contentHash($payload) || ($source['kind'] ?? '')!=='service_plan') throw new DomainException('计划内容与校验凭据不一致',40301,403);
+        if ((int)($source['plan_version'] ?? 0)!==($isVersion?(int)($payload['base_version'] ?? 0)+1:1)) throw new DomainException('计划版本与来源凭据不一致',40906,409);
+        (new AgentMealSourceService())->validateProof($payload['agent_source_proof']);
         $fields = ['agent_task_id', 'family_ref', 'user_ref', 'member_refs', 'profile_version_refs', 'plan_name', 'plan_days', 'delivery_frequency', 'days', 'nutrition_validation'];
         if ($isVersion) {
             $fields[] = 'base_version';
@@ -208,35 +254,18 @@ class ServicePlanService
         }
     }
 
-    protected function buildTradeDraft(array $days)
+    protected function buildTradeDraft(array $days, $tierCode, $policyVersion)
     {
-        $matcher = new ProductMatchService();
-        $total = 0;
-        $issues = [];
-        $dayDrafts = [];
+        $policy=(new PlanPolicyService())->current($policyVersion);
+        $allowed=$policy['config']['tiers'][$tierCode]['allowed_sku_ids'];
+        $total=0;$issues=[];$drafts=[];
         foreach ($days as $day) {
-            $dayItems = [];
-            foreach ($day['meals'] as $meal) {
-                foreach ((array)(isset($meal['ingredient_requirements']) ? $meal['ingredient_requirements'] : []) as $requirement) {
-                    $requirement['recipe_ref'] = isset($meal['recipe_ref']) ? $meal['recipe_ref'] : '';
-                    $result = $matcher->matchRequirement($requirement);
-                    if ($result['issue']) {
-                        if (empty($requirement['is_optional'])) {
-                            $issue = $result['issue'];
-                            $issue['day_no'] = (int)$day['day_no'];
-                            $issues[] = $issue;
-                        }
-                    } else {
-                        $item = $result['selected'];
-                        $item['recipe_ref'] = $requirement['recipe_ref'];
-                        $dayItems[] = $item;
-                        $total += (int)$item['total_price_cent'];
-                    }
-                }
-            }
-            $dayDrafts[] = ['day_no' => (int)$day['day_no'], 'items' => $dayItems];
+            $matched=PlanRequirements::matchBatch($day['meals'],array_values(array_intersect($allowed,$day['eligible_sku_ids'])));
+            foreach ($matched['issues'] as $issue) $issues[]=$issue+['day_no'=>(int)$day['day_no'],'blocking'=>true];
+            foreach ($matched['items'] as $item) $total+=(int)$item['total_price_cent'];
+            $drafts[]=['day_no'=>(int)$day['day_no'],'items'=>$matched['items'],'requirements'=>$matched['requirements']];
         }
-        return ['days' => $dayDrafts, 'issues' => $issues, 'total_amount_cent' => $total];
+        return ['days'=>$drafts,'issues'=>$issues,'total_amount_cent'=>$total];
     }
 
     protected function insertVersion($planId, $versionNo, $baseVersion, array $payload, array $draft, $reviewGate, $now)
@@ -254,7 +283,8 @@ class ServicePlanService
             'review_ref' => isset($payload['professional_review_ref']) ? $payload['professional_review_ref'] : '',
             'review_gate_status' => $reviewGate,
             'trade_status' => empty($draft['issues']) ? 'passed' : 'failed',
-            'pricing_draft_json' => Json::encode($draft), 'createtime' => $now,
+            'pricing_draft_json' => Json::encode($draft), 'agent_source_proof_json'=>Json::encode($payload['agent_source_proof']), 'createtime' => $now,
+            'source_payload_json'=>Json::encode($payload),
         ]);
     }
 

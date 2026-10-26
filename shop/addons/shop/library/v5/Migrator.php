@@ -58,7 +58,7 @@ class Migrator
     {
         // 安装和插件升级共用版本记录；与幂等DDL在同一事务提交。
         $root = ROOT_PATH . 'database' . DS . 'postgresql' . DS . 'migrations' . DS;
-        $paths = [$root . '20261019_001_agent_meal_source.sql', $root . '20261021_commerce_catalog_review.sql', $root . '20261022_miniapp_user_access.sql'];
+        $paths = [$root . '20261019_001_agent_meal_source.sql', $root . '20261021_commerce_catalog_review.sql', $root . '20261022_miniapp_user_access.sql', $root . '20261023_wechat_phone.sql', $root . '20261025_021_exclusive_plan_contract.sql'];
         foreach ($paths as $path) {
             if (!is_file($path)) throw new \RuntimeException('Shop migration file missing: ' . basename($path));
             $version = pathinfo($path, PATHINFO_FILENAME);

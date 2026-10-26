@@ -1,4 +1,6 @@
 <script setup>
+import FoodImageSlot from './FoodImageSlot.vue'
+import PlanOrderControls from './PlanOrderControls.vue'
 const back = () => uni.navigateBack();
 import { ref, computed, onMounted } from "vue";
 import { onShow } from "@dcloudio/uni-app";
@@ -199,94 +201,27 @@ const afterStatus = {
   4: "已撤销",
   5: "已处理",
 };
+const deliveryStep=computed(()=>order.value?.status==='delivered'?2:order.value?.status==='shipping'?1:order.value?.status==='paid'?0:-1)
+const statusDescription=computed(()=>({pending:'核对订单后，完成付款。',paid:'订单已确认，等待配送。',shipping:'食材正在送往你家。',delivered:'食材已收到，一起做顿好饭。',cancelled:'订单已结束。',refund_pending:'售后处理中，请查看处理结果。'}[order.value?.status]||''))
+const paymentLabel=computed(()=>({paid:'已支付',unpaid:'未支付',paying:'结果待确认',refunding:'退款中',refund_pending:'退款处理中',refunded:'已退款'}[order.value?.paymentStatus]||'待核对'))
+function dateText(value){const d=new Date(value);if(!Number.isFinite(d.getTime()))return '';return d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日 '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}
+
 </script>
 <template>
-  <view class="screen"
-    ><AppNavBar
-      ><view class="nav-row"
-        ><button class="icon-button" @click="back">‹</button
-        ><text class="nav-title">订单详情</text><text /></view></AppNavBar
-    ><text v-if="error" class="inline-error">{{ error }}</text
-    ><text v-if="message" class="safe-note">{{ message }}</text
-    ><button class="secondary-button" :disabled="busy" @click="load">
-      {{ busy ? "正在处理…" : "刷新订单" }}</button
-    ><view v-if="pending" class="card detail-card"
-      ><text
-        >上次售后申请结果尚未确认。请重试原申请，系统会核对原提交结果。</text
-      ><button class="primary-button" :disabled="busy" @click="retrySale">
-        重试并确认原售后申请
-      </button></view
-    ><template v-if="order"
-      ><view class="card detail-card"
-        ><text class="display-title">{{ order.label }}</text
-        ><text>{{ order.id }}</text
-        ><text class="section-title"
-          >订单金额 ¥{{ money(order.totalCents) }}</text
-        ><text v-if="order.address"
-          >{{ order.address.receiver }} {{ order.address.mobile }} ·
-          {{ order.address.region }} {{ order.address.detail }}</text
-        ><text v-for="item in order.items" :key="item.id"
-          >{{ item.name }} × {{ item.quantity }} · ¥{{
-            money(item.priceCents * item.quantity)
-          }}</text
-        ></view
-      ><text v-if="order.localTestPayment" class="safe-note">本地联调环境 · 测试付款不扣款，不代表真实微信支付已开通。</text>
-      <button v-if="order.localTestPayment && allowed('pay')" class="primary-button" :disabled="busy" @click="localPay">本地测试支付（不扣款）</button>
-      <button v-if="order.status === 'delivered' && order.mealSnapshot" class="primary-button" :disabled="busy" @click="cook">查看本餐做法并记餐</button>
-      <view class="actions"
-        ><button
-          v-if="allowed('pay') && !order.localTestPayment"
-          class="primary-button"
-          :disabled="busy"
-          @click="pay"
-        >
-          微信支付</button
-        ><button
-          v-if="order.status === 'pending'"
-          class="secondary-button"
-          :disabled="busy"
-          @click="query"
-        >
-          查询支付结果</button
-        ><button
-          v-if="allowed('cancel')"
-          class="secondary-button"
-          :disabled="busy"
-          @click="action('cancel')"
-        >
-          取消未支付订单</button
-        ><button
-          v-if="allowed('receive')"
-          class="primary-button"
-          :disabled="busy"
-          @click="action('receipt')"
-        >
-          确认收货</button
-        ><button class="secondary-button" :disabled="busy" @click="logistics">
-          查看物流</button
-        ><button
-          v-if="allowed('afterSale')"
-          class="secondary-button"
-          :disabled="busy"
-          @click="afterSale"
-        >
-          申请售后</button
-        ><button
-          v-if="allowed('repurchase')"
-          class="secondary-button"
-          :disabled="busy"
-          @click="repurchase"
-        >
-          再买一单
-        </button></view
-      ><view v-if="order.batches.length" class="card detail-card"
-        ><text class="section-title">配送批次</text
-        ><text v-for="b in order.batches" :key="b.id"
-          >第{{ b.batch_no }}批 · {{ b.delivery_date }} · {{ b.status }}</text
-        ><text class="subtitle"
-          >计划取消和退款规则尚未定稿，新的计划购买暂未开放。</text
-        ></view
-      ><view v-if="events.length" class="card detail-card"
+ <view class="screen order-screen"><AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="back">‹</button><text class="nav-title">订单详情</text><button class="refresh-link" :disabled="busy" @click="load">{{busy?'读取中':'刷新'}}</button></view></AppNavBar>
+  <text v-if="error" class="inline-error" role="alert">{{error}}</text><text v-if="message" class="safe-note">{{message}}</text>
+  <view v-if="pending" class="card detail-card"><text>上次售后申请结果待确认</text><button class="primary-button" :disabled="busy" @click="retrySale">确认原售后申请</button></view>
+  <template v-if="order">
+   <view class="order-status"><text class="status-title">{{order.label}}</text><text class="status-description">{{statusDescription}}</text></view>
+   <view v-if="deliveryStep>=0" class="delivery-progress"><view v-for="(label,index) in ['已下单','配送中',order.status==='delivered'?'已收货':'待收货']" :key="index" class="progress-step" :class="{complete:index<=deliveryStep}"><view class="progress-point">{{index<=deliveryStep?'✓':''}}</view><text>{{label}}</text></view></view>
+   <view class="card order-goods"><view class="card-heading"><text>订单商品</text><text>{{order.items.length}} 项</text></view><view v-for="item in order.items" :key="item.id" class="order-item"><FoodImageSlot :src="item.image" :label="item.name" class="order-image"/><view class="order-item-copy"><text>{{item.name}}</text><text>{{item.sku_snapshot?.sku_name||''}}</text></view><view class="order-item-amount"><text>¥{{money(item.priceCents*item.quantity)}}</text><text>×{{item.quantity}}</text></view></view><view class="order-total"><text>订单金额</text><text>¥{{money(order.totalCents)}}</text></view></view>
+   <view v-if="order.address" class="card order-address"><view class="address-icon" aria-hidden="true">⌖</view><view><text>{{order.address.receiver}} · {{order.address.mobile}}</text><text>{{order.address.region}} {{order.address.detail}}</text></view></view>
+   <view class="card order-meta"><text class="card-heading">订单信息</text><view><text>订单编号</text><button @click="uni.setClipboardData({data:order.id})">{{order.id}} <text>复制</text></button></view><view v-if="order.createdAt"><text>下单时间</text><text>{{dateText(order.createdAt)}}</text></view><view><text>支付状态</text><text>{{paymentLabel}}</text></view></view>
+   <text v-if="order.localTestPayment" class="safe-note">本地测试订单 · 测试付款不扣款</text>
+   <view class="order-primary-actions"><button v-if="order.localTestPayment&&allowed('pay')" class="primary-button" :disabled="busy" @click="localPay">本地测试支付（不扣款）</button><button v-if="allowed('pay')&&!order.localTestPayment" class="primary-button" :disabled="busy" @click="pay">微信支付 ¥{{money(order.totalCents)}}</button><button v-if="allowed('receive')" class="primary-button" :disabled="busy" @click="action('receipt')">确认收货</button><button v-if="order.status==='delivered'&&order.mealSnapshot" class="primary-button" :disabled="busy" @click="cook">开始做饭，记一餐</button><button v-if="allowed('afterSale')" class="secondary-button" :disabled="busy" @click="afterSale">申请售后</button></view>
+   <view class="order-secondary-actions"><button v-if="order.status==='pending'" :disabled="busy" @click="query">查询支付结果</button><button v-if="allowed('cancel')" :disabled="busy" @click="action('cancel')">取消订单</button><button :disabled="busy" @click="logistics">查看物流</button><button v-if="allowed('repurchase')" :disabled="busy" @click="repurchase">再买一单</button></view>
+      <PlanOrderControls v-if="order.type==='plan' && order.plan" :order="order" @changed="load"/>
+      <view v-if="events.length" class="card detail-card"
         ><text class="section-title">物流进度</text
         ><text v-for="(event, index) in events" :key="event.id || index"
           >{{ event.description || event.event_type }}
@@ -393,42 +328,5 @@ const afterStatus = {
   >
 </template>
 <style scoped>
-.detail-card {
-  padding: 28rpx;
-  margin: 24rpx 0;
-  display: flex;
-  flex-direction: column;
-  gap: 18rpx;
-}
-.actions,
-.choices {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16rpx;
-}
-.actions button {
-  flex: 1 1 40%;
-  padding: 18rpx;
-}
-.choices button {
-  padding: 14rpx;
-  font-size: 25rpx;
-}
-.selected {
-  background: #246b50;
-  color: white;
-}
-.sale-row {
-  display: flex;
-  align-items: center;
-  gap: 12rpx;
-}
-.sale-row input {
-  width: 100rpx;
-}
-.choices image {
-  width: 130rpx;
-  height: 130rpx;
-  border-radius: 16rpx;
-}
+.order-screen{background:#fafbfc}.refresh-link{min-width:80rpx;min-height:44px;color:#0674ed;font-size:25rpx}.order-status{padding:30rpx 8rpx 22rpx}.status-title{display:block;font-size:54rpx;font-weight:500;line-height:1.3;letter-spacing:-1rpx}.status-description{display:block;font-size:28rpx;color:#7e8aa1;margin-top:14rpx;line-height:1.6}.delivery-progress{display:flex;justify-content:space-between;margin:14rpx 12rpx 32rpx}.progress-step{display:flex;flex:1;position:relative;flex-direction:column;align-items:center;gap:12rpx;font-size:24rpx;color:#65728c}.progress-step:before{content:'';position:absolute;top:24rpx;left:50%;width:100%;height:3rpx;background:#dce1eb}.progress-step:last-child:before{display:none}.progress-point{width:48rpx;height:48rpx;border-radius:50%;background:#e2e6ee;box-shadow:0 0 0 6rpx #fafbfc;position:relative;z-index:1;color:#fff;display:flex;align-items:center;justify-content:center;font-size:28rpx}.complete .progress-point{background:#2184ff}.complete:not(:last-child):before{background:#80b8ff}.order-goods{padding:24rpx 22rpx 0}.card-heading{display:flex;justify-content:space-between;color:#6f7d96;font-size:25rpx;font-weight:500;margin-bottom:10rpx}.card-heading>text:last-child{font-weight:400;color:#65728c}.order-item{display:flex;align-items:center;gap:20rpx;padding:18rpx 0}.order-image{width:116rpx;height:116rpx;border-radius:18rpx}.order-item-copy{flex:1;min-width:0}.order-item-copy>text:first-child{display:block;font-size:29rpx;font-weight:500;line-height:1.5;overflow-wrap:anywhere}.order-item-copy>text+text{display:block;font-size:24rpx;color:#65728c;margin-top:8rpx}.order-item-amount{flex-shrink:0;text-align:right;font-size:27rpx;font-variant-numeric:tabular-nums}.order-item-amount text{display:block}.order-item-amount text+text{margin-top:8rpx;font-size:24rpx;color:#65728c}.order-total{display:flex;justify-content:space-between;align-items:baseline;border-top:1rpx solid #edf0f5;margin-top:10rpx;padding:20rpx 0;font-size:27rpx}.order-total>text:last-child{font-size:36rpx;font-weight:500}.order-address{display:flex;align-items:center;gap:20rpx;margin-top:16rpx;padding:24rpx;font-size:28rpx}.address-icon{font-size:44rpx;color:#53617a}.order-address>view:last-child{flex:1;min-width:0}.order-address text{display:block;line-height:1.6;overflow-wrap:anywhere}.order-address text+text{font-size:25rpx;color:#65728c;margin-top:6rpx}.order-meta{margin:16rpx 0;padding:24rpx}.order-meta>view{display:flex;justify-content:space-between;align-items:center;gap:20rpx;margin-top:6rpx;font-size:24rpx;color:#65728c;line-height:1.7}.order-meta>view>text:first-child{flex-shrink:0}.order-meta>view>text:last-child{text-align:right}.order-meta button{font-size:24rpx;min-height:44px;overflow-wrap:anywhere;text-align:right}.order-meta button>text{color:#0674ed;margin-left:8rpx}.order-primary-actions{display:flex;flex-direction:column;gap:16rpx;margin-top:26rpx}.order-primary-actions .secondary-button{border-radius:999rpx}.order-secondary-actions{display:flex;justify-content:center;gap:24rpx;flex-wrap:wrap;margin-top:10rpx}.order-secondary-actions button{font-size:25rpx;min-height:44px;color:#7b89a0}.detail-card{padding:26rpx;margin:22rpx 0;display:flex;flex-direction:column;gap:18rpx;font-size:27rpx;line-height:1.7}.choices{display:flex;flex-wrap:wrap;gap:12rpx}.choices button{min-height:72rpx;padding:14rpx 20rpx;border:1rpx solid #e7e8ed;border-radius:16rpx;font-size:27rpx}.choices .selected{background:#edf5ff;border-color:#2085fa;color:#0674ed}.sale-row{display:flex;align-items:center;flex-wrap:wrap;gap:12rpx;font-size:27rpx}.sale-row input{width:100rpx}.choices image{width:130rpx;height:130rpx;border-radius:16rpx}.detail-card>text{overflow-wrap:anywhere}
 </style>

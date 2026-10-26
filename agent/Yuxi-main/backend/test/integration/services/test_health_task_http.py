@@ -143,7 +143,7 @@ async def owned_counts(uid):
 
 
 async def test_missing_selection_and_external_dependency_create_no_rows(health_http):  # noqa: F811
-    """needs_input不消耗幂等键，未知专业/多日用途不生成空运行。"""
+    """缺少选择不消耗幂等键，未实现用途不生成空运行。"""
     client, users = health_http
     owner = users[0]
     member = await create_member(client, owner["headers"])
@@ -158,6 +158,7 @@ async def test_missing_selection_and_external_dependency_create_no_rows(health_h
         assert rejected.status_code == 422 and rejected.json()["code"] == "request_key_mismatch", rejected.text
     for task_type in (
         "initial_meal_preview",
+        "multi_day_plan",
         "family_meal_revision",
         "safe_meal_revision",
         "quality_check",
@@ -170,7 +171,7 @@ async def test_missing_selection_and_external_dependency_create_no_rows(health_h
         assert result["thread_id"] is None and result["request_submit_url"] is None
         assert "request_id" not in result and "run_id" not in result
         assert missing.headers["Cache-Control"] == "no-store"
-    for task_type in ("glucose_plan", "multi_day_plan", "automatic_family_coordination"):
+    for task_type in ("glucose_plan", "automatic_family_coordination"):
         pending = await entry(client, owner["headers"], member, task_type)
         assert pending.status_code == 200 and pending.json()["entry_status"] == "dependency_not_ready", pending.text
     for other in users[1:]:

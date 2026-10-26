@@ -182,6 +182,7 @@ def test_submitted_profile_uses_only_published_coding_and_preserves_unknowns():
 async def test_onboarding_never_downgrades_existing_professional_source(monkeypatch):
     """再次建档不能把原专业投影切成自述，从而丢失已知临床资料。"""
     from yuxi.services.health_vision_service import health_vision_service
+    from yuxi.storage.postgres.models_health import HealthGrant
 
     async def configured(session):
         return {"meal_plan": {"available": True, "processor": "test-processor"}, "policy_version": "test-policy"}
@@ -196,7 +197,12 @@ async def test_onboarding_never_downgrades_existing_professional_source(monkeypa
         async def scalar(self, query):
             return link
 
-        async def get(self, model, key):
+        async def flush(self):
+            pass
+
+        async def get(self, model, key, **kwargs):
+            if model is HealthGrant:
+                return SimpleNamespace(revoked_at=None, scopes=["ai_use"])
             return record
 
     await bind_submitted_profile(

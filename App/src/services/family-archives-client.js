@@ -28,8 +28,8 @@ export function createFamilyArchivesClient({ send, session, state, storage }) {
       if (!current(t)) return
       if (family?.id !== familyId || !Array.isArray(family.members)) throw new Error('家庭档案格式异常')
       state.family = family
-      const member = family.members.find(row => row.id === memberId && row.is_active) || family.members.find(row => row.is_self && row.is_active)
-      if (!member) return
+      const member = memberId ? family.members.find(row => row.id === memberId && row.is_active) : family.members.find(row => row.is_self && row.is_active)
+      if (!member) throw Object.assign(new Error('指定成员已不可访问，请返回家庭档案核查。'), {code:404})
       if (member.profile_access !== 'family_shared') throw Object.assign(new Error('该档案当前不可读取'), { code: 403 })
       state.member = member
       state.pendingMeasurement = storage?.getStorageSync(pendingKey()) || null

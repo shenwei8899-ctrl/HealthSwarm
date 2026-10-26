@@ -79,7 +79,7 @@ export function createHealthPlanClient({ state, send = request, revision = sessi
       })
     },
     page(offset = 0) { if (!state.pending) return run(current => page(current, offset)) },
-    detail(plan) { if (!state.pending) return run(current => read(current, plan.plan_id)) },
+    detail(plan) { if (!state.pending) return run(current => read(current, typeof plan === 'string' ? plan : plan.plan_id)) },
     adopt(replaceAccepted = false) {
       if (!state.plan || !state.approval?.available || state.pending || state.blocked || state.adoption?.current) return
       if (state.previous.length && !replaceAccepted) { state.error = '请先明确确认替代所列当日采用。'; return }

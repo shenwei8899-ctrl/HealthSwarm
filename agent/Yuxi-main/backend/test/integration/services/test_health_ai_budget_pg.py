@@ -628,3 +628,33 @@ async def test_advisory_keeps_vision_price_reservation_and_usage(budget_db, monk
     async with budget_db.get_async_session_context() as session:
         row = await session.get(HealthAiCall, reservation.call_id)
         assert (row.status, row.input_tokens, row.output_tokens) == ("settled", 11, 7)
+
+
+async def test_budget_readiness_is_read_only_and_detects_price_and_frozen_month(budget_db):
+    """真实数据库证明就绪检查不预留费用，缺价格与冻结月份不会冒充可用。"""
+    from sqlalchemy import func
+    info=ModelInfo(provider_id="synthetic",model_id="fixed",model_type="chat",display_name="合成",api_key="synthetic",base_url="https://synthetic.invalid/v1",provider_type="openai")
+    async with budget_db.get_async_session_context() as db:
+        assert (await budget.model_budget_readiness(db,info))["reason_code"]=="budget_price_unavailable"
+        assert await db.scalar(select(func.count()).select_from(HealthAiCall))==0
+        assert await db.scalar(select(func.count()).select_from(HealthAiMonth))==1
+    await seed_price(budget_db,budget.model_target(info))
+    async with budget_db.get_async_session_context() as db:
+        assert (await budget.model_budget_readiness(db,info))["available"]
+        account=(await db.scalars(select(HealthAiMonth))).one();account.blocked=True
+    async with budget_db.get_async_session_context() as db:
+        assert (await budget.model_budget_readiness(db,info))["reason_code"]=="budget_exceeded"
+        assert await db.scalar(select(func.count()).select_from(HealthAiCall))==0
+
+
+async def test_budget_readiness_detects_missing_opening_without_initializing(budget_db):
+    """价格存在而期初缺失时只报告，不擅自填零或新建月份。"""
+    from yuxi.storage.postgres.models_health_budget import HealthAiOpening
+    info=ModelInfo(provider_id="synthetic",model_id="fixed",model_type="chat",display_name="合成",api_key="synthetic",base_url="https://synthetic.invalid/v1",provider_type="openai")
+    await seed_price(budget_db,budget.model_target(info))
+    async with budget_db.get_async_session_context() as db:
+        await db.delete(await db.get(HealthAiOpening,1))
+    async with budget_db.get_async_session_context() as db:
+        result=await budget.model_budget_readiness(db,info)
+        assert result["reason_code"]=="budget_price_unavailable" and "期初" in result["reason"]
+        assert await db.get(HealthAiOpening,1) is None

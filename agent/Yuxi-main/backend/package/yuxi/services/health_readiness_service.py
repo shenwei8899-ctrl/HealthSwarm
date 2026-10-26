@@ -154,6 +154,16 @@ async def member_readiness(uid: str, member_id: str) -> HealthMemberReadiness:
                         entry.allowed_actions.append("retry")
                 elif entry.status == "needs_input":
                     entry.allowed_actions.append("complete_selection")
+            if entry.status == "available" and task.purpose == "consultation":
+                from yuxi.services.health_ai_budget_service import model_budget_readiness
+                from yuxi.services.health_vision_service import current_health_model_info
+
+                info = await current_health_model_info(session, configuration["consultation"]["model"])
+                budget = await model_budget_readiness(session, info)
+                if not budget["available"]:
+                    entry.status = "unavailable"
+                    entry.reason_code = "configuration_unavailable"
+                    entry.configuration_reason_code = budget["reason_code"]
             entries.append(entry)
 
         for kind, required_scopes in (("report", {"report_upload", "ai_use"}), ("meal", {"diet_edit", "ai_use"})):

@@ -1,4 +1,5 @@
 <script setup>
+import CookingGuide from './CookingGuide.vue'
 import { ref, computed, onMounted } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import AppNavBar from './AppNavBar.vue'
@@ -15,22 +16,11 @@ function load(){return run(async active=>{const result=await commerce.cooking(pr
 onMounted(load);onShow(load)
 function record(){uni.navigateTo({url:'/pages/scan/index?commerce=1&id='+encodeURIComponent(props.id)})}
 function viewOrder(){uni.redirectTo({url:'/pages/orders/detail?id='+encodeURIComponent(props.id)})}
+
 </script>
 <template>
-  <view class="screen">
-    <AppNavBar><view class="nav-row"><button class="icon-button" @click="viewOrder">‹</button><text class="nav-title">本餐制作</text><text/></view></AppNavBar>
-    <FlowRibbon :current="5"/>
-    <text v-if="error" class="inline-error">{{error}}</text>
-    <button class="secondary-button" :disabled="busy" @click="load">{{busy?'正在读取…':'刷新订单菜谱'}}</button>
-    <template v-if="context">
-      <view class="page-heading"><text class="display-title">收到食材，开始做饭</text><text class="subtitle">订单 {{context.order_sn}} · 使用购买时保存的菜谱</text></view>
-      <text v-if="menu.is_local_fixture" class="safe-note">本地联调菜谱 · 未经个体化营养评估</text>
-      <view class="card cooking-card"><button v-for="item in dishes" :key="item.recipe_ref" class="secondary-button" @click="selected=item.recipe_ref">{{item.recipe_name}}</button></view>
-      <view v-if="dish" class="card cooking-card"><text class="section-title">{{dish.recipe_name}}所需食材</text><text v-for="(ingredient,n) in dish.ingredients" :key="n">{{typeof ingredient==='string'?ingredient:ingredient.name}}</text></view>
-      <view v-for="(step,n) in dish?.steps||[]" :key="n" class="card cooking-card"><text class="section-title">{{n+1}} · {{typeof step==='string'?step:step.text||step.description}}</text></view>
-      <text class="safe-note">请按实际采购及家中已有食材核对。份量、油盐和营养数值没有自动推算。</text>
-      <button class="primary-button" @click="record">吃完后记录这一餐</button>
-    </template>
-  </view>
+ <view class="screen cooking-screen"><AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回订单" @click="viewOrder">‹</button><text class="nav-title">制作烹饪</text><button class="refresh-link" :disabled="busy" @click="load">{{busy?'读取中':'刷新'}}</button></view></AppNavBar>
+  <text v-if="error" class="inline-error" role="alert">{{error}}</text><template v-if="context"><view class="cooking-heading"><text>食材到了，</text><text>一起做顿好饭。</text></view><text v-if="menu.is_local_fixture" class="safe-note">本地联调菜谱</text><CookingGuide :dishes="dishes" :selected="selected" action="吃完拍照，记一餐" @select="selected=$event" @action="record"/></template>
+ </view>
 </template>
-<style scoped>.cooking-card{padding:28rpx;margin:22rpx 0;display:flex;flex-direction:column;gap:18rpx}</style>
+<style scoped>.cooking-screen{background:#fafbfc}.refresh-link{min-width:80rpx;min-height:44px;font-size:25rpx;color:#0674ed}.cooking-heading{padding:28rpx 4rpx 30rpx}.cooking-heading text{display:block;font-size:50rpx;font-weight:500;line-height:1.35;letter-spacing:-1rpx}</style>

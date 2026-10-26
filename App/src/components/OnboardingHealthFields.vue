@@ -6,13 +6,13 @@ const props = defineProps({ member: { type: Object, required: true } })
 const coreGoals = ['控糖', '控压', '控脂', '减脂', '增肌', '饮食均衡']
 const coreTastes = ['清淡', '少油', '少盐', '不吃辣', '不限口味']
 const healthStates = [
-  { value: 'none', label: '确认没有' },
-  { value: 'set', label: '有／选择内容' },
+  { value: 'none', label: '没有已知基础病' },
+  { value: 'set', label: '有基础病' },
 ]
 const editor = ref(''), draft = ref([]), custom = ref('')
 const extraGoals = computed(() => props.member.goals.filter(value => !coreGoals.includes(value)))
 const extraTastes = computed(() => props.member.tastePreferences.filter(value => !coreTastes.includes(value)))
-const editorTitle = computed(() => editor.value === 'goals' ? '其他饮食目标' : editor.value === 'cuisines' ? '其他菜系' : '其他口味')
+const editorTitle = computed(() => editor.value === 'goals' ? '其他饮食目标' : editor.value === 'cuisines' ? '菜系偏好' : '其他口味')
 const extraOptions = computed(() => {
   const field = editor.value === 'goals' ? 'goals' : 'tastePreferences'
   const core = editor.value === 'goals' ? coreGoals : coreTastes
@@ -56,7 +56,6 @@ function saveExtras() {
 <template>
   <view class="health-card">
     <text class="card-title">基础健康</text>
-    <text class="health-question">是否有已知基础病？（必填）</text>
     <view class="health-options" role="radiogroup" aria-label="基础病情况">
       <button v-for="item in healthStates" :key="item.value" class="health-option" :class="{ chosen: member.healthStatus === item.value }" role="radio" :aria-checked="member.healthStatus === item.value" @click="setHealth(item.value)">
         <view class="radio-mark"><view v-if="member.healthStatus === item.value" /></view><text>{{ item.label }}</text>
@@ -67,7 +66,6 @@ function saveExtras() {
       <view class="option-grid condition-grid"><button v-for="item in diseaseOptions" :key="item" :class="{ selected: member.conditions.includes(item) }" :aria-pressed="member.conditions.includes(item)" @click="toggle(member.conditions, item)">{{ item }}</button></view>
       <input v-if="member.conditions.includes('其他')" v-model="member.otherCondition" class="custom-input" placeholder="填写具体基础病" aria-label="具体基础病" />
     </view>
-    <text class="support-copy">根据你的填写提供建议，可随时修改。</text>
     <text v-if="member.healthStatus === 'set'" class="support-copy self-report">基础病信息为用户自述，不是平台确诊。</text>
   </view>
 
@@ -84,8 +82,7 @@ function saveExtras() {
   </view>
 
   <view class="health-card">
-    <view class="card-heading"><text class="card-title">菜系偏好</text><text class="multiple-hint">可后补 · 可多选</text></view>
-    <view class="option-grid"><button v-for="item in cuisineOptions" :key="item" :class="{ selected: member.cuisines.includes(item) }" :aria-pressed="member.cuisines.includes(item)" @click="toggle(member.cuisines, item)">{{ item }}</button><button @click="openExtras('cuisines')">其他</button></view>
+    <button class="cuisine-summary" @click="openExtras('cuisines')"><text class="cuisine-label">菜系偏好<text class="optional-label">可选</text></text><text class="cuisine-value" :class="{'cuisine-placeholder':!member.cuisines.length}">{{member.cuisines.length ? member.cuisines.join('、') : '请选择'}}</text><text class="chevron">›</text></button>
   </view>
 
   <view v-if="editor" class="sheet-mask" @click="editor = ''">
@@ -97,8 +94,9 @@ function saveExtras() {
     </view>
   </view>
 </template>
-
 <style scoped>
-.health-card{padding:24rpx;background:#fff;border:1rpx solid #e7e7ed;border-radius:24rpx;margin-bottom:20rpx;color:#1d1d1f}
-.card-title{display:block;font-size:34rpx;line-height:1.35;font-weight:600}.card-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:20rpx}.multiple-hint,.support-copy{font-size:24rpx;color:#92929c}.health-question{display:block;font-size:28rpx;margin:18rpx 0 20rpx}.health-options{display:flex;flex-direction:column;gap:10rpx}.health-option{display:flex;align-items:center;gap:28rpx;width:100%;min-height:64rpx;padding:12rpx 26rpx;border:1rpx solid #e3e3e9;border-radius:14rpx;font-size:27rpx;line-height:1.4;text-align:left}.health-option.chosen{background:#f5f5f7;border-color:#f5f5f7}.radio-mark{width:32rpx;height:32rpx;flex-shrink:0;border:2rpx solid #9a9a9c;border-radius:50%;display:flex;align-items:center;justify-content:center}.chosen .radio-mark{border-color:#1d1d1f}.radio-mark view{width:22rpx;height:22rpx;border-radius:50%;background:#1d1d1f}.support-copy{display:block;line-height:1.6;margin-top:20rpx}.self-report{font-size:22rpx;margin-top:6rpx}.option-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14rpx}.option-grid button{display:flex;justify-content:center;align-items:center;min-width:0;min-height:62rpx;padding:10rpx 6rpx;border:1rpx solid #dedee5;border-radius:14rpx;font-size:26rpx;line-height:1.4;overflow-wrap:anywhere;color:#1d1d1f}.option-grid .selected,.sheet-actions .selected{background:#1d1d1f;border-color:#1d1d1f;color:#fff}.other-row{display:flex;align-items:center;justify-content:space-between;width:100%;border:1rpx solid #e3e3e9;border-radius:14rpx;padding:16rpx 24rpx;margin-top:18rpx;text-align:left;font-size:27rpx}.other-row>view{min-width:0}.chevron{font-size:36rpx;line-height:1;color:#8e8e93;margin-left:16rpx}.extra-summary{display:block;font-size:22rpx;line-height:1.6;color:#86868f;overflow-wrap:anywhere}.taste-summary{margin-top:16rpx}.condition-area{margin-top:22rpx}.field-label{display:block;font-size:25rpx;margin-bottom:14rpx}.condition-grid button{font-size:23rpx}.custom-input{height:76rpx;padding:0 20rpx;background:#f5f5f7;border:1rpx solid #e3e3e9;border-radius:14rpx;font-size:26rpx;min-width:0;margin-top:16rpx}.extras-sheet{max-height:80vh;overflow-y:auto;color:#1d1d1f}.sheet-heading{display:flex;justify-content:space-between;align-items:center;margin-bottom:24rpx}.sheet-heading .support-copy{margin:0 0 8rpx}.close-sheet{font-size:40rpx;width:64rpx;height:64rpx}.custom-row{display:grid;grid-template-columns:minmax(0,1fr) 70rpx;gap:14rpx;align-items:center}.custom-row button{font-size:25rpx;margin-top:16rpx}.cuisine-label{margin-top:28rpx}.sheet-actions{display:grid;grid-template-columns:1fr 1fr;gap:16rpx;margin-top:28rpx}.sheet-actions button{border:1rpx solid #dedee5;border-radius:16rpx;padding:18rpx;font-size:28rpx}
+.health-card{padding:0;margin-bottom:20rpx;color:#25272d}.card-title{display:block;font-size:30rpx;font-weight:600;line-height:1.5}.card-heading{display:flex;align-items:center;justify-content:space-between;gap:12rpx;margin-bottom:14rpx}.multiple-hint{font-size:24rpx;color:#8790a2}.health-options{margin-top:12rpx;display:flex;flex-direction:column;gap:8rpx}.health-option{display:flex;align-items:center;gap:22rpx;width:100%;min-height:44px;padding:12rpx 24rpx;border:1rpx solid #e9ecf2;border-radius:16rpx;text-align:left;font-size:29rpx}.health-option.chosen{background:#f5f6f8;border-color:#f5f6f8}.radio-mark{width:32rpx;height:32rpx;flex-shrink:0;border:2rpx solid #b9c2d3;border-radius:50%;display:flex;align-items:center;justify-content:center}.chosen .radio-mark{background:#0879f9;border-color:#0879f9}.radio-mark view{width:12rpx;height:12rpx;border-radius:50%;background:#fff}
+.option-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12rpx}.option-grid button{display:flex;align-items:center;justify-content:center;min-width:0;min-height:44px;padding:10rpx 8rpx;border:1rpx solid #e6eaf1;border-radius:16rpx;font-size:28rpx;line-height:1.4;color:#4b556b;overflow-wrap:anywhere}.option-grid .selected{border-color:#589aff;background:#f0f6ff;color:#0674ed}.other-row{display:flex;align-items:center;justify-content:space-between;width:100%;min-height:44px;padding:12rpx 4rpx;border-bottom:1rpx solid #edf0f5;text-align:left;color:#7c879e;font-size:27rpx;margin-top:4rpx}.other-row>view{min-width:0}.chevron{font-size:34rpx;color:#8592ac;flex-shrink:0}.extra-summary{display:block;color:#7e8798;font-size:25rpx;line-height:1.6;overflow-wrap:anywhere}.taste-summary{margin-top:12rpx}.cuisine-summary{display:flex;align-items:center;justify-content:space-between;gap:20rpx;width:100%;min-height:46px;padding:14rpx 22rpx;border:1rpx solid #e6eaf1;border-radius:18rpx;text-align:left;font-size:28rpx;color:#4b556b}.cuisine-label{flex-shrink:0;color:#343944}.optional-label{font-size:23rpx;color:#8790a2;margin-left:10rpx}.cuisine-value{flex:1;min-width:0;overflow-wrap:anywhere;text-align:right}.cuisine-placeholder{color:#8b94a6}.support-copy{display:block;font-size:24rpx;line-height:1.6;color:#858da0;margin-top:14rpx}.condition-area{margin-top:18rpx}.field-label{display:block;margin-bottom:12rpx;font-size:26rpx;color:#6f7a90}.custom-input{min-width:0;height:44px;padding:0 20rpx;background:#f7f8fa;border:1rpx solid #e9ecf2;border-radius:16rpx;font-size:28rpx;margin-top:14rpx}.condition-grid button{font-size:26rpx}
+.extras-sheet{max-height:80vh;overflow-y:auto;border-radius:32rpx 32rpx 0 0}.sheet-heading{display:flex;justify-content:space-between;align-items:center;gap:20rpx;margin-bottom:26rpx}.sheet-heading .card-title{font-size:34rpx;font-weight:500}.sheet-heading .support-copy{margin:0 0 6rpx}.close-sheet{width:44px;height:44px;font-size:38rpx;color:#31343b}.custom-row{display:grid;grid-template-columns:minmax(0,1fr) 80rpx;align-items:center;gap:16rpx}.custom-row button{min-height:44px;font-size:28rpx;color:#0674ed;margin-top:14rpx}.sheet-actions{display:grid;grid-template-columns:1fr 1fr;gap:20rpx;margin-top:28rpx}.sheet-actions button{min-height:48px;border:1rpx solid #dfe4ee;border-radius:999rpx;font-size:30rpx}.sheet-actions .selected{background:#25262a;border-color:#25262a;color:#fff}
+
 </style>

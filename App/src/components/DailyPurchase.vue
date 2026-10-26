@@ -63,5 +63,5 @@ onUnmounted(() => { active = false; invalidate() })
 </template>
 
 <style scoped>
-.daily-purchase{background:#fafafa;padding-bottom:44rpx}.page-heading{padding:32rpx 0}.helper{display:block;font-size:25rpx;line-height:1.8;color:#777;margin:16rpx 0}.meal,.status{padding:28rpx;margin:24rpx 0}.date-label{display:block;font-size:25rpx;color:#777;margin:24rpx 0}.section-title,.dishes{display:block}.dishes{font-size:28rpx;line-height:1.8;margin:20rpx 0 28rpx}.text-button{font-size:24rpx;padding:20rpx;color:#555}.daily-purchase :deep(.secondary-button){color:#555;border-color:#ddd}
+.daily-purchase{background:#fafafa;padding-bottom:44rpx}.page-heading{padding:32rpx 0}.helper{display:block;font-size:25rpx;line-height:1.8;color:#777;margin:16rpx 0}.meal,.status{padding:28rpx;margin:24rpx 0}.date-label{display:block;font-size:25rpx;color:#777;margin:24rpx 0}.section-title,.dishes{display:block}.dishes{font-size:28rpx;line-height:1.8;margin:20rpx 0 28rpx}.text-button{font-size:25rpx;padding:20rpx;color:#555}.daily-purchase :deep(.secondary-button){color:#555;border-color:#ddd}
 </style>

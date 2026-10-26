@@ -172,7 +172,7 @@ test('lost login keeps onboarding edits in the original account scope and offers
 function cloudSaver(initialSession, onRequest = () => assert.fail('must not send a request')) {
   let session = initialSession, revision = 1
   const values = new Map(), requests = []
-  const deps = { getSession: () => session, sessionRevision: () => revision,
+  const deps = {normalizeProfile,saveProfile(){},pendingInvitation:()=>null,getSession: () => session, sessionRevision: () => revision,
     scopedStorage: { getStorageSync: key => values.get(key), setStorageSync: (key, value) => values.set(key, value) },
     newHealthRequestId: () => 'original-idempotency-key', request: async options => { requests.push(options); return onRequest(options, () => { session = null; revision++ }) } }
   const source = readFileSync(new URL('../src/services/cloud-profile.js', import.meta.url), 'utf8').replace(/^import .*$/gm, '').replace(/export /g, '')
@@ -290,4 +290,22 @@ test('independent cuisine and taste selectors preserve each others answers', () 
   assert.deepEqual([...member.tastePreferences], ['合成自定义口味'])
   p.toggle(member.cuisines, '不限菜系'); assert.deepEqual([...member.cuisines], ['不限菜系'])
   p.toggle(member.cuisines, '粤菜'); assert.deepEqual([...member.cuisines], ['粤菜'])
+})
+
+
+test('settling an old unconsented profile receipt never claims the new consent and edits were saved',async()=>{
+ const old=normalizeProfile({householdId:'family-a',familyVersion:1,onboarded:true,source:'api',members:[completeMember()],defaultDiners:['self']})
+ const profile={...structuredClone(old),analysisPolicy:{processor:'synthetic-current',policy_version:'dev-test'}};profile.members[0].name='new name'
+ const posted=[]
+ const h=cloudSaver({token:'synthetic',householdId:'family-a'},async o=>{
+  if(o.method==='POST'){posted.push(structuredClone(o.data));return {data:{saved:true}}}
+  if(o.path.endsWith('/configuration'))return {data:{policy_version:'dev-test',meal_plan:{available:true,processor:'synthetic-current'}}}
+  return {data:structuredClone(old)}
+ })
+ const previous=h.input(old,'original-key');h.values.set('cloud-onboarding-pending',{path:'/api/family/family-a/miniapp-profile',data:previous})
+ await assert.rejects(h.save(profile),e=>e.code===409&&e.businessCode==='previous_profile_submission_settled')
+ assert.deepEqual(posted,[previous]);assert.equal(posted[0].analysis_consent,null);assert.equal(h.values.get('cloud-onboarding-pending'),null)
+ const analysisConsent={...profile.analysisPolicy,purpose:'consultation'}
+ await h.save(profile,{analysisConsent})
+ assert.deepEqual(posted[1].analysis_consent,analysisConsent);assert.equal(posted[1].members[0].name,'new name')
 })

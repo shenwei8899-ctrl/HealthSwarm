@@ -8,7 +8,66 @@ use think\Response;
 class Console extends Workspace
 {
     protected $layout = false;
-    protected $noNeedRight = ['index','bootstrap','listing','record','persist','overview','operate','account','publication'];
+    protected $noNeedRight = ['index','bootstrap','listing','record','persist','overview','operate','account','publication','publicationFilters','publicationSummary','bulkPublicationPreview','bulkPublicationConfirm','importTemplate','importPreview','importConfirm','importHistory','importRecord','skuTemplates'];
+    protected function requireImport($write=false, $confirm=false)
+    {
+        $this->requireResource('goods',$write);
+        if ($write) {
+            $this->requireResource('suppliers',true);
+            $permission=$confirm?'confirmimport':'previewimport';
+            if (!$this->auth->check('shop/v5/workspace/'.$permission)) $this->error('没有商品导入操作权限');
+        }
+    }
+    public function importTemplate()
+    {
+        $this->requireImport();
+        return parent::downloadImportTemplate();
+    }
+    public function importHistory()
+    {
+        $this->requireImport();
+        $search=trim((string)$this->request->get('q',''));
+        $build=function()use($search){$query=Db::name('shop_master_data_import');if($search!=='')$query->where('batch_sn|original_name','like','%'.$search.'%');return $query;};
+        $total=$build()->count();
+        $query=$build();
+        $rows=$query->field('id,batch_sn,original_name,status,total_rows,valid_rows,invalid_rows,inserted_count,updated_count,createtime,imported_at')->order('id','desc')->limit(max(0,(int)$this->request->get('offset',0)),20)->select();
+        $this->ok(['total'=>$total,'rows'=>$rows]);
+    }
+    public function importRecord()
+    {
+        $this->requireImport();
+        try {$result=(new \addons\shop\library\v5\MasterDataImportService())->detail((int)$this->request->get('id',0));}
+        catch (\Exception $e) {$this->error($e->getMessage());}
+        $batchId=(int)$this->request->get('id',0);
+        $batch=Db::name('shop_master_data_import')->where('id',$batchId)->find();
+        $result['original_name']=$batch['original_name'];
+        $result['rows_total']=Db::name('shop_master_data_import_row')->where('batch_id',$batchId)->count();
+        $result['rows']=Db::name('shop_master_data_import_row')->where('batch_id',$batchId)->field('sheet_name,row_no,business_key,status,action,error_message,data_json')->order('id')->limit(max(0,(int)$this->request->get('offset',0)),100)->select();
+        $this->ok($result);
+    }
+    public function importPreview()
+    {
+        $this->requireImport(true);
+        if (!$this->request->isPost()) $this->error('请求方式错误');
+        $this->token();
+        try {
+            $file=$this->request->file('file');
+            if (!$file) throw new \RuntimeException('请选择 .xlsx 文件；文件不能超过 12 MB');
+            $name=(string)$file->getInfo('name');
+            if (strtolower(pathinfo($name,PATHINFO_EXTENSION))!=='xlsx' || $file->getSize()<=0 || $file->getSize()>12*1024*1024) throw new \RuntimeException('仅支持不超过 12 MB 的 .xlsx 文件');
+            $result=(new \addons\shop\library\v5\SupplierCatalogImportService())->preview($file->getRealPath(),$name,(int)$this->auth->id);
+        } catch (\Exception $e) {$this->error($e->getMessage(),null,['__token__'=>$this->request->token()]);}
+        $this->ok($result,$result['duplicate']?'文件已预检，返回原批次':'预检完成，尚未写入商品');
+    }
+    public function importConfirm()
+    {
+        $this->requireImport(true,true);
+        if (!$this->request->isPost()) $this->error('请求方式错误');
+        $this->token();
+        try {$result=(new \addons\shop\library\v5\SupplierCatalogImportService())->confirm((int)$this->request->post('batch_id'),(int)$this->auth->id);}
+        catch (\Exception $e) {$this->error($e->getMessage(),null,['__token__'=>$this->request->token()]);}
+        $this->ok($result,'导入完成，新商品已保存为草稿；已有商品保留原上架状态');
+    }
     protected function rights($resource)
     {
         $map=['goods'=>'product','skus'=>'product','categories'=>'product','specs'=>'product','spec_values'=>'product','inventory_logs'=>'product',
@@ -36,6 +95,7 @@ class Console extends Workspace
     {
         return ['shop/v5/workspace/dashboard'=>'首页 · 查看经营工作台','shop/v5/workspace/product'=>'商品 · 查看商品、分类与规格',
             'shop/v5/workspace/save'=>'商品 / 供应商 · 保存基础资料','shop/v5/workspace/adjuststock'=>'商品 · 调整库存',
+            'shop/v5/workspace/previewimport'=>'商品 · Excel 导入预检','shop/v5/workspace/confirmimport'=>'商品 · 确认 Excel 导入',
             'shop/v5/workspace/orders'=>'订单 · 查看订单与发货','shop/v5/workspace/shiporder'=>'订单 · 提交发货',
             'shop/v5/workspace/aftersales'=>'订单 · 查看售后','shop/v5/workspace/reviewaftersale'=>'订单 · 审核售后',
             'shop/v5/workspace/members'=>'用户 · 查看用户与购买记录','user/user/edit'=>'用户 · 编辑账号',
@@ -101,6 +161,7 @@ class Console extends Workspace
         }
         $permissions=[];
         foreach(['auth/admin/index','auth/admin/add','auth/admin/edit','auth/group/index','auth/group/add','auth/group/edit','user/user/edit','shop/v5/workspace/shiporder','shop/v5/workspace/adjuststock','shop/v5/workspace/reviewaftersale','shop/v5/workspace/resolveexception','shop/v5/workspace/dashboard'] as $name) $permissions[$name]=$this->auth->check($name);
+        foreach (['previewimport','confirmimport'] as $action) $permissions['shop/v5/workspace/'.$action]=$this->auth->check('shop/v5/workspace/'.$action)&&$this->auth->check('shop/v5/workspace/product')&&$this->auth->check('shop/v5/workspace/suppliers')&&$this->auth->check('shop/v5/workspace/save');
         $this->ok(['resources'=>$resources,'roles'=>$roles,'rules'=>$rules,'permissions'=>$permissions]);
     }
     public function listing()
@@ -122,6 +183,15 @@ class Console extends Workspace
         }
         return parent::data();
     }
+    /** Templates are copied into new SKU labels; editing a template never rewrites existing SKUs. */
+    public function skuTemplates()
+    {
+        $this->requireResource('skus');
+        $specs=Db::name('shop_spec')->order('id')->field('id,name')->select();
+        $values=Db::name('shop_spec_value')->order('spec_id')->order('id')->field('id,spec_id,value')->select();
+        $this->ok(['specs'=>$specs,'values'=>$values]);
+    }
+
     public function persist()
     {
         if(!$this->request->isPost())$this->error('请求方式错误');
@@ -129,6 +199,15 @@ class Console extends Workspace
         if(!in_array($resource,['goods','skus','categories','specs','spec_values','suppliers','supplier_skus'],true))$this->error('该资源不支持此保存方式');
         $row=$this->request->post('row/a',[]);
         foreach($row as $value)if(!is_scalar($value)&&$value!==null)$this->error('表单字段格式无效');
+        $templateId=$this->request->post('template_value_id','');
+        if ($templateId !== '') {
+            if ($resource !== 'skus' || (int)$this->request->post('id',0)!==0) $this->error('规格模板仅用于新增商品规格，已有规格请直接编辑');
+            if (!is_scalar($templateId) || !preg_match('/^[1-9][0-9]*$/D',(string)$templateId)) $this->error('请选择有效的规格模板值');
+            $template=Db::name('shop_spec_value')->alias('v')->join('shop_spec s','s.id=v.spec_id')->where('v.id',(int)$templateId)->field('v.value')->find();
+            if (!$template || trim((string)$template['value'])==='') $this->error('规格模板已不存在，请刷新后重新选择');
+            if (trim((string)($row['sku_id']??''))!==trim((string)$template['value'])) $this->error('规格模板已变化，请重新打开新增规格并选择');
+            $row['sku_id']=trim((string)$template['value']);
+        }
         // Basic editing never changes publication. New products must first be saved as drafts.
         if($resource==='goods')unset($row['status']);
         $optionalNumbers=['skus'=>['marketprice'],'categories'=>['weigh'],'suppliers'=>['priority'],'supplier_skus'=>['stock_quantity','priority']];
@@ -154,6 +233,7 @@ class Console extends Workspace
     }
     protected function buildResourceQuery(array $definition,array $filter,$q,array $queryColumns)
     {
+        if($definition['table']==='shop_goods')return (new \addons\shop\library\v5\BulkPublicationService())->query($filter,$q);
         $exact=[];
         foreach(['status','supplier_id','sku_id','goods_id','spec_id','category_id','user_id','paystate','orderstate','shippingstate'] as $key){
             if(array_key_exists($key,$filter)&&in_array($key,$queryColumns,true)&&is_scalar($filter[$key])&&$filter[$key]!==''){$exact[$key]=$filter[$key];unset($filter[$key]);}
@@ -238,6 +318,55 @@ class Console extends Workspace
             'pending'=>Db::name('shop_order')->where('order_type','normal')->where('paystate',1)->where('orderstate',0)->where('shippingstate',0)->count(),
             'aftersales'=>Db::name('shop_order_aftersales')->where('status',1)->count(),'test_payments_excluded'=>$test,'trend'=>$trend]);
     }
+    public function publicationSummary()
+    {
+        $this->requireResource('goods');
+        // One aggregate snapshot, using the same publication states as the product list.
+        $counts=Db::name('shop_goods')->field("COUNT(*) AS total, COALESCE(SUM(CASE WHEN status='normal' AND catalog_status='published' AND agent_visible=1 THEN 1 ELSE 0 END),0) AS published, COALESCE(SUM(CASE WHEN catalog_status='draft' THEN 1 ELSE 0 END),0) AS draft")->find();
+        $total=(int)$counts['total'];$published=(int)$counts['published'];$draft=(int)$counts['draft'];
+        $this->ok(['total'=>$total,'published'=>$published,'hidden'=>$total-$published-$draft,'draft'=>$draft]);
+    }
+    public function publicationFilters()
+    {
+        $this->requireResource('goods');
+        $this->ok([
+            'suppliers'=>Db::name('shop_supplier')->field('id,name,status')->order('id')->select(),
+            'categories'=>Db::name('shop_category')->field('id,name')->order('id')->select(),
+            'batches'=>Db::name('shop_master_data_import')->where('status','imported')->field('id,batch_sn,original_name')->order('id','desc')->select()
+        ]);
+    }
+    public function bulkPublicationPreview()
+    {
+        if(!$this->request->isPost())$this->error('请求方式错误');
+        $this->requireResource('goods',true);$this->token();
+        try{
+            $filter=json_decode($this->request->post('filter','{}'),true);
+            if(!is_array($filter))throw new \addons\shop\library\v5\DomainException('筛选条件无效');
+            $service=new \addons\shop\library\v5\BulkPublicationService();
+            $ids=$service->selectIds($this->request->post('mode','selected'),$this->request->post('ids/a',[]),$filter,$this->request->post('q',''));
+            $preview=$service->preview($ids,$this->request->post('state',''));
+            $ticket=bin2hex(random_bytes(24));
+            \think\Session::set('commerce_bulk_publication',['ticket'=>$ticket,'admin_id'=>(int)$this->auth->id,'expires'=>time()+600,'preview'=>$preview]);
+            unset($preview['eligible']);$preview['ticket']=$ticket;$preview['expires_in']=600;
+        }catch(\addons\shop\library\v5\DomainException $e){$this->error($e->getMessage(),null,['__token__'=>$this->request->token()]);}
+        $this->ok($preview,'预检完成，尚未改动商品');
+    }
+    public function bulkPublicationConfirm()
+    {
+        if(!$this->request->isPost())$this->error('请求方式错误');
+        $this->requireResource('goods',true);$this->token();
+        $saved=\think\Session::get('commerce_bulk_publication');$ticket=$this->request->post('ticket','');
+        if(!$saved||$saved['admin_id']!==(int)$this->auth->id||$saved['expires']<time()||!is_string($ticket)||!hash_equals($saved['ticket'],$ticket))$this->error('预检已失效或已执行，请重新预检',null,['__token__'=>$this->request->token()]);
+        if($this->request->post('ack','')!=='1')$this->error('请先确认本次商品和操作范围',null,['__token__'=>$this->request->token()]);
+        if($saved['preview']['state']==='normal'&&$saved['preview']['has_sample']&&$this->request->post('sample_ack','')!=='1')$this->error('包含示例标记商品，请先核实真实资料',null,['__token__'=>$this->request->token()]);
+        // Consume before execution. A repeated click cannot repeat a confirmed batch.
+        \think\Session::delete('commerce_bulk_publication');
+        $result=(new \addons\shop\library\v5\BulkPublicationService())->execute($saved['preview']);
+        \app\admin\model\AdminLog::setTitle($saved['preview']['state']==='normal'?'商品批量上架':'商品批量下架');
+        \app\admin\model\AdminLog::setContent(['state'=>$saved['preview']['state'],'result'=>$result]);
+        $this->ok($result,'批量处理完成，请查看逐项结果');
+    }
+
     public function publication()
     {
         if(!$this->request->isPost())$this->error('请求方式错误');

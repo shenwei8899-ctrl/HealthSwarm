@@ -128,7 +128,31 @@ class MiniappProfileInput(BaseModel):
         return self
 
 
-def miniapp_onboarding_ready(member, family):
+class MiniappAnalysisInput(BaseModel):
+    """用户核对已保存的成员资料后明确接受单一用途，不提交档案副本。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    action: Literal["start_analysis"]
+    client_request_id: UUID
+    member_id: UUID
+    expected_version: int = Field(ge=1)
+    accepted: Literal[True]
+    purpose: Literal["consultation", "meal_plan"]
+    processor: str = Field(min_length=1, max_length=200)
+    policy_version: str = Field(min_length=1, max_length=200)
+
+
+class MiniappConsultationOpenInput(BaseModel):
+    """应用在本人建档后自动衔接咨询，只引用服务端已保存的成员和版本。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    action: Literal["open_consultation"]
+    client_request_id: UUID
+    member_id: UUID
+    expected_version: int = Field(ge=1)
+
+
+def miniapp_profile_complete(member):
     """按当前本人完整档案与确认版本判定，不继承其他家人的完成标记。"""
     if member is None or not member.is_active:
         return False
@@ -151,4 +175,9 @@ def miniapp_onboarding_ready(member, family):
         )
     except ValidationError:
         return False
-    return member.confirmed_version == member.version
+    return True
+
+
+def miniapp_onboarding_ready(member, family):
+    """保留建档完成标记，咨询自动衔接只使用完整的服务端档案。"""
+    return miniapp_profile_complete(member) and member.confirmed_version == member.version

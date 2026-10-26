@@ -917,6 +917,26 @@ class HealthDailyArrangement(Base):
     updated_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
+class HealthExclusivePlanGroup(Base):
+    """同一家庭三档计划的可恢复检查点，订单快照由商城独立保存。"""
+
+    __tablename__ = "health_exclusive_plan_group"
+    __table_args__ = (UniqueConstraint("actor_uid", "family_id", "request_id", name="uq_health_exclusive_request"),)
+    id = Column(String(36), primary_key=True)
+    actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
+    family_id = Column(String(36), ForeignKey("family_archives.id"), nullable=False)
+    request_id = Column(String(36), nullable=False)
+    basis_hash = Column(String(64), nullable=False)
+    status = Column(String(24), nullable=False)
+    attempt = Column(Integer, nullable=False, default=0)
+    selection = Column(JSON_VALUE, nullable=False)
+    sources = Column(JSON_VALUE, nullable=False)
+    policy = Column(JSON_VALUE, nullable=False)
+    progress = Column(JSON_VALUE, nullable=False, default=dict)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
 class HealthRecipeCommerceSource(Base):
     """发布配方与商城食材编码、真实做法的明确版本映射。"""
 
@@ -936,6 +956,7 @@ HEALTH_TABLES = HEALTH_BUDGET_TABLES + [
         HealthMiniappProfileCoding,
         HealthPublishedRecipeClassification,
         HealthDailyArrangement,
+        HealthExclusivePlanGroup,
         HealthRecipeCommerceSource,
         FamilyMember,
         HealthGrant,

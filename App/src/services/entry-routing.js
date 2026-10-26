@@ -26,6 +26,6 @@ export function createEntryResolver({ auth, readProfile, session, invitation = (
     const profile = await readProfile()
     current()
     if (session()?.householdId !== id || profile.householdId !== id) throw new Error('家庭已变化，请重新选择。')
-    return profile.onboarded === true ? '/pages/chat/index' : '/pages/onboarding/index'
+    return (profile.completeProfile === true || profile.onboarded === true) ? '/pages/chat/index' : '/pages/onboarding/index'
   }
 }

@@ -1,4 +1,6 @@
 <script setup>
+import FoodImageSlot from './FoodImageSlot.vue'
+import PurchaseCheckoutSheet from './PurchaseCheckoutSheet.vue'
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import CommerceAccess from './CommerceAccess.vue'
@@ -45,6 +47,22 @@ function receipt(data) {
   if (!data.purchase || !Array.isArray(data.purchase.items)) throw new Error('本餐采购内容不完整，请重新读取。')
   return data.purchase
 }
+const returnKey = () => 'meal-checkout-address-return:' + [props.route.arrangement, props.route.version, props.route.date, props.route.meal, (props.route.meals || []).join(',')].join(':')
+function chooseAddress() {
+  if (busy.value || state.busy) return
+  const key = returnKey(), scope = storageContext()
+  page.invalidateQuote()
+  scopedStorage.setStorageSync(key, { at: Date.now(), scope })
+  uni.navigateTo({ url: '/pages/address/index', fail: () => { if (active(scope)) scopedStorage.setStorageSync(key, null) } })
+}
+async function resumeCheckout(scope) {
+  if (!active(scope)) return
+  const key = returnKey(), pending = scopedStorage.getStorageSync(key)
+  if (!pending) return
+  scopedStorage.setStorageSync(key, null)
+  if (!preview.value?.available || error.value || pending.scope !== scope || !Number.isFinite(pending.at) || Date.now() - pending.at > 15 * 60 * 1000 || pending.at > Date.now()) return
+  await checkout()
+}
 async function refresh() {
   if (ownerScope !== storageContext()) {
     ownerScope = storageContext(); preview.value = null; publication.value = null; selected.value = []
@@ -68,6 +86,7 @@ async function refresh() {
     }
   } catch (e) { if(active(scope))preview.value=null;failure(e,scope) }
   finally { if (active(scope)) busy.value = false }
+  await resumeCheckout(scope)
 }
 function toggle(id) { if (busy.value || state.busy) return; if (state.ready) page.toggle(id); else selected.value = selected.value.includes(id) ? selected.value.filter(value => value !== id) : [...selected.value, id]; rememberSelection() }
 async function checkout() {
@@ -105,41 +124,28 @@ async function recover() {
 onMounted(refresh)
 onShow(refresh)
 onUnmounted(() => { alive = false; page.dispose() })
+
 </script>
 
 <template>
-  <view class="meal-purchase">
-    <view class="section-head"><text class="section-title">{{route.meal === 'daily' ? '所选餐次食材汇总' : '本餐所需食材和购买清单'}}</text><text>已选 {{ picked.length }} 项</text></view>
-    <text class="safe-note">{{route.meal === 'daily' ? '按所选餐次需求' : '按本餐需求'}}匹配整包装食材，家中已有的可以取消购买。</text>
-    <text v-if="busy || state.busy" class="safe-note">正在核对本餐商品与配送…</text>
-    <view v-if="error || state.error" class="card status"><text>{{ error || state.error }}</text><button class="secondary-button" :disabled="busy || state.busy" @click="refresh">重新核对本餐食材</button></view>
-    <text v-if="preview && !preview.available" class="inline-error">{{ preview.message }}</text>
-    <view v-for="item in products" :key="item.id" class="card product" @click="toggle(item.id)">
-      <view class="check" :class="{ selected: picked.includes(item.id) }">{{ picked.includes(item.id) ? '✓' : '' }}</view>
-      <image v-if="item.imageUrl" :src="item.imageUrl" mode="aspectFill" />
-      <view class="product-copy"><text>{{ item.name }}</text><text>{{ item.needLabel }}</text><text>{{ item.packLabel }} × {{ item.quantity }} 包</text><text>可售 {{ item.availableQuantity }} 包</text></view>
-      <text>¥{{ money(item.priceCents * item.quantity) }}</text>
-    </view>
-    <text v-if="preview" class="safe-note">商品小计供采购核对；配送费、优惠和应付金额以结算报价为准。</text>
-    <view class="meal-bottom-bar"><view><text>已选 {{ picked.length }} 项</text><text class="amount">¥{{ money(total) }}</text></view><button class="primary-button" :disabled="busy || state.busy || !purchaseReady || !picked.length || !!error" @click="checkout">{{ preview?.confirmation_pending ? '确认上次采购结果' : '去结算／直接购买' }}</button></view>
-    <view v-if="checkoutOpen" class="sheet-mask"><view class="sheet checkout-sheet">
-      <view class="sheet-head"><text class="section-title">{{route.meal === 'daily' ? '确认采购订单' : '确认本餐订单'}}</text><button :disabled="busy || state.busy" @click="checkoutOpen = false">×</button></view>
-      <CommerceAccess v-if="loginOpen" entry @ready="checkout" />
-      <template v-else>
-        <button class="card address" :disabled="busy || state.busy" @click="uni.navigateTo({url:'/pages/address/index'})"><text>{{ state.address ? state.address.name + ' · ' + state.address.phone : '请选择配送地址' }}</text><text v-if="state.address">{{ state.address.region }} {{ state.address.detail }}</text></button>
-        <view v-for="slot in state.slots" :key="slot.id"><button :disabled="busy || state.busy" :class="{chosen: state.slotId === slot.id}" @click="state.slotId = slot.id; page.invalidateQuote()">{{ slot.name || slot.start_time + '—' + slot.end_time }}</button></view>
-        <text v-if="state.deliveryMessage" class="inline-error">{{ state.deliveryMessage }}</text>
-        <text v-if="error || state.error || state.checkoutError" class="inline-error">{{ error || state.error || state.checkoutError }}</text>
-        <view v-if="state.quote" class="quote"><view v-for="line in state.quote.items" :key="line.sku_id"><text>{{ line.snapshot?.product_name }} × {{ line.quantity }}</text><text>¥{{ money(line.line_amount_cent) }}</text></view><text>商品 ¥{{ money(state.quote.goods_amount_cent) }} · 配送 ¥{{ money(state.quote.shipping_fee_cent) }} · 优惠 ¥{{ money(state.quote.discount_amount_cent) }}</text><text class="amount">应付 ¥{{ money(state.quote.payable_amount_cent) }}</text></view>
-        <button v-if="state.pending || state.orderSn" class="primary-button" :disabled="busy || state.busy" @click="recover">确认原订单结果</button>
-        <button v-else-if="state.quote" class="primary-button" :disabled="busy || state.busy" @click="submit">确认下单 ¥{{ money(state.quote.payable_amount_cent) }}</button>
-        <button v-else class="primary-button" :disabled="busy || state.busy" @click="checkout">核对商品与价格</button>
-        <text class="safe-note">下单后进入订单详情支付，以服务端支付结果为准。</text>
-      </template>
-    </view></view>
-  </view>
+ <view class="meal-purchase">
+  <view class="section-head"><text class="section-title">{{route.meal==='daily'?'所选餐次食材汇总':'本餐所需食材'}}</text><text>家中已有可取消</text></view>
+  <text v-if="busy||state.busy" class="safe-note">正在核对商品与配送…</text>
+  <view v-if="error||state.error" class="card status" role="alert"><text>{{error||state.error}}</text><button class="secondary-button" :disabled="busy||state.busy" @click="refresh">重新核对本餐食材</button></view>
+  <text v-if="preview&&!preview.available" class="inline-error">{{preview.message}}</text>
+  <view class="products"><button v-for="item in products" :key="item.id" class="product" :disabled="busy||state.busy" :aria-pressed="picked.includes(item.id)" @click="toggle(item.id)"><view class="check" :class="{selected:picked.includes(item.id)}">{{picked.includes(item.id)?'✓':''}}</view><FoodImageSlot :src="item.imageUrl" :label="item.name" class="product-image"/><view class="product-copy"><text class="product-name">{{item.name}}</text><text>本餐需 {{item.needLabel}}</text><text>{{item.packLabel}} × {{item.quantity}} 包</text><text v-if="item.availableQuantity<item.quantity" class="stock-alert">库存不足</text></view><text class="product-price">¥{{money(item.priceCents*item.quantity)}}</text></button></view>
+  <view class="meal-bottom-bar"><view class="selection-summary"><text>{{route.meal==='daily'?(route.meals||[]).map(m=>({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}[m])).join('、'):'已选 '+picked.length+' 项'}}</text><text class="amount">¥{{money(total)}}</text></view><button class="checkout-button" :disabled="busy||state.busy||!purchaseReady||!picked.length||!!error" @click="checkout">{{preview?.confirmation_pending?'确认上次采购结果':'去结算'}}<text v-if="!preview?.confirmation_pending">→</text></button></view>
+  <PurchaseCheckoutSheet :open="checkoutOpen" :title="route.meal==='daily'?'确认采购订单':'确认本餐订单'" :address="state.address" :slots="state.slots" :slot-id="state.slotId" :products="products" :quote="state.quote" :busy="busy||state.busy" :error="error||state.error||state.checkoutError||state.deliveryMessage" :pending="!!(state.pending||state.orderSn)" :access-required="loginOpen" @close="checkoutOpen=false" @address="chooseAddress" @slot="state.slotId=$event;page.invalidateQuote()" @confirm="submit" @recover="recover" @quote="checkout"><template #access><CommerceAccess entry @ready="checkout"/></template></PurchaseCheckoutSheet>
+ </view>
 </template>
+<style scoped>
+.section-head{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:10rpx;margin:30rpx 0 14rpx}.section-title{font-size:29rpx;font-weight:500}.section-head>text:last-child{font-size:23rpx;color:#65728c}.products{border:1rpx solid #e9edf3;border-radius:26rpx;background:#fff;padding:0 18rpx}.product{display:flex;align-items:center;gap:16rpx;padding:18rpx 0;border-bottom:1rpx solid #eff2f6;width:100%;text-align:left;box-sizing:border-box}.product:last-child{border:0}.check{display:flex;align-items:center;justify-content:center;width:34rpx;height:34rpx;border:2rpx solid #bcc4d3;border-radius:8rpx;flex-shrink:0;font-size:26rpx;color:#fff}.check.selected{background:#0879f9;border-color:#0879f9}.product-image{width:108rpx;height:116rpx;border-radius:18rpx}.product-copy{flex:1;min-width:0}.product-copy text{display:block;color:#65728c;font-size:24rpx;line-height:1.6}.product-copy .product-name{color:#252a34;font-size:28rpx;font-weight:500;line-height:1.45;margin-bottom:6rpx;overflow-wrap:anywhere}.product-price{align-self:flex-end;padding-bottom:4rpx;flex-shrink:0;font-size:27rpx;font-weight:500;white-space:nowrap;font-variant-numeric:tabular-nums}.product-copy .stock-alert{color:#b83532}.meal-bottom-bar{position:fixed;z-index:10;left:0;right:0;bottom:0;padding:18rpx 32rpx calc(env(safe-area-inset-bottom) + 18rpx);display:flex;align-items:center;justify-content:space-between;gap:20rpx;background:#fff;border-top:1rpx solid #eceff4;box-sizing:border-box}.selection-summary{display:flex;align-items:baseline;justify-content:space-between;gap:16rpx;flex:1;min-width:0;font-size:24rpx}.selection-summary>text:first-child{line-height:1.5;max-width:50%;color:#465064}.amount{font-size:40rpx;font-weight:600;font-variant-numeric:tabular-nums;color:#20242c;white-space:nowrap}.checkout-button{display:flex;align-items:center;justify-content:center;gap:16rpx;background:#25262a;border-radius:999rpx;color:#fff;min-height:92rpx;padding:18rpx 24rpx;font-size:28rpx;line-height:1.5;max-width:46%;box-sizing:border-box}.status{padding:24rpx;font-size:27rpx;line-height:1.6}.status button{margin-top:16rpx}button[disabled]{opacity:.45}
+@media(max-width:350px){.product{gap:12rpx}.product-image{width:86rpx;height:100rpx}.product-price{font-size:26rpx}.selection-summary{flex-direction:column;gap:0}.selection-summary>text:first-child{max-width:100%}.amount{font-size:38rpx}}
+/* #ifdef H5 */
+.meal-bottom-bar{max-width:480px;margin:0 auto}
+/* #endif */
+</style>
 
 <style scoped>
-.section-head{display:flex;align-items:center;justify-content:space-between;gap:16rpx;margin:36rpx 0 18rpx}.section-head>text:last-child{color:#777;font-size:24rpx}.product{display:flex;align-items:center;gap:16rpx;padding:22rpx;margin:16rpx 0}.product image{width:90rpx;height:90rpx;border-radius:16rpx}.product-copy{flex:1;min-width:0}.product-copy text{display:block;line-height:1.7;font-size:23rpx;color:#777}.product-copy text:first-child{font-size:28rpx;color:#222}.check{width:36rpx;height:36rpx;border:1rpx solid #999;border-radius:8rpx;flex-shrink:0;text-align:center}.check.selected{background:#222;color:white}.meal-bottom-bar{position:fixed;z-index:10;left:0;right:0;bottom:0;padding:20rpx 32rpx calc(env(safe-area-inset-bottom) + 20rpx);display:flex;align-items:center;gap:24rpx;border-top:1rpx solid #ddd;background:#fff}.meal-bottom-bar>view{display:flex;flex-direction:column;gap:6rpx;font-size:23rpx}.meal-bottom-bar .primary-button{flex:1}.amount{font-size:34rpx;font-weight:600}.checkout-sheet{max-height:85vh;overflow:auto}.address{width:100%;padding:24rpx;text-align:left;margin:24rpx 0}.address text{display:block;line-height:1.7}.quote{display:flex;flex-direction:column;gap:20rpx;margin:28rpx 0}.quote>view{display:flex;justify-content:space-between;gap:18rpx}.chosen{background:#eee}.status{padding:24rpx}
+@media(max-width:350px){.product-copy text,.section-head>text:last-child,.selection-summary{font-size:12px}.section-title,.product-copy .product-name{font-size:14px}}
 </style>

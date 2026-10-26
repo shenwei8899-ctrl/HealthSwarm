@@ -1,56 +1,51 @@
 <script setup>
-import { ensureExclusivePlan } from '../../services/exclusive-planning.js'
-import AppNavBar from '../../components/AppNavBar.vue'
 import { computed, ref } from 'vue'
-import { onLoad,onShow } from '@dcloudio/uni-app'
-import { getProfile,backHome } from '../../utils/profile.js'
-import { getExclusivePlan,adaptExclusivePlan } from '../../utils/exclusive-plans.js'
-const error=ref(''),loading=ref(false),revision=ref(0)
-const id=ref('balanced'),profile=ref(getProfile()),showAll=ref(false)
-const plan=computed(()=>{revision.value;return adaptExclusivePlan(getExclusivePlan(id.value),profile.value)})
-const firstBatchTotal=computed(()=>(plan.value.estimateCents/100).toFixed(2)),total=computed(()=>(plan.value.totalEstimateCents/100).toFixed(2))
-const displayDays=computed(()=>Array.from({length:showAll.value?21:2},(_,i)=>({...plan.value.days[i%plan.value.days.length],day:'第 '+(i+1)+' 天',version:'演示图文菜谱 v2'})))
-onLoad(o=>id.value=o.id||'balanced')
-onShow(async()=>{profile.value=getProfile();await generatePlan()})
-async function generatePlan(){loading.value=true;error.value='';try{await ensureExclusivePlan(getExclusivePlan(id.value),profile.value);revision.value++}catch(e){error.value=e.message||'计划生成失败，请重试'}finally{loading.value=false}}
-function buy(){if(plan.value.blocked.length)return;uni.navigateTo({url:'/pages/exclusive-plans/schedule?id='+plan.value.id})}
+import { onLoad, onShow } from '@dcloudio/uni-app'
+import AppNavBar from '../../components/AppNavBar.vue'
+import FoodImageSlot from '../../components/FoodImageSlot.vue'
+import { commerce } from '../../services/commerce.js'
+import { useCommercePage } from '../../services/commerce-page.js'
+import { selectedDay, dayMeals, memberName, selectedProducts, priceText, validPlanRoute } from '../../services/plan-presentation.js'
+const route = ref(null), plan = ref(null), dayNo = ref(1), expanded = ref('')
+const { busy, error, run } = useCommercePage(() => { plan.value = null; expanded.value = '' })
+const day = computed(() => selectedDay(plan.value, dayNo.value))
+const meals = computed(() => dayMeals(day.value))
+const products = computed(() => selectedProducts(plan.value, dayNo.value))
+const names = computed(() => plan.value?.members?.map(member => member.display_alias || '家庭成员').join('、'))
+onLoad(options => { try { route.value = validPlanRoute(options) } catch (e) { error.value = e.message } })
+onShow(load)
+function load() { if (route.value) return run(async active => { plan.value = null; const result = await commerce.servicePlan(route.value.sn, route.value.version); if (active()) plan.value = result }) }
+function next() { if (plan.value?.status === 'available') uni.navigateTo({url:'/pages/exclusive-plans/schedule?plan_sn='+encodeURIComponent(route.value.sn)+'&plan_version='+route.value.version}) }
+const back = () => uni.navigateBack()
 </script>
-
 <template>
-  <view class="screen detail-screen">
-    <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">计划详情</text><text class="pill">21 天</text></view></AppNavBar>
-    <text v-if="loading" class="safe-note">正在分析专属计划…</text><view v-if="error" class="card"><text class="inline-error">{{error}}</text><button @click="generatePlan">重试生成</button></view>
-    <view class="detail-head"><text class="eyebrow">AI专属计划 · 测试数据</text><text class="display-title">{{ plan.name }}</text><text>{{ plan.subtitle }}</text></view>
-    <view class="section-head"><view><text class="section-title">21 天三餐菜谱</text><text>每天早餐／午餐／晚餐 · 测试菜谱版本</text></view><button @click="showAll=!showAll">{{showAll?'收起':'查看全部21天'}} ›</button></view>
-    <scroll-view class="days-scroll" scroll-x :show-scrollbar="false">
-      <view class="days-row">
-        <view v-for="day in displayDays" :key="day.day" class="day-card card">
-          <text class="day-title">{{ day.day }}</text>
-          <text class="demo-label">{{day.version}}</text>
-          <view v-for="meal in day.meals" :key="meal.type" class="meal-block">
-            <text class="meal-type">{{ meal.type }}</text>
-            <view><image :src="meal.image" mode="aspectFill" /><view><text>{{ meal.name }}</text><text>{{ meal.minutes }} 分钟</text></view></view>
+  <view class="screen exclusive-screen detail-screen">
+    <AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="back">‹</button><text class="nav-title">计划详情</text></view></AppNavBar>
+    <view v-if="error" class="plan-surface plan-empty"><text class="plan-caption">{{error}}</text><button class="plan-secondary" :disabled="busy" @click="load">重新读取</button><button class="plan-text-link" @click="back">返回选择计划</button></view>
+    <text v-else-if="busy && !plan" class="plan-notice">正在读取计划…</text>
+    <template v-if="plan">
+      <view class="plan-heading"><text class="plan-title">{{plan.tier_name}}</text><text class="plan-caption">{{plan.difference}}</text><text class="plan-tiny">21 天 · {{names}}</text></view>
+      <FoodImageSlot class="plan-photo" :src="plan.display?.image_url" :label="plan.tier_name"/>
+      <view class="section-top"><text class="plan-section-title">每天，好好吃饭</text><text class="plan-tiny">完整三餐</text></view>
+      <scroll-view scroll-x class="day-tabs" :show-scrollbar="false"><view class="day-tabs-inner"><button v-for="item in plan.days" :key="item.day_no" :class="{chosen:Number(item.day_no)===dayNo}" @click="dayNo=Number(item.day_no); expanded=''">第 {{item.day_no}} 天</button></view></scroll-view>
+      <view class="plan-surface meal-list">
+        <view v-for="meal in meals" :key="meal.type" class="meal-group">
+          <text class="meal-label">{{meal.name}}</text>
+          <view v-for="dish in meal.dishes" :key="dish.id" class="dish">
+            <button class="dish-heading" @click="expanded=expanded===dish.id?'':dish.id"><FoodImageSlot class="dish-photo" :src="dish.recipe_snapshot?.image_url" :label="dish.recipe_name"/><view><text>{{dish.recipe_name}}</text><text class="plan-tiny">查看份量与做法</text></view><text class="plan-caption">{{expanded===dish.id?'−':'›'}}</text></button>
+            <view v-if="expanded===dish.id" class="dish-details"><view v-for="portion in dish.recipe_snapshot?.member_portions || []" :key="portion.member_ref" class="portion"><text>{{memberName(plan, portion.member_ref)}}</text><text>{{portion.grams}} g</text></view><text v-for="(step,index) in dish.recipe_snapshot?.steps || []" :key="index" class="step">{{index+1}}. {{typeof step==='string'?step:step.instruction || step.description || step.text}}</text></view>
           </view>
         </view>
       </view>
-    </scroll-view>
-    <view class="section-head products-head"><view><text class="section-title">配套食材选购</text><text>首批所需食材已准备好</text></view></view>
-    <view class="plan-products">
-      <view v-for="item in plan.products" :key="item.name" class="plan-product">
-        <image :src="item.image" mode="aspectFill" /><view><text>{{ item.name }}</text><text>× {{ item.count }}</text></view><text>¥{{ (item.cents / 100).toFixed(2) }}</text>
-      </view>
-    </view>
-    <view class="price-summary card"><view><text>首批三餐食材预估价</text><text>¥{{firstBatchTotal}}</text></view><view><text>21天计划预计总价</text><text>¥{{total}}</text></view><text>测试金额 · 结算前必须按 21 批实际 SKU、库存和费用重新报价。</text></view>
-    <view class="bottom-bar"><view><text>21天总价预估</text><text>¥{{ total }}</text></view><button @click="buy" :disabled="plan.blocked.length>0">下一步</button></view>
-
-    <view class="check-status card"><text class="section-title">饮食安全检查 · 演示</text><text>{{plan.blocked.length?plan.blocked.join('；'):'已避开已知冲突'}}</text><text>{{plan.fixturePlans.some(day=>day.some(p=>p.general))?'资料尚未完整填写，当前仅提供通用建议，不代表完成个体化适配。':'已结合成员档案调整菜谱及关联食材。'}}</text><button v-if="plan.blocked.length" class="secondary-button" @click="uni.navigateTo({url:'/pages/profile/index'})">补充档案</button></view>
+      <view class="section-top"><text class="plan-section-title">第 {{dayNo}} 天食材</text></view>
+      <view class="plan-surface"><view v-for="item in products" :key="item.sku_id" class="ingredient"><FoodImageSlot class="ingredient-photo" :src="item.product_snapshot?.image_url" :label="item.product_snapshot?.product_name"/><view><text>{{item.product_snapshot?.product_name}}</text><text class="plan-tiny">{{item.product_snapshot?.specification || item.product_snapshot?.spec || ''}} × {{item.quantity}}</text></view><text>{{priceText(item.total_price_cent)}}</text></view><text v-if="!products.length" class="plan-caption">食材正在核对，暂不可购买</text></view>
+      <view class="plan-surface"><view class="plan-row"><text>首批食材预估</text><text>{{priceText(plan.first_batch_goods_cent)}}</text></view><view class="plan-row"><text>21 天食材与服务</text><text>{{priceText(plan.estimated_subtotal_cent)}}</text></view><text class="plan-tiny">配送费选址后计算，结算时确认最终金额。</text></view>
+      <text v-if="plan.status!=='available'" class="plan-notice">计划仍在核对，暂不可购买。</text>
+      <view class="plan-fixed"><button class="plan-primary" :disabled="busy || plan.status!=='available'" @click="next">选择配送安排 <text>→</text></button></view>
+    </template>
   </view>
 </template>
-
 <style scoped>
-.check-status{display:flex;flex-direction:column;gap:16rpx;padding:26rpx;margin-top:24rpx;font-size:23rpx;line-height:1.7}.bottom-bar button[disabled]{opacity:.4}
-.detail-screen { padding-bottom: calc(env(safe-area-inset-bottom) + 170rpx); overflow: visible; }.detail-head { margin-top: 46rpx; }.detail-head .display-title { display: block; font-size: 50rpx; }.detail-head > text:last-child { display: block; margin-top: 16rpx; color: #687a72; font-size: 23rpx; line-height: 1.65; }.section-head { display: flex; align-items: flex-end; justify-content: space-between; margin: 46rpx 0 20rpx; }.section-head > view { display: flex; flex-direction: column; gap: 8rpx; }.section-head > view > text:last-child { color: #75867e; font-size: 20rpx; }.section-head > button { color: #246b50; font-size: 22rpx; }.days-scroll { width: calc(100% + 30rpx); white-space: nowrap; }.days-row { display: inline-flex; gap: 18rpx; padding-right: 30rpx; }.day-card { width: 430rpx; display: inline-flex; flex-direction: column; padding: 24rpx; white-space: normal; }.day-title { padding-bottom: 18rpx; color: #1d1d1f; font-family:inherit; font-size: 31rpx; font-weight: 800; border-bottom: 1rpx solid rgba(24,54,46,.1); }.meal-block { margin-top: 18rpx; }.meal-type { display: block; margin-bottom: 10rpx; color: #315549; font-size: 21rpx; font-weight: 700; }.meal-block > view { display: flex; align-items: center; gap: 14rpx; }.meal-block image { width: 104rpx; height: 86rpx; flex: 0 0 auto; border-radius: 18rpx; }.meal-block > view > view { display: flex; flex-direction: column; gap: 8rpx; }.meal-block > view > view text:first-child { color: #233f35; font-size: 22rpx; font-weight: 700; line-height: 1.4; }.meal-block > view > view text:last-child { color: #849088; font-size: 19rpx; }.products-head { margin-top: 54rpx; }.plan-products { display: flex; flex-direction: column; gap: 10rpx; }.plan-product { display: flex; align-items: center; gap: 18rpx; padding: 16rpx 0; border-bottom: 1rpx solid rgba(24,54,46,.08); }.plan-product image { width: 116rpx; height: 98rpx; flex: 0 0 auto; border-radius: 20rpx; }.plan-product > view { flex: 1; display: flex; flex-direction: column; gap: 8rpx; }.plan-product > view text:first-child { color: #223f35; font-size: 24rpx; font-weight: 700; }.plan-product > view text:last-child { color: #7d8c85; font-size: 20rpx; }.plan-product > text { color: #9c4e38; font-size: 27rpx; font-weight: 800; }
-.bottom-bar { position: fixed; z-index: 10; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 24rpx; padding: 22rpx 30rpx calc(env(safe-area-inset-bottom) + 22rpx); background: rgba(255,253,247,.97); border-top: 1rpx solid rgba(24,54,46,.08); }.bottom-bar > view { width: 190rpx; display: flex; flex-direction: column; gap: 6rpx; color: #71827a; font-size: 18rpx; }.bottom-bar > view text:last-child { color: #1d1d1f; font-size: 32rpx; font-weight: 800; }.bottom-bar > button { flex: 1; min-height: 86rpx; border-radius: 26rpx; background: #246b50; color: white; font-size: 28rpx; font-weight: 700; }
-.price-summary{margin-top:22rpx;padding:22rpx}.price-summary>view{display:flex;justify-content:space-between;padding:12rpx 0;border-bottom:1rpx solid rgba(24,54,46,.08);font-size:20rpx}.price-summary>view text:last-child{color:#a34c37;font-size:27rpx;font-weight:900}.price-summary>text{display:block;margin-top:13rpx;color:#7c655a;font-size:17rpx;line-height:1.5}.conflict-box,.resolved-box{display:flex;flex-direction:column;gap:8rpx;margin-top:16rpx;padding:17rpx;border-radius:17rpx;background:#f1d6cc;color:#824635}.conflict-box>text:first-child,.resolved-box>text:first-child{font-size:20rpx;font-weight:900}.conflict-box>text:not(:first-child),.resolved-box>text:not(:first-child){font-size:18rpx;line-height:1.5}.conflict-box button{min-height:60rpx;margin-top:6rpx;padding:8rpx 12rpx;border:1rpx solid #b36b56;border-radius:15rpx;background:#fff9f5;color:#814432;font-size:17rpx;font-weight:800}.resolved-box{background:#e2edd8;color:#315846}.sheet-actions .primary-button[disabled]{opacity:.45}
-.allergy-mask { z-index: 70; align-items: center; padding: 30rpx; }.allergy-sheet { border-radius: 34rpx; }.allergy-sheet > .section-title { display: block; text-align: center; }.warning { display: flex; gap: 15rpx; margin-top: 26rpx; padding: 20rpx; border-radius: 18rpx; background: #fae5df; color: #a64a38; font-size: 21rpx; line-height: 1.55; }.warning text:first-child { width: 34rpx; height: 34rpx; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 50%; background: #d55742; color: white; font-weight: 800; }.profile-allergy { display: flex; align-items: center; justify-content: space-between; margin-top: 18rpx; padding: 18rpx; border-radius: 18rpx; background: #e9f1e4; color: #325749; font-size: 21rpx; }.profile-allergy text:last-child { font-weight: 700; }.allergen-title { display: block; margin: 26rpx 0 14rpx; color: #243e35; font-size: 23rpx; font-weight: 700; }.allergen-list { display: flex; flex-direction: column; gap: 10rpx; }.allergen-list > view { display: flex; gap: 18rpx; padding: 17rpx 20rpx; border-radius: 16rpx; background: #f0f1ec; color: #5e6e67; font-size: 21rpx; }.allergen-list > view text:last-child { padding: 3rpx 8rpx; border: 1rpx solid #aab3ac; background: white; color: #384d44; }.replace-link { width: 100%; min-height: 68rpx; margin-top: 18rpx !important; color: #61776d; font-size: 22rpx; }.sheet-actions { display: grid; grid-template-columns: 1fr 1.4fr; gap: 14rpx; margin-top: 4rpx; }.sheet-actions .primary-button,.sheet-actions .secondary-button { min-height: 84rpx; margin: 0; font-size: 23rpx; }
+@import '../../styles/exclusive-plan.css';
+.detail-screen{padding-bottom:calc(160rpx + env(safe-area-inset-bottom))}.section-top{display:flex;align-items:center;justify-content:space-between;margin:38rpx 2rpx 18rpx}.day-tabs{white-space:nowrap;width:100%}.day-tabs-inner{display:inline-flex;gap:12rpx}.day-tabs button{font-size:26rpx;padding:16rpx 22rpx;border-radius:40rpx;background:#eef1f6;color:#748199;line-height:1.5}.day-tabs button.chosen{background:#292d35;color:white}.meal-list{padding:8rpx 26rpx}.meal-group{padding:26rpx 0;border-bottom:1rpx solid #eef1f5}.meal-group:last-child{border:0}.meal-label{font-size:26rpx;color:#6d7e99}.dish-heading{display:flex;align-items:center;text-align:left;gap:20rpx;background:none;padding:18rpx 0;width:100%;font-size:29rpx;line-height:1.6}.dish-heading>view:not(.food-image-slot){flex:1;min-width:0}.dish-heading>view>text{display:block}.dish-photo{width:108rpx;height:94rpx;border-radius:16rpx;flex-shrink:0}.dish-details{padding:4rpx 0 18rpx;font-size:26rpx;color:#65738d;line-height:1.7}.portion{display:flex;justify-content:space-between;gap:20rpx}.step{display:block;margin-top:12rpx}.ingredient{display:flex;align-items:center;gap:18rpx;padding:16rpx 0;font-size:27rpx}.ingredient-photo{width:88rpx;height:88rpx;flex-shrink:0;border-radius:16rpx}.ingredient>view:not(.food-image-slot){flex:1;min-width:0}.ingredient>view>text{display:block}.ingredient>text{flex-shrink:0}
 </style>

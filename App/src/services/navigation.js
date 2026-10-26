@@ -4,8 +4,8 @@ import { captureInvitation, rememberInvitation } from './family-invitations.js'
 import { storageContext } from './storage.js'
 import { getSession } from './session.js'
 const apiPages = new Set(['pages/index/index', 'pages/invite/index', 'pages/account/index', 'pages/family-shared/index',
-  'pages/records/index', 'pages/meal-photo/index', 'pages/indicators/index', 'pages/chat/agent', 'pages/chat/camera', 'pages/chat/history', 'pages/profile/member', 'pages/scan/index', 'pages/records/detail', 'pages/memories/index', 'pages/feedback/index', 'pages/exclusive-plans/index', 'pages/health/vision', 'pages/health/plans',
-  'pages/family-select/index', 'pages/my/index', 'pages/profile/index', 'pages/settings/privacy', 'pages/settings/health-profile',
+  'pages/records/index', 'pages/meal-photo/index', 'pages/indicators/index', 'pages/chat/agent', 'pages/chat/camera', 'pages/chat/history', 'pages/profile/member', 'pages/scan/index', 'pages/records/detail', 'pages/memories/index', 'pages/feedback/index', 'pages/exclusive-plans/index', 'pages/exclusive-plans/detail', 'pages/exclusive-plans/schedule', 'pages/health/vision', 'pages/health/plans',
+  'pages/family-select/index', 'pages/my/index', 'pages/profile/index', 'pages/settings/privacy',
   'pages/onboarding/index', 'pages/chat/index', 'pages/shop/index', 'pages/recipe/index',
   'pages/orders/index', 'pages/orders/detail', 'pages/address/index', 'pages/address/edit'])
 const commercePages = new Set(['pages/purchase/index'])
@@ -41,7 +41,7 @@ export function protectedDestination(requested, entry) {
   const path = requested.split('?')[0]
   if (entry.startsWith('/pages/invite/index')) return entry
   if (entry === '/pages/chat/index') return canOpenPage(requested) ? requested : entry
-  if (entry === '/pages/onboarding/index' && ['/pages/reports/index','/pages/reports/detail','/pages/health/vision'].includes(path)) return requested
+  if (entry === '/pages/onboarding/index' && ['/pages/profile/index','/pages/profile/member','/pages/family-shared/index','/pages/reports/index','/pages/reports/detail','/pages/health/vision'].includes(path)) return requested
   return entry
 }
 function currentRoute(options) {
