@@ -1,0 +1,25 @@
+{
+  "checks": {
+    "no_project_containers": true,
+    "no_project_network": true,
+    "no_project_image_tags": true,
+    "project_directory_absent": true,
+    "temporary_delete_directory_absent": true,
+    "project_volume_absent": true,
+    "other_entrypoints_respond": true,
+    "other_19_containers_preserved": true
+  },
+  "http_statuses": {
+    "healthswarm": 200,
+    "public_gateway": 200,
+    "commerce": 200,
+    "keenlight": 200
+  },
+  "all_passed": true,
+  "removed_counts": {
+    "containers": 7,
+    "image_tags": 6,
+    "volumes": 1,
+    "networks": 1
+  }
+}

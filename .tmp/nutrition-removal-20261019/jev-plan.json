@@ -1,0 +1,46 @@
+{
+  "disclosure": "metadata",
+  "request": {
+    "candidates": [
+      {
+        "description": "冻结资源清单并检查共享依赖，停止删除精确标签容器，删除专用网络、独占卷与镜像标签，再删除验证后的专属目录",
+        "available": true,
+        "authorized": true,
+        "scope_impact": "彻底移除授权测试项目，保留共享依赖与其他项目",
+        "id": "exact_project_removal"
+      }
+    ],
+    "task_id": "nutrition-test-removal-20261019",
+    "kind": "direction",
+    "trigger": "plan_ready",
+    "evidence": [
+      {
+        "excerpt": "把这个项目的全部删掉，全部清空这个当前这个项目的所有代码，不要删错了",
+        "observed_at": 1792401311,
+        "source": "user"
+      },
+      {
+        "excerpt": "目标目录为/opt/healthswarm-agent/releases/nutrition-20261019-test；所有目标挂载属于独立目录或目标匿名卷；正式服务正常。",
+        "observed_at": 1792401311,
+        "source": "ssh inventory"
+      }
+    ],
+    "revision": "nutrition-removal-r1",
+    "share_approved": true,
+    "acceptance": [
+      "目标项目容器、专属网络和数据卷清空",
+      "目标专属代码及数据目录不存在",
+      "目标镜像标签清空",
+      "其他运行项目保持正常"
+    ],
+    "original_goal": "彻底删除服务器上 healthswarm-nutrition-20261019 营养测试环境及其专属代码和数据，避免误删其他项目。",
+    "constraints": [
+      "只删除精确项目标签资源和专属目录",
+      "保留正式大健康系统、商城、路由项目及共享镜像数据",
+      "不执行全局prune",
+      "执行前核对共享挂载、网络及卷引用"
+    ],
+    "created_at": 1792401311,
+    "state": "只读检查：根分区66%已用、内存可用2.4GiB/7.4GiB、负载低于4核；目标8容器、1网络、1匿名Redis卷、6专属镜像标签及98MB独立目录，未发现非目标容器挂载目标目录。"
+  }
+}

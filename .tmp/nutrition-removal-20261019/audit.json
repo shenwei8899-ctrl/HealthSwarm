@@ -1,0 +1,575 @@
+{
+  "project": "healthswarm-nutrition-20261019",
+  "root": "/opt/healthswarm-agent/releases/nutrition-20261019-test",
+  "before": [
+    {
+      "id": "a6881a6d34b2e0cc5d7e16cd2e313e63415e07b48ed53b3022ace30e9d23e360",
+      "name": "/healthswarm-nutrition-20261019-web-1",
+      "image": "healthswarm-agent-web:nutrition-20261019-083e41481355",
+      "status": "running",
+      "health": null,
+      "mounts": []
+    },
+    {
+      "id": "3bf56e1c83c26b2f2486eec7deff505147c08d1abd31b8417bb3464571f6e881",
+      "name": "/healthswarm-nutrition-20261019-worker-1",
+      "image": "healthswarm-agent-api:nutrition-20261019-fe92335d63d7",
+      "status": "running",
+      "health": null,
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/releases/nutrition-20261019-test/state",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "14e74686074dad0a9bc2ee2fb09d6de6f9126840b4cbc7985c8c4aa424acaa28",
+      "name": "/healthswarm-nutrition-20261019-api-1",
+      "image": "healthswarm-agent-api:nutrition-20261019-fe92335d63d7",
+      "status": "running",
+      "health": null,
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/releases/nutrition-20261019-test/state",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "872a7fc694d36c1798352f605ea0d2e94084ba02d40a90c1bd67c0adf6586d41",
+      "name": "/healthswarm-nutrition-20261019-postgres-1",
+      "image": "sha256:a3b7f434b2dc57ce85a67e171163eb8ab1a1ebcb39d27484661f26b1dfbe30d6",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/releases/nutrition-20261019-test/postgres",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "8e0987b54db96135bacde331799cd0b81671f96150dfc3d440f7ad25d03c371b",
+      "name": "/healthswarm-nutrition-20261019-redis-1",
+      "image": "sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+      "status": "running",
+      "health": null,
+      "mounts": [
+        {
+          "type": "volume",
+          "source": "/var/lib/docker/volumes/b4807edc85f9e9440360b6c796f4e8bda188941e5f1d0d83c635460f2bd13140/_data",
+          "name": "b4807edc85f9e9440360b6c796f4e8bda188941e5f1d0d83c635460f2bd13140"
+        }
+      ]
+    },
+    {
+      "id": "dd7def6361b36a268af9b647c9e7c340be6153b67e5b6fc9c87e7da685f54962",
+      "name": "/healthswarm-nutrition-20261019-minio-1",
+      "image": "sha256:6d770d7f255cda1f18d841ffc4365cb7e0d237f6af6a15fcdb587480cd7c3b93",
+      "status": "running",
+      "health": null,
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/releases/nutrition-20261019-test/minio",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "1785236c39c0f810b16ab3004a617752b4fd6317c6df29f384167c8ef734a75d",
+      "name": "/healthswarm-nutrition-20261019-sandbox-provisioner-1",
+      "image": "sha256:1d0a2ccabf0ebdbe1f339ca28d33545b8ceb4d3cf2a76a7d250a965bec97d2ca",
+      "status": "running",
+      "health": null,
+      "mounts": []
+    }
+  ],
+  "protected_before": [
+    {
+      "id": "8b65284fa63909ac91238c6043a3b6eb5f72db33f691f40fa65f347913101a2e",
+      "name": "/healthswarm-agent-worker-1",
+      "image": "healthswarm-agent-api:unified-commerce-20261019-bb472cf7e8",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/yuxi/skill-projections",
+          "name": null
+        },
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/yuxi/skill-sources",
+          "name": null
+        },
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/yuxi/threads",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "7b6181ed98a8f18a8e11d5608fd5b465933219ae1d77974b33cccf3698f8a8a7",
+      "name": "/healthswarm-agent-api-1",
+      "image": "healthswarm-agent-api:unified-commerce-20261019-bb472cf7e8",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/yuxi/skill-projections",
+          "name": null
+        },
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/yuxi/skill-sources",
+          "name": null
+        },
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/yuxi/threads",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "e1b52febdf0c4d57710c0da0863b09470d2bc930a7c4795f525af583a22c2042",
+      "name": "/healthswarm-agent-web-1",
+      "image": "healthswarm-agent-web:3e436b6e396f",
+      "status": "running",
+      "health": null,
+      "mounts": []
+    },
+    {
+      "id": "39527e4125477a621a83a642938296bfc8404c37d7430852acd1570ab7de0661",
+      "name": "/healthswarm-commerce-web",
+      "image": "keenlight-nginx:1.31.4-1870de6d59aa",
+      "status": "running",
+      "health": null,
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-commerce",
+          "name": null
+        },
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-commerce/nginx.conf",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "41517311e1ff69743b9227e41fe6a37f205631997a7835081d1d1e4c20b10319",
+      "name": "/healthswarm-commerce-db",
+      "image": "postgres:16",
+      "status": "running",
+      "health": null,
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-commerce/shared/postgres",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "b8781d23bc459f7040933fa38878810666849441b9d81e1602d77319ce7a1ff2",
+      "name": "/healthswarm-public-gateway",
+      "image": "keenlight-nginx:1.31.4-1870de6d59aa",
+      "status": "running",
+      "health": null,
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-public-gateway/nginx.conf",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "ef5ec2b08377ebdd29fd34a32a8884686e1c9081c1c5b8f3ab1392988ae82bb0",
+      "name": "/keenlight-router-wan-video-gateway-1",
+      "image": "keenlight-wan-video-gateway:20261011-pricing",
+      "status": "running",
+      "health": "healthy",
+      "mounts": []
+    },
+    {
+      "id": "ec1fd88753911770aae04695054c19beba9e2a926ff51ab319991d7a86d62d7b",
+      "name": "/keenlight-router-proxy-1",
+      "image": "keenlight-nginx:1.31.4-1870de6d59aa",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/keenlight-router/nginx.conf",
+          "name": null
+        },
+        {
+          "type": "bind",
+          "source": "/opt/keenlight-router/public",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "106b419d1bd6ed0f1f8fa7515a09a53ce458c7c7e435436b4c9283544562d9c0",
+      "name": "/keenlight-router-video-static-1",
+      "image": "keenlight-nginx:1.31.4-1870de6d59aa",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "volume",
+          "source": "/var/lib/docker/volumes/keenlight-router-app-data-migration-20261010/_data",
+          "name": "keenlight-router-app-data-migration-20261010"
+        },
+        {
+          "type": "bind",
+          "source": "/opt/keenlight-router/video-static.conf",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "c5c0189b1a794c18fd05e6a327a4cf27d087b836e8332312fa86b0da3b673f59",
+      "name": "/keenlight-router-app-1",
+      "image": "keenlight-source-runtime:0.1.225-model-export.20260924-c16cd980",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "volume",
+          "source": "/var/lib/docker/volumes/keenlight-router-app-data-migration-20261010/_data",
+          "name": "keenlight-router-app-data-migration-20261010"
+        }
+      ]
+    },
+    {
+      "id": "b7bc2334f30f475e0c552acbfe64d2499832d994e4f9c06023ea4b730ba8588c",
+      "name": "/healthswarm-agent-sandbox-provisioner-1",
+      "image": "healthswarm-agent-sandbox-provisioner:5d2234a-r1",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/sandbox.env",
+          "name": null
+        },
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/yuxi/skill-projections",
+          "name": null
+        },
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/yuxi/threads",
+          "name": null
+        },
+        {
+          "type": "bind",
+          "source": "/var/run/docker.sock",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "9e5191a4e8c9977e26db49514229d4e9b5847b7aa5f3c9db47f9cb9907872029",
+      "name": "/healthswarm-agent-milvus-1",
+      "image": "milvusdb/milvus@sha256:fe39aa0fa006be4825a177b6b41393465deece910351c33a58170444265c63d8",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/milvus/milvus",
+          "name": null
+        },
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/milvus/logs",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "412d7bbd48e2542939f8c8f73f0ee7298fe83d1c5afc267d81ff9352e4fed9fc",
+      "name": "/healthswarm-agent-postgres-1",
+      "image": "postgres@sha256:a3b7f434b2dc57ce85a67e171163eb8ab1a1ebcb39d27484661f26b1dfbe30d6",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/postgresql",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "81ea55f392f33850f01479a98730377af4b310d8232fae5393ccfcfb89e8b6f7",
+      "name": "/healthswarm-agent-redis-1",
+      "image": "redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/redis",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "cf0862450a39aca99d6592cea5df3f7c5bccf8da7beb6498c3e9ed067716a006",
+      "name": "/healthswarm-agent-etcd-1",
+      "image": "quay.io/coreos/etcd@sha256:89b6debd43502d1088f3e02f39442fd3e951aa52bee846ed601cf4477114b89e",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/milvus/etcd",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "d93d95586e52e357f601c3c1cebc86247f82ce1b16586e71aa61d41d88ad06d6",
+      "name": "/healthswarm-agent-minio-1",
+      "image": "minio/minio@sha256:6d770d7f255cda1f18d841ffc4365cb7e0d237f6af6a15fcdb587480cd7c3b93",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/milvus/minio",
+          "name": null
+        },
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/milvus/minio_config",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "5fec2a077141b354beffc8849c49b8c213224056b80aacb8fd019cef41ac8706",
+      "name": "/healthswarm-agent-graph-1",
+      "image": "neo4j@sha256:3388e05ee53c8313d01acdf33e63ad175af95a92226dc8551160564439ce2c8c",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/neo4j/data",
+          "name": null
+        },
+        {
+          "type": "bind",
+          "source": "/opt/healthswarm-agent/state/neo4j/logs",
+          "name": null
+        }
+      ]
+    },
+    {
+      "id": "3c21250705a6cb29e70323c58955f24295c987891ba30f80734c643cd4b3f6d6",
+      "name": "/keenlight-router-postgres-1",
+      "image": "keenlight-postgres:18.4-9a8afca54e78",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "volume",
+          "source": "/var/lib/docker/volumes/94cb9ec1cd538119fea1d2ff6609af717f2cdeddd02a7725874f2b45a75f99c8/_data",
+          "name": "94cb9ec1cd538119fea1d2ff6609af717f2cdeddd02a7725874f2b45a75f99c8"
+        },
+        {
+          "type": "volume",
+          "source": "/var/lib/docker/volumes/keenlight-router_postgres_data/_data",
+          "name": "keenlight-router_postgres_data"
+        }
+      ]
+    },
+    {
+      "id": "16237f8f2edf45d08b991004090448074edc66fbdc46b86045ec22e2ba0d1deb",
+      "name": "/keenlight-router-redis-1",
+      "image": "keenlight-redis:8.8.0-9d317178ecea",
+      "status": "running",
+      "health": "healthy",
+      "mounts": [
+        {
+          "type": "volume",
+          "source": "/var/lib/docker/volumes/keenlight-router_redis_data/_data",
+          "name": "keenlight-router_redis_data"
+        }
+      ]
+    }
+  ],
+  "volumes": [
+    "b4807edc85f9e9440360b6c796f4e8bda188941e5f1d0d83c635460f2bd13140"
+  ],
+  "networks": [
+    "healthswarm-nutrition-20261019_isolated"
+  ],
+  "images": [
+    "healthswarm-agent-api:nutrition-20261019-6ee8da7aeb79",
+    "healthswarm-agent-api:nutrition-20261019-fe92335d63d7",
+    "healthswarm-agent-api:nutrition-20261019-7f40c6970e3d",
+    "healthswarm-agent-api:nutrition-20261019-83672a4613f5",
+    "healthswarm-agent-web:nutrition-20261019-8f59d17914e7",
+    "healthswarm-agent-web:nutrition-20261019-083e41481355"
+  ],
+  "removed_containers": [
+    "a6881a6d34b2e0cc5d7e16cd2e313e63415e07b48ed53b3022ace30e9d23e360",
+    "3bf56e1c83c26b2f2486eec7deff505147c08d1abd31b8417bb3464571f6e881",
+    "14e74686074dad0a9bc2ee2fb09d6de6f9126840b4cbc7985c8c4aa424acaa28",
+    "872a7fc694d36c1798352f605ea0d2e94084ba02d40a90c1bd67c0adf6586d41",
+    "8e0987b54db96135bacde331799cd0b81671f96150dfc3d440f7ad25d03c371b",
+    "dd7def6361b36a268af9b647c9e7c340be6153b67e5b6fc9c87e7da685f54962",
+    "1785236c39c0f810b16ab3004a617752b4fd6317c6df29f384167c8ef734a75d"
+  ],
+  "removed_volumes": [
+    "b4807edc85f9e9440360b6c796f4e8bda188941e5f1d0d83c635460f2bd13140"
+  ],
+  "removed_networks": [
+    "healthswarm-nutrition-20261019_isolated"
+  ],
+  "removed_images": [
+    "healthswarm-agent-api:nutrition-20261019-6ee8da7aeb79",
+    "healthswarm-agent-api:nutrition-20261019-fe92335d63d7",
+    "healthswarm-agent-api:nutrition-20261019-7f40c6970e3d",
+    "healthswarm-agent-api:nutrition-20261019-83672a4613f5",
+    "healthswarm-agent-web:nutrition-20261019-8f59d17914e7",
+    "healthswarm-agent-web:nutrition-20261019-083e41481355"
+  ],
+  "root_deleted": true,
+  "directory_quarantined": true,
+  "protected_readback": [
+    {
+      "name": "/healthswarm-agent-worker-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "/healthswarm-agent-api-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "/healthswarm-agent-web-1",
+      "same_container_present": true,
+      "running": true,
+      "health": null
+    },
+    {
+      "name": "/healthswarm-commerce-web",
+      "same_container_present": true,
+      "running": true,
+      "health": null
+    },
+    {
+      "name": "/healthswarm-commerce-db",
+      "same_container_present": true,
+      "running": true,
+      "health": null
+    },
+    {
+      "name": "/healthswarm-public-gateway",
+      "same_container_present": true,
+      "running": true,
+      "health": null
+    },
+    {
+      "name": "/keenlight-router-wan-video-gateway-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "/keenlight-router-proxy-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "/keenlight-router-video-static-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "/keenlight-router-app-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "/healthswarm-agent-sandbox-provisioner-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "/healthswarm-agent-milvus-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "/healthswarm-agent-postgres-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "/healthswarm-agent-redis-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "/healthswarm-agent-etcd-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "/healthswarm-agent-minio-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "/healthswarm-agent-graph-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "/keenlight-router-postgres-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "/keenlight-router-redis-1",
+      "same_container_present": true,
+      "running": true,
+      "health": "healthy"
+    }
+  ],
+  "no_target_containers": true,
+  "completed_at_unix": 1792401411.3294775
+}

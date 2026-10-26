@@ -1187,7 +1187,11 @@ class KnowledgeBaseManager:
         """
         await self._require_kb_supports_documents(kb_id, "open")
         window = await self.open_file_content(kb_id, file_id, offset=offset, limit=limit)
-        return OpenOutputSchema(kb_id=kb_id, file_id=file_id, **window).model_dump()
+        return OpenOutputSchema(
+            kb_id=kb_id, file_id=file_id,
+            citation_url=KnowledgeBase.document_citation_url(kb_id, file_id, window.get("start_line")),
+            **window,
+        ).model_dump()
 
     async def find_in_document(
         self,

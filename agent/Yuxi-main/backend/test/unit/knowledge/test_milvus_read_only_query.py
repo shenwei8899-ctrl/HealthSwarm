@@ -159,3 +159,63 @@ async def test_read_only_keyword_query_reports_all_orphaned_hits(monkeypatch):
             use_reranker=False,
             use_graph_retrieval=False,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('search_mode', ['vector', 'keyword', 'hybrid'])
+async def test_query_excludes_navigation_before_recall_and_after_graph_fusion(monkeypatch, search_mode):
+    """目录即使被图谱再次召回，也不能挤占正文结果。"""
+    collection = _collection()
+    kb, config, *_ = _query_setup(monkeypatch, collection=collection)
+    monkeypatch.setattr(kb, '_get_or_create_milvus_collection', AsyncMock(return_value=collection))
+    monkeypatch.setattr(kb, '_get_embedding_function', lambda *a, **kw: lambda texts: [[0.1, 0.2]])
+    monkeypatch.setattr(kb, '_build_file_name_expr', AsyncMock(return_value='file_id in ["file-1", "directory"]'))
+    monkeypatch.setattr(kb, '_collection_supports_bm25', lambda c: True)
+    collection.hybrid_search = Mock(return_value=collection.search.return_value)
+    graph = [
+        {'content': 'links only', 'metadata': {'file_id': 'directory', 'chunk_id': 'dir'}, 'score': 1.0},
+        {'content': 'source body', 'metadata': {'file_id': 'file-1', 'chunk_id': 'body'}, 'score': 0.8},
+    ]
+    monkeypatch.setattr(kb, '_retrieve_graph_chunks', AsyncMock(return_value=graph))
+    result = await kb.aquery(
+        'recipe', 'kb-1', config=config, search_mode=search_mode,
+        file_name='recipe', excluded_file_ids=['directory'], use_graph_retrieval=True, use_reranker=False,
+    )
+    assert result and all(r['metadata']['file_id'] != 'directory' for r in result)
+    assert any(r['metadata']['file_id'] == 'file-1' for r in result)
+    if search_mode == 'hybrid':
+        requests = collection.hybrid_search.call_args.kwargs['reqs']
+        assert all('file_id not in ["directory"]' in r.expr for r in requests)
+        assert all('file_id in ["file-1", "directory"]' in r.expr for r in requests)
+    else:
+        expression = collection.search.call_args.kwargs['expr']
+        assert 'file_id not in ["directory"]' in expression
+        assert 'file_id in ["file-1", "directory"]' in expression
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('excluded', ['directory', [None], [123], ['']])
+async def test_query_rejects_invalid_excluded_file_ids(monkeypatch, excluded):
+    """非法排除配置明确报错，不能静默把目录重新混入正文。"""
+    collection = _collection()
+    kb, config, *_ = _query_setup(monkeypatch, collection=collection)
+    with pytest.raises(ValueError, match='excluded_file_ids'):
+        await kb.aquery(
+            'recipe', 'kb-1', config=config, read_only=True, search_mode='keyword',
+            excluded_file_ids=excluded, use_graph_retrieval=False, use_reranker=False,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('excluded', [[], ['directory']])
+async def test_query_reads_persisted_exclusions_without_a_filename(monkeypatch, excluded):
+    """持久化排除配置直接作用于普通检索；空列表保留默认行为。"""
+    collection = _collection()
+    kb, _, *_ = _query_setup(monkeypatch, collection=collection)
+    config = KnowledgeBaseConfig(
+        kb_id='kb-1', kb_type='milvus', embedding_model_spec='provider:embedding-v1',
+        query_params={'options': {'search_mode': 'keyword', 'excluded_file_ids': excluded}},
+    )
+    result = await kb.aquery('recipe', 'kb-1', config=config, read_only=True)
+    assert result[0]['metadata']['file_id'] == 'file-1'
+    assert collection.search.call_args.kwargs['expr'] == ('file_id not in ["directory"]' if excluded else None)

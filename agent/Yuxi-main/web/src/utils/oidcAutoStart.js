@@ -18,6 +18,13 @@ export function sanitizeRedirect(value) {
   return '/'
 }
 
+/** 登录完成后返回业务页面，避免再次进入认证页。 */
+export function resolveLoginRedirect(value) {
+  const target = sanitizeRedirect(value)
+  const path = target.split(/[?#]/, 1)[0].replace(/\/+$/, '').toLowerCase()
+  return !path || path === '/login' || path === '/auth/oidc/callback' ? '/agent' : target
+}
+
 // 检查是否已经尝试过自动触发 OIDC（同一会话内，避免无限循环）
 export function hasAutoStartAttempted() {
   return sessionStorage.getItem(AUTO_START_KEY) === '1'

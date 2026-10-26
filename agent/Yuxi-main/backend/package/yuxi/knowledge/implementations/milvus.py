@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import time
 import traceback
@@ -941,6 +942,15 @@ class MilvusKB(KnowledgeBase):
                 recall_top_k = final_top_k
 
             file_expr = await self._build_file_name_expr(kb_id, merged_kwargs.get("file_name"))
+            excluded_file_ids = merged_kwargs.get("excluded_file_ids", [])
+            if not isinstance(excluded_file_ids, list) or any(
+                not isinstance(file_id, str) or not file_id.strip() for file_id in excluded_file_ids
+            ):
+                raise ValueError("excluded_file_ids must be a list of non-empty file IDs")
+            excluded_ids = set(excluded_file_ids)
+            if excluded_ids:
+                exclusion_expr = f"file_id not in {json.dumps(sorted(excluded_ids))}"
+                file_expr = f"({file_expr}) and ({exclusion_expr})" if file_expr else exclusion_expr
             if file_expr:
                 logger.debug(f"Using filter expression: {file_expr}")
 
@@ -1055,6 +1065,11 @@ class MilvusKB(KnowledgeBase):
                 if graph_chunks:
                     graph_weight = float(merged_kwargs.get("graph_weight", 1.0))
                     retrieved_chunks = self._fuse_chunk_rankings(retrieved_chunks, graph_chunks, graph_weight)
+
+            if excluded_ids:
+                retrieved_chunks = [
+                    chunk for chunk in retrieved_chunks if chunk.get("metadata", {}).get("file_id") not in excluded_ids
+                ]
 
             if not retrieved_chunks:
                 return []

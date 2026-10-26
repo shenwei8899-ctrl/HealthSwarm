@@ -7,6 +7,26 @@ import {
   apiRequest,
   buildQuery
 } from './base'
+import { downloadWorkspaceKnowledgeFile } from './workspace_api'
+import { parseDownloadFilename } from '@/utils/file_utils'
+
+export const getKnowledgeSourceDocument = async (kbId, fileId) => {
+  const response = await downloadWorkspaceKnowledgeFile(kbId, fileId, 'parsed')
+  if (!response.headers.get('Content-Type')?.startsWith('text/markdown')) {
+    throw new Error('原文解析结果不可用')
+  }
+  return {
+    meta: {
+      filename:
+        parseDownloadFilename(response.headers.get('Content-Disposition')).replace(
+          /\.parsed\.md$/,
+          ''
+        ) || fileId,
+      content_hash: response.headers.get('X-Yuxi-Source-Hash')
+    },
+    content: await response.text()
+  }
+}
 
 /**
  * 知识库管理API模块

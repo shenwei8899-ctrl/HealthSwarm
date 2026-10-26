@@ -2,6 +2,7 @@ import MarkdownIt from 'markdown-it'
 import markdownItKatex from '@vscode/markdown-it-katex'
 import taskLists from 'markdown-it-task-lists'
 import DOMPurify from 'dompurify'
+import { resolveKnowledgeReference } from './knowledgeSourceLinks.js'
 import { createHighlighter } from 'shiki'
 import { load as yamlLoad } from 'js-yaml'
 import { escapeHtml } from './html.js'
@@ -179,8 +180,8 @@ const ensureLanguages = async (highlighter, languages) => {
   )
 }
 
-export const createMarkdownRenderer = ({ themeName, highlighter }) =>
-  new MarkdownIt({
+export const createMarkdownRenderer = ({ themeName, highlighter }) => {
+  const renderer = new MarkdownIt({
     html: true,
     breaks: true,
     linkify: true,
@@ -197,6 +198,28 @@ export const createMarkdownRenderer = ({ themeName, highlighter }) =>
     .use(markdownKatexPlugin, { throwOnError: false, errorColor: '#cc0000', trust: false })
     .use(taskLists, { enabled: false, label: false, labelAfter: false })
     .use(markdownItFrontmatterCard)
+
+  renderer.linkify.add('knowledge:', {
+    validate: (text, position) => {
+      const candidate = text.slice(position).match(/^\/\/kb_[\w-]+\/file_[\w-]+(?:#[\w-]+)?/)
+      return candidate && resolveKnowledgeReference(`knowledge:${candidate[0]}`)
+        ? candidate[0].length
+        : 0
+    },
+    normalize: (match) => {
+      match.url = resolveKnowledgeReference(match.url)
+    }
+  })
+  const renderLink =
+    renderer.renderer.rules.link_open ||
+    ((tokens, index, options, env, self) => self.renderToken(tokens, index, options))
+  renderer.renderer.rules.link_open = (tokens, index, options, env, self) => {
+    const href = resolveKnowledgeReference(tokens[index].attrGet('href'))
+    if (href) tokens[index].attrSet('href', href)
+    return renderLink(tokens, index, options, env, self)
+  }
+  return renderer
+}
 
 const getRenderer = async (theme, needsHighlight) => {
   const themeName = normalizeTheme(theme)

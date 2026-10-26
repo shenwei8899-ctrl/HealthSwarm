@@ -1,0 +1,75 @@
+{
+  "disclosure": "metadata",
+  "request": {
+    "candidates": [
+      {
+        "description": "所有验收项均已通过真实回查，可以交付删除结果",
+        "available": true,
+        "scope_impact": "仅交付已执行结果",
+        "id": "complete",
+        "authorized": true
+      }
+    ],
+    "task_id": "nutrition-test-removal-20261019",
+    "kind": "completion",
+    "evidence": [
+      {
+        "source": "verification.json",
+        "observed_at": 1792401456,
+        "excerpt": "all_passed=true; removed:7 containers,1 volume,1 network,6 image tags; others:19 preserved; HTTP 200 for healthswarm,commerce,gateway,keenlight"
+      }
+    ],
+    "revision": "nutrition-removal-r2-verified",
+    "share_approved": true,
+    "acceptance": [
+      "目标项目容器、专属网络和数据卷清空",
+      "目标专属代码及数据目录不存在",
+      "目标镜像标签清空",
+      "其他运行项目保持正常"
+    ],
+    "original_goal": "彻底删除服务器上 healthswarm-nutrition-20261019 营养测试环境及其专属代码和数据，避免误删其他项目。",
+    "constraints": [
+      "只删除精确项目标签资源和专属目录",
+      "保留正式大健康系统、商城、路由项目及共享镜像数据",
+      "不执行全局prune",
+      "执行前核对共享挂载、网络及卷引用"
+    ],
+    "created_at": 1792401456,
+    "state": "删除完成；逐项回查目标资源均不存在，其他19个原容器仍运行，正式系统、商城、网关及路由入口HTTP全部200。",
+    "changes": [
+      "删除7个测试环境服务容器，临时runner已自行退出",
+      "删除1个独占Redis卷、1个专属网络、6个专属镜像标签",
+      "删除整个专属目录中的测试代码、配置及数据库文件"
+    ],
+    "tests": [
+      {
+        "exit_code": 0,
+        "revision": "nutrition-removal-r2-verified",
+        "source": "verification.json + audit.json；SSH只读回查命令exit_code=0",
+        "criterion": "目标项目容器、专属网络和数据卷清空",
+        "output_excerpt": "目标容器/网络/卷/镜像均不存在；专属目录不存在；其他19容器原ID运行，四个入口HTTP200"
+      },
+      {
+        "exit_code": 0,
+        "revision": "nutrition-removal-r2-verified",
+        "source": "verification.json + audit.json；SSH只读回查命令exit_code=0",
+        "criterion": "目标专属代码及数据目录不存在",
+        "output_excerpt": "目标容器/网络/卷/镜像均不存在；专属目录不存在；其他19容器原ID运行，四个入口HTTP200"
+      },
+      {
+        "exit_code": 0,
+        "revision": "nutrition-removal-r2-verified",
+        "source": "verification.json + audit.json；SSH只读回查命令exit_code=0",
+        "criterion": "目标镜像标签清空",
+        "output_excerpt": "目标容器/网络/卷/镜像均不存在；专属目录不存在；其他19容器原ID运行，四个入口HTTP200"
+      },
+      {
+        "exit_code": 0,
+        "revision": "nutrition-removal-r2-verified",
+        "source": "verification.json + audit.json；SSH只读回查命令exit_code=0",
+        "criterion": "其他运行项目保持正常",
+        "output_excerpt": "目标容器/网络/卷/镜像均不存在；专属目录不存在；其他19容器原ID运行，四个入口HTTP200"
+      }
+    ]
+  }
+}

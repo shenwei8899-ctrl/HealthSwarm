@@ -4,6 +4,7 @@ import os
 import re
 from abc import ABC, abstractmethod
 from typing import Any
+from urllib.parse import quote
 
 from yuxi.knowledge.chunking.ragflow_like.presets import ensure_chunk_defaults_in_additional_params
 from yuxi.knowledge.read_models import KnowledgeBaseConfig
@@ -576,6 +577,7 @@ class KnowledgeBase(ABC):
                 "filename": f"{filename}.parsed.md",
                 "content": await self._read_minio_bytes(markdown_file),
                 "media_type": "text/markdown; charset=utf-8",
+                "content_hash": file_meta.get("content_hash"),
             }
 
         original_path = self._original_file_path(file_meta)
@@ -609,6 +611,12 @@ class KnowledgeBase(ABC):
         }
 
     @staticmethod
+    def document_citation_url(kb_id: str, file_id: str, line: int | None = None) -> str:
+        """生成本站原文阅读地址；读取时仍由接口校验权限。"""
+        url = f"/knowledge/source/{quote(kb_id, safe='')}/{quote(file_id, safe='')}"
+        return f"{url}?line={line}" if line and line > 0 else url
+
+    @staticmethod
     def build_search_output(kb_id: str, retrieval_results: Any) -> dict[str, Any] | Any:
         if not isinstance(retrieval_results, list):
             return retrieval_results
@@ -625,6 +633,8 @@ class KnowledgeBase(ABC):
                 if key not in {"filepath", "parsed_path", "path", "markdown_file"}
             }
             file_id = metadata.get("file_id") or chunk.get("file_id") or chunk.get("full_doc_id") or ""
+            if str(kb_id).startswith("kb_") and str(file_id).startswith("file_"):
+                metadata["citation_url"] = KnowledgeBase.document_citation_url(str(kb_id), str(file_id))
             chunk_id = metadata.get("chunk_id") or chunk.get("chunk_id") or chunk.get("id")
             chunk_index = metadata.get("chunk_index")
             if chunk_index is None:
