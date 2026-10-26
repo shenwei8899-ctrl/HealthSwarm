@@ -11,6 +11,7 @@ export const HEALTH_TEXT_TASKS = Object.freeze({
   blood_lipids_review: '血脂记录回顾', blood_pressure_review: '血压记录回顾',
   diet_analysis: '已保存餐次反馈',
   meal_preview: '本餐安排',
+  initial_meal_preview: '单日专属计划',
 })
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const terminalStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'rejected'])
@@ -103,16 +104,16 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       if (!Array.isArray(members.data) || !members.data.some(row => row.id === memberId && (!indicatorTask || row.is_owner === true)) ||
         readiness.data?.capabilities?.member_id !== memberId || !Array.isArray(readiness.data?.entries)) throw mismatch()
       const entry = readiness.data.entries.find(row => row.entry_type === taskType)
-      state.available = entry?.status === 'available'
+      state.available = entry?.status === 'available' || (taskType === 'initial_meal_preview' && selection && entry?.status === 'needs_input' && entry?.reason_code === 'selection_required')
       if (!state.available) state.notice = '当前成员的这项服务暂不可用，可在“我的 → 资料管理 → 我的健康资料”核对资料与咨询权限。'
       if (entry?.reason_code === 'consent_required') {
         const policy = (await send({ path: '/api/health/v1/configuration' })).data
         if (!current(ticket)) return
-        const purpose = taskType === 'diet_analysis' ? 'diet_analysis' : 'consultation'
+        const purpose = taskType === 'initial_meal_preview' ? 'meal_plan' : taskType === 'diet_analysis' ? 'diet_analysis' : 'consultation'
         const configured = policy?.[purpose]
         if (configured?.available === true && typeof configured.processor === 'string' &&
           configured.processor && typeof policy.policy_version === 'string' && policy.policy_version) {
-          state.consentOption = { processor: configured.processor, policyVersion: policy.policy_version, ...(purpose === 'diet_analysis' ? {purpose} : {}) }
+          state.consentOption = { processor: configured.processor, policyVersion: policy.policy_version, ...(purpose !== 'consultation' ? {purpose} : {}) }
           state.notice = '请先核对当前咨询处理方和政策版本，再明确选择是否同意。'
         }
       }

@@ -1,6 +1,7 @@
 """初始批准配餐的全员来源验证、独立预览及确认保存。"""
 
 from copy import deepcopy
+import os
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import ValidationError
@@ -25,6 +26,32 @@ from yuxi.storage.postgres.models_health import (
     HealthPublishedRecipeClassification,
 )
 from yuxi.utils.datetime_utils import utc_now_naive
+
+
+async def read_initial_plan_context(uid, member_id, plan_date):
+    """从当前授权来源装配单日选择，不接受客户端专业规则或版本猜测。"""
+    async with pg_manager.get_async_session_context() as session:
+        health = HealthVisionRepository(session)
+        for scope in ("ai_use", "diet_edit", "profile_view"):
+            await health.authorize(member_id, uid, scope)
+        quality = HealthQualityRepository(session)
+        profile = await quality.profile_projection(member_id)
+        code = os.getenv("HEALTH_DAILY_RULE_CODE", "")
+        rules = external_projection(await quality.rules(code), "rules", code)
+        result = {"member_id": member_id, "plan_date": plan_date.isoformat(), "selection": None}
+        if profile["status"] != "ready":
+            return {**result, "reason": "profile_not_ready", "message": "请先完成成员营养档案的确认。"}
+        if rules["status"] != "ready" or not rules["payload"].get("meal_generation"):
+            return {**result, "reason": "rules_not_ready", "message": "已批准的配餐规则尚未就绪，请联系管理员。"}
+        selected = InitialPlanSelection(
+            kind="single",
+            plan_date=plan_date,
+            rule_code=code,
+            rule_version=rules["version"],
+            profile_versions={member_id: profile["version"]},
+            meals=[{"meal_type": meal, "participant_ids": [member_id]} for meal in ("breakfast", "lunch", "dinner")],
+        )
+        return {**result, "selection": selected.model_dump(mode="json"), "reason": None, "message": ""}
 
 
 async def initial_context_in_session(session, uid, member_id, selection):

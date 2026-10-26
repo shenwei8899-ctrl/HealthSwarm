@@ -163,6 +163,7 @@ async def test_initial_binding_immutable_and_all_member_consent(initial_runtime)
         )
         binding = await session.get(HealthConsultation, conversation.id)
         expected_selection = {k: deepcopy(v) for k, v in body.items() if k != "client_request_id"}
+        expected_selection.update(purchase_required=False, base_plan_id=None, base_plan_version=None, change_meal=None)
         for meal in expected_selection["meals"]:
             meal["participant_ids"].sort()
         assert binding.initial_planner_selection["selection"] == expected_selection
@@ -409,6 +410,8 @@ async def test_initial_actual_message_owner_rolls_back(initial_runtime, change):
         run = await session.get(AgentRun, context.run_id)
         assert run.status == "completed" and run.output_message_id
         assert json.loads((await session.get(Message, run.output_message_id)).content) == final
+        # 此Run由fixture直接构造且未创建运行资源，发布后的清理标记由fixture收敛。
+        run.runtime_cleanup_pending = False
 
 
 @pytest.mark.parametrize("slug", ["health-meal-planner", "health-diet-analyst", "health-quality"])

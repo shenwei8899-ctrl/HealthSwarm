@@ -69,6 +69,7 @@ from yuxi.services.health_safe_meal_swap_service import read_safe_swap_candidate
 from yuxi.services.health_safe_plan_regeneration_service import preview_safe_regeneration, regenerate_meal_plan
 from yuxi.services.health_initial_meal_plan_types import InitialPlanSelection
 from yuxi.services.health_initial_meal_plan_service import (
+    read_initial_plan_context,
     create_initial_plan_preview,
     read_initial_plan_preview,
     save_initial_plan,
@@ -654,6 +655,15 @@ async def save_plan(
     """幂等保存已有服务器预览。"""
     require_request_key(data.client_request_id, request_key)
     return await save_meal_plan(str(user.uid), str(member_id), data)
+
+
+@health_vision.get("/members/{member_id}/initial-meal-plan-context")
+async def initial_plan_context(
+    member_id: UUID, plan_date: date, response: Response, user: User = Depends(get_required_user)
+):
+    """只读提供当前单日配餐选择，授权和专业来源由服务核对。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await read_initial_plan_context(str(user.uid), str(member_id), plan_date)
 
 
 @health_vision.post("/members/{member_id}/initial-meal-plan-previews")
