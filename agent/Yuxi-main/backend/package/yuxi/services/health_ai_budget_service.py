@@ -1,6 +1,7 @@
 """五类健康 AI 共用的人民币月预算与供应商调用账本。"""
 
 import hashlib
+import os
 from dataclasses import dataclass, field, replace
 from datetime import UTC
 from decimal import Decimal
@@ -23,10 +24,10 @@ from yuxi.storage.postgres.models_health_budget import HealthAiCall, HealthAiMon
 
 @dataclass(frozen=True)
 class BudgetReservation:
-    """调用前已提交的预留及不可变价格版本。"""
+    """严格模式绑定已提交预留；参考模式不虚构价格和费用记录。"""
 
-    call_id: str
-    price: HealthAiPriceInput
+    call_id: str | None
+    price: HealthAiPriceInput | None
     model_info: object = field(default=None, repr=False)
 
 
@@ -73,6 +74,7 @@ async def reserve(purpose: str, owner_id: str, target: str, *, call_id: str | No
     """提交全项目预留后才允许外呼，数据库不可用时不降级。"""
     if purpose not in HEALTH_BUDGET_PURPOSES or not owner_id or len(owner_id) > 64:
         raise HealthVisionError("budget_context_invalid", "健康预算调用归属无效", 422)
+    advisory = budget_mode() == "advisory" and purpose in {"consultation", "indicator_review", "diet_analysis"}
     call_id = call_id or str(uuid4())
     async with pg_manager.get_async_session_context() as session:
         repo = HealthAiBudgetRepository(session)
@@ -80,6 +82,15 @@ async def reserve(purpose: str, owner_id: str, target: str, *, call_id: str | No
         if await repo.call(call_id) is not None:
             raise HealthVisionError("budget_call_replayed", "此调用已预留，不能再次发送供应商请求", 409)
         now = await repo.now()
+        if advisory:
+            month = budget_month(now)
+            account = await repo.month(month)
+            if account is None:
+                session.add(HealthAiMonth(month=month, occupied_cny=Decimal(0), blocked=True))
+            else:
+                account.blocked = True
+            # 记录严格账本已不完整，切回严格模式时不能沿用旧余额放行。
+            return BudgetReservation(None, None)
         row = await repo.price(target, now)
         if row is None:
             raise HealthVisionError("budget_price_unavailable", "计费依据或费用上界未就绪，可使用人工录入", 503)
@@ -112,6 +123,9 @@ async def reserve(purpose: str, owner_id: str, target: str, *, call_id: str | No
 
 async def settle(reservation: BudgetReservation, usage=None, *, fixed_charge: bool = False):
     """完整回执按原批准价格结算；未知与超界保留全部占用。"""
+    if reservation.call_id is None:
+        # 参考模式的用量由Run模型审计及识图任务回执持久化，人民币金额保持未知。
+        return
     async with pg_manager.get_async_session_context() as session:
         repo = HealthAiBudgetRepository(session)
         await repo.lock()
@@ -149,21 +163,28 @@ async def settle(reservation: BudgetReservation, usage=None, *, fixed_charge: bo
 
 async def budget_status():
     """管理员读取完整月占用与最近调用，不暴露健康正文或凭据。"""
+    mode = budget_mode()
     async with pg_manager.get_async_session_context() as session:
         repo = HealthAiBudgetRepository(session)
         await repo.lock()
         month = budget_month(await repo.now())
         account = await repo.month(month)
         occupied = account.occupied_cny if account else Decimal(0)
+        opening = await repo.opening()
+        amounts_known = mode == "strict" and opening is not None and not (account and account.blocked)
         return {
             "month": str(month),
             "timezone": "Asia/Shanghai",
             "currency": "CNY",
-            "limit_cny": str(MONTHLY_LIMIT_CNY),
-            "occupied_cny": str(occupied),
-            "remaining_cny": str(MONTHLY_LIMIT_CNY - occupied),
-            "blocked": bool(account and account.blocked),
-            "initialized": await repo.opening() is not None,
+            "mode": mode,
+            "advisory_purposes": ["consultation", "indicator_review", "diet_analysis"] if mode == "advisory" else [],
+            "reference_budget_cny": str(MONTHLY_LIMIT_CNY),
+            "limit_cny": str(MONTHLY_LIMIT_CNY) if mode == "strict" else None,
+            "occupied_cny": str(occupied) if amounts_known else None,
+            "remaining_cny": str(MONTHLY_LIMIT_CNY - occupied) if amounts_known else None,
+            "blocked": mode == "strict" and bool(account and account.blocked),
+            "usage_source": "agent_run_model_audit_and_vision_task_receipts",
+            "initialized": opening is not None,
             "calls": [
                 {
                     "id": c.id,
@@ -189,6 +210,8 @@ async def initialize_budget(uid, data):
                 raise HealthVisionError("budget_opening_conflict", "预算期初已确认，不能覆盖或清零", 409)
             return {"month": str(opening.month), "occupied_cny": str(opening.occupied_cny)}
         month = budget_month(await repo.now())
+        if await repo.month(month) is not None:
+            raise HealthVisionError("budget_opening_conflict", "当月已有调用或待核账记录，不能用期初覆盖", 409)
         session.add(
             HealthAiOpening(id=1, month=month, occupied_cny=data.occupied_cny, evidence=data.evidence, approved_by=uid)
         )
@@ -204,7 +227,15 @@ def model_target(info) -> str:
         info is None
         or not info.api_key
         or info.provider_type not in {"openai", "openrouter"}
-        or info.request_body_overrides
+        or (
+            info.request_body_overrides
+            and not (
+                info.provider_type == "openai"
+                and info.model_id == "deepseek-flash"
+                and info.base_url.rstrip("/") in {"https://api.deepseek.com", "https://api.deepseek.com/v1"}
+                and info.request_body_overrides == {"thinking": {"type": "disabled"}}
+            )
+        )
     ):
         raise HealthVisionError("budget_price_unavailable", "模型计费配置未就绪或存在请求覆盖", 503)
     return hashlib.sha256((processor_identity("meal", info) + ":" + info.api_key).encode()).hexdigest()
@@ -220,8 +251,48 @@ def budget_month(utc_time):
     return utc_time.replace(tzinfo=UTC).astimezone(ZoneInfo("Asia/Shanghai")).date().replace(day=1)
 
 
+async def model_budget_readiness(session, info):
+    """只读核对模型目标、有效价格、期初与当前月余量，不创建预留。"""
+    try:
+        target = model_target(info)
+    except HealthVisionError:
+        return {
+            "available": False,
+            "reason_code": "budget_price_unavailable",
+            "reason": "模型计费参数尚未就绪，请联系管理员",
+        }
+    if budget_mode() == "advisory":
+        return {"available": True, "reason_code": None, "reason": None}
+    repo = HealthAiBudgetRepository(session)
+    now = await repo.now()
+    record = await repo.price(target, now)
+    if record is None:
+        return {
+            "available": False,
+            "reason_code": "budget_price_unavailable",
+            "reason": "模型价格或费用上界尚未配置，请联系管理员",
+        }
+    opening = await repo.opening()
+    if opening is None or budget_month(now) < opening.month:
+        return {
+            "available": False,
+            "reason_code": "budget_price_unavailable",
+            "reason": "本月预算期初尚未核对，请联系管理员",
+        }
+    price = HealthAiPriceInput.model_validate(record.specification)
+    account = await repo.month(budget_month(now))
+    occupied = account.occupied_cny if account else Decimal(0)
+    if (account and account.blocked) or occupied + price.ceiling_cny > MONTHLY_LIMIT_CNY:
+        return {
+            "available": False,
+            "reason_code": "budget_exceeded",
+            "reason": "本月健康 AI 可用额度不足或待核账，请稍后再试",
+        }
+    return {"available": True, "reason_code": None, "reason": None}
+
+
 async def reserve_model(purpose: str, owner_id: str, spec: str) -> BudgetReservation:
-    """固定模型调用的统一入口，价格缺失时在外呼前拒绝。"""
+    """绑定模型快照，严格模式在外呼前核对价格与额度。"""
     info = model_cache.get_model_info(spec)
     reservation = await reserve(purpose, owner_id, model_target(info))
     return replace(reservation, model_info=info)
@@ -234,4 +305,13 @@ def reserved_chat_model(reservation: BudgetReservation, **kwargs):
     info = reservation.model_info
     if info is None or model_cache.get_model_info(info.spec) != info:
         raise HealthVisionError("policy_changed", "预算等待期间模型配置已变化，请重新提交", 409)
-    return load_chat_model_from_info(info, **kwargs, max_retries=0, max_tokens=reservation.price.max_output_tokens)
+    max_tokens = reservation.price.max_output_tokens if reservation.price is not None else 2048
+    return load_chat_model_from_info(info, **kwargs, max_retries=0, max_tokens=max_tokens)
+
+
+def budget_mode() -> str:
+    """只有显式参考模式可放宽金额门槛，配置错误不得自动放行。"""
+    mode = os.getenv("HEALTH_AI_BUDGET_MODE", "strict")
+    if mode not in {"strict", "advisory"}:
+        raise ValueError("HEALTH_AI_BUDGET_MODE 必须为 strict 或 advisory")
+    return mode
