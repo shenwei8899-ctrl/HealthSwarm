@@ -25,6 +25,12 @@ export default defineConfig(({ mode }) => {
       name: 'wechat-config',
       generateBundle(_options, bundle) {
         if (process.env.UNI_PLATFORM !== 'mp-weixin') return
+        // Generated JSON whitespace counts toward WeChat's package size limit.
+        for (const [name, asset] of Object.entries(bundle)) {
+          if (name.endsWith('.json') && asset.type === 'asset') {
+            asset.source = JSON.stringify(JSON.parse(String(asset.source))) + '\n'
+          }
+        }
         // uni-app's H5 rpx settings are not valid WeChat window options.
         const appAsset = bundle['app.json']
         if (appAsset?.type === 'asset') {
@@ -32,7 +38,7 @@ export default defineConfig(({ mode }) => {
           for (const key of ['rpxCalcMaxDeviceWidth', 'rpxCalcBaseDeviceWidth', 'rpxCalcIncludeWidth']) {
             if (app.window) delete app.window[key]
           }
-          appAsset.source = JSON.stringify(app, null, 2) + '\n'
+          appAsset.source = JSON.stringify(app) + '\n'
         }
         if (!appid) return
         const asset = bundle['project.config.json']
@@ -40,7 +46,7 @@ export default defineConfig(({ mode }) => {
         const project = JSON.parse(String(asset.source))
         project.appid = appid
         project.setting = { ...project.setting, urlCheck: true }
-        asset.source = JSON.stringify(project, null, 2) + '\n'
+        asset.source = JSON.stringify(project) + '\n'
       },
     }],
   }

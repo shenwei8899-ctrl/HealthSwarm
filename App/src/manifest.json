@@ -40,6 +40,10 @@
         {
           "type": "file",
           "value": "static/preview.html"
+        },
+        {
+          "type": "file",
+          "value": "static/chat/history.png"
         }
       ]
     }
