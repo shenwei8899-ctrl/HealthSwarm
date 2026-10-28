@@ -5,8 +5,8 @@ import { storageContext } from './storage.js'
 import { getSession } from './session.js'
 const apiPages = new Set(['pages/index/index', 'pages/invite/index', 'pages/account/index', 'pages/family-shared/index',
   'pages/records/index', 'pages/meal-photo/index', 'pages/indicators/index', 'pages/chat/agent', 'pages/chat/camera', 'pages/chat/history', 'pages/profile/member', 'pages/scan/index', 'pages/records/detail', 'pages/memories/index', 'pages/feedback/index', 'pages/exclusive-plans/index', 'pages/exclusive-plans/detail', 'pages/exclusive-plans/schedule', 'pages/health/vision', 'pages/health/plans',
-  'pages/family-select/index', 'pages/my/index', 'pages/profile/index', 'pages/settings/privacy',
-  'pages/onboarding/index', 'pages/chat/index', 'pages/shop/index', 'pages/recipe/index',
+  'pages/family-select/index', 'pages/my/index', 'pages/profile/index', 'pages/settings/index', 'pages/settings/privacy',
+  'pages/onboarding/index', 'pages/onboarding/preparing', 'pages/chat/index', 'pages/shop/index', 'pages/recipe/index',
   'pages/orders/index', 'pages/orders/detail', 'pages/address/index', 'pages/address/edit'])
 const commercePages = new Set(['pages/purchase/index'])
 export function launchRoute(options) {
@@ -17,7 +17,7 @@ export function registerApiPages(pages) { pages.forEach(page => apiPages.add(pag
 export function canOpenPage(url) {
   const path = (url || '').replace(/^\//, '').split('?')[0]
   if (path === 'pages/shop/index') {
-    if (/[?&]commerce=1(?:&|$)/.test(url)) return false
+    if (/[?&]commerce=1(?:&|$)/.test(url)) return !isMockMode && isCommerceEnabled && /^\/?pages\/shop\/index\?(?:commerce=1&cart=1|cart=1&commerce=1)$/.test(url)
     if (isMockMode) return /[?&](meal|daily|bundle|source)=/.test(url)
     return /[?&]arrangement=[0-9a-f-]{36}(?:&|$)/i.test(url)
       && /[?&]version=[1-9][0-9]*(?:&|$)/.test(url)
@@ -40,7 +40,8 @@ export function guardInitialH5Route(location, history) {
 export function protectedDestination(requested, entry) {
   const path = requested.split('?')[0]
   if (entry.startsWith('/pages/invite/index')) return entry
-  if (entry === '/pages/chat/index') return canOpenPage(requested) ? requested : entry
+  if (entry.split('?')[0] === '/pages/chat/index') return canOpenPage(requested) ? requested : entry
+  if (entry.split('?')[0] === '/pages/onboarding/preparing' && ['/pages/onboarding/preparing','/pages/onboarding/index','/pages/profile/index','/pages/profile/member','/pages/family-shared/index','/pages/my/index','/pages/settings/index','/pages/settings/privacy','/pages/orders/index','/pages/orders/detail','/pages/address/index','/pages/address/edit','/pages/chat/history','/pages/records/index','/pages/records/detail'].includes(path)) return requested
   if (entry === '/pages/onboarding/index' && ['/pages/profile/index','/pages/profile/member','/pages/family-shared/index','/pages/reports/index','/pages/reports/detail','/pages/health/vision'].includes(path)) return requested
   return entry
 }
@@ -56,19 +57,33 @@ function forward(method, options) {
     previous.done.then(result=>{options[result.failed?'fail':'success']?.(result.value);options.complete?.(result.value)})
     return previous.done
   }
+  if (previous && previous.scope!==scope) previous.cancel()
+  else if (previous) {
+    const result={errMsg:method+':fail 正在打开页面',code:'NAVIGATION_IN_PROGRESS'}
+    options.fail?.(result);options.complete?.(result)
+    return Promise.resolve({failed:true,value:result})
+  }
   let settle
   const flight={scope,method,url:options.url,done:new Promise(resolve=>{settle=resolve})}
   navigationFlight=flight
+  const feedbackPaths=['/pages/exclusive-plans/index','/pages/profile/index','/pages/scan/index','/pages/chat/history','/pages/my/index']
+  let showing=false
+  const timer=method==='navigateTo' && feedbackPaths.includes(options.url?.split('?')[0])
+    ? setTimeout(()=>{showing=true;uni.showLoading?.({title:'正在打开',mask:true})},400) : null
   function finish(failed,value) {
     if(flight.finished)return
     flight.finished=true
+    if(timer)clearTimeout(timer)
+    if(showing)uni.hideLoading?.()
     if(navigationFlight===flight)navigationFlight=null
     settle({failed,value})
     options[failed?'fail':'success']?.(value);options.complete?.(value)
+    if(failed && method==='navigateTo' && !options.fail && value.code!=='SESSION_CHANGED')
+      uni.showToast?.({title:value.errMsg?.replace(/^\w+:fail\s*/, '')||'页面打开失败，请重试',icon:'none'})
   }
+  flight.cancel=()=>finish(true,{errMsg:method+':fail 账号已变化',code:'SESSION_CHANGED'})
   void (async()=>{
     try {
-      if(previous)await previous.done
       if(!current()) {finish(true,{errMsg:method+':fail 账号已变化',code:'SESSION_CHANGED'});return}
       let url=options.url
       if(!isMockMode && url.split('?')[0]!=='/pages/index/index') url=protectedDestination(url,await resolveAppEntry())
@@ -98,7 +113,7 @@ export function checkCurrentEntry(options) {
   const current=()=>scope===storageContext()||!account?.householdId&&account?.accountId===getSession()?.accountId&&account?.token===getSession()?.token
   entryCheck=(async()=>{
     try {
-      const entry=await resolveAppEntry()
+      const entry=await resolveAppEntry({force:true})
       if(!current()||navigationFlight)return
       const route=currentRoute(options),target=protectedDestination(route,entry)
       if(target!==route) {

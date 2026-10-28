@@ -9,6 +9,8 @@ export default defineConfig(({ mode }) => {
   const appid = process.env.VITE_WECHAT_APPID || env.VITE_WECHAT_APPID || ''
   if (appid && !/^wx[0-9a-f]{16}$/i.test(appid)) throw new Error('VITE_WECHAT_APPID 必须是有效的小程序 AppID')
   return {
+    // Keep minification bounded on development machines with little free memory.
+    build: { terserOptions: { maxWorkers: 1 } },
     server: {
       proxy: {
         '/api': { target: process.env.VITE_HEALTH_API_PROXY || env.VITE_HEALTH_API_PROXY || 'http://127.0.0.1:15050', changeOrigin: true },

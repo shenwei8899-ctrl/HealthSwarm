@@ -26,6 +26,15 @@ function setup(overrides={}, memory=new Map()) {
   const client=createMealPhotoClient({state,send,revision:()=>rev,storage:{getStorageSync:k=>structuredClone(memory.get(k)),setStorageSync:(k,v)=>memory.set(k,structuredClone(v))},newId:()=>`key-${++next}`,upload:overrides.upload|| (async()=>({upload_id:'photo',purpose:'meal'}))})
   return {state,client,calls,memory,config,changeAccount:()=>rev++}
 }
+test('capture can reuse freshly authorized member list while still reading policy and drafts',async()=>{
+  const h=setup()
+  await h.client.open('member',[{id:'member',scopes:['diet_edit','ai_use']},{id:'hidden',scopes:[]}])
+  assert.equal(h.state.memberId,'member')
+  assert.deepEqual(h.state.members.map(m=>m.id),['member'])
+  assert.ok(h.calls.some(c=>c.path.endsWith('/configuration')))
+  assert.ok(h.calls.some(c=>c.path.includes('/vision/page')))
+  assert.ok(!h.calls.some(c=>c.path.endsWith('/members')))
+})
 test('unconfigured service permits private upload but never sends consent or recognition',async()=>{
   const h=setup();h.config.meal.available=false;h.config.meal.reason='模型未配置'
   await h.client.open();await h.client.addPhoto('local');await h.client.start('lunch',meal.eaten_at,true)

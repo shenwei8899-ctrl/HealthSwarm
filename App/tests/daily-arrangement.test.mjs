@@ -19,6 +19,15 @@ function setup(handler) {
     send:async input=>{calls.push(structuredClone(input));return {data:await handler(input,calls)}},newId:()=>'request-'+ ++count,wait:async()=>{},pollLimit:3})
   return {client,state,calls,data,switch(){scope='B';familyId='family-B'}}
 }
+test('pausing retains the saved meal and rejects a late stale read',async()=>{
+ let finish,reads=0
+ const f=setup(()=>++reads===1?ready():new Promise(resolve=>{finish=resolve}))
+ await f.client.load(day);const previous=f.state.arrangement
+ const pending=f.client.load(day);f.client.pause()
+ assert.equal(f.state.arrangement.id,previous.id);assert.equal(f.state.busy,false)
+ const stale=ready();stale.id='late';finish(stale);await pending
+ assert.equal(f.state.arrangement.id,'saved-1');assert.equal(f.state.phase,'ready')
+})
 test('ready requires three complete saved meals and a genuine Agent request/run reference',()=>{
   assert.equal(validateDailyArrangement(ready(),day).id,'saved-1')
   for(const mutate of [v=>v.meals.pop(),v=>v.saved=false,v=>v.validation.status='pending',v=>v.procurement.checked=false,v=>v.analysis.source='demo',v=>v.analysis.run_id='',v=>v.meals[0].dishes[0].steps=[],v=>v.meals[0].memberNotes=[],v=>delete v.meals[0].purchase,v=>v.meals[0].purchase.package_version=0]){
@@ -199,7 +208,7 @@ test('saved meal viewing does not depend on a commerce login',()=>{
 test('formal UI places the real analysis before the gated card and has no placeholder menus',()=>{
   const ui=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
   assert.ok(ui.indexOf('class="analysis-message"')<ui.indexOf('<DailyArrangementCard'))
-  assert.match(ui,/v-if="cardVisible && state.phase==='ready'"/)
+  assert.match(ui,/v-if="cardVisible && presentation.initialResults"/)
   assert.ok(!ui.includes('本餐有待处理的饮食问题'));assert.ok(!ui.includes('测试数据'))
   assert.ok(ui.includes('/pages/chat/camera'));assert.ok(ui.includes('/pages/scan/index'))
 })

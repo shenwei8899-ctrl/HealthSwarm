@@ -9,9 +9,12 @@ export function canUseLocalBusinessLogin(env, { platform = '', hostname = '' } =
 // 独立 H5 测试包只在明确指定的站点使用同源真实服务；不影响正式微信构建。
 export function canUseH5TestBusinessLogin(env, { h5 = false, origin = '' } = {}) {
   if (!h5 || env.VITE_H5_TEST_LOGIN !== '1' || env.VITE_SERVICE_MODE !== 'api' ||
-      env.VITE_API_BASE_URL !== '' || !origin || origin !== env.VITE_H5_TEST_ORIGIN) return false
-  try {
-    const target = new URL(env.VITE_H5_TEST_ORIGIN)
-    return ['http:', 'https:'].includes(target.protocol) && target.origin === env.VITE_H5_TEST_ORIGIN
-  } catch { return false }
+      env.VITE_API_BASE_URL !== '' || !origin) return false
+  const origins = (env.VITE_H5_TEST_ORIGINS || env.VITE_H5_TEST_ORIGIN || '').split(',').map(value => value.trim()).filter(Boolean)
+  return origins.some(value => {
+    try {
+      const target = new URL(value)
+      return ['http:', 'https:'].includes(target.protocol) && target.origin === value && value === origin
+    } catch { return false }
+  })
 }

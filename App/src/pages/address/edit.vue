@@ -1,17 +1,14 @@
 <script setup>
-import CommerceAccess from '../../components/CommerceAccess.vue'
-import CommerceAddresses from '../../components/CommerceAddresses.vue'
-import { isMockMode } from '../../services/config.js'
-const addressId=ref('')
-import AppNavBar from '../../components/AppNavBar.vue'
-import { reactive,ref } from 'vue'
+import { ref, getCurrentInstance } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { backHome } from '../../utils/profile.js'
-import { service as mockService } from '../../services/index.js'
-const form=reactive({name:'',phone:'',region:'',detail:''}),saving=ref(false),error=ref('')
-onLoad(async o=>{addressId.value=o.id||'';if(!isMockMode)return;if(o.id){saving.value=true;try{const addresses=await mockService.addresses(),entry=addresses.find(a=>a.id===o.id);if(!entry)throw new Error('地址不存在，请返回重新选择');Object.assign(form,entry)}catch(e){error.value=e.message}finally{saving.value=false}}})
-function sample(){Object.assign(form,{name:'测试收件人',phone:'13800000000',region:'上海市 徐汇区',detail:'示例路 88 号 1 幢 101 室（虚构）'})}
-async function save(){if(saving.value)return;saving.value=true;error.value='';try{await mockService.saveAddress(form);backHome()}catch(e){error.value=e.message}finally{saving.value=false}}
+import CommerceAccess from '../../components/CommerceAccess.vue'
+import AddressForm from '../../components/AddressForm.vue'
+import { isMockMode } from '../../services/config.js'
+import { openerChannel, addressBack } from '../../services/address-navigation.js'
+const id = ref(''), mode = ref('manage'), routeReady = ref(false), instance = getCurrentInstance()
+let channel
+onLoad(options => { id.value = options.id || ''; mode.value = options.mode === 'select' ? 'select' : 'manage'; routeReady.value = true; channel = openerChannel(instance) })
+function saved(result) { channel?.emit('addressSaved', result); addressBack(mode.value === 'select' ? 2 : 1) }
+function removed(result) { channel?.emit('addressRemoved', result); addressBack() }
 </script>
-<template><CommerceAccess v-if="!isMockMode"><CommerceAddresses :edit-id="addressId" :new-address="!addressId"/></CommerceAccess><view v-else class="screen"><AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">{{form.id?'编辑':'新增'}}收货地址</text><text></text></view></AppNavBar><view class="page-heading"><text class="display-title">填写配送信息</text><text class="subtitle">前端体验版，请使用虚构测试资料。</text></view><view class="card form"><text class="form-label">收件人</text><input v-model="form.name" class="field-input" placeholder="姓名或称呼"/><text class="form-label">联系电话</text><input v-model="form.phone" class="field-input" type="number" maxlength="11" placeholder="11 位手机号"/><text class="form-label">省、市、区</text><input v-model="form.region" class="field-input" placeholder="例如 上海市 徐汇区"/><text class="form-label">详细地址</text><textarea v-model="form.detail" class="text-area" placeholder="街道、门牌号等"/></view><text v-if="error" class="inline-error">{{error}}</text><button class="primary-button" :disabled="saving" @click="save">{{saving?'正在保存…':'保存并使用'}}</button><button :disabled="saving" class="secondary-button sample" @click="sample">填入虚构示例地址</button></view></template>
-<style scoped>.form{padding:8rpx 28rpx 28rpx;margin-bottom:28rpx}.sample{margin-top:20rpx}</style>
+<template><CommerceAccess :enabled="!isMockMode"><AddressForm v-if="routeReady" :address-id="id" :mode="mode" @saved="saved" @removed="removed"/></CommerceAccess></template>

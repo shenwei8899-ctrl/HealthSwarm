@@ -111,3 +111,23 @@ test('local welcome submits credentials, clears password and enters the server-s
   assert.equal(page.password.value, '')
   assert.deepEqual(redirects, ['/pages/onboarding/index'])
 })
+
+test('H5 test login accepts only explicitly listed IP and HTTPS origins', () => {
+  const env = { VITE_H5_TEST_LOGIN: '1', VITE_SERVICE_MODE: 'api', VITE_API_BASE_URL: '',
+    VITE_H5_TEST_ORIGINS: 'http://8.136.134.29, https://h5.example.test' }
+  for (const origin of ['http://8.136.134.29', 'https://h5.example.test']) {
+    assert.equal(canUseH5TestBusinessLogin(env, { h5: true, origin }), true)
+    assert.equal(canUseH5TestBusinessLogin(env, { h5: false, origin }), false)
+    assert.equal(canUseH5TestBusinessLogin({ ...env, VITE_H5_TEST_LOGIN: '0' }, { h5: true, origin }), false)
+  }
+  for (const origin of ['https://unlisted.test', 'http://8.136.134.29:8080', 'https://h5.example.test.evil.test', 'http://h5.example.test']) {
+    assert.equal(canUseH5TestBusinessLogin(env, { h5: true, origin }), false)
+  }
+})
+
+test('an H5 test origin list cannot accept paths, credentials, or a non-web origin', () => {
+  for (const origin of ['file://', 'null', 'https://test.example/path', 'https://user:pass@test.example', 'https://test.example/']) {
+    assert.equal(canUseH5TestBusinessLogin({ VITE_H5_TEST_LOGIN: '1', VITE_SERVICE_MODE: 'api', VITE_API_BASE_URL: '',
+      VITE_H5_TEST_ORIGINS: origin }, { h5: true, origin }), false)
+  }
+})

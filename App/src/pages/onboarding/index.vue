@@ -1,4 +1,5 @@
 <script setup>
+import { queueOnboardingPreparation, preparationRoute } from '../../services/onboarding-preparation.js'
 import { sessionRevision } from '../../services/session.js'
 import { scopedStorage, storageScope } from '../../services/storage.js'
 import AppNavBar from '../../components/AppNavBar.vue'
@@ -11,7 +12,7 @@ import { backHome, getProfile, newMember, normalizeMember, normalizeProfile, sav
 import { dataWarnings } from '../../utils/health.js'
 import { onboardingIssue } from '../../utils/onboarding-validation.js'
 import { isMockMode } from '../../services/config.js'
-import { loadCloudProfile, saveCloudProfile, readCloudReportStatus } from '../../services/cloud-profile.js'
+import { loadCloudProfile, readCloudReportStatus } from '../../services/cloud-profile.js'
 const cloudLoading=ref(!isMockMode),cloudError=ref(''),cloudSaving=ref(false),cloudLoaded=ref(isMockMode)
 const cloudErrorCode = ref(null)
 const conflictDraft=ref(null),showConflictDraft=ref(false)
@@ -53,11 +54,11 @@ async function readCloud(restoreDraft = true) {
         memberIndex.value = profile.value.members.findIndex(member => String(member.id) === profile.value.selfMemberId)
         if (memberIndex.value < 0) throw new Error('尚未读到本人档案，请重新打开邀请并确认加入。')
       }
-      const policy=profile.value.analysisPolicy
+      const policy=profile.value.analysisPolicy,configuration=profile.value.healthConfiguration
       const draft = scopedStorage.getStorageSync('frontend-onboarding-progress-v1')
       if (restoreDraft && draft?.profile?.householdId === profile.value.householdId && draft.profile.familyVersion === profile.value.familyVersion) {
         profile.value = normalizeProfile(draft.profile); step.value = draft.step || 0
-        profile.value.analysisPolicy=policy
+        profile.value.analysisPolicy=policy;profile.value.healthConfiguration=configuration
       }
       if (!invited.value && !profile.value.defaultDiners.length) profile.value.defaultDiners = profile.value.members.map(member=>member.id)
       familyDiners.value=[...profile.value.defaultDiners]
@@ -145,10 +146,22 @@ async function commit() {
   if(!isMockMode){
     const revision=sessionRevision()
     cloudSaving.value=true;cloudError.value=''
-    try { const saved=await saveCloudProfile(profile.value);if(!alive)return;if(revision!==sessionRevision()){clearPrivate();cloudError.value='账号或家庭已变化，请重新读取档案。';return}profile.value=saved }
-    catch(error){if(!alive)return;preserveProgress();if([401,403,404,410].includes(Number(error.code))||error.code==='SESSION_CHANGED'||revision!==sessionRevision())clearPrivate();cloudError.value=error.message;cloudErrorCode.value=error.code;return}
-    finally{cloudSaving.value=false}
+    try {
+      await queueOnboardingPreparation(profile.value)
+      if(!alive)return
+      if(revision!==sessionRevision()){clearPrivate();cloudError.value='账号或家庭已变化，请重新读取档案。';return}
+      uni.navigateTo({url:preparationRoute()})
+    }catch(error){
+      if(!alive)return
+      if(error.code==='PREPARATION_PENDING'){uni.navigateTo({url:preparationRoute()});return}
+      preserveProgress()
+      if([401,403,404,410].includes(Number(error.code))||error.code==='SESSION_CHANGED'||revision!==sessionRevision())clearPrivate()
+      cloudError.value=error.message;cloudErrorCode.value=error.code
+    }finally{cloudSaving.value=false}
+    return
   }
+
+
   if (!invited.value) {
     completed = true
     scopedStorage.setStorageSync('frontend-onboarded-v1', true)
@@ -201,11 +214,13 @@ function next() {
       </template>
       <text class="helper diner-summary">默认按 {{ dinerCount }} 人安排，每餐可以调整。</text>
     </view>
+    <text v-if="step===2&&!isMockMode&&!invited" class="preparation-disclosure">完成后，将使用已填资料进行营养咨询与今日配餐准备。处理说明以当前服务配置为准。</text>
     <view class="onboarding-footer"><button class="primary-button next" :disabled="cloudSaving||cloudLoading" @click="next"><text>{{ step === 2 ? (cloudSaving ? '正在保存…' : invited ? '保存，进入家庭' : '完成建档，开始对话') : '保存并继续' }}</text><text>{{ step === 1 ? '›' : '→' }}</text></button></view>
     <text v-if="isMockMode" class="demo-label">前端体验版 · 资料保存于本机，请勿输入真实病历</text>
   </view>
 </template>
 <style scoped>
+.preparation-disclosure{display:block;margin:24rpx 0 0;color:#938a7d;font-size:22rpx;line-height:1.7}
 .onboarding-screen{background:#fff;color:#22252b;padding:12rpx 32rpx calc(env(safe-area-inset-bottom) + 96px)}
 .step-progress{display:flex;align-items:center;gap:22rpx;margin:16rpx 4rpx 0}.step-caption{font-size:24rpx;color:#858da0;white-space:nowrap}.progress{display:flex;flex:1;gap:10rpx}.progress>view{height:10rpx;flex:1;border-radius:999rpx;background:#e9ecf2}.progress>view.complete{background:#0879f9}
 .question-head{display:flex;flex-direction:column;gap:12rpx;margin:28rpx 4rpx 24rpx}.question-head .display-title{font-size:56rpx;font-weight:500;line-height:1.32;letter-spacing:-.6rpx;white-space:pre-line}.helper{display:block;font-size:27rpx;line-height:1.6;color:#7d8699}.label{display:block;font-size:29rpx;font-weight:500}.question-head .helper{font-size:28rpx}
@@ -222,6 +237,7 @@ function next() {
 </style>
 
 <style scoped>
+.preparation-disclosure{display:block;margin:24rpx 0 0;color:#938a7d;font-size:22rpx;line-height:1.7}
 
 /* The Qixian-inspired treatment belongs to the first onboarding step only. */
 .step-node,.step-name{display:none}
@@ -276,6 +292,7 @@ function next() {
 </style>
 
 <style scoped>
+.preparation-disclosure{display:block;margin:24rpx 0 0;color:#938a7d;font-size:22rpx;line-height:1.7}
 
 /* Steps two and three share the approved first-step visual language. */
 .onboarding-screen.detail-step{padding:12rpx 40rpx calc(env(safe-area-inset-bottom) + 110px);background:#fff;color:#111}

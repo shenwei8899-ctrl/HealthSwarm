@@ -1,3 +1,4 @@
+import { resolveCheckoutAddress } from './address-test-helpers.mjs'
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -195,7 +196,7 @@ function shop(delivery) {
     slots: () => delivery(),
     quote: async () => { quoteCalls++; return { checkout_token: 'quote' }; },
   };
-  const deps = { ...h.deps, commerce, defineProps: () => ({ route: {} }) };
+  const deps = { ...h.deps, commerce, resolveCheckoutAddress, defineProps: () => ({ route: {} }) };
   const code = readFileSync(new URL('../src/components/CommerceShop.vue', import.meta.url), 'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '');
   const page = new Function('deps', `const {${Object.keys(deps)}}=deps;${code};return {products,cart,ready,error,deliveryState,deliveryMessage,quote,load,preview,retryDelivery}`)(deps);

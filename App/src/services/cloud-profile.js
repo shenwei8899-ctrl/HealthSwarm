@@ -14,7 +14,7 @@ export async function readCloudReportStatus(memberId) {
   return observations.data.length?'done':vision.data.drafts.some(d=>d.review_status==='pending_confirmation')?'review':'empty'
 }
 
-export async function loadCloudProfile() {
+export async function loadCloudProfile({openConsultation=true, readConfiguration=true} = {}) {
   let session = getSession()
   if (!session?.token) throw Object.assign(new Error('请先微信登录'), { code: 401 })
   if (pendingInvitation()) throw Object.assign(new Error('请先查看并决定是否接受家庭邀请。'), {code:'INVITATION_PENDING'})
@@ -42,13 +42,17 @@ export async function loadCloudProfile() {
   if (ticket !== sessionRevision()) throw new Error('账号已变化，请重新进入。')
   if (data.source !== 'api' || data.householdId !== session.householdId || !Array.isArray(data.members)) throw new Error('云端档案返回不完整，请重试。')
   let profile = normalizeProfile(data)
+  if (!readConfiguration && !openConsultation) {
+    saveProfile(profile)
+    return profile
+  }
   let config = {}
   try { config = (await request({path:'/api/health/v1/configuration'})).data }
   catch(error) { if ([401,403].includes(Number(error.code))) throw error }
   if (ticket !== sessionRevision()) throw new Error('账号已变化，请重新进入。')
   profile.analysisPolicy = config.consultation?.available === true && config.consultation.processor && config.policy_version
     ? {processor:config.consultation.processor,policy_version:config.policy_version} : null
-  if((profile.completeProfile||profile.onboarded)&&profile.selfMemberId&&profile.analysisPolicy){
+  if(openConsultation&&(profile.completeProfile||profile.onboarded)&&profile.selfMemberId&&profile.analysisPolicy){
     const member=profile.members.find(m=>m.id===profile.selfMemberId)
     if(member){
       const id=newHealthRequestId()
@@ -56,7 +60,7 @@ export async function loadCloudProfile() {
       const {data:opened}=await request({path:'/api/family/'+encodeURIComponent(session.householdId)+'/miniapp-profile',method:'POST',headers:{'Idempotency-Key':id},data:{action:'open_consultation',client_request_id:id,member_id:member.id,expected_version:member.version}})
       if(ticket!==sessionRevision())throw new Error('账号已变化，请重新进入。')
       if(opened.source!=='api'||opened.householdId!==session.householdId||!Array.isArray(opened.members))throw new Error('云端档案返回不完整，请重新读取。')
-      profile=normalizeProfile({...opened,analysisPolicy:profile.analysisPolicy,healthConfiguration:config})
+      profile=normalizeProfile({...opened,analysisPolicy:profile.analysisPolicy})
       }catch(error){
         if(ticket!==sessionRevision()||[401,403,404,410].includes(Number(error.code)))throw error
         profile.consultationError=error.message||'咨询连接暂未完成，请重新读取。'

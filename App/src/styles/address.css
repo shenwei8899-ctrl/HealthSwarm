@@ -1,0 +1,12 @@
+.address-screen{background:#f5f6f8;padding-bottom:calc(env(safe-area-inset-bottom) + 168rpx);color:#25262a}
+.address-screen .nav-spacer{width:80rpx;flex-shrink:0}
+.address-screen .address-bottom{position:fixed;left:0;right:0;bottom:0;z-index:12;display:flex;gap:22rpx;background:#fff;border-top:1rpx solid #eceef1;padding:20rpx 28rpx calc(env(safe-area-inset-bottom) + 24rpx);box-sizing:border-box}
+.address-screen .address-bottom>.primary-button{flex:1;width:100%;font-size:30rpx;font-weight:500;min-height:44px}
+.address-screen .address-state{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22rpx;min-height:280rpx;padding:44rpx 28rpx;color:#747b86;font-size:27rpx;line-height:1.65;text-align:center}
+.address-screen .address-state-title{font-size:32rpx;font-weight:500;color:#25262a}
+.address-screen .address-retry{font-size:27rpx;min-height:44px;padding:12rpx 28rpx;color:#246b50}
+.address-screen .address-note{display:block;font-size:24rpx;line-height:1.65;color:#7e838c;margin:24rpx 4rpx}
+.address-screen button[disabled]{opacity:.45}
+/* #ifdef H5 */
+.address-screen .address-bottom{max-width:480px;margin:0 auto}
+/* #endif */

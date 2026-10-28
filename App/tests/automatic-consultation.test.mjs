@@ -30,6 +30,11 @@ test('incomplete profile keeps onboarding without creating consultation',async()
 test('an unavailable model leaves the saved profile readable without opening consultation',async()=>{
  const c=client({enabled:false});await c.load();assert.equal(c.calls.filter(o=>o.method==='POST').length,0);assert.equal(c.saved.length,1)
 })
+test('entry-only profile read does not wait for model configuration or start consultation',async()=>{
+ const c=client();const result=await c.load({openConsultation:false,readConfiguration:false})
+ assert.equal(result.householdId,'family')
+ assert.deepEqual(c.calls.map(call=>call.path),['/api/family/family/miniapp-profile'])
+})
 test('account switch during automatic opening cannot cache the prior private profile',async()=>{
  const c=client({switchDuringOpen:true});await assert.rejects(c.load(),/账号已变化/);assert.equal(c.saved.length,0)
 })
@@ -42,7 +47,7 @@ test('onboarding and member details no longer ask for manual consultation approv
 })
 
 
-test('complete profile returns directly to chat even when confirmation version is older',async()=>{
+test('complete profile opens chat without requiring meal preparation or another confirmation',async()=>{
  const session={accountId:'self',token:'synthetic',householdId:'family',families:[{id:'family'}]}
  const resolve=createEntryResolver({auth:{restore:async()=>session},session:()=>session,readProfile:async()=>({householdId:'family',completeProfile:true,onboarded:false})})
  assert.equal(await resolve(),'/pages/chat/index')

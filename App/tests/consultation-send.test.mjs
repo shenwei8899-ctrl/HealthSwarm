@@ -2,12 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {ref,computed,reactive,nextTick} from 'vue'
+import {mealQuestionAction} from '../src/services/daily-meal-plan.js'
 
-function setup({linked=true,available=true,entry=true,notice='',error=''}={}){
+function setup({linked=true,available=true,entry=true,notice='',error='',prepared=true,initialized=true,initializationError=''}={}){
   const toasts=[],submits=[]
-  const deps={ref,computed,reactive,nextTick,onShow(){},onHide(){},onMounted(){},onUnmounted(){},defineProps:()=>({route:{}}),
+  const deps={ref,computed,reactive,nextTick,mealQuestionAction,onShow(){},onHide(){},onMounted(){},onUnmounted(){},defineProps:()=>({route:{}}),
     storageContext:()=> 'account:family',getSession:()=>({token:'synthetic',householdId:'family'}),
-    dailyArrangementState:()=>({phase:'error',error:'配餐数据未就绪',busy:false}),
+    dailyArrangementState:()=>({phase:prepared?'ready':'error',error:'配餐数据未就绪',busy:false}),
     createDailyArrangementClient:()=>({reset(){},dispose(){}}),
     scopedStorage:{getStorageSync:()=>null,setStorageSync(){}},localDate:()=> '2026-10-26',
     HEALTH_TEXT_TASKS:{consultation:'咨询'},newHealthRequestId:()=> 'synthetic-request',request(){},
@@ -18,7 +19,9 @@ function setup({linked=true,available=true,entry=true,notice='',error=''}={}){
       async submit(text){submits.push(text);return true},hide(){},
     })}
   const code=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
-  const page=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${code};return {profile,question,task,chatError,sendQuestion,messages}`)(deps)
+  const page=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${code};return {profile,question,task,chatError,sendQuestion,messages,entryReady,entryError}`)(deps)
+  page.entryReady.value=initialized
+  page.entryError.value=initializationError
   page.profile.value={selfMemberId:'self',members:[{id:'self',relation:'爸爸',...(linked?{healthMemberId:'health-self'}:{})}]}
   if(linked)page.task.value={memberId:'health-self',taskType:'consultation',available,notice,error,entry:entry?{thread_id:'thread'}:null}
   return {...page,toasts,submits}
@@ -38,7 +41,7 @@ test('thread creation failure keeps the draft and shows its cause',async()=>{
  assert.equal(p.question.value,'你好');assert.equal(p.submits.length,0)
  assert.equal(p.toasts[0].title,'建立咨询失败，请重试')
 })
-test('available text consultation submits even when daily meals are unavailable',async()=>{
+test('available text consultation submits after consultation initialization',async()=>{
  const p=setup();p.question.value='你好';await p.sendQuestion()
  assert.deepEqual(p.submits,['你好']);assert.equal(p.question.value,'');assert.equal(p.toasts.length,0)
  assert.equal(p.messages.value[0].role,'user')
@@ -50,4 +53,13 @@ test('terminal processing errors do not offer to reread a finished response',()=
  assert.doesNotMatch(template,/v-if="message.error"[^>]*@click="flow.refresh/)
  assert.match(template,/服务器已收到本条问题/)
  assert.match(template,/budget_price_unavailable/)
+})
+
+test('unfinished consultation initialization keeps the question and shows its actual error',async()=>{
+ const p=setup({initialized:false,initializationError:'咨询资料读取失败，请重试。'});p.question.value='你好';await p.sendQuestion()
+ assert.deepEqual(p.submits,[]);assert.equal(p.question.value,'你好');assert.equal(p.chatError.value,'咨询资料读取失败，请重试。')
+})
+test('missing daily preparation does not block initialized ordinary consultation',async()=>{
+ const p=setup({prepared:false});p.question.value='你好';await p.sendQuestion()
+ assert.deepEqual(p.submits,['你好']);assert.equal(p.question.value,'');assert.equal(p.chatError.value,'')
 })

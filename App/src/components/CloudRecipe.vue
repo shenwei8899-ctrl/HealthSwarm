@@ -17,7 +17,7 @@ function load(){
  loading=(async()=>{
  try{
   const r=props.route
-  const {data}=await request({path:'/api/family/'+encodeURIComponent(getSession().householdId)+'/daily-arrangements/'+r.date+'/meals/'+r.meal+'?arrangement_id='+encodeURIComponent(r.arrangement)+'&version='+Number(r.version)})
+  const {data}=await request({path:'/api/family/'+encodeURIComponent(getSession().householdId)+'/daily-arrangements/'+r.date+'/meals/'+r.meal+'?arrangement_id='+encodeURIComponent(r.arrangement)+'&version='+Number(r.version)+(r.daily_plan_version!=null?'&daily_plan_version='+Number(r.daily_plan_version):'')})
   if(!alive||mine!==revision||ticket!==storageContext())return
   if(data.arrangement_id!==r.arrangement||data.version!==Number(r.version)||data.meal?.type!==r.meal)throw new Error('本餐已更新，请返回重新核对。')
   const found=data.meal.dishes.find(item=>item.id===r.dish)

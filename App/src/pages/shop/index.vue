@@ -1,6 +1,10 @@
 <script setup>
+import { openAddressPicker } from '../../services/address-navigation.js'
+import { resolveCheckoutAddress } from '../../services/address-model.js'
+const demoPreferredAddressId=ref('')
 import { isCommerceEnabled } from '../../services/config.js'
 import CommerceAccess from '../../components/CommerceAccess.vue'
+import CommerceShop from '../../components/CommerceShop.vue'
 import CloudMealDetail from '../../components/CloudMealDetail.vue'
 import CloudDailyPurchase from '../../components/CloudDailyPurchase.vue'
 import ConversationPackagePurchase from '../../components/ConversationPackagePurchase.vue'
@@ -32,7 +36,7 @@ import { createCookingGuide,mealFromRoute,mealToRoute,DAILY_MEALS } from '../../
 import { mealProfile,localDate,todayPlan,selectedFor,saveSelection,setMealMembers,changeResult,dailyProcurement,mergeDailyProducts } from '../../utils/meal-state.js'
 const demoAddress=ref(isCommerceEnabled ? null : mockService.selectedAddress())
 const address=computed({get:()=>isCommerceEnabled?mealCommerce.state.address:demoAddress.value,set:value=>{if(isCommerceEnabled)mealCommerce.state.address=value;else demoAddress.value=value}})
-function chooseAddress(){if(isCommerceEnabled&&mealCommerce.state.busy)return;uni.navigateTo({url:'/pages/address/index'})}
+function chooseAddress(){if(isCommerceEnabled&&mealCommerce.state.busy)return;openAddressPicker({selectedId:address.value?.id,onSelected:id=>{if(isCommerceEnabled){mealCommerce.state.preferredAddressId=id;mealCommerce.invalidateQuote()}else demoPreferredAddressId.value=id}})}
 const meal=ref('晚餐'),profile=ref(getProfile()),revision=ref(0),daily=ref(false),included=ref(['早餐','午餐','晚餐']),dinersOpen=ref(false),updateNote=ref('')
 const savedArrangementMeal=ref(null),savedArrangementError=ref('')
 const isDiabetesCase=computed(()=>false),caseId=ref('')
@@ -114,7 +118,7 @@ function refreshSelection(){
  knownProducts=products.value.map(p=>[p.id,p.quantity])
 }
 onLoad(options=>{commerceRoute.value=options;commercePage.value=isCommerceEnabled&&options.commerce==='1'&&!options.meal;if(commercePage.value)return;meal.value=mealFromRoute(options.meal);daily.value=options.daily==='1';bundleId.value=options.bundle||'';sourcePlanId.value=options.source==='exclusive-plan'?(options.plan||'balanced'):'';planStartDate.value=options.start||'';deliveryBatchCount.value=Number(options.batches||0);checkoutRequested=options.checkout==='1'||options.verify==='1';if(isCommerceEnabled)return;refreshSelection();const reorder=options.reorder?getOrder(options.reorder):null;if(reorder){selected.value=products.value.filter(p=>reorder.items.some(i=>i.id===p.id)).map(p=>p.id);saveSelection(meal.value,products.value,selected.value);}checkoutRequested=options.checkout==='1'||options.verify==='1'})
-onShow(async()=>{if(commercePage.value)return;if(isCommerceEnabled){await reloadCommerce();return;}profile.value=getProfile();if(!isMockMode)await refreshPlans();if(disposed)return;address.value=mockService.selectedAddress();revision.value++;refreshSelection();if(orderOpen.value&&!paid.value&&quote&&quote.signature!==checkoutFingerprint(quoteInput())){orderOpen.value=false;updateNote.value='成员、菜品、地址或报价已变化，请重新核对结算。'}if(checkoutRequested&&!menuError.value){checkoutRequested=false;checkout()}})
+onShow(async()=>{if(commercePage.value)return;if(isCommerceEnabled){await reloadCommerce();return;}profile.value=getProfile();if(!isMockMode)await refreshPlans();if(disposed)return;address.value=resolveCheckoutAddress(await mockService.addresses(),demoPreferredAddressId.value||mockService.selectedAddress()?.id);revision.value++;refreshSelection();if(orderOpen.value&&!paid.value&&quote&&quote.signature!==checkoutFingerprint(quoteInput())){orderOpen.value=false;updateNote.value='成员、菜品、地址或报价已变化，请重新核对结算。'}if(checkoutRequested&&!menuError.value){checkoutRequested=false;checkout()}})
 function toggle(id){if(isCommerceEnabled){mealCommerce.toggle(id);return;}if(paying.value)return;const i=selected.value.indexOf(id);i<0?selected.value.push(id):selected.value.splice(i,1);saveSelection(daily.value?'今日采购':meal.value,products.value,selected.value);if(daily.value){for(const p of procurement.value.plans){const ids=selectedFor(p.meal,p.products);const index=ids.indexOf(id);if(selected.value.includes(id)&&index<0)ids.push(id);else if(!selected.value.includes(id)&&index>=0)ids.splice(index,1);saveSelection(p.meal,p.products,ids)}}}
 function toggleMeal(value){if(paying.value)return;const i=included.value.indexOf(value);i<0?included.value.push(value):included.value.splice(i,1);revision.value++;refreshSelection()}
 async function checkout(){
@@ -212,7 +216,7 @@ function editProfile(){uni.navigateTo({url:isMockMode?'/pages/profile/index':'/p
 <ConversationPackagePurchase v-if="!isMockMode && commerceRoute.conversation" :route="commerceRoute"/>
 <CloudDailyPurchase v-else-if="!isMockMode && commerceRoute.arrangement && commerceRoute.daily==='1'" :route="commerceRoute"/>
 <CloudMealDetail v-else-if="!isMockMode && commerceRoute.arrangement && commerceRoute.purchase!=='1'" :route="commerceRoute"/>
-<CommerceAccess v-else :enabled="isCommerceEnabled" @ready="reloadCommerce"><view v-if="commercePage" class="screen"><text>请返回 AI 首页选择餐单或询问食材包。</text><button @click="nutritionist">返回营养师</button></view>
+<CommerceAccess v-else :enabled="isCommerceEnabled" @ready="reloadCommerce"><CommerceShop v-if="commercePage && commerceRoute.cart==='1'" :route="commerceRoute"/><view v-else-if="commercePage" class="screen"><text>请返回 AI 首页选择餐单或询问食材包。</text><button @click="nutritionist">返回营养师</button></view>
 
   <view v-else class="screen shop-screen" :class="{'cloud-meal-screen':!isMockMode}">
     <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">{{ daily ? '今日采购清单' : sourcePlan ? '食材商城' : meal + '安排与购买' }}</text><text class="pill">{{isCommerceEnabled?(plan.isLocalFixture?'本地联调':'商城'):'演示'}}</text></view></AppNavBar>

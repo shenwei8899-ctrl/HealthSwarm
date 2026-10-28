@@ -25,7 +25,7 @@ async function load(){if(loading)return;if(scope===storageContext()&&members.val
  pendingGroup.value=saver.read();
  if(!ui&&mealKeys.includes(props.route.meal))mealType.value=props.route.meal
  if(props.route.commerce==='1'&&props.route.id&&!saver.read()&&!ui){const order=await commerce.cooking(props.route.id);if(mine!==epoch||context!==storageContext())return;dishes.value=order.meal_snapshot.dishes.map(d=>({name:d.recipe_name}));source.value='订单菜谱选菜';notice.value='订单菜谱仅供选菜，请逐人确认实际吃过的菜，未自动记为已吃。'}
- const first=people.value.find(p=>p.selected)||people.value[0];if(first)await photoClient.open(first.memberId)
+ const first=people.value.find(p=>p.selected)||people.value[0];if(first)await photoClient.open(first.memberId,data)
  if(mine!==epoch||context!==storageContext())return;store()
  }catch(e){if(mine===epoch)error.value=e.message}finally{if(mine===epoch){busy.value=false;loading=false}}}
 function hide(){if(opening)return;epoch++;loading=false;store();saver.hide();photoClient.discard();scope='';members.value=[];people.value=[];dishes.value=[];photo.value='';saved.value=null;pendingGroup.value=null;captureScope.value='单人餐盘';mealType.value='dinner';date.value=mealDay(new Date().toISOString());time.value='18:00';oil.value='不确定';source.value='手动填写';origin.value=null;notice.value='';error.value='';busy.value=false;consent.value=false;editing.value=false;portionDraft.value=[];portionError.value=''}

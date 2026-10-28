@@ -5,7 +5,9 @@
   "versionName": "0.1.0",
   "versionCode": "100",
   "transformPx": false,
-  "uniStatistics": { "enable": false },
+  "uniStatistics": {
+    "enable": false
+  },
   "h5": {
     "title": "家庭营养师原型"
   },
@@ -16,7 +18,30 @@
       "es6": true,
       "minified": true
     },
-    "permission": { "scope.camera": { "desc": "用于拍摄照片并在聊天中提问" }, "scope.record": { "desc": "用于按住说话，转成文字向家庭营养师提问" } },
-    "usingComponents": true
+    "permission": {
+      "scope.camera": {
+        "desc": "用于拍摄照片并在聊天中提问"
+      },
+      "scope.record": {
+        "desc": "用于按住说话，转成文字向家庭营养师提问"
+      }
+    },
+    "usingComponents": true,
+    "packOptions": {
+      "ignore": [
+        {
+          "type": "file",
+          "value": "static/food/welcome-family-table-v6.jpg"
+        },
+        {
+          "type": "file",
+          "value": "static/food/family-meal.jpg"
+        },
+        {
+          "type": "file",
+          "value": "static/preview.html"
+        }
+      ]
+    }
   }
 }

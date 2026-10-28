@@ -151,6 +151,10 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
     return flight
   }
   return {
+    adopt(value) {
+      generation++;flight=null;state.date=value.date
+      state.busy=false;state.error='';receive(value,value.date)
+    },
     load,
     async detail(id, type, version) {
       const input = context(), ticket = generation
@@ -159,7 +163,7 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
       if (data.arrangement_id !== id || data.version !== version || data.meal?.type !== type) throw new Error('本餐安排已更新，请重新读取。')
       return data
     },
-    async changeMembers(type, ids) {
+    async changeMembers(type, ids, { dailyPlanVersion } = {}) {
       if (state.busy || !state.arrangement) return
       const input = context(), ticket = generation, before = copy(state.arrangement)
       state.busy = true; state.error = ''
@@ -168,7 +172,8 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
         let pending = storage.getStorageSync(storageKey)
         if (pending && (pending.meal!==type || JSON.stringify([...pending.member_ids].sort())!==JSON.stringify([...ids].sort()))) throw new Error('上次成员调整结果尚未确认，请先重新读取原安排。')
         if (!pending) {
-          pending = { client_request_id: newId(), version: before.version, meal: type, member_ids: ids }
+          pending = { client_request_id: newId(), version: before.version, meal: type, member_ids: ids,
+            ...(Number.isInteger(dailyPlanVersion) ? {daily_plan_version:dailyPlanVersion} : {}) }
           storage.setStorageSync(storageKey, pending)
         }
         await send({ path: root() + '/' + state.date + '/members', method: 'POST', headers: { 'Idempotency-Key': pending.client_request_id }, data: pending })
@@ -194,6 +199,7 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
       } }
       finally { if (current(ticket, input.scope)) state.busy = false;else if(ticket===generation&&input.scope!==context().scope)Object.assign(state,dailyArrangementState()) }
     },
+    pause() { generation++; flight = null; state.busy = false },
     reset() { generation++; flight = null; Object.assign(state, dailyArrangementState()) },
     dispose() { disposed = true; generation++; flight = null },
   }
