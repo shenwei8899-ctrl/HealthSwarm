@@ -594,6 +594,7 @@ async function sendQuestion(promptAction=''){
     scopedStorage.setStorageSync('homepage-chat-task',{memberId:historyMemberId.value||task.value.memberId,taskMemberId:task.value.memberId,type,date:localDate(),newConversation:newConversationWelcome.value,conversationId:conversationId.value,...(type==='reference_meal_preview'?{selection:referenceSelection}:{})});desiredType=type
     stage='scroll-message'
     await scrollLatest()
+    if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration)return
     stage='submit-task'
     const accepted=await flow.submit(text,false,images)
     if(disposed||!visible||mine!==epoch||scope!==storageContext())return

@@ -105,7 +105,7 @@ function workflow(options = {}) {
     }
     return flow
   }
-  const deps = { mealQuestionAction,readDailyMealPlan:async(_family,date)=>({date,status:'absent',version:0,meals:[]}),selectChatPrompts,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick, defineProps: () => ({ route }),
+  const deps = { mealQuestionAction,readDailyMealPlan:async(_family,date)=>({date,status:'absent',version:0,meals:[]}),selectChatPrompts,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
     onMounted: fn => { hooks.mount = fn }, onUnmounted: fn => { hooks.unmount = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn },
     chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, parseChatMealIntent,
     newHealthRequestId: id, storageContext: () => identity.scope, getSession: () => ({ ...identity }), scopedStorage,
@@ -151,6 +151,33 @@ test('unknown submission blocks new questions but allows idle retry of its origi
     p.publish({refreshing:true});assert.equal(p.retryBusy.value,true)
     p.publish({refreshing:false,busy:true});assert.equal(p.retryBusy.value,true)
   }finally{p.dispose()}
+})
+
+for(const returnImmediately of [false,true])test(`leaving during the pre-submit scroll cancels the pending send${returnImmediately?' even after immediately returning':''}`,async()=>{
+  const reached=deferred(),scroll=deferred()
+  let holdScroll=false
+  const p=workflow({nextTick:async()=>{
+    if(holdScroll){holdScroll=false;reached.resolve();await scroll.promise}
+    await nextTick()
+  }})
+  let pending
+  try{
+    await p.load()
+    const threadId=p.conversationThreadId.value,text='合成离页前尚未提交的问题'
+    p.question.value=text;holdScroll=true
+    pending=p.sendQuestion()
+    await reached.promise
+    p.hooks.hide()
+    if(returnImmediately){
+      p.hooks.show();await flush()
+      assert.equal(p.entryReady.value,true)
+      assert.equal(p.chatBusy.value,false,'the returned page has finished checking its retained task')
+    }
+    scroll.resolve();await pending
+    assert.equal(p.calls.filter(call=>call.action==='submit').length,0)
+    assert.equal(p.threads.get(threadId).messages.some(message=>message.text===text),false)
+    assert.equal(p.question.value,text,'an unsubmitted question remains available as a draft')
+  }finally{scroll.resolve();await pending;p.dispose()}
 })
 
 test('ordinary arrangement requests and corrections stay in one continuous consultation without creating meal plans', async () => {
