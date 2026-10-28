@@ -10,6 +10,7 @@ from yuxi.agents.base import BaseAgent
 from yuxi.agents.middlewares import SteerMiddleware, TokenUsageMiddleware
 from yuxi.agents.middlewares.health_budget import HealthAiBudgetMiddleware
 from yuxi.agents.middlewares.health_catalog import HealthCatalogMiddleware
+from yuxi.agents.middlewares.health_catalog_context import HealthCatalogContextMiddleware
 from yuxi.agents.middlewares.health_final_answer import HealthFinalAnswerMiddleware, finalize_health_answer
 from yuxi.agents.toolkits.health import (
     find_food_packages,
@@ -120,6 +121,7 @@ class HealthConsultationAgent(BaseAgent):
             middleware=[
                 SteerMiddleware(),
                 HealthAuthorizationMiddleware(model_info),
+                HealthCatalogContextMiddleware(),
                 HealthCatalogMiddleware(),
                 HealthAiBudgetMiddleware(
                     "consultation" if self.prompt_name == "CONSULTATION_PROMPT" else "indicator_review"
