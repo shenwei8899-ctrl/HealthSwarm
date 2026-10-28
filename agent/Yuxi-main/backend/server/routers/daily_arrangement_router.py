@@ -84,6 +84,7 @@ class DailyMemberInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     client_request_id: UUID
     version: int = Field(gt=0)
+    daily_plan_version: int | None = Field(default=None, ge=0)
     meal: Literal["breakfast", "lunch", "dinner"]
     member_ids: list[UUID] = Field(min_length=1, max_length=20)
 
@@ -94,6 +95,23 @@ class DailyPurchaseInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     arrangement_id: UUID
     version: int = Field(gt=0)
+    daily_plan_version: int | None = Field(default=None, ge=0)
+
+
+class DailyReferencePurchaseInput(BaseModel):
+    """采购引用当前计划版本和已有参考结果。"""
+
+    model_config = ConfigDict(extra="forbid")
+    preview_id: UUID
+    version: int = Field(ge=0)
+    meal_types: list[Literal["breakfast", "lunch", "dinner"]] = Field(min_length=1, max_length=3)
+
+    @model_validator(mode="after")
+    def unique_meal_types(self):
+        """采购餐次只能各出现一次。"""
+        if len(self.meal_types) != len(set(self.meal_types)):
+            raise ValueError("采购餐次不能重复")
+        return self
 
 
 class DailySummaryInput(DailyPurchaseInput):
@@ -192,9 +210,24 @@ async def preparation_resume(fid: UUID, pid: UUID, user=Depends(get_required_use
 
 
 @daily_arrangement.get("/family/{fid}/daily-arrangements/{day}")
-async def daily_get(fid: UUID, day: date, user=Depends(get_required_user)):
+async def daily_get(
+    fid: UUID, day: date, daily_plan_version: int | None = Query(default=None, ge=0), user=Depends(get_required_user)
+):
     """读取当天唯一安排。"""
-    return await read_daily_arrangement(str(user.uid), str(fid), day)
+    result = await read_daily_arrangement(str(user.uid), str(fid), day)
+    if daily_plan_version is not None and result.get("status") == "ready":
+        from yuxi.services.daily_meal_plan_service import require_formal_current
+
+        await require_formal_current(
+            str(user.uid),
+            str(fid),
+            day,
+            result["id"],
+            result["version"],
+            daily_plan_version,
+            ["breakfast", "lunch", "dinner"],
+        )
+    return result
 
 
 @daily_arrangement.post("/family/{fid}/daily-arrangements")
@@ -222,9 +255,16 @@ async def meal_get(
     meal: Literal["breakfast", "lunch", "dinner"],
     arrangement_id: UUID,
     version: int = Query(gt=0),
+    daily_plan_version: int | None = Query(default=None, ge=0),
     user=Depends(get_required_user),
 ):
     """详情严格绑定首页显示的保存ID和版本。"""
+    if daily_plan_version is not None:
+        from yuxi.services.daily_meal_plan_service import require_formal_current
+
+        await require_formal_current(
+            str(user.uid), str(fid), day, str(arrangement_id), version, daily_plan_version, [meal]
+        )
     result = await read_daily_arrangement(str(user.uid), str(fid), day)
     if result.get("status") != "ready" or result["id"] != str(arrangement_id) or result["version"] != version:
         raise HealthVisionError("daily_version_changed", "本餐安排已更新，请返回重新读取", 409)
@@ -256,9 +296,16 @@ async def purchase_read(
     meal: Literal["breakfast", "lunch", "dinner"],
     arrangement_id: UUID,
     version: int = Query(gt=0),
+    daily_plan_version: int | None = Query(default=None, ge=0),
     user=Depends(get_required_user),
 ):
     """查看本餐商品，不要求商城登录也不产生交易写入。"""
+    if daily_plan_version is not None:
+        from yuxi.services.daily_meal_plan_service import require_formal_current
+
+        await require_formal_current(
+            str(user.uid), str(fid), day, str(arrangement_id), version, daily_plan_version, [meal]
+        )
     return await read_daily_purchase(str(user.uid), str(fid), day, meal, str(arrangement_id), version)
 
 
@@ -271,6 +318,12 @@ async def purchase_publish(
     user=Depends(get_required_user),
 ):
     """明确结算后幂等发布采购包，价格库存仍由商城核验。"""
+    if data.daily_plan_version is not None:
+        from yuxi.services.daily_meal_plan_service import require_formal_current
+
+        await require_formal_current(
+            str(user.uid), str(fid), day, str(data.arrangement_id), data.version, data.daily_plan_version, [meal]
+        )
     return await publish_daily_purchase(str(user.uid), str(fid), day, meal, str(data.arrangement_id), data.version)
 
 
@@ -280,16 +333,29 @@ async def summary_read(
     day: date,
     arrangement_id: UUID,
     version: int = Query(gt=0),
+    daily_plan_version: int | None = Query(default=None, ge=0),
     meals: list[Literal["breakfast", "lunch", "dinner"]] = Query(min_length=1, max_length=3),
     user=Depends(get_required_user),
 ):
     """按所选餐次汇总真实食材，查看只读。"""
+    if daily_plan_version is not None:
+        from yuxi.services.daily_meal_plan_service import require_formal_current
+
+        await require_formal_current(
+            str(user.uid), str(fid), day, str(arrangement_id), version, daily_plan_version, meals
+        )
     return await read_daily_summary(str(user.uid), str(fid), day, str(arrangement_id), version, meals)
 
 
 @daily_arrangement.post("/family/{fid}/daily-arrangements/{day}/purchase")
 async def summary_publish(fid: UUID, day: date, data: DailySummaryInput, user=Depends(get_required_user)):
     """明确购买后发布汇总采购包。"""
+    if data.daily_plan_version is not None:
+        from yuxi.services.daily_meal_plan_service import require_formal_current
+
+        await require_formal_current(
+            str(user.uid), str(fid), day, str(data.arrangement_id), data.version, data.daily_plan_version, data.meals
+        )
     return await publish_daily_summary(str(user.uid), str(fid), day, str(data.arrangement_id), data.version, data.meals)
 
 
@@ -329,6 +395,30 @@ async def current_reference_meal_plan(
 
     response.headers["Cache-Control"] = "no-store"
     return await current_reference_plan(user.uid, str(family_id), plan_date)
+
+
+@daily_arrangement.get("/family/{family_id}/daily-meal-plans/{plan_date}")
+async def current_daily_meal_plan(family_id: UUID, plan_date: date, user=Depends(get_required_user)):
+    """聊天和快捷入口读取同一当前计划。"""
+    from yuxi.services.daily_meal_plan_service import read_current_plan
+
+    return await read_current_plan(str(user.uid), str(family_id), plan_date)
+
+
+@daily_arrangement.post("/family/{family_id}/daily-meal-plans/{plan_date}/purchase")
+async def current_daily_reference_purchase(
+    family_id: UUID, plan_date: date, data: DailyReferencePurchaseInput, user=Depends(get_required_user)
+):
+    """把采购证明绑定每日计划版本，后续商品回读继续检查。"""
+    from yuxi.services.reference_meal_plan_service import publish_reference_purchase
+
+    daily = {
+        "family_id": str(family_id),
+        "date": plan_date.isoformat(),
+        "version": data.version,
+        "meal_types": sorted(data.meal_types),
+    }
+    return await publish_reference_purchase(str(user.uid), str(data.preview_id), daily_plan=daily)
 
 
 @daily_arrangement.post("/health/v1/reference-meal-plans/{preview_id}/purchase")

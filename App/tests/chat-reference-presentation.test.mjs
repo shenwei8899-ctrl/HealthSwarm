@@ -42,11 +42,12 @@ test('the five actions remain outside the scrolling conversation and above the c
  assert.doesNotMatch(source,/chat-menu-sheet|more-button/)
 })
 
-test('viewing today and asking a suggestion keep separate welcome events',()=>{
+test('welcome preserves shuffle and the latest today entry alongside bottom shortcuts',()=>{
  const source=readFileSync(new URL('../src/components/ChatWelcome.vue',import.meta.url),'utf8')
- assert.match(source,/\$emit\('today'\)/);assert.match(source,/\$emit\('ask',prompt\)/)
+ assert.match(source,/welcome-today|\$emit\('today'\)/);assert.match(source,/\$emit\('ask',prompt\)/)
  const chat=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
- assert.match(chat,/@ask="askPrompt" @today="shortcut\('today'\)"/)
+ assert.match(chat,/@ask="askPrompt" @shuffle="shufflePrompts"/)
+ assert.match(chat,/inlineTodayOpen.value=!inlineTodayOpen.value/)
  assert.match(chat,/function camera\(\)[\s\S]*?url:'\/pages\/chat\/camera'/)
  assert.match(chat,/key==='camera'\)uni\.navigateTo\(\{url:'\/pages\/scan\/index'/)
 })

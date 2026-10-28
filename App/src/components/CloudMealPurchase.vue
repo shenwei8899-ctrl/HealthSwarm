@@ -40,7 +40,7 @@ function failure(e,scope){
   error.value=e.message;busy.value=false
 }
 const path = () => '/api/family/' + encodeURIComponent(getSession().householdId) + '/daily-arrangements/' + props.route.date + (props.route.meal === 'daily' ? '' : '/meals/' + props.route.meal) + '/purchase'
-const version = () => ({ arrangement_id: props.route.arrangement, version: Number(props.route.version), ...(props.route.meal === 'daily' ? { meals: props.route.meals } : {}) })
+const version = () => ({ arrangement_id: props.route.arrangement, version: Number(props.route.version), ...(props.route.daily_plan_version!=null?{daily_plan_version:Number(props.route.daily_plan_version)}:{}), ...(props.route.meal === 'daily' ? { meals: props.route.meals } : {}) })
 const selectionKey = () => 'meal-purchase-selection:' + props.route.arrangement + ':' + props.route.meal + ':' + (props.route.meals || []).join(',')
 function rememberSelection() { scopedStorage.setStorageSync(selectionKey(), { known: products.value.map(item => item.id), selected: [...picked.value] }) }
 function receipt(data) {
@@ -72,7 +72,7 @@ async function refresh() {
   if (busy.value) return
   const scope = storageContext(); busy.value = true; error.value = ''; page.invalidateQuote()
   try {
-    const { data } = await request({ path: path() + '?arrangement_id=' + encodeURIComponent(props.route.arrangement) + '&version=' + Number(props.route.version) + (props.route.meals || []).map(meal => '&meals=' + meal).join('') })
+    const { data } = await request({ path: path() + '?arrangement_id=' + encodeURIComponent(props.route.arrangement) + '&version=' + Number(props.route.version) + (props.route.daily_plan_version!=null?'&daily_plan_version='+Number(props.route.daily_plan_version):'') + (props.route.meals || []).map(meal => '&meals=' + meal).join('') })
     if (!active(scope)) return
     preview.value = receipt(data)
     if (!initialized) {

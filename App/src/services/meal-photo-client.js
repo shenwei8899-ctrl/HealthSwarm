@@ -69,10 +69,10 @@ export function createMealPhotoClient({ state, send = request, upload = uploadMe
   }
   return {
     discard,
-    open(memberId = '') {
+    open(memberId = '', initialMembers = null) {
       discard()
       return run(async current => {
-        const [members, config] = await Promise.all([send({ path: root + '/members' }), send({ path: root + '/configuration' })])
+        const [members, config] = await Promise.all([initialMembers ? Promise.resolve({data:initialMembers}) : send({ path: root + '/members' }), send({ path: root + '/configuration' })])
         if (!current()) return
         state.members = members.data.filter(row => row.scopes?.includes('diet_edit')); state.config = config.data
         state.memberId = state.members.find(row => row.id === memberId)?.id || state.members[0]?.id || ''

@@ -10,12 +10,12 @@ export function referenceSelection(profile, text, { today, tomorrow, memberId, p
   }
   const family = /全家|一家|家人|家庭|我们/.test(text)
   const self = /为我|给我|帮我|本人|自己|一个人|一人|只(?:有|给)?我/.test(text)
-  const ids = family ? profile.members.map(m => m.id) : previous && !self ? previous.participant_ids : [selected?.id]
+  const defaults=Array.isArray(profile.defaultDiners)?profile.defaultDiners:[]
+  const ids = family ? profile.members.map(m => m.id) : previous && !self ? previous.participant_ids : memberId || self ? [selected?.id] : defaults.length ? defaults : [selected?.id]
   if (!ids.length || ids.some(id => !id)) throw new Error('请先选择可访问的就餐成员。')
   const chosen = [['breakfast',/早餐|早饭|早上|今早|明早/],['lunch',/午餐|午饭|中午/],['dinner',/晚餐|晚饭|晚上|今晚|明晚/]].filter(([,pattern])=>pattern.test(text)).map(([meal])=>meal)
   const meals = /三餐|全天|一天/.test(text) ? ['breakfast','lunch','dinner']
-    : previous && chosen.every(meal => previous.meal_types.includes(meal)) ? previous.meal_types
-    : chosen.length ? chosen : ['breakfast','lunch','dinner']
+    : chosen.length ? chosen : previous?.meal_types || ['breakfast','lunch','dinner']
   const date = /明天|明日|明早|明晚/.test(text) ? tomorrow : /今天|今日|今早|今晚/.test(text) ? today : previous?.plan_date || today
   return {mode:'reference',family_id:profile.householdId,plan_date:date,
     participant_ids:[...new Set(ids)].sort(),meal_types:meals}

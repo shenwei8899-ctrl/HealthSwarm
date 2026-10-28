@@ -4,7 +4,7 @@ import { wechatAuth } from './wechat-auth.js'
 import { loadCloudProfile } from './cloud-profile.js'
 import { getSession } from './session.js'
 import { pendingInvitation, invitationRoute } from './family-invitations.js'
-const resolve = createEntryResolver({ auth: wechatAuth, readProfile: () => loadCloudProfile({openConsultation:false}), pendingPreparation: () => !!scopedStorage.getStorageSync('onboarding-preparation-pending'),
+const resolve = createEntryResolver({ auth: wechatAuth, readProfile: () => loadCloudProfile({openConsultation:false,readConfiguration:false}), pendingPreparation: () => !!scopedStorage.getStorageSync('onboarding-preparation-pending'),
   session: getSession, invitation: pendingInvitation, invitationRoute })
 export const resolveAppEntry = createEntryCoordinator({ resolve, session: getSession,
   invitation: pendingInvitation,
@@ -14,3 +14,11 @@ export const resolveAppEntry = createEntryCoordinator({ resolve, session: getSes
     return profile ? [profile.source, profile.householdId, profile.completeProfile === true, profile.onboarded === true] : null
   },
 })
+
+export function rememberChatEntry(profile) {
+  const session=getSession()
+  if (!session?.token || !session.householdId || session.householdId!==profile?.householdId ||
+      !(profile.completeProfile || profile.onboarded) || pendingInvitation() ||
+      scopedStorage.getStorageSync('onboarding-preparation-pending')) return
+  resolveAppEntry.remember('/pages/chat/index')
+}

@@ -30,6 +30,11 @@ test('incomplete profile keeps onboarding without creating consultation',async()
 test('an unavailable model leaves the saved profile readable without opening consultation',async()=>{
  const c=client({enabled:false});await c.load();assert.equal(c.calls.filter(o=>o.method==='POST').length,0);assert.equal(c.saved.length,1)
 })
+test('entry-only profile read does not wait for model configuration or start consultation',async()=>{
+ const c=client();const result=await c.load({openConsultation:false,readConfiguration:false})
+ assert.equal(result.householdId,'family')
+ assert.deepEqual(c.calls.map(call=>call.path),['/api/family/family/miniapp-profile'])
+})
 test('account switch during automatic opening cannot cache the prior private profile',async()=>{
  const c=client({switchDuringOpen:true});await assert.rejects(c.load(),/账号已变化/);assert.equal(c.saved.length,0)
 })

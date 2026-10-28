@@ -2,6 +2,23 @@ import { request } from './request.js'
 import { sessionRevision } from './session.js'
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i
+// The history API's legacy timestamps are UTC even when the zone is omitted.
+export function chatTimestamp(value) {
+  if (typeof value !== 'string') return ''
+  const match = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})?$/i.exec(value)
+  if (!match) return ''
+  const [year, month, day] = match[1].split('-').map(Number)
+  if (month < 1 || month > 12 || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()) return ''
+  const [hour, minute, second] = match[2].split(':').map(Number)
+  if (hour > 23 || minute > 59 || second > 59) return ''
+  const stamp = `${match[1]}T${match[2]}.${(match[3] || '').padEnd(3, '0').slice(0, 3)}${match[4] || 'Z'}`
+  const milliseconds = Date.parse(stamp)
+  return Number.isFinite(milliseconds) ? new Date(milliseconds).toISOString() : ''
+}
+export function chatBusinessDate(value) {
+  const stamp = chatTimestamp(value)
+  return stamp ? new Date(Date.parse(stamp) + 8 * 3600000).toISOString().slice(0, 10) : ''
+}
 const conversationUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const conversationPageSize = 20
 const sameId = (left, right) => typeof left === 'string' && typeof right === 'string' && left.toLowerCase() === right.toLowerCase()
@@ -67,7 +84,8 @@ export function chatMessages(value) {
     }
     const purchaseRequestId = role === 'assistant' && /\[食材包:[A-Za-z0-9_-]{100,4096}\]/.test(text) ? item.request_id || item.extra_metadata?.request_id || '' : ''
     if (role === 'assistant') text = text.replace(/\[食材包:[A-Za-z0-9_-]{100,4096}\]/g, '').trim()
-    return [{ id: String(item.id), role, text, business, purchaseRequestId, createdAt: item.created_at,
+    return [{ id: String(item.id), role, text, business, purchaseRequestId,
+      ...(business?.data?.scope==='daily_reference'?{planDate:business.data.plan_date}:{}), createdAt: chatTimestamp(item.created_at),
       requestId: item.request_id || item.extra_metadata?.request_id || '', status: item.delivery_status || 'saved',
       ...(images.length ? { image: { localPath: images[0] } } : {}) }]
   })

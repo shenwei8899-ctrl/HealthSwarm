@@ -1,3 +1,6 @@
+import {mealQuestionAction,readDailyMealPlan} from '../src/services/daily-meal-plan.js'
+import {selectChatPrompts,CHAT_PROMPT_POOL} from '../src/services/chat-prompts.js'
+import {chatTimestamp,chatBusinessDate} from '../src/services/cloud-chat.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -21,11 +24,11 @@ function workflow(options = {}) {
   const clock = { day: '2026-10-28' }, route = options.route || {}
   let serial = 100, flow, snapshotOverride = null
   const id = () => uuid(++serial)
-  const profile = () => ({ onboarded: true, completeProfile: true, source: 'api', householdId: identity.householdId,
+  const profile = () => { const value=({ onboarded: true, completeProfile: true, source: 'api', householdId: identity.householdId,
     selfMemberId: 'self', defaultDiners: ['self', 'father'], healthConfiguration: { consultation: { available: true }, meal_plan: { available: true } },
     members: [{ id: 'self', relation: '本人', name: '合成本人', healthMemberId: member, allergyStatus: 'set', allergies: ['花生'], doctorStatus: 'none' },
       { id: 'father', relation: '父亲', name: '合成家人', healthMemberId: relative, restrictionStatus: 'set', restrictions: ['少辣'] }],
-  })
+  });if(options.relativeFirst)value.members.reverse();if(options.diners)value.defaultDiners=options.diners;return value }
   const addThread = (threadId, config = {}) => {
     const row = { threadId, memberId: member, taskType: 'consultation', agent: 'health-consultation', businessDate: null,
       messages: [], runs: [], owner: identity.scope, ...config }
@@ -86,20 +89,29 @@ function workflow(options = {}) {
         return true
       },
       async restoreRequest(requestId) { calls.push({ action: 'restoreRequest', requestId }) },
+      async restoreReferenceRequest(threadId,requestId) {
+        const row=threads.get(threadId)
+        assert.ok(row&&row.owner===identity.scope&&row.memberId===state.memberId)
+        selected=threadId;bindings.set(bindingKey(),threadId)
+        publish({entry:entryFor(row),requestId,status:'needs_input',result:{type:'needs_input',questions:['合成待补充问题']}})
+        return true
+      },
       async acceptConsent() { calls.push({ action: 'consent' }) },
+      pause() { generation++ },
+      async resume() { return true },
       async refresh() { calls.push({ action: 'refresh' }) },
       invalidateThread() { publish({ invalidated: true, available: false, entry: null }) },
       publish,
     }
     return flow
   }
-  const deps = { computed, reactive, ref, nextTick, defineProps: () => ({ route }),
+  const deps = { mealQuestionAction,readDailyMealPlan:async(_family,date)=>({date,status:'absent',version:0,meals:[]}),selectChatPrompts,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick, defineProps: () => ({ route }),
     onMounted: fn => { hooks.mount = fn }, onUnmounted: fn => { hooks.unmount = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn },
     chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, parseChatMealIntent,
     newHealthRequestId: id, storageContext: () => identity.scope, getSession: () => ({ ...identity }), scopedStorage,
     loadCloudProfile: async () => profile(), localDate: value => value ? nextDay(clock.day) : clock.day,
     dailyArrangementState: () => ({ phase: 'idle', busy: false, date: clock.day, arrangement: null }),
-    createDailyArrangementClient: ({ state }) => ({ reset() { state.phase = 'idle'; state.busy = false; state.arrangement = null }, dispose() {},
+    createDailyArrangementClient: ({ state }) => ({ pause() {},reset() { state.phase = 'idle'; state.busy = false; state.arrangement = null }, dispose() {},
       adopt(value) { state.phase = 'ready'; state.arrangement = value; state.date = value.date },
       async load(date) { calls.push({ action: 'loadPlan', date }); return null },
       async start(value) { calls.push({ action: 'startPlan', value }); throw new Error('normal chat must not create a saved plan') },
@@ -121,7 +133,7 @@ function workflow(options = {}) {
   }
   const code = readFileSync(new URL('../src/components/CloudNutritionChat.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
+  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
   const historyRow = threadId => { const row = threads.get(threadId); return { thread_id: threadId, member_id: row.memberId, agent_slug: row.agent, business_date: row.businessDate } }
   return { ...page, calls, writes, identity, clock, hooks, scopedStorage, threads, addThread, historyRow,
     publish: value => flow.publish(value), setSnapshot: value => { snapshotOverride = value },
@@ -167,7 +179,7 @@ test('explicit structured planning preserves chosen family members, tomorrow lun
     await p.sendQuestion('reference_meal_preview')
     const selected = p.calls.filter(call => call.action === 'open' && call.taskType === 'reference_meal_preview')
     assert.ok(selected.length >= 1)
-    for (const call of selected) assert.deepEqual(call.selection, { mode: 'reference', family_id: 'family-a', plan_date: '2026-10-29', participant_ids: ['father', 'self'], meal_types: ['lunch'] })
+    for (const call of selected) assert.deepEqual(call.selection, { mode: 'reference', family_id: 'family-a', plan_date: '2026-10-29', participant_ids: ['father', 'self'], meal_types: ['lunch'],daily_base_version:0 })
     const submitted = p.calls.filter(call => call.action === 'submit')
     assert.equal(submitted.length, 1); assert.equal(submitted[0].taskType, 'reference_meal_preview'); assert.equal(submitted[0].text, question)
     assert.equal(p.profile.value.members[0].allergies[0], '花生')
@@ -178,7 +190,7 @@ for (const followUp of ['请帮我安排今天三餐', '可以，直接安排三
   test(`reference needs_input续聊保留线程和选择：${followUp}`, async () => {
     const p = workflow()
     try {
-      await p.load(); p.question.value = '整理今天三餐'; await p.sendQuestion('reference_meal_preview')
+      await p.load(); p.question.value = '整理本人今天三餐'; await p.sendQuestion('reference_meal_preview')
       const original = p.calls.filter(call => call.action === 'submit').at(-1)
       p.publish({ status: 'completed', result: { type: 'needs_input', questions: ['请补充就餐资料'] } })
       p.question.value = followUp; await p.sendQuestion()
@@ -374,6 +386,41 @@ test('the first structured plan in a new conversation retains a consultation anc
   } finally { p.dispose() }
 })
 
+test('a relative meal task preserves its self-owned conversation and both actors histories',async()=>{
+  const p=workflow({relativeFirst:true,diners:['father']})
+  try{
+    await p.load();await p.newConversation()
+    p.question.value='本人的咨询';await p.sendQuestion()
+    const anchor=p.conversationThreadId.value,group=p.conversationId.value
+    p.question.value='安排今天午餐';await p.sendQuestion('reference_meal_preview')
+    assert.equal(p.calls.filter(call=>call.action==='submit').at(-1).memberId,relative)
+    assert.equal(p.scopedStorage.getStorageSync('conversation-index:'+anchor).memberId,member)
+    assert.equal(p.scopedStorage.getStorageSync('homepage-chat-task').memberId,member)
+    assert.equal(p.scopedStorage.getStorageSync('homepage-chat-task').taskMemberId,relative)
+    await p.selectConversation(p.historyRow(p.identity.dailyThread));await p.selectConversation(p.historyRow(anchor))
+    assert.equal(p.conversationId.value,group)
+    assert.equal(p.messages.value.find(message=>message.text==='本人的咨询').memberId,member)
+    assert.equal(p.messages.value.find(message=>message.text==='安排今天午餐').memberId,relative)
+  }finally{p.dispose()}
+})
+
+test('a relative needs-input meal question reenters within its original conversation and task',async()=>{
+  const p=workflow({relativeFirst:true,diners:['father']})
+  try{
+    await p.load();await p.newConversation();p.question.value='先保留本人的咨询';await p.sendQuestion()
+    const group=p.conversationId.value,reference=uuid(900),request=uuid(901)
+    p.addThread(reference,{memberId:relative,taskType:'reference_meal_preview',agent:'health-meal-planner'})
+    p.dailyPlans.value[p.clock.day]={date:p.clock.day,status:'absent',version:0,meals:[],pending:{status:'needs_input',member_id:relative,thread_id:reference,request_id:request,questions:['合成待补充问题'],selection:{mode:'reference',family_id:'family-a',plan_date:p.clock.day,participant_ids:['father'],meal_types:['lunch'],daily_base_version:0}}}
+    await p.resumePlanQuestion()
+    assert.equal(p.scopedStorage.getStorageSync('homepage-chat-task').conversationId,group)
+    await p.load()
+    assert.equal(p.conversationId.value,group);assert.equal(p.task.value.taskType,'reference_meal_preview')
+    assert.equal(p.task.value.entry.thread_id,reference)
+    assert.ok(p.messages.value.some(message=>message.text==='先保留本人的咨询'))
+    assert.equal(p.calls.filter(call=>call.action==='submit').length,1)
+  }finally{p.dispose()}
+})
+
 test('a late history read from the previous account cannot overwrite the new account view, draft or summary cache', async () => {
   const p = workflow(), second = uuid(2), accountB = uuid(9), delayed = deferred()
   p.addThread(second)
@@ -407,4 +454,16 @@ test('a thread invalidated while its history is loading cannot restore the late 
     assert.deepEqual(p.messages.value, [])
     assert.equal(p.writes.some(write => JSON.stringify(write.value).includes('不得重新显示的失效正文')), false)
   } finally { p.dispose() }
+})
+
+
+test('ordinary meal suggestion cards send conversational questions without saving a plan',async()=>{
+  const p=workflow()
+  try{
+    await p.load()
+    for(const prompt of CHAT_PROMPT_POOL.slice(0,6))await p.askPrompt(prompt)
+    assert.equal(p.calls.filter(call=>call.action==='submit').length,6)
+    assert.equal(p.calls.some(call=>call.action==='open'&&call.taskType==='reference_meal_preview'),false)
+    assert.equal(p.calls.some(call=>call.action==='startPlan'),false)
+  }finally{p.dispose()}
 })

@@ -107,6 +107,7 @@ async def test_missing_professional_sources_keep_ordinary_available_and_selectio
         "diet_analysis",
     }
     assert {task_type for task_type, task in tasks.items() if task.status == "needs_input"} == {
+        "reference_meal_preview",
         "initial_meal_preview",
         "multi_day_plan",
         "family_meal_revision",
@@ -119,13 +120,17 @@ async def test_missing_professional_sources_keep_ordinary_available_and_selectio
         "glucose_plan",
         "automatic_family_coordination",
     }
-    assert len(tasks) == 14
+    assert len(tasks) == 15
     assert {task_type: (task.purpose, task.required_inputs) for task_type, task in tasks.items()} == {
         "consultation": ("consultation", []),
         "blood_glucose_review": ("consultation", []),
         "blood_lipids_review": ("consultation", []),
         "blood_pressure_review": ("consultation", []),
         "meal_preview": ("meal_plan", []),
+        "reference_meal_preview": (
+            "meal_plan",
+            ["selection.family_id", "selection.plan_date", "selection.participant_ids"],
+        ),
         "diet_analysis": ("diet_analysis", ["interaction.confirmed_meal_or_period"]),
         "initial_meal_preview": (
             "meal_plan",
@@ -265,7 +270,13 @@ async def test_configuration_reason_is_stable_and_purpose_specific(capability_so
     result = await service_module.member_capabilities(sources.uid, sources.member_id)
     tasks = {task.task_type: task for task in result.tasks}
     assert tasks["consultation"].status == tasks["diet_analysis"].status == "available"
-    for task_type in ("meal_preview", "initial_meal_preview", "multi_day_plan", "family_meal_revision", "safe_meal_revision"):
+    for task_type in (
+        "meal_preview",
+        "initial_meal_preview",
+        "multi_day_plan",
+        "family_meal_revision",
+        "safe_meal_revision",
+    ):
         assert (tasks[task_type].status, tasks[task_type].reason_code, tasks[task_type].configuration_reason_code) == (
             "unavailable",
             "configuration_unavailable",

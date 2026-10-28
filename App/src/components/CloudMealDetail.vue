@@ -32,7 +32,7 @@ function load(){
   loading=(async()=>{
   try{
     const r=props.route
-    const {data}=await request({path:'/api/family/'+encodeURIComponent(getSession().householdId)+'/daily-arrangements/'+r.date+'/meals/'+r.meal+'?arrangement_id='+encodeURIComponent(r.arrangement)+'&version='+Number(r.version)})
+    const {data}=await request({path:'/api/family/'+encodeURIComponent(getSession().householdId)+'/daily-arrangements/'+r.date+'/meals/'+r.meal+'?arrangement_id='+encodeURIComponent(r.arrangement)+'&version='+Number(r.version)+(r.daily_plan_version!=null?'&daily_plan_version='+Number(r.daily_plan_version):'')})
     if(!alive||mine!==revision)return
     if(ticket!==storageContext()){failure({code:'SESSION_CHANGED',message:'账号或家庭已变化，请重新读取。'},mine,ticket);return}
     if(data.arrangement_id!==r.arrangement||data.version!==Number(r.version)||data.meal?.type!==r.meal)throw new Error('本餐已更新，请返回今日安排重新读取。')
@@ -55,7 +55,7 @@ async function confirm(ids){
     if(!alive||mine!==revision)return
     if(ticket!==storageContext()){failure({code:'SESSION_CHANGED',message:'账号或家庭已变化，请重新读取。'},mine,ticket);return}
     if(!state.arrangement||state.arrangement.id!==props.route.arrangement||state.arrangement.version!==Number(props.route.version)){meal.value=null;profile.value=null;throw new Error(state.error||'本餐已更新，请返回今日安排核对。')}
-    await client.changeMembers(props.route.meal,ids)
+    await client.changeMembers(props.route.meal,ids,{dailyPlanVersion:props.route.daily_plan_version!=null?Number(props.route.daily_plan_version):undefined})
     if(!alive||mine!==revision)return
     if(ticket!==storageContext()){failure({code:'SESSION_CHANGED',message:'账号或家庭已变化，请重新读取。'},mine,ticket);return}
     if(state.error){if(!state.arrangement||state.arrangement.version!==Number(props.route.version)){meal.value=null;profile.value=null};throw new Error(state.error)}
@@ -63,7 +63,7 @@ async function confirm(ids){
   }catch(e){failure(e,mine,ticket)}
   finally{if(alive&&mine===revision)busy.value=false}
 }
-function recipe(dish){const r=props.route;uni.navigateTo({url:'/pages/recipe/index?arrangement='+encodeURIComponent(r.arrangement)+'&meal='+r.meal+'&date='+r.date+'&version='+r.version+'&dish='+encodeURIComponent(dish.id)})}
+function recipe(dish){const r=props.route;uni.navigateTo({url:'/pages/recipe/index?arrangement='+encodeURIComponent(r.arrangement)+'&meal='+r.meal+'&date='+r.date+'&version='+r.version+'&dish='+encodeURIComponent(dish.id)+(r.daily_plan_version!=null?'&daily_plan_version='+Number(r.daily_plan_version):'')})}
 onMounted(load)
 onShow(()=>{if(scope!==storageContext()){scope=storageContext();revision++;loading=null;meal.value=null;profile.value=null;busy.value=false;client.reset()};void load()})
 onHide(()=>{revision++;loading=null;meal.value=null;profile.value=null;diners.value=false;busy.value=false;client.reset()})

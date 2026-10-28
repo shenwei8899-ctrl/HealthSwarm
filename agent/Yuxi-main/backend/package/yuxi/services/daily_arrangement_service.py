@@ -76,6 +76,7 @@ async def start_daily_arrangement(uid, fid, data):
     """首开按每日唯一约束创建；超时重放不重新创建Agent任务。"""
     from yuxi.services.daily_arrangement_tasks import queue_daily_in_session
     from yuxi.services.task_service import tasker
+    from yuxi.services.daily_meal_plan_service import current_row
 
     async with pg_manager.get_async_session_context() as db:
         family, row = await DailyArrangementRepository(db, uid, fid).context(data.date, lock=True)
@@ -94,7 +95,12 @@ async def start_daily_arrangement(uid, fid, data):
         else:
             row.version += 1
         row.status, row.request_id = "generating", str(data.client_request_id)
-        row.selection = {"initial": selection.model_dump(mode="json"), "attempt": 0}
+        current_plan = await current_row(db, uid, fid, data.date)
+        row.selection = {
+            "initial": selection.model_dump(mode="json"),
+            "attempt": 0,
+            "daily_base_version": current_plan.version if current_plan else 0,
+        }
         row.sources, row.snapshot = sources, {}
         await db.flush()
         task = await queue_daily_in_session(db, row)
@@ -377,6 +383,11 @@ async def resume_daily_arrangement(uid, fid, day):
         await authorize_daily_agent_result(db, uid, row.selection)
         row.snapshot, row.status, row.updated_at = snapshot, "ready", utc_now_naive()
         await authorize_sources(db, uid, row)
+        from yuxi.services.daily_meal_plan_service import publish_formal_in_session
+
+        await publish_formal_in_session(
+            db, uid, fid, day, row, row.selection.get("daily_base_version"), initial.get("change_meal")
+        )
     return await read_daily_arrangement(uid, fid, day)
 
 
@@ -384,8 +395,9 @@ async def change_daily_members(uid, fid, day, data):
     """同键单餐调整绑定原保存版本；没有任何订单或履约写入。"""
     from yuxi.services.daily_arrangement_tasks import queue_daily_in_session
     from yuxi.services.task_service import tasker
+    from yuxi.services.daily_meal_plan_service import current_row
 
-    digest = input_fingerprint(data.model_dump(mode="json"))
+    digest = input_fingerprint(data.model_dump(mode="json", exclude_none=True))
     async with pg_manager.get_async_session_context() as db:
         family, row = await DailyArrangementRepository(db, uid, fid).context(day, lock=True)
         if row is None:
@@ -397,6 +409,12 @@ async def change_daily_members(uid, fid, day, data):
             return {"status": row.status, "date": day.isoformat(), "id": row.id}
         if row.status != "ready" or row.version != data.version:
             raise HealthVisionError("daily_version_changed", "已有安排正在更新，请重新读取", 409)
+        if getattr(data, "daily_plan_version", None) is not None:
+            from yuxi.services.daily_meal_plan_service import require_formal_current_in_session
+
+            await require_formal_current_in_session(
+                db, uid, fid, day, row.id, data.version, data.daily_plan_version, [data.meal]
+            )
         participation = {meal["type"]: [person["id"] for person in meal["members"]] for meal in row.snapshot["meals"]}
         ids = [str(mid) for mid in data.member_ids]
         if len(set(ids)) != len(ids):
@@ -410,8 +428,10 @@ async def change_daily_members(uid, fid, day, data):
             row.snapshot["plan_version"],
             data.meal,
         )
+        current_plan = await current_row(db, uid, fid, day)
         row.selection = {
             "initial": selected.model_dump(mode="json"),
+            "daily_base_version": current_plan.version if current_plan else 0,
             "attempt": 0,
             "purchase_payloads": {
                 key: payload
@@ -749,6 +769,15 @@ async def validate_daily_commerce_source(source):
     meal_types = sorted(item["meal"] for item in source.get("meals", [source]))
     scope = "daily:" + ",".join(meal_types) if "meals" in source else meal_types[0]
     async with pg_manager.get_async_session_context() as db:
+        from yuxi.services.daily_meal_plan_service import current_row
+
+        current_plan = await current_row(db, source["uid"], source["family_id"], date.fromisoformat(source["date"]))
+        if current_plan and any(
+            current_plan.meal_sources.get(meal, {}).get("kind") != "formal"
+            or current_plan.meal_sources.get(meal, {}).get("id") != source["arrangement_id"]
+            for meal in meal_types
+        ):
+            raise HealthVisionError("source_invalidated", "今日饮食计划已更换餐次，请重新核对采购", 410)
         _, row = await DailyArrangementRepository(db, source["uid"], source["family_id"]).context(
             date.fromisoformat(source["date"])
         )

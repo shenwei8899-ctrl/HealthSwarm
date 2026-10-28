@@ -57,19 +57,33 @@ function forward(method, options) {
     previous.done.then(result=>{options[result.failed?'fail':'success']?.(result.value);options.complete?.(result.value)})
     return previous.done
   }
+  if (previous && previous.scope!==scope) previous.cancel()
+  else if (previous) {
+    const result={errMsg:method+':fail 正在打开页面',code:'NAVIGATION_IN_PROGRESS'}
+    options.fail?.(result);options.complete?.(result)
+    return Promise.resolve({failed:true,value:result})
+  }
   let settle
   const flight={scope,method,url:options.url,done:new Promise(resolve=>{settle=resolve})}
   navigationFlight=flight
+  const feedbackPaths=['/pages/exclusive-plans/index','/pages/profile/index','/pages/scan/index','/pages/chat/history','/pages/my/index']
+  let showing=false
+  const timer=method==='navigateTo' && feedbackPaths.includes(options.url?.split('?')[0])
+    ? setTimeout(()=>{showing=true;uni.showLoading?.({title:'正在打开',mask:true})},400) : null
   function finish(failed,value) {
     if(flight.finished)return
     flight.finished=true
+    if(timer)clearTimeout(timer)
+    if(showing)uni.hideLoading?.()
     if(navigationFlight===flight)navigationFlight=null
     settle({failed,value})
     options[failed?'fail':'success']?.(value);options.complete?.(value)
+    if(failed && method==='navigateTo' && !options.fail && value.code!=='SESSION_CHANGED')
+      uni.showToast?.({title:value.errMsg?.replace(/^\w+:fail\s*/, '')||'页面打开失败，请重试',icon:'none'})
   }
+  flight.cancel=()=>finish(true,{errMsg:method+':fail 账号已变化',code:'SESSION_CHANGED'})
   void (async()=>{
     try {
-      if(previous)await previous.done
       if(!current()) {finish(true,{errMsg:method+':fail 账号已变化',code:'SESSION_CHANGED'});return}
       let url=options.url
       if(!isMockMode && url.split('?')[0]!=='/pages/index/index') url=protectedDestination(url,await resolveAppEntry())

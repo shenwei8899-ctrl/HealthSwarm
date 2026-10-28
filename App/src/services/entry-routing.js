@@ -57,7 +57,7 @@ export function createEntryCoordinator({ resolve, session, invitation = () => ''
       (account?.families || []).map(family => [family.id, family.onboardingRequired]),
       invitation(), pendingPreparation(), profileState()])
   }
-  return function resolveEntry({ fresh = false } = {}) {
+  function resolveEntry({ fresh = false } = {}) {
     const key = context(), account = session(), time = now()
     const owner = JSON.stringify([account?.accountId, account?.token, account?.householdId, account?.authSource, account?.clientRevision])
     const expired = Number.isFinite(account?.expiresAt) && account.expiresAt * 1000 <= time
@@ -81,4 +81,10 @@ export function createEntryCoordinator({ resolve, session, invitation = () => ''
     pending = flight
     return flight.promise
   }
+  resolveEntry.remember = route => {
+    const account=session(), time=now()
+    if (pending || !account?.token || Number.isFinite(account.expiresAt) && account.expiresAt*1000<=time) return
+    verified={key:context(),route,at:time}
+  }
+  return resolveEntry
 }

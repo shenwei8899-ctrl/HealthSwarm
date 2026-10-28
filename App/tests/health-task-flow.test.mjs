@@ -57,6 +57,20 @@ test('indicator task uses separate entry and run IDs, and displays only the auth
   h.flow.hide(); assert.equal(h.flow.getState().result, null)
 })
 
+test('a reference followup can restore the original authorized thread and question',async()=>{
+ const referenceType='reference_meal_preview'
+ const h=fixture({send:async options=>{
+  if(options.path==='/api/health/v1/members')return {data:[{id:memberId,is_owner:true}]}
+  if(options.path.endsWith('/readiness'))return {data:{capabilities:{member_id:memberId},entries:[{entry_type:referenceType,status:'available'}]}}
+  if(options.path.endsWith('/tasks/'+requestId))return {data:{request_id:requestId,member_id:memberId,task_type:referenceType,thread_id:threadId,agent_slug:'health-meal-planner',request_status:'dispatched',execution_status:'completed',result:{result_type:'needs_input',questions:['早餐需要避开什么食材？']}}}
+  throw new Error('unexpected '+options.path)
+ }})
+ await h.flow.open(memberId,referenceType,{mode:'reference'})
+ assert.equal(await h.flow.restoreReferenceRequest(threadId,requestId),true)
+ assert.equal(h.flow.getState().entry.thread_id,threadId)
+ assert.deepEqual(h.flow.getState().result.questions,['早餐需要避开什么食材？'])
+})
+
 function fixtureBase(options) {
   if (options.path === '/api/health/v1/members') return { data: [{ id: memberId, is_owner: true }] }
   if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [{ entry_type: taskType, status: 'available' }] } }
@@ -65,6 +79,22 @@ function fixtureBase(options) {
   if (options.path === '/api/agent/runs') return { data: { request_id: requestId, thread_id: threadId } }
   throw new Error('unexpected request ' + options.path)
 }
+
+test('pausing an uncertain submit retains its request key and late responses cannot overwrite it',async()=>{
+ let completePost
+ const h=fixture({send:async options=>{
+   if(options.path==='/api/agent/runs')return new Promise(resolve=>{completePost=resolve})
+   if(options.path.endsWith('/tasks/'+requestId))throw Object.assign(new Error('not found'),{code:404})
+   return fixtureBase(options)
+ }})
+ await h.flow.open(memberId,taskType);await h.flow.createEntry()
+ const pending=h.flow.submit('合成问题');h.flow.pause()
+ assert.equal(h.flow.getState().requestId,requestId);assert.equal(h.flow.getState().submitUnknown,true);assert.equal(h.flow.getState().canRetry,true)
+ completePost({data:{request_id:requestId,thread_id:threadId}});await pending
+ assert.equal(h.flow.getState().submitUnknown,true)
+ assert.equal(await h.flow.resume(),true);assert.equal(h.flow.getState().requestId,requestId);assert.equal(h.flow.getState().canRetry,true)
+ assert.equal(h.calls.filter(c=>c.path==='/api/agent/runs').length,1)
+})
 
 test('selected indicator scope is sent unchanged and kept apart from default threads', async () => {
   const selection = { start_date: '2026-10-01', end_date: '2026-10-16', records: [{ record_id: requestId, version: 2 }] }

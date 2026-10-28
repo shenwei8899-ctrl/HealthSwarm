@@ -16,7 +16,13 @@ from sqlalchemy import delete, select, update
 
 from test.integration.services.test_health_nutrition_foundation_http import source_document
 from test.integration.services.test_health_quality_http import setup_quality
-from test.integration.services.test_health_vision_http import ROOT, health_http  # noqa: F401
+from test.integration.services.test_health_vision_http import ROOT
+from test.integration.services.test_health_family_profile_http import (  # noqa: F401
+    family_profile_http,
+    cleanup_test_sandboxes,
+    cleanup_test_knowledge_resources,
+    ensure_live_api_schema,
+)
 from yuxi.repositories.health_quality_repository import HealthQualityRepository
 from yuxi.services import daily_arrangement_service
 from yuxi.services.health_commerce_service import SourceProof, validate_source_proof
@@ -26,10 +32,25 @@ from yuxi.services.miniapp_planning_source import submitted_profile_projection
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import FamilyArchive, FamilyAudit, FamilyMember, User
 from yuxi.storage.postgres.models_health import HealthDailyArrangement, HealthQualityCheck
-from yuxi.storage.postgres.models_knowledge import KnowledgeFile
+from yuxi.storage.postgres.models_knowledge import KnowledgeBase, KnowledgeFile, KnowledgeChunk
 from yuxi.utils.datetime_utils import utc_now_naive
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
+@pytest_asyncio.fixture
+async def health_http(family_profile_http, monkeypatch):  # noqa: F811
+    """原来源校验通过真实 TCP 路由和独立 PG schema 验收，不写共享服务。"""
+    monkeypatch.setenv("HEALTH_COMMERCE_SOURCE_SECRET", "synthetic-source-invalidation-secret-20261028")
+    client, sessions, identities = family_profile_http
+    async with sessions.begin() as db:
+        await db.run_sync(
+            lambda session: KnowledgeBase.metadata.create_all(
+                session.connection(),
+                tables=[KnowledgeBase.__table__, KnowledgeFile.__table__, KnowledgeChunk.__table__],
+            )
+        )
+    yield client, [{"uid": uid, "headers": identities[uid]} for uid in ("self", "other", "admin")]
 
 
 @pytest.fixture(autouse=True)
@@ -268,10 +289,32 @@ async def test_daily_commerce_rejects_changed_binding_and_account(health_http, c
         assert row.snapshot == expected and row.status == expected_status and row.version == expected_version
 
 
-async def test_daily_commerce_rejects_bad_signature_unknown_kind_and_wrong_arrangement(health_http, created_families):  # noqa: F811
+async def test_daily_commerce_rejects_bad_signature_unknown_kind_and_wrong_arrangement(
+    health_http, created_families, monkeypatch
+):  # noqa: F811
     """签名与安排身份是独立边界，正确签名不能绑定另一安排。"""
     client, users = health_http
     current = await setup_quality(client, users)
+    # 未知类型会经过旧采用协议入口；配齐前置配置后验证凭据本身被拒绝。
+    monkeypatch.setenv("HEALTH_COMMERCE_URL", "http://localhost:1")
+    monkeypatch.setenv("HEALTH_COMMERCE_CLIENT_ID", "synthetic-invalid-kind")
+    monkeypatch.setenv("HEALTH_COMMERCE_CLIENT_SECRET", "synthetic-invalid-kind-client-secret")
+    monkeypatch.setenv(
+        "HEALTH_COMMERCE_INGREDIENT_MAP",
+        json.dumps(
+            [
+                {
+                    "food_id": current["rules"]["payload"]["ingredient_classifications"][0]["food_id"],
+                    "cooking_state": "合成",
+                    "ingredient_code": "synthetic-ingredient",
+                    "purchase_grams_per_edible_gram": "1",
+                    "source_ref": "synthetic:invalid-kind-test",
+                    "approved_by": "synthetic-engineering-fixture",
+                    "valid_until": "2099-01-01T00:00:00Z",
+                }
+            ]
+        ),
+    )
     saved = await daily_record(client, users, current, created_families)
     proof = await commerce_proof(users[0]["uid"], saved)
     bad = {**proof, "signature": "0" * 64}
@@ -491,7 +534,13 @@ async def test_miniapp_coding_rule_rechecks_its_own_original(health_http, create
                     },
                 )
             )
-        link = SimpleNamespace(family_id=fid, source_member_id=mid, actor_uid=uid, source_kind="miniapp_reported")
+        link = SimpleNamespace(
+            family_id=fid,
+            source_member_id=mid,
+            member_id=current["member"],
+            actor_uid=uid,
+            source_kind="miniapp_reported",
+        )
         async with pg_manager.get_async_session_context() as session:
             assert (await submitted_profile_projection(session, link))["status"] == "ready"
         async with pg_manager.get_async_session_context() as session:

@@ -19,6 +19,15 @@ function setup(handler) {
     send:async input=>{calls.push(structuredClone(input));return {data:await handler(input,calls)}},newId:()=>'request-'+ ++count,wait:async()=>{},pollLimit:3})
   return {client,state,calls,data,switch(){scope='B';familyId='family-B'}}
 }
+test('pausing retains the saved meal and rejects a late stale read',async()=>{
+ let finish,reads=0
+ const f=setup(()=>++reads===1?ready():new Promise(resolve=>{finish=resolve}))
+ await f.client.load(day);const previous=f.state.arrangement
+ const pending=f.client.load(day);f.client.pause()
+ assert.equal(f.state.arrangement.id,previous.id);assert.equal(f.state.busy,false)
+ const stale=ready();stale.id='late';finish(stale);await pending
+ assert.equal(f.state.arrangement.id,'saved-1');assert.equal(f.state.phase,'ready')
+})
 
 for(const code of ['daily_member_sources_unavailable','daily_profile_source_unavailable','daily_rules_unavailable','daily_dependencies_not_ready'])test(`setup error ${code} stops even when the old API labels its 503 retryable`,async()=>{
  const f=setup(()=>{throw Object.assign(new Error('依赖尚未就绪'),{code:503,businessCode:code,retryable:true})})

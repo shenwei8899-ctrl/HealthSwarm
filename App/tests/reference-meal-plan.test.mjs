@@ -24,8 +24,11 @@ test('colloquial meal and date names preserve an explicit single meal across a m
 
 test('a revision retains the existing date, members and meal scope unless the user explicitly changes them',()=>{
  const previous=referenceSelection(profile,'全家明天三餐',dates)
- for(const text of ['把这个餐单换一下','这个食谱改成粥','把早餐改成粥','早餐换成不含鸡蛋的']){
+ for(const text of ['把这个餐单换一下','这个食谱改成粥']){
   assert.deepEqual(referenceSelection(profile,text,{...dates,previous}),previous,text)
+ }
+ for(const text of ['把早餐改成粥','早餐换成不含鸡蛋的']){
+  assert.deepEqual(referenceSelection(profile,text,{...dates,previous}),{...previous,meal_types:['breakfast']},text)
  }
  assert.equal(referenceSelection(profile,'今天早餐改成粥',{...dates,previous}).plan_date,dates.today)
  assert.deepEqual(referenceSelection(profile,'只给我改一下',{...dates,previous}).participant_ids,['self'])

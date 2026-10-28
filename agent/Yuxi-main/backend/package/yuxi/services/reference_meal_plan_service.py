@@ -72,7 +72,7 @@ async def reference_context_in_session(session, uid, anchor, selection):
     if str(anchor) not in {v["health_member_id"] for v in sources.values()}:
         raise HealthVisionError("reference_member_required", "入口成员必须包含在所选就餐者中", 422)
     return {
-        "selection": selected.model_dump(mode="json"),
+        "selection": selected.model_dump(mode="json", exclude_none=True),
         "members": members,
         "sources": {
             "family_id": family.id,
@@ -145,9 +145,20 @@ async def get_reference_context(context):
             raise
         catalog = {"items": []}
         notice = "商品目录暂不可用，仍可生成参考餐单；采购建议暂不提供。"
+    current_plan = None
+    if current["selection"].get("daily_base_version") is not None:
+        from datetime import date
+        from yuxi.services.daily_meal_plan_service import read_current_plan
+
+        current_plan = await read_current_plan(
+            context.uid, current["selection"]["family_id"], date.fromisoformat(current["selection"]["plan_date"])
+        )
+        if current_plan["version"] != current["selection"]["daily_base_version"]:
+            raise HealthVisionError("daily_plan_version_changed", "今日计划已有更新，请重新读取后调整", 409)
     return {
         "scope": "daily_reference",
         **current,
+        "current_daily_plan": current_plan,
         "catalog": [
             reference_product(s)
             for s in catalog["items"]
@@ -632,14 +643,49 @@ async def current_reference_plan(uid, family_id, plan_date):
         return {"status": "absent", "scope": "daily_reference"}
 
 
+def select_reference_purchase_items(plan, meal_types):
+    """只返回所选餐次实际引用的商品，保留原包装建议和可核对食材。"""
+    ingredients = {
+        ingredient
+        for meal in plan["meals"]
+        if meal["meal_type"] in meal_types
+        for dish in meal["dishes"]
+        for ingredient in dish["ingredients"]
+    }
+    return [
+        {**item, "ingredient_refs": [ref for ref in item["ingredient_refs"] if ref in ingredients]}
+        for item in plan["purchase_items"]
+        if any(ref in ingredients for ref in item["ingredient_refs"])
+    ]
+
+
 async def validate_reference_purchase_source(session, source):
     """商城回源时核对实际完成结果、当前资料和选定商品事实。"""
     import time
 
     run, plan = await read_reference_plan_in_session(session, source["uid"], source["preview_id"])
+    from datetime import date
+    from yuxi.services.daily_meal_plan_service import current_row, require_current_reference_purchase
+
+    daily = source.get("daily_plan")
+    if not daily:
+        family_id = plan["sources"]["family_id"]
+        row = await current_row(session, source["uid"], family_id, date.fromisoformat(plan["plan_date"]))
+        daily = {
+            "family_id": family_id,
+            "date": plan["plan_date"],
+            "version": row.version if row else 0,
+            "meal_types": [meal["meal_type"] for meal in plan["meals"]],
+        }
+    # 历史卡片和已签发证明也必须回读当前餐次，不能靠省略每日版本购买旧餐。
+    await require_current_reference_purchase(session, source["uid"], daily, source["preview_id"], plan)
+    selected_items = (
+        select_reference_purchase_items(plan, source["daily_plan"]["meal_types"])
+        if source.get("daily_plan")
+        else plan["purchase_items"]
+    )
     expected = [
-        {"sku_id": str(i["sku_id"]), "quantity": i["quantity"], "facts_hash": i["facts_hash"]}
-        for i in plan["purchase_items"]
+        {"sku_id": str(i["sku_id"]), "quantity": i["quantity"], "facts_hash": i["facts_hash"]} for i in selected_items
     ]
     if (
         source["run_id"] != run.id
@@ -655,13 +701,13 @@ async def validate_reference_purchase_source(session, source):
         i["sku_id"] not in current
         or input_fingerprint(product_facts(current[i["sku_id"]], include_description=i.get("facts_version") == 2))
         != i["facts_hash"]
-        for i in plan["purchase_items"]
+        for i in selected_items
     ):
         raise HealthVisionError("reference_product_changed", "参考采购的商品身份或包装已变化", 410)
     return {"available": True, "selection_mode": "reference", "items": expected}
 
 
-async def publish_reference_purchase(uid, preview_id):
+async def publish_reference_purchase(uid, preview_id, daily_plan=None):
     """用户明确采购才发布固定规格和数量，重试使用同一来源和任务号。"""
     from datetime import date, datetime, time, timedelta
     from zoneinfo import ZoneInfo
@@ -670,11 +716,16 @@ async def publish_reference_purchase(uid, preview_id):
 
     async with pg_manager.get_async_session_context() as session:
         run, plan = await read_reference_plan_in_session(session, uid, preview_id)
-        if not plan["purchase_items"]:
+        selected_items = (
+            select_reference_purchase_items(plan, daily_plan["meal_types"])
+            if daily_plan is not None
+            else plan["purchase_items"]
+        )
+        if not selected_items:
             raise HealthVisionError("reference_items_missing", "该参考餐单未选定可核对的采购商品", 409)
         items = [
             {"sku_id": str(i["sku_id"]), "quantity": i["quantity"], "facts_hash": i["facts_hash"]}
-            for i in plan["purchase_items"]
+            for i in selected_items
         ]
         expiry = datetime.combine(
             date.fromisoformat(plan["plan_date"]) + timedelta(days=1), time.min, ZoneInfo("Asia/Shanghai")
@@ -689,8 +740,15 @@ async def publish_reference_purchase(uid, preview_id):
             "source_hash": input_fingerprint(plan),
             "expires_at": int(expiry.timestamp()),
         }
+        if daily_plan is not None:
+            source["daily_plan"] = daily_plan
         await validate_reference_purchase_source(session, source)
-    task = str(uuid5(NAMESPACE_URL, "reference-purchase:" + str(preview_id)))
+    task = str(
+        uuid5(
+            NAMESPACE_URL,
+            "reference-purchase:" + str(preview_id) + (":" + input_fingerprint(daily_plan) if daily_plan else ""),
+        )
+    )
     payload = {
         "agent_task_id": task,
         "family_ref": "reference:" + str(preview_id),

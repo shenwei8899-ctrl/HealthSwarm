@@ -1,3 +1,4 @@
+import {mealQuestionAction} from '../src/services/daily-meal-plan.js'
 import test from 'node:test'
 import {parseChatMealIntent} from '../src/utils/chat-meal-intent.js'
 import {referenceSelection} from '../src/services/reference-meal-plan.js'
@@ -8,7 +9,7 @@ import {ref,computed,reactive,nextTick} from 'vue'
 function setup(route={}){
  const submitted=[],opened=[],selections=[]
  const stored=new Map(),thread='22222222-2222-4222-8222-222222222222',referenceThread='33333333-3333-4333-8333-333333333333'
- const deps={parseChatMealIntent,ref,computed,reactive,nextTick,onShow(){},onHide(){},onMounted(){},onUnmounted(){},defineProps:()=>({route}),
+ const deps={mealQuestionAction,readDailyMealPlan:async(_family,date)=>({date,status:'absent',version:0,meals:[]}),parseChatMealIntent,ref,computed,reactive,nextTick,onShow(){},onHide(){},onMounted(){},onUnmounted(){},defineProps:()=>({route}),
  storageContext:()=> 'scope',getSession:()=>({token:'unit'}),
  dailyArrangementState:()=>({phase:'ready'}),createDailyArrangementClient:()=>({dispose(){}}),
  scopedStorage:{getStorageSync:key=>stored.get(key),setStorageSync:(key,value)=>stored.set(key,value)},localDate:date=>date?'2026-10-28':'2026-10-27',
@@ -41,7 +42,7 @@ test('显式生成明天早餐保留本人单餐选择、问题及日期',async(
  const p=setup();p.question.value='给我安排明天早餐';await p.sendQuestion('reference_meal_preview')
  assert.deepEqual(p.opened,['reference_meal_preview']);assert.deepEqual(p.submitted,['给我安排明天早餐'])
  assert.equal(p.task.value.taskType,'reference_meal_preview')
- assert.deepEqual(p.selections,[{mode:'reference',family_id:'family',plan_date:'2026-10-28',participant_ids:['self'],meal_types:['breakfast']}])
+ assert.deepEqual(p.selections,[{mode:'reference',family_id:'family',plan_date:'2026-10-28',participant_ids:['self'],meal_types:['breakfast'],daily_base_version:0}])
 })
 test('显式参考餐单按钮仍进入参考餐单而非普通商品咨询',async()=>{
  const p=setup();p.question.value='请帮我安排今天的三餐';await p.sendQuestion('reference_meal_preview')

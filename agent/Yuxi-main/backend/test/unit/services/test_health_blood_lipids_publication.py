@@ -320,6 +320,9 @@ async def test_actual_graph_binds_and_executes_fixed_blood_lipids_tool(monkeypat
                     content="",
                     tool_calls=[{"id": "blood-lipids-call", "name": "get_member_blood_lipids_records", "args": {}}],
                 ),
+                AIMessage(
+                    content="", tool_calls=[{"id": "finalize-call", "name": "finalize_health_answer", "args": {}}]
+                ),
                 AIMessage(content="当前没有血脂记录，营养安全和21天控糖仍未就绪"),
             ]
         )
@@ -351,14 +354,26 @@ async def test_actual_graph_binds_and_executes_fixed_blood_lipids_tool(monkeypat
     graph = await backend.get_graph(context=context)
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="回顾我的血脂")]},
-        config={"configurable": {"thread_id": context.thread_id}, "recursion_limit": 20},
+        config={"configurable": {"thread_id": context.thread_id}, "recursion_limit": 50},
         context=context,
     )
     read.assert_awaited_once_with(context)
     assert tool_lists and all("get_member_blood_lipids_records" in tools for tools in tool_lists)
-    assert all(set(tools) == set(health_consultation_service.HEALTH_TOOL_NAMES) for tools in tool_lists)
-    assert system_prompts and all('version: "2026.10.22.1"' in prompt for prompt in system_prompts)
+    assert all(
+        set(tools) == (set(health_consultation_service.HEALTH_TOOL_NAMES) | {"finalize_health_answer"})
+        for tools in tool_lists
+    )
+    assert system_prompts and all('version: "2026.10.28.1"' in prompt for prompt in system_prompts)
     tool_result = next(message for message in result["messages"] if message.type == "tool")
     assert tool_result.name == "get_member_blood_lipids_records"
     assert json.loads(tool_result.content) == read.return_value
     assert result["messages"][-1].content == "当前没有血脂记录，营养安全和21天控糖仍未就绪"
+
+
+@pytest.fixture(autouse=True)
+def no_unrelated_catalog_history(monkeypatch):
+    """本模块只验证指标/引证，商品审计由独立用例覆盖。"""
+    from unittest.mock import AsyncMock
+    from yuxi.repositories.conversation_purchase_repository import ConversationPurchaseRepository
+
+    monkeypatch.setattr(ConversationPurchaseRepository, "catalog_profile_payloads", AsyncMock(return_value=[]))

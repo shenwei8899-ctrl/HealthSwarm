@@ -11,7 +11,12 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from yuxi.storage.postgres.manager import BUSINESS_SCHEMA_VERSION, KNOWLEDGE_SCHEMA_VERSION, PostgresManager
+from yuxi.storage.postgres.manager import (
+    BUSINESS_SCHEMA_VERSION,
+    HEALTH_SCHEMA_VERSION,
+    KNOWLEDGE_SCHEMA_VERSION,
+    PostgresManager,
+)
 from yuxi.storage.postgres.models_knowledge import KnowledgeBase
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -134,7 +139,8 @@ async def test_v072_business_converges_current_schema_idempotently() -> None:
             await connection.execute(text("ALTER TABLE agent_runs ADD COLUMN last_event_id VARCHAR(64)"))
             await connection.execute(text("DROP TABLE scheduled_agent_runs"))
             await connection.execute(text("DROP TABLE scheduled_agent_jobs"))
-            await connection.execute(text("DROP TABLE tasks"))
+            # 当前共享 metadata 可能已注册健康表；此隔离 schema 只复原历史任务结构。
+            await connection.execute(text("DROP TABLE tasks CASCADE"))
             await connection.execute(text(LEGACY_TASK_TABLE_SQL))
             await connection.execute(
                 text(
@@ -282,7 +288,7 @@ async def test_v072_business_converges_current_schema_idempotently() -> None:
             "ix_scheduled_agent_runs_job_created",
             "ix_scheduled_agent_runs_dispatching",
         }.issubset(scheduled_indexes)
-        assert BUSINESS_SCHEMA_VERSION == 10
+        assert BUSINESS_SCHEMA_VERSION == 13
     finally:
         await _drop_isolated_schema(schema, admin_engine, scoped_engine)
 
@@ -468,7 +474,8 @@ async def test_unversioned_baseline_repairs_existing_legacy_task_table() -> None
     try:
         await manager.create_business_tables()
         async with scoped_engine.begin() as connection:
-            await connection.execute(text("DROP TABLE tasks"))
+            # 当前共享 metadata 可能已注册健康表；此隔离 schema 只复原历史任务结构。
+            await connection.execute(text("DROP TABLE tasks CASCADE"))
             await connection.execute(text(LEGACY_TASK_TABLE_SQL))
             await connection.execute(
                 text(
@@ -510,11 +517,75 @@ async def test_schema_version_is_persisted_and_runtime_validation_fails_closed()
             await manager.require_current_schema()
 
         await manager.record_schema_version("knowledge", KNOWLEDGE_SCHEMA_VERSION)
+        with pytest.raises(RuntimeError, match="health=missing"):
+            await manager.require_current_schema()
+        await manager.record_schema_version("health", HEALTH_SCHEMA_VERSION + 1)
+        with pytest.raises(RuntimeError, match=f"health={HEALTH_SCHEMA_VERSION + 1}"):
+            await manager.require_current_schema()
+        await manager.record_schema_version("health", HEALTH_SCHEMA_VERSION)
         await manager.require_current_schema()
         assert await manager.get_schema_versions() == {
             "business": BUSINESS_SCHEMA_VERSION,
             "knowledge": KNOWLEDGE_SCHEMA_VERSION,
+            "health": HEALTH_SCHEMA_VERSION,
         }
+    finally:
+        await _drop_isolated_schema(schema, admin_engine, scoped_engine)
+
+
+async def test_health_32_to_33_adds_daily_plan_index_idempotently() -> None:
+    """真实PG中新增索引表可重复创建，并保留已有健康表。"""
+    from datetime import date
+    from yuxi.storage.postgres.models_business import Base, FamilyArchive, User
+    from yuxi.storage.postgres.models_health import HealthDailyArrangement, HealthDailyMealPlan
+
+    schema, admin_engine, scoped_engine, manager = await _create_isolated_manager("pytest_daily_plan_schema")
+    try:
+        async with scoped_engine.begin() as connection:
+            before = [table for table in Base.metadata.sorted_tables if table is not HealthDailyMealPlan.__table__]
+            await connection.run_sync(lambda conn: Base.metadata.create_all(conn, tables=before))
+            assert await connection.scalar(text("SELECT to_regclass('health_daily_meal_plan')")) is None
+            assert await connection.scalar(text("SELECT to_regclass('health_daily_arrangement')")) is not None
+        sessions = async_sessionmaker(scoped_engine, expire_on_commit=False)
+        async with sessions.begin() as db:
+            db.add(User(uid="synthetic-migration", username="synthetic-migration", password_hash="synthetic"))
+            await db.flush()
+            db.add(FamilyArchive(id="synthetic-family", owner_uid="synthetic-migration", name="合成家庭"))
+            await db.flush()
+            db.add(
+                HealthDailyArrangement(
+                    id="synthetic-plan",
+                    actor_uid="synthetic-migration",
+                    family_id="synthetic-family",
+                    plan_date=date(2026, 10, 27),
+                    request_id="synthetic-request",
+                    status="ready",
+                    selection={},
+                    sources={},
+                    snapshot={"status": "ready", "meals": [{"type": "breakfast", "name": "合成早餐"}]},
+                )
+            )
+        await manager.create_schema_version_table()
+        await manager.record_schema_version("health", 32)
+        await manager.create_health_tables()
+        await manager.create_health_tables()
+        await manager.record_schema_version("health", 33)
+        async with scoped_engine.connect() as connection:
+            assert await connection.scalar(text("SELECT to_regclass('health_daily_meal_plan')")) is not None
+            assert await connection.scalar(text("SELECT to_regclass('health_daily_arrangement')")) is not None
+            assert (
+                await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_constraint WHERE conname='uq_health_daily_meal_plan' "
+                        "AND connamespace=current_schema()::regnamespace"
+                    )
+                )
+                == 1
+            )
+        assert (await manager.get_schema_versions())["health"] == 33
+        async with sessions() as db:
+            saved = await db.get(HealthDailyArrangement, "synthetic-plan")
+            assert saved.snapshot["meals"][0]["name"] == "合成早餐"
     finally:
         await _drop_isolated_schema(schema, admin_engine, scoped_engine)
 

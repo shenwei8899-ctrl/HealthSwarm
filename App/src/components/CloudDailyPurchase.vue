@@ -18,7 +18,7 @@ async function load() {
   const scope = storageContext(), ticket = ++epoch; error.value = ''; arrangement.value = null
   try {
     const r = props.route
-    const { data } = await request({ path: '/api/family/' + encodeURIComponent(getSession().householdId) + '/daily-arrangements/' + r.date })
+    const { data } = await request({ path: '/api/family/' + encodeURIComponent(getSession().householdId) + '/daily-arrangements/' + r.date + (r.daily_plan_version!=null?'?daily_plan_version='+Number(r.daily_plan_version):'') })
     if (!alive || ticket !== epoch || scope !== storageContext()) return
     if (data.status !== 'ready' || data.id !== r.arrangement || data.version !== Number(r.version)) throw new Error('今日安排已更新，请返回今日安排重新读取。')
     arrangement.value = data

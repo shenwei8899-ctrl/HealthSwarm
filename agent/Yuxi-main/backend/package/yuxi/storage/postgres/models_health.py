@@ -922,6 +922,21 @@ class HealthMiniappProfileCoding(Base):
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
+class HealthDailyMealPlan(Base):
+    """每日当前计划只保存餐次来源引用，内容由各来源持有。"""
+
+    __tablename__ = "health_daily_meal_plan"
+    __table_args__ = (UniqueConstraint("actor_uid", "family_id", "plan_date", name="uq_health_daily_meal_plan"),)
+    id = Column(String(36), primary_key=True)
+    actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
+    family_id = Column(String(36), ForeignKey("family_archives.id"), nullable=False)
+    plan_date = Column(Date, nullable=False)
+    version = Column(Integer, nullable=False, default=0)
+    meal_sources = Column(JSON_VALUE, nullable=False, default=dict)
+    pending = Column(JSON_VALUE, nullable=False, default=dict)
+    updated_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
 class HealthDailyArrangement(Base):
     """每日唯一安排及生成请求引用；就绪快照不依赖客户端缓存。"""
 
@@ -979,6 +994,7 @@ HEALTH_TABLES = HEALTH_BUDGET_TABLES + [
         HealthOnboardingPreparation,
         HealthMiniappProfileCoding,
         HealthPublishedRecipeClassification,
+        HealthDailyMealPlan,
         HealthDailyArrangement,
         HealthExclusivePlanGroup,
         HealthRecipeCommerceSource,

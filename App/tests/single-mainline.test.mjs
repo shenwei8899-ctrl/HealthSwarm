@@ -150,6 +150,40 @@ test('an account switch during entry resolution cancels the old navigation befor
   setSession({accountId:'B',householdId:'family-b',token:'token-b'});release('/pages/chat/index')
   await new Promise(resolve=>setImmediate(resolve));assert.equal(calls.length,0);assert.equal(failures[0].code,'SESSION_CHANGED')
 })
+test('different taps do not queue multiple pages while one navigation is pending',async()=>{
+  storage();let release;const calls=[],hooks={},failures=[]
+  uni.addInterceptor=(method,hook)=>hooks[method]=hook;uni.navigateTo=options=>calls.push(options)
+  const nav=navigation(()=>new Promise(resolve=>{release=resolve}));nav.installRouteGuards()
+  hooks.navigateTo.invoke({url:'/pages/profile/index'})
+  hooks.navigateTo.invoke({url:'/pages/my/index',fail:value=>failures.push(value)})
+  assert.equal(failures[0].code,'NAVIGATION_IN_PROGRESS')
+  release('/pages/chat/index');await new Promise(resolve=>setImmediate(resolve))
+  assert.equal(calls.length,1);assert.equal(calls[0].url,'/pages/profile/index')
+  calls[0].complete({errMsg:'navigateTo:ok'})
+})
+test('a new account can navigate without waiting for the previous account request',async()=>{
+  storage();setSession({accountId:'A',householdId:'family-a',token:'token-a'})
+  const releases=[],calls=[],hooks={},failures=[]
+  uni.addInterceptor=(method,hook)=>hooks[method]=hook;uni.navigateTo=options=>calls.push(options)
+  const nav=navigation(()=>new Promise(resolve=>releases.push(resolve)));nav.installRouteGuards()
+  hooks.navigateTo.invoke({url:'/pages/profile/index',fail:value=>failures.push(value)})
+  setSession({accountId:'B',householdId:'family-b',token:'token-b'})
+  hooks.navigateTo.invoke({url:'/pages/my/index'})
+  assert.equal(failures[0].code,'SESSION_CHANGED')
+  releases[1]('/pages/chat/index');await new Promise(resolve=>setImmediate(resolve))
+  assert.equal(calls.length,1);assert.equal(calls[0].url,'/pages/my/index')
+  calls[0].complete({errMsg:'navigateTo:ok'})
+  releases[0]('/pages/chat/index');await new Promise(resolve=>setImmediate(resolve))
+  assert.equal(calls.length,1)
+})
+test('a navigation failure is visible when the caller supplied no failure callback',async()=>{
+  storage();const hooks={},toasts=[]
+  uni.addInterceptor=(method,hook)=>hooks[method]=hook;uni.showToast=value=>toasts.push(value.title)
+  const nav=navigation(async()=>{throw Object.assign(new Error('网络暂不可用'),{code:'NETWORK_ERROR'})});nav.installRouteGuards()
+  hooks.navigateTo.invoke({url:'/pages/my/index'})
+  await new Promise(resolve=>setImmediate(resolve))
+  assert.deepEqual(toasts,['网络暂不可用'])
+})
 
 function invitationPage() {
   const {redirects}=storage(),calls=[],code='family_'+ 'a'.repeat(48)

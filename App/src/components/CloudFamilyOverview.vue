@@ -8,7 +8,7 @@ import { ageLabel } from '../utils/member-age.js'
 const profile=ref(null),error=ref(''),busy=ref(false)
 const owner=computed(()=>getSession()?.families?.find(f=>f.id===profile.value?.householdId)?.isOwner===true)
 let epoch=0
-async function load(){if(busy.value)return;const mine=++epoch;busy.value=true;error.value='';profile.value=null;try{const result=await loadCloudProfile();if(mine===epoch)profile.value=result}catch(e){if(mine===epoch)error.value=e.message}finally{if(mine===epoch)busy.value=false}}
+async function load(){if(busy.value)return;const mine=++epoch;busy.value=true;error.value='';profile.value=null;try{const result=await loadCloudProfile({openConsultation:false,readConfiguration:false});if(mine===epoch)profile.value=result}catch(e){if(mine===epoch)error.value=e.message}finally{if(mine===epoch)busy.value=false}}
 function discard(){epoch++;profile.value=null;busy.value=false;error.value=''}
 onMounted(load);onShow(load);onHide(discard)
 function detail(member){uni.navigateTo({url:'/pages/profile/member?id='+encodeURIComponent(member.id)})}

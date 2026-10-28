@@ -26,6 +26,7 @@ class ReferenceSelection(HealthDTO):
     meal_types: list[Literal["breakfast", "lunch", "dinner"]] = Field(
         default_factory=lambda: ["breakfast", "lunch", "dinner"], min_length=1, max_length=3
     )
+    daily_base_version: int | None = Field(default=None, ge=0, strict=True)
 
     @model_validator(mode="after")
     def unique_members(self):

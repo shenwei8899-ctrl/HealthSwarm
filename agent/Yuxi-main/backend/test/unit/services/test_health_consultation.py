@@ -169,7 +169,7 @@ async def test_context_does_not_expand_none_resources_or_user_prompt(monkeypatch
     run = SimpleNamespace(agent_slug="health-consultation", input_payload={"health_processing": snapshot})
     prepared = await service.prepare_consultation_context(context, db, run)
     assert prepared.model == "provider/fixed" and prepared.tools == service.HEALTH_TOOL_NAMES
-    assert prepared.system_prompt == service.CONSULTATION_PROMPT
+    assert prepared.system_prompt.startswith(service.CONSULTATION_PROMPT)
     assert prepared.knowledges == prepared.mcps == []
     assert prepared.skills == prepared.preload_skills == ["family-nutritionist"]
     assert prepared._skill_runtime_snapshot["skill_metadata"]["family-nutritionist"]["source_scope"] == "builtin"
@@ -228,6 +228,7 @@ async def test_graph_binds_only_prepared_ai_consultation_tools(monkeypatch):
     assert [tool.name for tool in assemble.call_args.kwargs["tools"]] == [
         "query_family_nutrition_knowledge",
         "get_member_memories",
+        "finalize_health_answer",
     ]
 
 
@@ -275,6 +276,9 @@ async def test_actual_graph_only_binds_fixed_read_tools_and_checks_each_model_tu
                 AIMessage(
                     content="", tool_calls=[{"id": "call-synthetic", "name": "get_confirmed_profile", "args": {}}]
                 ),
+                AIMessage(
+                    content="", tool_calls=[{"id": "finalize-call", "name": "finalize_health_answer", "args": {}}]
+                ),
                 AIMessage(content="合成记录解释，不是医疗建议"),
             ]
         )
@@ -302,14 +306,16 @@ async def test_actual_graph_only_binds_fixed_read_tools_and_checks_each_model_tu
     graph = await backend.get_graph(context=context)
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="解释合成记录")]},
-        config={"configurable": {"thread_id": context.thread_id}, "recursion_limit": 20},
+        config={"configurable": {"thread_id": context.thread_id}, "recursion_limit": 50},
         context=context,
     )
     assert result["messages"][-1].content == "合成记录解释，不是医疗建议"
-    assert tool_lists and all(set(names) == set(service.HEALTH_TOOL_NAMES) for names in tool_lists)
-    assert system_prompts and all(prompt == service.CONSULTATION_PROMPT for prompt in system_prompts)
+    assert tool_lists and all(
+        set(names) == (set(service.HEALTH_TOOL_NAMES) | {"finalize_health_answer"}) for names in tool_lists
+    )
+    assert system_prompts and all(prompt.startswith(service.CONSULTATION_PROMPT) for prompt in system_prompts)
     assert all("slug: family-nutritionist" in prompt and "## 咨询流程" in prompt for prompt in system_prompts)
-    assert ownership.await_count == 7  # 构图一次，每个模型轮次在预留前后各校验一次。
-    assert budget_calls.await_count == 3
+    assert ownership.await_count == 9  # 构图一次，四个模型轮次在预留前后各校验一次。
+    assert budget_calls.await_count == 4
     assert any(message.type == "tool" and message.status == "error" for message in result["messages"])
     assert executor.await_args.args == (context, "report")

@@ -1,10 +1,10 @@
 <script setup>
 import AppIcon from './AppIcon.vue'
-defineProps({prompts:{type:Array,default:()=>[]},disabled:Boolean})
-defineEmits(['ask','today'])
+defineProps({prompts:{type:Array,default:()=>[]},disabled:Boolean,compact:Boolean})
+defineEmits(['ask','shuffle','today'])
 </script>
 <template>
- <view class="chat-welcome">
+ <view class="chat-welcome" :class="{'is-compact':compact}">
   <view class="welcome-intro">
    <view class="welcome-title"><text>每一餐 </text><text class="welcome-accent">都更适合你</text></view>
    <text class="welcome-description">{{'聊聊想吃的、忌口的和家人的需要，\n一起把今天的三餐安排好。'}}</text>
@@ -18,7 +18,7 @@ defineEmits(['ask','today'])
   </view>
   <view class="welcome-hint-card">
    <view class="hint-heading"><view><text class="hint-title">从一个问题，开始好好吃饭</text><text class="hint-description">偏好、忌口、就餐人数，都可以慢慢补充。</text></view><button class="welcome-today" :disabled="disabled" @click="$emit('today')"><text>今日安排</text><text aria-hidden="true">→</text></button></view>
-   <scroll-view class="welcome-prompt-scroll" scroll-x :show-scrollbar="false"><view class="welcome-prompts"><button v-for="prompt in prompts" :key="prompt" :disabled="disabled" @click="$emit('ask',prompt)"><text>{{prompt}}</text><text aria-hidden="true">↗</text></button></view></scroll-view>
+   <scroll-view class="welcome-prompt-scroll" scroll-x :show-scrollbar="false"><view class="welcome-prompts"><button v-for="(prompt,index) in prompts" :key="index" :disabled="disabled" @click="$emit('ask',prompt)"><text>{{prompt.text}}</text><text aria-hidden="true">↗</text></button></view></scroll-view><button class="shuffle-prompts" :disabled="disabled" @click="$emit('shuffle')">换一换</button>
   </view>
  </view>
 </template>
@@ -31,4 +31,5 @@ defineEmits(['ask','today'])
 .welcome-prompt-scroll{width:100%;margin-top:10px;white-space:nowrap}.welcome-prompts{display:inline-flex;gap:7px;padding-right:2px}.welcome-prompts button{display:inline-flex;align-items:center;gap:8px;flex-shrink:0;width:auto;min-height:36px;padding:5px 9px;border:1px solid #eeeafa;border-radius:7px;background:rgba(255,255,255,.76);color:#756d89;font-size:11px;line-height:1.5;text-align:left;white-space:nowrap}.welcome-prompts button:after{border:0}.welcome-prompts button>text+text{color:#9887c8}.welcome-prompts button[disabled]{opacity:.45}
 @media(max-height:720px){.chat-welcome{padding-top:15px;gap:9px}.welcome-title{font-size:22px}.welcome-description{font-size:12px;margin-top:6px}.welcome-hero{height:148px}.hero-assistant{transform:scale(.9) rotate(-5deg)}.hero-orbit-family{top:25px}.hero-orbit-meals{top:55px}.welcome-hint-card{padding-top:10px}.hint-description{font-size:10px}}
 @media(max-width:350px){.welcome-title{font-size:21px}.welcome-description{font-size:12px}.hero-orbit{padding:6px;font-size:10px}.hero-orbit-family{left:-2px}.hero-orbit-meals{right:-2px}.hint-title{font-size:12px}.hint-description{font-size:10px}.welcome-today{font-size:10px;padding-left:7px;padding-right:7px}}
+.shuffle-prompts{min-height:40px;margin:4px 0 0 auto;padding:4px 8px;background:transparent;color:#8b7da5;font-size:12px}.shuffle-prompts:after{border:0}.is-compact .welcome-hero{display:none}.chat-welcome.is-compact{padding-top:14px}
 </style>
