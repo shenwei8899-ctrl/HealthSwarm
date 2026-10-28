@@ -12,15 +12,17 @@ const runId = '55555555-5555-4555-8555-555555555555'
 const tick = () => new Promise(resolve => setImmediate(resolve))
 const delta = (content, offset = 0, id = '10-0', extra = {}) => ({ id, type: 'custom', runId, requestId, threadId,
   phase: 'streaming', messageId: 'answer-1', offset, content, ...extra })
-function fixture() {
+function fixture({ pollLimit = 45 } = {}) {
   let account = { accountId: '17', token: 'test-session' }, revision = '1', status = 'running', reads = 0, readError = null
-  const subscriptions = [], timers = [], saved = new Map(), snapshots = []
+  let readGate = null, finalMessageId = null
+  const subscriptions = [], timers = [], saved = new Map(), snapshots = [], writes = []
   const storage = { getStorageSync: key => saved.get(key), setStorageSync: (key, value) => saved.set(key, structuredClone(value)) }
   const flow = createHealthTaskFlow({ session: () => account, revision: () => revision, storage,
     onChange: value => snapshots.push(value), newId: (() => { const ids = [entryId, requestId]; return () => ids.shift() })(),
-    schedule: fn => { const handle = { fn }; timers.push(handle); return handle }, cancel: handle => { handle.cancelled = true },
+    pollLimit, schedule: fn => { const handle = { fn }; timers.push(handle); return handle }, cancel: handle => { handle.cancelled = true },
     subscribe: options => { const subscription = { ...options, closed: false }; subscriptions.push(subscription); return () => { subscription.closed = true } },
     send: async options => {
+      if (options.method === 'POST') writes.push(options)
       if (options.path.endsWith('/members')) return { data: [{ id: memberId, is_owner: true }] }
       if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [{ entry_type: 'consultation', status: 'available' }] } }
       if (options.path.endsWith('/task-entries')) return { data: { member_id: memberId, task_type: 'consultation', client_request_id: entryId,
@@ -29,15 +31,19 @@ function fixture() {
       if (options.path.endsWith('/cancel')) { status = 'cancelled'; return { data: { status } } }
       if (options.path.includes('/tasks/')) {
         reads++
+        if (readGate) { const gate = readGate; readGate = null; await gate.promise }
         if (readError) { const error = readError; readError = null; throw error }
         return { data: { request_id: requestId, member_id: memberId, task_type: 'consultation', thread_id: threadId,
-          agent_slug: 'health-consultation', run_id: runId, request_status: 'dispatched', execution_status: status,
+          agent_slug: 'health-consultation', run_id: runId, request_status: 'dispatched', execution_status: status, final_message_id: finalMessageId,
           result: status === 'completed' ? { result_type: 'general_education_answer', scope: 'general_education', answer: '正式结果', citations: [] }
             : status === 'failed' ? { result_type: 'error', code: 'output_persistence_error', retryable: false } : null } }
       }
       throw new Error('Unexpected path ' + options.path)
     } })
-  return { flow, subscriptions, saved, snapshots,
+  return { flow, subscriptions, saved, snapshots, writes,
+    holdNextRead: () => { let release; const promise = new Promise(resolve => { release = resolve }); readGate = { promise }; return release },
+    pendingTimers: () => timers.filter(row => !row.cancelled && !row.used).length,
+    setFinalMessageId: value => { finalMessageId = value },
     setStatus: value => { status = value }, reads: () => reads, failNextRead: error => { readError = error },
     switchAccount: () => { account = { accountId: '18', token: 'other' }; revision = '2' },
     poll: async () => { const handle = timers.find(row => !row.cancelled && !row.used); assert.ok(handle); handle.used = true; handle.fn(); await tick() } }
@@ -105,6 +111,72 @@ test('a temporary task-read failure keeps polling the accepted request and recov
   assert.equal(h.subscriptions.at(-1).cursor, '10-0')
   h.subscriptions.at(-1).onEvent(delta('恢复。', 4, '11-0'))
   assert.equal(h.flow.getState().streamText, '已收到。恢复。')
+})
+
+test('健康任务回读成功后恢复真实running阶段，五次断流后明确使用polling', async () => {
+  const h = fixture(); await start(h)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    h.subscriptions.at(-1).onError(new Error('合成断流'))
+    await h.poll()
+    assert.equal(h.flow.getState().streamPhase, attempt < 4 ? 'running' : 'polling')
+  }
+  assert.equal(h.subscriptions.length, 5)
+  assert.equal(h.subscriptions.some(row => !row.closed), false)
+  assert.ok(h.pendingTimers() > 0)
+  h.flow.hide()
+})
+
+test('手动读取暂停请求重新开启有界轮询和订阅，仍读取原request且不重发', async () => {
+  const h = fixture({ pollLimit: 2 }); await start(h)
+  await h.poll(); await h.poll()
+  assert.equal(h.flow.getState().streamPhase, 'paused')
+  assert.equal(h.pendingTimers(), 0)
+  const posts = h.writes.length
+  await h.flow.refresh()
+  assert.equal(h.flow.getState().streamPhase, 'running')
+  assert.equal(h.flow.getState().requestId, requestId)
+  assert.ok(h.pendingTimers() > 0)
+  assert.ok(h.subscriptions.some(row => !row.closed))
+  assert.equal(h.flow.getState().notice, '')
+  assert.equal(h.writes.length, posts)
+  h.setStatus('completed'); await h.poll()
+  assert.equal(h.flow.getState().result.text, '正式结果')
+  assert.equal(h.flow.getState().notice, '')
+})
+
+test('同请求并发读取合并且保留已验证正文，读取结束清理refreshing', async () => {
+  const h = fixture(); await start(h); h.setStatus('completed'); await h.flow.refresh()
+  const release = h.holdNextRead(), before = h.reads()
+  const reads = [h.flow.refresh(), h.flow.refresh(), h.flow.refresh()]
+  try {
+    assert.equal(h.reads(), before + 1)
+    assert.equal(h.flow.getState().refreshing, true)
+    assert.equal(h.flow.getState().result.text, '正式结果')
+  } finally { release(); await Promise.all(reads) }
+  assert.equal(h.flow.getState().refreshing, false)
+  assert.equal(h.flow.getState().result.text, '正式结果')
+})
+
+test('网络读取失败保留已验证正文，隐私来源错误仍清除', async () => {
+  const h = fixture(); await start(h); h.setStatus('completed'); await h.flow.refresh()
+  h.failNextRead(Object.assign(new Error('合成网络失败'), { code: 'NETWORK_ERROR' }))
+  await h.flow.refresh()
+  assert.equal(h.flow.getState().result.text, '正式结果')
+  h.failNextRead(Object.assign(new Error('来源已撤回'), { code: 410 }))
+  await h.flow.refresh()
+  assert.equal(h.flow.getState().result, null)
+})
+
+test('成功回执仅公开正安全整数finalMessageId，离开或新任务清除', async () => {
+  const h = fixture(); await start(h)
+  assert.equal(h.flow.getState().finalMessageId, null)
+  h.setStatus('completed')
+  for (const value of [42, 0, -1, '42', 1.5, Number.MAX_SAFE_INTEGER + 1, null]) {
+    h.setFinalMessageId(value); await h.flow.refresh()
+    assert.equal(h.flow.getState().finalMessageId, value === 42 ? 42 : null)
+  }
+  h.setFinalMessageId(42); await h.flow.refresh(); h.flow.hide()
+  assert.equal(h.flow.getState().finalMessageId, null)
 })
 
 test('a missing offset replays from zero and a new message ID resets the previous model message', async () => {
