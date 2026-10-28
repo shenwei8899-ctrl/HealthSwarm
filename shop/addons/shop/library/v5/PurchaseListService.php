@@ -22,7 +22,7 @@ class PurchaseListService
                     'submitted_version' => (int)$submittedVersion,
                 ]);
             }
-            if (!in_array($package['status'], ['available', 'confirmed'], true) || $package['nutrition_status'] !== 'passed' || $package['trade_status'] !== 'passed') {
+            if (!in_array($package['status'], ['available', 'confirmed'], true) || !AgentMealSourceService::nutritionAllowsTrade($package) || $package['trade_status'] !== 'passed') {
                 throw new DomainException('推荐包尚未通过营养和交易双校验', 40908, 409);
             }
             if ((int)$package['expires_at'] <= time()) {
@@ -58,9 +58,12 @@ class PurchaseListService
                 'createtime' => $now,
                 'updatetime' => $now,
             ]);
-            $result = AgentSkuSelectionService::hasDirect($requirements)
-                ? $this->insertAgentSelection($listId, $version['id'], $requirements, $now)
-                : $this->insertRequirementsAndMatches($listId, 1, $requirements, $now);
+            $reference = AgentMealSourceService::referenceSource(Json::decode($package['agent_source_proof_json'] ?? '{}', []));
+            $result = $reference !== null
+                ? $this->insertReferenceSelection($listId, $version['id'], $now)
+                : (AgentSkuSelectionService::hasDirect($requirements)
+                    ? $this->insertAgentSelection($listId, $version['id'], $requirements, $now)
+                    : $this->insertRequirementsAndMatches($listId, 1, $requirements, $now));
             Db::name('shop_purchase_list')->where('id', $listId)->update([
                 'match_status' => $result['ready'] ? 'ready' : 'failed',
                 'estimated_total_cent' => $result['total_amount_cent'],
@@ -301,10 +304,44 @@ class PurchaseListService
         return ['ready'=>true,'total_amount_cent'=>$total];
     }
 
+    /** 参考商品按实际包装数量采购，不生成虚构的食材或营养换算。 */
+    protected function insertReferenceSelection($listId, $versionId, $now)
+    {
+        $items = Db::name('shop_recommendation_package_item')->where('package_version_id',$versionId)->order('sort','asc')->select();
+        if (!$items) throw new DomainException('采购商品不能为空',40012,400);
+        $total = 0;
+        foreach ($items as $sort => $item) {
+            $result = (new ProductMatchService())->validateSubmittedItem(['sku_id'=>$item['sku_id'],'quantity'=>(int)$item['quantity']]);
+            if ($result['issue']) throw new DomainException('所选商品暂不可售，请重新核对',40904,409);
+            $selected = $result['selected']; $quantity = (int)$item['quantity'];
+            $itemId = Db::name('shop_purchase_item')->insertGetId([
+                'purchase_list_id'=>$listId,'list_version_no'=>1,'recipe_ref'=>'catalog-sku:'.$item['sku_id'],
+                'ingredient_id'=>0,'required_value'=>$quantity,'required_unit'=>'pack',
+                'pantry_value'=>0,'pantry_unit'=>'pack','net_required_value'=>$quantity,'net_required_unit'=>'pack',
+                'is_optional'=>0,'match_status'=>'matched','sort'=>$sort,'createtime'=>$now,'updatetime'=>$now,
+            ]);
+            $matchId = Db::name('shop_purchase_match')->insertGetId([
+                'purchase_item_id'=>$itemId,'list_version_no'=>1,'sku_id'=>$item['sku_id'],'rank_no'=>1,
+                'required_pack_count'=>$quantity,'covered_value'=>$quantity,'covered_unit'=>'pack',
+                'surplus_value'=>0,'surplus_unit'=>'pack','unit_price_cent'=>$selected['unit_price_cent'],
+                'total_price_cent'=>$selected['total_price_cent'],'match_score'=>100,
+                'match_reason_json'=>Json::encode(['reason'=>'agent_catalog_selection','snapshot'=>$selected['product_snapshot']]),
+                'trade_status'=>'passed','requires_agent_revalidation'=>0,'is_selected'=>1,'createtime'=>$now,'updatetime'=>$now,
+            ]);
+            Db::name('shop_purchase_item')->where('id',$itemId)->update(['selected_match_id'=>$matchId]);
+            $total += (int)$selected['total_price_cent'];
+        }
+        return ['ready'=>true,'total_amount_cent'=>$total];
+    }
+
     protected function assertLegacyRematch(array $list)
     {
         if ($list['source_type'] !== 'recommendation_package') return;
-        $packageId = Db::name('shop_recommendation_package')->where('package_sn',$list['source_ref'])->value('id');
+        $package = Db::name('shop_recommendation_package')->where('package_sn',$list['source_ref'])->find();
+        if ($package && AgentMealSourceService::referenceSource(Json::decode($package['agent_source_proof_json'] ?? '{}', [])) !== null) {
+            throw new DomainException('商品按已选规格采购，调整商品请重新查询',40944,409);
+        }
+        $packageId = $package['id'] ?? 0;
         $v = Db::name('shop_recommendation_package_version')->where('package_id',$packageId)->where('version_no',$list['source_version'])->find();
         if ($v && AgentSkuSelectionService::hasDirect(Json::decode($v['requirements_snapshot_json'],[]))) {
             throw new DomainException('本清单由Agent选定规格，食材准备或替换请由Agent重新生成采购来源',40944,409);

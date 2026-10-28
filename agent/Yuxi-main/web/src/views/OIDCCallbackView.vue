@@ -29,15 +29,13 @@
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { useAgentStore } from '@/stores/agent'
 import { authApi } from '@/apis/auth_api'
 import { message } from 'ant-design-vue'
-import { clearAutoStartAttempt } from '@/utils/oidcAutoStart'
+import { clearAutoStartAttempt, resolveLoginRedirect } from '@/utils/oidcAutoStart'
 
 const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
-const agentStore = useAgentStore()
 
 // 状态
 const loading = ref(true)
@@ -68,45 +66,12 @@ const handleCallback = async () => {
 
     await router.replace({ path: route.path, query: {} })
 
-    // 更新用户状态
-    userStore.token = tokenData.access_token
-    userStore.userId = tokenData.uid
-    userStore.username = tokenData.username
-    userStore.uid = tokenData.uid || ''
-    userStore.phoneNumber = tokenData.phone_number || ''
-    userStore.avatar = tokenData.avatar || ''
-    userStore.userRole = tokenData.role || 'user'
-    userStore.departmentId = tokenData.department_id || null
-    userStore.departmentName = tokenData.department_name || ''
-
-    // 保存 token 到 localStorage
-    localStorage.setItem('user_token', tokenData.access_token)
-
-    // 显示成功消息
-    message.success('登录成功')
-
-    // 获取重定向路径并清理 OIDC 相关标记
-    const redirectPath = sessionStorage.getItem('oidc_redirect') || '/'
+    userStore.applySession(tokenData)
+    const redirectPath = resolveLoginRedirect(sessionStorage.getItem('oidc_redirect'))
+    await router.replace(redirectPath)
     sessionStorage.removeItem('oidc_redirect')
     clearAutoStartAttempt()
-
-    loading.value = false
-
-    // 延迟跳转，让用户看到成功提示
-    setTimeout(async () => {
-      // 跳转
-      if (redirectPath === '/') {
-        try {
-          await agentStore.initialize()
-          router.push('/agent')
-        } catch (err) {
-          console.error('获取智能体信息失败:', err)
-          router.push('/agent')
-        }
-      } else {
-        router.push(redirectPath)
-      }
-    }, 500)
+    message.success('登录成功')
   } catch (err) {
     console.error('OIDC 回调处理失败:', err)
     loading.value = false
@@ -120,7 +85,7 @@ const handleCallback = async () => {
 onMounted(async () => {
   // 如果已登录，跳转到首页
   if (userStore.isLoggedIn) {
-    router.push('/')
+    router.replace(resolveLoginRedirect(sessionStorage.getItem('oidc_redirect')))
     return
   }
 

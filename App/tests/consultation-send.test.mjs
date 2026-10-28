@@ -4,9 +4,11 @@ import {readFileSync} from 'node:fs'
 import {ref,computed,reactive,nextTick} from 'vue'
 import {mealQuestionAction} from '../src/services/daily-meal-plan.js'
 
+import {parseChatMealIntent} from '../src/utils/chat-meal-intent.js'
+
 function setup({linked=true,available=true,entry=true,notice='',error='',prepared=true,initialized=true,initializationError=''}={}){
   const toasts=[],submits=[]
-  const deps={ref,computed,reactive,nextTick,mealQuestionAction,onShow(){},onHide(){},onMounted(){},onUnmounted(){},defineProps:()=>({route:{}}),
+  const deps={ref,computed,reactive,nextTick,mealQuestionAction,parseChatMealIntent,onShow(){},onHide(){},onMounted(){},onUnmounted(){},defineProps:()=>({route:{}}),
     storageContext:()=> 'account:family',getSession:()=>({token:'synthetic',householdId:'family'}),
     dailyArrangementState:()=>({phase:prepared?'ready':'error',error:'配餐数据未就绪',busy:false}),
     createDailyArrangementClient:()=>({reset(){},dispose(){}}),

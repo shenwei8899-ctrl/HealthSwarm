@@ -113,8 +113,11 @@ export function checkCurrentEntry(options) {
   const current=()=>scope===storageContext()||!account?.householdId&&account?.accountId===getSession()?.accountId&&account?.token===getSession()?.token
   entryCheck=(async()=>{
     try {
-      const entry=await resolveAppEntry({force:true})
+      const entry=await resolveAppEntry({fresh:true})
       if(!current()||navigationFlight)return
+      // A late foreground check must not replace a page opened while it was
+      // validating the previous route.
+      if(currentRoute(options)!==initialRoute)return
       const route=currentRoute(options),target=protectedDestination(route,entry)
       if(target!==route) {
         const result=await forward('reLaunch',{url:target})

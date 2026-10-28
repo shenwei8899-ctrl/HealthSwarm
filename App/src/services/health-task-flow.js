@@ -19,6 +19,18 @@ const terminalStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupt
 const privateFailure = error => [401, 403, 404, 409, 410].includes(Number(error?.code))
 const uncertainFailure = error => error?.code === 'NETWORK_ERROR' || Number(error?.code) >= 500
 const mismatch = () => Object.assign(new Error('任务与当前成员或线程不一致，请返回重新核对'), { code: 'TASK_MISMATCH' })
+const streamState = () => ({ streamText: '', streamMessageId: '', streamOffset: 0, streamPhase: '', streamStatus: '', queuePosition: null })
+const streamLabels = { queued: '请求已收到，正在排队', running: '正在结合资料整理建议', validating: '正在核对内容与资料来源',
+  streaming: '正在生成回答', finalizing: '正在整理最终结果', reconnecting: '连接暂时中断，正在恢复回答', cancelling: '正在停止生成' }
+function newerCursor(next, previous = '0-0') {
+  if (!/^\d+-\d+$/.test(next || '')) return false
+  const a = next.split('-'), b = previous.split('-')
+  for (let i = 0; i < 2; i++) {
+    if (a[i].length !== b[i].length) return a[i].length > b[i].length
+    if (a[i] !== b[i]) return a[i] > b[i]
+  }
+  return false
+}
 
 
 export function createHealthTaskFlow({ send = request, session = getSession, revision = sessionRevision,
@@ -28,17 +40,19 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   pollInterval = 2000, pollLimit = 45, daily = false, day = () => new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10) } = {}) {
   let indicatorSelection = null, forceNewEntry = false
   let epoch = 0, readVersion = 0, timer = null, polls = 0, pendingQuery = '', storageKey = ''
-  let streams = [], streamKey = '', streamAttempts = 0, cursors = {}, pendingImages = []
+  let streams = [], streamKey = '', streamAttempts = 0, streamEpoch = 0, cursors = {}, pendingImages = [], cancelRequested = false
   let state = { memberId: '', taskType: '', title: '', loading: false, busy: false, available: false,
-    consentOption: null, entry: null, requestId: '', runId: '', requests: [], submitUnknown: false, status: '', result: null, error: '', notice: '' }
+    consentOption: null, entry: null, requestId: '', runId: '', requests: [], submitUnknown: false, status: '', result: null, error: '', notice: '', ...streamState() }
   const emit = () => onChange({ ...state, canRetry: (!!pendingQuery || pendingImages.length > 0) && state.submitUnknown,
     pendingText:state.submitUnknown?pendingQuery:'',pendingImages:state.submitUnknown?[...pendingImages]:[],
     entry: state.entry && { ...state.entry }, result: state.result && { ...state.result } })
   const token = () => ({ epoch, revision: revision(), accountId: session()?.accountId })
   const current = ticket => ticket.epoch === epoch && ticket.revision === revision() &&
     ticket.accountId && ticket.accountId === session()?.accountId
-  function stopStreams() { const old = streams; streams = []; streamKey = ''; old.forEach(close => close()) }
+  function stopStreams() { streamEpoch++; const old = streams; streams = []; streamKey = ''; old.forEach(close => close?.()) }
   function stop() { if (timer !== null) cancel(timer); timer = null; polls = 0; streamAttempts = 0; stopStreams() }
+  function phase(value) { state.streamPhase = value; state.streamStatus = streamLabels[value] || '' }
+  function clearStream() { Object.assign(state, streamState()); cancelRequested = false }
   const invalidKey = () => `health-chat-invalid:${state.memberId}:${day()}`
   function invalidateThread() {
     if (daily && state.entry?.thread_id) {
@@ -51,14 +65,15 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
     epoch++; readVersion++; state.busy = false; state.loading = false
     stop(); pendingQuery = ''; pendingImages = []; state.entry = null; state.requestId = ''; state.submitUnknown = false
     state.result = null; state.requests = []; state.runId = ''; state.available = false; state.consentOption = null; state.status = ''; state.error = message;state.invalidated=true
+    clearStream()
     if (storageKey) storage.setStorageSync(storageKey, null)
     emit()
   }
   function hide() {
     forceNewEntry = false
-    epoch++; readVersion++; stop(); pendingQuery = ''; pendingImages = []; storageKey = ''; cursors = {}
+    epoch++; readVersion++; stop(); pendingQuery = ''; pendingImages = []; storageKey = ''; cursors = {}; cancelRequested = false
     state = { memberId: '', taskType: '', title: '', loading: false, busy: false, available: false,
-      consentOption: null, entry: null, requestId: '', runId: '', requests: [], submitUnknown: false, status: '', result: null, error: '', notice: '' }
+      consentOption: null, entry: null, requestId: '', runId: '', requests: [], submitUnknown: false, status: '', result: null, error: '', notice: '', ...streamState() }
     emit()
   }
   // A covered page keeps its task and uncertain submission, but rejects late callbacks.
@@ -251,6 +266,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
     const ticket = token()
     if (!retry) {
       stop(); readVersion++; state.requestId = newId(); state.runId = ''; pendingQuery = text; pendingImages = [...selectedImages]
+      clearStream(); phase('queued')
       state.requests = [...state.requests, { request_id: state.requestId, status: '提交中' }].slice(-50)
       state.submitUnknown = true; state.status = '提交中'; state.result = null; save()
     }
@@ -286,6 +302,8 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       state.submitUnknown = false; pendingQuery = ''; pendingImages = []; state.status = data.execution_status === 'not_dispatched'
         ? data.request_status : data.execution_status
       state.runId = data.run_id || ''
+      if (!state.streamText && !cancelRequested && !['validating', 'reconnecting', 'finalizing'].includes(state.streamPhase))
+        phase(state.status === 'queued' || state.status === 'pending' ? 'queued' : 'running')
       const known = state.requests.some(row => row.request_id === expectedId)
       state.requests = known ? state.requests.map(row => row.request_id === expectedId ? { ...row, status: state.status } : row) : [...state.requests, { request_id: expectedId, status: state.status }]
       if (data.result?.result_type === 'error') state.result = { type: 'error', code: data.result.code, retryable: data.result.retryable === true }
@@ -309,8 +327,13 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
           state.result = { type: 'business', kind: data.result.result_type, data: data.result.data }
         } else throw mismatch()
       }
+      const terminal = terminalStatuses.has(data.execution_status) || ['cancelled', 'rejected', 'failed'].includes(data.request_status)
+      if (terminal) {
+        // 增量只用于当前生成预览；完成内容与失败状态始终由业务结果决定。
+        clearStream(); state.streamPhase = state.status
+      }
       save(); emit()
-      if (!terminalStatuses.has(data.execution_status) && !['cancelled', 'rejected', 'failed'].includes(data.request_status)) {
+      if (!terminal) {
         startPolling(givenTicket); startStreams(givenTicket)
       }
       else stop()
@@ -321,32 +344,77 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
           ? '提交结果尚未确认；可重新读取，或在本页用同一请求键重试。'
           : '提交结果尚未确认；请重新读取同一请求，暂勿重复提问。'
         emit()
-      } else handle(error, givenTicket, {preserveResult})
+      } else {
+        handle(error, givenTicket, {preserveResult})
+        if (current(givenTicket) && uncertainFailure(error) && !state.submitUnknown && !terminalStatuses.has(state.status)) {
+          phase('reconnecting'); emit(); startPolling(givenTicket)
+        }
+      }
     }
   }
   function startPolling(ticket) {
     if (timer !== null || !current(ticket)) return
-    if (polls >= pollLimit) { stopStreams(); state.notice = '等待已暂停，服务端可能仍在执行。请手动读取同一任务。'; emit(); return }
+    if (polls >= pollLimit) {
+      stopStreams(); state.notice = '等待已暂停，服务端可能仍在执行。请手动读取同一任务。'
+      state.streamPhase = 'paused'; state.streamStatus = state.notice; emit(); return
+    }
     timer = schedule(() => { timer = null; polls++; void refresh(ticket) }, pollInterval)
   }
   function startStreams(ticket) {
     const id = state.requestId, runId = state.runId, key = `${id}:${runId}`
-    if (streamKey === key || streamAttempts >= 5) return
+    if (streamKey === key || streamAttempts >= 5 || cancelRequested) return
     stopStreams(); streamKey = key; streamAttempts++
+    const generation = streamEpoch
+    const active = () => current(ticket) && generation === streamEpoch && id === state.requestId && runId === state.runId
     const options = { requestId: id, onEvent(event) {
-      if (!current(ticket) || id !== state.requestId || (event.requestId && event.requestId !== id) || (event.runId && runId && event.runId !== runId)) return
-      if (event.id && runId) { cursors[runId] = event.id; save() }
+      if (!active() || (event.requestId && event.requestId !== id) || (event.runId && runId && event.runId !== runId) ||
+        (event.threadId && event.threadId !== state.entry?.thread_id)) return
+      if (event.id && runId) {
+        if (!newerCursor(event.id, cursors[runId])) return
+        cursors[runId] = event.id; save()
+      }
+      if (Number.isInteger(event.queuePosition)) { state.queuePosition = event.queuePosition; phase('queued'); emit() }
+      if (['running', 'validating'].includes(event.phase)) { phase(event.phase); emit() }
+      if (event.phase === 'streaming' && typeof event.content === 'string' && event.content &&
+        event.requestId === id && event.runId === runId && event.threadId === state.entry?.thread_id && event.id &&
+        Number.isInteger(event.offset) && event.offset >= 0 && typeof event.messageId === 'string' && event.messageId) {
+        if (event.messageId !== state.streamMessageId && event.offset === 0) {
+          state.streamMessageId = event.messageId; state.streamText = ''; state.streamOffset = 0
+        }
+        if (event.messageId !== state.streamMessageId || event.offset > state.streamOffset) {
+          // 游标仍在而页面未保留正文，或分帧缺失：从头重放公开增量，避免展示残缺拼接。
+          cursors[runId] = '0-0'; state.streamText = ''; state.streamMessageId = ''; state.streamOffset = 0; save()
+          stopStreams(); phase('reconnecting'); emit(); return
+        }
+        if (event.offset < state.streamOffset) return
+        if (state.streamText.length + event.content.length <= 200000) {
+          state.streamText += event.content
+          // 服务端 Python len 按 Unicode 码点计数，emoji 不能按 JS UTF-16 长度计算。
+          state.streamOffset += Array.from(event.content).length
+          streamAttempts = 0; polls = 0; phase('streaming'); emit()
+        }
+      }
+      if (event.type === 'end') { phase('finalizing'); emit() }
+      if (['cancelled', 'failed', 'rejected', 'error'].includes(event.type)) {
+        state.streamText = ''; state.streamMessageId = ''; state.streamOffset = 0
+        if (runId) cursors[runId] = '0-0'
+        stopStreams(); phase('finalizing'); save(); emit()
+      }
       if (['run_created', 'end', 'cancelled', 'failed', 'rejected', 'error'].includes(event.type)) void refresh(ticket)
-    }, onEnd() { if (current(ticket) && id === state.requestId) streamKey = '' }, onError(error) {
-      if (!current(ticket) || id !== state.requestId) return
-      streamKey = ''
+    }, onEnd() {
+      if (!active()) return
+      stopStreams()
+      if (!['finalizing', 'cancelling'].includes(state.streamPhase)) { phase('reconnecting'); emit() }
+    }, onError(error) {
+      if (!active()) return
       if ([401, 403, 404, 409, 410].includes(Number(error?.code))) { readVersion++; forgetPrivate('当前授权或来源已变化，请返回重新核对。') }
+      else { stopStreams(); phase('reconnecting'); emit() }
     } }
     streams.push(subscribe({ ...options, runId: runId || undefined, cursor: cursors[runId] || '0-0' }))
   }
   async function selectRequest(id) {
     if (state.busy || state.loading || state.submitUnknown || !state.requests.some(row => row.request_id === id)) return
-    stop(); readVersion++; state.requestId = id; state.runId = ''; state.result = null; state.status = ''; save()
+    stop(); readVersion++; clearStream(); state.requestId = id; state.runId = ''; state.result = null; state.status = ''; save()
     await refresh()
   }
   async function restoreRequest(id) {
@@ -364,6 +432,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   async function cancelRequest() {
     if (state.busy || !state.requestId || state.submitUnknown || terminalStatuses.has(state.status)) return
     const ticket = token(), id = state.requestId, runId = state.runId
+    cancelRequested = true; stopStreams(); state.streamText = ''; state.streamMessageId = ''; state.streamOffset = 0; phase('cancelling')
     state.busy = true; state.error = ''; emit()
     try {
       await send({ path: runId ? `/api/agent/runs/${encodeURIComponent(runId)}/cancel` : `/api/agent/requests/${encodeURIComponent(id)}/cancel`, method: 'POST' })

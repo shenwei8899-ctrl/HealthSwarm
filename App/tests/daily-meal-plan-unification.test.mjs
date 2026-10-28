@@ -1,3 +1,4 @@
+import {parseChatMealIntent} from '../src/utils/chat-meal-intent.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -15,6 +16,7 @@ test('view, generation and targeted change are distinct actions',()=>{
   assert.equal(mealQuestionAction('请帮我安排今天的三餐'),'generate')
   assert.equal(mealQuestionAction('把晚餐换成蒸鱼'),'change')
   assert.equal(mealQuestionAction('蔬菜怎么做更好吃'),'consultation')
+  assert.equal(mealQuestionAction('换个话题，糖尿病家庭怎么吃？'),'consultation')
 })
 
 test('daily plan response rejects wrong date and duplicate meal types',async()=>{
@@ -33,7 +35,7 @@ function mount({read=async()=>plan()}={}){
   const flow={hide(){},async open(memberId,taskType,selection){calls.push({action:'open',memberId,taskType,selection});notify({memberId,taskType,available:true,entry:{thread_id:'thread'}})},async submit(text){calls.push({action:'submit',text});return true},async refresh(){calls.push({action:'refresh'});notify({taskType:'reference_meal_preview',requestId:'req',status:'completed',available:true})}}
   const state=()=>({phase:'idle',busy:false})
   const deps={ref,reactive,computed,nextTick,defineProps:()=>({route:{}}),onMounted:fn=>hooks.mounted=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
-    chatPresentation,chooseReference:referenceSelection,isReferencePlan,readDailyMealPlan:read,mealQuestionAction,
+    parseChatMealIntent,chatPresentation,chooseReference:referenceSelection,isReferencePlan,readDailyMealPlan:read,mealQuestionAction,
     dailyArrangementState:state,createDailyArrangementClient:()=>({reset(){},dispose(){}}),
     createHealthTaskFlow:({onChange})=>{notify=onChange;return flow},
     HEALTH_TEXT_TASKS:{consultation:'咨询',reference_meal_preview:'餐单'},
@@ -62,6 +64,44 @@ test('changing dinner binds the current version and only requests dinner',async(
   assert.deepEqual(opened.selection.meal_types,['dinner']);assert.ok(h.calls.some(call=>call.action==='submit'));h.dispose()
 })
 
+test('revising a completed plan reopens its reference thread with the current daily version',async()=>{
+  const h=mount({read:async()=>plan(3)})
+  h.page.setReference({mode:'reference',family_id:'family',plan_date:today,participant_ids:['self'],meal_types:['dinner'],daily_base_version:2})
+  h.page.task.value={taskType:'reference_meal_preview',status:'completed',available:true,memberId:member,entry:{thread_id:'old-thread'}}
+  h.page.question.value='把晚餐换成蒸鱼';await h.page.sendQuestion()
+  const opened=h.calls.find(call=>call.action==='open')
+  assert.ok(opened,'a completed daily version must not submit through its old binding')
+  assert.equal(opened.selection.daily_base_version,3)
+  assert.deepEqual(opened.selection.meal_types,['dinner'])
+  assert.ok(h.calls.some(call=>call.action==='submit'));h.dispose()
+})
+
+test('an explicit breakfast revision narrows a completed three-meal plan',async()=>{
+  const h=mount({read:async()=>plan(3)})
+  h.page.setReference({mode:'reference',family_id:'family',plan_date:today,participant_ids:['self'],meal_types:['breakfast','lunch','dinner'],daily_base_version:2})
+  h.page.task.value={taskType:'reference_meal_preview',status:'completed',available:true,memberId:member,entry:{thread_id:'old-thread'}}
+  h.page.question.value='把早餐改成粥';await h.page.sendQuestion()
+  const opened=h.calls.find(call=>call.action==='open')
+  assert.deepEqual(opened?.selection.meal_types,['breakfast'])
+  assert.equal(opened.selection.daily_base_version,3);h.dispose()
+})
+
+for(const code of [404,409,410])test(`authoritative daily-plan refusal ${code} removes the saved private card`,async()=>{
+  let denied=false
+  const h=mount({read:async()=>{if(denied)throw Object.assign(new Error('来源不可读取'),{code});return plan()}})
+  await h.page.loadDailyPlan('family',today,0,'scope');assert.ok(h.page.todayPlan.value)
+  denied=true;await assert.rejects(()=>h.page.loadDailyPlan('family',today,0,'scope'))
+  assert.equal(h.page.todayPlan.value,null);h.dispose()
+})
+
+test('a transient daily-plan read failure preserves the last verified card',async()=>{
+  let denied=false
+  const h=mount({read:async()=>{if(denied)throw Object.assign(new Error('network'),{code:503});return plan()}})
+  await h.page.loadDailyPlan('family',today,0,'scope')
+  denied=true;await assert.rejects(()=>h.page.loadDailyPlan('family',today,0,'scope'))
+  assert.equal(h.page.todayPlan.value.version,1);h.dispose()
+})
+
 test('an earlier read cannot replace a later completed read for the same date',async()=>{
   const pending=[];const h=mount({read:()=>new Promise(resolve=>pending.push(resolve))})
   const a=h.page.loadDailyPlan('family',today,0,'scope'),b=h.page.loadDailyPlan('family',today,0,'scope')
@@ -86,8 +126,21 @@ test('a short answer continues the bound meal question and keeps its original se
   const h=mount();const selection={mode:'reference',family_id:'family',plan_date:today,participant_ids:['self'],meal_types:['dinner'],daily_base_version:1}
   h.page.setReference(selection);h.page.task.value={taskType:'reference_meal_preview',result:{type:'needs_input'},available:true,memberId:member,entry:{thread_id:'thread'}}
   h.page.question.value='不吃花生';await h.page.sendQuestion()
-  const opened=h.calls.find(call=>call.action==='open');assert.equal(opened.taskType,'reference_meal_preview')
-  assert.deepEqual(opened.selection,selection);assert.ok(h.calls.some(call=>call.action==='submit'&&call.text==='不吃花生'));h.dispose()
+  assert.equal(h.calls.filter(call=>call.action==='open').length,0)
+  assert.equal(h.page.task.value.taskType,'reference_meal_preview');assert.ok(h.calls.some(call=>call.action==='submit'&&call.text==='不吃花生'));h.dispose()
+})
+
+test('a needs-input answer preserves all bound diners and meals even when the saved plan differs',async()=>{
+  const h=mount()
+  h.page.profile.value.members.push({id:'other',healthMemberId:'other-health'})
+  const selection={mode:'reference',family_id:'family',plan_date:today,participant_ids:['other','self'],meal_types:['breakfast','lunch','dinner'],daily_base_version:1}
+  h.page.setReference(selection)
+  h.page.task.value={taskType:'reference_meal_preview',result:{type:'needs_input'},available:true,memberId:member,entry:{thread_id:'thread'}}
+  h.page.question.value='早餐加点豆浆';await h.page.sendQuestion()
+  assert.deepEqual(selection.participant_ids,['other','self'])
+  assert.deepEqual(selection.meal_types,['breakfast','lunch','dinner'])
+  assert.equal(h.calls.filter(call=>call.action==='open').length,0)
+  assert.ok(h.calls.some(call=>call.action==='submit'));h.dispose()
 })
 
 

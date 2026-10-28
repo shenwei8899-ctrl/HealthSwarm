@@ -118,6 +118,7 @@ export async function apiRequest(url, options = {}, requiresAuth = true, respons
       }
     }
 
+    let requestToken = ''
     // 如果需要认证，添加认证头
     if (requiresAuth) {
       const userStore = useUserStore()
@@ -125,6 +126,7 @@ export async function apiRequest(url, options = {}, requiresAuth = true, respons
         throw new Error('用户未登录')
       }
 
+      requestToken = userStore.token
       Object.assign(requestOptions.headers, userStore.getAuthHeaders())
     }
 
@@ -165,22 +167,20 @@ export async function apiRequest(url, options = {}, requiresAuth = true, respons
       }
 
       if (response.status === 401 && requiresAuth) {
-        // 如果是认证失败，可能需要重新登录
         const userStore = useUserStore()
-
-        message.error('登录已过期，请重新登录')
-
-        // 如果用户当前认为自己已登录，则登出
-        if (userStore.isLoggedIn) {
+        // 仅使发起请求的会话失效；迟到的旧响应不能退出新登录。
+        error.handled = true
+        if (userStore.token === requestToken) {
           userStore.logout()
+          message.error('登录已过期，请重新登录')
+          if (window.location.pathname !== '/login') {
+            sessionStorage.setItem(
+              'redirect',
+              window.location.pathname + window.location.search + window.location.hash
+            )
+            window.location.replace('/login')
+          }
         }
-
-        // 使用setTimeout确保消息显示后再跳转
-        setTimeout(() => {
-          window.location.href = '/login'
-        }, 1500)
-
-        throw error
       } else if (response.status === 403) {
         throw error
       } else if (response.status === 500) {

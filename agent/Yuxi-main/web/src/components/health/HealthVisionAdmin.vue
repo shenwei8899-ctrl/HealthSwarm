@@ -6,6 +6,8 @@ import { message } from 'ant-design-vue'
 import { healthVisionApi } from '@/apis/health_vision_api'
 import { nutrientLabels } from '@/utils/healthVision'
 import RecipePortionAdmin from './RecipePortionAdmin.vue'
+import NutritionSourcePicker from './NutritionSourcePicker.vue'
+import HealthRulesAdmin from './HealthRulesAdmin.vue'
 const props = defineProps({ configuration: { type: Object, required: true } })
 const emit = defineEmits(['saved'])
 const openSettings = inject('settingsModal', null)?.openSettingsModal
@@ -281,6 +283,7 @@ async function publishFood() {
           placeholder="未知"
       /></label>
     </div>
+    <NutritionSourcePicker :disabled="busy" @selected="food.source = $event" />
     <a-checkbox v-model:checked="food.recipe_estimated"
       >此记录为配方估算（计算结果标记为估算）</a-checkbox
     >
@@ -292,6 +295,7 @@ async function publishFood() {
   <RecipePortionAdmin :food-count="configuration.food_count" @saved="emit('saved')" />
   <HealthDailySetup />
   <HealthNutritionImport />
+  <HealthRulesAdmin />
 </template>
 
 <style scoped lang="less">

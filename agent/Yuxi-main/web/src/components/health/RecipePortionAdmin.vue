@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { healthVisionApi } from '@/apis/health_vision_api'
+import NutritionSourcePicker from './NutritionSourcePicker.vue'
 const props = defineProps({ foodCount: { type: Number, default: 0 } })
 const emit = defineEmits(['saved'])
 const busy = ref(false)
@@ -147,6 +148,7 @@ async function publishPortion() {
           placeholder="实际测量烹饪后的可食净重"
       /></label>
     </div>
+    <NutritionSourcePicker :disabled="busy" @selected="recipe.source = $event" />
     <div v-for="(ingredient, index) in recipe.ingredients" :key="index" class="ingredient grid">
       <label
         >原料版本<a-select

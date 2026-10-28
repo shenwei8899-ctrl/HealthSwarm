@@ -88,6 +88,35 @@ test('App foreground restoration and page request retain identity revision until
   delete globalThis.getCurrentPages
 })
 
+test('foreground revalidation is fresh and leaves the current page visible while the network is pending',async()=>{
+  const {redirects}=storage();let finish,options
+  setSession({accountId:'17',householdId:'home',token:'synthetic',authSource:'wechat'})
+  const page={route:'pages/chat/index',options:{}}
+  globalThis.getCurrentPages=()=>[page]
+  const nav=navigation(input=>{options=input;return new Promise(done=>finish=done)})
+  const checking=nav.checkCurrentEntry({path:'pages/chat/index'})
+  await Promise.resolve()
+  assert.deepEqual(options,{fresh:true})
+  assert.deepEqual(redirects,[])
+  assert.equal(getCurrentPages()[0],page)
+  finish('/pages/chat/index');await checking
+  assert.deepEqual(redirects,[])
+  delete globalThis.getCurrentPages
+})
+
+test('a late foreground result cannot jump back from a different page opened during validation',async()=>{
+  const {redirects}=storage();let finish
+  setSession({accountId:'17',householdId:'home',token:'synthetic',authSource:'wechat'})
+  let page={route:'pages/chat/index',options:{}}
+  globalThis.getCurrentPages=()=>[page]
+  const nav=navigation(()=>new Promise(done=>finish=done))
+  const checking=nav.checkCurrentEntry({path:'pages/chat/index'})
+  await Promise.resolve();page={route:'pages/profile/index',options:{}}
+  finish('/pages/onboarding/index');await checking
+  assert.deepEqual(redirects,[])
+  delete globalThis.getCurrentPages
+})
+
 test('concurrent foreground checks issue one native navigation until completion',async()=>{
   storage();const calls=[]
   uni.reLaunch=options=>calls.push(options)

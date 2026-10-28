@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import {createEntryCoordinator} from '../src/services/entry-routing.js'
 import {readFileSync} from 'node:fs'
 
 function cacheHarness() {
@@ -7,12 +8,13 @@ function cacheHarness() {
   let session={accountId:'a',householdId:'family-a',token:'synthetic'}
   const source=readFileSync(new URL('../src/services/app-entry.js',import.meta.url),'utf8').replace(/^import .*$/gm,'').replace(/export /g,'')
   const deps={
-    scopedStorage:{getStorageSync:()=>preparing},storageContext:()=>scope,
+    createEntryCoordinator:options=>createEntryCoordinator({...options,now:()=>now}),
+    scopedStorage:{getStorageSync:key=>key==='onboarding-preparation-pending'?preparing:null},storageContext:()=>scope,
     createEntryResolver:()=>async()=>{reads++;return route},wechatAuth:{},loadCloudProfile(){},
     getSession:()=>session,pendingInvitation:()=>invite,invitationRoute:()=>'',Date:{now:()=>now},
   }
   const cache=new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {resolveAppEntry,rememberChatEntry}`)(deps)
-  return {cache,get reads(){return reads},setScope:value=>scope=value,setInvitation:value=>invite=value,
+  return {cache,get reads(){return reads},setScope:value=>{scope=value;session={...session,clientRevision:value}},setInvitation:value=>invite=value,
     setPreparing:value=>preparing=value,setTime:value=>now=value,setRoute:value=>route=value,setSession:value=>session=value}
 }
 test('verified chat is immediately navigable for the same account and household',async()=>{
@@ -31,9 +33,9 @@ test('session, invitation and pending preparation changes invalidate the cached 
 test('foreground forced verification discards prior cached success',async()=>{
   const h=cacheHarness();h.cache.rememberChatEntry({householdId:'family-a',onboarded:true})
   h.setRoute('/pages/onboarding/index')
-  assert.equal(await h.cache.resolveAppEntry({force:true}),'/pages/onboarding/index')
+  assert.equal(await h.cache.resolveAppEntry({fresh:true}),'/pages/onboarding/index')
   assert.equal(await h.cache.resolveAppEntry(),'/pages/onboarding/index')
-  assert.equal(h.reads,2)
+  assert.equal(h.reads,1)
 })
 test('a profile from another family cannot seed the cache',async()=>{
   const h=cacheHarness();h.cache.rememberChatEntry({householdId:'family-b',onboarded:true})

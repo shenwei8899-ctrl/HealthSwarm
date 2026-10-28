@@ -10,15 +10,16 @@ class AgentMealSourceService
     public static function referenceSource(array $proof)
     {
         $source = Json::decode($proof['payload'] ?? '{}', []);
-        return in_array($source['kind'] ?? '', ['reference_plan', 'conversation_catalog'], true) ? $source : null;
+        return ($source['kind'] ?? '') === 'reference_plan' ||
+            (($source['kind'] ?? '') === 'conversation_catalog' && ($source['trade_policy'] ?? '') === 'catalog_v1') ? $source : null;
     }
 
-    private static function referenceMenu(array $source)
+    /** 采购版本由签名来源绑定，客户端不能借用另一段对话。 */
+    private static function referenceVersion(array $source)
     {
-        $conversation = ($source['kind'] ?? '') === 'conversation_catalog';
-        $id = $source[$conversation ? 'request_id' : 'preview_id'] ?? '';
-        if (!is_string($id) || $id === '') throw new DomainException('参考商品缺少来源标识', 40301, 403);
-        return ($conversation ? 'conversation:' : 'reference:') . $id;
+        return ($source['kind'] ?? '') === 'conversation_catalog'
+            ? 'conversation:' . ($source['request_id'] ?? '')
+            : 'reference:' . ($source['preview_id'] ?? '');
     }
 
     public static function nutritionAllowsTrade(array $package)
@@ -37,7 +38,9 @@ class AgentMealSourceService
         if (($verified['selection_mode'] ?? '') !== 'reference' ||
             ($payload['nutrition_validation']['status'] ?? '') !== 'reference_only' ||
             ($payload['user_ref'] ?? '') !== 'uid:' . ($source['uid'] ?? '') ||
-            ($payload['menu_version_ref'] ?? '') !== self::referenceMenu($source)) {
+            ($payload['menu_version_ref'] ?? '') !== self::referenceVersion($source) ||
+            (($source['kind'] ?? '') === 'conversation_catalog' &&
+                (($payload['family_ref'] ?? '') !== self::referenceVersion($source) || !empty($payload['ingredient_requirements'])))) {
             throw new DomainException('日常参考来源或状态不一致', 40301, 403);
         }
         $this->assertReferenceItems($payload['items'] ?? [], $verified['items'] ?? []);
@@ -71,7 +74,8 @@ class AgentMealSourceService
         $proof = Json::decode($row['agent_source_proof_json'] ?? '{}', []);
         $source = self::referenceSource($proof);
         if (($row['user_ref'] ?? '') !== 'uid:' . ($source['uid'] ?? '') ||
-            ($row['menu_version_ref'] ?? '') !== self::referenceMenu($source)) {
+            ($row['menu_version_ref'] ?? '') !== self::referenceVersion($source) ||
+            (($source['kind'] ?? '') === 'conversation_catalog' && ($row['family_ref'] ?? '') !== self::referenceVersion($source))) {
             throw new DomainException('参考商品账号来源不一致', 40301, 403);
         }
         (new IdentityService())->assertOwner($row['user_id'],

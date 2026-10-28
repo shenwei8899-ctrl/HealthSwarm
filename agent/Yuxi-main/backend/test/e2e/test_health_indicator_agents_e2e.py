@@ -160,7 +160,9 @@ async def test_indicator_topic_tool_real_worker_and_source_invalidation(indicato
                 assert source["kb_id"] == kb_id and f"[资料:{source['source_id']}]" in answer
                 assert source["filename"] in answer
         calls = (await runtime.replay.get("/observations", params={"token": token})).json()["calls"]
-        assert calls == [{"kind": kind, "mode": "education", "phase": phase} for phase in ("education", "answer")]
+        assert calls == [
+            {"kind": kind, "mode": "education", "phase": phase} for phase in ("education", "finalize", "answer")
+        ]
         read = await subject.client.get(f"{ROOT}/tasks/{request_id}", headers=subject.headers)
         assert read.status_code == 200 and read.json()["result"]["answer"] == answer, read.text
         async with pg_manager.get_async_session_context() as session:
@@ -244,7 +246,7 @@ async def test_three_indicator_agents_current_records_citations_correction_and_v
         await assert_indicator_result(subject, first, first_run, kind, use_model, record["id"], 1, evidence_id)
         before = (await runtime.replay.get("/observations", params={"token": token})).json()["calls"]
         assert before == [
-            {"kind": kind, "mode": "read", "phase": phase} for phase in ("records", "knowledge", "answer")
+            {"kind": kind, "mode": "read", "phase": phase} for phase in ("records", "knowledge", "finalize", "answer")
         ]
         corrected = await correct_record(subject, record["id"])
         assert corrected["version"] == 2

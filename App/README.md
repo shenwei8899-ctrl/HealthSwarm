@@ -30,6 +30,16 @@ pnpm build:mp-weixin
 
 `dist` 是生成产物，修改应在 `src` 内完成，不直接编辑产物。
 
+真实微信登录使用单独的 API 构建入口，明确指定已在微信公众平台登记、并已接到对应后台的 HTTPS 地址和 AppID：
+
+```bash
+npm run build:mp-weixin:api -- --api-base-url https://api.example.com --commerce-base-url https://shop.example.com --appid wx0123456789abcdef
+```
+
+以上地址和 AppID 是占位示例，需替换为实际配置。加上 `--check-only` 可只检查服务。正式入口先核对 Agent 微信配置、AppID、就绪状态和商城鉴权接口，通过后才构建；拒绝临时 `trycloudflare.com` 域名，并固定关闭本机测试登录、演示手机号和本机 HTTP 开关。预检失败不会覆盖已有产物，也不会回退模拟模式；构建完成后再核对产物中的 API 地址、AppID 和合法域名校验开关。
+
+微信的合法域名登记不会自动把请求转发到 Agent。若已登记域名的 `/api/auth/wechat/config` 或 `/api/system/ready` 返回 404，需要先修复该域名服务器的路由；仅替换前端地址仍无法登录。完成正式构建后，在开发者工具中导入当前构建目录，刷新“详情 → 域名信息”并重新编译。
+
 ## 配套业务服务
 
 聊天恢复、今日饮食计划与建档准备使用同一版本的 Agent 后端；每日计划的来源引用和准备记录需要健康 Schema 33。部署时先使用后端既有迁移入口完成版本升级，再启动 API 与 Worker，不能只替换前端包。参考餐单保留来源、营养未核算和未专业审核标记；缺少配置时显示实际原因。

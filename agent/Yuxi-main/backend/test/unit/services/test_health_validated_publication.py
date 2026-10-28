@@ -51,8 +51,10 @@ def controlled_publication_mutation(monkeypatch, request):
                 agent_run_service,
                 "stream_agent_run_events",
                 "if run.agent_slug in EDUCATION_HEALTH_AGENTS:\n"
+                "                    original_envelope = envelope\n"
                 "                    envelope = _public_health_run_event",
-                "if False:\n                    envelope = _public_health_run_event",
+                "if False:\n                    original_envelope = envelope\n"
+                "                    envelope = _public_health_run_event",
             )
         ],
         "state": [

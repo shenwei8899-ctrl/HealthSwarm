@@ -46,6 +46,7 @@ from yuxi.repositories.tool_message_audit_repository import ToolMessageAuditRepo
 from yuxi.services.agent_run_manifest_service import PreparedRunExecution
 from yuxi.services.attachment_service import serialize_attachment
 from yuxi.services.input_message_service import AgentRunInputMessage
+from yuxi.services.health_answer_stream import TrustedHealthFinalAnswerStream
 from yuxi.services.langfuse_service import (
     LangfuseRunContext,
     build_run_context,
@@ -65,6 +66,20 @@ from yuxi.utils.question_utils import (
     normalize_questions as _normalize_interrupt_questions,
 )
 from yuxi.utils.thread_utils import extract_thread_id as _metadata_thread_id
+
+
+async def validate_health_stream_prefix(context, content: str) -> None:
+    """公开完整科普句段前重验当前执行、成员授权及同轮来源。"""
+    from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
+    from yuxi.services.health_evidence_service import validate_evidence_publication
+    from yuxi.services.health_family_profile_service import validate_profile_publication
+
+    async with pg_manager.get_async_session_context() as session:
+        run = await HealthConsultationRepository(session).require_attempt(context, lock=True)
+        if run.agent_slug not in EDUCATION_HEALTH_AGENTS:
+            raise ValueError("只有科普答复可以公开校验后的消息预览")
+        await validate_profile_publication(session, run)
+        await validate_evidence_publication(session, run, content)
 
 
 def _with_attachment_context(message: HumanMessage, attachments: list[dict]) -> HumanMessage:
@@ -1133,6 +1148,16 @@ async def stream_agent_chat(
     )
 
     withhold_health_output = agent_item.slug in EDUCATION_HEALTH_AGENTS
+    answer_stream = (
+        TrustedHealthFinalAnswerStream(
+            lambda content: validate_health_stream_prefix(context, content),
+            request_id=context.request_id,
+            run_id=context.run_id,
+            thread_id=thread_id,
+        )
+        if withhold_health_output
+        else None
+    )
     accumulated_content: list[str] = []
     trace_info: dict[str, Any] = {}
     last_agent_state_signature = ""
@@ -1228,6 +1253,13 @@ async def stream_agent_chat(
 
                 if mode == "custom":
                     if withhold_health_output:
+                        delta = await answer_stream.consume(payload)
+                        if delta:
+                            yield make_chunk(
+                                status="health_answer_delta",
+                                delta=delta,
+                                validated_prefix=answer_stream.prefix[: answer_stream.published],
+                            )
                         continue
                     compression = _context_compression_payload(payload)
                     if compression is not None:
@@ -1461,6 +1493,16 @@ async def stream_agent_resume(
 
     conv_repo = ConversationRepository(db)
     withhold_health_output = agent_item.slug in EDUCATION_HEALTH_AGENTS
+    answer_stream = (
+        TrustedHealthFinalAnswerStream(
+            lambda content: validate_health_stream_prefix(context, content),
+            request_id=context.request_id,
+            run_id=context.run_id,
+            thread_id=thread_id,
+        )
+        if withhold_health_output
+        else None
+    )
     if withhold_health_output:
         yield make_resume_chunk(status="health_progress", phase="running", message="正在回顾记录与审核知识")
     resume_command = Command(resume=resume_input)
@@ -1544,6 +1586,13 @@ async def stream_agent_resume(
 
                 if mode == "custom":
                     if withhold_health_output:
+                        delta = await answer_stream.consume(payload)
+                        if delta:
+                            yield make_resume_chunk(
+                                status="health_answer_delta",
+                                delta=delta,
+                                validated_prefix=answer_stream.prefix[: answer_stream.published],
+                            )
                         continue
                     compression = _context_compression_payload(payload)
                     if compression is not None:

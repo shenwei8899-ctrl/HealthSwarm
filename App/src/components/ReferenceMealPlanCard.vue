@@ -3,6 +3,7 @@ import {ref,onUnmounted} from 'vue'
 import {request} from '../services/request.js'
 import {commerce} from '../services/commerce.js'
 import {storageContext} from '../services/storage.js'
+import {sourceTitle} from '../utils/ai-answer.js'
 const props=defineProps({plan:{type:Object,required:true}})
 const expanded=ref(false),busy=ref(false),error=ref('')
 const names={breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}
@@ -37,7 +38,7 @@ async function purchase(){
    <text class="meal-title">{{names[meal.meal_type]}}</text>
    <view v-for="(dish,index) in meal.dishes" :key="dish.file_id+index" class="reference-dish">
     <text class="dish-name">{{dish.name}}</text><text>{{dish.portion_note}}</text><text v-if="dish.portion_quote">原食谱份量：{{dish.portion_quote}}</text>
-    <text class="source-name">来源：{{dish.source.filename}}</text>
+    <text v-if="sourceTitle(dish.source?.filename)" class="source-name">来源：{{sourceTitle(dish.source?.filename)}}</text>
     <template v-if="expanded"><text>食材原文：{{dish.ingredients.join('；')}}</text><text v-for="(step,i) in dish.steps" :key="i">{{i+1}}. {{step}}</text><text v-if="dish.nutrition_quote">原食谱营养说明：{{dish.nutrition_quote}}</text><text class="reference-note">个人营养量尚未核算，未知值不按零处理。</text></template>
    </view>
   </view>

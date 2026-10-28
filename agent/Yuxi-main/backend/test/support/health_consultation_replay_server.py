@@ -1,5 +1,6 @@
 """只接受合成健康咨询的本地协议重放，不代理任何供应商。"""
 
+import hashlib
 import json
 import re
 import time
@@ -19,6 +20,7 @@ SAFE_PLANNER_TOOLS = {
 }
 TOOLS = {
     "find_food_packages",
+    "select_food_products",
     "get_confirmed_profile",
     "get_confirmed_diet",
     "get_complete_health_profile",
@@ -741,6 +743,45 @@ def validate_request(authorization, body):
     return token, step, call_id, bool(results), record_ids
 
 
+def final_answer_request(body, expected_tools):
+    """把新两阶段协议交给既有业务oracle；旧单元fixture仍按旧协议独立校验。"""
+    messages = body.get("messages", [])
+    user_index = max((index for index, item in enumerate(messages) if item.get("role") == "user"), default=-1)
+    query = str(messages[user_index].get("content", "")) if user_index >= 0 else ""
+    finalize_id = "health-finalize-" + hashlib.sha256(query.encode()).hexdigest()[:32]
+    finalized = any(
+        item.get("role") == "tool" and item.get("tool_call_id") == finalize_id for item in messages[user_index + 1 :]
+    )
+    tools = body.get("tools", [])
+    names = [item.get("function", {}).get("name") for item in tools]
+    if set(names) == expected_tools and len(names) == len(expected_tools):
+        return body, "legacy", finalize_id
+    if set(names) == expected_tools | {"finalize_health_answer"} and len(names) == len(expected_tools) + 1:
+        if finalized or body.get("tool_choice") != "required":
+            raise ValueError("explicit_finalization_required")
+        normalized = [item for item in tools if item.get("function", {}).get("name") != "finalize_health_answer"]
+        return {**body, "tools": normalized}, "tools", finalize_id
+    if not names and finalized and body.get("tool_choice") in {None, "none"}:
+        normalized = [{"function": {"name": name}} for name in sorted(expected_tools)]
+        return {**body, "tools": normalized}, "final", finalize_id
+    raise ValueError("fixed_final_stage_tools_required")
+
+
+def final_answer_tool_delta(finalize_id):
+    """回放只选择内部结束动作，不先生成完整答案。"""
+    return {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "index": 0,
+                "id": finalize_id,
+                "type": "function",
+                "function": {"name": "finalize_health_answer", "arguments": "{}"},
+            }
+        ],
+    }
+
+
 class HealthReplayHandler(BaseHTTPRequestHandler):
     """重放只开放健康检查、显式 gate 和 OpenAI 兼容响应。"""
 
@@ -781,9 +822,15 @@ class HealthReplayHandler(BaseHTTPRequestHandler):
                 raise ValueError("invalid_length")
             if safe_planner:
                 token, step, safe_delta, answered = safe_planner_replay_delta(self.headers.get("authorization"), body)
-                call_id, record_ids = "", []
+                call_id, record_ids, stage, finalize_id = "", [], "legacy", ""
             else:
-                token, step, call_id, answered, record_ids = validate_request(self.headers.get("authorization"), body)
+                normalized, stage, finalize_id = final_answer_request(body, TOOLS)
+                token, step, call_id, answered, record_ids = validate_request(
+                    self.headers.get("authorization"), normalized
+                )
+                if stage == "final" and not answered:
+                    raise ValueError("final_stage_requires_actual_tool_receipts")
+            finalize = stage == "tools" and answered
         except (ValueError, KeyError, TypeError, IndexError) as error:
             if isinstance(error, ValueError) and re.fullmatch(r"[a-z_]+", str(error)):
                 print(f"合成协议拒绝：{error}", flush=True)
@@ -791,7 +838,13 @@ class HealthReplayHandler(BaseHTTPRequestHandler):
             return
         with LOCK:
             state = STATES.setdefault(token, {"calls": [], "release": Event()})
-            state["calls"].append({"step": step, "phase": "answer" if answered else "read", "record_ids": record_ids})
+            state["calls"].append(
+                {
+                    "step": step,
+                    "phase": "finalize" if finalize else "answer" if answered else "read",
+                    "record_ids": record_ids,
+                }
+            )
         if step == "one" and not answered and not state["release"].wait(40):
             self.write_json(504, {"error": "synthetic_gate_timeout"})
             return
@@ -812,6 +865,7 @@ class HealthReplayHandler(BaseHTTPRequestHandler):
                 "safe_gate",
             }
             and answered
+            and not finalize
             and not state["release"].wait(40)
         ):
             self.write_json(504, {"error": "synthetic_gate_timeout"})
@@ -962,6 +1016,8 @@ class HealthReplayHandler(BaseHTTPRequestHandler):
             }
         if safe_planner:
             delta = safe_delta
+        elif finalize:
+            delta, answered = final_answer_tool_delta(finalize_id), False
         common = {
             "id": f"chatcmpl-{token}-{step}",
             "object": "chat.completion.chunk",

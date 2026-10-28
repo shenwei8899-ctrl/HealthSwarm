@@ -91,9 +91,9 @@ async def test_weight_worker_correction_requires_fresh_consultation(weight_worke
     async with httpx.AsyncClient(base_url="http://localhost:8766", timeout=10) as replay:
         calls = (await replay.get("/observations", params={"token": token})).json()["calls"]
         assert calls == [
-            {"step": step, "phase": phase, "record_ids": [record["id"]] if phase == "answer" else []}
+            {"step": step, "phase": phase, "record_ids": [record["id"]] if phase in {"finalize", "answer"} else []}
             for step in ("weight_read", "weight_updated")
-            for phase in ("read", "answer")
+            for phase in ("read", "finalize", "answer")
         ]
 
 
@@ -177,7 +177,9 @@ async def test_weight_worker_late_publication_rechecks_direct_and_derived_reads(
                     ]
             calls = (await replay.get("/observations", params={"token": gate_token})).json()["calls"]
             assert [(call["step"], call["phase"]) for call in calls] == (
-                [(step, "read"), (step, "answer")] if step == "weight_gate" else [(step, "answer")]
+                [(step, "read"), (step, "finalize"), (step, "answer")]
+                if step == "weight_gate"
+                else [(step, "finalize"), (step, "answer")]
             )
             await assert_old_weight_thread_denied(subject, original, first)
             before = (await replay.get("/observations", params={"token": token})).json()["calls"]

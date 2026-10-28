@@ -4,7 +4,7 @@ defineProps({ name: { type: String, default: 'grid' }, size: { type: Number, def
 <template><view class="app-icon" :class="'i-'+name" :style="{width:size+'rpx',height:size+'rpx'}"><image v-if="name==='assistant'" class="assistant-mark" src="/static/chat/assistant-leaf-v1.png" mode="aspectFit" aria-hidden="true"/><template v-else><view class="a"></view><view class="b"></view><view class="c"></view></template></view></template>
 <style scoped>
 .assistant-mark{display:block;width:100%;height:100%}
-.app-icon{position:relative;display:inline-block;flex:none;color:inherit;box-sizing:border-box}.app-icon view{position:absolute;box-sizing:border-box}
+.app-icon{position:relative;display:inline-block;flex:none;color:inherit;box-sizing:border-box}.app-icon .a,.app-icon .b,.app-icon .c{position:absolute;box-sizing:border-box}
 .i-user .a,.i-family .a{width:36%;height:36%;border:2px solid currentColor;border-radius:50%;top:3%;left:32%}.i-user .b,.i-family .b{width:76%;height:43%;border:2px solid currentColor;border-radius:50% 50% 18% 18%;bottom:4%;left:12%}.i-family .c{width:24%;height:28%;border:2px solid currentColor;border-radius:50%;left:2%;top:22%;background:transparent}
 .i-calendar .a,.i-record .a,.i-grid .a{inset:12% 8% 4%;border:2px solid currentColor;border-radius:5px}.i-calendar .b,.i-record .b{left:18%;right:18%;top:37%;height:2px;background:currentColor}.i-calendar .c{left:28%;top:0;width:44%;height:24%;border-left:2px solid currentColor;border-right:2px solid currentColor}
 .i-camera .a{inset:20% 3% 10%;border:2px solid currentColor;border-radius:5px}.i-camera .b{inset:37% 31% 22%;border:2px solid currentColor;border-radius:50%}.i-camera .c{top:7%;left:29%;width:42%;height:15%;border:2px solid currentColor;border-bottom:0;border-radius:3px 3px 0 0}

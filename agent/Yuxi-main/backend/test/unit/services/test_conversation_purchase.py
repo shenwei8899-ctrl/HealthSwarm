@@ -148,7 +148,9 @@ async def test_catalog_payload_and_history_recheck_current_confirmed_profile(mon
     import json
     from unittest.mock import AsyncMock
 
-    member = SimpleNamespace(id="self-member", confirmed_version=1, profile={"allergens": [], "activity_level": "light"})
+    member = SimpleNamespace(
+        id="self-member", confirmed_version=1, profile={"allergens": [], "activity_level": "light"}
+    )
     payload = {"catalog_context_version": 1, "profile_context": purchase.dietary_profile_context(member)}
     if change == "version":
         member.confirmed_version = 2
@@ -157,7 +159,9 @@ async def test_catalog_payload_and_history_recheck_current_confirmed_profile(mon
     current_member = AsyncMock(return_value=member)
     monkeypatch.setattr(purchase, "require_shopping_member", current_member)
     monkeypatch.setattr(
-        purchase.ConversationPurchaseRepository, "catalog_profile_payloads", AsyncMock(return_value=[json.dumps(payload)])
+        purchase.ConversationPurchaseRepository,
+        "catalog_profile_payloads",
+        AsyncMock(return_value=[json.dumps(payload)]),
     )
     session, binding = object(), object()
     if change is None:

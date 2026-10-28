@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Event, Lock
 from urllib.parse import parse_qs, urlparse
 
-from test.support.health_consultation_replay_server import TOOLS
+from test.support.health_consultation_replay_server import TOOLS, final_answer_request, final_answer_tool_delta
 from test.support.health_indicator_replay_server import tool_delta
 
 MODEL = "deterministic-health-reviewed-scope-20261013"
@@ -33,15 +33,23 @@ def replay_response(authorization, body):
     with LOCK:
         expected = STATES[token]["roles"][role]
         foreign = STATES[token].get("foreign_citation")
+    allowed = (
+        TOOLS
+        if role == "consultation"
+        else {f"get_member_{role}_records", "query_reviewed_nutrition_knowledge", "query_family_nutrition_knowledge"}
+    )
+    body, stage, finalize_id = final_answer_request(body, allowed)
     names = [tool.get("function", {}).get("name") for tool in body.get("tools", [])]
-    allowed = TOOLS if role == "consultation" else {f"get_member_{role}_records", "query_reviewed_nutrition_knowledge"}
     if len(names) != len(allowed) or set(names) != allowed:
         raise ValueError("fixed_role_tools_required")
-    tool = next(
-        tool["function"] for tool in body["tools"] if tool["function"]["name"] == "query_reviewed_nutrition_knowledge"
-    )
-    if set(tool["parameters"]["properties"]) != {"query"} or tool["parameters"]["required"] != ["query"]:
-        raise ValueError("query_only_tool_required")
+    if stage != "final":
+        tool = next(
+            tool["function"]
+            for tool in body["tools"]
+            if tool["function"]["name"] == "query_reviewed_nutrition_knowledge"
+        )
+        if set(tool["parameters"]["properties"]) != {"query"} or tool["parameters"]["required"] != ["query"]:
+            raise ValueError("query_only_tool_required")
     serialized = json.dumps(body, ensure_ascii=False)
     if any(marker in serialized for marker in expected["forbidden"]):
         raise ValueError("forbidden_scope_reached_model")
@@ -55,6 +63,8 @@ def replay_response(authorization, body):
         None,
     )
     if output is None:
+        if stage == "final":
+            raise ValueError("final_stage_requires_actual_tool_receipts")
         return (
             token,
             role,
@@ -81,6 +91,8 @@ def replay_response(authorization, body):
             r"[0-9a-f]{64}", str(citation.get("scope_hash"))
         ):
             raise ValueError("declared_scope_projection_required")
+    if stage == "tools":
+        return token, role, mode, "finalize", final_answer_tool_delta(finalize_id)
     adopted = [foreign] if mode == "foreign" else [citation["citation_id"] for citation in citations]
     if not adopted or any(not re.fullmatch(r"[0-9a-f-]{36}", str(citation)) for citation in adopted):
         raise ValueError("actual_citation_required")

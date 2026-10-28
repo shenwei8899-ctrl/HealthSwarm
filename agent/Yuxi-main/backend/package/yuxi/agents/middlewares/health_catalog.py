@@ -32,6 +32,18 @@ class HealthCatalogMiddleware(AgentMiddleware):
         selected = any(
             isinstance(m, ToolMessage) and m.name == "select_food_products" and m.status != "error" for m in current
         )
+        final = (
+            request.state.get("health_final_request_id") == request.runtime.context.request_id
+            and request.state.get("health_answer_phase") == "final"
+        )
+        if final:
+            if not queried and food_product_intent(human.text):
+                raise HealthVisionError("catalog_tool_required", "本轮商品查询未完成，请重试", 409)
+            if queried and not selected:
+                raise HealthVisionError("catalog_selection_required", "本轮商品选择未完成，请重试", 409)
+            # 最终正文只能生成一次；目录义务必须在任何公开增量产生前完成。
+            return await handler(request)
+
         forced = None
         if not queried and food_product_intent(human.text):
             forced = "find_food_packages"
@@ -45,7 +57,8 @@ class HealthCatalogMiddleware(AgentMiddleware):
         ]
         if forced and not any(call["name"] == forced for call in calls):
             raise HealthVisionError("catalog_tool_required", "本轮商品查询未完成，请重试", 409)
-        if queried and not selected and not calls:
+        finishing = not calls or any(call["name"] == "finalize_health_answer" for call in calls)
+        if queried and not selected and finishing:
             response = await handler(request.override(tool_choice=tool_choice("select_food_products")))
             if not any(
                 call["name"] == "select_food_products"

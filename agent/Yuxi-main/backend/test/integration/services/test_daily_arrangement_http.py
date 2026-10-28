@@ -29,12 +29,23 @@ async def test_late_stock_failure_preserves_committed_winner(family_profile_http
     from datetime import date
     from unittest.mock import AsyncMock
     from yuxi.services import daily_arrangement_service as service
+    from test.integration.services.test_health_quality_http import setup_quality
 
     client, sessions, users = family_profile_http
     family, _, _, _ = await source(client, users["self"])
+    current = await setup_quality(client, [{"uid": uid, "headers": users[uid]} for uid in ("self", "other", "admin")])
     rid, preview = str(uuid4()), str(uuid4())
     day = date(2099, 1, 1)
-    receipt = {"status": "ready", "id": rid, "version": 1, "date": day.isoformat(), "meals": []}
+    receipt = {
+        "status": "ready",
+        "id": rid,
+        "version": 1,
+        "date": day.isoformat(),
+        "meals": [],
+        "plan_id": current["plan"],
+        "plan_version": 1,
+        "quality_check_id": current["check"]["check_id"],
+    }
     selection = {
         "initial": {"profile_versions": {str(uuid4()): 1}},
         "attempt": 0,

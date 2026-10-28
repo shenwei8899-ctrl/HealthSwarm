@@ -86,6 +86,7 @@ async def test_actual_graph_ignores_user_tool_and_prompt_overrides(
         record_tool,
         "query_reviewed_nutrition_knowledge",
         "query_family_nutrition_knowledge",
+        "finalize_health_answer",
     ]
     assert graph["system_prompt"] == f"published {slug}" and graph["checkpointer"] == "PG"
     assert [type(item).__name__ for item in graph["middleware"]] == [
@@ -94,6 +95,7 @@ async def test_actual_graph_ignores_user_tool_and_prompt_overrides(
         "HealthCatalogMiddleware",
         "HealthAiBudgetMiddleware",
         "HealthCitationMiddleware",
+        "HealthFinalAnswerMiddleware",
         "TokenUsageMiddleware",
     ]
     guard.assert_awaited_once_with(context)

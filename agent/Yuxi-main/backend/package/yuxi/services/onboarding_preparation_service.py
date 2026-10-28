@@ -148,7 +148,22 @@ async def start_onboarding_preparation(uid, fid, data):
                 sources = await preparation_sources(service, family)
                 latest = await latest_preparation(db, uid, fid)
                 if latest is not None and latest.sources == sources and latest.plan_date == business_date():
-                    row, task = latest, None
+                    # 新键也固定首次复用目标，响应丢失后的重放不能改指向新来源。
+                    row = HealthOnboardingPreparation(
+                        id=str(uuid4()),
+                        actor_uid=uid,
+                        family_id=fid,
+                        request_id=str(data.client_request_id),
+                        fingerprint=digest,
+                        plan_date=latest.plan_date,
+                        sources=latest.sources,
+                        consents=latest.consents,
+                        result={"reused_preparation_id": latest.id},
+                        status="alias",
+                    )
+                    db.add(row)
+                    await db.flush()
+                    task = None
                 else:
                     row = HealthOnboardingPreparation(
                         id=str(uuid4()),

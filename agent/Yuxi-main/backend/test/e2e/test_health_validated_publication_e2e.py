@@ -1,4 +1,4 @@
-"""健康解释在真实Worker完成校验提交前仅公开固定状态，恢复也拒绝原始事件。"""
+"""健康解释在无工具最终模型尚未完成时公开校验句段，终态仍以持久结果为准。"""
 
 import asyncio
 import json
@@ -92,15 +92,16 @@ async def test_education_publication_live_reconnect_and_authoritative_results(
             streams.append(asyncio.create_task(collect_public_events(subject, run_id, live)))
 
             async def delta_sent():
-                """协议门闩证明真实Worker已消费两项服务工具并进入最终模型流。"""
+                """协议门闩证明业务工具及finalize已完成，第二段仍未生成。"""
+                observed = (await runtime.replay.get("/observations", params={"token": token})).json()
                 async with pg_manager.get_async_session_context() as session:
                     run = await session.get(AgentRun, run_id)
-                    if run.status in {"failed", "cancelled"}:
+                    if not observed["delta_sent"] and run.status in {"failed", "cancelled"}:
                         pytest.fail(f"合成模型在最终delta前终止：{run.error_type}: {run.error_message}")
-                return (await runtime.replay.get("/observations", params={"token": token})).json()
+                return observed
 
             observation = await wait_until(delta_sent, lambda value: value["delta_sent"], timeout=60)
-            assert [call["phase"] for call in observation["calls"]] == ["records", "knowledge", "answer"]
+            assert [call["phase"] for call in observation["calls"]] == ["records", "knowledge", "finalize", "answer"]
             await wait_until(
                 lambda: async_value(
                     any(
@@ -110,10 +111,33 @@ async def test_education_publication_live_reconnect_and_authoritative_results(
                 ),
                 bool,
             )
+            early_preview = ""
+            if mode != "forged":
+                await wait_until(
+                    lambda: async_value(
+                        any(
+                            event == "custom" and payload.get("payload", {}).get("name") == "yuxi.health_answer_delta"
+                            for event, payload, _ in live
+                        )
+                    ),
+                    bool,
+                )
+                early_preview = "".join(
+                    payload["payload"]["chunk"]["content"]
+                    for event, payload, _ in live
+                    if event == "custom" and payload.get("payload", {}).get("name") == "yuxi.health_answer_delta"
+                )
+                assert early_preview.startswith(f"PUBLICATION_BODY:{token}") and "第二块正文" not in early_preview
+            observation = (await runtime.replay.get("/observations", params={"token": token})).json()
+            assert observation["answer_chunks_sent"] == 1 and observation["finish_sent"] is False
+            write_evidence(
+                "stream_timing",
+                {"role": role, "mode": mode, "early_preview": bool(early_preview), **observation},
+            )
             legacy_ids = await inject_legacy_raw_events(run_id, bound["thread_id"], request_id, token)
             await wait_until(lambda: async_value(live), bool)
             await assert_pending_views(subject, bound, request_id, run_id, token)
-            assert_status_only(live, token)
+            assert_publication_events(live, token, allow_preview=mode != "forged")
             cursor = next(event_id for _, _, event_id in reversed(live) if event_id)
             streams[0].cancel()
             await asyncio.gather(streams[0], return_exceptions=True)
@@ -147,28 +171,31 @@ async def test_education_publication_live_reconnect_and_authoritative_results(
             redis_rows = await (await get_redis_client()).xrange(f"run:events:{run_id}")
             for event_id, fields in redis_rows:
                 if event_id not in legacy_ids:
-                    assert_no_candidate(fields, token)
+                    data = json.loads(fields["payload"]).get("payload", {})
+                    answer_delta = fields["event_type"] == "custom" and data.get("name") == "yuxi.health_answer_delta"
+                    if answer_delta:
+                        assert mode != "forged", data
+                    assert_no_candidate(fields, token, allow_body=answer_delta)
             if mode == "failure":
                 failed_stream = (await runtime.replay.get("/observations", params={"token": token})).json()
                 assert failed_stream["stream_failed"] is True
             await asyncio.wait_for(streams[-1], 60)
-            assert_status_only(live + recovered, token)
             rewind = []
             await collect_public_events(subject, run_id, rewind, verbose=False)
-            assert_status_only(rewind, token)
-            assert any(
-                event == "custom" and payload["payload"]["name"] == "yuxi.init" and event_id not in legacy_ids
-                for event, payload, event_id in rewind
-            ) or mode in {"source", "scope"}
+            assert_rewind_events(rewind, run_id, mode, legacy_ids)
             write_evidence("sse", {"role": role, "mode": mode, "live": live, "recovered": recovered, "rewind": rewind})
             if mode == "success":
                 assert recovered[-1][0] == rewind[-1][0] == "end"
                 assert recovered[-1][1]["payload"]["status"] == "completed"
-                await assert_committed_answer(subject, bound, request_id, run_id, token)
+                expected = await assert_committed_answer(subject, bound, request_id, run_id, token)
+                assert early_preview and expected.startswith(early_preview) and early_preview != expected
             else:
                 await assert_rejected_answer(subject, bound, request_id, run_id, token, mode)
+                expected = None
+            assert_publication_events(live + recovered, token, expected_answer=expected, allow_preview=mode != "forged")
+            assert_publication_events(rewind, token, expected_answer=expected)
             if mode == "success":
-                # 完成后撤回来源，重连仍只有状态；最终正文读取必须fresh拒绝。
+                # 完成后撤回来源，重连不得重放旧预览；最终正文读取必须fresh拒绝。
                 withdrawn = await subject.client.delete(
                     f"{ROOT}/nutrition-evidence/{evidence}", headers=runtime.users[2]["headers"]
                 )
@@ -190,7 +217,7 @@ async def test_education_publication_live_reconnect_and_authoritative_results(
                     assert_no_candidate(stale_read.json(), token)
                 stale_events = []
                 await collect_public_events(subject, run_id, stale_events, verbose=True)
-                assert_status_only(stale_events, token)
+                assert_publication_events(stale_events, token)
             assert consent["accepted"] is True
         finally:
             await runtime.replay.get("/release", params={"token": token})
@@ -258,6 +285,9 @@ async def assert_committed_answer(subject, bound, request_id, run_id, token):
     assert task.json()["execution_status"] == result.json()["status"] == "completed"
     expected = task.json()["result"]["answer"]
     assert expected.startswith(f"PUBLICATION_BODY:{token}") and "[证据:" in expected
+    paragraphs = expected.split("\n\n")
+    assert len(paragraphs) == 2 and len(paragraphs[0].split(" 合成协议正文", 1)[1].split("[证据:", 1)[0]) >= 80
+    assert all("[证据:" in paragraph for paragraph in paragraphs) and paragraphs[1].startswith("第二块正文")
     assert result.json()["output"] == expected
     async with pg_manager.get_async_session_context() as session:
         run = await session.get(AgentRun, run_id)
@@ -290,6 +320,7 @@ async def assert_committed_answer(subject, bound, request_id, run_id, token):
     assert [item["content"] for item in state.json()["messages"] if item["type"] == "ai"] == [expected]
     for payload in (task.json(), result.json(), history.json(), state.json()):
         assert_no_candidate(payload, token, allow_body=True)
+    return expected
 
 
 async def assert_rejected_answer(subject, bound, request_id, run_id, token, mode):
@@ -300,6 +331,7 @@ async def assert_rejected_answer(subject, bound, request_id, run_id, token, mode
         assert owner.role == "user"
         assert run.status == ("cancelled" if mode == "cancel" else "failed"), run.to_dict()
         assert run.output_message_id is None and run.worker_id is None and run.lease_expires_at is None
+        assert run.runtime_cleanup_pending is False
         public = list(
             await session.scalars(
                 select(Message).where(
@@ -349,8 +381,36 @@ async def assert_rejected_answer(subject, bound, request_id, run_id, token, mode
         response = await subject.client.get(path, headers=subject.headers)
         assert response.status_code in {200, 403, 404, 409, 410}, response.text
         assert_no_candidate(response.json(), token)
+        if mode == "consent" and path == f"{ROOT}/tasks/{request_id}":
+            assert_consent_read_denied(response, token)
         if path.endswith("/result") and response.status_code == 200:
             assert response.json()["output"] == ""
+
+
+def assert_rewind_events(events, run_id, mode, legacy_ids):
+    """撤权建连先fresh拒绝；其余重放保留唯一真实init及Redis ID排重。"""
+    if mode in {"scope", "source", "consent"}:
+        assert events == [("error", {"run_id": run_id, "message": "运行任务不存在"}, None)]
+        return
+    actual_init = [
+        event_id
+        for event, payload, event_id in events
+        if event == "custom" and payload.get("payload", {}).get("name") == "yuxi.init" and event_id not in legacy_ids
+    ]
+    assert len(actual_init) == 1 and actual_init[0]
+    event_ids = [event_id for _, _, event_id in events if event_id]
+    assert len(event_ids) == len(set(event_ids))
+
+
+def assert_consent_read_denied(response, token):
+    """真实只读接口必须给明确同意错误，不能用空成功结果掩盖撤回。"""
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload["code"] == "consent_required" and payload["retryable"] is False
+    assert payload["detail"] == payload["message"] == "请先同意当前咨询用途"
+    assert response.headers["cache-control"] == "no-store"
+    assert isinstance(payload["trace_id"], str) and payload["trace_id"]
+    assert_no_candidate(payload, token)
 
 
 async def collect_public_events(subject, run_id, events, *, after_seq="0-0", verbose=False):
@@ -412,10 +472,12 @@ async def probe_private_audit(subject, thread_id, token, *, revoked=False):
     assert ordinary.status_code == 403 and "PRIVATE_TOOL_PREAMBLE" not in ordinary.text, ordinary.text
 
 
-def assert_status_only(events, token):
-    """公开帧名单手写，工具、messages及模型state不可透传。"""
-    for event, payload, _ in events:
+def assert_publication_events(events, token, *, expected_answer=None, allow_preview=False):
+    """手写公开帧和连续偏移oracle；真实生成中的已校验句段可以先于终态出现。"""
+    answer_deltas, combined, answer_message_id = [], "", None
+    for index, (event, payload, _) in enumerate(events):
         assert event in {"metadata", "status", "custom", "end", "error", "interrupt"}, event
+        answer_delta = False
         if event == "custom":
             data = payload["payload"]
             assert set(data) == {"name", "chunk"}, data
@@ -423,6 +485,22 @@ def assert_status_only(events, token):
             identity = {"run_id", "thread_id", "request_id", "status"}
             if data["name"] == "yuxi.init":
                 assert set(chunk) == identity and chunk["status"] == "init", chunk
+            elif data["name"] == "yuxi.health_answer_delta":
+                assert expected_answer is not None or allow_preview, data
+                assert set(payload) == {"run_id", "thread_id", "request_id", "event", "payload"}, payload
+                assert set(chunk) == identity | {"content", "offset", "message_id"}, chunk
+                assert all(chunk[key] == payload[key] for key in identity - {"status"}), chunk
+                assert chunk["status"] == "health_answer_delta" and payload["event"] == "custom", chunk
+                assert type(chunk["offset"]) is int and chunk["offset"] == len(combined), chunk
+                assert isinstance(chunk["message_id"], str) and chunk["message_id"], chunk
+                assert isinstance(chunk["content"], str) and chunk["content"], chunk
+                if answer_message_id is None:
+                    answer_message_id = chunk["message_id"]
+                assert chunk["message_id"] == answer_message_id
+                combined += chunk["content"]
+                assert combined.startswith(f"PUBLICATION_BODY:{token}"), chunk
+                answer_delta = True
+                answer_deltas.append(index)
             else:
                 assert data["name"] == "yuxi.health_progress", data
                 assert set(chunk) == identity | {"phase", "message"} and chunk["status"] == "health_progress", chunk
@@ -431,16 +509,29 @@ def assert_status_only(events, token):
                     "validating": "正在校验答复来源与引用",
                 }
                 assert chunk["phase"] in expected_message and chunk["message"] == expected_message[chunk["phase"]]
-        assert_no_candidate(payload, token)
+        encoded = json.dumps(payload, ensure_ascii=False)
+        assert not any(
+            field in encoded
+            for field in (
+                '"reasoning',
+                '"tool_calls"',
+                '"tool_call_chunks"',
+                '"tool_call_id"',
+                '"stream_event"',
+                '"msg"',
+            )
+        ), payload
+        assert_no_candidate(payload, token, allow_body=answer_delta)
+    if expected_answer is not None:
+        assert len(answer_deltas) >= 2 and combined == expected_answer, (answer_deltas, combined)
+        assert events[-1][0] == "end" and answer_deltas[0] < len(events) - 1, events
 
 
 def assert_no_candidate(payload, token, *, allow_body=False):
     """独立哨兵覆盖正文、reasoning、工具前言和错误正文。"""
     encoded = json.dumps(payload, ensure_ascii=False)
     forbidden = [
-        "PRIVATE_REASONING",
-        "PRIVATE_TOOL_PREAMBLE",
-        "PRIVATE_MODEL_FAILURE",
+        "PRIVATE_",
         "LEGACY_RAW",
         "synthetic-blood-",
     ]

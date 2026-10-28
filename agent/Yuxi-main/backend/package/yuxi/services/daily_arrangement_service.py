@@ -189,7 +189,8 @@ async def resume_daily_arrangement(uid, fid, day):
             if attempt < selection.get("retry_limit", 2):
                 async with pg_manager.get_async_session_context() as db:
                     _, row = await DailyArrangementRepository(db, uid, fid).context(day, lock=True)
-                    if row.version == version and row.status == "ready":
+                    if row.status == "ready":
+                        await authorize_sources(db, uid, row)
                         return row.snapshot
                     if row.version == version and row.selection.get("attempt", 0) == attempt:
                         row.selection = {**row.selection, "attempt": attempt + 1}
@@ -203,6 +204,7 @@ async def resume_daily_arrangement(uid, fid, day):
             if row.version != version:
                 raise HealthVisionError("daily_version_changed", "安排已更新，请重新读取", 409)
             if row.status == "ready":
+                await authorize_sources(db, uid, row)
                 return row.snapshot
             if row.selection.get("attempt", 0) != attempt:
                 return {"status": "generating", "date": day.isoformat(), "id": rid}
@@ -240,7 +242,8 @@ async def resume_daily_arrangement(uid, fid, day):
         if attempt < selection.get("retry_limit", 2):
             async with pg_manager.get_async_session_context() as db:
                 _, row = await DailyArrangementRepository(db, uid, fid).context(day, lock=True)
-                if row.version == version and row.status == "ready":
+                if row.status == "ready":
+                    await authorize_sources(db, uid, row)
                     return row.snapshot
                 if row.version == version and row.selection.get("attempt", 0) == attempt:
                     refreshed = {
@@ -260,6 +263,7 @@ async def resume_daily_arrangement(uid, fid, day):
         if row.version != version:
             raise HealthVisionError("daily_version_changed", "安排已更新，请重新读取", 409)
         if row.status == "ready":
+            await authorize_sources(db, uid, row)
             return row.snapshot
         if row.selection.get("attempt", 0) != attempt:
             return {"status": "generating", "date": day.isoformat(), "id": rid}
@@ -332,7 +336,8 @@ async def resume_daily_arrangement(uid, fid, day):
         if attempt < selection.get("retry_limit", 2):
             async with pg_manager.get_async_session_context() as db:
                 _, row = await DailyArrangementRepository(db, uid, fid).context(day, lock=True)
-                if row.version == version and row.status == "ready":
+                if row.status == "ready":
+                    await authorize_sources(db, uid, row)
                     return row.snapshot
                 if row.version == version and row.selection.get("attempt", 0) == attempt:
                     row.selection = {

@@ -249,8 +249,10 @@ async def test_queued_disconnect_run_cursors_and_authoritative_task(recovery_run
             write_evidence("pg-final", {"facts": facts, "request_count": 3, "run_count": 2})
         assert (await observations())["calls"] == [
             {"step": "one", "phase": "read", "record_ids": []},
+            {"step": "one", "phase": "finalize", "record_ids": confirmed.json()["target_ids"]},
             {"step": "one", "phase": "answer", "record_ids": confirmed.json()["target_ids"]},
             {"step": "two", "phase": "read", "record_ids": []},
+            {"step": "two", "phase": "finalize", "record_ids": confirmed.json()["target_ids"]},
             {"step": "two", "phase": "answer", "record_ids": confirmed.json()["target_ids"]},
         ]
         for other in users[1:]:

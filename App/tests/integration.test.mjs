@@ -330,6 +330,24 @@ test('WeChat AppID is applied to the emitted project asset without depending on 
   assert.deepEqual(JSON.parse(asset.source),{appid,setting:{es6:true,urlCheck:true}})
 })
 
+test('WeChat app asset omits H5 rpx options while source and H5 keep them',()=>{
+  const source=readFileSync(new URL('../vite.config.js',import.meta.url),'utf8').replace(/^import .*$/gm,'').replace('export default','return')
+  const pages=JSON.parse(readFileSync(new URL('../src/pages.json',import.meta.url),'utf8'))
+  const window={...pages.globalStyle}
+  const create=platform=>new Function('defineConfig','loadEnv','uniModule','process',source)(fn=>fn({mode:'production'}),()=>({}),()=>({name:'uni'}),{env:{UNI_PLATFORM:platform},cwd:()=>'.'}).plugins.at(-1)
+  const mp={type:'asset',source:JSON.stringify({pages:['pages/index/index'],window})}
+  const h5={type:'asset',source:mp.source}
+  create('mp-weixin').generateBundle({},{'app.json':mp})
+  create('h5').generateBundle({},{'app.json':h5})
+  const emitted=JSON.parse(mp.source)
+  for(const key of ['rpxCalcMaxDeviceWidth','rpxCalcBaseDeviceWidth','rpxCalcIncludeWidth']) {
+    assert.ok(Object.hasOwn(window,key))
+    assert.equal(Object.hasOwn(emitted.window,key),false)
+  }
+  assert.equal(emitted.window.navigationBarTitleText,window.navigationBarTitleText)
+  assert.deepEqual(JSON.parse(h5.source).window,window)
+})
+
 test('API runtime namespaces cannot read mock data and unadapted routes are blocked',async()=>{
   setup();setSession({accountId:'A',householdId:'home'});scopedStorage.setStorageSync('demo-orders-v1',[{id:'demo'}])
   const api=await apiRuntime();api.session.setSession({accountId:'A',householdId:'home'})

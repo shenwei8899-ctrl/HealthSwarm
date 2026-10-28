@@ -22,9 +22,19 @@ export default defineConfig(({ mode }) => {
       },
     },
     plugins: [uni(), {
-      name: 'wechat-appid',
+      name: 'wechat-config',
       generateBundle(_options, bundle) {
-        if (process.env.UNI_PLATFORM !== 'mp-weixin' || !appid) return
+        if (process.env.UNI_PLATFORM !== 'mp-weixin') return
+        // uni-app's H5 rpx settings are not valid WeChat window options.
+        const appAsset = bundle['app.json']
+        if (appAsset?.type === 'asset') {
+          const app = JSON.parse(String(appAsset.source))
+          for (const key of ['rpxCalcMaxDeviceWidth', 'rpxCalcBaseDeviceWidth', 'rpxCalcIncludeWidth']) {
+            if (app.window) delete app.window[key]
+          }
+          appAsset.source = JSON.stringify(app, null, 2) + '\n'
+        }
+        if (!appid) return
         const asset = bundle['project.config.json']
         if (!asset || asset.type !== 'asset') return
         const project = JSON.parse(String(asset.source))

@@ -152,9 +152,9 @@ async def test_browser_profile_confirmation_link_and_fresh_consultation(isolated
             observed = await replay.get("/observations", params={"token": token})
             assert observed.status_code == 200
             assert observed.json()["calls"] == [
-                {"step": step, "phase": phase, "record_ids": [source_id] if phase == "answer" else []}
+                {"step": step, "phase": phase, "record_ids": [source_id] if phase in {"finalize", "answer"} else []}
                 for step in ("profile", "profile_updated")
-                for phase in ("read", "answer")
+                for phase in ("read", "finalize", "answer")
             ]
         daily_again = await client.post(f"{ROOT}/members/{member_id}/daily-consultations", headers=headers)
         assert daily_again.status_code == 410 and daily_again.json()["code"] == "profile_source_changed"

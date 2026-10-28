@@ -7,7 +7,6 @@ import {
   apiRequest,
   buildQuery
 } from './base'
-
 import { downloadWorkspaceKnowledgeFile } from './workspace_api'
 import { parseDownloadFilename } from '@/utils/file_utils'
 

@@ -1838,6 +1838,8 @@ async def test_health_deadline_closes_execution_before_failed_and_skips_checkpoi
     run = _build_run()
     run.agent_slug = slug
     run.started_at = run_worker.utc_now_naive()
+    # 只固定 PG 起点的墙钟投影；实际 asyncio 与 monotonic 计时仍关闭长 await。
+    monkeypatch.setattr(run_worker, "utc_now_naive", lambda: run.started_at)
     _patch_common(monkeypatch, run)
     monkeypatch.setattr(run_worker.WorkerSettings, "health_execution_timeout", 0.025)
     started = AsyncMock()

@@ -100,7 +100,7 @@ test('local welcome submits credentials, clears password and enters the server-s
   const deps = { ref, onShow() {}, onHide() {}, onUnload() {}, isMockMode: false, canUseBusinessLogin: true, isCommerceEnabled: false, phoneBindingDemo: false,
     getSession: () => null, wechatAuth: { cancelPending() {} },
     service: { login: async data => calls.push(data) }, resolveAppEntry: async () => '/pages/onboarding/index' }
-  globalThis.uni = { reLaunch: options => { redirects.push(options.url); options.success?.({errMsg:'reLaunch:ok'}) } }
+  globalThis.uni = { reLaunch: options => { redirects.push(options.url); options.success?.({}) } }
   const source = readFileSync(new URL('../src/pages/index/index.vue', import.meta.url), 'utf8')
   const code = source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const page = new Function('deps', `const {${Object.keys(deps)}}=deps;${code};return {start,continueLogin,identifier,password,loginOpen}`)(deps)

@@ -14,6 +14,7 @@ import {readDailyMealPlan,mealQuestionAction} from '../services/daily-meal-plan.
 import {referenceSelection as chooseReference,isReferencePlan} from '../services/reference-meal-plan.js'
 import ConversationFoodPackages from './ConversationFoodPackages.vue'
 import VoiceInput from './VoiceInput.vue'
+import AiAnswer from './AiAnswer.vue'
 import { readCurrentPreparation } from '../services/onboarding-preparation.js'
 import { loadCloudProfile } from '../services/cloud-profile.js'
 import { rememberChatEntry } from '../services/app-entry.js'
@@ -27,6 +28,8 @@ import { persistChatImage, previewChatImage } from '../services/chat-images.js'
 import { readChatSnapshot, chatImageContent, chatTimestamp, chatBusinessDate } from '../services/cloud-chat.js'
 import { localDate } from '../utils/meal-state.js'
 import { selectChatPrompts } from '../services/chat-prompts.js'
+import { parseChatMealIntent } from '../utils/chat-meal-intent.js'
+import { loadChatMealPlan } from '../services/chat-meal-plan.js'
 
 const props=defineProps({route:{type:Object,default:()=>({})}})
 const state=reactive(dailyArrangementState()),profile=ref(null),cardVisible=ref(false),selectedMeal=ref(null)
@@ -38,6 +41,10 @@ const question=ref(''),chatError=ref(''),messages=ref([]),task=ref({}),consentCh
 const voiceMode=ref(false),voiceBusy=ref(false),voiceRef=ref(null),communityOpen=ref(false),scrollTarget=ref(''),inlineTodayOpen=ref(false)
 const draftImage=ref(null),draftSaving=ref(false),draftError=ref('')
 const familyState=reactive(dailyArrangementState()),familyPanel=ref(false),familySelection=ref(null),familyIntent=ref('')
+const mealPlanReady=ref(false),mealPlanAudience=ref('default')
+const liveAnswer=computed(()=>!!task.value.streamText&&!task.value.result)
+const progressText=computed(()=>profileLoading.value?'正在读取你的资料':familyState.busy?(familyState.phase==='generating'?'正在生成三餐，并核对成员、营养与食材':'正在核对已保存的餐单'):task.value.streamStatus||(['queued','pending'].includes(task.value.status)?'问题已收到，正在等待营养师处理':'正在读取资料并整理回复'))
+let scrollTimer=null
 const prompts=ref([]),promptDate=ref('')
 function refreshPrompts(){
   const previousIds=prompts.value.length?prompts.value.map(p=>p.id):scopedStorage.getStorageSync('homepage-prompt-ids')||[]
@@ -62,7 +69,7 @@ const visibleMessages=computed(()=>messages.value.filter(m=>!failedTask.value||m
 const presentation=computed(()=>chatPresentation({route:props.route,hasMessages:visibleMessages.value.length>0,
   hasSavedArrangement:state.phase==='ready',newConversation:newConversationWelcome.value,
   preparedThreadId:preparedThreadId.value,currentThreadId:task.value.entry?.thread_id,
-  loading:!profile.value||profileLoading.value||task.value.loading||state.busy}))
+  loading:false}))
 const failureText={budget_price_unavailable:'营养咨询服务的计费配置尚未就绪，请联系管理员。原问题已保留。',budget_exceeded:'本月健康 AI 可用额度不足或待核账，请稍后再试。原问题已保留。',execution_cancelled:'本次处理已取消。',execution_interrupted:'本次处理已中断，可稍后重新发送。'}
 const chatBusy=computed(()=>!entryReady.value||!returnVerified.value||profileLoading.value||sending.value||familyState.busy||task.value.busy||task.value.loading||['queued','dispatched','pending','running','cancel_requested'].includes(task.value.status))
 const inputBusy=computed(()=>!entryReady.value||sending.value||familyState.busy||task.value.busy||(!returning.value&&task.value.loading)||['queued','dispatched','pending','running','cancel_requested'].includes(task.value.status))
@@ -79,6 +86,7 @@ const flow=createHealthTaskFlow({daily:true,onChange:next=>{
       void loadDailyPlan(profile.value.householdId,referenceSelection.plan_date,mine,scope).catch(e=>{if(!disposed&&visible&&mine===epoch&&scope===storageContext())mealReadError.value=e.message})
     }
   }
+  if(next.streamText||next.streamStatus)queueScroll()
   if(next.invalidated){messages.value=[];question.value='';removeDraft();submittedDraft=null;pendingUser=null;return}
   if(pendingUser&&next.requestId){pendingUser.requestId=next.requestId;pendingUser.status=next.status||'sending'}
   if(submittedDraft&&!submittedDraft.requestId&&pendingUser&&next.requestId)submittedDraft.requestId=next.requestId
@@ -119,11 +127,17 @@ function requirePlanningReady(){
 async function familyPlan(text,retry=false){
   text=retry?familyIntent.value:String(text||'');if(!retry)familyIntent.value=text
   const scope=storageContext(),mine=epoch
-  const date=/明天|明日/.test(text)?localDate(new Date(Date.now()+86400000)):localDate()
-  const type=/早餐|早上/.test(text)?'breakfast':/午餐|中午/.test(text)?'lunch':'dinner'
-  familyPanel.value=true;await familyClient.load(date,retry)
-  if(disposed||!visible||mine!==epoch||scope!==storageContext())return
-  if(familyState.phase==='ready')familySelection.value={type,ids:profile.value.members.map(m=>m.id),question:text}
+  const intent=parseChatMealIntent(text,localDate())
+  if(!intent)return
+  familyPanel.value=true;mealPlanReady.value=false;mealPlanAudience.value=intent.audience
+  const isCurrent=()=>!disposed&&visible&&mine===epoch&&scope===storageContext()
+  const arrangement=await loadChatMealPlan(intent,{client:familyClient,state:familyState,profile:profile.value,isCurrent,retry})
+  if(!isCurrent())return
+  mealPlanReady.value=!!arrangement
+  if(!arrangement){chatError.value=familyState.error||'餐单仍在处理中，请继续读取本次安排。';return}
+  if(question.value.trim()===text)question.value=''
+  if(state.date===intent.date){await client.load(intent.date);if(!isCurrent())return;cardVisible.value=state.phase==='ready'}
+  await nextTick();scrollTarget.value='chat-meal-plan'
 }
 async function familyMembers(ids){
   const choice=familySelection.value;familySelection.value=null;if(!choice)return
@@ -134,6 +148,7 @@ async function familyMembers(ids){
 }
 function openFamilyMeal(meal){uni.navigateTo({url:'/pages/shop/index?meal='+meal.type+'&date='+familyState.date+'&arrangement='+encodeURIComponent(familyState.arrangement.id)+'&version='+familyState.arrangement.version})}
 async function scrollLatest(){await nextTick();scrollTarget.value='';await nextTick();if(messages.value.length)scrollTarget.value='message-'+messages.value.at(-1).id}
+function queueScroll(){if(scrollTimer!==null)return;scrollTimer=setTimeout(async()=>{scrollTimer=null;if(disposed||!visible)return;await nextTick();scrollTarget.value='';await nextTick();scrollTarget.value=liveAnswer.value?'stream-answer':'reply-progress'},180)}
 function stopPlanTimers(){Object.values(planTimers).forEach(timer=>clearTimeout(timer));planTimers={};planPolls={}}
 function clearPrivate(){entryReady.value=false;returnVerified.value=false;returning.value=false;returnError.value='';prompts.value=[];promptDate.value='';mealsLoading.value=false;mealReadError.value='';latestReference.value=null;dailyPlans.value={};stopPlanTimers();referenceSelection=null;refreshedTerminal='';newConversationWelcome.value=false;preparedThreadId.value='';epoch++;sendGeneration++;sending.value=false;loading=null;profileLoading.value=false;flow.hide();client.reset();familyClient.reset();familyPanel.value=false;familySelection.value=null;messages.value=[];question.value='';chatError.value='';profile.value=null;task.value={};selectedMeal.value=null;removeDraft();pendingUser=null;submittedDraft=null;voiceRef.value?.cancel();voiceBusy.value=false;voiceMode.value=false;cardVisible.value=false}
 function rememberThread(){
@@ -248,6 +263,14 @@ async function loadDailyPlan(familyId,date,mine,scope){
   const ticket=(planReads[date]||0)+1;planReads[date]=ticket
   let plan
   try{plan=await readDailyMealPlan(familyId,date)}catch(error){
+    if(!disposed&&visible&&mine===epoch&&scope===storageContext()&&planReads[date]===ticket&&[404,409,410].includes(Number(error.code))){
+      const plans={...dailyPlans.value};delete plans[date];dailyPlans.value=plans
+      if(planTimers[date])clearTimeout(planTimers[date])
+      delete planTimers[date];delete planPolls[date]
+      if(state.date===date){cardVisible.value=false;client.reset();selectedMeal.value=null}
+      if(familyState.date===date){familyClient.reset();familyPanel.value=false;familySelection.value=null}
+      if(latestReference.value?.plan_date===date)latestReference.value=null
+    }
     if(!disposed&&visible&&mine===epoch&&scope===storageContext()&&planReads[date]===ticket&&[401,403].includes(Number(error.code))){
       clearPrivate();entryReady.value=false;entryError.value='身份或成员授权已变化，请重新读取当前档案。'
       if(!getSession()?.token)uni.reLaunch({url:'/pages/index/index'})
@@ -361,8 +384,8 @@ onMounted(load);onShow(()=>{
   }
   if(entryReady.value)void refreshReturn();else void load()
 })
-onHide(()=>{visible=false;suspended=true;epoch++;sendGeneration++;loading=null;profileLoading.value=false;returning.value=false;restoring=false;returnVerified.value=false;mealsLoading.value=false;stopPlanTimers();voiceRef.value?.cancel();flow.pause();pendingUser=null;sending.value=false;client.pause();familyClient.pause();familyPanel.value=false;familySelection.value=null})
-onUnmounted(()=>{disposed=true;epoch++;draftVersion++;stopPlanTimers();client.dispose();familyClient.dispose();flow.hide()})
+onHide(()=>{if(scrollTimer!==null)clearTimeout(scrollTimer);scrollTimer=null;visible=false;suspended=true;epoch++;sendGeneration++;loading=null;profileLoading.value=false;returning.value=false;restoring=false;returnVerified.value=false;mealsLoading.value=false;stopPlanTimers();voiceRef.value?.cancel();flow.pause();pendingUser=null;sending.value=false;client.pause();familyClient.pause();familyPanel.value=false;familySelection.value=null})
+onUnmounted(()=>{if(scrollTimer!==null)clearTimeout(scrollTimer);disposed=true;epoch++;draftVersion++;stopPlanTimers();client.dispose();familyClient.dispose();flow.hide()})
 function openMeal(meal){uni.navigateTo({url:'/pages/shop/index?meal='+meal.type+'&date='+state.date+'&arrangement='+encodeURIComponent(state.arrangement.id)+'&version='+state.arrangement.version})}
 function openDailyMeal(item,date){uni.navigateTo({url:'/pages/shop/index?meal='+item.meal_type+'&date='+date+'&arrangement='+encodeURIComponent(item.source.id)+'&version='+item.source.version+'&daily_plan_version='+dailyPlans.value[date].version})}
 async function selectDailyMembers(item,date){
@@ -400,8 +423,19 @@ async function sendQuestion(promptAction=''){
   if(!profile.value){chatError.value=entryError.value||'咨询资料尚未读到，请重新读取咨询资料后再发送。';return}
   const scope=storageContext(),mine=epoch,sendTicket=++sendGeneration,text=question.value.trim(),image=draftImage.value&&{...draftImage.value}
   sending.value=true;chatError.value=''
+  let stage='select-task'
   try{
-    const action=image?'consultation':mealQuestionAction(text)
+    const mealIntent=!props.route.taskType&&!image?parseChatMealIntent(text,localDate()):null
+    const explicitMeal=!!mealIntent&&/配餐|配一(?:顿|天)|餐单|食谱|(?:生成|制定).{0,12}(?:三餐|早餐|午餐|晚餐)|安排.{0,12}(?:全天|一天|三餐|早餐|午餐|晚餐|早饭|午饭|晚饭|明早|明晚)/.test(text)
+    // A revision stays in the selected plan's thread, preserving its date and
+    // participants. A fresh arrangement still creates its own explicit choice.
+    const referenceAdjustment=!props.route.taskType&&!image&&task.value.taskType==='reference_meal_preview'&&!!referenceSelection&&
+      !/(?:换(?:个|一个)?话题|换个问题|(?:取消|停止|不用|不需要|不想|不要)(?:再|继续)?(?:配餐|安排|生成|制定))/.test(text)&&
+      !/(?:^|[，。！？；、\s])(?:请)?(?:为我|给我|帮我|给全家|为全家|帮全家)?(?:安排|生成|制定|配一)/.test(text)&&
+      (task.value.result?.type==='needs_input'||/换(?:菜|成|掉|一|个)|替换|改(?:成|为|一下)|调整|重新(?:生成|安排|做)|再(?:生成|安排|做)|去掉|不放|不吃|不含|不要|加(?:一|点|些)|少(?:一|点|些)|多(?:一|点|些)/.test(text))
+    if(mealIntent?.unsupportedDate&&(explicitMeal||promptAction==='reference_meal_preview'))throw new Error('请明确选择今天或明天的一日餐单，原问题已保留。')
+    const baseAction=mealQuestionAction(text)
+    const action=image?'consultation':referenceAdjustment?'change':explicitMeal?'generate':baseAction==='generate'?'consultation':baseAction
     if(!props.route.taskType&&action==='view'){
       const date=/明天|明日/.test(text)?localDate(new Date(Date.now()+86400000)):localDate()
       const plan=await loadDailyPlan(profile.value.householdId,date,epoch,scope)
@@ -409,32 +443,37 @@ async function sendQuestion(promptAction=''){
       messages.value.push({id:newHealthRequestId(),role:'user',text},{id:newHealthRequestId(),role:'assistant',text:plan.status==='ready'?'这是当前饮食计划。':'这一天还没有饮食计划。',planDate:date})
       question.value='';await scrollLatest();return
     }
-    const continuing=!props.route.taskType&&action==='consultation'&&task.value.taskType==='reference_meal_preview'&&task.value.result?.type==='needs_input'&&referenceSelection
+    const continuing=!props.route.taskType&&!image&&task.value.taskType==='reference_meal_preview'&&task.value.result?.type==='needs_input'&&referenceAdjustment
+    let referenceFollowUp=false
     const type=Object.hasOwn(HEALTH_TEXT_TASKS,props.route.taskType)?props.route.taskType
       :!image&&['consultation','reference_meal_preview'].includes(promptAction)?promptAction
       :continuing||action!=='consultation'?'reference_meal_preview':'consultation'
     if(type==='reference_meal_preview'){
-      if(!continuing)referenceSelection=chooseReference(profile.value,text,{today:localDate(),tomorrow:localDate(new Date(Date.now()+86400000)),memberId:props.route.memberId})
-      if(action==='change'&&referenceSelection.meal_types.length===3&&!/三餐|全天|一天/.test(text))throw new Error('请说明要调整早餐、午餐还是晚餐。')
+      const previousVersion=referenceSelection?.daily_base_version
+      const selection=continuing?referenceSelection:chooseReference(profile.value,text,{today:localDate(),tomorrow:localDate(new Date(Date.now()+86400000)),memberId:props.route.memberId,...(referenceAdjustment?{previous:referenceSelection}:{})})
+      referenceFollowUp=referenceAdjustment&&['family_id','plan_date','participant_ids','meal_types'].every(key=>JSON.stringify(selection[key])===JSON.stringify(referenceSelection[key]))
+      if(!continuing)referenceSelection=selection
+      if(action==='change'&&!referenceFollowUp&&referenceSelection.meal_types.length===3&&!/三餐|全天|一天/.test(text))throw new Error('请说明要调整早餐、午餐还是晚餐。')
       const plan=await loadDailyPlan(profile.value.householdId,referenceSelection.plan_date,epoch,scope)
       if(!plan)throw new Error('计划状态已变化，请重新读取。')
       if(continuing&&referenceSelection.daily_base_version!==plan.version)throw new Error('饮食计划已有更新，请重新核对后继续。')
+      if(referenceFollowUp&&previousVersion!==plan.version)referenceFollowUp=false
       if(activePlanStatus(plan.pending?.status)){inlineTodayOpen.value=plan.date===localDate();throw new Error('该日饮食计划正在生成，请等待已有任务完成。')}
-      const explicitMembers=/全家|一家|家人|家庭|只(给|要|安排).{0,3}我|我一个人|我自己/.test(text)
+      const explicitMembers=/全家|一家|家人|家庭|我们|为我|给我|帮我|本人|自己|一个人|一人|只(?:有|给)?我/.test(text)
       const covered=type=>plan.meals.some(item=>item.meal_type===type&&(!explicitMembers||JSON.stringify((item.members||[]).map(m=>m.id).sort())===JSON.stringify(referenceSelection.participant_ids)))
       if(action==='generate'&&plan.status==='ready'&&referenceSelection.meal_types.every(covered)){
         messages.value.push({id:newHealthRequestId(),role:'user',text},{id:newHealthRequestId(),role:'assistant',text:'这是当前饮食计划。',planDate:plan.date})
         question.value='';await scrollLatest();return
       }
       if(action==='generate'&&plan.status==='ready')referenceSelection.meal_types=referenceSelection.meal_types.filter(type=>!covered(type))
-      if(action==='change'&&plan.status!=='ready')throw new Error('这一天还没有饮食计划，请先生成餐单。')
-      if(action==='change'&&!/全家|一家|家人|家庭|只(给|要|安排).{0,3}我|我一个人|我自己/.test(text)){
+      if(action==='change'&&!continuing&&plan.status!=='ready')throw new Error('这一天还没有饮食计划，请先生成餐单。')
+      if(action==='change'&&!continuing&&!/全家|一家|家人|家庭|我们|为我|给我|帮我|本人|自己|一个人|一人|只(?:有|给)?我/.test(text)){
         const existing=plan.meals.find(item=>item.meal_type===referenceSelection.meal_types[0])
         if(existing?.members?.length)referenceSelection.participant_ids=[...new Set(existing.members.map(member=>member.id))].sort()
       }
       referenceSelection.daily_base_version=plan.version
     }
-    if(type==='reference_meal_preview'||!task.value.memberId||task.value.taskType!==type)await restoreChat(type,{fresh:newConversationWelcome.value&&(task.value.taskType!==type||!task.value.entry?.thread_id)})
+    if(type==='reference_meal_preview'&&!referenceFollowUp||!task.value.memberId||task.value.taskType!==type)await restoreChat(type,{fresh:newConversationWelcome.value&&(task.value.taskType!==type||!task.value.entry?.thread_id)})
     if(disposed||!visible||mine!==epoch||scope!==storageContext())return
     if(task.value.canRetry){chatError.value='上次问题的提交结果尚未确认，请先点击“重试原问题”或重新读取。';return}
     if(!task.value.available){chatError.value=task.value.error||task.value.notice||chatError.value||'请先在该成员的家庭档案中完成资料和咨询同意。';return}
@@ -442,12 +481,15 @@ async function sendQuestion(promptAction=''){
     rememberThread()
     if(disposed||!visible||mine!==epoch||scope!==storageContext())return
     if(!task.value.entry?.thread_id){chatError.value=task.value.error||task.value.notice||'咨询尚未建立，请重新读取后再发送。';return}
+    stage='read-image'
     const images=image?[await chatImageContent(image)]:[]
     if(disposed||!visible||mine!==epoch||scope!==storageContext())return
+    stage='queue-message'
     const user=reactive({id:newHealthRequestId(),role:'user',text,createdAt:new Date().toISOString(),status:'sending',...(image?{image}: {})})
     pendingUser=user;submittedDraft={text,path:image?.localPath||'',requestId:''};messages.value.push(user)
     scopedStorage.setStorageSync('homepage-chat-task',{memberId:task.value.memberId,type,date:localDate(),newConversation:newConversationWelcome.value,...(type==='reference_meal_preview'?{selection:referenceSelection}:{})});desiredType=type
     await scrollLatest()
+    stage='submit-task'
     const accepted=await flow.submit(text,false,images)
     if(disposed||!visible||mine!==epoch||scope!==storageContext())return
     if(!accepted&&type==='reference_meal_preview'&&task.value.error?.includes('该日饮食计划正在生成')){
@@ -459,7 +501,18 @@ async function sendQuestion(promptAction=''){
     user.status=accepted?'sent':task.value.canRetry?'unknown':'failed'
     if(accepted&&!['failed','rejected'].includes(task.value.status)){if(question.value.trim()===text)question.value='';if(draftImage.value?.localPath===(image?.localPath||''))removeDraft()}
     else chatError.value=task.value.error||'回复尚未完成，原问题和图片已保留。'
-  }catch(e){if(!disposed&&visible&&mine===epoch&&scope===storageContext())chatError.value=e.message}
+  }catch(e){if(!disposed&&visible&&mine===epoch&&scope===storageContext()){
+    chatError.value=e.message
+    if(e?.name==='TypeError'){
+      // Caught client errors otherwise lose their frames on the device. Keep
+      // this local and omit message payloads, URL queries and private paths.
+      const stack=String(e.stack||'').split('\n').filter(line=>/^\s*at\s/.test(line)).map(line=>{
+        const frame=line.match(/(?:^|[\\/])([A-Za-z0-9_-]+\.(?:js|vue))(?:\?[^\r\n]*)?:(\d+):(\d+)\)?$/)
+        return frame?`at ${frame[1]}:${frame[2]}:${frame[3]}`:''
+      }).filter(Boolean).slice(0,6).join('\n')
+      console.error('[health-chat-send]',{stage,name:'TypeError',message:e.message==='Cannot convert undefined or null to object'?e.message:'TypeError',stack})
+    }
+  }}
   finally{if(sendTicket===sendGeneration){pendingUser=null;sending.value=false;if(!disposed&&visible&&mine===epoch&&scope===storageContext()&&chatError.value)uni.showToast({title:chatError.value,icon:'none',duration:3500})}}
 }
 async function resumePlanQuestion(){
@@ -497,7 +550,7 @@ async function editFailedQuestion(){
   if(disposed||!visible||scope!==storageContext()||ticket!==epoch)return
   question.value=text;draftImage.value=image||null;draftError.value=''
 }
-async function consent(){if(!consentChecked.value)return;consentChecked.value=false;await flow.acceptConsent(true);await sendQuestion()}
+async function consent(){if(!consentChecked.value)return;consentChecked.value=false;await flow.acceptConsent(true);await sendQuestion(task.value.taskType==='reference_meal_preview'?'reference_meal_preview':undefined)}
 function sendVoice(text){question.value=text;voiceBusy.value=false;void sendQuestion()}
 function removeDraft(){draftVersion++;draftImage.value=null;draftSaving.value=false;draftError.value=''}
 async function prepareDraft(image=draftImage.value){
@@ -533,7 +586,7 @@ async function askPrompt(prompt){
 <template>
 <NutritionistLayout v-if="entryReady" :voice-busy="voiceBusy" :scroll-target="scrollTarget" @history="history" @profile="uni.navigateTo({url:'/pages/my/index'})" @shortcut="shortcut">
  <template #default>
-  <view v-if="presentation.initialResults" class="analysis-message"><text class="analysis-copy">{{state.arrangement.analysis.text}}</text></view>
+  <view v-if="presentation.initialResults" class="analysis-message"><AiAnswer :text="state.arrangement.analysis.text"/></view>
   <DailyArrangementCard v-if="cardVisible && presentation.initialResults" :arrangement="state.arrangement" :disabled="state.busy" @open="openMeal" @members="selectedMeal=$event" @shop="shop"/>
    <view v-if="failedTask" class="recovery-card" role="status">
     <text class="recovery-label">上次的请求</text>
@@ -545,14 +598,14 @@ async function askPrompt(prompt){
    </view>
    <ChatWelcome v-if="presentation.welcome" :compact="failedTask" :prompts="prompts" :disabled="chatBusy" @ask="askPrompt" @shuffle="shufflePrompts"/>
    <view v-for="message in visibleMessages" :id="'message-'+message.id" :key="message.id" class="message-row" :class="message.role">
-   <view class="message-content"><view class="bubble"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><text v-if="message.text">{{message.text}}</text>
-    <text v-for="citation in message.citations||[]" :key="citation" class="citation">参考：{{citation}}</text>
+   <view class="message-content"><view class="bubble"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><AiAnswer v-if="message.role==='assistant'&&message.text" :text="message.text" :citations="message.citations||[]"/><text v-else-if="message.text" selectable>{{message.text}}</text>
     <text v-if="message.status==='unknown'" class="chat-error">提交结果待确认，请勿重复发送。</text>
     <text v-if="message.status==='failed'||message.status==='rejected'" class="chat-error">服务器已收到本条问题，但处理未完成。</text><text v-if="message.status==='cancelled'" class="chat-error">已取消本次问题。</text>
    </view><DailyMealPlanCard v-if="message.planDate&&dailyPlans[message.planDate]?.status==='ready'" :plan="dailyPlans[message.planDate]" :busy="planPurchaseBusy" @open="openDailyMeal($event,message.planDate)" @members="selectDailyMembers($event,message.planDate)" @shop="purchaseDaily($event,dailyPlans[message.planDate])"/><HealthChatBusinessCard v-else-if="message.business&&!message.planDate" :result="message.business" :member-id="message.memberId||task.memberId"/><ConversationFoodPackages v-if="message.purchaseRequestId" :offers="message.purchaseOffers" :request-id="message.purchaseRequestId"/></view>
   </view>
+  <view v-if="liveAnswer" id="stream-answer" class="message-row assistant live-answer"><view class="message-content"><view class="bubble"><AiAnswer :text="task.streamText" streaming/></view></view></view>
   <view v-if="familyPanel" class="dialogue-status"><text>家庭餐单 · {{familyState.date}}</text><text>按这餐实际参加的成员核对家庭安排，每位成员的资料和权限由服务端检查。</text><text v-if="familyState.busy">正在读取家庭安排…</text><text v-if="familyState.error" class="chat-error">{{familyState.error}}</text><button v-if="familyState.error" :disabled="familyState.busy" @click="familyPlan('',true)">重新读取家庭餐单</button><DailyArrangementCard v-if="familyState.phase==='ready'" :arrangement="familyState.arrangement" family :disabled="familyState.busy" @open="openFamilyMeal" @members="familySelection={type:$event.type,ids:$event.members.map(m=>m.id),question:''}" @shop="shop"/><button @click="familyPanel=false">收起家庭餐单</button></view>
-  <view v-if="chatBusy&&!returning&&!returnError" class="reply-progress" role="status" aria-live="polite"><text>{{profileLoading?'正在读取咨询资料':familyState.busy?'正在读取家庭安排':'正在回复'}}</text><view class="thinking-dots" aria-hidden="true"><view/><view/><view/></view></view><text v-if="chatError" class="chat-error" role="alert">{{chatError}}</text>
+  <view v-if="entryReady&&!profileLoading&&chatBusy&&!returning&&!returnError" id="reply-progress" class="reply-progress" role="status" aria-live="polite"><view class="progress-dot"/><text>{{progressText}}</text><button v-if="canCancel" class="stop-generation" @click="flow.cancelRequest()">停止</button></view><text v-if="entryError||chatError" class="chat-error" role="alert">{{entryError||chatError}}</text>
   <view v-if="returnError" class="dialogue-status"><text>{{returnError}}</text><button :disabled="returning" @click="refreshReturn">重新核对咨询状态</button></view>
   <button v-if="!profile&&!profileLoading" class="secondary-button" @click="load()">重新读取咨询资料</button>
   <view v-if="task.error||task.notice||task.canRetry||canCancel" class="dialogue-status"><text>{{task.error||task.notice}}</text><button v-if="task.requestId&&task.result?.type!=='error'" @click="flow.refresh()">重新读取本次回复</button><button v-if="task.canRetry" @click="retryQuestion">重试原问题</button><button v-if="canCancel" @click="flow.cancelRequest()">取消当前问题</button></view>
@@ -595,4 +648,6 @@ async function askPrompt(prompt){
 .composer{display:flex;align-items:center;gap:8px;padding:0;background:#fff;border:0;border-radius:0;min-height:50px}.composer input{flex:1;min-width:0;height:48px;box-sizing:border-box;padding:0 13px;border:1px solid #e0e0e0;border-radius:8px;background:#fff;color:#222;font-size:16px;line-height:1.5}.input-icon,.send-button{display:flex;flex-shrink:0;align-items:center;justify-content:center;min-width:44px;width:44px;min-height:48px;height:48px;border:0;border-radius:0;background:transparent;color:#80848a;padding:0}.input-icon:after,.send-button:after{border:0}.composer>.input-icon:first-child{margin-left:-8px;width:44px;min-width:44px}.send-button{color:#fff;background:#111;border-radius:8px;min-height:44px;height:44px}.composer :deep(.voice-input){flex:1;width:auto;min-width:0;height:48px;border:1px solid #e0e0e0;box-sizing:border-box;border-radius:8px;background:#fff}.composer :deep(.hold-to-talk){height:46px;font-size:16px}.keyboard-icon{width:20px;height:15px;border:1.5px solid currentColor;border-radius:3px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:3px}.keyboard-icon>view{width:13px;border-top:1px dotted currentColor}.keyboard-icon>view:last-child{width:9px;border-top-style:solid}
 .chat-message-image{display:block;width:210px;max-width:100%;height:auto;border-radius:8px;margin-bottom:8px}.image-draft{display:flex;align-items:center;gap:12px;padding:8px 0 14px;font-size:13px;line-height:1.6;color:#777}.draft-thumbnail{position:relative;flex-shrink:0}.draft-thumbnail image{width:56px;height:56px;border-radius:8px}.draft-thumbnail button{position:absolute;top:-7px;right:-7px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:#fff;color:#444}.image-draft>view+view{flex:1}.image-draft button{font-size:13px;min-height:24px}.inline-today{padding:0;margin:22px 0;max-height:none;overflow:visible}.inline-today-head{display:flex;align-items:center;justify-content:space-between;color:#777;font-size:13px}.inline-today-head button{display:flex;align-items:center;min-height:44px;background:transparent;color:#444;font-size:13px}.inline-today :deep(.daily-arrangement-card){margin-top:0}.composer-note{display:block;font-size:12px;color:#888;line-height:1.7;margin-top:8px}.inline-error{font-size:13px;color:#8d4c40}.section-title{font-size:18px}.sheet-mask .sheet{background:#fff;color:#222}.sheet-mask .composer-note{text-align:left}
 @keyframes reply-pulse{0%,70%,100%{opacity:.3}35%{opacity:1}}@media(prefers-reduced-motion:reduce){.thinking-dots>view{animation:none}}@media(max-width:350px){.bubble,.analysis-copy{font-size:15px}.message-row{margin:24px 0}.message-row.user{padding-left:30px}.user .bubble{padding:11px 14px;font-size:15px}.composer input{font-size:15px;padding-left:11px}.input-icon,.send-button{min-width:44px;width:44px}}
+
+.progress-dot{width:7px;height:7px;flex-shrink:0;border-radius:50%;background:#558367;animation:progress-breathe 1.4s ease-in-out infinite}.stop-generation{flex-shrink:0;padding:5px 12px;min-height:36px;border:1px solid #dce7dd;border-radius:18px;background:#fff;color:#48614d;font-size:12px}.live-answer{padding-bottom:5px}@keyframes progress-breathe{0%,100%{opacity:.4}50%{opacity:1}}@media(prefers-reduced-motion:reduce){.progress-dot{animation:none}}
 </style>

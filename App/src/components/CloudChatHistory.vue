@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { onShow,onHide,onUnload } from '@dcloudio/uni-app'
 import AppNavBar from './AppNavBar.vue'
+import AiAnswer from './AiAnswer.vue'
 import { loadCloudProfile } from '../services/cloud-profile.js'
 import { readChatDays,readChatMessages } from '../services/cloud-chat.js'
 import { scopedStorage } from '../services/storage.js'
@@ -50,7 +51,7 @@ onShow(()=>load());onHide(hide);onUnload(hide)
     <text class="history-saved-note">已保存对话</text>
     <view v-for="message in messages" :key="message.id" class="history-message" :class="message.role">
      <text class="history-message-role">{{message.role==='user'?'我':'家庭营养师'}}</text>
-     <view class="history-message-body"><image v-if="message.image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><text>{{message.text}}</text></view>
+     <view class="history-message-body"><image v-if="message.image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><AiAnswer v-if="message.role==='assistant'" :text="message.text" :citations="message.citations||[]"/><text v-else selectable>{{message.text}}</text></view>
     </view>
     <text v-if="!busy&&!error&&!messages.length" class="history-loading">当天暂无可读取的消息。</text>
    </template>

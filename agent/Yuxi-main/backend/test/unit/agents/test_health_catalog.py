@@ -14,6 +14,7 @@ def model_request(text="帮我推荐食材", after=(), request_id="request-curre
     """构造 middleware 实际读取的请求边界并记录模型指定工具。"""
     overrides = []
     request = SimpleNamespace(
+        state={},
         tools=[SimpleNamespace(name=name) for name in ("find_food_packages", "select_food_products")],
         messages=[HumanMessage(content=text, additional_kwargs={"health_request_id": request_id}), *after],
         runtime=SimpleNamespace(context=SimpleNamespace(request_id="request-current")),

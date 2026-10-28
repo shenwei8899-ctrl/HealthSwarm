@@ -137,7 +137,7 @@ async def test_reviewed_scope_role_input_commit_history_and_cross_role_citation(
         assert final_observation["calls"] == [
             {"role": current_role, "mode": mode, "phase": phase}
             for current_role, mode in ((role, "success"), (role, "changed"), (other_role, "success"), (role, "foreign"))
-            for phase in ("knowledge", "answer")
+            for phase in ("knowledge", "finalize", "answer")
         ]
         write_receipt("model-calls", {"role": role, **final_observation})
     finally:

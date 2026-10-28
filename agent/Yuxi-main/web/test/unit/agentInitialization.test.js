@@ -142,6 +142,52 @@ test('未绑定的健康角色偏好不成为默认选择，已绑定线程仍�
   assert.equal(store.agentConfig.model, 'health-consultation-model')
 })
 
+test('知识库和工具响应挂起时聊天初始化仍完成，随后更新名称映射', async (t) => {
+  const { store, databaseApi, toolApi } = await loadAgentStore(t)
+  const databases = deferred()
+  const tools = deferred()
+  t.mock.method(databaseApi, 'getAccessibleDatabases', () => databases.promise)
+  t.mock.method(toolApi, 'getTools', () => tools.promise)
+
+  let completed = false
+  const initialization = store.initialize().then(() => {
+    completed = true
+  })
+  await setImmediate()
+  assert.equal(completed, true)
+  assert.equal(store.isInitialized, true)
+  assert.equal(store.selectedAgentId, 'default-chatbot')
+  assert.deepEqual(store.availableKnowledgeBases, [])
+  databases.resolve({ databases: [{ id: 'nutrition', name: '营养指南' }] })
+  tools.resolve({ data: [{ name: 'search', display_name: '检索' }] })
+  await initialization
+  await setImmediate()
+  assert.equal(store.availableKnowledgeBases[0].name, '营养指南')
+  assert.equal(store.toolMetadata[0].display_name, '检索')
+})
+
+test('退出后迟到的业务响应不回填上一会话资料或默认智能体', async (t) => {
+  const { store, agentApi, databaseApi, toolApi } = await loadAgentStore(t)
+  const agents = deferred()
+  const databases = deferred()
+  const tools = deferred()
+  t.mock.method(agentApi, 'getAgents', () => agents.promise)
+  t.mock.method(databaseApi, 'getAccessibleDatabases', () => databases.promise)
+  t.mock.method(toolApi, 'getTools', () => tools.promise)
+  const initialization = store.initialize()
+  store.reset()
+  agents.resolve({ agents: agentList() })
+  databases.resolve({ databases: [{ id: 'previous-account' }] })
+  tools.resolve({ data: [{ name: 'previous-account-tool' }] })
+  await initialization
+  await setImmediate()
+  assert.deepEqual(store.agents, [])
+  assert.deepEqual(store.availableKnowledgeBases, [])
+  assert.deepEqual(store.toolMetadata, [])
+  assert.equal(store.selectedAgentId, null)
+  assert.equal(store.isInitialized, false)
+})
+
 /** 用真实 Vite 模块和 Pinia 加载 store，仅替换外部请求边界。 */
 async function loadAgentStore(t) {
   const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
@@ -189,7 +235,7 @@ async function loadAgentStore(t) {
   assert.strictEqual(loadedApis.agentApi, agentApi)
   assert.strictEqual(loadedApis.databaseApi, databaseApi)
   assert.strictEqual(loadedApis.toolApi, toolApi)
-  return { store: useAgentStore(), agentApi, calls }
+  return { store: useAgentStore(), agentApi, databaseApi, toolApi, calls }
 }
 
 /** 提供独立身份与默认选项，重现真实线程选择的两种智能体。 */

@@ -85,6 +85,6 @@ Worker 的 `YUXI_HEALTH_RUN_TIMEOUT_SECONDS` 默认值为 `300` 秒，适用于�
 
 健康固定图的确定性回放通过真实 API、ARQ Worker、最终 Message 和 PG 结果验证装配；回放不能证明真实模型效果或专业规则正确。按[测试规范](../develop-guides/testing-guidelines.md)准备合成隔离槽位，然后在 API 容器运行 `uv run --no-sync --group test python test/support/health_agent_replay_gate.py`。门禁要求独立合成标记及固定测试数据库，拒绝占用中的回放端口，并要求实际执行的用例零跳过。
 
-普通咨询及三个指标教育角色的普通 SSE、Run 进度、状态与历史只提供固定执行事实或当前有效的已发布结果。排障所需模型和工具候选仍保存在私有审计中：`GET /api/chat/thread/{thread_id}/audits` 需要超级管理员身份、会话归属及当前成员健康授权；普通会话所有者不能直接读取。不要用 `verbose=true`、checkpoint 或旧事件游标取得候选内容。首模型输出时间使用 Worker 内部有限标记记录，不能用普通进度时间代替。
+普通咨询及三个指标教育角色的普通 SSE 提供固定进度和经过当前来源校验的句段预览；Run 状态与历史仍以有效的持久化结果为准。增量实时发送和重放均重新校验来源，不能从旧事件取得已撤回资料。排障所需原始模型和工具候选仍保存在私有审计中：`GET /api/chat/thread/{thread_id}/audits` 需要超级管理员身份、会话归属及当前成员健康授权；普通会话所有者不能直接读取。不要用 `verbose=true` 或 checkpoint 取得候选内容。首模型输出时间使用 Worker 内部有限标记记录，不能用普通进度时间代替。增量契约见[任务恢复](health-task-recovery.md)。
 
 Yuxi 的系统测试模板使用 `scripts/ci_health_agent_replay.sh` 建立专属 `health-agent-ci` Compose 项目；脚本拒绝接管已存在项目，只清理自身创建的容器与卷。HealthSwarm 保留的工作流位于 `agent/Yuxi-main/.github/workflows/`，GitHub 只发现仓库根 `.github/workflows/`；该模板在 HealthSwarm 根仓库的自动运行入口仍待维护者配置。本地门禁结果与远端运行状态分别验收。

@@ -46,8 +46,8 @@ class SyntheticConversationSource extends AgentMealSourceService
     }
 }
 $catalogService = new SyntheticConversationSource();
-$catalogProof = ['payload'=>Json::encode(['kind'=>'conversation_catalog','uid'=>'synthetic-owner','request_id'=>'synthetic-request']), 'signature'=>'synthetic-conversation-receipt'];
-$catalogPayload = ['user_ref'=>'uid:synthetic-owner','menu_version_ref'=>'conversation:synthetic-request',
+$catalogProof = ['payload'=>Json::encode(['kind'=>'conversation_catalog','trade_policy'=>'catalog_v1','uid'=>'synthetic-owner','request_id'=>'synthetic-request']), 'signature'=>'synthetic-conversation-receipt'];
+$catalogPayload = ['family_ref'=>'conversation:synthetic-request','user_ref'=>'uid:synthetic-owner','menu_version_ref'=>'conversation:synthetic-request',
     'nutrition_validation'=>['status'=>'reference_only'], 'ingredient_requirements'=>[],
     'items'=>[['sku_id'=>'101','quantity'=>1]], 'agent_source_proof'=>$catalogProof];
 referenceAssert($catalogService->validateReferencePayload($catalogPayload), 'Conversation catalogue selection must share the verified reference trade contract');
