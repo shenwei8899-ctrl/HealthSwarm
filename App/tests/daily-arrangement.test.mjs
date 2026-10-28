@@ -19,6 +19,13 @@ function setup(handler) {
     send:async input=>{calls.push(structuredClone(input));return {data:await handler(input,calls)}},newId:()=>'request-'+ ++count,wait:async()=>{},pollLimit:3})
   return {client,state,calls,data,switch(){scope='B';familyId='family-B'}}
 }
+
+for(const code of ['daily_member_sources_unavailable','daily_profile_source_unavailable','daily_rules_unavailable','daily_dependencies_not_ready'])test(`setup error ${code} stops even when the old API labels its 503 retryable`,async()=>{
+ const f=setup(()=>{throw Object.assign(new Error('依赖尚未就绪'),{code:503,businessCode:code,retryable:true})})
+ await f.client.load(day)
+ assert.equal(f.calls.length,1);assert.equal(f.state.errorCode,code);assert.equal(f.state.retryable,false);assert.equal(f.state.phase,'error')
+})
+
 test('ready requires three complete saved meals and a genuine Agent request/run reference',()=>{
   assert.equal(validateDailyArrangement(ready(),day).id,'saved-1')
   for(const mutate of [v=>v.meals.pop(),v=>v.saved=false,v=>v.validation.status='pending',v=>v.procurement.checked=false,v=>v.analysis.source='demo',v=>v.analysis.run_id='',v=>v.meals[0].dishes[0].steps=[],v=>v.meals[0].memberNotes=[],v=>delete v.meals[0].purchase,v=>v.meals[0].purchase.package_version=0]){
