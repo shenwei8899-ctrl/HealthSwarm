@@ -23,6 +23,7 @@ export const useUserStore = defineStore('user', () => {
 
   // 动作
   function applySession(data) {
+    useAgentStore().reset()
     useProjectsStore().reset()
     token.value = data.access_token
     userId.value = data.user_id
@@ -232,6 +233,7 @@ export const useUserStore = defineStore('user', () => {
     isSuperAdmin,
 
     // 方法
+    applySession,
     login,
     logout,
     initialize,

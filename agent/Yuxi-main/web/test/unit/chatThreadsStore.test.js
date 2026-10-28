@@ -11,7 +11,11 @@ globalThis.localStorage = {
 }
 
 test('线程创建期间共享 Store 拒绝外层切换，创建结果可显式提交', async () => {
-  const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' })
+  const server = await createServer({
+    server: { middlewareMode: true },
+    appType: 'custom',
+    optimizeDeps: { noDiscovery: true, include: [] }
+  })
   setActivePinia(createPinia())
   try {
     const { useChatThreadsStore } = await server.ssrLoadModule('/src/stores/chatThreads.js')
@@ -31,7 +35,11 @@ test('线程创建期间共享 Store 拒绝外层切换，创建结果可显式�
 })
 
 test('Project 删除后 Store 只移除对应线程并清空当前选择', async () => {
-  const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' })
+  const server = await createServer({
+    server: { middlewareMode: true },
+    appType: 'custom',
+    optimizeDeps: { noDiscovery: true, include: [] }
+  })
   setActivePinia(createPinia())
   try {
     const { useChatThreadsStore } = await server.ssrLoadModule('/src/stores/chatThreads.js')
@@ -51,7 +59,11 @@ test('Project 删除后 Store 只移除对应线程并清空当前选择', async
 })
 
 test('置顶线程不占用普通线程分页 offset 且不会提前结束加载', async () => {
-  const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' })
+  const server = await createServer({
+    server: { middlewareMode: true },
+    appType: 'custom',
+    optimizeDeps: { noDiscovery: true, include: [] }
+  })
   setActivePinia(createPinia())
   try {
     const { threadApi } = await server.ssrLoadModule('/src/apis/agent_api.js')

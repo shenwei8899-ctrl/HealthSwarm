@@ -24,7 +24,7 @@ export class ErrorHandler {
     }
 
     // 用户提示
-    if (showMessage) {
+    if (showMessage && !error?.handled) {
       const displayMessage = customMessage || this.getErrorMessage(error, context)
 
       switch (severity) {

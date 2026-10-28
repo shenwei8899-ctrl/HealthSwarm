@@ -32,11 +32,14 @@ def proof(version=1):
     }
 
 
-async def setup_quality(client, users, *, field=None):
+async def setup_quality(client, users, *, field=None, source_refs=None):
     """当前食品摘要由已发布来源读取，期望营养仍独立手算。"""
     owner, reviewer, admin = [user["headers"] for user in users]
     member = await create_member(client, owner)
-    recipe = await publish_planner_recipe(client, admin, "独立质量合成菜")
+    source_refs = source_refs or {}
+    recipe = await publish_planner_recipe(
+        client, admin, "独立质量合成菜", food_source=source_refs.get("food"), recipe_source=source_refs.get("recipe")
+    )
     preview = await client.post(f"{ROOT}/members/{member}/meal-plan-previews", headers=owner, json=plan_spec(recipe))
     assert preview.status_code == 201, preview.text
     key = str(uuid4())
@@ -68,6 +71,8 @@ async def setup_quality(client, users, *, field=None):
     rules["ingredient_classifications"][0].update(food_id=food["id"], food_hash=input_fingerprint(food))
     rule_code = "synthetic-" + uuid4().hex
     rules_body = {**proof(), "rule_code": rule_code, "status": "approved", "payload": rules}
+    if source_refs.get("rules"):
+        rules_body["source_ref"] = source_refs["rules"]
     imported = await client.post(f"{ROOT}/approved-quality-rules", headers=admin, json=rules_body)
     assert imported.status_code == 201, imported.text
     credential = {**proof(), "status": "qualified", "reviewer_uid": users[1]["uid"]}

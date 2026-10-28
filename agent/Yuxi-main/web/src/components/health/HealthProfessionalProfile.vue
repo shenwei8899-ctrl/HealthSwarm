@@ -3,6 +3,7 @@ import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { healthVisionApi as api } from '@/apis/health_vision_api'
 import { nutrientLabels } from '@/utils/healthVision'
+import HealthNutritionReadiness from './HealthNutritionReadiness.vue'
 
 const props = defineProps({
   member: { type: Object, default: null },
@@ -91,7 +92,8 @@ const reasons = {
   confirmed_formula_input_required: '批准公式所需的专业确认参数不完整',
   formula_result_outside_supported_range: '公式结果超出支持范围，需要专业复核',
   doctor_requirement_rule_not_approved: '医嘱未匹配批准规则，需要专业复核',
-  approved_target_ranges_conflict: '批准目标范围存在冲突，需要专业复核'
+  approved_target_ranges_conflict: '批准目标范围存在冲突，需要专业复核',
+  knowledge_source_changed: '知识库原件已变化或不可用，请联系专业内容方重新核对'
 }
 let epoch = 0
 let readSequence = 0
@@ -679,6 +681,12 @@ onBeforeUnmount(() => {
             <a-button :disabled="busy || !!pendingImport" @click="openPlans">前往餐单草稿</a-button>
           </template>
         </template>
+        <HealthNutritionReadiness
+          :key="`${user.userId}:${member.id}`"
+          :member-id="member.id"
+          :rule-code="ruleCode"
+          :disabled="busy || calculating"
+        />
       </section>
     </template>
   </section>

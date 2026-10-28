@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from unittest.mock import AsyncMock
 
 from server.routers import workspace_router
 from server.routers.workspace_router import workspace_knowledge
@@ -160,3 +161,46 @@ def test_workspace_knowledge_file_calls_knowledge_preview_directly(monkeypatch):
     assert response.status_code == 200, response.text
     assert response.json()["content"] == "preview"
     assert calls == [("kb_1", "file_1")]
+
+
+def test_parsed_source_download_preserves_hash_for_authorized_ordinary_user(monkeypatch):
+    """普通读取者获取正文和原件版本，不经过管理员接口。"""
+    kb = FakeKnowledgeBase()
+    kb.get_file_download = AsyncMock(
+        return_value={
+            "filename": "recipe.md.parsed.md",
+            "content": b"ingredients\nmethod",
+            "media_type": "text/markdown",
+            "content_hash": "a" * 64,
+        }
+    )
+    client = _build_client(monkeypatch, kb)
+    response = client.get(
+        "/api/workspace/knowledge/download",
+        params={
+            "kb_id": "kb_1",
+            "file_id": "file_1",
+            "variant": "parsed",
+        },
+    )
+    assert response.status_code == 200
+    assert response.content == b"ingredients\nmethod"
+    assert response.headers["X-Yuxi-Source-Hash"] == "a" * 64
+
+
+def test_parsed_source_download_denies_before_reading_file(monkeypatch):
+    """知道正文地址不赋予读取权限。"""
+    kb = FakeKnowledgeBase()
+    kb.check_accessible = AsyncMock(return_value=False)
+    kb.get_file_download = AsyncMock(side_effect=AssertionError("must not read"))
+    client = _build_client(monkeypatch, kb)
+    response = client.get(
+        "/api/workspace/knowledge/download",
+        params={
+            "kb_id": "kb_1",
+            "file_id": "file_1",
+            "variant": "parsed",
+        },
+    )
+    assert response.status_code == 403
+    kb.get_file_download.assert_not_awaited()

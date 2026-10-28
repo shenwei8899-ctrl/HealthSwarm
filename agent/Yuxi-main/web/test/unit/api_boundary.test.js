@@ -16,6 +16,8 @@ async function withServer(run) {
   const server = await createServer({
     server: { middlewareMode: true },
     appType: 'custom',
+    // 测试只经 SSR 加载模块，避免为每个实例扫描客户端入口。
+    optimizeDeps: { noDiscovery: true, include: [] },
     ssr: { noExternal: ['ant-design-vue'] },
     plugins: [
       {
@@ -86,38 +88,165 @@ test('登录 423 保留锁定状态、文案和剩余时间响应头', async () 
   })
 })
 
-test('受保护请求的 401 才清理会话并跳转登录页', async () => {
+test('受保护请求的 401 才清理会话并立即跳转登录页', async () => {
   await withServer(async (server) => {
     storageValues.set('user_token', 'expired-token')
     globalThis.__apiBoundaryMessages = []
-    globalThis.window = { location: { href: '/agent' } }
+    const redirects = mockLocation('/agent?project_id=project-1#composer')
     globalThis.fetch = async () =>
       new Response(JSON.stringify({ detail: '令牌已过期' }), {
         status: 401,
         headers: { 'content-type': 'application/json' }
       })
 
-    const originalSetTimeout = globalThis.setTimeout
-    try {
-      setActivePinia(createPinia())
-      const { apiGet } = await server.ssrLoadModule('/src/apis/base.js')
-      const { useUserStore } = await server.ssrLoadModule('/src/stores/user.js')
-      const userStore = useUserStore()
-      globalThis.setTimeout = (callback) => {
-        callback()
-        return 0
-      }
+    setActivePinia(createPinia())
+    const { apiGet } = await server.ssrLoadModule('/src/apis/base.js')
+    const { useUserStore } = await server.ssrLoadModule('/src/stores/user.js')
+    const userStore = useUserStore()
 
-      await assert.rejects(apiGet('/api/protected'), (error) => error.status === 401)
-      assert.equal(userStore.isLoggedIn, false)
-      assert.equal(storageValues.has('user_token'), false)
-      assert.equal(window.location.href, '/login')
-      assert.deepEqual(globalThis.__apiBoundaryMessages, ['登录已过期，请重新登录'])
-    } finally {
-      globalThis.setTimeout = originalSetTimeout
-    }
+    await assert.rejects(apiGet('/api/protected'), (error) => error.status === 401)
+    assert.equal(userStore.isLoggedIn, false)
+    assert.equal(storageValues.has('user_token'), false)
+    assert.equal(sessionStorage.getItem('redirect'), '/agent?project_id=project-1#composer')
+    assert.deepEqual(redirects, ['/login'])
+    assert.deepEqual(globalThis.__apiBoundaryMessages, ['登录已过期，请重新登录'])
   })
 })
+
+test('旧会话请求迟到的 401 不清理刚登录的新会话', async (t) => {
+  await withServer(async (server) => {
+    storageValues.set('user_token', 'previous-session')
+    globalThis.__apiBoundaryMessages = []
+    const redirects = mockLocation('/agent')
+    const previousResponse = deferred()
+    globalThis.fetch = async (url) => {
+      if (url === '/api/protected') return previousResponse.promise
+      assert.equal(url, '/api/auth/token')
+      return new Response(
+        JSON.stringify({
+          access_token: 'current-session',
+          user_id: 2,
+          uid: 'current-user',
+          username: '当前用户',
+          role: 'user'
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    }
+
+    setActivePinia(createPinia())
+    const { apiGet } = await server.ssrLoadModule('/src/apis/base.js')
+    const { useUserStore } = await server.ssrLoadModule('/src/stores/user.js')
+    const userStore = useUserStore()
+    const logout = t.mock.method(userStore, 'logout')
+    const oldRequest = assert.rejects(apiGet('/api/protected'), (error) => error.status === 401)
+
+    await userStore.login({ loginId: 'current-user', password: 'synthetic-password' })
+    previousResponse.resolve(unauthorizedResponse())
+    await oldRequest
+
+    assert.equal(userStore.isLoggedIn, true)
+    assert.equal(userStore.userId, 2)
+    assert.equal(userStore.uid, 'current-user')
+    assert.equal(userStore.token, 'current-session')
+    assert.equal(storageValues.get('user_token'), 'current-session')
+    assert.equal(logout.mock.callCount(), 0)
+    assert.equal(sessionStorage.getItem('redirect'), null)
+    assert.deepEqual(redirects, [])
+    assert.deepEqual(globalThis.__apiBoundaryMessages, [])
+  })
+})
+
+test('同一会话的并发 401 只退出、提示和跳转一次', async (t) => {
+  await withServer(async (server) => {
+    storageValues.set('user_token', 'expired-session')
+    globalThis.__apiBoundaryMessages = []
+    const redirects = mockLocation('/agent')
+    const responses = [deferred(), deferred()]
+    let requested = 0
+    globalThis.fetch = async () => responses[requested++].promise
+
+    setActivePinia(createPinia())
+    const { apiGet } = await server.ssrLoadModule('/src/apis/base.js')
+    const { useUserStore } = await server.ssrLoadModule('/src/stores/user.js')
+    const userStore = useUserStore()
+    const logout = t.mock.method(userStore, 'logout')
+    const requests = [
+      assert.rejects(apiGet('/api/protected/one'), (error) => error.status === 401),
+      assert.rejects(apiGet('/api/protected/two'), (error) => error.status === 401)
+    ]
+    assert.equal(requested, 2)
+    responses.forEach((response) => response.resolve(unauthorizedResponse()))
+    await Promise.all(requests)
+
+    assert.equal(userStore.isLoggedIn, false)
+    assert.equal(storageValues.has('user_token'), false)
+    assert.equal(logout.mock.callCount(), 1)
+    assert.deepEqual(redirects, ['/login'])
+    assert.deepEqual(globalThis.__apiBoundaryMessages, ['登录已过期，请重新登录'])
+  })
+})
+
+test('已在登录页时受保护请求 401 不触发重复导航', async () => {
+  await withServer(async (server) => {
+    storageValues.set('user_token', 'expired-session')
+    globalThis.__apiBoundaryMessages = []
+    const redirects = mockLocation('/login')
+    globalThis.fetch = async () => unauthorizedResponse()
+
+    setActivePinia(createPinia())
+    const { apiGet } = await server.ssrLoadModule('/src/apis/base.js')
+    const { useUserStore } = await server.ssrLoadModule('/src/stores/user.js')
+    const userStore = useUserStore()
+
+    await assert.rejects(apiGet('/api/protected'), (error) => error.status === 401)
+    assert.equal(userStore.isLoggedIn, false)
+    assert.equal(storageValues.has('user_token'), false)
+    assert.deepEqual(redirects, [])
+    assert.deepEqual(globalThis.__apiBoundaryMessages, ['登录已过期，请重新登录'])
+  })
+})
+
+/** 记录真实重定向动作，避免用立即执行定时器掩盖延迟行为。 */
+function mockLocation(path) {
+  const redirects = []
+  const url = new URL(path, 'http://healthswarm.local')
+  const sessionValues = new Map()
+  globalThis.sessionStorage = {
+    getItem: (key) => sessionValues.get(key) ?? null,
+    setItem: (key, value) => sessionValues.set(key, String(value)),
+    removeItem: (key) => sessionValues.delete(key)
+  }
+  globalThis.window = {
+    location: {
+      pathname: url.pathname,
+      search: url.search,
+      hash: url.hash,
+      href: path,
+      replace(path) {
+        redirects.push(path)
+      }
+    }
+  }
+  return redirects
+}
+
+/** 每个请求持有独立响应，验证响应到达时的会话归属。 */
+function deferred() {
+  let resolve
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
+/** 返回可重复消费的独立认证失败响应。 */
+function unauthorizedResponse() {
+  return new Response(JSON.stringify({ detail: '令牌已过期' }), {
+    status: 401,
+    headers: { 'content-type': 'application/json' }
+  })
+}
 
 test('用户 Store 的 422 传播链不泄露认证头、密码或 Pydantic input', async () => {
   await withServer(async (server) => {

@@ -62,6 +62,7 @@ export const useAgentStore = defineStore(
     const error = ref(null)
     const isInitialized = ref(false)
     let initializationPromise = null
+    let resetVersion = 0
 
     const selectedAgent = computed(() => {
       const agentId = selectedAgentId.value
@@ -86,22 +87,24 @@ export const useAgentStore = defineStore(
 
     /** 加载消息来源展示所需的知识库名称。 */
     async function fetchAccessibleKnowledgeBases() {
+      const version = resetVersion
       try {
         const response = await databaseApi.getAccessibleDatabases()
-        availableKnowledgeBases.value = response.databases || []
+        if (version === resetVersion) availableKnowledgeBases.value = response.databases || []
       } catch (e) {
         console.warn('Failed to fetch accessible knowledge bases:', e)
-        availableKnowledgeBases.value = []
+        if (version === resetVersion) availableKnowledgeBases.value = []
       }
     }
 
     async function fetchToolMetadata() {
+      const version = resetVersion
       try {
         const result = await toolApi.getTools()
-        toolMetadata.value = result?.data || []
+        if (version === resetVersion) toolMetadata.value = result?.data || []
       } catch (e) {
         console.warn('Failed to fetch tool metadata:', e)
-        toolMetadata.value = []
+        if (version === resetVersion) toolMetadata.value = []
       }
     }
 
@@ -109,16 +112,22 @@ export const useAgentStore = defineStore(
     async function initialize() {
       if (initializationPromise) return initializationPromise
       if (isInitialized.value) return
+      const version = resetVersion
       const pending = (async () => {
         try {
-          await Promise.all([fetchAgents(), fetchAccessibleKnowledgeBases(), fetchToolMetadata()])
+          // 名称映射属于辅助信息，不阻塞智能体和聊天界面就绪。
+          void fetchAccessibleKnowledgeBases()
+          void fetchToolMetadata()
+          await fetchAgents()
+          if (version !== resetVersion) return
 
           const targetAgentId = getPreferredAgentId(agents.value, selectedAgentId.value)
           if (targetAgentId) {
             await selectAgent(targetAgentId)
           }
-          isInitialized.value = true
+          if (version === resetVersion) isInitialized.value = true
         } catch (err) {
+          if (version !== resetVersion) return
           console.error('Failed to initialize agent store:', err)
           handleChatError(err, 'initialize')
           error.value = err.message
@@ -136,18 +145,22 @@ export const useAgentStore = defineStore(
     }
 
     async function fetchAgents({ includeSubagents = false } = {}) {
+      const version = resetVersion
       isLoadingAgents.value = true
       error.value = null
       try {
         const response = await agentApi.getAgents({ includeSubagents })
-        agents.value = sortAgents((response.agents || []).map(normalizeAgent))
+        if (version === resetVersion) {
+          agents.value = sortAgents((response.agents || []).map(normalizeAgent))
+        }
       } catch (err) {
+        if (version !== resetVersion) return
         console.error('Failed to fetch agents:', err)
         handleChatError(err, 'fetch')
         error.value = err.message
         throw err
       } finally {
-        isLoadingAgents.value = false
+        if (version === resetVersion) isLoadingAgents.value = false
       }
     }
 
@@ -175,33 +188,38 @@ export const useAgentStore = defineStore(
       if (!agentId) return null
       if (!forceRefresh && agentDetails.value[agentId]) return agentDetails.value[agentId]
 
+      const version = resetVersion
       isLoadingAgentDetail.value = true
       error.value = null
       try {
         const response = await agentApi.getAgentDetail(agentId)
+        if (version !== resetVersion) return null
         const agent = normalizeAgent(response.agent || response)
         agentDetails.value[agent.id] = agent
         return agent
       } catch (err) {
+        if (version !== resetVersion) return null
         console.error(`Failed to fetch agent detail for ${agentId}:`, err)
         handleChatError(err, 'fetch')
         error.value = err.message
         throw err
       } finally {
-        isLoadingAgentDetail.value = false
+        if (version === resetVersion) isLoadingAgentDetail.value = false
       }
     }
 
     async function selectAgent(agentId, { allowSubagent = false } = {}) {
       if (!agentId) return
+      const version = resetVersion
       let knownAgent = agentDetails.value[agentId] || agents.value.find((a) => a.id === agentId)
       if (!knownAgent) {
         knownAgent = await fetchAgentDetail(agentId)
       }
-      if (knownAgent?.is_subagent && !allowSubagent) return
+      if (version !== resetVersion || (knownAgent?.is_subagent && !allowSubagent)) return
       isLoadingConfig.value = true
       try {
         const detail = agentDetails.value[agentId] || (await fetchAgentDetail(agentId))
+        if (version !== resetVersion || !detail) return
         const loadedConfig = applyConfigDefaults(
           extractContext(detail),
           getConfigurableItems(detail)
@@ -210,7 +228,7 @@ export const useAgentStore = defineStore(
         agentConfig.value = loadedConfig
         originalAgentConfig.value = { ...loadedConfig }
       } finally {
-        isLoadingConfig.value = false
+        if (version === resetVersion) isLoadingConfig.value = false
       }
     }
 
@@ -282,6 +300,7 @@ export const useAgentStore = defineStore(
     }
 
     function reset() {
+      resetVersion += 1
       agents.value = []
       selectedAgentId.value = null
       availableKnowledgeBases.value = []

@@ -640,6 +640,8 @@ test('目标实际模板保留零值、单位和版本，未就绪只显示下�
     return [vnode.props?.message, ...children.map(textOf)].filter(Boolean).join(' ')
   }
   const context = {
+    user: { userId: 'synthetic-user' },
+    member: { id: 'synthetic-member' },
     busy: false,
     calculating: false,
     currentProfile: current(),
