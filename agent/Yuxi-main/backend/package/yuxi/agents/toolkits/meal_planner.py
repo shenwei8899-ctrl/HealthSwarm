@@ -4,7 +4,7 @@ from langgraph.prebuilt.tool_node import ToolRuntime
 from pydantic import Field
 
 from yuxi.agents.toolkits.registry import tool
-from yuxi.agents.toolkits.health import HealthReadInput
+from yuxi.agents.toolkits.health import HealthKnowledgeInput, HealthReadInput
 from yuxi.services.health_meal_plan_types import MealPlanSpec
 from yuxi.services.health_family_planner_types import FamilySwapToolInput, FamilyParticipationToolInput
 from yuxi.services.reference_meal_plan_types import ReferencePlanDraft
@@ -14,6 +14,12 @@ class RecipeSearch(HealthReadInput):
     """关键词不接受账号、成员或模型参数。"""
 
     query: str = Field(default="", max_length=80)
+
+
+class ReferenceRecipeSearch(HealthReadInput):
+    """参考食谱要求 trim 后非空关键词，与受控检索服务保持相同边界。"""
+
+    query: str = Field(min_length=1, max_length=80, description="简短菜名或食材关键词，不传身份或病历正文")
 
 
 class MealPlanToolInput(MealPlanSpec, HealthReadInput):
@@ -39,7 +45,7 @@ async def get_reference_plan_context(runtime: ToolRuntime) -> dict:
     return await get_reference_context(runtime.context)
 
 
-@tool(category="health", display_name="检索参考菜谱", args_schema=RecipeSearch)
+@tool(category="health", display_name="检索参考菜谱", args_schema=ReferenceRecipeSearch)
 async def search_reference_recipes(query: str, runtime: ToolRuntime) -> dict:
     """按主题检索真实食谱文件。"""
     from yuxi.services.reference_meal_plan_service import search_reference_recipes as search
@@ -83,7 +89,7 @@ async def preview_initial_meal_plan(runtime: ToolRuntime) -> dict:
     return await preview_initial_for_run(runtime.context)
 
 
-@tool(category="health", display_name="配餐营养依据检索", args_schema=RecipeSearch)
+@tool(category="health", display_name="配餐营养依据检索", args_schema=HealthKnowledgeInput)
 async def query_initial_nutrition_knowledge(query: str, runtime: ToolRuntime) -> dict:
     """从固定知识库检索搭配依据，数值与配方仍使用正式发布版本。"""
     from yuxi.services.health_initial_planner_service import search_initial_nutrition_knowledge

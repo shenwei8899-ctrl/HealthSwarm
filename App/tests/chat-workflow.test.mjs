@@ -46,7 +46,12 @@ function workflow(options = {}) {
     let generation = 0, selected = null, selection = null, flowOptions = {}, state
     const fresh = () => ({ memberId: '', taskType: '', available: false, entry: null, requestId: '', status: '', result: null,
       readOnly: false, busy: false, loading: false, submitUnknown: false, canRetry: false })
-    const publish = patch => { state = { ...(state || fresh()), ...patch }; onChange(clone(state)) }
+    const publish = patch => {
+      state = { ...(state || fresh()), ...patch }
+      const row = selected && threads.get(selected)
+      if (row && state.requestId) row.taskSnapshot = clone({ requestId: state.requestId, status: state.status, result: state.result })
+      onChange(clone(state))
+    }
     const hide = () => { generation++; selected = null; state = fresh(); onChange(clone(state)) }
     const bindingKey = () => identity.scope + ':' + flowOptions.conversationId + ':' + state.memberId + ':' + state.taskType + ':' + JSON.stringify(selection)
     const entryFor = row => ({ thread_id: row.threadId, agent_slug: row.agent, business_date: row.businessDate })
@@ -61,7 +66,7 @@ function workflow(options = {}) {
         const row = selected && threads.get(selected)
         if (mine !== generation) return
         if (row && row.owner !== identity.scope) throw Object.assign(new Error('合成的跨账号访问拒绝'), { code: 403 })
-        publish({ entry: row ? entryFor(row) : null, readOnly: !!row?.businessDate && row.businessDate < clock.day })
+        publish({ entry: row ? entryFor(row) : null, ...(row?.taskSnapshot || {}), readOnly: !!row?.businessDate && row.businessDate < clock.day })
       },
       async createEntry() {
         calls.push({ action: 'create', taskType: state.taskType, memberId: state.memberId, selection: clone(selection), options: clone(flowOptions) })
@@ -128,13 +133,25 @@ function workflow(options = {}) {
   }
   const code = readFileSync(new URL('../src/components/CloudNutritionChat.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
+  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
   const historyRow = threadId => { const row = threads.get(threadId); return { thread_id: threadId, member_id: row.memberId, agent_slug: row.agent, business_date: row.businessDate } }
   return { ...page, calls, writes, identity, clock, hooks, scopedStorage, threads, addThread, historyRow,
     publish: value => flow.publish(value), setSnapshot: value => { snapshotOverride = value },
     dispose() { hooks.unmount?.(); scope.stop() },
   }
 }
+
+test('unknown submission blocks new questions but allows idle retry of its original request',async()=>{
+  const p=workflow()
+  try{
+    await p.load()
+    p.publish({submitUnknown:true,canRetry:true,busy:false,loading:false,refreshing:false})
+    assert.equal(p.chatBusy.value,true)
+    assert.equal(!!p.retryBusy.value,false)
+    p.publish({refreshing:true});assert.equal(p.retryBusy.value,true)
+    p.publish({refreshing:false,busy:true});assert.equal(p.retryBusy.value,true)
+  }finally{p.dispose()}
+})
 
 test('ordinary arrangement requests and corrections stay in one continuous consultation without creating meal plans', async () => {
   const p = workflow()
@@ -166,6 +183,86 @@ test('explicit structured planning preserves chosen family members, tomorrow lun
     const submitted = p.calls.filter(call => call.action === 'submit')
     assert.equal(submitted.length, 1); assert.equal(submitted[0].taskType, 'reference_meal_preview'); assert.equal(submitted[0].text, question)
     assert.equal(p.profile.value.members[0].allergies[0], '花生')
+  } finally { p.dispose() }
+})
+
+for (const followUp of ['请帮我安排今天三餐', '可以，直接安排三餐', '体重70公斤，没有过敏']) {
+  test(`reference needs_input续聊保留线程和选择：${followUp}`, async () => {
+    const p = workflow()
+    try {
+      await p.load(); p.question.value = '整理本人今天三餐'; await p.sendQuestion('reference_meal_preview')
+      const original = p.calls.filter(call => call.action === 'submit').at(-1)
+      p.publish({ status: 'completed', result: { type: 'needs_input', questions: ['请补充就餐资料'] } })
+      p.question.value = followUp; await p.sendQuestion()
+      const latest = p.calls.filter(call => call.action === 'submit').at(-1)
+      assert.equal(latest.taskType, 'reference_meal_preview')
+      assert.equal(latest.threadId, original.threadId)
+      assert.deepEqual(latest.selection, original.selection)
+    } finally { p.dispose() }
+  })
+}
+
+test('选回会话只读验证后恢复未完成reference上下文，取消后不再恢复', async () => {
+  const p = workflow()
+  try {
+    await p.load(); const main = p.conversationThreadId.value
+    p.question.value = '整理今天三餐'; await p.sendQuestion('reference_meal_preview')
+    const original = p.calls.filter(call => call.action === 'submit').at(-1)
+    p.publish({ status: 'completed', result: { type: 'needs_input', questions: ['请补充就餐资料'] } })
+    await p.newConversation()
+    const writes = p.calls.filter(call => call.action === 'submit' || call.action === 'create').length
+    await p.selectConversation(p.historyRow(main))
+    assert.equal(p.task.value.taskType, 'reference_meal_preview')
+    assert.equal(p.task.value.entry.thread_id, original.threadId)
+    assert.equal(p.calls.filter(call => call.action === 'submit' || call.action === 'create').length, writes)
+    p.question.value = '体重70公斤'; await p.sendQuestion()
+    assert.equal(p.calls.filter(call => call.action === 'submit').at(-1).threadId, original.threadId)
+    p.publish({ status: 'completed', result: { type: 'needs_input', questions: ['请补充就餐资料'] } })
+    p.question.value = '取消配餐，换个话题，解释膳食纤维'; await p.sendQuestion()
+    assert.equal(p.calls.filter(call => call.action === 'submit').at(-1).taskType, 'consultation')
+    await p.newConversation(); await p.selectConversation(p.historyRow(main))
+    assert.equal(p.task.value.taskType, 'consultation')
+  } finally { p.dispose() }
+})
+
+for (const field of ['scope', 'threadId', 'requestId']) {
+  test(`缓存special的${field}不匹配时保持已验证主咨询，不提交或创建历史任务`, async () => {
+    const p = workflow()
+    try {
+      await p.load(); const main = p.conversationThreadId.value, conversation = p.conversationId.value
+      p.question.value = '整理今天三餐'; await p.sendQuestion('reference_meal_preview')
+      p.publish({ status: 'completed', result: { type: 'needs_input', questions: ['请补充资料'] } })
+      const key = 'conversation-task:' + conversation, saved = p.scopedStorage.getStorageSync(key)
+      assert.ok(saved)
+      p.scopedStorage.setStorageSync(key, { ...saved, [field]: field === 'scope' ? 'another-session' : uuid(999) })
+      await p.newConversation()
+      const writes = p.calls.filter(call => call.action === 'submit' || call.action === 'create').length
+      await p.selectConversation(p.historyRow(main))
+      assert.equal(p.task.value.taskType, 'consultation')
+      assert.equal(p.task.value.entry.thread_id, main)
+      assert.equal(p.calls.filter(call => call.action === 'submit' || call.action === 'create').length, writes)
+    } finally { p.dispose() }
+  })
+}
+
+test('needs_input期间明确改变日期和家庭成员仍生成新选择，非法日期不提交', async () => {
+  const p = workflow()
+  try {
+    await p.load(); p.question.value = '整理今天早餐'; await p.sendQuestion('reference_meal_preview')
+    const original = p.calls.filter(call => call.action === 'submit').at(-1)
+    p.publish({ status: 'completed', result: { type: 'needs_input', questions: ['请补充资料'] } })
+    p.question.value = '请给全家安排明天晚餐'; await p.sendQuestion()
+    const latest = p.calls.filter(call => call.action === 'submit').at(-1)
+    assert.equal(latest.taskType, 'reference_meal_preview')
+    assert.notEqual(latest.threadId, original.threadId)
+    assert.equal(latest.selection.plan_date, '2026-10-29')
+    assert.deepEqual(latest.selection.participant_ids, ['father', 'self'])
+    assert.deepEqual(latest.selection.meal_types, ['dinner'])
+    p.publish({ status: 'completed', result: { type: 'needs_input', questions: ['请补充资料'] } })
+    const submitted = p.calls.filter(call => call.action === 'submit').length
+    p.question.value = '请帮我安排后天三餐'; await p.sendQuestion()
+    assert.equal(p.calls.filter(call => call.action === 'submit').length, submitted)
+    assert.match(p.chatError.value, /今天或明天/)
   } finally { p.dispose() }
 })
 

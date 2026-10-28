@@ -234,7 +234,7 @@ test('a Task bound to another member clears the private projection and saved poi
   assert.equal(h.saved.get(`health-task:${memberId}:${taskType}`), null)
 })
 
-test('an older status read cannot replace a newer completed answer', async () => {
+test('concurrent reads of one request share the same verified completion', async () => {
   let reads = 0, releaseOld
   const baseTask = { request_id: requestId, member_id: memberId, task_type: taskType,
     thread_id: threadId, agent_slug: 'health-blood-glucose', request_status: 'dispatched' }
@@ -253,9 +253,11 @@ test('an older status read cannot replace a newer completed answer', async () =>
   await h.flow.open(memberId, taskType)
   const old = h.flow.refresh()
   await new Promise(resolve => setImmediate(resolve))
-  await h.flow.refresh()
-  releaseOld({ data: { ...baseTask, execution_status: 'running', result: null } })
-  await old
+  const concurrent = h.flow.refresh()
+  assert.equal(reads, 2, 'the open read and one shared refresh are the only HTTP reads')
+  releaseOld({ data: { ...baseTask, execution_status: 'completed', result: { result_type: 'general_education_answer',
+    scope: 'general_education', answer: '当前答复', citations: [] } } })
+  await Promise.all([old, concurrent])
   assert.equal(h.flow.getState().result.text, '当前答复')
 })
 

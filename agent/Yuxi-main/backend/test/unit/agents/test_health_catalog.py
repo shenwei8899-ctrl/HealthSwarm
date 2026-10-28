@@ -10,7 +10,7 @@ from yuxi.agents.middlewares.health_catalog import HealthCatalogMiddleware
 from yuxi.services.health_vision_types import HealthVisionError
 
 
-def model_request(text="帮我推荐食材", after=(), request_id="request-current"):
+def model_request(text="帮我推荐商城食材", after=(), request_id="request-current"):
     """构造 middleware 实际读取的请求边界并记录模型指定工具。"""
     overrides = []
     request = SimpleNamespace(

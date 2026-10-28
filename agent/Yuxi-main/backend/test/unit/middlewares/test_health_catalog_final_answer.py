@@ -52,7 +52,7 @@ class ReplacingBudgetOracle(AgentMiddleware):
         return await handler(request.override(model=model))
 
 
-def human(text="今晚吃什么", *, request_id="synthetic-request"):
+def human(text="推荐可以买的食材", *, request_id="synthetic-request"):
     """本轮Human身份与生产授权中间件写入的标记一致。"""
     return HumanMessage(text, additional_kwargs={"health_request_id": request_id})
 
@@ -62,14 +62,15 @@ def receipt(name, *, status="success"):
     return ToolMessage(content="synthetic receipt", name=name, tool_call_id="call-" + name, status=status)
 
 
-async def catalog_graph(model, messages, *, final=False, on_custom=None):
+async def catalog_graph(model, messages, *, final=False, on_custom=None, system_prompt=None, extra_tools=()):
     """保持生产Catalog→Budget→Final顺序，通过实际v3桥消费custom。"""
     context = Context()
     budget = ReplacingBudgetOracle()
     checkpoint = InMemorySaver()
     graph = create_agent(
         model,
-        tools=[find_food_packages, select_food_products, production.finalize_health_answer],
+        tools=[find_food_packages, select_food_products, *extra_tools, production.finalize_health_answer],
+        system_prompt=system_prompt,
         middleware=[catalog.HealthCatalogMiddleware(), budget, production.HealthFinalAnswerMiddleware()],
         context_schema=Context,
         checkpointer=checkpoint,
