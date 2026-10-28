@@ -53,9 +53,75 @@ function page(path, exposed, extras={}) {
   const value=scope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;\n${source}\nreturn {${exposed}}`)(deps))
   return {...value,show,ready,hide,dispose(){unload?.();scope.stop()}}
 }
-const chatFields='input,draftImage,draftSaving,draftError,hasDraftContent,canSend,prepareDraftImage,removeDraftImage,openCamera,ask,messages,thinking,replyError,retryReply,voice,voiceMode,voiceBusy,voiceRef,sendVoice'
+const chatFields='input,draftImage,draftSaving,draftError,hasDraftContent,canSend,prepareDraftImage,removeDraftImage,openCamera,ask,messages,thinking,replyError,retryReply,voice,voiceMode,voiceBusy,voiceRef,sendVoice,historyOpen,conversations,activeConversationId,conversationGroups,newConversation,selectConversation,showHistory,closeHistory,historyProfile,chatDate'
 const cameraFields='mounted,ready,busy,error,device,flash,zoomChoices,zoom,cameraReady,cameraError,takePhoto,choosePhoto,switchCamera,toggleFlash,setZoom,close'
 const chat=extras=>page('chat/index.vue',chatFields,extras)
+
+test('local drawer imports old daily chats once without changing their messages',()=>{
+  setup()
+  const today=mealState.localDate(),yesterday=mealState.localDate(new Date(Date.now()-86400000))
+  const old=[{role:'user',text:'  原来的对话  '},{role:'assistant',text:'旧回复'}]
+  scopedStorage.setStorageSync('chat-'+today,old)
+  scopedStorage.setStorageSync('chat-'+yesterday,[{role:'user',text:'昨日咨询'}])
+  scopedStorage.setStorageSync('chat-2025-01-02',[{role:'user',text:'更早咨询'}])
+  const p=chat()
+  assert.deepEqual(p.messages.value,old);assert.deepEqual(scopedStorage.getStorageSync('chat-'+today),old)
+  assert.deepEqual(p.conversationGroups.value.map(group=>group.label),['今天','昨天','2025-01-02'])
+  assert.equal(p.conversations.value.find(row=>row.id==='legacy-'+today).title,'原来的对话')
+  p.showHistory();assert.equal(p.historyOpen.value,true);p.closeHistory();assert.equal(p.historyOpen.value,false)
+  p.dispose()
+  const reopened=chat();assert.equal(reopened.conversations.value.length,3);assert.deepEqual(scopedStorage.getStorageSync('chat-'+today),old);reopened.dispose()
+})
+
+test('local new chats have separate messages, first-question titles and unsent drafts',async()=>{
+  setup();const p=chat({mockDelay:async()=>{}}),first=p.activeConversationId.value
+  p.input.value='第一份草稿';await p.prepareDraftImage({path:'/tmp/first-draft.jpg'})
+  await p.ask('第一条咨询')
+  assert.equal(p.conversations.value.find(row=>row.id===first).title,'第一条咨询')
+  const firstMessages=JSON.parse(JSON.stringify(p.messages.value))
+  p.newConversation();const second=p.activeConversationId.value
+  assert.notEqual(second,first);assert.equal(p.messages.value.length,0);assert.equal(p.input.value,'');assert.equal(p.draftImage.value,null)
+  p.input.value='第二份草稿';await p.ask('第二条咨询')
+  p.selectConversation(first)
+  assert.deepEqual(p.messages.value,firstMessages);assert.equal(p.input.value,'第一份草稿');assert.match(p.draftImage.value.localPath,/first-draft/)
+  p.selectConversation(second);assert.equal(p.input.value,'第二份草稿');assert.equal(p.draftImage.value,null);assert.equal(p.messages.value[0].text,'第二条咨询')
+  assert.equal(scopedStorage.getStorageSync('local-chat-conversation:'+first).messages[0].text,'第一条咨询')
+  assert.equal(scopedStorage.getStorageSync('local-chat-conversation:'+second).messages[0].text,'第二条咨询')
+  assert.equal(scopedStorage.getStorageSync('chat-'+mealState.localDate()).filter(row=>row.role==='user').length,2)
+  p.dispose()
+  const reopened=chat();assert.equal(reopened.activeConversationId.value,second);assert.equal(reopened.input.value,'第二份草稿');assert.equal(reopened.conversations.value.length,2);reopened.dispose()
+})
+
+for(const flag of ['thinking','voiceBusy','draftSaving'])test(`local drawer blocks switching and creation while ${flag}`,()=>{
+  setup();const p=chat(),first=p.activeConversationId.value;p.newConversation();const second=p.activeConversationId.value
+  p[flag].value=true;p.newConversation();p.selectConversation(first);p.showHistory()
+  assert.equal(p.activeConversationId.value,second);assert.equal(p.conversations.value.length,2);assert.equal(p.historyOpen.value,false)
+  p[flag].value=false;p.selectConversation(first);assert.equal(p.activeConversationId.value,first);p.dispose()
+})
+
+test('switching before a scheduled record prompt prevents it appearing in the new chat',async()=>{
+  setup();const p=chat({onLoad:fn=>fn({recordId:'old-record'})})
+  p.newConversation();await new Promise(resolve=>setTimeout(resolve,320))
+  assert.deepEqual(p.messages.value,[]);p.dispose()
+})
+
+test('account changes clear the local drawer and ignore an old reply while retaining its own draft',async()=>{
+  setup();setSession({accountId:'local-a',householdId:'home'});let finish
+  const p=chat({mockDelay:()=>new Promise(resolve=>finish=resolve)}),first=p.activeConversationId.value
+  p.input.value='账号A的草稿';const pending=p.ask('账号A的问题');p.showHistory()
+  setSession({accountId:'local-b',householdId:'home'});await p.show();finish();await pending
+  assert.notEqual(p.activeConversationId.value,first);assert.equal(p.input.value,'');assert.equal(p.messages.value.length,0);assert.equal(p.historyOpen.value,false)
+  assert.equal(scopedStorage.getStorageSync('local-chat-conversation:'+first),undefined)
+  setSession({accountId:'local-a',householdId:'home'});await p.show()
+  assert.equal(p.activeConversationId.value,first);assert.equal(p.input.value,'账号A的草稿');assert.equal(p.messages.value.length,1);assert.equal(p.messages.value[0].text,'账号A的问题');p.dispose()
+})
+
+test('a local conversation continues across days and its drawer profile opens My',async()=>{
+  const {calls}=setup();const p=chat(),id=p.activeConversationId.value
+  p.input.value='继续这段对话';p.chatDate.value='2000-01-01';await p.show()
+  assert.equal(p.activeConversationId.value,id);assert.equal(p.input.value,'继续这段对话')
+  p.showHistory();p.historyProfile();assert.equal(p.historyOpen.value,false);assert.equal(calls.navigation.url,'/pages/my/index');p.dispose()
+})
 
 test('recognized speech automatically sends with the existing photo draft',async()=>{
   setup();const p=chat();await p.prepareDraftImage({path:'/tmp/voice-meal.jpg',source:'album'})

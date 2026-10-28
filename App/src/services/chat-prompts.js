@@ -1,11 +1,11 @@
 // 推荐只使用时间与通用话题，不根据家庭成员信息推断疾病。
 export const CHAT_PROMPT_POOL = Object.freeze([
-  { id: 'breakfast-today', text: '帮我安排今天早餐', action: 'reference_meal_preview', hours: [5, 10] },
-  { id: 'breakfast-tomorrow', text: '给我安排明天早餐', action: 'reference_meal_preview', hours: [17, 24] },
-  { id: 'lunch-today', text: '今天午餐吃什么？', action: 'reference_meal_preview', hours: [5, 14] },
-  { id: 'dinner-today', text: '今晚全家吃什么？', action: 'reference_meal_preview', hours: [10, 24] },
-  { id: 'meals-tomorrow', text: '帮我安排明天三餐', action: 'reference_meal_preview' },
-  { id: 'family-tomorrow', text: '安排明天全家三餐', action: 'reference_meal_preview' },
+  { id: 'breakfast-today', text: '帮我安排今天早餐', action: 'consultation', hours: [5, 10] },
+  { id: 'breakfast-tomorrow', text: '给我安排明天早餐', action: 'consultation', hours: [17, 24] },
+  { id: 'lunch-today', text: '今天午餐吃什么？', action: 'consultation', hours: [5, 14] },
+  { id: 'dinner-today', text: '今晚全家吃什么？', action: 'consultation', hours: [10, 24] },
+  { id: 'meals-tomorrow', text: '帮我安排明天三餐', action: 'consultation' },
+  { id: 'family-tomorrow', text: '安排明天全家三餐', action: 'consultation' },
   { id: 'vegetables', text: '蔬菜怎么做更好吃？', action: 'consultation' },
   { id: 'egg-tomato', text: '鸡蛋番茄怎么搭配？', action: 'consultation' },
   { id: 'quick-breakfast', text: '早餐怎样省时准备？', action: 'consultation' },

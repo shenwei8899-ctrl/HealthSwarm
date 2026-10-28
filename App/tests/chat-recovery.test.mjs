@@ -25,10 +25,13 @@ function fixture({cached=true,createFailure=false}={}){
   if(o.path.endsWith('/members'))return {data:[{id:member,is_owner:true}]}
   if(o.path.endsWith('/readiness')){if(pendingOpen)await pendingOpen;return {data:{capabilities:{member_id:member},entries:['consultation',type].map(entry_type=>({entry_type,status:'available'}))}}}
   if(o.path.includes('/tasks/'))return {data:{member_id:member,thread_id:thread,request_id:rid,task_type:type,agent_slug:'health-meal-planner',request_status:'dispatched',execution_status:'failed',result:{result_type:'error',code:'execution_failed',retryable:false}}}
+  if(o.path.includes('/consultations?'))return {data:{items:[{thread_id:newThread,member_id:member,agent_slug:'health-consultation',business_date:null}],has_more:false,next_offset:null}}
+  if(o.path.includes('/requests?agent_slug='))return {data:{requests:[]}}
   if(o.path.endsWith('/daily-conversations'))return {data:{days:[]}}
-  if(o.path.endsWith('/task-entries')){
+  if(o.path.endsWith('/task-entries')||o.path.endsWith('/consultations')&&o.method==='POST'){
    createAttempts++
    if(createFailure&&createAttempts===1)throw Object.assign(new Error('synthetic timeout'),{code:503})
+   if(o.path.endsWith('/consultations'))return {data:{member_id:member,thread_id:newThread,agent_slug:'health-consultation',business_date:null,feedback_selection:null}}
    return {data:{member_id:member,task_type:o.data.task_type,client_request_id:o.data.client_request_id,entry_status:'ready',thread_id:newThread,agent_slug:'health-consultation',request_submit_url:'/api/agent/runs'}}
   }
   if(o.path.includes('/reference-meal-plans/')||o.path.includes('/daily-arrangements/'))return {data:{status:'absent'}}
@@ -102,7 +105,7 @@ test('uncertain fresh-thread creation reuses the original key and never falls ba
  const h=fixture({createFailure:true});await h.page.load();await h.page.restartChat()
  await h.page.flow.createEntry()
  await h.page.load();await h.page.flow.createEntry()
- const creates=h.calls.filter(c=>c.path.endsWith('/task-entries'))
+ const creates=h.calls.filter(c=>c.path.endsWith('/consultations')&&c.method==='POST')
  assert.equal(creates.length,2);assert.equal(creates[0].data.client_request_id,creates[1].data.client_request_id)
  assert.equal(h.idCount,1)
  assert.equal(h.calls.some(c=>c.path.endsWith('/daily-consultations')),false);h.dispose()
@@ -111,6 +114,6 @@ for(const reason of ['account','hide'])test(`editing never restores private text
  const h=fixture();await h.page.load();const release=h.pauseOpen(),pending=h.page.editFailedQuestion()
  await new Promise(r=>setImmediate(r));if(reason==='account')h.changeAccount();else h.hooks.hide()
  release();await pending;assert.equal(h.page.question.value,'')
- if(reason==='hide'){await h.page.load();assert.equal(h.page.failedQuestion.value.text,'请安排今天早餐');assert.equal(h.page.failedTask.value,true)}
+ if(reason==='hide'){await h.page.load();assert.equal(h.page.question.value,'');assert.equal(h.calls.some(c=>c.path==='/api/agent/runs'),false)}
  h.dispose()
 })

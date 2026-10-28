@@ -45,20 +45,20 @@ function mount({read=async()=>plan()}={}){
     readCurrentPreparation:async()=>({status:'absent'}),request:async()=>({data:{}})}
   const source=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const scope=effectScope()
-  const page=scope.run(()=>new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {dailyPlans,todayPlan,loadDailyPlan,reloadToday,profile,task,entryReady,question,sendQuestion,messages,setReference:value=>referenceSelection=value}`)(deps))
-  page.profile.value={householdId:'family',selfMemberId:'self',members:[{id:'self',healthMemberId:member}]};page.entryReady.value=true
+  const page=scope.run(()=>new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {conversationThreadId,dailyPlans,todayPlan,loadDailyPlan,reloadToday,profile,task,entryReady,question,sendQuestion,messages,setReference:value=>referenceSelection=value}`)(deps))
+  page.conversationThreadId.value='existing-consultation-anchor';page.profile.value={householdId:'family',selfMemberId:'self',members:[{id:'self',healthMemberId:member}]};page.entryReady.value=true
   return {page,calls,notify,dispose(){hooks.unmount?.();scope.stop()}}
 }
 
 test('view and repeated generation read the existing plan without submitting another task',async()=>{
-  const h=mount();h.page.question.value='查看今天的餐单';await h.page.sendQuestion()
+  const h=mount();h.page.question.value='查看今天的餐单';await h.page.sendQuestion('reference_meal_preview')
   assert.equal(h.page.messages.value.at(-1).planDate,today);assert.equal(h.calls.length,0)
-  h.page.question.value='请帮我安排今天的三餐';await h.page.sendQuestion()
+  h.page.question.value='请帮我安排今天的三餐';await h.page.sendQuestion('reference_meal_preview')
   assert.equal(h.page.messages.value.at(-1).planDate,today);assert.equal(h.calls.length,0);h.dispose()
 })
 
 test('changing dinner binds the current version and only requests dinner',async()=>{
-  const h=mount();h.page.question.value='把晚餐换成蒸鱼';await h.page.sendQuestion()
+  const h=mount();h.page.question.value='把晚餐换成蒸鱼';await h.page.sendQuestion('reference_meal_preview')
   const opened=h.calls.find(call=>call.action==='open')
   assert.equal(opened.taskType,'reference_meal_preview');assert.equal(opened.selection.daily_base_version,1)
   assert.deepEqual(opened.selection.meal_types,['dinner']);assert.ok(h.calls.some(call=>call.action==='submit'));h.dispose()
@@ -68,7 +68,7 @@ test('revising a completed plan reopens its reference thread with the current da
   const h=mount({read:async()=>plan(3)})
   h.page.setReference({mode:'reference',family_id:'family',plan_date:today,participant_ids:['self'],meal_types:['dinner'],daily_base_version:2})
   h.page.task.value={taskType:'reference_meal_preview',status:'completed',available:true,memberId:member,entry:{thread_id:'old-thread'}}
-  h.page.question.value='把晚餐换成蒸鱼';await h.page.sendQuestion()
+  h.page.question.value='把晚餐换成蒸鱼';await h.page.sendQuestion('reference_meal_preview')
   const opened=h.calls.find(call=>call.action==='open')
   assert.ok(opened,'a completed daily version must not submit through its old binding')
   assert.equal(opened.selection.daily_base_version,3)
@@ -117,7 +117,7 @@ test('tomorrow and today retain independent plan objects',async()=>{
 
 test('another device running the same plan prevents duplicate submission and keeps the saved plan',async()=>{
   const h=mount({read:async()=>({...plan(),pending:{request_id:'other-request',status:'running'}})})
-  h.page.question.value='把晚餐换成蒸鱼';await h.page.sendQuestion()
+  h.page.question.value='把晚餐换成蒸鱼';await h.page.sendQuestion('reference_meal_preview')
   assert.equal(h.calls.length,0);assert.equal(h.page.todayPlan.value.meals.length,3)
   assert.equal(h.page.question.value,'把晚餐换成蒸鱼');h.dispose()
 })

@@ -166,7 +166,7 @@ test('feedback pagination reports a stalled cursor instead of claiming no saved 
 })
 
 function chat(){let submits=0,exists=false,invalid=false;const saved=storage(),calls=[]
- const send=async o=>{calls.push(jsonClone(o));if(o.path.includes('/daily-meal-plans/'))return {data:{status:'absent',date:o.path.split('/').at(-1),version:0,meals:[]}};if(o.path.includes('/reference-meal-plans/'))return {data:{status:'absent'}};if(o.path.includes('/daily-arrangements/'))return {data:readyPreparation('2026-10-20').arrangement};if(o.path.endsWith('/members'))return {data:[{id:member,is_owner:true}]};if(o.path.endsWith('/readiness'))return {data:{capabilities:{member_id:member},entries:[{entry_type:'consultation',status:'available'}]}};if(o.path.endsWith('/daily-conversations'))return {data:{days:[{date:'2026-10-20',thread_id:thread}]}};if(o.path==='/api/agent/runs'){if(++submits===1)throw Object.assign(new Error('timeout'),{code:503});exists=true;return {data:{request_id:requestId,thread_id:thread}}}if(o.path.includes('/tasks/')){if(invalid)throw Object.assign(new Error('withdrawn'),{code:410});if(!exists)throw Object.assign(new Error('not yet'),{code:404});return {data:{member_id:member,thread_id:thread,request_id:requestId,task_type:'consultation',agent_slug:'health-consultation',request_status:'dispatched',execution_status:'completed',result:{result_type:'general_education_answer',scope:'general_education',answer:'private previous answer',citations:[]}}}};throw new Error(o.path)}
+ const send=async o=>{calls.push(jsonClone(o));if(o.path.includes('/daily-meal-plans/'))return {data:{status:'absent',date:o.path.split('/').at(-1),version:0,meals:[]}};if(o.path.includes('/reference-meal-plans/'))return {data:{status:'absent'}};if(o.path.includes('/daily-arrangements/'))return {data:readyPreparation('2026-10-20').arrangement};if(o.path.includes('/consultations?'))return {data:{items:[{thread_id:thread,member_id:member,agent_slug:'health-consultation',business_date:'2026-10-20'}],has_more:false,next_offset:null}};if(o.path.includes('/requests?agent_slug='))return {data:{requests:[]}};if(o.path.endsWith('/members'))return {data:[{id:member,is_owner:true}]};if(o.path.endsWith('/readiness'))return {data:{capabilities:{member_id:member},entries:[{entry_type:'consultation',status:'available'}]}};if(o.path.endsWith('/daily-conversations'))return {data:{days:[{date:'2026-10-20',thread_id:thread}]}};if(o.path==='/api/agent/runs'){if(++submits===1)throw Object.assign(new Error('timeout'),{code:503});exists=true;return {data:{request_id:requestId,thread_id:thread}}}if(o.path.includes('/tasks/')){if(invalid)throw Object.assign(new Error('withdrawn'),{code:410});if(!exists)throw Object.assign(new Error('not yet'),{code:404});return {data:{member_id:member,thread_id:thread,request_id:requestId,task_type:'consultation',agent_slug:'health-consultation',request_status:'dispatched',execution_status:'completed',result:{result_type:'general_education_answer',scope:'general_education',answer:'private previous answer',citations:[]}}}};throw new Error(o.path)}
  const deps={chooseReference,isReferencePlan,preparationReady:value=>checkPreparation(value,'2026-10-20'),readCurrentPreparation:async()=>readyPreparation('2026-10-20'),preparationRoute:()=>'/pages/onboarding/preparing',HEALTH_TEXT_TASKS,loadCloudProfile:async()=>({onboarded:true,selfMemberId:'self',householdId:'family',defaultDiners:['self'],members:[{id:'self',relation:'本人',healthMemberId:member}]}),dailyArrangementState:()=>({phase:'idle',busy:false}),createDailyArrangementClient:({state})=>({adopt:arrangement=>{state.phase='ready';state.arrangement=arrangement},load:async()=>{state.phase='ready';state.arrangement={}},pause(){},reset(){},dispose(){}}),storageContext:()=> 'scope',scopedStorage:saved,getSession:()=>({accountId:'self',householdId:'family',token:'synthetic'}),commerce:{connect:async()=>{}},request:send,newHealthRequestId:()=>requestId,localDate:()=> '2026-10-20',readChatSnapshot:async()=>({messages:[],runs:[]}),chatImageContent:async image=>image.localPath,persistChatImage:async image=>({localPath:image.path}),createHealthTaskFlow:options=>createHealthTaskFlow({...options,send,session:()=>({accountId:'self',token:'synthetic'}),revision:()=>1,storage:saved,newId:()=>requestId,day:()=> '2026-10-20',subscribe:()=>()=>{}}),uni:{redirectTo(){},reLaunch(){},showToast(){}}}
  deps.mealQuestionAction=mealQuestionAction;deps.readDailyMealPlan=(family,date)=>readDailyMealPlan(family,date,deps.request)
  return {deps,calls,invalidate:()=>invalid=true}
@@ -308,15 +308,26 @@ test('family reference question preserves all selected actors, meal and original
  h.deps.loadCloudProfile=async()=>({onboarded:true,householdId:'family',selfMemberId:'self',members:[{id:'self',relation:'本人',healthMemberId:member},{id:'parent',relation:'母亲',healthMemberId:'parent-health'}]})
  h.deps.createHealthTaskFlow=({onChange})=>({hide(){},invalidateThread(){},open:async(id,type,selection)=>{opened.push({id,type,selection});onChange({memberId:id,taskType:type,available:true,entry:{thread_id:thread,agent_slug:type==='consultation'?'health-consultation':'health-meal-planner'}})},submit:async text=>{queries.push(text);return true}})
  const p=mount('CloudNutritionChat.vue','load,question,sendQuestion',h.deps)
- await p.load();p.question.value='给全家安排明天早餐，不要牛奶';await p.sendQuestion()
+ await p.load();p.question.value='给全家安排明天早餐，不要牛奶';await p.sendQuestion('reference_meal_preview')
  const entry=opened.find(o=>o.type==='reference_meal_preview')
  assert.equal(entry.selection.family_id,'family');assert.deepEqual(entry.selection.participant_ids,['parent','self']);assert.deepEqual(entry.selection.meal_types,['breakfast'])
  assert.deepEqual(queries,['给全家安排明天早餐，不要牛奶']);assert.equal(p.question.value,'');p.dispose()
 })
 
+test('an ordinary tomorrow breakfast request stays in the continuous consultation',async()=>{
+ const h=chat(),opened=[],queries=[]
+ h.deps.localDate=date=>date?'2026-10-21':'2026-10-20'
+ h.deps.createHealthTaskFlow=({onChange})=>({hide(){},open:async(id,type,selection)=>{opened.push({id,type,selection});onChange({memberId:id,taskType:type,available:true,entry:{thread_id:thread,agent_slug:type==='consultation'?'health-consultation':'health-meal-planner'}})},submit:async text=>{queries.push(text);return true}})
+ const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,chatError',h.deps)
+ await p.load();p.question.value='给我安排明天早餐';await p.sendQuestion()
+ assert.equal(opened.some(o=>o.type==='reference_meal_preview'),false)
+ assert.equal(opened.at(-1).type,'consultation');assert.equal(opened.at(-1).id,member)
+ assert.deepEqual(queries,['给我安排明天早餐']);assert.equal(p.chatError.value,'');assert.equal(p.question.value,'');p.dispose()
+})
+
 test('unsupported reference dates preserve the complete question before creating a task',async()=>{
  const h=chat(),p=mount('CloudNutritionChat.vue','load,question,chatError,sendQuestion',h.deps)
- await p.load();p.question.value='给全家安排下周一早餐，不要牛奶';await p.sendQuestion()
+ await p.load();p.question.value='给全家安排下周一早餐，不要牛奶';await p.sendQuestion('reference_meal_preview')
  assert.equal(p.question.value,'给全家安排下周一早餐，不要牛奶');assert.match(p.chatError.value,/原问题已保留/)
  assert.ok(!h.calls.some(c=>c.path==='/api/agent/runs'||c.path.endsWith('/task-entries')));p.dispose()
 })
@@ -416,7 +427,7 @@ test('failed initial profile load keeps the draft and exposes a retryable error 
  assert.equal(p.question.value,'请介绍均衡饮食');assert.equal(h.calls.length,0);p.dispose()
 })
 
-test('a failed consultation can restart with a new thread while keeping an edited draft',async()=>{
+test('a failed consultation restarts empty and preserves the edited draft until its first send',async()=>{
  const h=chat(),saved=storage(),newThread='44444444-4444-4444-8444-444444444444',calls=[]
  const send=async o=>{
   calls.push(o)
@@ -429,15 +440,13 @@ test('a failed consultation can restart with a new thread while keeping an edite
  }
  h.deps.scopedStorage=saved
  h.deps.createHealthTaskFlow=options=>createHealthTaskFlow({...options,send,session:()=>({token:'synthetic',accountId:'self'}),revision:()=>1,storage:saved,newId:()=>requestId,day:()=> '2026-10-20',subscribe:()=>()=>{}})
- const p=mount('CloudNutritionChat.vue','load,flow,task,question,draftImage,draftError,restartChat',h.deps)
+ const p=mount('CloudNutritionChat.vue','load,flow,task,question,draftImage,draftError,restartChat,conversationId,messages',h.deps)
  await p.load();await p.flow.restoreRequest(requestId);assert.equal(p.task.value.status,'failed')
  p.question.value='修改后的问题';p.draftImage.value={localPath:'data:image/png;base64,QQ=='}
  await p.restartChat()
- assert.equal(p.task.value.taskType,'consultation');assert.equal(p.task.value.entry,null);assert.equal(p.question.value,'修改后的问题')
+ assert.equal(p.task.value.entry,null);assert.equal(p.conversationId.value,requestId);assert.deepEqual(p.messages.value,[]);assert.equal(p.question.value,'修改后的问题')
  assert.equal(p.draftImage.value.localPath,'data:image/png;base64,QQ==')
  assert.equal(calls.filter(c=>c.path.endsWith('/task-entries')).length,0)
- await p.flow.createEntry();assert.equal(p.task.value.entry.thread_id,newThread)
- assert.equal(calls.filter(c=>c.path.endsWith('/task-entries')).length,1)
  assert.equal(calls.some(c=>c.path==='/api/agent/runs'),false);p.dispose()
 })
 
@@ -654,12 +663,12 @@ test('busy suggestion controls cannot shuffle or overwrite the draft',async()=>{
  assert.deepEqual(p.prompts.value.map(p=>p.id),ids);assert.equal(p.question.value,'正在发送');p.dispose()
 })
 
-test('reported tomorrow breakfast prompt opens a scoped reference meal task without an explicit UI task argument',async()=>{
+test('an explicit tomorrow breakfast action binds the selected reference meal scope',async()=>{
  const h=chat(),opened=[],queries=[]
  h.deps.localDate=date=>date?'2026-10-21':'2026-10-20'
  h.deps.createHealthTaskFlow=({onChange})=>({hide(){},open:async(id,type,selection)=>{opened.push({id,type,selection});onChange({memberId:id,taskType:type,available:true,entry:{thread_id:thread,agent_slug:type==='consultation'?'health-consultation':'health-meal-planner'}})},submit:async text=>{queries.push(text);return true}})
  const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,chatError',h.deps)
- await p.load();p.question.value='给我安排明天早餐';await p.sendQuestion()
+ await p.load();p.question.value='给我安排明天早餐';await p.sendQuestion('reference_meal_preview')
  const entry=opened.find(o=>o.type==='reference_meal_preview')
  assert.ok(entry);assert.equal(entry.id,member);assert.equal(entry.selection.plan_date,'2026-10-21')
  assert.deepEqual(entry.selection.participant_ids,['self']);assert.deepEqual(entry.selection.meal_types,['breakfast'])
@@ -674,7 +683,7 @@ test('meal revisions preserve tomorrow and family while explicit meals narrow th
  h.deps.loadCloudProfile=async()=>({onboarded:true,householdId:'family',selfMemberId:'self',members:[{id:'self',relation:'本人',healthMemberId:member},{id:'parent',relation:'母亲',healthMemberId:'parent-health'}]})
  h.deps.createHealthTaskFlow=({onChange})=>({hide(){},open:async(id,type,selection)=>{opened.push({id,type,selection});onChange({memberId:id,taskType:type,available:true,entry:{thread_id:thread,agent_slug:type==='consultation'?'health-consultation':'health-meal-planner'}})},submit:async text=>{queries.push(text);return true}})
  const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,chatError',h.deps)
- await p.load();p.question.value='给全家安排明天三餐';await p.sendQuestion()
+ await p.load();p.question.value='给全家安排明天三餐';await p.sendQuestion('reference_meal_preview')
  const count=opened.length,original=opened.at(-1).selection
  for(const [index,text] of ['把早餐改成粥','早餐换成不含鸡蛋的','把这个餐单换一下','这个食谱改成粥'].entries()){
   p.question.value=text;await p.sendQuestion()
@@ -682,7 +691,7 @@ test('meal revisions preserve tomorrow and family while explicit meals narrow th
  }
  assert.deepEqual(original,{mode:'reference',family_id:'family',plan_date:'2026-10-21',participant_ids:['parent','self'],meal_types:['breakfast','lunch','dinner'],daily_base_version:0})
  assert.deepEqual(queries,['给全家安排明天三餐','把早餐改成粥','早餐换成不含鸡蛋的','把这个餐单换一下','这个食谱改成粥'])
- p.question.value='给我安排今天晚饭';await p.sendQuestion()
+ p.question.value='给我安排今天晚饭';await p.sendQuestion('reference_meal_preview')
  assert.equal(opened.length,count+2);assert.deepEqual(opened.at(-1).selection,{mode:'reference',family_id:'family',plan_date:'2026-10-20',participant_ids:['self'],meal_types:['dinner'],daily_base_version:0})
  p.question.value='换个话题，糖尿病家庭怎么吃？';await p.sendQuestion();assert.equal(opened.at(-1).type,'consultation')
  p.dispose()
@@ -694,7 +703,7 @@ test('plain answers to reference plan questions stay in the selected meal thread
  h.deps.localDate=date=>date?'2026-10-21':'2026-10-20'
  h.deps.createHealthTaskFlow=({onChange})=>({hide(){},open:async(id,type,selection)=>{opened.push({id,type,selection});active={memberId:id,taskType:type,available:true,entry:{thread_id:thread,agent_slug:type==='consultation'?'health-consultation':'health-meal-planner'}};onChange(active)},submit:async text=>{queries.push(text);onChange({...active,requestId,result:{type:'needs_input',questions:['请补充你的用餐偏好。']}});return true}})
  const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,task,chatError',h.deps)
- await p.load();p.question.value='给我安排明天早餐';await p.sendQuestion()
+ await p.load();p.question.value='给我安排明天早餐';await p.sendQuestion('reference_meal_preview')
  const count=opened.length
  for(const text of ['清淡一点','两个人','家里有小米']){
   p.question.value=text;await p.sendQuestion();assert.equal(opened.length,count,text)

@@ -7,7 +7,7 @@ defineEmits(['ask','shuffle'])
  <view class="chat-welcome" :class="{'is-compact':compact}">
   <view class="welcome-intro">
    <view class="welcome-logo" aria-hidden="true"><AppIcon name="assistant" :size="160"/></view>
-   <text class="welcome-title">你好，我是家庭营养师。</text>
+   <text class="welcome-title">今天想怎么吃？</text>
    <text class="welcome-description">{{'聊聊今天怎么吃，\n也可以一起安排家人的三餐。'}}</text>
   </view>
   <view class="welcome-suggestions">

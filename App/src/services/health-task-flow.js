@@ -39,23 +39,24 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   schedule = (fn, ms) => setTimeout(fn, ms), cancel = handle => clearTimeout(handle),
   pollInterval = 2000, pollLimit = 45, daily = false, day = () => new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10) } = {}) {
   let indicatorSelection = null, forceNewEntry = false
+  let conversationOptions = null
   let epoch = 0, readVersion = 0, timer = null, polls = 0, pendingQuery = '', storageKey = ''
   let streams = [], streamKey = '', streamAttempts = 0, streamEpoch = 0, cursors = {}, pendingImages = [], cancelRequested = false
-  let state = { memberId: '', taskType: '', title: '', loading: false, busy: false, available: false,
+  let state = { memberId: '', taskType: '', title: '', loading: false, busy: false, available: false, readOnly: false,
     consentOption: null, entry: null, requestId: '', runId: '', requests: [], submitUnknown: false, status: '', result: null, error: '', notice: '', ...streamState() }
   const emit = () => onChange({ ...state, canRetry: (!!pendingQuery || pendingImages.length > 0) && state.submitUnknown,
     pendingText:state.submitUnknown?pendingQuery:'',pendingImages:state.submitUnknown?[...pendingImages]:[],
     entry: state.entry && { ...state.entry }, result: state.result && { ...state.result } })
-  const token = () => ({ epoch, revision: revision(), accountId: session()?.accountId })
+  const token = () => ({ epoch, revision: revision(), accountId: session()?.accountId, householdId: session()?.householdId })
   const current = ticket => ticket.epoch === epoch && ticket.revision === revision() &&
-    ticket.accountId && ticket.accountId === session()?.accountId
+    ticket.accountId && ticket.accountId === session()?.accountId && ticket.householdId === session()?.householdId
   function stopStreams() { streamEpoch++; const old = streams; streams = []; streamKey = ''; old.forEach(close => close?.()) }
   function stop() { if (timer !== null) cancel(timer); timer = null; polls = 0; streamAttempts = 0; stopStreams() }
   function phase(value) { state.streamPhase = value; state.streamStatus = streamLabels[value] || '' }
   function clearStream() { Object.assign(state, streamState()); cancelRequested = false }
   const invalidKey = () => `health-chat-invalid:${state.memberId}:${day()}`
   function invalidateThread() {
-    if (daily && state.entry?.thread_id) {
+    if (daily && !conversationOptions && state.entry?.thread_id) {
       const old = storage.getStorageSync(invalidKey()) || []
       storage.setStorageSync(invalidKey(), [...new Set([...old, state.entry.thread_id])])
     }
@@ -72,7 +73,8 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   function hide() {
     forceNewEntry = false
     epoch++; readVersion++; stop(); pendingQuery = ''; pendingImages = []; storageKey = ''; cursors = {}; cancelRequested = false
-    state = { memberId: '', taskType: '', title: '', loading: false, busy: false, available: false,
+    conversationOptions = null
+    state = { memberId: '', taskType: '', title: '', loading: false, busy: false, available: false, readOnly: false,
       consentOption: null, entry: null, requestId: '', runId: '', requests: [], submitUnknown: false, status: '', result: null, error: '', notice: '', ...streamState() }
     emit()
   }
@@ -119,7 +121,9 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       pendingQuery: state.submitUnknown ? pendingQuery : '', pendingImages: state.submitUnknown ? pendingImages : [] })
   }
   function handle(error, ticket, {preserveResult=false} = {}) {
-    if (Number(error?.code) === 401 && ticket.epoch === epoch && !session()?.token) {
+    const identity = session()
+    if (Number(error?.code) === 401 && ticket.epoch === epoch && !identity?.token &&
+      (!identity || (ticket.accountId === identity.accountId && ticket.householdId === identity.householdId))) {
       forgetPrivate('登录已过期，请重新登录后核对任务。'); return
     }
     if (!current(ticket)) return
@@ -129,18 +133,63 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       else forgetPrivate('当前任务或成员已不可读取，请返回核对身份、授权和资料来源。')
     } else { state.error = error?.message || '服务暂不可用，请手动重试'; emit() }
   }
-  async function open(memberId, taskType, selection = null, { fresh = false } = {}) {
+  /** 通过成员咨询目录重新核对指定线程，避免本地指针成为身份依据。 */
+  async function restoreConsultation(memberId, threadId, ticket) {
+    if (!uuidPattern.test(threadId || '')) throw mismatch()
+    let offset = 0
+    while (current(ticket)) {
+      const { data } = await send({ path: `/api/health/v1/members/${memberId}/consultations?limit=20&offset=${offset}` })
+      if (!current(ticket)) return null
+      if (!Array.isArray(data?.items) || typeof data.has_more !== 'boolean') throw mismatch()
+      const row = data.items.find(item => item?.thread_id === threadId)
+      if (row) {
+        if (row.member_id !== memberId || row.agent_slug !== 'health-consultation' ||
+          (row.business_date !== null && !/^\d{4}-\d{2}-\d{2}$/.test(row.business_date || ''))) throw mismatch()
+        return { thread_id: threadId, agent_slug: row.agent_slug, business_date: row.business_date }
+      }
+      if (!data.has_more) throw mismatch()
+      if (!data.items.length || !Number.isInteger(data.next_offset) || data.next_offset <= offset) throw mismatch()
+      offset = data.next_offset
+    }
+    return null
+  }
+  /** 排队请求尚未创建 Run，恢复时从真实线程队列读取后再核对健康任务。 */
+  async function restoreQueuedRequests(ticket) {
+    const threadId = state.entry.thread_id
+    const { data } = await send({ path: `/api/agent/thread/${threadId}/requests?agent_slug=health-consultation` })
+    if (!current(ticket)) return
+    if (!Array.isArray(data?.requests) || data.requests.some(row => !uuidPattern.test(row?.request_id || '') ||
+      row.thread_id !== threadId || row.agent_slug !== 'health-consultation' || row.status !== 'queued')) throw mismatch()
+    const existing = new Set(state.requests.map(row => row.request_id))
+    state.requests = [...state.requests, ...data.requests.filter(row => !existing.has(row.request_id))
+      .map(row => ({ request_id: row.request_id, status: row.status }))].slice(-50)
+    if (data.requests.length && (!state.requestId || terminalStatuses.has(state.status))) {
+      stop(); readVersion++; clearStream(); state.requestId = data.requests[0].request_id; state.runId = ''; state.result = null
+      await refresh(ticket)
+    }
+    if (current(ticket)) save()
+  }
+  async function open(memberId, taskType, selection = null, options = {}) {
+    const fresh = options?.fresh === true
     hide()
     forceNewEntry = fresh
     indicatorSelection = selection
     if (!uuidPattern.test(memberId || '') || !Object.prototype.hasOwnProperty.call(HEALTH_TEXT_TASKS, taskType)) {
       state.error = '健康任务参数无效，请返回重新选择'; emit(); return
     }
+    if ((options?.conversationId !== undefined && (typeof options.conversationId !== 'string' || !uuidPattern.test(options.conversationId))) ||
+      (options?.threadId !== undefined && (typeof options.threadId !== 'string' || !uuidPattern.test(options.threadId) || taskType !== 'consultation' || !options.conversationId))) {
+      state.error = '对话参数无效，请返回重新选择'; emit(); return
+    }
+    if (options?.conversationId) conversationOptions = { conversationId: options.conversationId, ...(options.threadId ? { threadId: options.threadId } : {}) }
     state.memberId = memberId; state.taskType = taskType; state.title = HEALTH_TEXT_TASKS[taskType]
     if (taskType === 'diet_analysis' && (!uuidPattern.test(selection?.record_id || '') || !Number.isInteger(selection?.source_version) || selection.source_version < 1)) {
       state.error = '请从已保存餐次进入反馈。'; emit(); return
     }
-    storageKey = `health-task:${memberId}:${taskType}${selection ? ':' + JSON.stringify(selection) : ''}${daily ? ':' + day() : ''}`
+    const legacyStorageKey = `health-task:${memberId}:${taskType}${selection ? ':' + JSON.stringify(selection) : ''}${daily ? ':' + day() : ''}`
+    storageKey = conversationOptions
+      ? `health-conversation:${conversationOptions.conversationId}:${memberId}:${taskType}${selection ? ':' + JSON.stringify(selection) : ''}`
+      : legacyStorageKey
     if (!session()?.token) { state.error = '请先登录后再读取健康任务'; emit(); return }
     const ticket = token(); state.loading = true; emit()
     try {
@@ -172,21 +221,43 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
         }
       }
       const cached = storage.getStorageSync(storageKey)
-      // An uncertain write must keep its request key, even when opening a new chat.
-      const saved = fresh && !cached?.entry?.pending && !cached?.submitUnknown ? null : cached
-      if (saved?.memberId === memberId && saved?.taskType === taskType && saved.entry?.thread_id && saved.entry?.agent_slug) {
-        state.entry = saved.entry; state.requestId = saved.requestId || ''
+      let saved = fresh && !cached?.entry?.pending && !cached?.submitUnknown ? null : cached
+      if (!saved && saved !== null && conversationOptions?.threadId) {
+        const legacy = storage.getStorageSync(legacyStorageKey)
+        if (legacy?.memberId === memberId && legacy.taskType === taskType && legacy.entry?.thread_id === conversationOptions.threadId) saved = legacy
+      }
+      const sameSavedTask = saved?.memberId === memberId && saved?.taskType === taskType
+      let verifiedEntry = null
+      if (conversationOptions && taskType === 'consultation') {
+        const threadId = conversationOptions.threadId || (sameSavedTask ? saved.entry?.thread_id : '')
+        if (threadId) verifiedEntry = await restoreConsultation(memberId, threadId, ticket)
+        if (!current(ticket)) return
+      }
+      if (sameSavedTask && saved.entry?.thread_id && saved.entry?.agent_slug &&
+        (!conversationOptions || taskType !== 'consultation' || verifiedEntry?.thread_id === saved.entry.thread_id)) {
+        state.entry = verifiedEntry || saved.entry; state.requestId = saved.requestId || ''
         state.requests = Array.isArray(saved.requests) ? saved.requests.filter(row => uuidPattern.test(row.request_id)).slice(-50) : []
         state.submitUnknown = saved.submitUnknown === true
         cursors = saved.cursors && typeof saved.cursors === 'object' ? Object.fromEntries(Object.entries(saved.cursors).filter(([id, value]) => uuidPattern.test(id) && /^\d+-\d+$/.test(value))) : {}
         pendingQuery = state.submitUnknown && typeof saved.pendingQuery === 'string' && saved.pendingQuery.length <= 4000 ? saved.pendingQuery : ''
         pendingImages = state.submitUnknown && Array.isArray(saved.pendingImages) ? saved.pendingImages.filter(validImage).slice(0, 1) : []
         if (state.requestId) await refresh(ticket)
-      } else if (saved?.entry?.client_request_id && saved.entry?.pending === true) {
+        if (!current(ticket)) return
+      } else if (verifiedEntry) {
+        state.entry = verifiedEntry
+        save()
+      } else if (sameSavedTask && saved?.entry?.client_request_id && saved.entry?.pending === true) {
         state.entry = saved.entry
         state.notice = '上次创建线程的结果未确认，可用原请求键重试。'
       }
-      if (!fresh && daily && taskType === 'consultation' && state.available && !state.entry?.thread_id && !state.entry?.pending) {
+      if (verifiedEntry) {
+        state.readOnly = !!verifiedEntry.business_date && verifiedEntry.business_date < day()
+        if (state.readOnly) state.notice = '这是往日咨询记录，可查看历史；请新建对话继续咨询。'
+        try { await restoreQueuedRequests(ticket) }
+        catch (error) { if (current(ticket)) state.available = false; throw error }
+        if (!current(ticket)) return
+      }
+      if (!fresh && daily && !conversationOptions && taskType === 'consultation' && state.available && !state.entry?.thread_id && !state.entry?.pending) {
         const { data } = await send({ path: `/api/health/v1/members/${memberId}/daily-conversations` })
         if (!current(ticket)) return
         const today = data.days?.find(row => row.date === day())
@@ -201,7 +272,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   }
   async function acceptConsent(accepted) {
     if (accepted !== true || !state.consentOption || state.busy || state.loading) return
-    const ticket = token(), { memberId, taskType, consentOption } = state
+    const ticket = token(), { memberId, taskType, consentOption } = state, options = conversationOptions
     state.busy = true; state.error = ''; emit()
     try {
       const { data } = await send({ path: `/api/health/v1/members/${memberId}/processing-consents`, method: 'POST',
@@ -209,7 +280,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
           policy_version: consentOption.policyVersion } })
       if (!current(ticket)) return
       if (data?.accepted !== true) throw mismatch()
-      await open(memberId, taskType, indicatorSelection)
+      await open(memberId, taskType, indicatorSelection, options || {})
     } catch (error) { handle(error, ticket) }
     finally { if (current(ticket)) { state.busy = false; emit() } }
   }
@@ -220,9 +291,13 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
     if (!uuidPattern.test(clientId)) throw new Error('无法生成有效请求标识')
     state.entry = { client_request_id: clientId, pending: true, ...(forceNewEntry || state.entry?.fresh ? { fresh: true } : {}) }; state.busy = true; state.error = ''; save(); emit()
     try {
-      const useDaily = !forceNewEntry && !state.entry.fresh && daily && type === 'consultation' && !(storage.getStorageSync(invalidKey()) || []).length
+      const independentConsultation = !!conversationOptions && type === 'consultation'
+      const useDaily = !forceNewEntry && !state.entry.fresh && daily && !conversationOptions && type === 'consultation' && !(storage.getStorageSync(invalidKey()) || []).length
       const response = useDaily
         ? await send({ path: `/api/health/v1/members/${id}/daily-consultations`, method: 'POST' })
+        : independentConsultation
+        ? await send({ path: `/api/health/v1/members/${id}/consultations`, method: 'POST',
+          headers: { 'Idempotency-Key': clientId }, data: { client_request_id: clientId } })
         : type === 'diet_analysis'
         ? await send({ path: `/api/health/v1/diet-logs/${indicatorSelection.record_id}/feedback-conversation`, method: 'POST',
           data: { client_request_id: clientId, source_version: indicatorSelection.source_version } })
@@ -232,6 +307,11 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       let row = response.data
       if (useDaily) {
         if (row.member_id !== id || row.agent_slug !== 'health-consultation' || row.business_date !== day()) throw mismatch()
+        row = { ...row, task_type: type, client_request_id: clientId, entry_status: 'ready', request_submit_url: '/api/agent/runs' }
+      }
+      if (independentConsultation) {
+        if (row?.member_id !== id || row.agent_slug !== 'health-consultation' ||
+          row.business_date !== null || row.feedback_selection !== null || !uuidPattern.test(row.thread_id || '')) throw mismatch()
         row = { ...row, task_type: type, client_request_id: clientId, entry_status: 'ready', request_submit_url: '/api/agent/runs' }
       }
       if (type === 'diet_analysis') {
@@ -258,7 +338,10 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   }
   function validImage(value) { return typeof value === 'string' && value.length <= 3 * 1024 * 1024 && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(value) }
   async function submit(query, retry = false, images = []) {
-    if (!state.available || !state.entry?.thread_id || state.busy || state.loading) return
+    if (conversationOptions && state.entry?.business_date && state.entry.business_date < day()) {
+      state.readOnly = true; state.notice = '这是往日咨询记录，可查看历史；请新建对话继续咨询。'; emit()
+    }
+    if (state.readOnly || !state.available || !state.entry?.thread_id || state.busy || state.loading) return
     if (state.submitUnknown && !retry) return
     const text = retry ? pendingQuery : String(query || '').trim()
     const selectedImages = retry ? pendingImages : images
@@ -417,9 +500,11 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
     stop(); readVersion++; clearStream(); state.requestId = id; state.runId = ''; state.result = null; state.status = ''; save()
     await refresh()
   }
-  async function restoreRequest(id) {
-    if(!uuidPattern.test(id||'')||!state.entry?.thread_id||state.requestId||state.busy||state.loading)return
-    state.requestId=id;save();await refresh()
+  async function restoreRequest(id, { preferActive = false } = {}) {
+    if (!uuidPattern.test(id || '') || !state.entry?.thread_id || state.busy || state.loading || state.submitUnknown) return
+    if (state.requestId && (!preferActive || state.status !== 'queued' || state.requestId === id)) return
+    stop(); readVersion++; clearStream(); state.requestId = id; state.runId = ''; state.result = null; state.status = ''
+    save(); await refresh()
   }
   async function restoreReferenceRequest(threadId,id) {
     if(state.taskType!=='reference_meal_preview'||!state.available||state.busy||state.loading||

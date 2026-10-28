@@ -92,6 +92,7 @@ async def test_actual_graph_ignores_user_tool_and_prompt_overrides(
     assert [type(item).__name__ for item in graph["middleware"]] == [
         "SteerMiddleware",
         "HealthAuthorizationMiddleware",
+        "HealthCatalogContextMiddleware",
         "HealthCatalogMiddleware",
         "HealthAiBudgetMiddleware",
         "HealthCitationMiddleware",
