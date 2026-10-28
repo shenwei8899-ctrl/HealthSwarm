@@ -185,9 +185,9 @@ async def test_browser_blood_pressure_pair_correction_and_fresh_consultation(iso
             observed = await replay.get("/observations", params={"token": token})
             assert observed.status_code == 200
             assert observed.json()["calls"] == [
-                {"step": step, "phase": phase, "record_ids": [record_id] if phase == "answer" else []}
+                {"step": step, "phase": phase, "record_ids": [record_id] if phase in {"finalize", "answer"} else []}
                 for step in ("bp_read", "bp_updated")
-                for phase in ("read", "answer")
+                for phase in ("read", "finalize", "answer")
             ]
         write_control(
             control / "verified.json", {"status": "passed", **receipt, "versions": [1, 2], "source": "device"}

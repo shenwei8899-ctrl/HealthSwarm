@@ -1,3 +1,4 @@
+import { resolveCheckoutAddress } from './address-model.js'
 const mealNames = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐' }
 const units = { g: 'g', kg: 'kg', piece: '个', ml: 'ml', l: 'L' }
 const same = (a, b) => String(a) === String(b)
@@ -51,7 +52,7 @@ export function commerceMealView(menu, { members = [], meal = 'dinner', quantiti
 }
 
 export function newMealCommerceState() {
-  return { menu: null, cart: [], address: null, slots: [], slotId: 0, quote: null, selected: [], quantities: {}, ready: false, busy: false, error: '', checkoutError: '', deliveryMessage: '', deliverySupported: null, contextIssue: '', baselineMembers: '', baselineProfile: '', pending: null, orderSn: '' }
+  return { menu: null, cart: [], address: null, preferredAddressId: '', slots: [], slotId: 0, quote: null, selected: [], quantities: {}, ready: false, busy: false, error: '', checkoutError: '', deliveryMessage: '', deliverySupported: null, contextIssue: '', baselineMembers: '', baselineProfile: '', pending: null, orderSn: '' }
 }
 
 export function createMealCommerceController({ state, api, scope, context }) {
@@ -114,7 +115,7 @@ export function createMealCommerceController({ state, api, scope, context }) {
       }
       if (!state.baselineMembers || !unchanged) { state.baselineMembers = memberKey(input.members); state.baselineProfile = JSON.stringify(input.members || []) }
       membersChanged()
-      state.address = addresses.find(address => address.isDefault) || null
+      state.address = resolveCheckoutAddress(addresses, state.preferredAddressId || state.address?.id)
       state.pending = api.pendingOrder(); state.ready = true
       state.slots = []; state.deliveryMessage = ''; state.deliverySupported = null; state.slotId = 0
       if (state.address) {

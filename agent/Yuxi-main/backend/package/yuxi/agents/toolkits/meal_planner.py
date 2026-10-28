@@ -7,6 +7,7 @@ from yuxi.agents.toolkits.registry import tool
 from yuxi.agents.toolkits.health import HealthReadInput
 from yuxi.services.health_meal_plan_types import MealPlanSpec
 from yuxi.services.health_family_planner_types import FamilySwapToolInput, FamilyParticipationToolInput
+from yuxi.services.reference_meal_plan_types import ReferencePlanDraft
 
 
 class RecipeSearch(HealthReadInput):
@@ -17,6 +18,53 @@ class RecipeSearch(HealthReadInput):
 
 class MealPlanToolInput(MealPlanSpec, HealthReadInput):
     """ToolNode注入身份；HTTP和模型JSON均不能提供运行对象。"""
+
+
+class ReferenceRecipeInput(HealthReadInput):
+    """文件必须来自当前固定资料库。"""
+
+    file_id: str = Field(min_length=1, max_length=64)
+    chunk_id: str = Field(min_length=1, max_length=128)
+
+
+class ReferencePlanToolInput(ReferencePlanDraft, HealthReadInput):
+    """模型仅提供参考稿，运行身份由 ToolNode 注入并验证。"""
+
+
+@tool(category="health", display_name="日常参考餐单上下文", args_schema=HealthReadInput)
+async def get_reference_plan_context(runtime: ToolRuntime) -> dict:
+    """读取当前已选成员与可售商品，不读取专业规则。"""
+    from yuxi.services.reference_meal_plan_service import get_reference_context
+
+    return await get_reference_context(runtime.context)
+
+
+@tool(category="health", display_name="检索参考菜谱", args_schema=RecipeSearch)
+async def search_reference_recipes(query: str, runtime: ToolRuntime) -> dict:
+    """按主题检索真实食谱文件。"""
+    from yuxi.services.reference_meal_plan_service import search_reference_recipes as search
+
+    return await search(runtime.context, query)
+
+
+@tool(category="health", display_name="读取参考菜谱原文", args_schema=ReferenceRecipeInput)
+async def read_reference_recipe(file_id: str, chunk_id: str, runtime: ToolRuntime) -> dict:
+    """打开本 Run 检索命中的当前文件。"""
+    from yuxi.services.reference_meal_plan_service import read_reference_recipe as read
+
+    return await read(runtime.context, file_id, chunk_id)
+
+
+@tool(category="health", display_name="保存日常参考餐单", args_schema=ReferencePlanToolInput)
+async def save_reference_meal_plan(
+    meals: list, purchase_items: list, purchase_gaps: list, runtime: ToolRuntime
+) -> dict:
+    """保存原文可核对的三餐，未知营养保持缺失。"""
+    from yuxi.services.reference_meal_plan_service import save_reference_plan
+
+    return await save_reference_plan(
+        runtime.context, {"meals": meals, "purchase_items": purchase_items, "purchase_gaps": purchase_gaps}
+    )
 
 
 @tool(category="health", display_name="初始配餐当前上下文", args_schema=HealthReadInput)

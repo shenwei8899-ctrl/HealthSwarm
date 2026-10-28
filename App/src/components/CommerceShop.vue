@@ -1,4 +1,6 @@
 <script setup>
+import { openAddressPicker } from '../services/address-navigation.js'
+import { resolveCheckoutAddress } from '../services/address-model.js'
 import { ref, computed, onMounted } from "vue";
 import { onShow } from "@dcloudio/uni-app";
 import AppNavBar from "./AppNavBar.vue";
@@ -6,8 +8,10 @@ import { commerce } from "../services/commerce.js";
 import { useCommercePage } from "../services/commerce-page.js";
 
 const props = defineProps({ route: { type: Object, default: () => ({}) } });
+const cartOnly = computed(() => props.route.cart === '1');
 const products = ref([]),
   cart = ref([]),
+  preferredAddressId = ref(""),
   address = ref(null),
   quote = ref(null),
   slots = ref([]),
@@ -25,7 +29,7 @@ const { busy, error, run } = useCommercePage(() => {
   menu.value = null;
   products.value = [];
   cart.value = [];
-  address.value = null;
+  address.value = null; preferredAddressId.value = "";
   slots.value = [];
   quote.value = null;
   ready.value = false;
@@ -37,11 +41,14 @@ const { busy, error, run } = useCommercePage(() => {
   deliveryMessage.value = "";
 });
 const money = (cents) => (Number(cents || 0) / 100).toFixed(2);
-const go = (path) => uni.navigateTo({ url: path });
+const go = (path) => {
+  if (path === '/pages/address/index') { quote.value = null; openAddressPicker({ selectedId: address.value?.id, onSelected: id => { preferredAddressId.value = id; quote.value = null } }); return }
+  uni.navigateTo({ url: path });
+};
 const back = () => uni.navigateBack();
 async function read(active) {
   const [catalog, basket, addresses, savedMenu] = await Promise.all([
-    commerce.products(),
+    cartOnly.value ? Promise.resolve({items:[],has_more:false}) : commerce.products(),
     commerce.cart(),
     commerce.addresses(),
     mealName.value ? commerce.meal(mealName.value, props.route.date) : Promise.resolve(null),
@@ -52,7 +59,7 @@ async function read(active) {
   next.value = catalog.next_cursor;
   more.value = catalog.has_more;
   cart.value = basket.items;
-  address.value = addresses.find((a) => a.isDefault) || null;
+  address.value = resolveCheckoutAddress(addresses, preferredAddressId.value || address.value?.id);
   slots.value = [];
   slot.value = 0;
   quote.value = null;
@@ -172,14 +179,14 @@ function retryOrder() {
     <AppNavBar
       ><view class="nav-row"
         ><button class="icon-button" @click="back">‹</button
-        ><text class="nav-title">选购食材</text
+        ><text class="nav-title">{{cartOnly?'核对采购商品':'选购食材'}}</text
         ><button class="text-button" @click="go('/pages/orders/index')">
           订单
         </button></view
       ></AppNavBar
     >
     <view class="page-heading"
-      ><text class="display-title">挑选今天需要的食材</text
+      ><text class="display-title">{{cartOnly?'核对已选商品':'挑选今天需要的食材'}}</text
       ><text class="subtitle"
         >核对商品、数量、配送地址和价格后下单。</text
       ></view
@@ -213,7 +220,7 @@ function retryOrder() {
     ><button class="secondary-button" :disabled="busy" @click="load">
       {{ busy ? "正在处理…" : "刷新商品与购物车" }}
     </button>
-    <view v-if="ready && !products.length" class="card commerce-card"
+    <view v-if="!cartOnly && ready && !products.length" class="card commerce-card"
       ><text>暂时没有可购买的商品</text></view
     >
     <view

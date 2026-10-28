@@ -4,7 +4,14 @@ import json
 
 import pytest
 
-from test.support.health_consultation_replay_server import MODEL, STATES, HealthReplayHandler, validate_request
+from test.support.health_consultation_replay_server import (
+    MODEL,
+    STATES,
+    HealthReplayHandler,
+    final_answer_request,
+    final_answer_tool_delta,
+    validate_request,
+)
 
 AUTH = "Bearer synthetic-health-replay-key"
 TOKEN = "a" * 32
@@ -39,6 +46,7 @@ def replay_body():
             {"type": "function", "function": {"name": name}}
             for name in (
                 "find_food_packages",
+                "select_food_products",
                 "get_confirmed_profile",
                 "get_confirmed_diet",
                 "get_complete_health_profile",
@@ -88,6 +96,27 @@ def test_replay_accepts_only_explicit_minimal_synthetic_projection():
     assert validate_request(AUTH, body) == (TOKEN, "one", f"health-read-{TOKEN}-one", False, [])
     attach_result(body, record_result())
     assert validate_request(AUTH, body) == (TOKEN, "one", f"health-read-{TOKEN}-one", True, ["synthetic-record"])
+
+
+def test_two_stage_replay_requires_finalizer_receipt_then_removes_all_bound_tools():
+    """业务oracle保持独立；结束动作不能凭移除工具跳过。"""
+    body = replay_body()
+    expected = {item["function"]["name"] for item in body["tools"]}
+    body["tools"].append({"function": {"name": "finalize_health_answer"}})
+    body["tool_choice"] = "required"
+    normalized, stage, finalize_id = final_answer_request(body, expected)
+    assert stage == "tools" and validate_request(AUTH, normalized)[3] is False
+    attach_result(body, record_result())
+    normalized, stage, _ = final_answer_request(body, expected)
+    assert validate_request(AUTH, normalized)[3] is True
+    assert final_answer_tool_delta(finalize_id)["tool_calls"][0]["function"]["name"] == "finalize_health_answer"
+    body.pop("tools")
+    body.pop("tool_choice")
+    with pytest.raises(ValueError, match="fixed_final_stage_tools_required"):
+        final_answer_request(body, expected)
+    body["messages"].append({"role": "tool", "tool_call_id": finalize_id, "content": "资料准备完成。"})
+    normalized, stage, _ = final_answer_request(body, expected)
+    assert stage == "final" and validate_request(AUTH, normalized)[3] is True
 
 
 @pytest.mark.parametrize(

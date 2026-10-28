@@ -1,7 +1,7 @@
-import { apiBaseUrl } from './config.js'
+import { apiBaseUrl, allowLocalHealthApi } from './config.js'
 import { getSession, sessionRevision } from './session.js'
 
-/** 增量解析SSE，只向调用方交付事件身份；正文始终从权威结果接口读取。 */
+/** 只接收公开健康增量契约；原始 messages、工具、推理与任意模型字段不可作为答复。 */
 export function createHealthEventParser(onEvent) {
   let buffer = '', bytes = []
   return chunk => {
@@ -34,7 +34,24 @@ export function createHealthEventParser(onEvent) {
       let value
       try { value = JSON.parse(data.join('\n')) } catch { continue }
       if (!value || typeof value !== 'object') continue
-      onEvent({ id: /^\d+-\d+$/.test(id) ? id : '', type, runId: value.run_id, requestId: value.request_id })
+      const payload = value.payload && typeof value.payload === 'object' ? value.payload : {}
+      const chunk = payload.chunk && typeof payload.chunk === 'object' ? payload.chunk : {}
+      const event = { id: /^\d+-\d+$/.test(id) ? id : '', type,
+        runId: value.run_id, requestId: value.request_id, threadId: value.thread_id }
+      if (type === 'queued' && Number.isInteger(value.position) && value.position >= 0) event.queuePosition = value.position
+      if (type === 'custom' && payload.name === 'yuxi.health_progress') {
+        event.phase = chunk.phase === 'validating' ? 'validating' : 'running'
+      }
+      if (type === 'custom' && payload.name === 'yuxi.health_answer_delta' &&
+        typeof chunk.content === 'string' && chunk.content.length <= 65536 &&
+        Number.isInteger(chunk.offset) && chunk.offset >= 0 && chunk.offset <= 200000 &&
+        typeof chunk.message_id === 'string' && chunk.message_id.length > 0 && chunk.message_id.length <= 200) {
+        event.content = chunk.content
+        event.offset = chunk.offset
+        event.messageId = chunk.message_id
+        event.phase = 'streaming'
+      }
+      onEvent(event)
     }
   }
 }
@@ -45,14 +62,15 @@ export function subscribeHealthEvents({ requestId, runId, cursor = '0-0', onEven
   if (!getSession()?.token) return () => {}
   const rev = sessionRevision(), token = getSession().token
   const sameOrigin = typeof window !== 'undefined' && apiBaseUrl === ''
-  if (!sameOrigin && !/^https:\/\//.test(apiBaseUrl)) return () => {}
+  const localApi = allowLocalHealthApi && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(apiBaseUrl)
+  if (!sameOrigin && !localApi && !/^https:\/\//.test(apiBaseUrl)) return () => {}
   const path = runId ? `/api/agent/runs/${encodeURIComponent(runId)}/events?verbose=false&after_seq=${encodeURIComponent(cursor)}` : `/api/agent/requests/${encodeURIComponent(requestId)}/events`
   const url = apiBaseUrl.replace(/\/$/, '') + path
-  let closed = false, abort = () => {}
+  let closed = false, settled = false, abort = () => {}
   const current = () => !closed && sessionRevision() === rev
-  const parse = createHealthEventParser(event => { if (current()) onEvent(event) })
-  const failed = error => { if (current()) onError(error) }
-  const ended = () => { if (current()) onEnd() }
+  const parse = createHealthEventParser(event => { if (current() && !settled) onEvent(event) })
+  const failed = error => { if (current() && !settled) { settled = true; onError(error) } }
+  const ended = () => { if (current() && !settled) { settled = true; onEnd() } }
   if (typeof window !== 'undefined' && typeof fetch === 'function' && typeof AbortController === 'function') {
     const controller = new AbortController(); abort = () => controller.abort()
     void (async () => {

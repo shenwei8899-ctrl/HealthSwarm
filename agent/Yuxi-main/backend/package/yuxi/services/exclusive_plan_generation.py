@@ -27,6 +27,7 @@ def generate_exclusive_day(selection, current, recipes, foods, refs, mappings, c
         and mappings[rid].recipe_hash == refs.get(rid)
         and mappings[rid].steps
         and all(item["food"]["id"] in mappings[rid].ingredient_codes for item in recipe.ingredients)
+        and all(isinstance(value, str) for value in mappings[rid].ingredient_codes.values())
         and repeat_allowed(rid, previous, day_no, tier_rule["repeat"], config["repeat_identity"])
     }
     stock = {

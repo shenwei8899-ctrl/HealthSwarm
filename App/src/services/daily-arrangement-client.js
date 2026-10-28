@@ -151,6 +151,10 @@ export function createDailyArrangementClient({ state, send, context, storage, ne
     return flight
   }
   return {
+    adopt(value) {
+      generation++;flight=null;state.date=value.date
+      state.busy=false;state.error='';receive(value,value.date)
+    },
     load,
     async detail(id, type, version) {
       const input = context(), ticket = generation

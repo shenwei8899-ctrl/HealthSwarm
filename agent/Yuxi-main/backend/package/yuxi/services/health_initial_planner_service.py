@@ -100,7 +100,9 @@ def initial_context_result(binding):
 
 def require_initial_binding(binding):
     """其它配餐模式不能调用固定初始工具。"""
-    if binding.initial_planner_selection is None:
+    from yuxi.services.reference_meal_plan_service import reference_binding
+
+    if binding.initial_planner_selection is None or reference_binding(binding):
         raise HealthVisionError("initial_selection_required", "须从用户明确选定初始范围的入口创建线程", 409)
 
 
@@ -197,6 +199,11 @@ async def validate_initial_planner_publication(session, run, text):
     )
     if binding.initial_planner_selection is None or binding.conversation_id != run.conversation_id:
         raise HealthVisionError("source_invalidated", "初始运行绑定已变化", 410)
+    from yuxi.services.reference_meal_plan_service import reference_binding, validate_reference_publication
+
+    if reference_binding(binding):
+        await validate_reference_publication(session, run, binding, text)
+        return
     try:
         payload = json.loads(text)
         answer = PlannerAnswer(

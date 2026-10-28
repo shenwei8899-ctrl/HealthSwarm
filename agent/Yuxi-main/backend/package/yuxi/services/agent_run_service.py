@@ -951,7 +951,7 @@ def _public_health_error(error_type: str | None) -> dict[str, str]:
 
 
 def _public_health_run_event(run, event_type: str, envelope: dict) -> dict | None:
-    """健康实时与重放事件只投影进度；正式正文由当前有效的完成结果读取。"""
+    """只公开进度及经过来源校验的科普增量，终态仍以持久结果为准。"""
     payload = envelope.get("payload") if isinstance(envelope, dict) else None
     payload = payload if isinstance(payload, dict) else {}
     chunk = payload.get("chunk") if isinstance(payload.get("chunk"), dict) else {}
@@ -974,6 +974,34 @@ def _public_health_run_event(run, event_type: str, envelope: dict) -> dict | Non
             "reason": "interrupted",
             "chunk": {**identity, "status": "interrupted", "message": "咨询已中断，请重新发送文字咨询"},
         }
+    elif event_type == "custom" and payload.get("name") == "yuxi.health_answer_delta":
+        delta = chunk.get("delta") if isinstance(chunk.get("delta"), dict) else {}
+        content, offset, message_id = delta.get("content"), delta.get("offset"), delta.get("message_id")
+        prefix = chunk.get("validated_prefix")
+        if (
+            run.status not in {"running", "completed"}
+            or not isinstance(content, str)
+            or not content
+            or len(content) > 32000
+            or type(offset) is not int
+            or not 0 <= offset <= 32000
+            or not isinstance(message_id, str)
+            or not 0 < len(message_id) <= 200
+            or not isinstance(prefix, str)
+            or len(prefix) > 32000
+            or prefix[offset:] != content
+        ):
+            return None
+        public_payload = {
+            "name": "yuxi.health_answer_delta",
+            "chunk": {
+                **identity,
+                "status": "health_answer_delta",
+                "content": content,
+                "offset": offset,
+                "message_id": message_id,
+            },
+        }
     elif event_type == "custom" and payload.get("name") == "yuxi.health_progress":
         phase = "validating" if chunk.get("phase") == "validating" else "running"
         message = "正在校验答复来源与引用" if phase == "validating" else "正在回顾记录与审核知识"
@@ -986,6 +1014,17 @@ def _public_health_run_event(run, event_type: str, envelope: dict) -> dict | Non
     else:
         return None
     return {**identity, "event": event_type, "payload": public_payload}
+
+
+async def validate_health_stream_publication(run, envelope: dict) -> None:
+    """实时读取和断线重放均重验前缀来源，撤回资料后不重放旧正文。"""
+    from yuxi.services.health_evidence_service import validate_evidence_publication
+    from yuxi.services.health_family_profile_service import validate_profile_publication
+
+    prefix = envelope["payload"]["chunk"]["validated_prefix"]
+    async with pg_manager.get_async_session_context() as session:
+        await validate_profile_publication(session, run)
+        await validate_evidence_publication(session, run, prefix)
 
 
 async def _load_stream_run_for_user(run_id: str, current_uid: str):
@@ -1088,9 +1127,24 @@ async def stream_agent_run_events(
                 event_type = event.get("event_type") or "message"
                 envelope = event.get("payload") or {}
                 if run.agent_slug in EDUCATION_HEALTH_AGENTS:
+                    original_envelope = envelope
                     envelope = _public_health_run_event(run, event_type, envelope)
                     if envelope is None:
                         continue
+                    if envelope.get("payload", {}).get("name") == "yuxi.health_answer_delta":
+                        try:
+                            await validate_health_stream_publication(run, original_envelope)
+                        except Exception:
+                            yield format_sse(
+                                {
+                                    "run_id": run.id,
+                                    "request_id": run.request_id,
+                                    "thread_id": run.conversation_thread_id,
+                                    "message": "答复来源或授权已变化，请重新读取本次任务",
+                                },
+                                event="error",
+                            )
+                            return
                 if not verbose and run.agent_slug not in EDUCATION_HEALTH_AGENTS and isinstance(envelope, dict):
                     envelope = _compact_run_event_envelope(envelope)
                     if envelope is None:

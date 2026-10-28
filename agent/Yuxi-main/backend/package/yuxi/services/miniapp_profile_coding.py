@@ -49,14 +49,29 @@ async def prepare_daily_profile_coding(uid, sources, selection, context):
             )
             member = await session.get(FamilyMember, source["id"])
             link = await session.get(HealthFamilyProfileLink, hid)
-            if member is None or member.version != source["version"] or link is None or link.actor_uid != uid:
+            if (
+                member is None
+                or member.id != source["id"]
+                or member.version != source["version"]
+                or link is None
+                or link.source_member_id != member.id
+                or link.family_id != member.family_id
+            ):
                 raise HealthVisionError("source_invalidated", "成员档案或授权已更新", 410)
             if link.source_kind != "miniapp_reported":
+                if link.actor_uid != uid:
+                    raise HealthVisionError("source_invalidated", "成员档案或授权已更新", 410)
                 continue
             quality = HealthQualityRepository(session)
             projection = await quality.profile_projection(hid)
             if projection["status"] == "ready":
+                # 已批准规则可直接编码的共享本人来源无需再次交给模型。
+                # 授权、当前用途同意与来源绑定仍先校验；投影也必须对应同一版本。
+                if projection.get("id") != member.id or projection.get("version") != member.version:
+                    raise HealthVisionError("source_invalidated", "成员档案或授权已更新", 410)
                 continue
+            if link.actor_uid != uid:
+                raise HealthVisionError("source_invalidated", "成员档案或授权已更新", 410)
             record = await quality.rules(selection["rule_code"])
             rules = external_projection(record, "rules", selection["rule_code"])
             if rules["status"] != "ready" or rules["version"] != selection["rule_version"]:

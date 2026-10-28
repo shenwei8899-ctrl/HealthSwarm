@@ -42,7 +42,7 @@ test('onboarding and member details no longer ask for manual consultation approv
 })
 
 
-test('complete profile returns directly to chat even when confirmation version is older',async()=>{
+test('complete profile opens chat without requiring meal preparation or another confirmation',async()=>{
  const session={accountId:'self',token:'synthetic',householdId:'family',families:[{id:'family'}]}
  const resolve=createEntryResolver({auth:{restore:async()=>session},session:()=>session,readProfile:async()=>({householdId:'family',completeProfile:true,onboarded:false})})
  assert.equal(await resolve(),'/pages/chat/index')

@@ -13,10 +13,36 @@ function discard(){epoch++;profile.value=null;busy.value=false;error.value=''}
 onMounted(load);onShow(load);onHide(discard)
 function detail(member){uni.navigateTo({url:'/pages/profile/member?id='+encodeURIComponent(member.id)})}
 </script>
-<template><view class="screen family-overview"><AppNavBar><view class="nav-row"><button class="icon-button" @click="uni.navigateBack({fail:()=>uni.reLaunch({url:'/pages/chat/index'})})">‹</button><text class="nav-title">家庭健康档案</text><button class="icon-button" aria-label="切换家庭" @click="uni.navigateTo({url:'/pages/family-select/index'})">···</button></view></AppNavBar><view class="page-heading"><text class="display-title">家人的健康，都在这里</text><text class="muted">{{profile?.householdName||'我的家'}}</text></view><text v-if="busy" class="safe-note">正在读取家庭档案…</text><view v-if="error" class="card error-state"><text class="inline-error">{{error}}</text><button class="secondary-button" @click="load">重新读取</button><button @click="uni.navigateTo({url:'/pages/family-select/index'})">选择家庭</button></view><button v-for="member in profile?.members||[]" :key="member.id" class="card member-card" @click="detail(member)"><view class="avatar">{{member.name.slice(0,1)}}</view><view><text>{{member.name}}<text v-if="member.id===profile.selfMemberId" class="self-badge"> · 本人</text></text><text>{{ageLabel(member)}} · {{member.gender}}</text></view><text>›</text></button><button v-if="profile&&owner" class="secondary-button" @click="uni.navigateTo({url:'/pages/onboarding/index'})">管理家庭成员</button></view></template>
-<style scoped>.member-card{border-radius:28rpx;background:#fff;border:1rpx solid #ebebef;width:100%;display:flex;gap:22rpx;align-items:center;padding:26rpx;margin-bottom:18rpx;text-align:left}.avatar{width:86rpx;height:86rpx;display:flex;align-items:center;justify-content:center;border-radius:26rpx;background:#f0f1f4;color:#292a2e;font-size:32rpx;font-weight:500}.member-card>view:nth-child(2){flex:1;display:flex;flex-direction:column;gap:12rpx}.member-card>view:nth-child(2)>text:first-child{font-size:30rpx;font-weight:500}.member-card>view:nth-child(2)>text:last-child,.muted{font-size:25rpx;color:#767680}.member-card>text{font-size:40rpx;color:#767680}.note{margin-top:28rpx;text-align:left}.error-state{padding:24rpx}</style>
-
+<template>
+  <view class="screen family-overview">
+    <AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="uni.navigateBack({fail:()=>uni.reLaunch({url:'/pages/chat/index'})})">‹</button><text class="nav-title">家庭健康档案</text><text/></view></AppNavBar>
+    <view class="family-heading">
+      <view class="family-summary"><text class="family-name">{{profile?.householdName||'我的家'}}</text><text v-if="profile" class="family-count">共 {{profile.members.length}} 位成员</text></view>
+      <button class="switch-family" @click="uni.navigateTo({url:'/pages/family-select/index'})">切换家庭<text class="switch-arrow">›</text></button>
+    </view>
+    <text v-if="busy" class="loading-note">正在读取家庭档案…</text>
+    <view v-if="error" class="error-state"><text class="inline-error">{{error}}</text><button class="secondary-button" @click="load">重新读取</button><button class="choose-family" @click="uni.navigateTo({url:'/pages/family-select/index'})">选择家庭</button></view>
+    <view v-if="profile" class="member-list">
+      <button v-for="member in profile.members" :key="member.id" class="member-row" :aria-label="member.name+'，查看健康档案'" @click="detail(member)">
+        <view class="avatar">{{member.name.slice(0,1)}}</view>
+        <view class="member-copy"><view class="member-name-line"><text class="member-name">{{member.name}}</text><text v-if="member.id===profile.selfMemberId" class="self-badge">本人</text></view><text class="member-meta">{{ageLabel(member)==='0 个月'?'未满1个月':ageLabel(member)}} · {{member.gender}}</text></view>
+        <text class="member-arrow">›</text>
+      </button>
+      <text v-if="!profile.members.length" class="empty-note">暂无家庭成员</text>
+    </view>
+    <button v-if="profile&&owner" class="manage-members" @click="uni.navigateTo({url:'/pages/onboarding/index'})">管理家庭成员</button>
+  </view>
+</template>
 <style scoped>
-/* Approved v5 presentation. */
-.member-card{padding:28rpx;gap:24rpx;border-radius:24rpx;min-height:158rpx}.avatar{width:104rpx;height:104rpx;border-radius:50%;background:#eaf0f8;color:#34465d;font-size:38rpx;font-weight:400;flex-shrink:0}.member-card:nth-of-type(even) .avatar{background:#f3ede8;color:#7b604a}.member-card>view:nth-child(2){min-width:0}.member-card>view:nth-child(2)>text:first-child{font-size:32rpx;font-weight:400}.member-card>view:nth-child(2)>text:last-child{font-size:27rpx;overflow-wrap:anywhere}.family-overview .secondary-button{color:#0674ed;border-color:#c6d9f4}.note{font-size:25rpx;line-height:1.7;margin-top:32rpx}
+.family-overview{background:#fff;color:#202020;padding-left:20px;padding-right:20px;padding-bottom:calc(env(safe-area-inset-bottom) + 32px)}
+.icon-button{min-width:44px;min-height:44px}
+.family-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:26px 0 24px}
+.family-summary{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}.family-name{font-size:21px;font-weight:600;line-height:1.4;overflow-wrap:anywhere}.family-count{font-size:13px;color:#767676;line-height:1.5}
+.switch-family{display:flex;align-items:center;gap:7px;flex:none;min-height:44px;font-size:13px;color:#555}.switch-arrow{font-size:20px;color:#929292}
+.member-list{border-top:1px solid #ededed}.member-row{width:100%;min-height:96px;display:flex;align-items:center;gap:14px;padding:20px 0;border-bottom:1px solid #ededed;text-align:left;box-sizing:border-box}
+.avatar{width:48px;height:48px;display:flex;align-items:center;justify-content:center;flex:none;border-radius:50%;background:#f3f1ed;color:#625d54;font-size:20px;font-weight:400}
+.member-copy{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}.member-name-line{display:flex;align-items:flex-start;gap:8px;min-width:0}.member-name{flex:0 1 auto;min-width:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all;font-size:17px;font-weight:500;line-height:1.5}.self-badge{flex:none;white-space:nowrap;margin-top:3px;padding:1px 6px;border-radius:4px;background:#f3f3f3;color:#646464;font-size:11px;line-height:18px}
+.member-meta{font-size:13px;color:#777;line-height:1.5;overflow-wrap:anywhere}.member-arrow{flex:none;color:#969696;font-size:23px;line-height:1}
+.manage-members{width:100%;min-height:48px;display:flex;align-items:center;justify-content:center;margin-top:28px;padding:12px 16px;border-radius:8px;background:#222;color:#fff;font-size:16px;line-height:1.5;box-sizing:border-box}.manage-members:active{background:#383838}.member-row:active{background:#fafafa}.switch-family:active{opacity:.6}
+.loading-note,.empty-note{display:block;font-size:14px;color:#737373;line-height:1.6;padding:16px 0}.error-state{padding:0 0 20px}.choose-family{width:100%;min-height:44px;margin-top:8px;font-size:14px;color:#333}
 </style>

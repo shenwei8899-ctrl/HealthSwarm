@@ -2,6 +2,7 @@
 import FoodImageSlot from './FoodImageSlot.vue'
 import PurchaseCheckoutSheet from './PurchaseCheckoutSheet.vue'
 import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { openAddressPicker } from '../services/address-navigation.js'
 import { onShow } from '@dcloudio/uni-app'
 import CommerceAccess from './CommerceAccess.vue'
 import { commerce } from '../services/commerce.js'
@@ -53,7 +54,7 @@ function chooseAddress() {
   const key = returnKey(), scope = storageContext()
   page.invalidateQuote()
   scopedStorage.setStorageSync(key, { at: Date.now(), scope })
-  uni.navigateTo({ url: '/pages/address/index', fail: () => { if (active(scope)) scopedStorage.setStorageSync(key, null) } })
+  openAddressPicker({ selectedId: state.address?.id, onSelected: id => { state.preferredAddressId = id; page.invalidateQuote() }, onCancel: () => { if (active(scope)) scopedStorage.setStorageSync(key, null) } })
 }
 async function resumeCheckout(scope) {
   if (!active(scope)) return

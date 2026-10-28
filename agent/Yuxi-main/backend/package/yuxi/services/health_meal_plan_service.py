@@ -424,6 +424,10 @@ async def planner_final_result(context, text):
         raise HealthVisionError("planner_output_invalid", "配餐输出须为预览回执或补充问题", 422) from None
     async with pg_manager.get_async_session_context() as session:
         run, binding = await require_planner_run(session, context)
+        from yuxi.services.reference_meal_plan_service import reference_binding, reference_answer_in_session
+
+        if reference_binding(binding):
+            return await reference_answer_in_session(session, run, binding, answer)
         if getattr(binding, "safe_planner_selection", None) is not None:
             from yuxi.services.health_safe_planner_service import safe_answer_in_session
 

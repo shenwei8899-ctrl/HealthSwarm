@@ -113,9 +113,9 @@ async def test_blood_glucose_worker_preserves_pair_and_requires_fresh_consultati
     ]
     async with httpx.AsyncClient(base_url="http://localhost:8766", timeout=10) as replay:
         assert (await replay.get("/observations", params={"token": token})).json()["calls"] == [
-            {"step": step, "phase": phase, "record_ids": [record["id"]] if phase == "answer" else []}
+            {"step": step, "phase": phase, "record_ids": [record["id"]] if phase in {"finalize", "answer"} else []}
             for step in ("glucose_read", "glucose_updated")
-            for phase in ("read", "answer")
+            for phase in ("read", "finalize", "answer")
         ]
 
 
@@ -215,7 +215,9 @@ async def test_blood_glucose_late_direct_and_derived_publication_has_no_ordinary
                     assert len(uses) == 1 and uses[0].record_refs == [{"record_id": record["id"], "version": 1}]
             calls = (await replay.get("/observations", params={"token": gate_token})).json()["calls"]
             assert [(call["step"], call["phase"]) for call in calls] == (
-                [(step, "read"), (step, "answer")] if step == "glucose_gate" else [(step, "answer")]
+                [(step, "read"), (step, "finalize"), (step, "answer")]
+                if step == "glucose_gate"
+                else [(step, "finalize"), (step, "answer")]
             )
             await assert_old_blood_glucose_thread_denied(subject, original, first)
             before = (await replay.get("/observations", params={"token": token})).json()["calls"]

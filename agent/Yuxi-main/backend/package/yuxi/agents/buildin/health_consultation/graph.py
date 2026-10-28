@@ -9,8 +9,11 @@ from langchain_core.messages import HumanMessage
 from yuxi.agents.base import BaseAgent
 from yuxi.agents.middlewares import SteerMiddleware, TokenUsageMiddleware
 from yuxi.agents.middlewares.health_budget import HealthAiBudgetMiddleware
+from yuxi.agents.middlewares.health_catalog import HealthCatalogMiddleware
+from yuxi.agents.middlewares.health_final_answer import HealthFinalAnswerMiddleware, finalize_health_answer
 from yuxi.agents.toolkits.health import (
     find_food_packages,
+    select_food_products,
     get_confirmed_diet,
     get_confirmed_profile,
     get_complete_health_profile,
@@ -77,6 +80,7 @@ class HealthConsultationAgent(BaseAgent):
     prompt_name = "CONSULTATION_PROMPT"
     consultation_tools = (
         find_food_packages,
+        select_food_products,
         get_confirmed_profile,
         get_confirmed_diet,
         get_complete_health_profile,
@@ -111,15 +115,17 @@ class HealthConsultationAgent(BaseAgent):
             )
         return create_agent(
             model=load_chat_model(fully_specified_name=context.model, session_id=context.thread_id),
-            tools=tools,
+            tools=[*tools, finalize_health_answer],
             system_prompt=prompt,
             middleware=[
                 SteerMiddleware(),
                 HealthAuthorizationMiddleware(model_info),
+                HealthCatalogMiddleware(),
                 HealthAiBudgetMiddleware(
                     "consultation" if self.prompt_name == "CONSULTATION_PROMPT" else "indicator_review"
                 ),
                 HealthCitationMiddleware(),
+                HealthFinalAnswerMiddleware(),
                 TokenUsageMiddleware(),
             ],
             context_schema=self.context_schema,

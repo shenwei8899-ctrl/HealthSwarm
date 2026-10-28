@@ -54,6 +54,12 @@ _TASK_DEFINITIONS = {
             failure_function="fail_exclusive_plan",
         ),
         TaskDefinition(
+            "onboarding_preparation_v1",
+            "yuxi.services.onboarding_preparation_service",
+            "run_onboarding_preparation",
+            failure_function="fail_onboarding_preparation",
+        ),
+        TaskDefinition(
             "daily_arrangement_v1",
             "yuxi.services.daily_arrangement_tasks",
             "run_daily_arrangement",

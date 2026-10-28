@@ -22,9 +22,10 @@ function page(members = [completeMember()], extras = {}) {
     scopedStorage: { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, value) },
     onLoad() {}, onShow() {}, onUnload() {}, loadCloudProfile: async () => profile, readCloudReportStatus: async () => 'empty',
     saveCloudProfile: async value => { calls.saves.push(JSON.parse(JSON.stringify(value))); return { ...value, onboarded: true } },
+    queueOnboardingPreparation: value => deps.saveCloudProfile(value), preparationRoute: () => '/pages/onboarding/preparing',
     uni: { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, structuredClone(value)), pageScrollTo() {}, showToast: value => calls.toasts.push(value.title),
       showModal() { throw new Error('Required fields must not be bypassable through a warning modal') },
-      reLaunch: value => calls.redirects.push(value.url) }, ...extras }
+      navigateTo: value => calls.redirects.push(value.url), reLaunch: value => calls.redirects.push(value.url) }, ...extras }
   const script = readFileSync(new URL('../src/pages/onboarding/index.vue', import.meta.url), 'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
@@ -56,7 +57,7 @@ for (const [label, mutate, step] of missing) {
 test('a complete explicit no-restriction profile can finish without height weight or sex', async () => {
   const p = page(); p.next(); assert.equal(p.step.value, 1)
   p.next(); assert.equal(p.step.value, 2); p.next(); await nextTick()
-  assert.equal(p.calls.saves.length, 1); assert.deepEqual(p.calls.redirects, ['/pages/chat/index?from=onboarding'])
+  assert.equal(p.calls.saves.length, 1); assert.deepEqual(p.calls.redirects, ['/pages/onboarding/preparing'])
   assert.equal(p.calls.saves[0].members[0].height, ''); p.dispose()
 })
 
@@ -67,7 +68,7 @@ for (const cuisines of [[], ['不限菜系'], ['粤菜']]) {
     assert.equal(p.step.value, 2); p.next(); await nextTick()
     assert.equal(p.calls.saves.length, 1)
     assert.deepEqual(p.calls.saves[0].members[0].cuisines, cuisines)
-    assert.deepEqual(p.calls.redirects, ['/pages/chat/index?from=onboarding']); p.dispose()
+    assert.deepEqual(p.calls.redirects, ['/pages/onboarding/preparing']); p.dispose()
   })
 }
 

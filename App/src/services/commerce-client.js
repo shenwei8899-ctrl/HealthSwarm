@@ -116,7 +116,7 @@ export function createCommerceClient({
     current(scope);
     return send(path, options, session ? { token: session.token } : {});
   }
-  async function mutate(path, method = "POST", data = {}) {
+  async function mutate(path, method = "POST", data = {}, validate) {
     const scope = parent.scope(),
       signature = JSON.stringify([path, method, data]);
     const state = read(),
@@ -126,6 +126,7 @@ export function createCommerceClient({
     try {
       const result = await request(path, { method, data, key: intent });
       current(scope);
+      if (validate) validate(result);
       const next = { ...(read().intents || {}) };
       delete next[signature];
       save({ ...read(), intents: next });
@@ -347,12 +348,18 @@ export function createCommerceClient({
       mutate("/cart/items/" + id(line.cart_item_id), "DELETE", {
         version: line.version,
       }),
+    addressBook: () => request("/addresses"),
     addresses: async () => (await request("/addresses")).items,
+    setDefaultAddress: (addressId) => mutate("/addresses/" + id(addressId) + "/default", "PUT"),
+    deleteAddress: (addressId) => mutate("/addresses/" + id(addressId), "DELETE"),
     saveAddress: (address) =>
       mutate(
         "/addresses" + (address.id ? "/" + id(address.id) : ""),
         address.id ? "PUT" : "POST",
         address,
+        result => {
+          if (!result?.id) throw failure('地址保存结果尚未确认，请重试原操作', 'NETWORK_ERROR');
+        },
       ),
     selectAddress: (addressId) =>
       mutate("/addresses/" + id(addressId) + "/default", "PUT"),

@@ -142,3 +142,43 @@ def test_topic_replay_uses_real_dual_library_receipt_and_rejects_foreign_role(ki
     request["messages"][-1]["content"] = json.dumps(payload)
     with pytest.raises(ValueError, match="role_scoped_topic_sources_required"):
         replay_response(AUTHORIZATION, request)
+
+
+@pytest.mark.parametrize("kind", ["blood_glucose", "blood_lipids", "blood_pressure"])
+def test_indicator_two_stage_replay_keeps_business_tools_until_explicit_finalization(kind):
+    """三指标都先真实检索，再结束准备并进入无工具正文调用。"""
+    request = body(kind)
+    request["messages"][1]["content"] = f"INDICATOR_E2E:{TOKEN}:{kind}:education"
+    request["tools"].append({"function": {"name": "finalize_health_answer"}})
+    request["tool_choice"] = "required"
+    *_, phase, _ = replay_response(AUTHORIZATION, request)
+    assert phase == "education"
+    kb_ids = [f"pytest_indicator_{kind.removeprefix('blood_')}", "pytest_indicator_common"]
+    payload = {
+        "status": "ok",
+        "scope": "general_education",
+        "kb_ids": kb_ids,
+        "sources": [
+            {
+                "kb_id": kb,
+                "filename": f"{kb}.md",
+                "source_id": UUID,
+                "content": f"topic{TOKEN} synthetic education {kb}",
+            }
+            for kb in kb_ids
+        ],
+    }
+    request["messages"].append(
+        {"role": "tool", "tool_call_id": f"indicator-{TOKEN}-{kind}-education", "content": json.dumps(payload)}
+    )
+    *_, phase, delta = replay_response(AUTHORIZATION, request)
+    assert phase == "finalize" and delta["tool_calls"][0]["function"]["name"] == "finalize_health_answer"
+    request["messages"].append(
+        {"role": "tool", "tool_call_id": delta["tool_calls"][0]["id"], "content": "资料准备完成。"}
+    )
+    with pytest.raises(ValueError, match="explicit_finalization_required"):
+        replay_response(AUTHORIZATION, request)
+    request.pop("tools")
+    request.pop("tool_choice")
+    *_, phase, answer = replay_response(AUTHORIZATION, request)
+    assert phase == "answer" and f"[资料:{UUID}]" in answer["content"]

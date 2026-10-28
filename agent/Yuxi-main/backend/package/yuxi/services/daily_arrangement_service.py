@@ -21,6 +21,7 @@ from yuxi.services.daily_commerce_service import (
     sku_matches_plan,
 )
 from yuxi.services.family_service import FamilyService
+from yuxi.services.commerce_sku_selection import purchase_authority
 from yuxi.services.health_initial_meal_plan_types import InitialPlanSelection
 from yuxi.services.health_initial_meal_plan_service import save_initial_plan
 from yuxi.services.health_meal_plan_types import MealPlanSave
@@ -462,6 +463,12 @@ async def daily_selection(db, uid, family, day, *, participation=None, allow_int
         if profile["status"] != "ready" and not (
             allow_interpretation and profile["reason"] == "profile_coding_unavailable"
         ):
+            if profile.get("reason") == "profile_coding_rules_unavailable":
+                raise HealthVisionError(
+                    "daily_rules_unavailable",
+                    "配餐所需的营养规则或档案编码规则尚未配置完成，档案已保存，请等待服务配置后继续准备",
+                    503,
+                )
             raise HealthVisionError(
                 "daily_profile_source_unavailable", "营养师的档案来源尚未同步完成，系统会保留已有建档", 503
             )
@@ -736,7 +743,9 @@ async def validate_daily_commerce_source(source):
         )
         if row is None or row.version != snapshot["version"] or row.status != "ready":
             raise HealthVisionError("source_invalidated", "今日安排已变化，请重新核对", 410)
-        await validate_daily_purchase_composition(row.selection.get("purchase_payloads", {}).get(scope))
+        payload = row.selection.get("purchase_payloads", {}).get(scope)
+        await validate_daily_purchase_composition(payload)
+        return purchase_authority(payload)
 
 
 def retained_purchase_payloads(selection, changed):

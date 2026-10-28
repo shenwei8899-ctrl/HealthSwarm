@@ -206,17 +206,21 @@ async def validate_source_proof(proof):
 
             await validate_exclusive_source(source)
             return {"available": True}
-        if source.get("kind") == "conversation_package":
+        if source.get("kind") in {"conversation_package", "conversation_catalog"}:
             from yuxi.services.conversation_purchase_service import validate_conversation_source
 
             async with pg_manager.get_async_session_context() as session:
-                await validate_conversation_source(session, source)
-            return {"available": True}
+                return await validate_conversation_source(session, source)
+        if source.get("kind") == "reference_plan":
+            from yuxi.services.reference_meal_plan_service import validate_reference_purchase_source
+
+            async with pg_manager.get_async_session_context() as session:
+                return await validate_reference_purchase_source(session, source)
         if source.get("kind") == "daily_arrangement":
             from yuxi.services.daily_arrangement_service import validate_daily_commerce_source
 
-            await validate_daily_commerce_source(source)
-            return {"available": True}
+            authority = await validate_daily_commerce_source(source)
+            return {"available": True, **({"purchase_authority": authority} if authority else {})}
         _, mappings = require_commerce_configuration()
         selected = PurchaseSelection.model_validate(source["selection"])
         current = await purchase_requirements(source["uid"], source["member_id"], selected)

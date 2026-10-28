@@ -8,6 +8,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Lock
 from urllib.parse import parse_qs, urlparse
 
+from test.support.health_consultation_replay_server import TOOLS, final_answer_request, final_answer_tool_delta
+
 MODEL = "deterministic-health-indicator-20261013"
 AUTHORIZATION = "Bearer synthetic-health-indicator-key"
 PORT = 8778
@@ -16,6 +18,31 @@ LOCK = Lock()
 
 
 def replay_response(authorization, body):
+    """两阶段装配保留既有业务oracle，并如实记录内部finalize额外调用。"""
+    query = next(
+        (str(item.get("content", "")) for item in reversed(body.get("messages", [])) if item.get("role") == "user"), ""
+    )
+    indicator = re.match(r"INDICATOR_E2E:[0-9a-f]{32}:(blood_glucose|blood_lipids|blood_pressure):", query)
+    if indicator:
+        expected = {
+            f"get_member_{indicator[1]}_records",
+            "query_reviewed_nutrition_knowledge",
+            "query_family_nutrition_knowledge",
+        }
+    elif query.startswith("HANDOFF_E2E:"):
+        expected = TOOLS
+    else:
+        return legacy_replay_response(authorization, body)
+    normalized, stage, finalize_id = final_answer_request(body, expected)
+    token, kind, mode, phase, delta = legacy_replay_response(authorization, normalized)
+    if stage == "final" and phase != "answer":
+        raise ValueError("final_stage_requires_actual_tool_receipts")
+    if stage == "tools" and phase == "answer":
+        return token, kind, mode, "finalize", final_answer_tool_delta(finalize_id)
+    return token, kind, mode, phase, delta
+
+
+def legacy_replay_response(authorization, body):
     """独立oracle核对固定角色、最小实测及本轮证据，返回下一阶段。"""
     if authorization != AUTHORIZATION or body.get("model") != MODEL or body.get("stream") is not True:
         raise ValueError("synthetic_model_required")

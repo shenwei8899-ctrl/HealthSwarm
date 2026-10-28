@@ -15,7 +15,7 @@ export function chatMessages(value) {
     let text=chatText(item.content),business=null
     if(role==='assistant'&&text.trim().startsWith('{')){
       try{const data=JSON.parse(text)
-        if(data.result_type==='needs_input'&&Array.isArray(data.questions))text=data.questions.join('\n')
+        if((data.result_type==='needs_input'||data.status==='needs_input')&&Array.isArray(data.questions))text=data.questions.join('\n')
         else if(data.result_type==='meal_feedback'&&data.feedback?.details?.comment)text=data.feedback.details.comment
         else if(data.preview_id&&Array.isArray(data.meals)){business={type:'business',kind:'meal_plan_preview',data};text='餐单预览已返回，请核对菜品与份量。'}
         else if(data.result_type==='diet_analysis'&&Array.isArray(data.findings)){business={type:'business',kind:'diet_analysis',data};text='已保存饮食的回顾。'}

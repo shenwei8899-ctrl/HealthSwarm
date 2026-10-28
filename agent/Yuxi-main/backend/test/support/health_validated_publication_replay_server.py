@@ -1,4 +1,4 @@
-"""先发送未校验正文，再等待测试释放的独立合成健康协议。"""
+"""工具准备后显式结束，再在无工具调用中分两块生成正文。"""
 
 import json
 import re
@@ -33,15 +33,28 @@ def replay_response(authorization, body):
     kind = "blood_glucose" if role == "consultation" else role
     record_tool = f"get_member_{kind}_records"
     names = [tool.get("function", {}).get("name") for tool in body.get("tools", [])]
-    expected = TOOLS if role == "consultation" else {record_tool, "query_reviewed_nutrition_knowledge"}
-    if len(names) != len(expected) or set(names) != expected:
+    expected = (
+        TOOLS
+        if role == "consultation"
+        else {record_tool, "query_reviewed_nutrition_knowledge", "query_family_nutrition_knowledge"}
+    ) | {"finalize_health_answer"}
+    if names and (len(names) != len(expected) or set(names) != expected or body.get("tool_choice") != "required"):
         raise ValueError("fixed_role_tools_required")
     skill = "family-nutritionist" if role == "consultation" else f"family-{role.replace('_', '-')}"
     if not any(
         message.get("role") == "system" and f"slug: {skill}" in str(message.get("content")) for message in messages
     ):
         raise ValueError("fixed_role_skill_required")
-    records_id, knowledge_id = f"publication-records-{token}", f"publication-knowledge-{token}"
+    records_id, knowledge_id, finalize_id = (
+        f"publication-records-{token}",
+        f"publication-knowledge-{token}",
+        f"publication-finalize-{token}",
+    )
+    finalized = any(
+        message.get("role") == "tool" and message.get("tool_call_id") == finalize_id for message in messages
+    )
+    if bool(names) == finalized:
+        raise ValueError("explicit_tool_free_final_stage_required")
     outputs = {
         message.get("tool_call_id"): json.loads(message["content"])
         for message in messages
@@ -49,7 +62,11 @@ def replay_response(authorization, body):
     }
     if records_id not in outputs:
         delta = tool_delta(record_tool, {}, records_id)
-        delta["content"] = f"PRIVATE_TOOL_PREAMBLE:{token}"
+        delta["content"] = (
+            f"PRIVATE_TOOL_PREAMBLE:{token} 这段内容先于工具调用字段到达，仍然属于模型准备调用工具时的私有前言。"
+            "它故意包含足够长的完整文本和段落边界，用来证明公开通道必须等待消息结束并确认没有工具调用，"
+            "不能因为文本已经成段就把尚未完成的模型消息当作最终答复发布。\n\n"
+        )
         return token, role, mode, "records", delta
     validate_records(outputs[records_id], kind, "read")
     if knowledge_id not in outputs:
@@ -63,6 +80,8 @@ def replay_response(authorization, body):
     citations = outputs[knowledge_id]["citations"]
     if len(citations) != 1 or f"publication{token}" not in citations[0]["content"]:
         raise ValueError("actual_synthetic_evidence_required")
+    if not finalized:
+        return token, role, mode, "finalize", tool_delta("finalize_health_answer", {}, finalize_id)
     citation = "00000000-0000-0000-0000-000000000000" if mode == "forged" else citations[0]["citation_id"]
     return (
         token,
@@ -71,7 +90,14 @@ def replay_response(authorization, body):
         "answer",
         {
             "role": "assistant",
-            "content": f"PUBLICATION_BODY:{token} 合成协议正文；只解释已读取事实。[证据:{citation}]",
+            "content": (
+                f"PUBLICATION_BODY:{token} 合成协议正文只用于检验健康解释的发布边界，"
+                "说明本轮已经读取授权记录并检索审核来源，"
+                "所有展示内容都应在当前授权、记录版本和来源状态重新校验后公开，测试文本不会添加医学判断、"
+                f"个体诊断或者未经程序确认的营养数值。[证据:{citation}]\n\n"
+                "第二块正文用于核对首段已公开后模型才继续生成，逐段校验的答复预览与最终保存结果必须逐字一致，"
+                f"断线恢复也只能重放仍然通过当前业务校验的同一答复。[证据:{citation}]"
+            ),
             "reasoning_content": f"PRIVATE_REASONING:{token}",
         },
     )
@@ -100,6 +126,8 @@ class PublicationReplayHandler(BaseHTTPRequestHandler):
                 "calls": list(state["calls"]),
                 "delta_sent": state["delta_sent"],
                 "stream_failed": state.get("stream_failed", False),
+                "answer_chunks_sent": state.get("answer_chunks_sent", 0),
+                "finish_sent": state.get("finish_sent", False),
             }
         if parsed.path in {"/release", "/observations"}:
             self.write_json(200, response)
@@ -107,7 +135,7 @@ class PublicationReplayHandler(BaseHTTPRequestHandler):
             self.write_json(404, {"error": "not_found"})
 
     def do_POST(self):  # noqa: N802
-        """最终delta先flush，再阻塞结束帧，便于外部核对未完成事实。"""
+        """工具字段晚于前言；最终首段flush后门闩阻塞下一段生成。"""
         if self.path != "/v1/chat/completions":
             self.write_json(404, {"error": "not_found"})
             return
@@ -135,18 +163,31 @@ class PublicationReplayHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         try:
-            self.write_chunk({**common, "choices": [{"index": 0, "delta": delta, "finish_reason": None}]})
-            if phase == "answer":
-                with LOCK:
-                    state["delta_sent"] = True
-                if not state["release"].wait(timeout=60):
-                    self.write_chunk({"error": {"message": "synthetic_gate_timeout"}})
-                    return
-                if mode == "failure":
-                    self.write_chunk({"error": {"message": f"PRIVATE_MODEL_FAILURE:{token}"}})
+            if phase == "records":
+                deltas = [{"role": "assistant", "content": delta["content"]}, {"tool_calls": delta["tool_calls"]}]
+            elif phase == "answer":
+                first, second = delta["content"].split("\n\n", 1)
+                deltas = [
+                    {**delta, "content": first + "\n\n"},
+                    {"content": second},
+                ]
+            else:
+                deltas = [delta]
+            for index, chunk in enumerate(deltas):
+                self.write_chunk({**common, "choices": [{"index": 0, "delta": chunk, "finish_reason": None}]})
+                if phase == "answer":
                     with LOCK:
-                        state["stream_failed"] = True
-                    return
+                        state["answer_chunks_sent"] = index + 1
+                        state["delta_sent"] = True
+                    if index == 0:
+                        if not state["release"].wait(timeout=60):
+                            self.write_chunk({"error": {"message": "synthetic_gate_timeout"}})
+                            return
+                        if mode == "failure":
+                            self.write_chunk({"error": {"message": f"PRIVATE_MODEL_FAILURE:{token}"}})
+                            with LOCK:
+                                state["stream_failed"] = True
+                            return
             self.write_chunk(
                 {
                     **common,
@@ -158,6 +199,9 @@ class PublicationReplayHandler(BaseHTTPRequestHandler):
             )
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
+            if phase == "answer":
+                with LOCK:
+                    state["finish_sent"] = True
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:

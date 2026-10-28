@@ -57,6 +57,7 @@ async def create_health_task_entry(uid: str, member_id: str, data: HealthTaskEnt
         chosen.task_type
         in {
             "initial_meal_preview",
+            "reference_meal_preview",
             "family_meal_revision",
             "safe_meal_revision",
             "quality_check",
@@ -136,6 +137,7 @@ async def create_health_task_entry(uid: str, member_id: str, data: HealthTaskEnt
             "blood_pressure_review": PRESSURE_SLUG,
             "meal_preview": PLANNER_SLUG,
             "initial_meal_preview": PLANNER_SLUG,
+            "reference_meal_preview": PLANNER_SLUG,
             "family_meal_revision": PLANNER_SLUG,
             "safe_meal_revision": PLANNER_SLUG,
         }[chosen.task_type]
@@ -143,6 +145,7 @@ async def create_health_task_entry(uid: str, member_id: str, data: HealthTaskEnt
         if chosen.selection is not None:
             keyword = {
                 "initial_meal_preview": "initial_selection",
+                "reference_meal_preview": "initial_selection",
                 "family_meal_revision": "family_selection",
                 "safe_meal_revision": "safe_selection",
                 "blood_glucose_review": "indicator_selection",
@@ -273,8 +276,13 @@ def task_type_for_binding(slug, binding):
         return "purchase_requirements"
     if slug != PLANNER_SLUG:
         raise HealthVisionError("not_found", "此角色尚未接入健康任务投影", 404)
+    from yuxi.services.reference_meal_plan_service import reference_binding
+
     modes = [
-        ("initial_meal_preview", getattr(binding, "initial_planner_selection", None)),
+        (
+            "reference_meal_preview" if reference_binding(binding) else "initial_meal_preview",
+            getattr(binding, "initial_planner_selection", None),
+        ),
         ("family_meal_revision", getattr(binding, "family_planner_selection", None)),
         ("safe_meal_revision", getattr(binding, "safe_planner_selection", None)),
     ]
@@ -298,6 +306,11 @@ async def validate_task_business_result(session, run, binding, payload, content)
         return
     if run.agent_slug == PURCHASE_SLUG:
         await validate_purchase_publication(session, run, content)
+        return
+    from yuxi.services.reference_meal_plan_service import reference_binding, validate_reference_publication
+
+    if reference_binding(binding):
+        await validate_reference_publication(session, run, binding, content)
         return
     if binding.initial_planner_selection is not None:
         await validate_initial_planner_publication(session, run, content)

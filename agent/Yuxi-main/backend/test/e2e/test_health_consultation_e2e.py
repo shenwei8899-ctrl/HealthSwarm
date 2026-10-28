@@ -306,11 +306,20 @@ async def test_bound_consultation_fifo_preserves_confirmed_records_and_own_outpu
             observed = await stats()
             assert [(call["step"], call["phase"]) for call in observed["calls"]] == [
                 ("one", "read"),
+                ("one", "finalize"),
                 ("one", "answer"),
                 ("two", "read"),
+                ("two", "finalize"),
                 ("two", "answer"),
             ]
-            assert [call["record_ids"] for call in observed["calls"]] == [[], [record_id], [], [record_id]]
+            assert [call["record_ids"] for call in observed["calls"]] == [
+                [],
+                [record_id],
+                [record_id],
+                [],
+                [record_id],
+                [record_id],
+            ]
             async with pg_manager.get_async_session_context() as session:
                 runs = [await session.get(AgentRun, run_id) for run_id in (first_run, second_run)]
                 assert runs[1].started_at >= runs[0].finished_at
@@ -355,8 +364,12 @@ async def test_bound_consultation_fifo_preserves_confirmed_records_and_own_outpu
             saved = checkpoint.checkpoint["channel_values"]["messages"]
             assert saved[-1].text == f"HEALTH_CONSULTATION_E2E_OK:{token}:two"
             tool_messages = [message for message in saved if message.type == "tool"]
-            assert len(tool_messages) == 2 and all(
-                json.loads(message.content)["records"][0]["record_id"] == record_id for message in tool_messages
+            assert len(tool_messages) == 4
+            finalizers = [message for message in tool_messages if message.name == "finalize_health_answer"]
+            assert len(finalizers) == 2
+            reads = [message for message in tool_messages if message.name == "get_confirmed_profile"]
+            assert len(reads) == 2 and all(
+                json.loads(message.content)["records"][0]["record_id"] == record_id for message in reads
             )
         finally:
             try:

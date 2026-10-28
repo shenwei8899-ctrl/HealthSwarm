@@ -231,7 +231,7 @@
       "path": "pages/address/index",
       "style": {
         "navigationStyle": "custom",
-        "navigationBarTitleText": "选择配送地址"
+        "navigationBarTitleText": "收货地址"
       }
     },
     {
@@ -270,6 +270,10 @@
       }
     },
     {
+      "path": "pages/settings/index",
+      "style": { "navigationStyle": "custom", "navigationBarTitleText": "设置" }
+    },
+    {
       "path": "pages/settings/privacy",
       "style": {
         "navigationStyle": "custom",
@@ -281,6 +285,13 @@
       "style": {
         "navigationStyle": "custom",
         "navigationBarTitleText": "我的家庭"
+      }
+    },
+    {
+      "path": "pages/onboarding/preparing",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "正在准备今日饮食"
       }
     }
   ],

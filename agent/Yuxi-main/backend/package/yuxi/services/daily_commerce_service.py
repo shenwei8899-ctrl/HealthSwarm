@@ -12,6 +12,7 @@ from uuid import uuid4
 import httpx
 
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.commerce_sku_selection import direct_sku_matches, match_direct
 
 
 async def commerce_request(method, path, payload=None, *, request_id=None):
@@ -111,6 +112,8 @@ def match_meal_requirements(meals, catalog):
     """跨餐回溯分配同一库存，逐餐凑整包并保留实际选定SKU。"""
     if not meals or any(not requirements for requirements in meals.values()):
         return None
+    if any(r.get("sku_id") for rows in meals.values() for r in rows):
+        return match_direct(meals, catalog)
     groups = []
     for meal, requirement in ((meal, r) for meal, requirements in meals.items() for r in requirements):
         code = requirement.get("ingredient_code") or requirement["ingredient_id"]
@@ -196,6 +199,8 @@ def packages_in_stock(packages, catalog):
 
 def sku_matches_plan(sku, requirements, *, allow_reserved=False):
     """采购只覆盖已校验菜单配料；额外配料或交叉过敏原须重新配餐。"""
+    if any(r.get("sku_id") for r in requirements):
+        return direct_sku_matches(sku, requirements, allow_reserved)
     codes = {row.get("ingredient_code") or row["ingredient_id"] for row in requirements}
     ingredients = sku.get("ingredients") or []
     if (

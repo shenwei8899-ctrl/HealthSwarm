@@ -199,7 +199,7 @@ test('saved meal viewing does not depend on a commerce login',()=>{
 test('formal UI places the real analysis before the gated card and has no placeholder menus',()=>{
   const ui=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
   assert.ok(ui.indexOf('class="analysis-message"')<ui.indexOf('<DailyArrangementCard'))
-  assert.match(ui,/v-if="cardVisible && state.phase==='ready'"/)
+  assert.match(ui,/v-if="cardVisible && presentation.initialResults"/)
   assert.ok(!ui.includes('本餐有待处理的饮食问题'));assert.ok(!ui.includes('测试数据'))
   assert.ok(ui.includes('/pages/chat/camera'));assert.ok(ui.includes('/pages/scan/index'))
 })

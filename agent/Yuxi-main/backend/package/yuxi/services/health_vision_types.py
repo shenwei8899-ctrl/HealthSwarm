@@ -20,6 +20,7 @@ HEALTH_SCOPES = {
 }
 NUTRIENTS = {"energy_kcal": "kcal", "protein_g": "g", "fat_g": "g", "carbohydrate_g": "g", "sodium_mg": "mg"}
 HEALTH_TASK_TYPES = {
+    "onboarding_preparation_v1",
     "report_extract_v1",
     "meal_recognize_v1",
     "daily_arrangement_v1",

@@ -7,6 +7,88 @@ use think\Db;
 /** Agent 来源由后端保存并回源核对，客户端不可替换。 */
 class AgentMealSourceService
 {
+    public static function referenceSource(array $proof)
+    {
+        $source = Json::decode($proof['payload'] ?? '{}', []);
+        return ($source['kind'] ?? '') === 'reference_plan' ||
+            (($source['kind'] ?? '') === 'conversation_catalog' && ($source['trade_policy'] ?? '') === 'catalog_v1') ? $source : null;
+    }
+
+    /** 采购版本由签名来源绑定，客户端不能借用另一段对话。 */
+    private static function referenceVersion(array $source)
+    {
+        return ($source['kind'] ?? '') === 'conversation_catalog'
+            ? 'conversation:' . ($source['request_id'] ?? '')
+            : 'reference:' . ($source['preview_id'] ?? '');
+    }
+
+    public static function nutritionAllowsTrade(array $package)
+    {
+        if (($package['nutrition_status'] ?? '') === 'passed') return true;
+        $proof = Json::decode($package['agent_source_proof_json'] ?? '{}', []);
+        return ($package['nutrition_status'] ?? '') === 'reference_only' && self::referenceSource($proof) !== null;
+    }
+
+    public function validateReferencePayload(array $payload)
+    {
+        $proof = $payload['agent_source_proof'] ?? [];
+        $source = self::referenceSource($proof);
+        if ($source === null) return false;
+        $verified = $this->validateProof($proof);
+        if (($verified['selection_mode'] ?? '') !== 'reference' ||
+            ($payload['nutrition_validation']['status'] ?? '') !== 'reference_only' ||
+            ($payload['user_ref'] ?? '') !== 'uid:' . ($source['uid'] ?? '') ||
+            ($payload['menu_version_ref'] ?? '') !== self::referenceVersion($source) ||
+            (($source['kind'] ?? '') === 'conversation_catalog' &&
+                (($payload['family_ref'] ?? '') !== self::referenceVersion($source) || !empty($payload['ingredient_requirements'])))) {
+            throw new DomainException('日常参考来源或状态不一致', 40301, 403);
+        }
+        $this->assertReferenceItems($payload['items'] ?? [], $verified['items'] ?? []);
+        return true;
+    }
+
+    private function assertReferenceItems(array $actual, array $expected)
+    {
+        $normalize = function ($items) {
+            $result = [];
+            foreach ($items as $item) {
+                $id = (string)($item['sku_id'] ?? '');
+                if ($id === '' || isset($result[$id]) || !isset($item['quantity']) ||
+                    !ctype_digit((string)$item['quantity']) || (int)$item['quantity'] < 1) {
+                    throw new DomainException('参考商品或包装数量无效', 40004, 400);
+                }
+                $result[$id] = (int)$item['quantity'];
+            }
+            ksort($result); return $result;
+        };
+        if (!$expected || $normalize($actual) !== $normalize($expected)) {
+            throw new DomainException('商品选择与Agent保存的参考来源不一致', 40301, 403);
+        }
+    }
+
+    private function assertReferencePackage(array $row, $version)
+    {
+        if ($row['nutrition_status'] !== 'reference_only' || $row['trade_status'] !== 'passed') {
+            throw new DomainException('参考商品尚未通过交易检查', 40908, 409);
+        }
+        $proof = Json::decode($row['agent_source_proof_json'] ?? '{}', []);
+        $source = self::referenceSource($proof);
+        if (($row['user_ref'] ?? '') !== 'uid:' . ($source['uid'] ?? '') ||
+            ($row['menu_version_ref'] ?? '') !== self::referenceVersion($source) ||
+            (($source['kind'] ?? '') === 'conversation_catalog' && ($row['family_ref'] ?? '') !== self::referenceVersion($source))) {
+            throw new DomainException('参考商品账号来源不一致', 40301, 403);
+        }
+        (new IdentityService())->assertOwner($row['user_id'],
+            (new IdentityService())->resolveUserId($row['agent_client_id'], $row['user_ref']));
+        $verified = $this->validateProof($proof);
+        if (($verified['selection_mode'] ?? '') !== 'reference') throw new DomainException('参考来源类型无效',40301,403);
+        $v = Db::name('shop_recommendation_package_version')->where('package_id',$row['id'])->where('version_no',$version)->find();
+        if (!$v) throw new DomainException('参考商品版本不存在',40906,409);
+        $items = Db::name('shop_recommendation_package_item')->where('package_version_id',$v['id'])->select();
+        $this->assertReferenceItems($items, $verified['items'] ?? []);
+        return array_map('strval', array_column($items, 'sku_id'));
+    }
+
     public function assertSource($userId, $type, $ref, $version)
     {
         $client = trim((string)getenv('SHOP_AGENT_CLIENT_ID'));
@@ -35,9 +117,22 @@ class AgentMealSourceService
             !in_array($row['status'], ['available', 'confirmed'], true)) {
             throw new DomainException('餐单采购来源已变化或过期', 40906, 409);
         }
+        if (self::referenceSource(Json::decode($row['agent_source_proof_json'] ?? '{}', [])) !== null) {
+            return $this->assertReferencePackage($row, $version);
+        }
         if ($row['nutrition_status'] !== 'passed' || $row['trade_status'] !== 'passed') throw new DomainException('餐单采购尚未通过校验',40908,409);
         $v=Db::name('shop_recommendation_package_version')->where('package_id',$row['id'])->where('version_no',$version)->find();
         if (!$v) throw new DomainException('餐单采购版本不存在，请重新核对',40906,409);
+        $requirements = Json::decode($v['requirements_snapshot_json'], []);
+        if (AgentSkuSelectionService::hasDirect($requirements)) {
+            (new IdentityService())->assertOwner($userId, (new IdentityService())->resolveUserId($row['agent_client_id'], $row['user_ref']));
+            return AgentSkuSelectionService::assertPayload($row['agent_client_id'], [
+                'user_ref'=>$row['user_ref'], 'family_ref'=>$row['family_ref'], 'menu_version_ref'=>$v['menu_version_ref'],
+                'ingredient_requirements'=>$requirements,
+                'items'=>Db::name('shop_recommendation_package_item')->where('package_version_id',$v['id'])->select(),
+                'agent_source_proof'=>Json::decode($row['agent_source_proof_json'], []),
+            ], $this);
+        }
         foreach (Db::name('shop_recommendation_package_item')->where('package_version_id',$v['id']??0)->select() as $item) {
             // Checkout performs stock validation while accounting for its own reservation.
             // Here only verify the provenance mapping, including when all stock is reserved.

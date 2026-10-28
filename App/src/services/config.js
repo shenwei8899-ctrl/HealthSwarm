@@ -24,7 +24,7 @@ export const canUsePasswordLogin = false
 
 let platform = '', hostname = '', origin = ''
 // #ifdef MP-WEIXIN
-if (typeof uni !== 'undefined' && uni.getSystemInfoSync) platform = uni.getSystemInfoSync().platform
+if (typeof uni !== 'undefined' && uni.getDeviceInfo) platform = uni.getDeviceInfo().platform
 // #endif
 // #ifdef H5
 if (typeof location !== 'undefined') { hostname = location.hostname; origin = location.origin }

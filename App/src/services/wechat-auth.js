@@ -3,6 +3,7 @@ import { getSession, setSession, clearSession, sessionRevision } from './session
 import { createWechatAuthClient } from './wechat-auth-client.js'
 import { canUsePasswordLogin, canUseBusinessLogin } from './config.js'
 import { createBusinessAuthClient } from './business-auth-client.js'
+import { createSharedSessionRestore } from './session-restore.js'
 
 let isWechat = false
 // #ifdef MP-WEIXIN
@@ -27,7 +28,11 @@ const business = canUseBusinessLogin ? createBusinessAuthClient({
   session: { read: getSession, save: setSession, clear: clearSession, revision: sessionRevision },
 }) : null
 // 所有页面共用同一登录、恢复与家庭选择入口；本机联调仍由后端验证密码和权限。
-export const wechatAuth = business ? {
+const activeAuth = business ? {
   ...business,
   login: ({ identifier, password } = {}) => business.login(identifier, password),
 } : client
+export const wechatAuth = {
+  ...activeAuth,
+  restore: createSharedSessionRestore(() => activeAuth.restore(), getSession),
+}

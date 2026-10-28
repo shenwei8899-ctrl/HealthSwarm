@@ -237,7 +237,11 @@ class _ReportTableParser(HTMLParser):
         """损坏或过大的表格成为显式页级失败，不静默丢掉候选。"""
         if len(text) > 10000:
             raise HealthVisionError("parser_contract_invalid", "表格文本超过页面块限额")
-        self.feed(text)
+        try:
+            self.feed(text)
+        except AssertionError:
+            # Python 3.12 早期版本以断言拒绝损坏声明，保持相同页级失败契约。
+            raise HealthVisionError("parser_contract_invalid", "表格声明损坏，请重传或人工录入") from None
         if self.rawdata:
             raise HealthVisionError("parser_contract_invalid", "表格末尾结构不完整，请重传或人工录入")
         self.close()

@@ -26,7 +26,10 @@ async def queue_daily_in_session(session, row):
         name="完成今日安排",
         task_type="daily_arrangement_v1",
         payload=payload,
-        payload_match={**payload, "recovery_count": row.selection.get("recovery_count", 0)},
+        payload_match={
+            **payload,
+            "recovery_count": row.selection.get("recovery_count", 0),
+        },
         timeout_seconds=600,
     )
     return task
@@ -61,7 +64,8 @@ async def request_daily_resume(uid, fid, day, *, retry_failed=False):
                                 if key not in {"agent_result", "purchase_catalog_version"}
                             },
                             "purchase_payloads": retained_purchase_payloads(
-                                row.selection, row.selection["initial"].get("change_meal")
+                                row.selection,
+                                row.selection["initial"].get("change_meal"),
                             ),
                         }
                 row.status = "generating"
@@ -72,7 +76,11 @@ async def request_daily_resume(uid, fid, day, *, retry_failed=False):
                 }
                 if not row.selection.get("agent_result"):
                     attempt = row.selection.get("attempt", 0) + 1
-                    row.selection = {**row.selection, "attempt": attempt, "retry_limit": attempt + 2}
+                    row.selection = {
+                        **row.selection,
+                        "attempt": attempt,
+                        "retry_limit": attempt + 2,
+                    }
             if row.status == "generating":
                 task = await queue_daily_in_session(session, row)
     if task:
@@ -85,23 +93,48 @@ async def run_daily_arrangement(context):
     from yuxi.services.daily_arrangement_service import resume_daily_arrangement
 
     payload = context.payload
-    uid, fid, day = payload["uid"], payload["family_id"], date.fromisoformat(payload["date"])
+    uid, fid, day = (
+        payload["uid"],
+        payload["family_id"],
+        date.fromisoformat(payload["date"]),
+    )
     failures = 0
     for _ in range(150):
         await context.raise_if_cancelled()
         async with pg_manager.get_async_session_context() as session:
             _, row = await DailyArrangementRepository(session, uid, fid).context(day)
             if row is None or row.version != payload["version"] or row.status != "generating":
-                return {"arrangement_id": payload["arrangement_id"], "version": payload["version"]}
+                return {
+                    "arrangement_id": payload["arrangement_id"],
+                    "version": payload["version"],
+                }
         try:
             if not row.selection.get("agent_result"):
-                from yuxi.services.miniapp_profile_coding import prepare_daily_profile_coding
+                from yuxi.services.miniapp_profile_coding import (
+                    prepare_daily_profile_coding,
+                )
 
                 await prepare_daily_profile_coding(uid, row.sources, row.selection["initial"], context)
-            await resume_daily_arrangement(uid, fid, day)
+            async with pg_manager.get_async_session_context() as session:
+                _, current = await DailyArrangementRepository(session, uid, fid).context(day, lock=True)
+                if current.version == payload["version"] and current.status == "generating":
+                    current.selection = {
+                        **current.selection,
+                        "preparation_stage": "arranging",
+                    }
+            completed = await resume_daily_arrangement(uid, fid, day)
+            if completed["status"] == "ready":
+                from yuxi.services.onboarding_preparation_service import (
+                    finish_onboarding_preparations,
+                )
+
+                await finish_onboarding_preparations(uid, fid, day, completed)
             failures = 0
         except HealthVisionError as error:
-            if error.status < 500 or error.code in {"commerce_not_configured", "daily_dependencies_not_ready"}:
+            if error.status < 500 or error.code in {
+                "commerce_not_configured",
+                "daily_dependencies_not_ready",
+            }:
                 raise
             failures += 1
             if failures >= 3:
@@ -131,4 +164,7 @@ async def fail_daily_arrangement(session, task_record, error):
         await queue_daily_in_session(session, row)
         return
     row.status = "failed"
-    row.selection = {**row.selection, "failure_message": "今日安排暂未处理完成，可以重试恢复；已有档案和安排已保留。"}
+    row.selection = {
+        **row.selection,
+        "failure_message": "今日安排暂未处理完成，可以重试恢复；已有档案和安排已保留。",
+    }

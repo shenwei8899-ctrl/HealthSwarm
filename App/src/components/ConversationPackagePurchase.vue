@@ -6,14 +6,16 @@ import { onShow } from '@dcloudio/uni-app'
 import AppNavBar from './AppNavBar.vue'
 import { request } from '../services/request.js'
 import { commerce } from '../services/commerce.js'
+import { openAddressPicker } from '../services/address-navigation.js'
+import { resolveCheckoutAddress } from '../services/address-model.js'
 import { storageContext } from '../services/storage.js'
 const props=defineProps({route:Object})
 const offer=ref(null),publication=ref(null),address=ref(null),slots=ref([]),slotId=ref(0)
 const busy=ref(false),error=ref(''),checkoutOpen=ref(false),quote=ref(null),orderSn=ref(''),pending=ref(false)
 const money=value=>(Number(value||0)/100).toFixed(2)
-let alive=true,owner=storageContext()
+let alive=true,owner=storageContext(),preferredAddressId=''
 function current(scope){return alive&&scope===storageContext()}
-function reset(){offer.value=null;publication.value=null;address.value=null;slots.value=[];slotId.value=0;quote.value=null;orderSn.value='';pending.value=false;checkoutOpen.value=false}
+function reset(){preferredAddressId='';offer.value=null;publication.value=null;address.value=null;slots.value=[];slotId.value=0;quote.value=null;orderSn.value='';pending.value=false;checkoutOpen.value=false}
 async function load(){
   if(owner!==storageContext()){owner=storageContext();reset();busy.value=false}
   if(busy.value)return
@@ -30,7 +32,7 @@ async function load(){
 }
 async function delivery(scope){
   const addresses=await commerce.addresses();if(!current(scope))return
-  const selected=addresses.find(item=>item.isDefault)||null
+  const selected=resolveCheckoutAddress(addresses,preferredAddressId||address.value?.id)
   address.value=selected;quote.value=null
   if(!selected){slots.value=[];error.value='请选择配送地址，再核对价格。';return}
   const result=await commerce.slots(selected.id);if(!current(scope))return
@@ -70,6 +72,7 @@ async function submit(recover=false){
   }catch(e){if(current(scope)){pending.value=!!commerce.pendingOrder();error.value=e.message}}
   finally{if(current(scope))busy.value=false}
 }
+function chooseAddress(){ if(busy.value)return; quote.value=null;openAddressPicker({selectedId:address.value?.id,onSelected:id=>{preferredAddressId=id;quote.value=null}}) }
 onMounted(load);onShow(load);onUnmounted(()=>alive=false)
 
 </script>
@@ -77,7 +80,7 @@ onMounted(load);onShow(load);onUnmounted(()=>alive=false)
  <view class="screen package-purchase"><AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button><text class="nav-title">食材包</text><view class="nav-spacer"/></view></AppNavBar>
   <text v-if="busy" class="safe-note">正在核对食材包…</text><view v-if="error" class="card status" role="alert"><text>{{error}}</text><button :disabled="busy" @click="load">重新读取</button></view>
   <view v-if="offer" class="package-content"><FoodImageSlot :src="offer.image_url" :label="offer.name" class="package-hero"/><view class="package-heading"><text class="display-title">{{offer.name}}</text><text class="package-meta">{{offer.spec}} · 1 包</text><text class="package-price"><text>¥</text>{{money(offer.price_cent)}}</text><text v-if="offer.note" class="package-meta">{{offer.note}}</text></view><view class="ingredients"><text class="section-title">包含食材</text><text>{{offer.ingredients?.join(' · ')}}</text></view><view class="package-bottom"><text>商品参考价 <text>¥{{money(offer.price_cent)}}</text></text><button :disabled="busy||!offer.available||!!orderSn" @click="checkout">去结算 <text>→</text></button></view></view>
-  <PurchaseCheckoutSheet :open="checkoutOpen" :address="address" :slots="slots" :slot-id="slotId" :quote="quote" :busy="busy" :error="error" :pending="pending" @close="checkoutOpen=false" @address="uni.navigateTo({url:'/pages/address/index'})" @slot="slotId=$event;quote=null" @confirm="submit()" @recover="submit(true)" @quote="checkout"/>
+  <PurchaseCheckoutSheet :open="checkoutOpen" :address="address" :slots="slots" :slot-id="slotId" :quote="quote" :busy="busy" :error="error" :pending="pending" @close="checkoutOpen=false" @address="chooseAddress" @slot="slotId=$event;quote=null" @confirm="submit()" @recover="submit(true)" @quote="checkout"/>
  </view>
 </template>
 <style scoped>

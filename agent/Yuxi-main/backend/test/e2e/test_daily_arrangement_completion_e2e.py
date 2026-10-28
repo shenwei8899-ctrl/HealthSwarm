@@ -21,7 +21,9 @@ from yuxi.storage.postgres.models_business import (
     FamilyMember,
     FamilyProfileRevision,
     TaskRecord,
+    User,
 )
+from yuxi.utils.auth_utils import AuthUtils
 from yuxi.storage.postgres.models_health import (
     HealthDailyArrangement,
     HealthFamilyProfileLink,
@@ -39,13 +41,120 @@ pytestmark = [
 ]
 
 
+def meal_plan_consent(consent):
+    """与当前小程序一致地明确餐单用途，不重放旧版无用途分析同意。"""
+    assert consent.get("purpose") == "meal_plan"
+    assert all(isinstance(consent.get(key), str) and consent[key] for key in ("processor", "policy_version"))
+    return {key: consent[key] for key in ("purpose", "processor", "policy_version")}
+
+
+async def create_daily_actors(users):
+    """沿既有身份 fixture 建两个新普通账号；不继承专业档案，追加以供精确清理。"""
+    actors = []
+    async with pg_manager.get_async_session_context() as db:
+        existing = await db.scalar(select(User).where(User.uid == users[0]["uid"]))
+        assert existing is not None
+        for _ in range(2):
+            uid = f"pytest_health_{uuid4().hex}"
+            user = User(
+                username=uid,
+                uid=uid,
+                role="user",
+                password_hash="not-a-login-password",
+                department_id=existing.department_id,
+            )
+            db.add(user)
+            await db.flush()
+            actor = {
+                "uid": uid,
+                "headers": {"Authorization": f"Bearer {AuthUtils.create_access_token({'sub': str(user.id)})}"},
+            }
+            actors.append(actor)
+            users.append(actor)
+    return actors
+
+
+async def prepare_daily_members(client, users, owner_actor, peer_actor, fid, profile_path, profile, consent):
+    """两位成人经本人确认与真实共享接口授权；不代签家人或直接写来源/consent/grant。"""
+    assert owner_actor["uid"] != peer_actor["uid"] and owner_actor in users and peer_actor in users
+    policy = meal_plan_consent(consent)
+    peer_id = next(member["id"] for member in profile["members"] if member["id"] != profile["selfMemberId"])
+    peer_version = next(member["version"] for member in profile["members"] if member["id"] == peer_id)
+    rejected_id = str(uuid4())
+    rejected = await client.post(
+        profile_path,
+        headers={**owner_actor["headers"], "Idempotency-Key": rejected_id},
+        json={
+            "action": "start_analysis",
+            "client_request_id": rejected_id,
+            "member_id": peer_id,
+            "expected_version": peer_version,
+            "accepted": True,
+            **policy,
+        },
+    )
+    assert rejected.status_code == 403 and rejected.json()["code"] == "member_consent_required", rejected.text
+    invitation = await client.post(f"/api/family/{fid}/members/{peer_id}/invite", headers=owner_actor["headers"])
+    assert invitation.status_code == 200, invitation.text
+    joined = await client.post(
+        "/api/family/join", headers=peer_actor["headers"], json={"code": invitation.json()["code"]}
+    )
+    assert joined.status_code == 200 and joined.json()["id"] == fid, joined.text
+    current = await client.get(profile_path, headers=peer_actor["headers"])
+    assert current.status_code == 200 and current.json()["selfMemberId"] == peer_id, current.text
+    peer = next(member for member in current.json()["members"] if member["id"] == peer_id)
+    # 正式健康建档的 owner grant 包含 profile_edit，随后桥接只复用这个唯一空来源。
+    # 单靠 miniapp 新建的最小 grant 不能向另一成人授权，不能在 fixture 中直接补数据库权限。
+    created = await client.post(
+        f"{ROOT}/members",
+        headers=peer_actor["headers"],
+        json={"display_name": peer["name"], "relationship_label": "本人", "authorized": True},
+    )
+    assert created.status_code == 201, created.text
+    health_id = created.json()["id"]
+    request_id = str(uuid4())
+    confirmed = await client.post(
+        profile_path,
+        headers={**peer_actor["headers"], "Idempotency-Key": request_id},
+        json={
+            "action": "start_analysis",
+            "client_request_id": request_id,
+            "member_id": peer_id,
+            "expected_version": peer["version"],
+            "accepted": True,
+            **policy,
+        },
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    confirmed_peer = next(member for member in confirmed.json()["members"] if member["id"] == peer_id)
+    assert confirmed_peer["healthMemberId"] == health_id
+    shared = await client.put(
+        f"{ROOT}/members/{health_id}/grants",
+        headers=peer_actor["headers"],
+        json={"actor_uid": owner_actor["uid"], "scopes": ["ai_use", "diet_edit", "profile_view"]},
+    )
+    assert shared.status_code == 200, shared.text
+    accepted = await client.post(
+        f"{ROOT}/members/{health_id}/processing-consents",
+        headers=owner_actor["headers"],
+        json={**policy, "accepted": True},
+    )
+    assert accepted.status_code == 200, accepted.text
+    result = await client.get(profile_path, headers=owner_actor["headers"])
+    assert result.status_code == 200, result.text
+    restored = result.json()
+    assert len(restored["defaultDiners"]) == 2 and all(member["healthMemberId"] for member in restored["members"])
+    return restored
+
+
 @pytest.mark.parametrize("operation", ["change_meal", "retry_policy", "retry_transient"])
 async def test_onboarding_background_three_meals_and_explicit_retry(recovery_runtime, operation):  # noqa: F811
     """真实HTTP/Worker生成后校验PG；重试从明确登记的失败检查点开始。"""
     client, users, current, consent, gate, _, requests, _, _, stop_workers = recovery_runtime
-    owner, admin = users[0]["headers"], users[2]["headers"]
+    owner_actor, peer_actor = await create_daily_actors(users)
+    owner, admin = owner_actor["headers"], users[2]["headers"]
     family, profile_path, data, keyed = await source(client, owner)
-    uid, fid = users[0]["uid"], family["id"]
+    uid, fid = owner_actor["uid"], family["id"]
     root = f"/api/family/{fid}/daily-arrangements"
     path = root + "/2026-10-22"
     gate.set()
@@ -85,12 +194,16 @@ async def test_onboarding_background_three_meals_and_explicit_retry(recovery_run
         )
         assert response.status_code == 200, response.text
         data["members"][1]["birth_date"] = "1992-01-01"
+        data["members"][1].update(sex="female", height_cm=165, weight_kg=55)
         data["members"][1]["dietary"] = deepcopy(data["members"][0]["dietary"])
-        data["analysis_consent"] = {key: consent[key] for key in ("processor", "policy_version")}
+        data["analysis_consent"] = meal_plan_consent(consent)
         response = await client.post(profile_path, headers=keyed, json=data)
         assert response.status_code == 200, response.text
         profile = (await client.get(profile_path, headers=owner)).json()
         assert profile["onboarded"] and len(profile["defaultDiners"]) == 2
+        profile = await prepare_daily_members(
+            client, users, owner_actor, peer_actor, fid, profile_path, profile, consent
+        )
         request_id = str(uuid4())
         response = await client.post(
             root,

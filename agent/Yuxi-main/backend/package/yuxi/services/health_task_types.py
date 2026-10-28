@@ -13,6 +13,7 @@ from yuxi.services.health_quality_types import Code
 from yuxi.services.health_purchase_types import PurchaseSelection
 from yuxi.services.health_safe_planner_types import SafePlannerSelection
 from yuxi.services.health_vision_types import HealthDTO
+from yuxi.services.reference_meal_plan_types import ReferenceSelection
 from yuxi.services.health_indicator_review_types import IndicatorSelection
 
 HealthTaskType = Literal[
@@ -22,6 +23,7 @@ HealthTaskType = Literal[
     "blood_pressure_review",
     "meal_preview",
     "initial_meal_preview",
+    "reference_meal_preview",
     "family_meal_revision",
     "safe_meal_revision",
     "diet_analysis",
@@ -67,6 +69,14 @@ class InitialTaskEntry(HealthDTO):
     task_type: Literal["initial_meal_preview"]
     client_request_id: UUID
     selection: InitialPlanSelection | None = None
+
+
+class ReferenceTaskEntry(HealthDTO):
+    """选择日常参考范围，不接收专业规则或营养数值。"""
+
+    task_type: Literal["reference_meal_preview"]
+    client_request_id: UUID
+    selection: ReferenceSelection | None = None
 
 
 class FamilyTaskEntry(HealthDTO):
@@ -132,6 +142,7 @@ class HealthTaskEntryInput(RootModel):
         | AnalystTaskEntry
         | PurchaseTaskEntry
         | InitialTaskEntry
+        | ReferenceTaskEntry
         | FamilyTaskEntry
         | SafeTaskEntry
         | QualityTaskEntry
