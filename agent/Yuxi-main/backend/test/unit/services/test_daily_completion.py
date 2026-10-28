@@ -179,6 +179,7 @@ async def test_signed_daily_source_does_not_require_adopted_plan_mapping(monkeyp
         ),
     )
     monkeypatch.setattr(daily, "validate_daily_purchase_composition", AsyncMock())
+    monkeypatch.setattr("yuxi.services.daily_meal_plan_service.current_row", AsyncMock(return_value=None))
     from contextlib import asynccontextmanager
 
     @asynccontextmanager

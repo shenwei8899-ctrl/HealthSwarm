@@ -110,6 +110,7 @@ async def submit_agent_request(
 
     if agent_item.slug in HEALTH_AGENT_BACKENDS and agent_item.backend_id != HEALTH_AGENT_BACKENDS[agent_item.slug]:
         raise HTTPException(status_code=503, detail="专属咨询后端配置已变化")
+    health_binding = None
     if agent_item.backend_id in HEALTH_AGENT_BACKENDS.values():
         if HEALTH_AGENT_BACKENDS.get(agent_item.slug) != agent_item.backend_id:
             raise HTTPException(status_code=503, detail="健康角色后端不能映射其他入口")
@@ -118,7 +119,7 @@ async def submit_agent_request(
         ):
             raise HTTPException(status_code=422, detail="专属咨询只支持文字，报告与照片请在健康识图复核")
         try:
-            _, snapshot = await require_consultation(
+            health_binding, snapshot = await require_consultation(
                 db,
                 str(current_user.uid),
                 request_input.thread_id,
@@ -248,6 +249,13 @@ async def submit_agent_request(
         agent_backend=agent_backend,
         workdir_binding=workdir_binding,
     )
+    if health_binding is not None and request.status in {"queued", "dispatched"}:
+        from yuxi.services.daily_meal_plan_service import reserve_reference_request
+
+        try:
+            await reserve_reference_request(db, str(current_user.uid), health_binding, request)
+        except HealthVisionError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.message) from exc
     response = await request_view(repo=AgentRunRequestRepository(db), request=request)
     await db.commit()
     if workdir_binding.materialize_managed:

@@ -23,6 +23,58 @@ from yuxi.storage.postgres.models_health import (
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
+async def test_late_stock_failure_preserves_committed_winner(family_profile_http, monkeypatch):  # noqa: F811
+    """真实 PG 并发赢家已完成后，旧库存失败不能递增 attempt 或丢失回执。"""
+    from copy import deepcopy
+    from datetime import date
+    from unittest.mock import AsyncMock
+    from yuxi.services import daily_arrangement_service as service
+
+    client, sessions, users = family_profile_http
+    family, _, _, _ = await source(client, users["self"])
+    rid, preview = str(uuid4()), str(uuid4())
+    day = date(2099, 1, 1)
+    receipt = {"status": "ready", "id": rid, "version": 1, "date": day.isoformat(), "meals": []}
+    selection = {
+        "initial": {"profile_versions": {str(uuid4()): 1}},
+        "attempt": 0,
+        "agent_result": {"payload": {"preview_id": preview}, "task_key": str(uuid4()), "run_id": str(uuid4())},
+    }
+    async with sessions.begin() as db:
+        db.add(
+            HealthDailyArrangement(
+                id=rid,
+                actor_uid="self",
+                family_id=family["id"],
+                plan_date=day,
+                version=1,
+                status="generating",
+                request_id=str(uuid4()),
+                selection=deepcopy(selection),
+                sources={"members": {}},
+                snapshot=deepcopy(receipt),
+            )
+        )
+    monkeypatch.setattr(service, "authorize_daily_agent_result", AsyncMock())
+    monkeypatch.setattr(service, "save_initial_plan", AsyncMock(return_value={}))
+    monkeypatch.setattr(service, "meal_views", lambda *_: [{"type": "breakfast"}])
+    monkeypatch.setattr(service, "ingredient_requirements", lambda *_: [])
+    monkeypatch.setattr(service, "match_meal_requirements", lambda *_: None)
+
+    async def late_catalog():
+        """在落后 Worker 继续前提交另一个 Worker 的完成事实。"""
+        async with sessions.begin() as db:
+            row = await db.get(HealthDailyArrangement, rid)
+            row.status = "ready"
+        return {"version": "synthetic-catalog", "items": []}
+
+    monkeypatch.setattr(service, "current_catalog", late_catalog)
+    assert await service.resume_daily_arrangement("self", family["id"], day) == receipt
+    async with sessions() as db:
+        row = await db.get(HealthDailyArrangement, rid)
+        assert row.status == "ready" and row.selection == selection and row.snapshot == receipt
+
+
 async def test_revision_reads_published_snapshot_and_background_resume_deduplicates(family_profile_http, monkeypatch):  # noqa: F811
     """真实PG中保留原版本；GET不创建Task，并发恢复仅登记一个后台任务。"""
     from datetime import date
@@ -81,6 +133,74 @@ async def test_revision_reads_published_snapshot_and_background_resume_deduplica
         tasks = list((await db.scalars(select(TaskRecord))).all())
         assert len(tasks) == 1 and tasks[0].type == "daily_arrangement_v1"
         assert tasks[0].payload["arrangement_id"] == saved["id"] and tasks[0].payload["version"] == 2
+
+
+async def test_formal_details_and_purchase_reject_a_replaced_daily_meal(family_profile_http, monkeypatch):  # noqa: F811
+    """旧正式餐仍存在时，也不能通过详情或采购入口绕过当前计划。"""
+    from datetime import date
+    from yuxi.services import daily_arrangement_service as service
+    from yuxi.services.health_nutrition_service import input_fingerprint
+    from yuxi.services.health_vision_types import HealthVisionError
+    from yuxi.storage.postgres.models_health import HealthDailyMealPlan
+
+    async def quality_owner(*args):
+        return None
+
+    monkeypatch.setattr(service, "validate_daily_quality", quality_owner)
+    client, sessions, users = family_profile_http
+    family, _, _, _ = await source(client, users["self"])
+    rid = str(uuid4())
+    meals = [
+        {"type": meal, "members": [], "dishes": [{"name": "合成菜"}], "memberNotes": []}
+        for meal in ("breakfast", "lunch", "dinner")
+    ]
+    snapshot = {"status": "ready", "id": rid, "version": 1, "date": "2099-01-01", "meals": meals, "analysis": {}}
+    formal = {"kind": "formal", "id": rid, "version": 1}
+    async with sessions.begin() as db:
+        db.add(
+            HealthDailyArrangement(
+                id=rid,
+                actor_uid="self",
+                family_id=family["id"],
+                plan_date=date(2099, 1, 1),
+                version=1,
+                status="ready",
+                request_id=str(uuid4()),
+                selection={},
+                sources={"members": {}},
+                snapshot=snapshot,
+            )
+        )
+        db.add(
+            HealthDailyMealPlan(
+                id=str(uuid4()),
+                actor_uid="self",
+                family_id=family["id"],
+                plan_date=date(2099, 1, 1),
+                version=2,
+                meal_sources={"breakfast": formal, "lunch": {"kind": "reference", "id": "other"}, "dinner": formal},
+                pending={},
+            )
+        )
+    path = f"/api/family/{family['id']}/daily-arrangements/2099-01-01/meals"
+    params = f"?arrangement_id={rid}&version=1&daily_plan_version=2"
+    assert (await client.get(path + "/breakfast" + params, headers=users["self"])).status_code == 200
+    assert (await client.get(path + "/lunch" + params, headers=users["self"])).status_code == 409
+    assert (
+        await client.get(
+            path + "/breakfast" + params.replace("daily_plan_version=2", "daily_plan_version=1"), headers=users["self"]
+        )
+    ).status_code == 409
+    source_proof = {
+        "uid": "self",
+        "family_id": family["id"],
+        "date": "2099-01-01",
+        "arrangement_id": rid,
+        "meal": "lunch",
+        "meal_hash": input_fingerprint(meals[1]),
+    }
+    with pytest.raises(HealthVisionError, match="source_invalidated"):
+        await service.validate_daily_commerce_source(source_proof)
 
 
 async def source(client, headers):
@@ -309,11 +429,19 @@ async def test_daily_purchase_source_survives_other_meal_changes_but_not_revocat
     monkeypatch.delenv("HEALTH_COMMERCE_INGREDIENT_MAP", raising=False)
     client, sessions, users = family_profile_http
     family, path, data, headers = await source(client, users["self"])
-    data["analysis_consent"] = {"purpose": "meal_plan", "processor": "synthetic-processor", "policy_version": "synthetic-policy"}
+    data["analysis_consent"] = {
+        "purpose": "meal_plan",
+        "processor": "synthetic-processor",
+        "policy_version": "synthetic-policy",
+    }
     response = await client.post(path, headers=headers, json=data)
     assert response.status_code == 200, response.text
     profile = (await client.get(path, headers=users["self"])).json()
-    members = {row["healthMemberId"]: {"id": row["id"], "version": row["version"]} for row in profile["members"] if row["healthMemberId"]}
+    members = {
+        row["healthMemberId"]: {"id": row["id"], "version": row["version"]}
+        for row in profile["members"]
+        if row["healthMemberId"]
+    }
     breakfast = {
         "type": "breakfast",
         "members": [{"id": row["id"]} for row in profile["members"] if row["healthMemberId"]],

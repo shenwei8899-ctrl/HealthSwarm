@@ -5,7 +5,8 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
-from yuxi.services.daily_commerce_service import current_catalog, match_meal_requirements
+from yuxi.services.daily_commerce_service import current_catalog, match_meal_requirements, commerce_request
+from yuxi.services.commerce_sku_selection import resolve_binding, selected_requirement, RecipeSkuBinding
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.models_health import (
     HealthRecipeCommerceSource,
@@ -23,11 +24,17 @@ async def save_recipe_commerce_source(uid, rid, data):
         if recipe is None:
             raise HealthVisionError("recipe_not_found", "菜谱版本不存在", 404)
         _, hashes = await HealthQualityRepository(db).recipe_sources_by_recipe({rid})
-        codes = {str(key): value for key, value in data.ingredient_codes.items()}
+        codes = {}
+        for key, value in data.ingredient_codes.items():
+            codes[str(key)] = (
+                await resolve_binding(value.model_dump(mode="json"), commerce_request)
+                if isinstance(value, RecipeSkuBinding)
+                else value
+            )
         if (
             hashes.get(rid) != data.recipe_hash
             or set(codes) != {item["food"]["id"] for item in recipe.ingredients}
-            or any(not value.strip() or len(value) > 100 for value in codes.values())
+            or any(not value.strip() or len(value) > 100 for value in codes.values() if isinstance(value, str))
             or any(not step.strip() or len(step) > 2000 for step in data.steps)
         ):
             raise HealthVisionError("recipe_source_invalid", "步骤、配料映射或配方版本不一致", 422)
@@ -98,9 +105,13 @@ async def purchase_catalog(session, recipes, hashes):
 
     def eligible(snapshot):
         """每餐分别凑整包，再共同扣减库存，与逐餐发布的采购单位一致。"""
-        requirements = {
-            meal: ingredient_requirements(snapshot, mappings, meal) for meal in ("breakfast", "lunch", "dinner")
-        }
+        try:
+            requirements = {
+                meal: ingredient_requirements(snapshot, mappings, meal) for meal in ("breakfast", "lunch", "dinner")
+            }
+        except HealthVisionError:
+            # This candidate cannot mix purchase sources; keep searching other real candidates.
+            return False
         return match_meal_requirements(requirements, catalog) is not None
 
     return usable, eligible
@@ -116,6 +127,7 @@ def allocated_meals(snapshot):
 def ingredient_requirements(snapshot, mappings, meal_type=None):
     """按明确映射汇总原料需求；没有映射不能按名称猜配料。"""
     totals = defaultdict(Decimal)
+    direct = {}
     for _, meal in allocated_meals(snapshot):
         if meal_type and meal["meal_type"] != meal_type:
             continue
@@ -127,7 +139,25 @@ def ingredient_requirements(snapshot, mappings, meal_type=None):
                 code = mapping.ingredient_codes.get(ingredient["food_id"])
                 if not code or ingredient.get("planned_grams") is None:
                     return []
-                totals[code] += Decimal(ingredient["planned_grams"])
+                if isinstance(code, dict):
+                    value = selected_requirement(code, ingredient["food_id"], ingredient["planned_grams"])
+                    key = (value["sku_id"], value["food_id"])
+                    if key in direct:
+                        if (
+                            direct[key]["merchant_snapshot"] != value["merchant_snapshot"]
+                            or direct[key]["source_ref"] != value["source_ref"]
+                        ):
+                            raise HealthVisionError("sku_binding_changed", "配方商品来源不一致", 409)
+                        value["required_value"] = str(
+                            Decimal(value["required_value"]) + Decimal(direct[key]["required_value"])
+                        )
+                    direct[key] = value
+                else:
+                    totals[code] += Decimal(ingredient["planned_grams"])
+    if direct:
+        if totals:
+            raise HealthVisionError("mixed_purchase_sources", "本餐仍混有旧食材编码，请由 Agent 统一采购来源", 409)
+        return list(direct.values())
     return [
         {"ingredient_id": code, "ingredient_code": code, "required_value": str(value), "required_unit": "g"}
         for code, value in sorted(totals.items())

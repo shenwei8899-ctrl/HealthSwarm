@@ -603,7 +603,7 @@ class HealthMealPlanPreview(Base):
 
 
 class HealthInitialPlanPreview(Base):
-    """批准初始配餐的独立回执，确认时重新核对全部当前来源。"""
+    """初始配餐回执；selection.mode 区分参考结果与批准目录预览。"""
 
     __tablename__ = "health_initial_plan_preview"
     id = Column(String(36), primary_key=True)
@@ -874,6 +874,29 @@ class HealthMiniappProfileReceipt(Base):
     member_refs = Column(JSON_VALUE, nullable=False)
 
 
+class HealthOnboardingPreparation(Base):
+    """建档准备的请求身份、来源版本和既有结果引用。"""
+
+    __tablename__ = "health_onboarding_preparation"
+    __table_args__ = (UniqueConstraint("actor_uid", "request_id", name="uq_health_onboarding_request"),)
+    id = Column(String(36), primary_key=True)
+    actor_uid = Column(String, ForeignKey("users.uid"), nullable=False, index=True)
+    family_id = Column(String(36), ForeignKey("family_archives.id"), nullable=False)
+    request_id = Column(String(36), nullable=False)
+    fingerprint = Column(String(64), nullable=False)
+    plan_date = Column(Date, nullable=False)
+    sources = Column(JSON_VALUE, nullable=False)
+    consents = Column(JSON_VALUE, nullable=False)
+    result = Column(JSON_VALUE, nullable=False, default=dict)
+    status = Column(String(24), nullable=False, default="pending")
+    attempt = Column(Integer, nullable=False, default=0)
+    task_id = Column(String(64), nullable=True)
+    error_code = Column(String(100), nullable=True)
+    error_message = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
 class HealthPublishedRecipeClassification(Base):
     """独立发布的配方分类，使新增菜谱不必重写整个营养规则。"""
 
@@ -897,6 +920,21 @@ class HealthMiniappProfileCoding(Base):
     processor = Column(String(500), nullable=False)
     policy_version = Column(String(100), nullable=False)
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
+class HealthDailyMealPlan(Base):
+    """每日当前计划只保存餐次来源引用，内容由各来源持有。"""
+
+    __tablename__ = "health_daily_meal_plan"
+    __table_args__ = (UniqueConstraint("actor_uid", "family_id", "plan_date", name="uq_health_daily_meal_plan"),)
+    id = Column(String(36), primary_key=True)
+    actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
+    family_id = Column(String(36), ForeignKey("family_archives.id"), nullable=False)
+    plan_date = Column(Date, nullable=False)
+    version = Column(Integer, nullable=False, default=0)
+    meal_sources = Column(JSON_VALUE, nullable=False, default=dict)
+    pending = Column(JSON_VALUE, nullable=False, default=dict)
+    updated_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
 class HealthDailyArrangement(Base):
@@ -953,8 +991,10 @@ HEALTH_TABLES = HEALTH_BUDGET_TABLES + [
     model.__table__
     for model in (
         HealthMiniappProfileReceipt,
+        HealthOnboardingPreparation,
         HealthMiniappProfileCoding,
         HealthPublishedRecipeClassification,
+        HealthDailyMealPlan,
         HealthDailyArrangement,
         HealthExclusivePlanGroup,
         HealthRecipeCommerceSource,

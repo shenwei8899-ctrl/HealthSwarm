@@ -244,7 +244,7 @@ def test_shipping_skills_keep_required_dependencies():
         "family-blood-lipids",
         "family-blood-pressure",
     }
-    assert found["family-meal-planner"]["version"] == "2026.10.22.1"
+    assert found["family-meal-planner"]["version"] == "2026.10.26.1"
     assert found["family-quality-review"]["tool_dependencies"] == [
         "get_quality_review_context",
         "check_selected_plan_quality",
@@ -259,6 +259,10 @@ def test_shipping_skills_keep_required_dependencies():
     assert found["family-purchase"]["skill_dependencies"] == []
     assert found["family-purchase"]["mcp_dependencies"] == []
     assert found["family-meal-planner"]["tool_dependencies"] == [
+        "get_reference_plan_context",
+        "search_reference_recipes",
+        "read_reference_recipe",
+        "save_reference_meal_plan",
         "search_meal_plan_recipes",
         "preview_meal_plan",
         "get_family_plan_context",

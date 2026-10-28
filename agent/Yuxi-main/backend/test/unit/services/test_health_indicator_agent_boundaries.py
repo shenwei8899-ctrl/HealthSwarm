@@ -91,6 +91,7 @@ async def test_actual_graph_ignores_user_tool_and_prompt_overrides(
     assert [type(item).__name__ for item in graph["middleware"]] == [
         "SteerMiddleware",
         "HealthAuthorizationMiddleware",
+        "HealthCatalogMiddleware",
         "HealthAiBudgetMiddleware",
         "HealthCitationMiddleware",
         "TokenUsageMiddleware",
@@ -252,3 +253,12 @@ async def test_search_candidate_query_filters_one_requested_role_or_all_educatio
         set(value) for value in statement.params.values() if isinstance(value, (list, tuple, frozenset))
     ]
     assert "conversations.uid =" in str(statement) and "actor" in statement.params.values()
+
+
+@pytest.fixture(autouse=True)
+def no_unrelated_catalog_history(monkeypatch):
+    """本模块只验证指标/引证，商品审计由独立用例覆盖。"""
+    from unittest.mock import AsyncMock
+    from yuxi.repositories.conversation_purchase_repository import ConversationPurchaseRepository
+
+    monkeypatch.setattr(ConversationPurchaseRepository, "catalog_profile_payloads", AsyncMock(return_value=[]))

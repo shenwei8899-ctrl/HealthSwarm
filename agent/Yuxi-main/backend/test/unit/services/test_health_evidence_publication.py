@@ -269,3 +269,12 @@ async def test_index_hit_reloads_current_source_with_share_lock_before_projectio
     assert "FOR SHARE" in sql and "ORDER BY nutrition_evidence.id" in sql
     assert statement.get_execution_options().get("populate_existing") is True
     index.assert_awaited_once()
+
+
+@pytest.fixture(autouse=True)
+def no_unrelated_catalog_history(monkeypatch):
+    """本模块只验证指标/引证，商品审计由独立用例覆盖。"""
+    from unittest.mock import AsyncMock
+    from yuxi.repositories.conversation_purchase_repository import ConversationPurchaseRepository
+
+    monkeypatch.setattr(ConversationPurchaseRepository, "catalog_profile_payloads", AsyncMock(return_value=[]))

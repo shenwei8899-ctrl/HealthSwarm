@@ -50,7 +50,15 @@ async def read_daily_summary(uid, fid, day, arrangement_id, version, meal_types)
         if not original:
             raise HealthVisionError("daily_purchase_unavailable", "已保存餐次缺少食材来源，请重新安排", 409)
         for item in original:
-            key = (item.get("ingredient_code") or item["ingredient_id"], item["required_unit"])
+            key = (item.get("ingredient_code") or item["ingredient_id"], item["required_unit"], item.get("food_id"))
+            if (
+                key in requirements
+                and item.get("sku_id")
+                and any(
+                    requirements[key].get(field) != item.get(field) for field in ("merchant_snapshot", "source_ref")
+                )
+            ):
+                raise HealthVisionError("sku_binding_changed", "不同餐次商品来源不一致，请重新核对", 409)
             if key not in requirements:
                 requirements[key] = {**item, "required_value": Decimal(0)}
             requirements[key]["required_value"] += Decimal(item["required_value"])

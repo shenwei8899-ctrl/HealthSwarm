@@ -377,3 +377,12 @@ async def test_blood_pressure_run_service_requires_attempt_and_frozen_approval(m
         read.assert_not_awaited()
         record.assert_not_awaited()
     attempt.assert_awaited_once_with(context, lock=True)
+
+
+@pytest.fixture(autouse=True)
+def no_unrelated_catalog_history(monkeypatch):
+    """本模块只验证指标/引证，商品审计由独立用例覆盖。"""
+    from unittest.mock import AsyncMock
+    from yuxi.repositories.conversation_purchase_repository import ConversationPurchaseRepository
+
+    monkeypatch.setattr(ConversationPurchaseRepository, "catalog_profile_payloads", AsyncMock(return_value=[]))

@@ -47,6 +47,7 @@ async def member_capabilities(uid: str, member_id: str) -> MemberCapabilities:
         professional_scopes = ("ai_use", "diet_edit", "profile_view")
         selection_fields = {
             "multi_day_plan": ("family_id",),
+            "reference_meal_preview": ("family_id", "plan_date", "participant_ids"),
             "initial_meal_preview": ("kind", "plan_date", "rule_code", "rule_version", "profile_versions", "meals"),
             "family_meal_revision": ("plan_id", "version", "rule_code", "rule_version", "profile_versions"),
             "safe_meal_revision": ("plan_id", "version", "rule_code", "rule_version", "profile_version"),
@@ -71,6 +72,7 @@ async def member_capabilities(uid: str, member_id: str) -> MemberCapabilities:
                 indicator_scopes,
             ),
             ("meal_preview", PLANNER_SLUG, PLANNER_SKILLS, "meal_plan", ordinary_scopes),
+            ("reference_meal_preview", PLANNER_SLUG, PLANNER_SKILLS, "meal_plan", professional_scopes),
             ("diet_analysis", ANALYST_SLUG, ANALYST_SKILLS, "diet_analysis", ("ai_use", "diet_edit")),
             ("initial_meal_preview", PLANNER_SLUG, PLANNER_SKILLS, "meal_plan", professional_scopes),
             ("multi_day_plan", PLANNER_SLUG, PLANNER_SKILLS, "meal_plan", professional_scopes),

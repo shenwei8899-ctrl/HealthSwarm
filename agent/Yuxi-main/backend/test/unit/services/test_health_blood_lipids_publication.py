@@ -362,3 +362,12 @@ async def test_actual_graph_binds_and_executes_fixed_blood_lipids_tool(monkeypat
     assert tool_result.name == "get_member_blood_lipids_records"
     assert json.loads(tool_result.content) == read.return_value
     assert result["messages"][-1].content == "当前没有血脂记录，营养安全和21天控糖仍未就绪"
+
+
+@pytest.fixture(autouse=True)
+def no_unrelated_catalog_history(monkeypatch):
+    """本模块只验证指标/引证，商品审计由独立用例覆盖。"""
+    from unittest.mock import AsyncMock
+    from yuxi.repositories.conversation_purchase_repository import ConversationPurchaseRepository
+
+    monkeypatch.setattr(ConversationPurchaseRepository, "catalog_profile_payloads", AsyncMock(return_value=[]))

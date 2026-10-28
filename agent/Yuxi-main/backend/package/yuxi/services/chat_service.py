@@ -849,6 +849,9 @@ async def save_messages_from_langgraph_state(
                     from yuxi.services.health_initial_planner_service import validate_initial_planner_publication
 
                     await validate_initial_planner_publication(conv_repo.db, locked_run, last_ai_message.content)
+                    from yuxi.services.daily_meal_plan_service import publish_reference_in_session
+
+                    await publish_reference_in_session(conv_repo.db, locked_run, last_ai_message.content)
                     from yuxi.services.health_safe_planner_service import validate_safe_planner_publication
 
                     await validate_safe_planner_publication(conv_repo.db, locked_run, last_ai_message.content)

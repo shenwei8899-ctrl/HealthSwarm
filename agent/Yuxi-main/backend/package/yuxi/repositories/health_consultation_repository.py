@@ -228,10 +228,18 @@ class HealthConsultationRepository:
             return binding
         if getattr(binding, "initial_planner_selection", None) is not None:
             from yuxi.services.health_initial_planner_service import authorize_initial_planner_binding
+            from yuxi.services.reference_meal_plan_service import reference_binding, bound_reference_context
 
             if conversation.agent_id != PLANNER_SLUG or binding.family_planner_selection is not None:
                 raise HealthVisionError("source_invalidated", "初始选择不属于唯一配餐模式", 410)
-            await authorize_initial_planner_binding(self.session, binding)
+            if reference_binding(binding):
+                await bound_reference_context(self.session, uid, binding)
+                if preview_history:
+                    from yuxi.services.reference_meal_plan_service import validate_reference_history
+
+                    await validate_reference_history(self.session, binding)
+            else:
+                await authorize_initial_planner_binding(self.session, binding)
             return binding
         if getattr(binding, "family_planner_selection", None) is not None:
             from yuxi.services.health_family_planner_service import authorize_family_planner_binding
@@ -313,6 +321,9 @@ class HealthConsultationRepository:
             from yuxi.repositories.health_blood_lipids_repository import HealthBloodLipidsRepository
 
             await HealthFamilyProfileRepository(self.session).validate_history(uid, binding, lock=lock)
+            from yuxi.services.conversation_purchase_service import validate_catalog_profile_history
+
+            await validate_catalog_profile_history(self.session, binding, lock=lock)
             await HealthWeightRepository(self.session).validate_history(uid, binding, lock=lock)
             await HealthBloodPressureRepository(self.session).validate_history(uid, binding, lock=lock)
             await HealthBloodGlucoseRepository(self.session).validate_history(uid, binding, lock=lock)
