@@ -7,12 +7,12 @@ defineEmits(['ask','today'])
  <view class="chat-welcome">
   <view class="welcome-intro">
    <view class="welcome-logo" aria-hidden="true"><AppIcon name="assistant" :size="160"/></view>
-   <text class="welcome-title">你好，我是家庭营养师。</text>
-   <text class="welcome-description">{{'聊聊今天怎么吃，\n也可以一起安排家人的三餐。'}}</text>
+   <text class="welcome-title">今天想怎么吃？</text>
+   <text class="welcome-description">{{'我是你的家庭营养师，\n聊聊想吃的、忌口的，一起把三餐安排好。'}}</text>
    <button class="welcome-today" @click="$emit('today')"><text>查看今日安排</text><text aria-hidden="true">→</text></button>
   </view>
   <view class="welcome-suggestions">
-   <text class="suggestion-label">你可以这样问我</text>
+   <text class="suggestion-label">从一个问题开始</text>
    <view class="prompt-grid"><button v-for="prompt in prompts" :key="prompt" :disabled="disabled" @click="$emit('ask',prompt)">{{prompt}}</button></view>
    <text class="welcome-note">内容由 AI 生成，仅供参考</text>
   </view>

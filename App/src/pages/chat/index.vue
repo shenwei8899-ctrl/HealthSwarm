@@ -43,15 +43,93 @@ let draftVersion = 0, openingCamera = false, chatScope = storageScope()
 const chatDate=ref(localDate()),replyError=ref(''),lastRequest=ref('')
 let requestVersion=0,disposed=false
 const replyTimers=[]
-onUnload(()=>{disposed=true;dailyVersion++;requestVersion++;draftVersion++;replyTimers.forEach(clearTimeout)})
-onHide(()=>voiceRef.value?.cancel())
-function scheduleReply(work,delay){const scope=storageScope();replyTimers.push(setTimeout(()=>{if(!disposed&&scope===storageScope())work()},delay))}
-const messages = ref(scopedStorage.getStorageSync('chat-'+chatDate.value)||[])
-watch(messages,value=>{if(chatScope===storageScope())scopedStorage.setStorageSync('chat-'+chatDate.value,JSON.parse(JSON.stringify(value)))},{deep:true})
+onUnload(()=>{persistConversation();disposed=true;dailyVersion++;requestVersion++;draftVersion++;replyTimers.forEach(clearTimeout)})
+onHide(()=>{voiceRef.value?.cancel();historyOpen.value=false;persistConversation()})
+function scheduleReply(work,delay){const scope=storageScope(),version=requestVersion;replyTimers.push(setTimeout(()=>{if(!disposed&&scope===storageScope()&&version===requestVersion)work()},delay))}
+const messages = ref([])
+const historyOpen=ref(false),conversations=ref([]),activeConversationId=ref('')
+const conversationBusy=computed(()=>thinking.value||voiceBusy.value||draftSaving.value)
+let restoringConversation=false,legacyDates=[],conversationSequence=0
+const copy=value=>JSON.parse(JSON.stringify(value))
+const conversationKey=id=>'local-chat-conversation:'+id
+const conversationTitle=value=>value.find(message=>message.role==='user'&&message.text?.trim())?.text.trim().slice(0,48)||(value.some(message=>message.role==='user'&&message.image)?'图片对话':'新对话')
+const conversationGroups=computed(()=>{
+  const yesterday=localDate(new Date(Date.parse(chatDate.value+'T12:00:00+08:00')-86400000)),groups=new Map()
+  for(const row of [...conversations.value].sort((a,b)=>b.createdAt.localeCompare(a.createdAt))){
+    if(!groups.has(row.date))groups.set(row.date,{date:row.date,label:row.date===chatDate.value?'今天':row.date===yesterday?'昨天':row.date,items:[]})
+    groups.get(row.date).items.push(row)
+  }
+  return [...groups.values()].sort((a,b)=>b.date.localeCompare(a.date))
+})
+function saveConversationIndex(){scopedStorage.setStorageSync('local-chat-conversations',{version:1,activeId:activeConversationId.value,legacyDates,items:conversations.value})}
+function persistConversation(projectMessages=false){
+  if(!isMockMode||restoringConversation||disposed||chatScope!==storageScope()||!activeConversationId.value)return
+  const row=conversations.value.find(item=>item.id===activeConversationId.value)
+  if(!row)return
+  scopedStorage.setStorageSync(conversationKey(row.id),{messages:copy(messages.value),draft:{text:input.value,image:copy(draftImage.value),error:draftError.value},replyError:replyError.value,lastRequest:copy(lastRequest.value)})
+  row.title=conversationTitle(messages.value);row.updatedAt=new Date().toISOString()
+  // 每日投影继续供记餐和饮食上下文读取，按消息合并，保留其他会话及旧数据。
+  if(projectMessages){
+    const days=new Map()
+    for(const message of messages.value){
+      const day=message.createdAt&&Number.isFinite(Date.parse(message.createdAt))?localDate(new Date(message.createdAt)):row.date
+      if(!days.has(day))days.set(day,scopedStorage.getStorageSync('chat-'+day)||[])
+      const saved=days.get(day),index=saved.findIndex(old=>message.id?old.id===message.id:!old.id&&old.role===message.role&&old.text===message.text)
+      if(index<0)saved.push(copy(message));else saved[index]=copy(message)
+    }
+    for(const [day,value] of days){scopedStorage.setStorageSync('chat-'+day,value);if(!legacyDates.includes(day))legacyDates.push(day)}
+  }
+  saveConversationIndex()
+}
+function activateConversation(id){
+  const saved=scopedStorage.getStorageSync(conversationKey(id))||{}
+  restoringConversation=true;requestVersion++;draftVersion++
+  activeConversationId.value=id;messages.value=copy(saved.messages||[])
+  input.value=saved.draft?.text||'';draftImage.value=copy(saved.draft?.image||null);draftError.value=saved.draft?.error||''
+  replyError.value=saved.replyError||'';lastRequest.value=copy(saved.lastRequest||'')
+  thinking.value=false;draftSaving.value=false;voiceMode.value=false;voiceBusy.value=false
+  restoringConversation=false;historyOpen.value=false;scrollTarget.value='';saveConversationIndex()
+}
+function newConversation(){
+  if(disposed||conversationBusy.value||chatScope!==storageScope())return
+  persistConversation()
+  const stamp=new Date().toISOString()
+  let id
+  do{id='local-'+Date.now().toString(36)+'-'+(++conversationSequence)+'-'+Math.random().toString(36).slice(2)}while(conversations.value.some(row=>row.id===id))
+  conversations.value.unshift({id,date:localDate(),createdAt:stamp,updatedAt:stamp,title:'新对话'})
+  activateConversation(id);persistConversation()
+}
+function selectConversation(id){
+  if(disposed||conversationBusy.value||chatScope!==storageScope()||!conversations.value.some(row=>row.id===id))return
+  persistConversation();activateConversation(id);void scrollToLatestReply()
+}
+function restoreConversations(){
+  if(!isMockMode)return
+  const index=scopedStorage.getStorageSync('local-chat-conversations')
+  conversations.value=Array.isArray(index?.items)?index.items:[]
+  legacyDates=Array.isArray(index?.legacyDates)?index.legacyDates:[]
+  for(const key of scopedStorage.getStorageInfoSync().keys||[]){
+    if(!/^chat-\d{4}-\d{2}-\d{2}$/.test(key)||legacyDates.includes(key.slice(5)))continue
+    const date=key.slice(5),value=scopedStorage.getStorageSync(key)
+    legacyDates.push(date)
+    if(!Array.isArray(value)||!value.length)continue
+    const id='legacy-'+date,stamp=date+'T04:00:00.000Z'
+    if(!conversations.value.some(row=>row.id===id)){
+      conversations.value.push({id,date,createdAt:stamp,updatedAt:stamp,title:conversationTitle(value)})
+      scopedStorage.setStorageSync(conversationKey(id),{messages:copy(value),draft:{text:'',image:null,error:''}})
+    }
+  }
+  const active=conversations.value.find(row=>row.id===index?.activeId)||[...conversations.value].sort((a,b)=>b.createdAt.localeCompare(a.createdAt))[0]
+  if(active)activateConversation(active.id);else newConversation()
+}
+function appendMessages(...value){const stamp=new Date().toISOString();messages.value.push(...value.map(message=>({id:'message-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2),createdAt:stamp,...message})))}
 const scrollTarget = ref('')
 const caseId = ref(getActiveHealthCaseId())
 const caseFeedback = ref(false)
 const inlineTodayOpen = ref(false)
+restoreConversations()
+watch(messages,()=>persistConversation(true),{deep:true,flush:'sync'})
+watch([input,draftImage,draftError,replyError,lastRequest],()=>persistConversation(),{deep:true,flush:'sync'})
 async function scrollToLatestReply() {
   await nextTick()
   scrollTarget.value = 'message-' + (messages.value.length - 1)
@@ -69,7 +147,7 @@ onLoad(options => {
   cloudRoute.value = options
   if (!isMockMode) return
   caseFeedback.value = options.caseFeedback === 'diabetes'
-  if (options.recordId) scheduleReply(() => { messages.value.push({ role:'assistant', recordId:options.recordId, text:'这餐吃下来怎么样？有什么想告诉我的吗？你可以用文字或语音补充。' }); scrollToLatestReply() }, 280)
+  if (options.recordId) scheduleReply(() => { appendMessages({ role:'assistant', recordId:options.recordId, text:'这餐吃下来怎么样？有什么想告诉我的吗？你可以用文字或语音补充。' }); scrollToLatestReply() }, 280)
   if (options.startCase === 'diabetes') scheduleReply(() => ask(DIABETES_CASE_QUESTION), 380)
 })
 onShow(async () => {
@@ -77,10 +155,11 @@ onShow(async () => {
   if(chatScope!==storageScope()){
     voiceRef.value?.cancel();voiceMode.value=false;voiceBusy.value=false
     requestVersion++;draftVersion++;chatScope=storageScope();thinking.value=false;draftSaving.value=false
-    input.value='';draftImage.value=null;draftError.value='';replyError.value='';lastRequest.value=''
-    messages.value=scopedStorage.getStorageSync('chat-'+chatDate.value)||[]
+    restoringConversation=true;historyOpen.value=false;conversations.value=[];activeConversationId.value=''
+    input.value='';draftImage.value=null;draftError.value='';replyError.value='';lastRequest.value='';messages.value=[]
+    restoringConversation=false;restoreConversations()
   }
-  if(chatDate.value!==localDate()){requestVersion++;thinking.value=false;replyError.value='';lastRequest.value='';chatDate.value=localDate();messages.value=scopedStorage.getStorageSync('chat-'+chatDate.value)||[]}
+  if(chatDate.value!==localDate())chatDate.value=localDate()
   const nextProfile = getProfile()
   planRevision.value++
   profile.value = nextProfile
@@ -112,7 +191,7 @@ async function ask(text, retry=false) {
   }
   if (!request || (!request.text && !request.image)) return
   const content = request.text
-  if(!retry)messages.value.push({ id:request.id, role:'user', text:content, ...(request.image?{image:{...request.image}}:{}) })
+  if(!retry)appendMessages({ id:request.id, role:'user', text:content, ...(request.image?{image:{...request.image}}:{}) })
   lastRequest.value=request;replyError.value=''
   const version=++requestVersion,scope=storageScope()
   scrollToLatestReply()
@@ -120,7 +199,7 @@ async function ask(text, retry=false) {
   thinking.value = true
   try {
     if (/头晕|出汗|手抖|疑似低血糖|低血糖怎么办/.test(content)) {
-      messages.value.push({ role: 'assistant', safety: true, text: '这可能是低血糖等需要及时处理的情况。请立即停止当前菜单和购买操作；如果能够安全测量，请尽快测血糖，并按医生事先给出的处理方案处理。若意识不清、无法吞咽、症状严重或持续不缓解，请立即联系急救或就近就医。不要给意识不清的人喂食或喂水。' })
+      appendMessages({ role: 'assistant', safety: true, text: '这可能是低血糖等需要及时处理的情况。请立即停止当前菜单和购买操作；如果能够安全测量，请尽快测血糖，并按医生事先给出的处理方案处理。若意识不清、无法吞咽、症状严重或持续不缓解，请立即联系急救或就近就医。不要给意识不清的人喂食或喂水。' })
       thinking.value = false
       scrollToLatestReply()
       return
@@ -128,25 +207,25 @@ async function ask(text, retry=false) {
     if (request.image) {
       const response = await sendChatImage(request, { isCurrent: () => !disposed && version===requestVersion && scope===storageScope() })
       if(disposed||version!==requestVersion||scope!==storageScope())return
-      messages.value.push({ role:'assistant', ...response })
+      appendMessages({ role:'assistant', ...response })
       scrollToLatestReply()
       return
     }
     if (isCommerceEnabled && isMockMode) {
-      if (/记录|总结/.test(content)) messages.value.push({role:'assistant',text:'当前会员在本机保存了 '+records.value.length+' 条饮食记录，可在“我的 → 饮食记录”核对。健康云端与 AI 分析尚未接入。',action:'scan'});
+      if (/记录|总结/.test(content)) appendMessages({role:'assistant',text:'当前会员在本机保存了 '+records.value.length+' 条饮食记录，可在“我的 → 饮食记录”核对。健康云端与 AI 分析尚未接入。',action:'scan'});
       else {
         const route=/早餐|早上/.test(content)?'breakfast':/午餐|中午/.test(content)?'lunch':'dinner';
         const date=/明天|明日/.test(content)?localDate(new Date(Date.now()+86400000)):localDate();
         const menu=await commerce.meal(route,date);
         if(disposed||version!==requestVersion||scope!==storageScope())return;
-        messages.value.push({role:'assistant',text:menu.dishes?.length ? '已读取服务端保存的菜单：'+menu.dishes.map(d=>d.recipe_name).join('、')+(menu.is_local_fixture?'。这是本地联调菜单，未经个体化营养评估。':'。') : menu.message||'尚无服务端菜单，AI 营养师尚未接入。',action:menu.dishes?.length?'plan':undefined,meal:{breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}[route],date});
+        appendMessages({role:'assistant',text:menu.dishes?.length ? '已读取服务端保存的菜单：'+menu.dishes.map(d=>d.recipe_name).join('、')+(menu.is_local_fixture?'。这是本地联调菜单，未经个体化营养评估。':'。') : menu.message||'尚无服务端菜单，AI 营养师尚未接入。',action:menu.dishes?.length?'plan':undefined,meal:{breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}[route],date});
       }
       scrollToLatestReply();return;
     }
     await mockDelay('chat',450)
     if(disposed||version!==requestVersion||scope!==storageScope())return
     if (/糖尿病家庭怎么吃|糖尿病.*饮食建议|糖尿病.*怎么吃/.test(content)) {
-      messages.value.push({
+      appendMessages({
         role: 'assistant', healthAdvice: true,
         text: '糖尿病家庭饮食建议 · 演示\n\n1. 先确认健康信息\n如果成员有自报2型糖尿病，应先确认医生饮食要求、低血糖风险和肾脏相关情况；缺失信息不能默认正常。\n\n2. 全家可以同桌吃\n优先选择清淡烹饪，保证蔬菜和优质蛋白，把主食单独分份，不需要为一个人重新做整桌菜。\n\n3. 个人份量要分开\n糖尿病成员的主食先按较小份演示，具体数量仍以医生或营养师要求为准；其他成员使用常规份量。\n\n4. 继续观察与记录\n按时进餐，不因一次热量估算随意跳餐。照片只能辅助记录菜品和食量，不能判断血糖变化。\n\n这是一段固定案例建议，不会自动生成菜单、食材包或购买推荐。',
       })
@@ -155,7 +234,7 @@ async function ask(text, retry=false) {
       return
     }
     if (isDiabetesCase.value && /爸爸.*糖尿病|糖尿病.*今晚|三个人今晚/.test(content)) {
-      messages.value.push({
+      appendMessages({
         role: 'assistant', caseStep: 'clarify',
         text: '我读取到爸爸档案中记录了2型糖尿病。目前低血糖风险为“不确定”，肾脏相关情况仍“未填写”。请确认：爸爸是否有医生指定的饮食方案，或近期出现过低血糖？',
         quickReplies: ['没有特别医嘱', '有医嘱，稍后补充', '不确定，先看通用建议'],
@@ -169,12 +248,12 @@ async function ask(text, retry=false) {
     const suppliedContext=hasMealContext(content)
     const targetMember=suppliedContext?contextMember(profile.value,content):null
     if (/怀孕|孕期|哺乳|产后|喂养|辅食/.test(content) && targetMember===null) {
-      messages.value.push({role:'assistant',text:'这条情况是指哪位家庭成员？请告诉我成员称呼，我再结合对应资料安排。'});return
+      appendMessages({role:'assistant',text:'这条情况是指哪位家庭成员？请告诉我成员称呼，我再结合对应资料安排。'});return
     }
     const userMessage=messages.value.find(message=>message.id===request.id)
     if(userMessage&&targetMember!==null){userMessage.memberId=targetMember;userMessage.contextRecorded=/怀孕|孕期|哺乳|产后|喂养|辅食/.test(content)}
     // Save before generation so all pages read the same relevant context.
-    scopedStorage.setStorageSync('chat-'+chatDate.value,JSON.parse(JSON.stringify(messages.value)))
+    persistConversation()
     linkMealContext(targetDate,chatDate.value)
     let plan=todayPlan(profile.value,meal,targetDate)
     if (/吃|餐|菜|早|晚/.test(content)||suppliedContext) {
@@ -186,7 +265,7 @@ async function ask(text, retry=false) {
       const answer=await callApiAdapter('chatText',{clientMessageId:request.id,text:content,date:chatDate.value,members:planningMembers(profile.value.members,profile.value.viewerAccount)})
       if(disposed||version!==requestVersion||scope!==storageScope())return
       if(!answer?.text?.trim())throw new Error('回复未完成，请重试')
-      messages.value.push({role:'assistant',text:answer.text});return
+      appendMessages({role:'assistant',text:answer.text});return
     }
     let response
     if (/以后|长期|一直|喜欢|偏好|患有|有糖尿病|有高血压|有高血脂|有肾脏疾病/.test(content)) {
@@ -208,7 +287,7 @@ async function ask(text, retry=false) {
     if (response.action==='plan'&&!isMockMode) response.text=plan.reply||('已为 '+plan.count+' 位成员生成'+meal+'建议：'+plan.dishes.map(dish=>dish.name).join('、')+'。请查看个人份量、做法和注意事项。')
     if (!plan.dishes.length&&!plan.blocked.length&&(/吃|餐|菜|早|晚/.test(content)||suppliedContext)) response={text:plan.memberNotes.map(note=>note.name+'：'+note.portion).join('；')||'请在对话中说明当前用餐需要。'}
     if (response.action === 'plan') { response.bundles = createMealBundles(plan); if(/明天|明日/.test(content)){saveTomorrowProposal(profile.value,meal);response.text+=' 已保存为明日提议。'} }
-    messages.value.push({ role: 'assistant', ...response })
+    appendMessages({ role: 'assistant', ...response })
     thinking.value = false
     scrollToLatestReply()
   } catch(e){if(!disposed&&version===requestVersion&&scope===storageScope())replyError.value=e.message||'回复未完成，请重试'}
@@ -216,7 +295,7 @@ async function ask(text, retry=false) {
 }
 function retryReply(){if(lastRequest.value)return ask(lastRequest.value,true)}
 async function withdrawContext(message){
- message.withdrawn=true;scopedStorage.setStorageSync('chat-'+chatDate.value,JSON.parse(JSON.stringify(messages.value)))
+ message.withdrawn=true;persistConversation()
  await refreshDailyMenus();planRevision.value++;updateNote.value='这条对话信息已停止用于新建议，已支付订单保持原内容。'
 }
 function removeDraftImage(){draftVersion++;draftImage.value=null;draftSaving.value=false;draftError.value=''}
@@ -243,15 +322,15 @@ function openCamera(){
 function answerCaseChoice(choice, message) {
   if (message?.caseChoiceAnswered) return
   if (message) message.caseChoiceAnswered = true
-  messages.value.push({ role: 'user', text: choice })
+  appendMessages({ role: 'user', text: choice })
   if (choice === '有医嘱，稍后补充') {
-    messages.value.push({ role: 'assistant', text: '好的。为了避免计划与已有医嘱冲突，我先不生成菜单。请从“我的 → 我的家”进入家庭健康档案，补充爸爸的医生或营养师饮食要求后再回来继续。', action: 'profile' })
+    appendMessages({ role: 'assistant', text: '好的。为了避免计划与已有医嘱冲突，我先不生成菜单。请从“我的 → 我的家”进入家庭健康档案，补充爸爸的医生或营养师饮食要求后再回来继续。', action: 'profile' })
     scrollToLatestReply()
     return
   }
   const plan = createDiabetesCasePlan(profile.value, '晚餐')
   const prefix = choice === '不确定，先看通用建议' ? '以下只展示通用搭配思路，不替代医生或营养师的个体建议。\n\n' : ''
-  messages.value.push({
+  appendMessages({
     role: 'assistant', meal: '晚餐', caseStep: 'menu', bundles: createMealBundles(plan),
     text: prefix + '1. 已使用的档案\n已参考：爸爸的2型糖尿病记录、全家清淡口味、3人共同就餐。\n\n2. 一桌共享菜单\n清蒸鲈鱼、香菇青菜、番茄豆腐汤、杂粮饭。\n\n3. 每个人怎么吃\n全家可以吃同一桌菜。爸爸的主食先按较小份演示，蔬菜和蛋白质正常搭配；其他成员使用标准份。实际主食量仍应以医生或营养师要求为准。\n\n4. 下一步操作',
     caseActions: [
@@ -266,7 +345,7 @@ function handleCaseAction(type) {
   if (type === 'portion') go('/pages/shop/index?meal=dinner&case=diabetes')
   else if (type === 'buy') go('/pages/shop/index?meal=dinner&case=diabetes')
   else {
-    messages.value.push({ role: 'assistant', text: '已记录“换一道菜”的需求。完整版本会重新检查家庭档案与过敏原后给出替换菜；当前案例继续使用原菜单演示后续闭环。' })
+    appendMessages({ role: 'assistant', text: '已记录“换一道菜”的需求。完整版本会重新检查家庭档案与过敏原后给出替换菜；当前案例继续使用原菜单演示后续闭环。' })
     scrollToLatestReply()
   }
 }
@@ -288,7 +367,9 @@ function openAction(message) {
   else if (message.action === 'profile') go('/pages/my/index')
   else go('/pages/scan/index')
 }
-function showHistory() { go('/pages/chat/history') }
+function showHistory() { if(!conversationBusy.value&&chatScope===storageScope())historyOpen.value=!historyOpen.value }
+function closeHistory(){historyOpen.value=false}
+function historyProfile(){if(conversationBusy.value)return;closeHistory();go('/pages/my/index')}
 function changeDiners(item){dinerMeal.value=item.name;dinersOpen.value=true}
 async function confirmDiners(ids){const before=selectedDinerPlan.value;setMealMembers(profile.value,dinerMeal.value,ids);dinersOpen.value=false;await refreshDailyMenus();planRevision.value++;updateNote.value=changeResult(before,selectedDinerPlan.value)}
 function supplementPostMeal() {
@@ -301,7 +382,7 @@ function shortcut(key){if(key==='today')inlineTodayOpen.value=!inlineTodayOpen.v
 
 <template>
   <CloudNutritionChat v-if="!isMockMode" :route="cloudRoute"/>
-<NutritionistLayout v-else :voice-busy="voiceBusy" :scroll-target="scrollTarget" @history="showHistory" @profile="go('/pages/my/index')" @shortcut="shortcut"><template #default>
+<NutritionistLayout v-else :voice-busy="voiceBusy" :history-open="historyOpen" :scroll-target="scrollTarget" @history="showHistory" @profile="go('/pages/my/index')" @shortcut="shortcut"><template #default>
     <view class="today-card"><view class="today-top"><view><text class="eyebrow">{{today.getMonth()+1}}月{{today.getDate()}}日 · 今日安排</text><text class="section-title">好好吃饭，从今天开始</text></view><text class="test-badge">{{isCommerceEnabled?'服务端餐单':'测试数据'}}</text></view><view class="today-meals"><view v-for="item in dailyPlans" :key="item.route" class="daily-meal-row"><view class="meal-card-head"><text class="meal-name">{{item.name}}</text><button v-if="!isCommerceEnabled" class="diner-capsule" @click="changeDiners(item)"><AppIcon name="family" :size="26"/> {{item.plan.count}}人用餐</button></view><text class="meal-summary">{{item.summary}}</text><view class="meal-foot"><text class="meal-source">{{item.plan.source}}</text><button class="meal-link" @click="openDailyMeal(item)">查看本餐安排 ›</button></view></view></view><button v-if="!hasActivePaidPlan" class="daily-buy" @click="go('/pages/shop/index?daily=1')">一键选购 <text>↗</text></button></view>
     <text v-if="menuBusy" class="safe-note">正在分析本餐建议…</text><view v-if="menuError" class="card"><text class="inline-error">{{menuError}}</text><button @click="refreshDailyMenus">重试分析</button></view>
     <text v-if="updateNote" class="update-note">{{updateNote}}</text>
@@ -315,6 +396,16 @@ function shortcut(key){if(key==='today')inlineTodayOpen.value=!inlineTodayOpen.v
     <view v-if="inlineTodayOpen" class="inline-today card"><view><text class="section-title">今日饮食计划</text><button @click="inlineTodayOpen=false">收起</button></view><button v-for="item in dailyPlans" :key="item.route" @click="openDailyMeal(item)"><text>{{item.name}}</text><text>{{item.summary}}</text><text>›</text></button></view><view class="conversation-spacer"></view>
   </template><template #composer><view class="composer-content"><view v-if="draftImage" class="image-draft"><view class="draft-thumbnail"><image :src="draftImage.localPath||draftImage.path" mode="aspectFill" @click="previewChatImage(draftImage)"/><button class="remove-draft" aria-label="移除待发送图片" @click="removeDraftImage">×</button></view><view class="draft-description"><text>{{draftSaving?'正在准备图片…':draftError||'可直接发送图片，也可以补充文字'}}</text><button v-if="draftError" @click="prepareDraftImage()">重新准备图片</button></view></view><view class="composer"><button class="camera-button" :disabled="thinking||voiceBusy||draftSaving" aria-label="打开相机或选择照片" @click="openCamera"><AppIcon name="camera" :size="38"/></button><view v-if="voiceMode" class="voice-input-slot"><VoiceInput ref="voiceRef" style="width:100%;flex:1" :disabled="thinking||draftSaving||Boolean(draftError)" @send="sendVoice" @busy="voiceBusy=$event"/></view><input v-else v-model="input" placeholder="问问家庭营养师…" confirm-type="send" @confirm="ask()"/><button v-if="voiceMode" class="keyboard-button" :disabled="voiceBusy" aria-label="切换文字输入" @click="voiceMode=false"><view class="keyboard-icon"><view></view><view></view><view></view></view></button><button v-else-if="hasDraftContent" :disabled="!canSend" class="send-button" aria-label="发送" @click="ask()"><AppIcon name="arrow" :size="30"/></button><button v-else class="voice-button" :disabled="thinking||draftSaving" aria-label="切换语音输入" @click="voice"><AppIcon name="mic" :size="36"/></button></view><text class="safe-note">AI 回复与营养数值为测试数据 · 膳食建议仅供参考</text></view>
   </template><template #overlays>
+  <view v-if="historyOpen" class="local-history-mask" @click.self="closeHistory">
+    <view class="local-history-drawer" role="dialog" aria-modal="true" aria-label="历史对话">
+      <AppNavBar><view class="local-history-head"><text>对话</text><button aria-label="关闭历史对话" @click="closeHistory">×</button></view></AppNavBar>
+      <button class="local-history-new" :disabled="conversationBusy" @click="newConversation"><text>＋</text><text>新对话</text></button>
+      <scroll-view class="local-history-list" scroll-y :show-scrollbar="false">
+        <view v-for="group in conversationGroups" :key="group.date" class="local-history-group"><text class="local-history-date">{{group.label}}</text><button v-for="conversation in group.items" :key="conversation.id" class="local-history-item" :class="{'is-active':conversation.id===activeConversationId}" :aria-current="conversation.id===activeConversationId?'true':undefined" :disabled="conversationBusy" @click="selectConversation(conversation.id)">{{conversation.title}}</button></view>
+      </scroll-view>
+      <button class="local-history-profile" :disabled="conversationBusy" @click="historyProfile"><AppIcon name="user" :size="38"/><text>我的</text></button>
+    </view>
+  </view>
   <DinerPicker :open="dinersOpen" :members="profile.members" :selected="selectedDinerPlan.members.map(m=>m.id)" :meal="dinerMeal" @close="dinersOpen=false" @confirm="confirmDiners"/>
   <view v-if="communityOpen" class="sheet-mask" @click.self="communityOpen=false"><view class="sheet community-sheet"><view class="community-head"><text class="section-title">加入社群</text><button @click="communityOpen=false">×</button></view><view class="qr-placeholder">二维码待运营配置</view><text class="safe-note">暂无可用社群二维码，请稍后再试</text></view></view>
 </template></NutritionistLayout>
@@ -328,3 +419,6 @@ function shortcut(key){if(key==='today')inlineTodayOpen.value=!inlineTodayOpen.v
 </style>
 
 <style scoped>.composer-content .safe-note{font-size:25rpx;margin-top:12rpx}</style>
+<style scoped>
+.local-history-mask{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.3)}.local-history-drawer{display:flex;flex-direction:column;width:min(82vw,340px);height:100%;box-sizing:border-box;padding:6px 18px calc(env(safe-area-inset-bottom) + 18px);background:#fafafa;box-shadow:8px 0 36px rgba(0,0,0,.08)}.local-history-head{display:flex;align-items:center;justify-content:space-between;min-height:48px;font-size:23px;font-weight:600}.local-history-head button{display:flex;align-items:center;justify-content:center;width:40px;height:44px;margin:0;padding:0;background:transparent;font-size:28px;font-weight:400}.local-history-new{display:flex;align-items:center;gap:12px;min-height:50px;margin:12px 0 20px;padding:12px 14px;border-radius:12px;background:#f0f0f0;font-size:16px;text-align:left}.local-history-new>text:first-child{font-size:24px;line-height:1}.local-history-list{flex:1;min-height:0}.local-history-group{margin:0 0 20px}.local-history-date{display:block;padding:8px 12px;color:#8b8b8b;font-size:12px}.local-history-item{display:block;width:100%;overflow:hidden;margin:2px 0;padding:14px 12px;border-radius:10px;background:transparent;font-size:15px;line-height:1.5;text-align:left;text-overflow:ellipsis;white-space:nowrap}.local-history-item.is-active{background:#eaeaea}.local-history-profile{display:flex;align-items:center;gap:12px;min-height:52px;margin:12px 0 0;padding:12px;border-top:1px solid #e7e7e7;background:transparent;font-size:16px}.local-history-head button:after,.local-history-new:after,.local-history-item:after,.local-history-profile:after{border:0}.local-history-drawer button[disabled]{opacity:.45}.local-history-drawer button:focus-visible{outline:2px solid #444;outline-offset:2px}
+</style>

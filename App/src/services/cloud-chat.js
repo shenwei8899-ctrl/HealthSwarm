@@ -2,6 +2,50 @@ import { request } from './request.js'
 import { sessionRevision } from './session.js'
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i
+const conversationUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const conversationPageSize = 20
+const sameId = (left, right) => typeof left === 'string' && typeof right === 'string' && left.toLowerCase() === right.toLowerCase()
+const validBusinessDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+  !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value
+
+export function conversationTitle(value, maxLength = 36) {
+  const text = typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim() : ''
+  if (!text) return '新对话'
+  const length = Number.isInteger(maxLength) && maxLength > 0 && maxLength <= 120 ? maxLength : 36
+  const characters = Array.from(text)
+  return characters.length > length ? characters.slice(0, length).join('') + '…' : text
+}
+
+export function conversationSummary(messages) {
+  const first = Array.isArray(messages) && messages.find(message => message?.role === 'user' &&
+    (typeof message.text === 'string' && message.text.trim() || message.image))
+  return first ? conversationTitle(typeof first.text === 'string' && first.text.trim() || '[图片]') : '新对话'
+}
+
+export async function readConversations(memberId, offset = 0, send = request) {
+  if (!conversationUuid.test(memberId || '')) throw new Error('请先选择本人的健康资料')
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > Number.MAX_SAFE_INTEGER - conversationPageSize) {
+    throw new Error('对话分页位置无效，请重新读取')
+  }
+  const revision = sessionRevision()
+  const { data } = await send({ path: `/api/health/v1/members/${memberId}/consultations?limit=${conversationPageSize}&offset=${offset}` })
+  if (revision !== sessionRevision()) throw new Error('账号已变化，请重新读取对话')
+  const items = data?.items
+  if (!Array.isArray(items) || items.length > conversationPageSize || typeof data.has_more !== 'boolean' ||
+      items.some(row => !row || !conversationUuid.test(row.thread_id || '') || !sameId(row.member_id, memberId) ||
+        row.agent_slug !== 'health-consultation' || !(row.business_date === null || validBusinessDate(row.business_date)) ||
+        typeof row.created_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(row.created_at) ||
+        !validBusinessDate(row.created_at.slice(0, 10)) || !Number.isFinite(Date.parse(row.created_at))) ||
+      new Set(items.map(row => row.thread_id.toLowerCase())).size !== items.length ||
+      (data.has_more ? !items.length || data.next_offset !== offset + items.length : data.next_offset !== null)) {
+    throw new Error('对话目录返回不完整，请重新读取')
+  }
+  return {
+    items: items.map(row => ({ thread_id: row.thread_id, member_id: row.member_id, agent_slug: row.agent_slug,
+      business_date: row.business_date, created_at: row.created_at })),
+    hasMore: data.has_more, nextOffset: data.next_offset,
+  }
+}
 export function chatText(content) {
   if (typeof content === 'string') return content
   return Array.isArray(content) ? content.filter(item => item.type === 'text').map(item => item.text || '').join('\n') : ''
@@ -44,7 +88,14 @@ export async function readChatSnapshot(threadId, send = request) {
   const revision = sessionRevision()
   const { data } = await send({ path: `/api/chat/thread/${threadId}/history` })
   if (revision !== sessionRevision()) throw new Error('账号已变化，请重新读取对话')
-  return {messages:chatMessages(data),runs:Array.isArray(data.runs)?data.runs:[]}
+  if (data?.thread?.id !== undefined && !sameId(data.thread.id, threadId)) throw new Error('返回的对话与当前选择不一致，请重新读取')
+  const metadata = data?.thread
+  const thread = metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? {
+    id: threadId,
+    title: typeof metadata.title === 'string' ? conversationTitle(metadata.title, 120) : '',
+    agentId: typeof (metadata.agent_id ?? metadata.agentId) === 'string' ? (metadata.agent_id ?? metadata.agentId).slice(0, 120) : '',
+  } : null
+  return {messages:chatMessages(data),runs:Array.isArray(data.runs)?data.runs:[],thread}
 }
 
 // The chat Run API accepts image content. This never creates a meal draft/log.

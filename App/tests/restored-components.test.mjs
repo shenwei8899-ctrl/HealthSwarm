@@ -310,15 +310,14 @@ test('family reference question preserves all selected actors, meal and original
  assert.deepEqual(queries,['给全家安排明天早餐，不要牛奶']);assert.equal(p.question.value,'');p.dispose()
 })
 
-test('reported tomorrow breakfast prompt opens a scoped reference meal task without an explicit UI task argument',async()=>{
+test('an ordinary tomorrow breakfast request stays in the continuous consultation',async()=>{
  const h=chat(),opened=[],queries=[]
  h.deps.localDate=date=>date?'2026-10-21':'2026-10-20'
  h.deps.createHealthTaskFlow=({onChange})=>({hide(){},open:async(id,type,selection)=>{opened.push({id,type,selection});onChange({memberId:id,taskType:type,available:true,entry:{thread_id:thread,agent_slug:type==='consultation'?'health-consultation':'health-meal-planner'}})},submit:async text=>{queries.push(text);return true}})
  const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,chatError',h.deps)
  await p.load();p.question.value='给我安排明天早餐';await p.sendQuestion()
- const entry=opened.find(o=>o.type==='reference_meal_preview')
- assert.ok(entry);assert.equal(entry.id,member);assert.equal(entry.selection.plan_date,'2026-10-21')
- assert.deepEqual(entry.selection.participant_ids,['self']);assert.deepEqual(entry.selection.meal_types,['breakfast'])
+ assert.equal(opened.some(o=>o.type==='reference_meal_preview'),false)
+ assert.equal(opened.at(-1).type,'consultation');assert.equal(opened.at(-1).id,member)
  assert.deepEqual(queries,['给我安排明天早餐']);assert.equal(p.chatError.value,'');assert.equal(p.question.value,'');p.dispose()
 })
 
@@ -328,7 +327,7 @@ test('meal revisions reuse the selected reference thread and keep the family tom
  h.deps.loadCloudProfile=async()=>({onboarded:true,householdId:'family',selfMemberId:'self',members:[{id:'self',relation:'本人',healthMemberId:member},{id:'parent',relation:'母亲',healthMemberId:'parent-health'}]})
  h.deps.createHealthTaskFlow=({onChange})=>({hide(){},open:async(id,type,selection)=>{opened.push({id,type,selection});onChange({memberId:id,taskType:type,available:true,entry:{thread_id:thread,agent_slug:type==='consultation'?'health-consultation':'health-meal-planner'}})},submit:async text=>{queries.push(text);return true}})
  const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,chatError',h.deps)
- await p.load();p.question.value='给全家安排明天三餐';await p.sendQuestion()
+ await p.load();p.question.value='给全家安排明天三餐';await p.sendQuestion('reference_meal_preview')
  const count=opened.length,original=opened.at(-1).selection
  for(const text of ['把早餐改成粥','早餐换成不含鸡蛋的','把这个餐单换一下','这个食谱改成粥']){
   p.question.value=text;await p.sendQuestion()
@@ -336,7 +335,7 @@ test('meal revisions reuse the selected reference thread and keep the family tom
  }
  assert.deepEqual(original,{mode:'reference',family_id:'family',plan_date:'2026-10-21',participant_ids:['parent','self'],meal_types:['breakfast','lunch','dinner']})
  assert.deepEqual(queries,['给全家安排明天三餐','把早餐改成粥','早餐换成不含鸡蛋的','把这个餐单换一下','这个食谱改成粥'])
- p.question.value='给我安排今天晚饭';await p.sendQuestion()
+ p.question.value='给我安排今天晚饭';await p.sendQuestion('reference_meal_preview')
  assert.equal(opened.length,count+1);assert.deepEqual(opened.at(-1).selection,{mode:'reference',family_id:'family',plan_date:'2026-10-20',participant_ids:['self'],meal_types:['dinner']})
  p.question.value='换个话题，糖尿病家庭怎么吃？';await p.sendQuestion();assert.equal(opened.at(-1).type,'consultation')
  p.dispose()
@@ -347,7 +346,7 @@ test('plain answers to reference plan questions stay in the selected meal thread
  h.deps.localDate=date=>date?'2026-10-21':'2026-10-20'
  h.deps.createHealthTaskFlow=({onChange})=>({hide(){},open:async(id,type,selection)=>{opened.push({id,type,selection});active={memberId:id,taskType:type,available:true,entry:{thread_id:thread,agent_slug:type==='consultation'?'health-consultation':'health-meal-planner'}};onChange(active)},submit:async text=>{queries.push(text);onChange({...active,requestId,result:{type:'needs_input',questions:['请补充你的用餐偏好。']}});return true}})
  const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,task,chatError',h.deps)
- await p.load();p.question.value='给我安排明天早餐';await p.sendQuestion()
+ await p.load();p.question.value='给我安排明天早餐';await p.sendQuestion('reference_meal_preview')
  const count=opened.length
  for(const text of ['清淡一点','两个人','家里有小米']){
   p.question.value=text;await p.sendQuestion();assert.equal(opened.length,count,text)
@@ -477,7 +476,7 @@ test('failed initial profile load keeps the draft and exposes a retryable error 
  assert.equal(p.question.value,'请介绍均衡饮食');assert.equal(h.calls.length,0);p.dispose()
 })
 
-test('a failed consultation can restart with a new thread while keeping an edited draft',async()=>{
+test('a failed consultation restarts empty and preserves the edited draft until its first send',async()=>{
  const h=chat(),saved=storage(),newThread='44444444-4444-4444-8444-444444444444',calls=[]
  const send=async o=>{
   calls.push(o)
@@ -490,13 +489,13 @@ test('a failed consultation can restart with a new thread while keeping an edite
  }
  h.deps.scopedStorage=saved
  h.deps.createHealthTaskFlow=options=>createHealthTaskFlow({...options,send,session:()=>({token:'synthetic',accountId:'self'}),revision:()=>1,storage:saved,newId:()=>requestId,day:()=> '2026-10-20',subscribe:()=>()=>{}})
- const p=mount('CloudNutritionChat.vue','load,flow,task,question,draftImage,draftError,restartChat',h.deps)
+ const p=mount('CloudNutritionChat.vue','load,flow,task,question,draftImage,draftError,restartChat,conversationId,messages',h.deps)
  await p.load();await p.flow.restoreRequest(requestId);assert.equal(p.task.value.status,'failed')
  p.question.value='修改后的问题';p.draftImage.value={localPath:'data:image/png;base64,QQ=='}
  await p.restartChat()
- assert.equal(p.task.value.entry.thread_id,newThread);assert.equal(p.question.value,'修改后的问题')
+ assert.equal(p.task.value.entry,null);assert.equal(p.conversationId.value,requestId);assert.deepEqual(p.messages.value,[]);assert.equal(p.question.value,'修改后的问题')
  assert.equal(p.draftImage.value.localPath,'data:image/png;base64,QQ==')
- assert.equal(calls.filter(c=>c.path.endsWith('/task-entries')).length,1)
+ assert.equal(calls.filter(c=>c.path.endsWith('/task-entries')).length,0)
  assert.equal(calls.some(c=>c.path==='/api/agent/runs'),false);p.dispose()
 })
 
