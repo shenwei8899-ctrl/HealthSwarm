@@ -28,6 +28,8 @@ class MealCommerceService
         if ((int)$row['current_version'] !== (int)$versionNo) throw new DomainException('菜单已更新，请重新确认本餐', 40906, 409);
         $version = Db::name('shop_recommendation_package_version')->where('package_id', $row['id'])->where('version_no', $versionNo)->find();
         if (!$version) throw new DomainException('菜单版本不存在',40402,404);
+        $reference = AgentMealSourceService::referenceSource(Json::decode($row['agent_source_proof_json'] ?? '{}', [])) !== null;
+        if ($reference) (new AgentMealSourceService())->assertSource($uid, 'recommendation_package', $sn, $versionNo);
         $recipes = Json::decode($version['recipes_snapshot_json'], []);
         $issues = Json::decode($version['issues_json'], []);
         $items = [];
@@ -42,11 +44,11 @@ class MealCommerceService
         foreach ($recipes as $recipe) {
             if (empty($recipe['recipe_ref']) || empty($recipe['recipe_version']) || empty($recipe['steps']) || !is_array($recipe['steps']) || empty($recipe['ingredients'])) $completeRecipes = false;
         }
-        if (!$completeRecipes) $issues[] = ['issue_code'=>'recipe_incomplete', 'message'=>'菜谱版本或制作步骤尚未接入'];
-        $available = $row['status'] === 'available' && $row['trade_status'] === 'passed' && $row['nutrition_status'] === 'passed' && (int)$row['expires_at'] > time() && $completeRecipes && !$issues && (bool)$items;
+        if (!$reference && !$completeRecipes) $issues[] = ['issue_code'=>'recipe_incomplete', 'message'=>'菜谱版本或制作步骤尚未接入'];
+        $available = $row['status'] === 'available' && $row['trade_status'] === 'passed' && AgentMealSourceService::nutritionAllowsTrade($row) && (int)$row['expires_at'] > time() && ($reference || $completeRecipes) && !$issues && (bool)$items;
         return ['available'=>$available, 'package_sn'=>$sn, 'package_version'=>(int)$versionNo, 'menu_version_ref'=>$version['menu_version_ref'],
             'date'=>$row['meal_date'], 'meal'=>$recipes[0]['meal_type'] ?? '', 'dishes'=>$recipes, 'items'=>$items, 'issues'=>$issues,
-            'nutrition_validation_status'=>$row['nutrition_status'], 'is_local_fixture'=>$version['created_by_type'] === 'local_fixture', 'expires_at'=>date(DATE_ATOM,(int)$row['expires_at'])];
+            'scope'=>$reference?'daily_reference':'approved_recipe', 'nutrition_validation_status'=>$row['nutrition_status'], 'is_local_fixture'=>$version['created_by_type'] === 'local_fixture', 'expires_at'=>date(DATE_ATOM,(int)$row['expires_at'])];
     }
 
     /** 把审核过的本餐 SKU 加入本人购物车，保留其他采购项。 */

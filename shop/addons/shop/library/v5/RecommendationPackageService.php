@@ -29,7 +29,7 @@ class RecommendationPackageService
             }
         }
         $trade = $issues ? 'failed' : 'passed';
-        $status = $trade === 'passed' && $package['nutrition_status'] === 'passed' ? 'available' : 'blocked';
+        $status = $trade === 'passed' && AgentMealSourceService::nutritionAllowsTrade($package) ? 'available' : 'blocked';
         Db::name('shop_recommendation_package')->where('id', $package['id'])->update([
             'trade_status' => $trade, 'status' => $status, 'total_amount_cent' => $total,
             'last_issue_code' => $issues ? $issues[0]['issue_code'] : '',
@@ -41,18 +41,22 @@ class RecommendationPackageService
     public function create($clientId, array $payload, $requestId)
     {
         $this->requireFields($payload, ['agent_task_id', 'family_ref', 'user_ref', 'menu_version_ref', 'catalog_version', 'nutrition_validation']);
-        if (empty($payload['ingredient_requirements']) || !is_array($payload['ingredient_requirements'])) {
+        $reference = (new AgentMealSourceService())->validateReferencePayload($payload);
+        if (!$reference && (empty($payload['ingredient_requirements']) || !is_array($payload['ingredient_requirements']))) {
             throw new DomainException('ingredient_requirements不能为空', 40004, 400);
         }
         $digest=hash('sha256',Json::canonical($payload));
         $existing=Db::name('shop_recommendation_package')->where('agent_client_id',$clientId)->where('agent_task_id',$payload['agent_task_id'])->find();
         if($existing){if($existing['request_digest']&& !hash_equals($existing['request_digest'],$digest))throw new DomainException('相同Agent任务号对应了不同请求内容',40901,409);return $this->getBySn($existing['package_sn']);}
         $userId = (new IdentityService())->resolveUserId($clientId, $payload['user_ref']);
+        if (AgentSkuSelectionService::hasDirect($payload['ingredient_requirements'])) {
+            AgentSkuSelectionService::assertPayload($clientId, $payload);
+        }
         $matched = $this->buildItems($payload);
         $nutrition = $payload['nutrition_validation'];
         $nutritionStatus = isset($nutrition['status']) ? $nutrition['status'] : 'pending';
         $tradeStatus = empty($matched['issues']) ? 'passed' : 'failed';
-        $status = $nutritionStatus === 'passed' && $tradeStatus === 'passed' ? 'available' : 'blocked';
+        $status = ($nutritionStatus === 'passed' || $reference && $nutritionStatus === 'reference_only') && $tradeStatus === 'passed' ? 'available' : 'blocked';
         $packageSn = Identifiers::make('pkg');
         $now = time();
 
@@ -134,6 +138,9 @@ class RecommendationPackageService
         if (!$package || $package['agent_client_id'] !== $clientId) {
             throw new DomainException('推荐包不存在', 40402, 404);
         }
+        if (AgentMealSourceService::referenceSource(Json::decode($package['agent_source_proof_json'] ?? '{}', [])) !== null) {
+            throw new DomainException('请重新生成日常参考餐单后选择采购', 40907, 409);
+        }
         if ((int)$payload['base_version'] !== (int)$package['current_version']) {
             throw new DomainException('推荐包版本已变化，请刷新后重试', 40906, 409, [
                 'resource' => 'recommendation_package',
@@ -144,6 +151,11 @@ class RecommendationPackageService
         }
         if ($package['confirm_status'] === 'confirmed' || $package['status'] === 'ordered') {
             throw new DomainException('已确认或已下单的推荐包不可换菜', 40907, 409);
+        }
+        // A new Agent selection needs a new saved source, never reuse the old proof.
+        $oldVersion = Db::name('shop_recommendation_package_version')->where('package_id',$package['id'])->where('version_no',$package['current_version'])->find();
+        if (AgentSkuSelectionService::hasDirect($payload['ingredient_requirements']) || AgentSkuSelectionService::hasDirect(Json::decode($oldVersion['requirements_snapshot_json'],[]))) {
+            throw new DomainException('请由Agent重新生成并发布新的采购来源',40944,409);
         }
         $matched = $this->buildItems($payload);
         $nutrition = $payload['nutrition_validation'];

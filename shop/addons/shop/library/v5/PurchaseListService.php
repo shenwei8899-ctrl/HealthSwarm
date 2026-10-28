@@ -58,7 +58,9 @@ class PurchaseListService
                 'createtime' => $now,
                 'updatetime' => $now,
             ]);
-            $result = $this->insertRequirementsAndMatches($listId, 1, $requirements, $now);
+            $result = AgentSkuSelectionService::hasDirect($requirements)
+                ? $this->insertAgentSelection($listId, $version['id'], $requirements, $now)
+                : $this->insertRequirementsAndMatches($listId, 1, $requirements, $now);
             Db::name('shop_purchase_list')->where('id', $listId)->update([
                 'match_status' => $result['ready'] ? 'ready' : 'failed',
                 'estimated_total_cent' => $result['total_amount_cent'],
@@ -91,6 +93,7 @@ class PurchaseListService
                 throw new DomainException('采购清单不存在', 40403, 404);
             }
             (new IdentityService())->assertOwner($userId, $list['user_id']);
+            $this->assertLegacyRematch($list);
             if ((int)$list['current_version'] !== (int)$baseVersion) {
                 throw new DomainException('采购清单版本冲突', 40906, 409, ['current_version' => (int)$list['current_version']]);
             }
@@ -160,6 +163,7 @@ class PurchaseListService
             $list = Db::name('shop_purchase_list')->where('purchase_list_sn', $listSn)->lock(true)->find();
             if (!$list) throw new DomainException('采购清单不存在', 40403, 404);
             (new IdentityService())->assertOwner($userId, $list['user_id']);
+            $this->assertLegacyRematch($list);
             if ((int)$list['current_version'] !== (int)$baseVersion || in_array($list['status'], ['ordered','expired'], true)) throw new DomainException('采购清单版本或状态不允许修改', 40906, 409);
             $item = Db::name('shop_purchase_item')->where('id', (int)$purchaseItemId)->where('purchase_list_id', $list['id'])->where('list_version_no', $baseVersion)->find();
             $match = $item ? Db::name('shop_purchase_match')->where('id', (int)$matchId)->where('purchase_item_id', $item['id'])->where('list_version_no', $baseVersion)->find() : null;
@@ -261,6 +265,52 @@ class PurchaseListService
             'items' => $items,
         ];
     }
+
+    /** Carry the authoritative Agent selection forward; do not rematch nutrition in the mall. */
+    protected function insertAgentSelection($listId, $versionId, array $requirements, $now)
+    {
+        $items = Db::name('shop_recommendation_package_item')->where('package_version_id',$versionId)->order('sort','asc')->select();
+        $total = 0;
+        foreach ($items as $sort => $item) {
+            $required = 0;
+            foreach ($requirements as $r) if ((string)$r['sku_id'] === (string)$item['sku_id']) $required += (float)$r['required_value'];
+            $result = (new ProductMatchService())->validateSubmittedItem(['sku_id'=>$item['sku_id'],'quantity'=>(int)$item['quantity']]);
+            if ($result['issue']) throw new DomainException('Agent所选商品暂不可售，请重新核对',40904,409);
+            $selected = $result['selected']; $sku = $selected['product_snapshot'];
+            $net = $sku['net_content'];
+            if (!in_array($net['unit'],['g','kg'],true) || (float)$net['value'] <= 0) throw new DomainException('商品包装无法核对',40946,409);
+            $covered = (float)$net['value'] * ($net['unit']==='kg' ? 1000 : 1) * (int)$item['quantity'];
+            if ($required <= 0 || $covered + 0.000001 < $required) throw new DomainException('Agent采购数量不足，请重新核对',40944,409);
+            $itemId = Db::name('shop_purchase_item')->insertGetId([
+                'purchase_list_id'=>$listId, 'list_version_no'=>1, 'recipe_ref'=>'agent-sku:'.$item['sku_id'],
+                'ingredient_id'=>0, 'required_value'=>$required, 'required_unit'=>'g',
+                'pantry_value'=>0, 'pantry_unit'=>'g', 'net_required_value'=>$required, 'net_required_unit'=>'g',
+                'is_optional'=>0, 'match_status'=>'matched', 'sort'=>$sort,'createtime'=>$now,'updatetime'=>$now,
+            ]);
+            $matchId = Db::name('shop_purchase_match')->insertGetId([
+                'purchase_item_id'=>$itemId,'list_version_no'=>1,'sku_id'=>$item['sku_id'],'rank_no'=>1,
+                'required_pack_count'=>(int)$item['quantity'],'covered_value'=>$covered,'covered_unit'=>'g',
+                'surplus_value'=>max(0,$covered-$required),'surplus_unit'=>'g',
+                'unit_price_cent'=>$selected['unit_price_cent'],'total_price_cent'=>$selected['total_price_cent'],
+                'match_score'=>100,'match_reason_json'=>Json::encode(['reason'=>'agent_selected_sku','snapshot'=>$sku]),
+                'trade_status'=>'passed','requires_agent_revalidation'=>0,'is_selected'=>1,'createtime'=>$now,'updatetime'=>$now,
+            ]);
+            Db::name('shop_purchase_item')->where('id',$itemId)->update(['selected_match_id'=>$matchId]);
+            $total += (int)$selected['total_price_cent'];
+        }
+        return ['ready'=>true,'total_amount_cent'=>$total];
+    }
+
+    protected function assertLegacyRematch(array $list)
+    {
+        if ($list['source_type'] !== 'recommendation_package') return;
+        $packageId = Db::name('shop_recommendation_package')->where('package_sn',$list['source_ref'])->value('id');
+        $v = Db::name('shop_recommendation_package_version')->where('package_id',$packageId)->where('version_no',$list['source_version'])->find();
+        if ($v && AgentSkuSelectionService::hasDirect(Json::decode($v['requirements_snapshot_json'],[]))) {
+            throw new DomainException('本清单由Agent选定规格，食材准备或替换请由Agent重新生成采购来源',40944,409);
+        }
+    }
+
 
     protected function insertRequirementsAndMatches($listId, $version, array $requirements, $now)
     {

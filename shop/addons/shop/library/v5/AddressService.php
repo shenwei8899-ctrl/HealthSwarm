@@ -10,7 +10,7 @@ class AddressService
     {
         $rows = Db::name('shop_address')->where('user_id', $uid)->where('status', 'normal')->whereNull('deletetime')
             ->order('isdefault desc,id desc')->select();
-        return ['items' => array_map([$this, 'format'], $rows)];
+        return ['items' => array_map([$this, 'format'], $rows), 'capabilities' => ['default_address' => true, 'address_labels' => true]];
     }
 
     public function areas($pid = 0, $all = false)
@@ -28,6 +28,12 @@ class AddressService
         if (!preg_match('/^1\d{10}$/', $p['phone']) || mb_strlen($p['name']) > 50 || mb_strlen($p['detail']) > 200) {
             throw new DomainException('手机号或地址长度无效', 40001, 400);
         }
+        if (array_key_exists('isDefault', $p) && !is_bool($p['isDefault'])) {
+            throw new DomainException('默认地址设置无效', 40001, 400);
+        }
+        if (array_key_exists('label', $p) && (!is_string($p['label']) || mb_strlen(trim($p['label'])) > 10 || preg_match('/[\x00-\x1f\x7f]/u', $p['label']))) {
+            throw new DomainException('地址标签最多 10 个字，不能包含换行或控制字符', 40001, 400);
+        }
         $area = $this->resolveArea($p);
         $city = Db::name('shop_area')->where('id', $area['pid'])->find();
         $province = $city ? Db::name('shop_area')->where('id', $city['pid'])->find() : null;
@@ -39,11 +45,17 @@ class AddressService
             if ($row && (!isset($p['version']) || (int)$p['version'] !== (int)$row['row_version'])) {
                 throw new DomainException('地址已更新，请重新读取', 40906, 409);
             }
+            // Existing clients omit isDefault and retain their historical save-and-use behavior.
+            // New clients send an explicit boolean, so editing need not replace the default.
+            $hasAddresses = Db::name('shop_address')->where('user_id', $uid)->where('status', 'normal')->whereNull('deletetime')->count() > 0;
+            $makeDefault = !$hasAddresses || !array_key_exists('isDefault', $p) || $p['isDefault'];
             $data = ['user_id' => $uid, 'receiver' => trim($p['name']), 'mobile' => $p['phone'],
                 'province_id' => $province['id'], 'city_id' => $city['id'], 'area_id' => $area['id'],
-                'address' => trim($p['detail']), 'zipcode' => $area['zipcode'], 'isdefault' => 1,
+                'address' => trim($p['detail']), 'zipcode' => $area['zipcode'], 'isdefault' => $makeDefault ? 1 : 0,
+                'address_label' => array_key_exists('label', $p) ? trim($p['label']) : ($row['address_label'] ?? ''),
                 'status' => 'normal', 'row_version' => $row ? (int)$row['row_version'] + 1 : 1, 'updatetime' => time()];
-            Db::name('shop_address')->where('user_id', $uid)->where('isdefault', 1)->update(['isdefault' => 0]);
+            if ($makeDefault) Db::name('shop_address')->where('user_id', $uid)->where('isdefault', 1)
+                ->update(['isdefault' => 0, 'row_version' => Db::raw('row_version+1'), 'updatetime' => time()]);
             if ($id) Db::name('shop_address')->where('id', $id)->update($data);
             else $id = Db::name('shop_address')->insertGetId($data + ['createtime' => time()]);
             Db::commit();
@@ -56,9 +68,13 @@ class AddressService
         Db::startTrans();
         try {
             Db::name('user')->where('id', $uid)->lock(true)->find();
-            $this->owned($uid, $id);
-            Db::name('shop_address')->where('user_id', $uid)->where('isdefault', 1)->update(['isdefault' => 0]);
-            Db::name('shop_address')->where('id', $id)->update(['isdefault' => 1]);
+            $row = $this->owned($uid, $id);
+            if (!$row['isdefault']) {
+                Db::name('shop_address')->where('user_id', $uid)->where('isdefault', 1)
+                    ->update(['isdefault' => 0, 'row_version' => Db::raw('row_version+1'), 'updatetime' => time()]);
+                Db::name('shop_address')->where('id', $id)
+                    ->update(['isdefault' => 1, 'row_version' => Db::raw('row_version+1'), 'updatetime' => time()]);
+            }
             Db::commit();
         } catch (\Exception $e) { Db::rollback(); throw $e; }
         return $this->format($this->owned($uid, $id));
@@ -70,10 +86,10 @@ class AddressService
         try {
             Db::name('user')->where('id', $uid)->lock(true)->find();
             $row = $this->owned($uid, $id);
-            Db::name('shop_address')->where('id', $id)->where('user_id', $uid)->update(['status' => 'deleted', 'deletetime' => time(), 'isdefault' => 0]);
+            Db::name('shop_address')->where('id', $id)->where('user_id', $uid)->update(['status' => 'deleted', 'deletetime' => time(), 'isdefault' => 0, 'row_version' => Db::raw('row_version+1'), 'updatetime' => time()]);
             if ($row['isdefault']) {
                 $next = Db::name('shop_address')->where('user_id', $uid)->where('status', 'normal')->whereNull('deletetime')->order('id', 'desc')->find();
-                if ($next) Db::name('shop_address')->where('id', $next['id'])->update(['isdefault' => 1]);
+                if ($next) Db::name('shop_address')->where('id', $next['id'])->update(['isdefault' => 1, 'row_version' => Db::raw('row_version+1'), 'updatetime' => time()]);
             }
             Db::commit();
         } catch (\Throwable $e) { Db::rollback(); throw $e; }
@@ -108,6 +124,6 @@ class AddressService
         $detail = $row['address'];
         if ($prefix !== '' && strpos($detail, $prefix) === 0) $detail = substr($detail, strlen($prefix));
         return ['id' => (string)$row['id'], 'name' => $row['receiver'], 'phone' => $row['mobile'], 'region' => implode(' ', $names),
-            'detail' => $detail, 'area_id' => (string)$row['area_id'], 'isDefault' => (bool)$row['isdefault'], 'version' => (int)$row['row_version']];
+            'detail' => $detail, 'area_id' => (string)$row['area_id'], 'isDefault' => (bool)$row['isdefault'], 'label' => (string)($row['address_label'] ?? ''), 'version' => (int)$row['row_version']];
     }
 }
