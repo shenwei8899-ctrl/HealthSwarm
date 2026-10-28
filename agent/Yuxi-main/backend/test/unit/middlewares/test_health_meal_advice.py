@@ -2,17 +2,23 @@
 
 import ast
 import json
+from contextlib import asynccontextmanager
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from langchain_core.messages import AIMessageChunk
+from langchain.agents import create_agent
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.tools import tool
 
 from test.unit.middlewares.test_health_catalog_final_answer import catalog, catalog_graph, human
 from test.unit.middlewares.test_health_final_answer import ControlledStreamModel, production, tool_chunk
 from yuxi.services.health_meal_plan_types import PlannerAnswer
+from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.reference_meal_plan_types import ReferencePlanDraft
 
 BACKEND = Path(__file__).resolve().parents[3]
 
@@ -241,3 +247,113 @@ async def test_reference_source_gap_keeps_explicit_needs_input_without_saving():
     assert result == {"status": "needs_input", "questions": answer.questions}
     authorization.assert_awaited_once_with("synthetic-session", run.uid, "synthetic-binding")
     read_saved.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_assembled_reference_prompt_preserves_other_meals_when_only_dinner_is_selected():
+    """实际提示送入真实工具节点；脚本只提交晚餐，不证明真实模型或PG合并语义。"""
+    current = {
+        "meals": [
+            {"meal_type": meal, "dishes": [{"name": meal + "-original"}]} for meal in ["breakfast", "lunch", "dinner"]
+        ]
+    }
+    original = deepcopy(current)
+    submitted = []
+
+    @tool
+    async def get_reference_plan_context() -> dict:
+        """返回仅选择晚餐、附带合成当前三餐的上下文。"""
+        return {
+            "selection": {"plan_date": "2026-10-28", "meal_types": ["dinner"]},
+            "current_daily_plan": deepcopy(current),
+        }
+
+    @tool
+    async def save_reference_meal_plan(meals: list[dict]) -> dict:
+        """记录提交餐次；原保存 Owner 的范围拒绝由独立负例覆盖。"""
+        assert {meal["meal_type"] for meal in meals} == {"dinner"}
+        submitted.extend(deepcopy(meals))
+        return {"preview_id": "synthetic-selected-dinner"}
+
+    class ReferenceScopeReplayModel(GenericFakeChatModel):
+        """确保组装模型请求确实携带部署兼容的保留约束。"""
+
+        def bind_tools(self, tools, **kwargs):
+            """保留标准 ToolNode 执行。"""
+            return self
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            """旧提示在首次模型调用处失败，避免仅断言测试自产文本。"""
+            prompt = messages[0].content
+            assert "current_daily_plan" in prompt and "不得改写其他餐次" in prompt
+            assert "未提供" in prompt and "不得臆造当前计划" in prompt
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    model = ReferenceScopeReplayModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": "get_reference_plan_context", "args": {}, "id": "context"}]),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "save_reference_meal_plan",
+                            "args": {"meals": [{"meal_type": "dinner", "dishes": [{"name": "synthetic-replacement"}]}]},
+                            "id": "save",
+                        }
+                    ],
+                ),
+                AIMessage(content='{"preview_id":"synthetic-selected-dinner"}'),
+            ]
+        )
+    )
+    graph = create_agent(
+        model, tools=[get_reference_plan_context, save_reference_meal_plan], system_prompt=reference_prompt()
+    )
+    result = await graph.ainvoke({"messages": [HumanMessage("只改今天晚餐，其他两餐保留")]})
+
+    assert [meal["meal_type"] for meal in submitted] == ["dinner"]
+    assert current == original
+    assert result["messages"][-1].text == '{"preview_id":"synthetic-selected-dinner"}'
+
+
+@pytest.mark.asyncio
+async def test_reference_save_owner_still_rejects_an_unselected_breakfast():
+    """原保存 Owner 拒绝额外餐次，不通过提示兼容放松集合校验。"""
+    source = BACKEND / "package/yuxi/services/reference_meal_plan_service.py"
+    node = next(
+        item
+        for item in ast.parse(source.read_text(encoding="utf-8")).body
+        if isinstance(item, ast.AsyncFunctionDef) and item.name == "save_reference_plan"
+    )
+
+    @asynccontextmanager
+    async def transaction():
+        """仅提供合成事务边界，不连接数据库。"""
+        yield "synthetic-session"
+
+    namespace = {
+        "ReferencePlanDraft": ReferencePlanDraft,
+        "HealthVisionError": HealthVisionError,
+        "pg_manager": SimpleNamespace(get_async_session_context=transaction),
+        "require_planner_run": AsyncMock(return_value=("synthetic-run", "synthetic-binding")),
+        "bound_reference_context": AsyncMock(return_value={"selection": {"meal_types": ["dinner"]}}),
+        "tool_payloads": AsyncMock(return_value=[]),
+    }
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), namespace)
+    dish = {
+        "file_id": "synthetic-file",
+        "chunk_id": "synthetic-chunk",
+        "name": "合成菜",
+        "ingredients": ["南瓜"],
+        "steps": ["合成步骤"],
+    }
+    draft = {
+        "meals": [{"meal_type": meal, "dishes": [dish]} for meal in ["breakfast", "dinner"]],
+        "purchase_items": [],
+        "purchase_gaps": [{"ingredient": "南瓜", "reason": "no_match", "detail": "合成无匹配"}],
+    }
+
+    with pytest.raises(HealthVisionError) as failure:
+        await namespace["save_reference_plan"](SimpleNamespace(uid="synthetic-user"), draft)
+    assert failure.value.code == "reference_meals_mismatch"
