@@ -17,7 +17,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolRuntime
 from pydantic import ValidationError
-from sqlalchemy import case, or_, select
+from sqlalchemy import and_, case, func, or_, select
 
 from test.unit.middlewares.test_health_final_answer import Context
 from yuxi.agents.toolkits.health import query_family_nutrition_knowledge, query_reviewed_nutrition_knowledge
@@ -104,6 +104,8 @@ def search_services(monkeypatch):
             "select": select,
             "case": case,
             "or_": or_,
+            "and_": and_,
+            "func": func,
             "re": re,
         },
     )

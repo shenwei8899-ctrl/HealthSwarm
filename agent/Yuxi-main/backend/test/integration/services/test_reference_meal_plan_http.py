@@ -791,11 +791,13 @@ async def test_long_document_opens_the_actual_late_search_window(family_profile_
 
 
 async def test_exact_cooking_title_is_not_displaced_by_clinical_semantic_hits(family_profile_http, monkeypatch):
-    """普通做法按真实标题可找到，不能被疾病菜单占满向量结果。"""
+    """标题命中先于更早排序的正文命中，疾病菜单不能占满结果。"""
     current = await setup_reference(family_profile_http, monkeypatch)
     async with current[1].begin() as db:
         file = await db.scalar(select(KnowledgeFile))
         file.filename = "烹饪菜谱｜清粥.md"
+        first = await db.scalar(select(KnowledgeChunk))
+        first.content = "大米100克\n加水煮熟"
         for index in range(5):
             fid = f"competing-file-{index}"
             title = "USDA家庭菜谱｜粥.md" if index == 0 else f"官方菜单集合｜{index}粥临床资料.md"
@@ -815,9 +817,28 @@ async def test_exact_cooking_title_is_not_displaced_by_clinical_semantic_hits(fa
                     file_id=fid,
                     kb_id="synthetic-reference-kb",
                     chunk_index=0,
-                    content="合成竞争资料，粥",
+                    content="大米100克\n加水煮熟" if index == 0 else "合成竞争资料，粥",
                 )
             )
+        db.add(
+            KnowledgeFile(
+                file_id="earlier-body-file",
+                kb_id="synthetic-reference-kb",
+                filename="烹饪菜谱｜A早餐.md",
+                status="indexed",
+                content_hash="synthetic-body-competition",
+            )
+        )
+        await db.flush()
+        db.add(
+            KnowledgeChunk(
+                chunk_id="earlier-body-chunk",
+                file_id="earlier-body-file",
+                kb_id="synthetic-reference-kb",
+                chunk_index=0,
+                content="粥\n大米100克\n加水煮熟",
+            )
+        )
 
     async def unrelated_vector(*args):
         raise AssertionError("精确标题命中时不应再调用语义检索")
@@ -829,7 +850,119 @@ async def test_exact_cooking_title_is_not_displaced_by_clinical_semantic_hits(fa
     assert hits["items"][0]["filename"] == "烹饪菜谱｜清粥.md"
     assert hits["items"][0]["chunk_id"] == "reference-chunk"
     assert hits["items"][1]["filename"] == "USDA家庭菜谱｜粥.md"
-    assert len(hits["items"]) == 4
+    assert hits["items"][2]["file_id"] == "earlier-body-file"
+    assert len(hits["items"]) == 3
+
+
+async def test_cooking_body_hit_is_found_before_directory_and_clinical_titles(family_profile_http, monkeypatch):
+    """普通菜谱正文可命中食材，目录和疾病标题不能令其失去打开资格。"""
+    current = await setup_reference(family_profile_http, monkeypatch)
+    async with current[1].begin() as db:
+        file = await db.scalar(select(KnowledgeFile))
+        file.filename = "烹饪菜谱｜早餐糊.md"
+        first = await db.scalar(select(KnowledgeChunk))
+        first.content = "来源与介绍"
+        db.add_all(
+            [
+                KnowledgeChunk(
+                    chunk_id="cooking-body-hit",
+                    file_id=file.file_id,
+                    kb_id=file.kb_id,
+                    chunk_index=1,
+                    content="早餐糊\n燕麦30克\n加水煮熟",
+                ),
+                KnowledgeChunk(
+                    chunk_id="cooking-body-duplicate",
+                    file_id=file.file_id,
+                    kb_id=file.kb_id,
+                    chunk_index=2,
+                    content="燕麦的附注",
+                ),
+            ]
+        )
+        for index in range(5):
+            fid = f"directory-oat-{index}"
+            db.add(
+                KnowledgeFile(
+                    file_id=fid,
+                    kb_id=file.kb_id,
+                    filename=f"分类目录｜燕麦粥{index}.md" if index < 4 else "疾病食养｜燕麦粥.md",
+                    status="indexed",
+                    content_hash="synthetic-directory",
+                )
+            )
+            await db.flush()
+            db.add(
+                KnowledgeChunk(
+                    chunk_id=f"directory-oat-chunk-{index}",
+                    file_id=fid,
+                    kb_id=file.kb_id,
+                    chunk_index=0,
+                    content="燕麦粥目录，无食材和制作步骤",
+                )
+            )
+
+    async def unrelated_vector(*args):
+        raise AssertionError("普通烹饪正文命中时不应被疾病语义检索替代")
+
+    monkeypatch.setattr(service, "search_family_nutrition_knowledge", unrelated_vector)
+    bound = await bind_reference(current)
+    context = await running_context(current, bound.json()["thread_id"])
+    hits = await service.search_reference_recipes(context, "早餐 燕麦 制作方法")
+    assert [(item["file_id"], item["chunk_id"]) for item in hits["items"]] == [("reference-file", "cooking-body-hit")]
+    await receipt(current[1], context, "search_reference_recipes", hits)
+    opened = await service.read_reference_recipe(context, "reference-file", "cooking-body-hit")
+    assert "燕麦30克" in opened["content"]
+    with pytest.raises(HealthVisionError, match="reference_receipt_invalid"):
+        await service.read_reference_recipe(context, "directory-oat-0", "directory-oat-chunk-0")
+
+
+async def test_cooking_body_search_keeps_current_kb_and_indexed_file_boundary(family_profile_http, monkeypatch):
+    """正文召回不能把别库、未索引文件或目录当成当前菜谱。"""
+    current = await setup_reference(family_profile_http, monkeypatch)
+    async with current[1].begin() as db:
+        db.add(KnowledgeBase(kb_id="other-recipe-kb", name="其他合成库", kb_type="milvus"))
+        await db.flush()
+        for index, (kb, status, folder) in enumerate(
+            [
+                ("other-recipe-kb", "indexed", False),
+                ("synthetic-reference-kb", "pending", False),
+                ("synthetic-reference-kb", "indexed", True),
+            ]
+        ):
+            fid = f"excluded-cooking-{index}"
+            db.add(
+                KnowledgeFile(
+                    file_id=fid,
+                    kb_id=kb,
+                    filename=f"烹饪菜谱｜早餐糊{index}.md",
+                    status=status,
+                    is_folder=folder,
+                    content_hash="synthetic-excluded",
+                )
+            )
+            await db.flush()
+            db.add(
+                KnowledgeChunk(
+                    chunk_id=f"excluded-chunk-{index}",
+                    file_id=fid,
+                    kb_id=kb,
+                    chunk_index=0,
+                    content="燕麦30克 加水煮熟",
+                )
+            )
+    calls = []
+
+    async def semantic(context, query):
+        calls.append(query)
+        return {"status": "empty", "sources": []}
+
+    monkeypatch.setattr(service, "search_family_nutrition_knowledge", semantic)
+    bound = await bind_reference(current)
+    context = await running_context(current, bound.json()["thread_id"])
+    hits = await service.search_reference_recipes(context, "燕麦")
+    assert calls == ["燕麦"]
+    assert hits["items"] == []
 
 
 async def test_no_title_match_keeps_the_fixed_kb_semantic_search(family_profile_http, monkeypatch):

@@ -100,6 +100,74 @@ async def test_conflicting_payload_cannot_reuse_preparation_key(family_profile_h
         assert await db.scalar(select(func.count()).select_from(TaskRecord)) == 1
 
 
+async def test_profile_save_reuse_persists_alias_across_changed_sources_and_conflicting_replay(family_profile_http):
+    """表单复用已有准备须保存请求别名，改档案后重放仍绑定原目标且隔离其他账号。"""
+    client, sessions, users = family_profile_http
+    family, path, body, headers = await input_for(client, users["self"])
+    key_x, key_y = body["client_request_id"], str(uuid4())
+    profile_body = {key: value for key, value in body.items() if key != "processing_consents"}
+    saved = await client.post(f"/api/family/{family['id']}/miniapp-profile", json=profile_body, headers=headers)
+    assert saved.status_code == 200, saved.text
+    prepared = await client.post(
+        path + "/from-profile",
+        json={"client_request_id": key_y},
+        headers={**users["self"], "Idempotency-Key": key_y},
+    )
+    assert prepared.status_code == 200, prepared.text
+    target_id = prepared.json()["id"]
+    reused = await client.post(path, json=body, headers=headers)
+    assert reused.status_code == 200, reused.text
+    assert reused.json()["id"] == target_id and reused.json()["request_id"] == key_y
+    async with sessions() as db:
+        alias = await db.scalar(
+            select(HealthOnboardingPreparation).where(
+                HealthOnboardingPreparation.actor_uid == "self", HealthOnboardingPreparation.request_id == key_x
+            )
+        )
+        assert alias is not None
+        target = await db.get(HealthOnboardingPreparation, target_id)
+        assert (alias.actor_uid, alias.family_id, alias.status) == ("self", family["id"], "alias")
+        assert (target.actor_uid, target.family_id, target.request_id) == ("self", family["id"], key_y)
+        assert alias.result == {"reused_preparation_id": target_id} and alias.sources == target.sources
+        assert len(alias.fingerprint) == 64 and alias.fingerprint != target.fingerprint
+        assert alias.task_id is None and target.task_id is not None
+        alias_id, alias_fingerprint, alias_sources = alias.id, alias.fingerprint, alias.sources
+        receipt = await db.get(HealthMiniappProfileReceipt, ("self", key_x))
+        assert receipt.family_id == family["id"]
+        receipt_facts = receipt.family_id, receipt.fingerprint, receipt.member_refs
+        member = await db.get(FamilyMember, body["members"][0]["member_id"])
+        assert member.version == body["members"][0]["version"] + 1
+        member_facts = member.name, member.profile
+        for model, count in ((HealthOnboardingPreparation, 2), (HealthMiniappProfileReceipt, 1), (TaskRecord, 1)):
+            assert await db.scalar(select(func.count()).select_from(model)) == count
+        member.version += 1
+        changed_version = member.version
+        await db.commit()
+    replay = await client.post(path, json=body, headers=headers)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["id"] == target_id and replay.json()["status"] == "stale"
+    assert replay.json()["error_code"] == "preparation_sources_changed"
+    through_alias = await client.get(path + "/" + alias_id, headers=users["self"])
+    assert through_alias.status_code == 200 and through_alias.json()["id"] == target_id
+    conflicting = {**body, "members": [{**body["members"][0], "name": "改名的合成重放"}]}
+    rejected = await client.post(path, json=conflicting, headers=headers)
+    assert rejected.status_code == 409 and rejected.json()["code"] == "request_conflict"
+    foreign = await client.post(path, json=body, headers={**users["other"], "Idempotency-Key": key_x})
+    assert foreign.status_code == 404
+    assert (await client.get(path + "/" + alias_id, headers=users["other"])).status_code == 404
+    async with sessions() as db:
+        alias = await db.get(HealthOnboardingPreparation, alias_id)
+        assert (alias.actor_uid, alias.request_id, alias.fingerprint) == ("self", key_x, alias_fingerprint)
+        assert alias.family_id == family["id"] and alias.status == "alias"
+        assert alias.result == {"reused_preparation_id": target_id} and alias.sources == alias_sources
+        receipt = await db.get(HealthMiniappProfileReceipt, ("self", key_x))
+        assert (receipt.family_id, receipt.fingerprint, receipt.member_refs) == receipt_facts
+        member = await db.get(FamilyMember, body["members"][0]["member_id"])
+        assert member.version == changed_version and (member.name, member.profile) == member_facts
+        for model, count in ((HealthOnboardingPreparation, 2), (HealthMiniappProfileReceipt, 1), (TaskRecord, 1)):
+            assert await db.scalar(select(func.count()).select_from(model)) == count
+
+
 async def test_failed_setup_preserves_profile_and_concurrent_resume_queues_once(family_profile_http, monkeypatch):
     """实际执行后台入口，过期配置失败后保留档案，重试只登记新阶段。"""
     client, sessions, users = family_profile_http

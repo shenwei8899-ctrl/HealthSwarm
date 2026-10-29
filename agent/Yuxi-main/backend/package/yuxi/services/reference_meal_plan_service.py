@@ -5,7 +5,7 @@ import json
 import re
 from uuid import NAMESPACE_URL, uuid5
 
-from sqlalchemy import case, or_, select
+from sqlalchemy import and_, case, func, or_, select
 
 from yuxi.repositories.family_repository import FamilyRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
@@ -181,34 +181,67 @@ async def search_reference_recipes(context, query):
             for term in re.findall(r"[\w\u4e00-\u9fff]+", query)
             if term not in {"简单", "早餐", "午餐", "晚餐", "制作方法", "做法", "烹饪菜谱", "家常"}
         ]
-        # 精确菜名优先，避免广义营养向量结果挤掉库中已有的烹饪步骤。
+        kb_ids = configured_health_kb_ids("health-meal-planner")
+        cooking_file = or_(
+            KnowledgeFile.filename.startswith("烹饪菜谱"), KnowledgeFile.filename.startswith("USDA家庭菜谱")
+        )
+        source_order = case((KnowledgeFile.filename.startswith("烹饪菜谱"), 0), else_=1)
+        # 目录与疾病标题不截断普通菜谱召回；先找完整烹饪标题，再补正文中的食材和做法。
         matches = (
             (
                 await session.execute(
                     select(KnowledgeFile, KnowledgeChunk)
                     .join(KnowledgeChunk, KnowledgeChunk.file_id == KnowledgeFile.file_id)
                     .where(
-                        KnowledgeFile.kb_id.in_(configured_health_kb_ids("health-meal-planner")),
+                        KnowledgeFile.kb_id.in_(kb_ids),
                         KnowledgeChunk.kb_id == KnowledgeFile.kb_id,
                         KnowledgeFile.is_folder.is_(False),
                         KnowledgeFile.status == "indexed",
+                        cooking_file,
                         KnowledgeChunk.chunk_index == 0,
                         or_(*(KnowledgeFile.filename.contains(term, autoescape=True) for term in terms)),
                     )
-                    .order_by(
-                        case(
-                            (KnowledgeFile.filename.startswith("烹饪菜谱"), 0),
-                            (KnowledgeFile.filename.startswith("USDA家庭菜谱"), 1),
-                            else_=2,
-                        ),
-                        KnowledgeFile.filename,
-                    )
+                    .order_by(source_order, KnowledgeFile.filename)
                     .limit(4)
                 )
             ).all()
             if terms
             else []
         )
+        if terms and len(matches) < 4:
+            first_hit = (
+                select(KnowledgeChunk.file_id, func.min(KnowledgeChunk.chunk_index).label("chunk_index"))
+                .join(KnowledgeFile, KnowledgeFile.file_id == KnowledgeChunk.file_id)
+                .where(
+                    KnowledgeFile.kb_id.in_(kb_ids),
+                    KnowledgeChunk.kb_id == KnowledgeFile.kb_id,
+                    KnowledgeFile.is_folder.is_(False),
+                    KnowledgeFile.status == "indexed",
+                    cooking_file,
+                    KnowledgeFile.file_id.not_in([file.file_id for file, _ in matches]),
+                    or_(*(KnowledgeChunk.content.contains(term, autoescape=True) for term in terms)),
+                )
+                .group_by(KnowledgeChunk.file_id)
+                .subquery()
+            )
+            matches.extend(
+                (
+                    await session.execute(
+                        select(KnowledgeFile, KnowledgeChunk)
+                        .join(first_hit, first_hit.c.file_id == KnowledgeFile.file_id)
+                        .join(
+                            KnowledgeChunk,
+                            and_(
+                                KnowledgeChunk.file_id == first_hit.c.file_id,
+                                KnowledgeChunk.chunk_index == first_hit.c.chunk_index,
+                                KnowledgeChunk.kb_id == KnowledgeFile.kb_id,
+                            ),
+                        )
+                        .order_by(source_order, KnowledgeFile.filename)
+                        .limit(4 - len(matches))
+                    )
+                ).all()
+            )
     material = (
         {
             "status": "ok",
