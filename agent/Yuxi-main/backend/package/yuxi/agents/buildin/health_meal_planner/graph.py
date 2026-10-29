@@ -5,6 +5,7 @@ from contextlib import aclosing
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from yuxi.agents.base import BaseAgent
 from yuxi.agents.buildin.health_consultation.graph import HealthAuthorizationMiddleware
@@ -29,6 +30,7 @@ from yuxi.services.health_family_planner_types import FAMILY_PLANNER_TOOLS
 from yuxi.services.health_initial_meal_plan_types import INITIAL_PLANNER_TOOLS
 from yuxi.services.health_safe_planner_types import SAFE_PLANNER_TOOLS
 from yuxi.services.reference_meal_plan_types import REFERENCE_TOOLS
+from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.agents.toolkits.safe_meal_planner import (
     get_safe_plan_context,
     preview_safe_plan_swap,
@@ -41,14 +43,80 @@ from yuxi.models.providers.cache import model_cache
 class MealPlanResultMiddleware(AgentMiddleware):
     """模型不能自行输出菜谱、营养或审核事实。"""
 
+    async def awrap_model_call(self, request, handler):
+        """本轮参考餐单保存成功后，只进行一次真实的无工具最终调用。"""
+        from yuxi.services.health_meal_plan_service import planner_final_result
+
+        preview_id = self._saved_reference_preview(request.state, request.runtime.context)
+        if preview_id is None:
+            return await handler(request)
+
+        # 当前 Run 的完成审计、成员权限和菜谱原文仍由原服务重验。
+        await planner_final_result(request.runtime.context, json.dumps({"preview_id": preview_id}))
+        original = request.system_message.text if request.system_message else ""
+        instruction = (
+            "本轮所选餐次已通过保存工具完成，资料准备结束。"
+            "当前仅生成最终回复，不再检索、调用工具或修改餐单。"
+            f'最终仅输出 {{"preview_id":"{preview_id}"}}，服务器将重新核对并装配已保存的真实餐单。'
+        )
+        return await handler(
+            request.override(
+                tools=[],
+                tool_choice=None,
+                response_format=None,
+                system_message=SystemMessage(content=f"{original}\n\n{instruction}"),
+            )
+        )
+
     async def aafter_model(self, state, runtime):
         """保持消息身份，将最终回执替换为权威结构化快照。"""
         from yuxi.services.health_meal_plan_service import planner_final_result
 
         message = state["messages"][-1]
+        preview_id = self._saved_reference_preview(state, runtime.context)
+        if preview_id is not None and message.type == "ai" and (message.tool_calls or message.invalid_tool_calls):
+            raise HealthVisionError("planner_finalization_invalid", "餐单保存后的最终回复不允许继续调用工具", 422)
         if message.type == "ai" and not message.tool_calls:
-            result = await planner_final_result(runtime.context, message.text)
+            answer = json.dumps({"preview_id": preview_id}) if preview_id is not None else message.text
+            result = await planner_final_result(runtime.context, answer)
             return {"messages": [message.model_copy(update={"content": json.dumps(result, ensure_ascii=False)})]}
+
+    @staticmethod
+    def _saved_reference_preview(state, context):
+        """仅选择当前请求消息之后唯一的成功保存回执，不沿用旧轮次。"""
+        tools = tuple(name for name in context.tools if name != "query_family_nutrition_knowledge")
+        if tools != REFERENCE_TOOLS:
+            return None
+
+        messages = state.get("messages", [])
+        for index in range(len(messages) - 1, -1, -1):
+            human = messages[index]
+            if isinstance(human, HumanMessage):
+                if human.additional_kwargs.get("health_request_id") != context.request_id:
+                    return None
+                break
+        else:
+            return None
+
+        previews = set()
+        for message in messages[index + 1 :]:
+            if not (
+                isinstance(message, ToolMessage)
+                and message.name == "save_reference_meal_plan"
+                and message.status == "success"
+            ):
+                continue
+            try:
+                payload = json.loads(message.content)
+                preview_id = payload.get("preview_id") if isinstance(payload, dict) else None
+                if not isinstance(preview_id, str) or not preview_id:
+                    raise ValueError("缺少参考餐单回执")
+            except (TypeError, ValueError):
+                raise HealthVisionError("reference_receipt_invalid", "参考餐单保存回执无法核对", 409) from None
+            previews.add(preview_id)
+        if len(previews) > 1:
+            raise HealthVisionError("reference_receipt_invalid", "本轮存在多个不同参考餐单，请重新生成", 409)
+        return next(iter(previews), None)
 
 
 class HealthMealPlannerAgent(BaseAgent):
