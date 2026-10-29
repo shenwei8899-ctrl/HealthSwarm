@@ -10,6 +10,7 @@ from uuid import uuid4
 from langchain.chat_models import BaseChatModel
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, AIMessageChunk, convert_to_messages
+from langchain_core.outputs import ChatGenerationChunk
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from pydantic import Field, SecretStr
@@ -135,8 +136,33 @@ class ChatCompletionsAdapter(ChatOpenAI):
     """在解析边界保留扩展字段，HTTP、重试和工具绑定由上游负责。"""
 
     preserve_reasoning: bool = Field(default=False, exclude=True)
+    complete_tool_responses: bool = Field(default=False, exclude=True)
     # 开启 UID 头时的用户 uid；签名在每次发送边界现算，不缓存时间戳。
     user_uid: str | None = Field(default=None, exclude=True)
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        """参考工具接收完整参数，再沿标准分片路径产生真实模型事件。"""
+        if self.complete_tool_responses and kwargs.get("tools"):
+            result = await super()._agenerate(
+                messages, stop=stop, run_manager=run_manager, **{**kwargs, "stream": False}
+            )
+            generation = result.generations[0]
+            message = generation.message
+            data = message.model_dump(exclude={"type"})
+            # v1 内容视图不会自动带入已有的非法工具参数，保留原记录供边界拒绝。
+            if (
+                message.invalid_tool_calls
+                and isinstance(message.content, list)
+                and message.response_metadata.get("output_version") == "v1"
+            ):
+                data["content"] = [*message.content, *message.invalid_tool_calls]
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(**data),
+                generation_info={**(result.llm_output or {}), **(generation.generation_info or {})},
+            )
+            return
+        async for chunk in super()._astream(messages, stop=stop, run_manager=run_manager, **kwargs):
+            yield chunk
 
     def _convert_chunk_to_generation_chunk(self, chunk, default_chunk_class, base_generation_info):
         """在上游丢弃扩展字段前读取推理，并归一化工具续片。"""

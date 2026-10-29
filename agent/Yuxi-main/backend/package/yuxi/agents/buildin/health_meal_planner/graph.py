@@ -6,7 +6,6 @@ from contextlib import aclosing
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_openai import ChatOpenAI
 
 from yuxi.agents.base import BaseAgent
 from yuxi.agents.buildin.health_consultation.graph import HealthAuthorizationMiddleware
@@ -37,7 +36,7 @@ from yuxi.agents.toolkits.safe_meal_planner import (
     preview_safe_plan_swap,
     preview_safe_plan_regeneration,
 )
-from yuxi.models.chat import load_chat_model
+from yuxi.models.chat import ChatCompletionsAdapter, load_chat_model
 from yuxi.models.providers.cache import model_cache
 
 
@@ -51,9 +50,12 @@ class MealPlanResultMiddleware(AgentMiddleware):
         preview_id = self._saved_reference_preview(request.state, request.runtime.context)
         if preview_id is None:
             tools = tuple(name for name in request.runtime.context.tools if name != "query_family_nutrition_knowledge")
-            if tools == REFERENCE_TOOLS and request.tools and isinstance(request.model, ChatOpenAI):
-                # 已观测到并行空参数反复消耗步数；准备阶段逐次取得可核验回执。
-                request = request.override(model_settings={**request.model_settings, "parallel_tool_calls": False})
+            if tools == REFERENCE_TOOLS and request.tools and isinstance(request.model, ChatCompletionsAdapter):
+                # 工具参数接收完整响应后再执行；不改变原模型或无工具最终回复。
+                request = request.override(
+                    model=request.model.model_copy(update={"complete_tool_responses": True}),
+                    model_settings={**request.model_settings, "parallel_tool_calls": False},
+                )
             return await handler(request)
 
         # 当前 Run 的完成审计、成员权限和菜谱原文仍由原服务重验。

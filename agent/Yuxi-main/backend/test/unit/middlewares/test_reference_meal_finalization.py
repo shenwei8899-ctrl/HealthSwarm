@@ -12,8 +12,10 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages.utils import message_chunk_to_message
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.stream.transformers import CustomTransformer
 from pydantic import Field
 
 from test.unit.middlewares.test_health_final_answer import ControlledStreamModel, usage
@@ -21,6 +23,7 @@ from yuxi.agents.buildin.health_meal_planner.graph import MealPlanResultMiddlewa
 from yuxi.agents.toolkits import meal_planner
 from yuxi.models.chat import ChatCompletionsAdapter
 from yuxi.services import health_meal_plan_service, reference_meal_plan_service
+from yuxi.services import model_message_audit_service
 from yuxi.services.health_family_planner_types import FAMILY_PLANNER_TOOLS
 from yuxi.services.health_initial_meal_plan_types import INITIAL_PLANNER_TOOLS
 from yuxi.services.health_safe_planner_types import SAFE_PLANNER_TOOLS
@@ -193,33 +196,78 @@ async def run_graph(model, *, context=None, checkpoint=None, messages=None):
     return await graph.aget_state(config), observed, native
 
 
+def sdk_response(message, identifier, prompt_tokens, completion_tokens, *, stream=False):
+    """内存 HTTP 提供完整工具 JSON，只有无工具最终回复使用真实 SSE 格式。"""
+    usage_data = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }
+    finish_reason = "tool_calls" if message.get("tool_calls") else "stop"
+    if not stream:
+        return httpx.Response(
+            200,
+            json={
+                "id": identifier,
+                "object": "chat.completion",
+                "created": 1,
+                "model": "gpt-6.1-sol",
+                "system_fingerprint": "synthetic-fingerprint",
+                "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+                "usage": usage_data,
+            },
+        )
+
+    frames = [
+        {
+            "id": identifier,
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-6.1-sol",
+            "system_fingerprint": "synthetic-fingerprint",
+            "choices": [{"index": 0, "delta": message, "finish_reason": finish_reason}],
+        },
+        {
+            "id": identifier,
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-6.1-sol",
+            "choices": [],
+            "usage": usage_data,
+        },
+    ]
+    content = "".join(f"data: {json.dumps(frame)}\n\n" for frame in frames) + "data: [DONE]\n\n"
+    return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=content.encode())
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model_type", [ChatCompletionsAdapter, ChatOpenAI])
 @pytest.mark.parametrize("phase", ["preparation", "override_parallel", "saved"])
 async def test_reference_serial_tool_setting_reaches_real_openai_wire_only_during_preparation(
     model_type, phase, services
 ):
-    """真实 SDK 绑定到发送边界；准备时串行，保存后无工具且不引入参数。"""
+    """工具准备接收完整 JSON；原模型不变，保存后的无工具回复仍走 SSE。"""
     wire_requests = []
 
     def respond(request):
         """内存 HTTP 边界只记录实际载荷，不访问网络。"""
-        wire_requests.append(json.loads(request.content))
-        return httpx.Response(
-            200,
-            json={
-                "id": "synthetic-completion",
-                "object": "chat.completion",
-                "created": 1,
-                "model": "gpt-6.1-sol",
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "合成模型回复"},
-                        "finish_reason": "stop",
-                    }
-                ],
-            },
+        wire = json.loads(request.content)
+        wire_requests.append(wire)
+        message = {"role": "assistant", "content": "合成模型回复"}
+        if phase != "saved":
+            message["tool_calls"] = [
+                {
+                    "id": "synthetic-search",
+                    "type": "function",
+                    "function": {"name": "search_reference_recipes", "arguments": '{"query":"燕麦 鸡蛋"}'},
+                }
+            ]
+        return sdk_response(
+            message,
+            "synthetic-completion",
+            3,
+            2,
+            stream=wire.get("stream") is True,
         )
 
     settings = {"temperature": 0.17, "max_completion_tokens": 64}
@@ -234,8 +282,10 @@ async def test_reference_serial_tool_setting_reaches_real_openai_wire_only_durin
             base_url="https://example.invalid/v1",
             http_async_client=client,
             use_responses_api=False,
+            stream_usage=True,
             max_retries=0,
         )
+        original_streaming = model.disable_streaming
         request = request_for(messages).override(model=model, model_settings=settings)
 
         async def call_model(prepared):
@@ -245,36 +295,287 @@ async def test_reference_serial_tool_setting_reaches_real_openai_wire_only_durin
                 if prepared.tools
                 else prepared.model.bind(**prepared.model_settings)
             )
-            result = await bound.ainvoke([prepared.system_message, *prepared.messages])
-            return ModelResponse(result=[result])
+            chunks = [chunk async for chunk in bound.astream([prepared.system_message, *prepared.messages])]
+            result = chunks[0]
+            for chunk in chunks[1:]:
+                result += chunk
+            return ModelResponse(result=[message_chunk_to_message(result)])
 
         handler = AsyncMock(side_effect=call_model)
         result = await MealPlanResultMiddleware().awrap_model_call(request, handler)
 
     handler.assert_awaited_once()
     prepared = handler.await_args.args[0]
-    assert prepared is not request
+    if model_type is ChatOpenAI and phase != "saved":
+        assert prepared is request
+    else:
+        assert prepared is not request
     assert result.result[0].text == "合成模型回复"
     assert len(wire_requests) == 1
     wire = wire_requests[0]
     assert wire["temperature"] == 0.17 and wire["max_completion_tokens"] == 64
     assert request.model is model and request.model_settings is settings
+    assert model.disable_streaming is original_streaming is False
+    assert "complete_tool_responses" not in wire
+    assert "complete_tool_responses" not in model.model_dump()
     assert settings == original_settings
     assert request.tools == TOOLS and request.tool_choice == "any" and request.response_format
     if phase == "saved":
         assert prepared.tools == [] and prepared.tool_choice is None and prepared.response_format is None
         assert prepared.model_settings == original_settings
+        assert prepared.model is model and wire["stream"] is True
         assert "tools" not in wire and "parallel_tool_calls" not in wire
         services.final.assert_awaited_once()
-    else:
+    elif model_type is ChatCompletionsAdapter:
         assert prepared.model_settings == {**original_settings, "parallel_tool_calls": False}
         assert prepared.model_settings is not settings
+        assert prepared.model is not model and prepared.model.complete_tool_responses is True
+        assert prepared.model.disable_streaming is False and model.complete_tool_responses is False
+        assert wire.get("stream") is not True
         assert wire["parallel_tool_calls"] is False
         assert "parallel_tool_calls" not in wire.get("extra_body", {})
         functions = {tool["function"]["name"]: tool["function"] for tool in wire["tools"]}
         assert list(functions) == list(REFERENCE_TOOLS)
         assert "query" in functions["search_reference_recipes"]["parameters"]["required"]
+        assert result.result[0].tool_calls == [
+            {
+                "id": "synthetic-search",
+                "name": "search_reference_recipes",
+                "args": {"query": "燕麦 鸡蛋"},
+                "type": "tool_call",
+            }
+        ]
         services.final.assert_not_awaited()
+    else:
+        assert prepared.model is model and prepared.model_settings is settings
+        assert wire["stream"] is True
+        assert wire.get("parallel_tool_calls") == original_settings.get("parallel_tool_calls")
+        services.final.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_complete_tool_responses_keep_arguments_audit_usage_and_streamed_finalization(services, monkeypatch):
+    """真实 SDK 与 v3 图连接三路参数、保存、流式收尾和审计；数据库与来源服务仍为合成边界。"""
+    searches = AsyncMock(return_value={"items": [{"file_id": "synthetic-file", "chunk_id": "synthetic-chunk"}]})
+    monkeypatch.setattr(reference_meal_plan_service, "search_reference_recipes", searches)
+    audit_repository = SimpleNamespace(start=AsyncMock(return_value=(None, True)), finish=AsyncMock())
+
+    @asynccontextmanager
+    async def audit_session():
+        """只隔离审计数据库，不替换实际生命周期消费者。"""
+        yield object()
+
+    monkeypatch.setattr(model_message_audit_service.pg_manager, "get_async_session_context", audit_session)
+    monkeypatch.setattr(model_message_audit_service, "ModelMessageAuditRepository", lambda db: audit_repository)
+    context = Context()
+    collector = model_message_audit_service.ModelMessageAuditCollector(
+        run_id=context.run_id,
+        request_id=context.request_id,
+        thread_id=context.thread_id,
+        worker_id="synthetic-worker",
+    )
+    queries = ["燕麦 鸡蛋", "米饭 鸡胸肉", "西兰花 豆腐"]
+    wire_requests = []
+
+    def respond(request):
+        """供应商 stub 故意返回三个合法调用，验证参数完整性不依赖其遵守串行请求。"""
+        wire = json.loads(request.content)
+        wire_requests.append(wire)
+        call_index = len(wire_requests)
+        if call_index == 1:
+            tool_calls = [
+                {
+                    "id": f"synthetic-search-{index}",
+                    "type": "function",
+                    "function": {"name": "search_reference_recipes", "arguments": json.dumps({"query": query})},
+                }
+                for index, query in enumerate(queries)
+            ]
+        elif call_index == 2:
+            tool_calls = [
+                {
+                    "id": "synthetic-save",
+                    "type": "function",
+                    "function": {"name": "save_reference_meal_plan", "arguments": json.dumps(DRAFT)},
+                }
+            ]
+        else:
+            assert call_index == 3, "保存后只能出现一次无工具最终模型调用"
+            tool_calls = []
+        message = {"role": "assistant", "content": "模型正文不拥有餐单事实。" if not tool_calls else ""}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        return sdk_response(message, f"synthetic-completion-{call_index}", 3, 2, stream=wire.get("stream") is True)
+
+    observed = ObserveRequests()
+    native = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        model = ChatCompletionsAdapter(
+            model="gpt-6.1-sol",
+            api_key="synthetic-test-key",
+            base_url="https://example.invalid/v1",
+            http_async_client=client,
+            use_responses_api=False,
+            stream_usage=True,
+            max_retries=0,
+        )
+        graph = create_agent(
+            model,
+            tools=TOOLS,
+            middleware=[MealPlanResultMiddleware(), observed, usage.TokenUsageMiddleware()],
+            context_schema=Context,
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": context.thread_id}}
+        async with await graph.astream_events(
+            {"messages": [human()]}, context=context, config=config, version="v3", transformers=[CustomTransformer]
+        ) as events:
+            async for event in events:
+                if event["method"] != "messages":
+                    continue
+                params = event["params"]
+                message, metadata = params["data"]
+                native.append((message, metadata))
+                await collector.consume(
+                    message,
+                    {
+                        **metadata,
+                        "stream_event": {
+                            "namespace": params["namespace"],
+                            "seq": event["seq"],
+                            "timestamp": params["timestamp"],
+                        },
+                    },
+                )
+        state = await graph.aget_state(config)
+
+    assert len(wire_requests) == 3
+    assert [wire.get("stream") is True for wire in wire_requests] == [False, False, True]
+    assert [wire["parallel_tool_calls"] for wire in wire_requests[:2]] == [False, False]
+    assert "tools" not in wire_requests[-1] and "parallel_tool_calls" not in wire_requests[-1]
+    assert all("complete_tool_responses" not in wire for wire in wire_requests)
+    assert model.disable_streaming is False
+    assert model.complete_tool_responses is False and "complete_tool_responses" not in model.model_dump()
+    assert all(request.model.complete_tool_responses is True for request in observed.requests[:2])
+    assert all(request.model.disable_streaming is False for request in observed.requests)
+    assert observed.requests[-1].model is model and observed.requests[-1].tools == []
+    assert sorted(call.args[1] for call in searches.await_args_list) == sorted(queries)
+    assert all(call.args[0] == context for call in searches.await_args_list)
+    tools = [message for message in state.values["messages"] if isinstance(message, ToolMessage)]
+    assert len(tools) == 4 and all(message.status == "success" for message in tools)
+    assert services.saved.await_count == 1
+    assert services.saved.await_args.args[0] == context
+    assert ReferencePlanDraft.model_validate(services.saved.await_args.args[1]).model_dump(exclude_none=True) == DRAFT
+    assert [json.loads(call.args[1]) for call in services.final.await_args_list] == [{"preview_id": PREVIEW}] * 2
+    final = state.values["messages"][-1]
+    assert json.loads(final.text) == snapshot()
+    lifecycle_starts = [
+        message for message, _ in native if isinstance(message, dict) and message.get("event") == "message-start"
+    ]
+    assert final.id == lifecycle_starts[-1]["id"]
+    assert final.usage_metadata["total_tokens"] == 5
+    assert state.values["token_usage"]["run"]["model_call_count"] == 3
+    assert state.values["token_usage"]["run"]["usage_reported_call_count"] == 3
+    assert state.values["token_usage"]["run"]["total"] == {"input_tokens": 9, "output_tokens": 6, "total_tokens": 15}
+    assert audit_repository.start.await_count == audit_repository.finish.await_count == 3
+    started = [call.kwargs for call in audit_repository.start.await_args_list]
+    finished = [call.kwargs for call in audit_repository.finish.await_args_list]
+    assert [item["operation_id"] for item in started] == [item["operation_id"] for item in finished]
+    assert finished[-1]["operation_id"] == final.id
+    assert all(item["run_id"] == context.run_id and item["request_id"] == context.request_id for item in finished)
+    assert [item["usage"]["total_tokens"] for item in finished] == [5, 5, 5]
+    assert [item["metadata"]["finish_metadata"]["finish_reason"] for item in finished] == [
+        "tool_calls",
+        "tool_calls",
+        "stop",
+    ]
+    assert [item["metadata"]["finish_metadata"]["id"] for item in finished[:2]] == [
+        "synthetic-completion-1",
+        "synthetic-completion-2",
+    ]
+    assert all(item["metadata"]["finish_metadata"]["model_name"] == "gpt-6.1-sol" for item in finished)
+    assert all(item["metadata"]["finish_metadata"]["model_provider"] == "openai" for item in finished)
+    assert all(
+        item["metadata"]["finish_metadata"]["system_fingerprint"] == "synthetic-fingerprint" for item in finished
+    )
+    assert [item["metadata"]["finish_metadata"]["token_usage"]["total_tokens"] for item in finished[:2]] == [5, 5]
+    assert [call["args"]["query"] for call in finished[0]["metadata"]["tool_calls"]] == queries
+    assert finished[1]["metadata"]["tool_calls"][0]["name"] == "save_reference_meal_plan"
+    assert not finished[-1]["metadata"]["tool_calls"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments", ["invalid-json", '{"query":'])
+@pytest.mark.parametrize("preserve_reasoning,output_version", [(False, None), (True, "v1")])
+async def test_complete_response_keeps_invalid_arguments_without_executing_tools(
+    arguments, preserve_reasoning, output_version, monkeypatch
+):
+    """真实 SDK/ToolNode 参数边界保持非法记录；不以模型桥证明来源授权或最终发布。"""
+    search = AsyncMock()
+    monkeypatch.setattr(reference_meal_plan_service, "search_reference_recipes", search)
+    wire_requests = []
+
+    def respond(request):
+        """非法参数为独立输入，禁止补成空对象或有效查询。"""
+        wire_requests.append(json.loads(request.content))
+        return sdk_response(
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "合成推理原文",
+                "tool_calls": [
+                    {
+                        "id": "synthetic-invalid-call",
+                        "type": "function",
+                        "function": {"name": "search_reference_recipes", "arguments": arguments},
+                    }
+                ],
+            },
+            "synthetic-invalid-completion",
+            3,
+            2,
+            stream=wire_requests[-1].get("stream") is True,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        original = ChatCompletionsAdapter(
+            model="gpt-6.1-sol",
+            api_key="synthetic-test-key",
+            base_url="https://example.invalid/v1",
+            http_async_client=client,
+            preserve_reasoning=preserve_reasoning,
+            output_version=output_version,
+            use_responses_api=False,
+            max_retries=0,
+        )
+        model = original.model_copy(update={"complete_tool_responses": True})
+        graph = create_agent(model, tools=TOOLS, context_schema=Context, checkpointer=InMemorySaver())
+        context = Context()
+        config = {"configurable": {"thread_id": context.thread_id}}
+        async with await graph.astream_events(
+            {"messages": [human()]}, context=context, config=config, version="v3", transformers=[CustomTransformer]
+        ) as events:
+            async for _ in events:
+                pass
+        state = await graph.aget_state(config)
+
+    assert len(wire_requests) == 1 and wire_requests[0].get("stream") is False
+    assert "complete_tool_responses" not in wire_requests[0] and "complete_tool_responses" not in model.model_dump()
+    assert original.complete_tool_responses is False and original.disable_streaming is False
+    search.assert_not_awaited()
+    assert not any(isinstance(message, ToolMessage) for message in state.values["messages"])
+    final = state.values["messages"][-1]
+    assert not final.tool_calls and len(final.invalid_tool_calls) == 1
+    invalid = final.invalid_tool_calls[0]
+    assert invalid["id"] == "synthetic-invalid-call"
+    assert invalid["name"] == "search_reference_recipes" and invalid["args"] == arguments
+    assert invalid["error"]
+    assert final.usage_metadata["total_tokens"] == 5
+    assert final.response_metadata["finish_reason"] == "tool_calls"
+    assert final.response_metadata["id"] == "synthetic-invalid-completion"
+    assert final.response_metadata["model_name"] == "gpt-6.1-sol"
+    if preserve_reasoning:
+        assert any(block.get("reasoning") == "合成推理原文" for block in final.content_blocks)
 
 
 @pytest.mark.asyncio
@@ -285,7 +586,7 @@ async def test_serial_tool_setting_does_not_change_other_requests(boundary, serv
     settings = {"temperature": 0.17}
     request = request_for([human()], context).override(model_settings=settings)
     if boundary != "non_openai":
-        request = request.override(model=ChatOpenAI(model="gpt-6.1-sol", api_key="synthetic-test-key"))
+        request = request.override(model=ChatCompletionsAdapter(model="gpt-6.1-sol", api_key="synthetic-test-key"))
     if boundary == "no_tools":
         request = request.override(tools=[])
     handler = AsyncMock(return_value=ModelResponse(result=[AIMessage(content="继续准备")]))
@@ -294,6 +595,8 @@ async def test_serial_tool_setting_does_not_change_other_requests(boundary, serv
 
     handler.assert_awaited_once_with(request)
     assert request.model_settings is settings and settings == {"temperature": 0.17}
+    if isinstance(request.model, ChatCompletionsAdapter):
+        assert request.model.complete_tool_responses is False and request.model.disable_streaming is False
     services.final.assert_not_awaited()
 
 

@@ -10,6 +10,8 @@ Owner：backend/package/yuxi/agents/buildin/health_meal_planner/graph.py
 
 追加保存收尾并发布 `42f9ae5` 后，新的真实请求在保存前失败：30 次并行检索调用的参数为空、缺少必需的 `query`；随后四次有效检索均返回候选，但此前重试已耗尽流程步数。这次没有读取或保存回执，不能据此判定保存后收尾再次失效。
 
+显式串行参数的 `f77c981` 正式发布后，普通账号的新请求仍因循环上限失败：15 次检索和 6 次读取均缺少必填参数，四次检索及一次原文读取成功，没有保存。运行清单确认了配餐 Agent、有序的四个 reference 工具和 OpenAI 兼容模型；当前供应商配置没有覆盖工具或流式控制字段。审计中仍有三个空参数调用的批次，但没有实际出站载荷或原始响应分片，不能据此确认参数未透传、供应商忽略参数或本地解析丢失。
+
 ## 提案
 
 ### 实现方案
@@ -20,13 +22,21 @@ Owner：backend/package/yuxi/agents/buildin/health_meal_planner/graph.py
 
 失败保存不形成候选；相同 Preview 可归一，多个不同 Preview 明确拒绝。旧请求、旧轮次或其他模式不触发收尾；缺少完成审计、来源失效或最终模型仍返回工具调用时失败关闭。没有成功保存回执时维持原配餐或具体补充问题路径。服务不新增数据库、依赖或配置，不修改营养计算、专业状态、权限、循环上限与发布 Owner。代码完成不代表真实双轮验收通过，状态继续保留 proposed。
 
-本次再收窄 OpenAI 兼容模型的 reference 准备阶段：仅在仍有工具且模型是 `ChatOpenAI` 子类时，经原 handler 合并 `model_settings`，显式传入 `parallel_tool_calls=False`。原参数设置保留，必需 `query`、来源和授权校验不变；其他模式、其他模型和保存后的无工具收尾不注入该参数。不为缺失参数补造关键词，也不通过增加步数掩盖重复失败。并行调用本身是否导致空参数仍需真实供应商验证，该改动不能预报配餐成功。
+当前局部兼容方案仅在生产 `ChatCompletionsAdapter` 的 reference 准备分支为模型创建浅副本，启用默认关闭且不外发的 `complete_tool_responses`，并在保留原模型设置的基础上显式传入 `parallel_tool_calls=False`。适配器有工具时接收一次完整 HTTP 响应，将其中真实消息、工具参数、用量与完成元数据转换为标准模型分片，再沿原 v3 生命周期进入 ToolNode 和审计服务。原模型实例及其他模式保持原行为，保存后的无工具最终模型调用继续使用原流式请求；普通 `ChatOpenAI` 实例也不获得这个内部适配行为。业务数据仍只来自原工具和服务，完整参数也必须通过原来源、成员权限及保存校验。该方案不把尚未定位的流式因果当成事实，真实供应商两轮验证仍是完成条件。
+
+适配器转换不设置末片标志，保留原 SDK 的工具参数完成解析。推理模型的 v1 内容视图需要附带消息中原有的非法工具记录，避免它们在转换中遗漏；原非法 ID、名称和参数保持原样，不补成合法参数。模型审计继续由原协议消费者和 repository 持久化，不新增 whole-message 审计入口或合成最终答案。
 
 ## 替代方案
 
 保留标题短路或单纯增加召回数仍会读取无做法资料。放宽引文和偏好会产生无法核对的结果。提高循环上限只延后同一失败；仅修改提示词不能阻止已保存后的再次工具调用。`return_direct`、直接结束图或合成最终 AIMessage 无法单独满足当前 Run 的真实 Model 审计关联，因此复用已有无工具最终模型调用模式，不另建发布通道。
 
+标准 SDK 流式分片在独立内存 HTTP、真实 SDK 和 create_agent 路径中能保留完整参数；模拟缺失分片字段时的实际错误形态也与线上不同。因此不增加猜测式分片修补或为 `{}` 自动补词。完整工具响应会减少准备阶段的逐 token 事件，但当前配餐界面本就等待核验后的结构化餐单，保留已有处理状态即可。
+
+直接设置 `disable_streaming="tool_calling"` 会让框架发布整条 AIMessage，而原模型审计消费者只接收协议事件，独立 SDK 实验已观察到准备阶段审计遗漏。因此保持模型流式事件入口，只在现有适配器内部获取完整工具响应，再翻译真实响应数据，避免扩展 canonical 审计输入协议。
+
 ## 验收标准
+
+下表记录新快照冻结前已取得的证据；后续完整验证结果另存绑定冻结候选身份的独立验收记录，不据此预报通过。
 
 | 验收主张 | 失败面 | 语义 Owner | 直接证据 / 命令 | 负向案例 | 当前结果 |
 |---|---|---|---|---|---|
@@ -35,8 +45,8 @@ Owner：backend/package/yuxi/agents/buildin/health_meal_planner/graph.py
 | 固定库、当前 Run 和引文边界保留 | 来源伪造 | read_reference_recipe / checked_reference_meals | 相关 unit 与 integration | 未检索读取及伪造引文继续被拒绝 | Passed |
 | 成功保存后只进行一次无工具最终 handler 调用 | 模型继续检索直至循环超限 | MealPlanResultMiddleware | pytest test/unit/middlewares/test_reference_meal_finalization.py | 受控模型在工具仍开放时持续请求保存 | Passed |
 | 当前请求、唯一回执和最终消息身份的回归边界保留 | 沿用旧回执或伪造最终 AI | planner_final_result / 原消息发布事务 | 受控生命周期 unit 与真实 PG/HTTP 服务测试 | 旧请求、失败保存、多 Preview、缺审计和失效来源 | Passed |
-| OpenAI reference 工具准备请求透传串行参数且不污染其他分支 | 并行空参数持续重试 | MealPlanResultMiddleware / 原模型适配器 | 真实适配器的本地 wire 回归 | 非 reference、非 OpenAI、无工具和最终收尾不注入 | Passed |
-| 真实用户流程完成保存与单餐调整 | 模型未保存 | Worker / daily plan service | 普通合成档案真实 E2E 与回读 | 不以问题正文或 completed 状态替代保存事实 | Not run |
+| 生产适配器的 reference 工具准备接收完整参数且不污染其他分支 | 空参数持续重试或 Model 审计遗漏 | MealPlanResultMiddleware / ChatCompletionsAdapter | 真实 SDK 的完整 JSON wire 与 create_agent 生命周期回归 | 非 reference、其他模型、无工具及最终收尾维持原调用行为；非法参数不执行 | Inspected |
+| 真实用户流程完成保存与单餐调整 | 模型未保存 | Worker / daily plan service | 普通合成档案真实 E2E 与回读 | 不以问题正文或 completed 状态替代保存事实 | Inspected |
 
 main `b8946bd` 的正式候选实际执行 `pytest test/unit -m "not slow"`：5294 passed，收集错误和跳过均为零。真实隔离 PostgreSQL 上完整执行 `pytest test/integration/services/test_reference_meal_plan_http.py test/integration/services/test_onboarding_preparation_http.py`：34 passed。正式流程分别取得停止请求 ACK、原 PostgreSQL 进程退出码 0、自动移除和发布资源复核，随后 API/Worker 发布及健康、运行源码核对通过，其他服务未改变。
 
@@ -50,10 +60,20 @@ main `b8946bd` 的正式候选实际执行 `pytest test/unit -m "not slow"`：52
 
 `42f9ae5` 的干净正式候选已自行通过 5315 项 Linux 单元与 34 项真实 PG/HTTP，正常清理、API/Worker 发布、健康和六个运行文件的哈希核对均通过，其他服务与内置 Skill 未变。其新普通账号 E2E 仍失败：30 个空参数错误全部为缺失 `query`，早期模型输出反复包含三个并行空参数检索；后来四个合法单次查询分别返回 4、4、1、1 个候选，均为 `ok`。日计划仍为空，未运行 read/save，原失败及暂停记录继续保留。
 
-串行参数修改的冻结验证快照已实际通过完整 Linux 单元：5324 passed，其中本文件 30 项全部通过，收集错误和跳过均为零。新增六个 SDK wire 用例通过真实 `ChatOpenAI` 和仓库适配器，在内存 HTTP 边界检查载荷顶层参数；另三个排除边界用例通过。这不是供应商请求。相同候选的两个完整真实 PG/HTTP 文件共 34 passed；正常停止 ACK、原数据库退出码 0、自动移除、消失确认及资源复核通过。正式干净 main 候选仍须自行通过发布门槛，真实普通账号双轮保存与晚餐替换仍未通过。
+串行参数版本 `f77c981` 的干净正式候选已自行通过完整 Linux 单元：5324 passed，其中本文件 30 项全部通过，收集错误和跳过均为零；两个完整真实 PG/HTTP 文件共 34 passed。六个 SDK wire 用例检查顶层参数，另三个用例检查排除分支，均为内存 HTTP，不能代替供应商请求。正常数据库退出、自动移除、资源复核、API/Worker 发布、健康及运行源码检查通过。首次发布被业务活动门槛拦截；后续只读诊断确认三计数归零、基线未变、尚无部署 intent，再进入原正常流程，初次拦截详情仍未知且记录保留。发布后的普通账号 E2E 随后出现上述 21 个空参数错误，日计划未生成。
+
+完整工具响应修改的首次冻结快照（测试文件 `86fe636`）已实际执行完整 Linux `pytest test/unit -m "not slow"`：5328 passed、1 failed，共 5329 个唯一用例，收集错误和跳过均为零。本文件 35 项中 34 passed、1 failed，唯一失败为新增的 `test_complete_tool_responses_keep_arguments_audit_usage_and_streamed_finalization`。运行时 graph 与适配器已实际编译、导入并核对哈希一致；该次 Linux 输出没有保留 traceback，不能从失败摘要断定具体断言。单元门槛未通过，后续 PG/HTTP 未运行，原失败和停止回执保留。
+
+后续本地按实际 DTO、ToolNode、适配器、中间件和审计消费者的原样源码重放，首先失败于原测试快照第 466 行的 `services.saved.assert_awaited_once_with(context, DRAFT)`：保存调用实际传入嵌套 DTO，菜品的可选引文字段默认值为 `None`，与纯字典的 `DRAFT` 表示不同。仅在内存中把该断言改为核对一次调用、原 context，并用 `ReferencePlanDraft.model_validate(...).model_dump(exclude_none=True)` 比较实际参数后，其余原断言全部通过。测试修正只规范化 DTO 比较，保留调用次数、消息身份、用量、完成元数据和 Model 审计断言，运行时代码未变。新快照冻结前，修正后测试文件 `322fc942` 的完整 Linux 与 PG/HTTP 尚未执行；后续结果须绑定该冻结候选，本地重放不替代这些检查。
+
+新增回归使用真实 SDK 的内存 HTTP 检查完整 JSON、工具参数、原模型隔离、非法参数不执行，以及原 Model 审计消费者接收准备与最终轮次的事件和用量；服务与审计数据库边界仍为合成 oracle，不能单独证明生产审计持久化或供应商行为。新快照冻结前，真实供应商两轮尚未验收；普通账号三餐保存回读和第二轮仅换晚餐仍是完成条件，失败记录不能改记为通过。
 
 此前隔离数据库验证曾在业务测试通过后以 `command_failed_docker` 结束，缺少原数据库退出码；该整体失败记录仍保留，没有因后续正式流程通过而改写。更早的 Windows/Linux 收集失败和局部测试记录同样保留。上述 5294/34 项结果绑定已发布的 `b8946bd`，不预报当前新增收尾代码已通过。
 
 ## 风险
 
 正文匹配仍可能扫描固定库，返回四项不等于仅扫描四项。收尾仍需要一次真实模型调用，供应商超时不能改记成功；没有合法保存回执时也不能跳过资料缺口。工具完成审计必须在最终模型前可见，真实生命周期回归与 PG/HTTP 需继续核对这一顺序；缺失时失败，不忙等或补造。双轮真实测试须证明三餐已发布，以及仅换晚餐后早餐和午餐完整内容与来源保留，不能只比较状态或 Preview ID。
+
+完整响应不能保证供应商生成合法参数，也不构成新餐单已成功的证据。流式关闭仅限参考工具准备，非 OpenAI 模型和其他业务入口不获得隐式降级；如果当前供应商仍不能正确执行工具，应保留明确失败并继续依据真实证据定位。
+
+准备阶段的首个协议事件在完整 HTTP 返回后产生，因此 Model 审计的事件区间不代表完整网络耗时；不把它补写为供应商请求发起时刻。原 Run 的模型请求时间与实际消息用量沿各自既有 Owner 记录。
