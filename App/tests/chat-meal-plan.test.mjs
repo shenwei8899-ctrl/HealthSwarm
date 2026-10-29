@@ -13,11 +13,12 @@ test('explicit requests in the reported conversation enter real meal planning', 
     assert.ok(parse(text), text)
   }
   assert.equal(parse('为我配餐，必须为我进行配餐今天怎么吃').audience, 'self')
+  assert.equal(parse('按家庭档案为我配餐').audience,'self')
   assert.deepEqual(parse('今天怎么吃').meals, ['breakfast','lunch','dinner'])
 })
 
 test('nutrition education and cancelled requests remain ordinary conversation', () => {
-  for (const text of ['糖尿病家庭怎么吃？', '糖尿病配餐有什么原则？', '请介绍糖尿病配餐原则', '请帮我解释糖尿病配餐', '给我科普一下糖尿病如何配餐', '糖尿病今天怎么吃', '什么是配餐', '不要为我配餐', '不需要帮我配餐', '你好']) assert.equal(parse(text), null, text)
+  for (const text of ['糖尿病家庭怎么吃？', '糖尿病配餐有什么原则？', '请介绍糖尿病配餐原则', '请帮我解释糖尿病配餐', '给我科普一下糖尿病如何配餐', '糖尿病今天怎么吃', '什么是配餐', '不要为我配餐', '不需要帮我配餐', '停止配餐', '取消这次配餐', '不要给父亲配餐', '你好']) assert.equal(parse(text), null, text)
   assert.ok(parse('我有糖尿病，请为我配餐'))
   for (const text of ['糖尿病患者怎样安排今天的三餐？', '糖尿病如何制定配餐方案？', '为什么糖尿病需要制定食谱？']) assert.equal(parse(text), null, text)
 })

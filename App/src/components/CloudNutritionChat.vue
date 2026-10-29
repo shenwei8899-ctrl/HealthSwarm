@@ -29,7 +29,7 @@ import { persistChatImage, previewChatImage } from '../services/chat-images.js'
 import { readChatSnapshot, chatImageContent, chatTimestamp, chatBusinessDate } from '../services/cloud-chat.js'
 import { localDate } from '../utils/meal-state.js'
 import { selectChatPrompts } from '../services/chat-prompts.js'
-import { parseChatMealIntent } from '../utils/chat-meal-intent.js'
+import { parseChatMealIntent, isMealPlanningCancelled } from '../utils/chat-meal-intent.js'
 import { loadChatMealPlan } from '../services/chat-meal-plan.js'
 
 const props=defineProps({route:{type:Object,default:()=>({})}})
@@ -516,12 +516,16 @@ async function sendQuestion(promptAction=''){
     // A revision stays in the selected plan's thread, preserving its date and
     // participants. A fresh arrangement still creates its own explicit choice.
     const referenceAdjustment=!props.route.taskType&&!image&&task.value.taskType==='reference_meal_preview'&&!!referenceSelection&&
+      !(promptAction==='consultation'&&!mealIntent)&&
+      !isMealPlanningCancelled(text)&&
+      !/(?:什么是|介绍|解释|科普|原则|注意事项|怎么理解|如何理解|有什么区别|有何区别)/.test(text)&&
+      !(!mealIntent&&/(?:怎么|怎样|如何|为什么).*(?:选|做|搭配|准备|保存|作用|摄入)|(?:有什么|有何)(?:好处|作用)/.test(text))&&
       !/(?:换(?:个|一个)?话题|换个问题|^(?:取消|停止|不用了|不需要了)(?:[，。！？\s]|$)|(?:取消|停止|不用|不需要|不想|不要)(?:再|继续)?(?:配餐|安排|生成|制定))/.test(text)&&
       (task.value.result?.type==='needs_input'||!/(?:^|[，。！？；、\s])(?:请)?(?:为我|给我|帮我|给全家|为全家|帮全家)?(?:安排|生成|制定|配一)/.test(text)&&
-      /换(?:菜|成|掉|一|个)|替换|改(?:成|为|一下)|调整|重新(?:生成|安排|做)|再(?:生成|安排|做)|去掉|不放|不吃|不含|不要|加(?:一|点|些)|少(?:一|点|些)|多(?:一|点|些)/.test(text))
-    if(mealIntent?.unsupportedDate&&(referenceAdjustment||promptAction==='reference_meal_preview'))throw new Error('请明确选择今天或明天的一日餐单，原问题已保留。')
+      /换(?:菜|成|掉|一|个)|替换|改(?:成|为|一下|早餐|午餐|晚餐|早饭|午饭|晚饭)|调整|重新(?:生成|安排|做)|再(?:生成|安排|做)|去掉|不放|不吃|不含|不要|加(?:一|点|些)|少(?:一|点|些)|多(?:一|点|些)/.test(text))
+    if(mealIntent?.unsupportedDate)throw new Error('请明确选择今天或明天的一日餐单，原问题已保留。')
     const baseAction=mealQuestionAction(text)
-    let action=image?'consultation':referenceAdjustment?'change':promptAction==='reference_meal_preview'?(baseAction==='change'?'change':'generate'):baseAction
+    let action=image?'consultation':referenceAdjustment?'change':mealIntent||promptAction==='reference_meal_preview'?(baseAction==='change'?'change':'generate'):baseAction
     if(!props.route.taskType&&action==='view'){
       const date=/明天|明日/.test(text)?localDate(new Date(Date.now()+86400000)):localDate()
       const plan=await loadDailyPlan(profile.value.householdId,date,epoch,scope)
@@ -532,8 +536,7 @@ async function sendQuestion(promptAction=''){
     let continuing=!props.route.taskType&&!image&&task.value.taskType==='reference_meal_preview'&&task.value.result?.type==='needs_input'&&referenceAdjustment
     let referenceFollowUp=false
     const type=Object.hasOwn(HEALTH_TEXT_TASKS,props.route.taskType)?props.route.taskType
-      :!image&&['consultation','reference_meal_preview'].includes(promptAction)?promptAction
-      :continuing||referenceAdjustment?'reference_meal_preview':'consultation'
+      :!image&&(mealIntent||continuing||referenceAdjustment||promptAction==='reference_meal_preview')?'reference_meal_preview':'consultation'
     if(!props.route.taskType&&type==='consultation'&&conversationId.value)scopedStorage.setStorageSync('conversation-task:'+conversationId.value,null)
     // A plan-first conversation still needs a real consultation anchor so it
     // remains discoverable in the server-backed conversation drawer.
@@ -550,7 +553,7 @@ async function sendQuestion(promptAction=''){
     if(type==='reference_meal_preview'){
       const previousVersion=referenceSelection?.daily_base_version
       const candidate=chooseReference(profile.value,text,{today:localDate(),tomorrow:localDate(new Date(Date.now()+86400000)),memberId:props.route.memberId,...(referenceAdjustment?{previous:referenceSelection}:{})})
-      const changedChoice=continuing&&(candidate.plan_date!==referenceSelection.plan_date||JSON.stringify(candidate.participant_ids)!==JSON.stringify(referenceSelection.participant_ids)||/安排|生成|制定|配一/.test(text)&&JSON.stringify(candidate.meal_types)!==JSON.stringify(referenceSelection.meal_types))
+      const changedChoice=continuing&&(candidate.plan_date!==referenceSelection.plan_date||JSON.stringify(candidate.participant_ids)!==JSON.stringify(referenceSelection.participant_ids)||/(?:安排|生成|制定|配一|只(?:要|需|用|做|安排)?(?:今天|明天|今晚)?(?:的)?(?:早餐|午餐|晚餐|早饭|午饭|晚饭)|先(?:做|安排|配)?(?:早餐|午餐|晚餐|早饭|午饭|晚饭)|^(?:早餐|午餐|晚餐|早饭|午饭|晚饭)[。！!\s]*$)/.test(text)&&JSON.stringify(candidate.meal_types)!==JSON.stringify(referenceSelection.meal_types))
       if(changedChoice){continuing=false;action='generate'}
       const selection=continuing?referenceSelection:candidate
       referenceFollowUp=referenceAdjustment&&['family_id','plan_date','participant_ids','meal_types'].every(key=>JSON.stringify(selection[key])===JSON.stringify(referenceSelection[key]))
@@ -561,15 +564,15 @@ async function sendQuestion(promptAction=''){
       if(continuing&&referenceSelection.daily_base_version!==plan.version)throw new Error('饮食计划已有更新，请重新核对后继续。')
       if(referenceFollowUp&&previousVersion!==plan.version)referenceFollowUp=false
       if(activePlanStatus(plan.pending?.status)){inlineTodayOpen.value=plan.date===localDate();throw new Error('该日饮食计划正在生成，请等待已有任务完成。')}
-      const explicitMembers=/全家|一家|家人|家庭|我们|为我|给我|帮我|本人|自己|一个人|一人|只(?:有|给)?我/.test(text)
-      const covered=type=>plan.meals.some(item=>item.meal_type===type&&(!explicitMembers||JSON.stringify((item.members||[]).map(m=>m.id).sort())===JSON.stringify(referenceSelection.participant_ids)))
+      const covered=type=>plan.meals.some(item=>item.meal_type===type&&JSON.stringify((item.members||[]).map(m=>m.id).sort())===JSON.stringify(referenceSelection.participant_ids))
       if(action==='generate'&&plan.status==='ready'&&referenceSelection.meal_types.every(covered)){
         messages.value.push({id:newHealthRequestId(),role:'user',text},{id:newHealthRequestId(),role:'assistant',text:'这是当前饮食计划。',planDate:plan.date})
         question.value='';await scrollLatest();return
       }
       if(action==='generate'&&plan.status==='ready')referenceSelection.meal_types=referenceSelection.meal_types.filter(type=>!covered(type))
       if(action==='change'&&!continuing&&plan.status!=='ready')throw new Error('这一天还没有饮食计划，请先生成餐单。')
-      if(action==='change'&&!continuing&&!/全家|一家|家人|家庭|我们|为我|给我|帮我|本人|自己|一个人|一人|只(?:有|给)?我/.test(text)){
+      const explicitMembers=/全家|一家|家人|我们|家庭(?:三餐|配餐|餐单|菜单|用餐|饮食计划)|为我|给我|帮我|本人|自己|一个人|一人|只(?:有|给)?我/.test(text)||profile.value.members.some(member=>[member.name,member.relation].some(label=>typeof label==='string'&&label.length>1&&['给','为','帮'].some(prefix=>['','我','我的'].some(owner=>text.includes(prefix+owner+label)))))
+      if(action==='change'&&!continuing&&!referenceAdjustment&&!explicitMembers){
         const existing=plan.meals.find(item=>item.meal_type===referenceSelection.meal_types[0])
         if(existing?.members?.length)referenceSelection.participant_ids=[...new Set(existing.members.map(member=>member.id))].sort()
       }
@@ -744,7 +747,7 @@ function messageTime(message,index){
    <ChatWelcome v-if="presentation.welcome" :compact="failedTask" :prompts="prompts" :disabled="chatBusy" @ask="askPrompt" @shuffle="shufflePrompts" @today="shortcut('today')"/>
   <view v-for="(message,messageIndex) in visibleMessages" :id="'message-'+message.id" :key="message.id" class="message-turn">
    <view v-if="messageTime(message,messageIndex)" class="message-time"><text>{{messageTime(message,messageIndex)}}</text></view>
-   <view class="message-row" :class="message.role"><view class="message-content"><view class="bubble"><view v-if="message.role==='assistant'" class="reply-card-head"><AppIcon name="assistant" :size="25"/><text>家庭营养师</text></view><view class="bubble-body"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><AiAnswer v-if="message.role==='assistant'&&message.text" :text="message.text" :citations="message.citations||[]" compact/><text v-else-if="message.text" selectable>{{message.text}}</text>
+   <view class="message-row" :class="message.role"><view class="message-content"><view class="bubble"><view v-if="message.role==='assistant'" class="reply-card-head"><AppIcon name="assistant" :size="46" :state="message.business&&isReferencePlan(message.business.data)?'success':'idle'"/><text>家庭营养师</text></view><view class="bubble-body"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><AiAnswer v-if="message.role==='assistant'&&message.text" :text="message.text" :citations="message.citations||[]" compact/><text v-else-if="message.text" selectable>{{message.text}}</text>
     <text v-if="message.status==='unknown'" class="chat-error">提交结果待确认，请勿重复发送。</text>
     <text v-if="message.status==='failed'||message.status==='rejected'" class="chat-error">服务器已收到本条问题，但处理未完成。</text><text v-if="message.status==='cancelled'" class="chat-error">已取消本次问题。</text>
    </view></view><DailyMealPlanCard v-if="message.planDate&&dailyPlans[message.planDate]?.status==='ready'" :plan="dailyPlans[message.planDate]" :busy="planPurchaseBusy" @open="openDailyMeal($event,message.planDate)" @members="selectDailyMembers($event,message.planDate)" @shop="purchaseDaily($event,dailyPlans[message.planDate])"/><HealthChatBusinessCard v-else-if="message.business&&!message.planDate" :result="message.business" :member-id="message.memberId||task.memberId"/><ConversationFoodPackages v-if="message.purchaseRequestId" :offers="message.purchaseOffers" :request-id="message.purchaseRequestId"/><ChatReplyActions v-if="message.role==='assistant'&&message.text&&!message.error" :text="message.text" :message-id="message.serverMessageId||message.id" :can-quote="!chatBusy&&!conversationReadOnly" @quote="quoteReply"/></view></view>
@@ -753,14 +756,14 @@ function messageTime(message,index){
    <button @click="question='请换几道菜，继续沿用已确认的饮食限制。'"><text>换几道菜</text><AppIcon name="arrow" :size="23"/></button>
    <button @click="generateReference"><text>整理成今日餐单</text><AppIcon name="arrow" :size="23"/></button>
   </view>
-  <view v-if="liveAnswer||entryReady&&!profileLoading&&chatBusy" id="stream-answer" class="message-row assistant live-answer"><view class="message-content"><view class="bubble"><view class="reply-card-head"><AppIcon name="assistant" :size="25"/><text>家庭营养师</text></view><view class="bubble-body"><AiAnswer v-if="liveAnswer" :text="task.streamText" streaming compact/><view id="reply-progress" class="reply-progress" role="status" aria-live="polite"><view class="progress-dot"/><text>{{progressText}}</text></view></view></view></view></view>
+  <view v-if="liveAnswer||entryReady&&!profileLoading&&chatBusy" id="stream-answer" class="message-row assistant live-answer"><view class="message-content"><view class="bubble"><view class="reply-card-head"><AppIcon name="assistant" :size="46" :state="task.taskType==='reference_meal_preview'?'planning':'thinking'"/><text>家庭营养师</text></view><view class="bubble-body"><AiAnswer v-if="liveAnswer" :text="task.streamText" streaming compact/><view id="reply-progress" class="reply-progress" role="status" aria-live="polite"><view class="progress-dot"/><text>{{progressText}}</text></view></view></view></view></view>
   <view v-if="familyPanel" class="dialogue-status"><text>家庭餐单 · {{familyState.date}}</text><text>按这餐实际参加的成员核对家庭安排，每位成员的资料和权限由服务端检查。</text><text v-if="familyState.busy">正在读取家庭安排…</text><text v-if="familyState.error" class="chat-error">{{familyState.error}}</text><button v-if="familyState.error" :disabled="familyState.busy" @click="familyPlan('',true)">重新读取家庭餐单</button><DailyArrangementCard v-if="familyState.phase==='ready'" :arrangement="familyState.arrangement" family :disabled="familyState.busy" @open="openFamilyMeal" @members="familySelection={type:$event.type,ids:$event.members.map(m=>m.id),question:''}" @shop="shop"/><button @click="familyPanel=false">收起家庭餐单</button></view>
   <text v-if="entryError||chatError" class="chat-error" role="alert">{{entryError||chatError}}</text>
   <view v-if="returnError" class="dialogue-status"><text>{{returnError}}</text><button :disabled="returning" @click="refreshReturn">重新核对咨询状态</button></view>
   <button v-if="!profile&&!profileLoading" class="secondary-button" @click="load()">重新读取咨询资料</button>
   <view v-if="task.error||task.canRetry||task.submitUnknown||task.streamPhase==='paused'||task.notice&&!chatBusy" class="dialogue-status recovery-status"><text>{{task.error||task.notice}}</text><button v-if="task.requestId&&task.result?.type!=='error'" :disabled="task.refreshing" @click="flow.refresh()">{{task.refreshing?'正在读取…':'重新读取本次回复'}}</button><button v-if="task.canRetry" :disabled="retryBusy" @click="retryQuestion">重试原问题</button></view>
   <button v-if="(task.invalidated||task.status==='failed')&&!route.taskType" class="secondary-button" :disabled="chatBusy||draftSaving" @click="restartChat">开始新咨询</button>
-  <button v-if="entryReady&&profile&&(!task.available||needsProfileLink)" class="secondary-button" @click="memberArchive">查看该成员档案</button><view v-if="task.consentOption" class="dialogue-status"><text>本次咨询处理方：{{task.consentOption.processor}}；政策版本：{{task.consentOption.policyVersion}}。</text><checkbox-group @change="consentChecked=$event.detail.value.includes('yes')"><label><checkbox value="yes" :checked="consentChecked"/>同意本次咨询的数据处理</label></checkbox-group><button :disabled="!consentChecked||chatBusy" @click="consent">同意并继续咨询</button></view>
+  <button v-if="entryReady&&profile&&(!task.available||needsProfileLink)" class="secondary-button" @click="memberArchive">查看该成员档案</button><view v-if="task.consentOption" class="dialogue-status"><text>本次{{task.taskType==='reference_meal_preview'?'配餐':'咨询'}}处理方：{{task.consentOption.processor}}；政策版本：{{task.consentOption.policyVersion}}。</text><checkbox-group @change="consentChecked=$event.detail.value.includes('yes')"><label><checkbox value="yes" :checked="consentChecked"/>同意本次{{task.taskType==='reference_meal_preview'?'配餐':'咨询'}}的数据处理</label></checkbox-group><button :disabled="!consentChecked||chatBusy" @click="consent">同意并继续{{task.taskType==='reference_meal_preview'?'配餐':'咨询'}}</button></view>
  </template>
  <template #composer>
   <view v-if="conversationReadOnly" class="archived-conversation"><text>这段每日对话已归档，记录仍可查看。</text><button :disabled="chatBusy" @click="newConversation">新对话继续聊</button></view>

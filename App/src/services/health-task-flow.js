@@ -170,7 +170,9 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
     if (current(ticket)) save()
   }
   async function open(memberId, taskType, selection = null, options = {}) {
-    const fresh = options?.fresh === true
+    // WeChat's second async compilation hoists block locals after minification.
+    // Function-scoped bindings prevent those locals from shadowing task metadata.
+    var fresh = options?.fresh === true
     hide()
     forceNewEntry = fresh
     indicatorSelection = selection
@@ -186,50 +188,50 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
     if (taskType === 'diet_analysis' && (!uuidPattern.test(selection?.record_id || '') || !Number.isInteger(selection?.source_version) || selection.source_version < 1)) {
       state.error = '请从已保存餐次进入反馈。'; emit(); return
     }
-    const legacyStorageKey = `health-task:${memberId}:${taskType}${selection ? ':' + JSON.stringify(selection) : ''}${daily ? ':' + day() : ''}`
+    var legacyStorageKey = `health-task:${memberId}:${taskType}${selection ? ':' + JSON.stringify(selection) : ''}${daily ? ':' + day() : ''}`
     storageKey = conversationOptions
       ? `health-conversation:${conversationOptions.conversationId}:${memberId}:${taskType}${selection ? ':' + JSON.stringify(selection) : ''}`
       : legacyStorageKey
     if (!session()?.token) { state.error = '请先登录后再读取健康任务'; emit(); return }
-    const ticket = token(); state.loading = true; emit()
+    var ticket = token(); state.loading = true; emit()
     try {
-      const [members, readiness] = await Promise.all([
+      var [members, readiness] = await Promise.all([
         send({ path: '/api/health/v1/members' }),
         send({ path: `/api/health/v1/members/${memberId}/readiness` }),
       ])
       if (!current(ticket)) return
       if (taskType === 'diet_analysis') {
-        const source = await readDietRecord(memberId,selection.record_id,send)
+        var source = await readDietRecord(memberId,selection.record_id,send)
         if (!current(ticket)) return
         if (source.id !== selection.record_id || source.source_version !== selection.source_version) throw mismatch()
       }
-      const indicatorTask = taskType.startsWith('blood_')
+      var indicatorTask = taskType.startsWith('blood_')
       if (!Array.isArray(members.data) || !members.data.some(row => row.id === memberId && (!indicatorTask || row.is_owner === true)) ||
         readiness.data?.capabilities?.member_id !== memberId || !Array.isArray(readiness.data?.entries)) throw mismatch()
-      const entry = readiness.data.entries.find(row => row.entry_type === taskType)
+      var entry = readiness.data.entries.find(row => row.entry_type === taskType)
       state.available = entry?.status === 'available' || (['initial_meal_preview','reference_meal_preview'].includes(taskType) && selection && entry?.status === 'needs_input' && entry?.reason_code === 'selection_required')
       if (!state.available) state.notice = ({budget_price_unavailable:'营养咨询计费配置尚未就绪，请联系管理员。',budget_exceeded:'本月健康 AI 可用额度不足或待核账，请稍后再试。',consent_required:'此项服务已停用，请在隐私设置中管理。',missing_scopes:'该成员尚未授权此项健康服务，请核查成员授权。',configuration_unavailable:'此项服务尚未配置，资料仍可查看和修改。',dependency_not_ready:'此项服务所需的运行服务或专业资料尚未就绪。',agent_unavailable:'营养助手尚未就绪，请稍后再试。',skill_unavailable:'营养助手资料尚未就绪。'})[entry?.configuration_reason_code||entry?.reason_code] || '请打开该成员的家庭档案核对资料与授权。'
       if (entry?.reason_code === 'consent_required' && taskType !== 'consultation') {
-        const policy = (await send({ path: '/api/health/v1/configuration' })).data
+        var policy = (await send({ path: '/api/health/v1/configuration' })).data
         if (!current(ticket)) return
-        const purpose = taskType === 'diet_analysis' ? 'diet_analysis' : ['meal_preview','initial_meal_preview','reference_meal_preview'].includes(taskType) ? 'meal_plan' : 'consultation'
-        const configured = policy?.[purpose]
+        var purpose = taskType === 'diet_analysis' ? 'diet_analysis' : ['meal_preview','initial_meal_preview','reference_meal_preview'].includes(taskType) ? 'meal_plan' : 'consultation'
+        var configured = policy?.[purpose]
         if (configured?.available === true && typeof configured.processor === 'string' &&
           configured.processor && typeof policy.policy_version === 'string' && policy.policy_version) {
           state.consentOption = { processor: configured.processor, policyVersion: policy.policy_version, ...(purpose !== 'consultation' ? {purpose} : {}) }
           state.notice = '请先核对当前咨询处理方和政策版本，再明确选择是否同意。'
         }
       }
-      const cached = storage.getStorageSync(storageKey)
-      let saved = fresh && !cached?.entry?.pending && !cached?.submitUnknown ? null : cached
+      var cached = storage.getStorageSync(storageKey)
+      var saved = fresh && !cached?.entry?.pending && !cached?.submitUnknown ? null : cached
       if (!saved && saved !== null && conversationOptions?.threadId) {
-        const legacy = storage.getStorageSync(legacyStorageKey)
+        var legacy = storage.getStorageSync(legacyStorageKey)
         if (legacy?.memberId === memberId && legacy.taskType === taskType && legacy.entry?.thread_id === conversationOptions.threadId) saved = legacy
       }
-      const sameSavedTask = saved?.memberId === memberId && saved?.taskType === taskType
-      let verifiedEntry = null
+      var sameSavedTask = saved?.memberId === memberId && saved?.taskType === taskType
+      var verifiedEntry = null
       if (conversationOptions && taskType === 'consultation') {
-        const threadId = conversationOptions.threadId || (sameSavedTask ? saved.entry?.thread_id : '')
+        var threadId = conversationOptions.threadId || (sameSavedTask ? saved.entry?.thread_id : '')
         if (threadId) verifiedEntry = await restoreConsultation(memberId, threadId, ticket)
         if (!current(ticket)) return
       }
@@ -258,9 +260,9 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
         if (!current(ticket)) return
       }
       if (!fresh && daily && !conversationOptions && taskType === 'consultation' && state.available && !state.entry?.thread_id && !state.entry?.pending) {
-        const { data } = await send({ path: `/api/health/v1/members/${memberId}/daily-conversations` })
+        var { data } = await send({ path: `/api/health/v1/members/${memberId}/daily-conversations` })
         if (!current(ticket)) return
-        const today = data.days?.find(row => row.date === day())
+        var today = data.days?.find(row => row.date === day())
         if (today && uuidPattern.test(today.thread_id) && !(storage.getStorageSync(invalidKey()) || []).includes(today.thread_id)) {
           state.entry = { thread_id: today.thread_id, agent_slug: 'health-consultation', business_date: day() }
           save()

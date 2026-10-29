@@ -4,7 +4,7 @@ import { addressNavigation } from './address-test-helpers.mjs'
 import {readyPreparation} from './fixtures/preparation-ready.mjs'
 import {preparationReady as checkPreparation} from '../src/services/preparation-ready.js'
 import test from 'node:test'
-import {parseChatMealIntent} from '../src/utils/chat-meal-intent.js'
+import {parseChatMealIntent,isMealPlanningCancelled} from '../src/utils/chat-meal-intent.js'
 import {loadChatMealPlan} from '../src/services/chat-meal-plan.js'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -20,7 +20,7 @@ import {readDailyMealPlan,mealQuestionAction} from '../src/services/daily-meal-p
 const jsonClone=v=>v===undefined?undefined:JSON.parse(JSON.stringify(v))
 const member='11111111-1111-4111-8111-111111111111',thread='22222222-2222-4222-8222-222222222222',requestId='33333333-3333-4333-8333-333333333333'
 function mount(file,fields,extras={}){
- const hooks={},deps={parseChatMealIntent,loadChatMealPlan,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,watch,chatTimestamp,chatBusinessDate,chatPresentation,defineProps:()=>({route:{}}),onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnload:fn=>hooks.unload=fn,onUnmounted:fn=>hooks.unmount=fn,...extras}
+ const hooks={},deps={parseChatMealIntent,isMealPlanningCancelled,loadChatMealPlan,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,watch,chatTimestamp,chatBusinessDate,chatPresentation,defineProps:()=>({route:{}}),onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnload:fn=>hooks.unload=fn,onUnmounted:fn=>hooks.unmount=fn,...extras}
  if(file==='CloudMealPurchase.vue') Object.assign(deps,addressNavigation(deps.storageContext,deps.uni))
  const source=readFileSync(new URL('../src/components/'+file,import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
  const scope=effectScope();const page=scope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {${fields}}`)(deps))
@@ -314,14 +314,14 @@ test('family reference question preserves all selected actors, meal and original
  assert.deepEqual(queries,['给全家安排明天早餐，不要牛奶']);assert.equal(p.question.value,'');p.dispose()
 })
 
-test('an ordinary tomorrow breakfast request stays in the continuous consultation',async()=>{
+test('a typed tomorrow breakfast request directly enters the personal meal workflow',async()=>{
  const h=chat(),opened=[],queries=[]
  h.deps.localDate=date=>date?'2026-10-21':'2026-10-20'
  h.deps.createHealthTaskFlow=({onChange})=>({hide(){},open:async(id,type,selection)=>{opened.push({id,type,selection});onChange({memberId:id,taskType:type,available:true,entry:{thread_id:thread,agent_slug:type==='consultation'?'health-consultation':'health-meal-planner'}})},submit:async text=>{queries.push(text);return true}})
  const p=mount('CloudNutritionChat.vue','load,question,sendQuestion,chatError',h.deps)
  await p.load();p.question.value='给我安排明天早餐';await p.sendQuestion()
- assert.equal(opened.some(o=>o.type==='reference_meal_preview'),false)
- assert.equal(opened.at(-1).type,'consultation');assert.equal(opened.at(-1).id,member)
+ assert.equal(opened.at(-1).type,'reference_meal_preview');assert.equal(opened.at(-1).id,member)
+ assert.deepEqual(opened.at(-1).selection.meal_types,['breakfast']);assert.deepEqual(opened.at(-1).selection.participant_ids,['self']);assert.equal(opened.at(-1).selection.plan_date,'2026-10-21')
  assert.deepEqual(queries,['给我安排明天早餐']);assert.equal(p.chatError.value,'');assert.equal(p.question.value,'');p.dispose()
 })
 
@@ -637,13 +637,13 @@ test('switching family clears in-memory suggestions before the next profile fini
  await loading;assert.equal(p.prompts.value.length,4);p.dispose()
 })
 
-for(const action of ['consultation','reference_meal_preview'])test(`suggestion action ${action} controls routing independently of display wording`,async()=>{
+for(const action of ['consultation','reference_meal_preview'])test(`suggestion ${action} retains the input meal intent`,async()=>{
  const h=chat(),opened=[],queries=[]
  h.deps.createHealthTaskFlow=({onChange})=>({hide(){},open:async(id,type,selection)=>{opened.push({type,selection});onChange({memberId:id,taskType:type,available:true,entry:{thread_id:thread}})},submit:async text=>{queries.push(text);return true}})
  const p=mount('CloudNutritionChat.vue','load,askPrompt,task',h.deps);await p.load()
  const text=action==='consultation'?'午餐吃什么更省时间？':'给我一点早餐灵感'
  await p.askPrompt({id:'wording-independent',text,action})
- assert.equal(p.task.value.taskType,action);assert.deepEqual(queries,[text])
+ assert.equal(p.task.value.taskType,'reference_meal_preview');assert.deepEqual(queries,[text])
  if(action==='reference_meal_preview')assert.deepEqual(opened.at(-1).selection.meal_types,['breakfast'])
  p.dispose()
 })

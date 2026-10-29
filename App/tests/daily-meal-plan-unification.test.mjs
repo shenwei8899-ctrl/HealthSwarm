@@ -1,4 +1,4 @@
-import {parseChatMealIntent} from '../src/utils/chat-meal-intent.js'
+import {parseChatMealIntent,isMealPlanningCancelled} from '../src/utils/chat-meal-intent.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -24,9 +24,10 @@ test('daily plan response rejects wrong date and duplicate meal types',async()=>
   await assert.rejects(()=>readDailyMealPlan('f',today,async()=>({data:plan(1,[meal('breakfast'),meal('breakfast')])})),/来源/)
 })
 
-test('new plans use default diners and an explicit self request stays personal',()=>{
+test('new plans use the current profile; explicit family requests include the family',()=>{
   const p={householdId:'family',selfMemberId:'self',defaultDiners:['self','other'],members:[{id:'self',healthMemberId:member},{id:'other',healthMemberId:'other'}]}
-  assert.deepEqual(referenceSelection(p,'安排今天三餐',{today}).participant_ids,['other','self'])
+  assert.deepEqual(referenceSelection(p,'安排今天三餐',{today}).participant_ids,['self'])
+  assert.deepEqual(referenceSelection(p,'给全家安排今天三餐',{today}).participant_ids,['other','self'])
   assert.deepEqual(referenceSelection(p,'只给我安排今天三餐',{today}).participant_ids,['self'])
 })
 
@@ -35,7 +36,7 @@ function mount({read=async()=>plan()}={}){
   const flow={hide(){},async open(memberId,taskType,selection){calls.push({action:'open',memberId,taskType,selection});notify({memberId,taskType,available:true,entry:{thread_id:'thread'}})},async submit(text){calls.push({action:'submit',text});return true},async refresh(){calls.push({action:'refresh'});notify({taskType:'reference_meal_preview',requestId:'req',status:'completed',available:true})}}
   const state=()=>({phase:'idle',busy:false})
   const deps={ref,reactive,computed,nextTick,defineProps:()=>({route:{}}),onMounted:fn=>hooks.mounted=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
-    parseChatMealIntent,chatPresentation,chooseReference:referenceSelection,isReferencePlan,readDailyMealPlan:read,mealQuestionAction,
+    parseChatMealIntent,isMealPlanningCancelled,chatPresentation,chooseReference:referenceSelection,isReferencePlan,readDailyMealPlan:read,mealQuestionAction,
     dailyArrangementState:state,createDailyArrangementClient:()=>({reset(){},dispose(){}}),
     createHealthTaskFlow:({onChange})=>{notify=onChange;return flow},
     HEALTH_TEXT_TASKS:{consultation:'咨询',reference_meal_preview:'餐单'},

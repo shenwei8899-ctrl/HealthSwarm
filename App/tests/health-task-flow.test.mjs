@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { createHealthTaskFlow } from '../src/services/health-task-flow.js'
 
 const memberId = '11111111-1111-4111-8111-111111111111'
@@ -353,4 +355,43 @@ for(const code of ['budget_price_unavailable','budget_exceeded'])test(`terminal 
  await h.flow.open(memberId,taskType);await h.flow.createEntry();await h.flow.submit('你好')
  assert.deepEqual(h.flow.getState().result,{type:'error',code,retryable:false});assert.equal(h.flow.getState().status,'failed')
  assert.equal(h.scheduled.length,0)
+})
+
+test('minified task entry keeps its task dictionary outside WeChat async local bindings', async () => {
+  const compiler = createRequire(import.meta.resolve('vite'))
+  const { rollup } = compiler('rollup'), { minify } = compiler('terser'), { parse } = compiler('@babel/parser')
+  const source = readFileSync(new URL('../src/services/health-task-flow.js', import.meta.url), 'utf8')
+  const bundle = await rollup({ input: 'task-entry', external: id => id !== 'task-entry', plugins: [{
+    name: 'task-entry-source', resolveId: id => id === 'task-entry' ? id : null,
+    load: id => id === 'task-entry' ? source : null,
+  }] })
+  try {
+    const generated = await bundle.generate({ format: 'cjs', generatedCode: { constBindings: true } })
+    const compressed = await minify(generated.output[0].code, { module: true })
+    const ast = parse(compressed.code, { sourceType: 'script' })
+    const isFunction = node => /Function/.test(node.type)
+    const walk = (node, visit, parents = []) => {
+      if (!node || typeof node !== 'object') return
+      if (visit(node, parents) === false) return
+      for (const value of Object.values(node)) {
+        if (Array.isArray(value)) value.forEach(child => walk(child, visit, [...parents, node]))
+        else if (value && typeof value === 'object') walk(value, visit, [...parents, node])
+      }
+    }
+    let entry, dictionary
+    walk(ast, (node, parents) => {
+      if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && node.callee.property.name === 'call' &&
+          node.callee.object.type === 'MemberExpression' && node.callee.object.property.name === 'hasOwnProperty') {
+        entry = parents.findLast(isFunction); dictionary = node.arguments[0].name
+      }
+    })
+    assert.ok(entry && dictionary, 'the real task-type validation must remain in the compiled entry')
+    const locals = []
+    walk(entry.body, node => {
+      if (isFunction(node)) return false
+      if (node.type === 'VariableDeclarator') walk(node.id, binding => { if (binding.type === 'Identifier') locals.push(binding.name) })
+    })
+    assert.equal(locals.includes(dictionary), false,
+      'WeChat regenerator hoists block locals; they must not shadow the task dictionary used before the first await')
+  } finally { await bundle.close() }
 })

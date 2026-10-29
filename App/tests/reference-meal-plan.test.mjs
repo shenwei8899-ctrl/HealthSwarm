@@ -14,6 +14,15 @@ test('reference choice preserves requested meal set, date and actor scope',()=>{
  assert.throws(()=>referenceSelection(profile,'后天三餐',dates),/原问题已保留/)
  assert.throws(()=>referenceSelection(profile,'今天三餐',{...dates,memberId:'inaccessible'}),/成员/)
 })
+test('an unspecified personal request uses the current profile rather than all default diners',()=>{
+ const family={...profile,defaultDiners:['self','mother']}
+ assert.deepEqual(referenceSelection(family,'为我配餐',dates).participant_ids,['self'])
+ assert.deepEqual(referenceSelection(family,'按家庭档案为我配餐',dates).participant_ids,['self'])
+ assert.deepEqual(referenceSelection(family,'今天怎么吃',dates).participant_ids,['self'])
+ assert.deepEqual(referenceSelection(family,'今天怎么吃',{...dates,memberId:'health-mother'}).participant_ids,['mother'])
+ const named={...family,members:[...family.members,{id:'father',healthMemberId:'health-father',relation:'父亲'}]}
+ for(const text of ['给我父亲配餐','为我的父亲配餐','帮我的父亲安排今天晚餐'])assert.deepEqual(referenceSelection(named,text,dates).participant_ids,['father'],text)
+})
 
 test('colloquial meal and date names preserve an explicit single meal across a month boundary',()=>{
  const monthEnd={today:'2026-10-31',tomorrow:'2026-11-01'}
@@ -34,6 +43,7 @@ test('a revision retains the existing date, members and meal scope unless the us
  assert.deepEqual(referenceSelection(profile,'只给我改一下',{...dates,previous}).participant_ids,['self'])
  assert.throws(()=>referenceSelection(profile,'改一下',{...dates,previous:{...previous,family_id:'other-family'}}),/成员资料已变化/)
  assert.throws(()=>referenceSelection(profile,'后天改成粥',{...dates,previous}),/今天或明天/)
+ for(const text of ['晚餐换成清淡一点，早餐和午餐不变','只改晚餐，早餐和午餐保持原样','早餐不要改，午餐照旧，晚餐换一下'])assert.deepEqual(referenceSelection(profile,text,{...dates,previous}).meal_types,['dinner'],text)
 })
 test('reference boundary cannot be promoted into an approved result by display',()=>{
  const plan={scope:'daily_reference',status:'reference_ready',professional_status:'not_reviewed',nutrition_status:'not_calculated',preview_id:'preview',meals:[{}]}

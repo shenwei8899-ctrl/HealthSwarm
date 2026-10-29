@@ -1,6 +1,6 @@
 import {mealQuestionAction} from '../src/services/daily-meal-plan.js'
 import test from 'node:test'
-import {parseChatMealIntent} from '../src/utils/chat-meal-intent.js'
+import {parseChatMealIntent,isMealPlanningCancelled} from '../src/utils/chat-meal-intent.js'
 import {referenceSelection} from '../src/services/reference-meal-plan.js'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
@@ -9,7 +9,7 @@ import {ref,computed,reactive,nextTick} from 'vue'
 function setup(route={}){
  const submitted=[],opened=[],selections=[]
  const stored=new Map(),thread='22222222-2222-4222-8222-222222222222',referenceThread='33333333-3333-4333-8333-333333333333'
- const deps={mealQuestionAction,readDailyMealPlan:async(_family,date)=>({date,status:'absent',version:0,meals:[]}),parseChatMealIntent,ref,computed,reactive,nextTick,onShow(){},onHide(){},onMounted(){},onUnmounted(){},defineProps:()=>({route}),
+ const deps={mealQuestionAction,readDailyMealPlan:async(_family,date)=>({date,status:'absent',version:0,meals:[]}),parseChatMealIntent,isMealPlanningCancelled,ref,computed,reactive,nextTick,onShow(){},onHide(){},onMounted(){},onUnmounted(){},defineProps:()=>({route}),
  storageContext:()=> 'scope',getSession:()=>({token:'unit'}),
  dailyArrangementState:()=>({phase:'ready'}),createDailyArrangementClient:()=>({dispose(){}}),
  scopedStorage:{getStorageSync:key=>stored.get(key),setStorageSync:(key,value)=>stored.set(key,value)},localDate:date=>date?'2026-10-28':'2026-10-27',
@@ -28,15 +28,15 @@ function setup(route={}){
  return {...page,submitted,opened,selections}
 }
 
-for(const text of ['为我配菜','今晚吃什么','今天吃什么','晚餐推荐','推荐几道菜'])test(`普通聊天使用咨询商品流程：${text}`,async()=>{
+for(const text of ['为我配菜','今晚吃什么','今天吃什么','晚餐推荐','推荐几道菜'])test(`自然用餐需求直接进入配餐：${text}`,async()=>{
  const p=setup();p.question.value=text;await p.sendQuestion()
- assert.deepEqual(p.submitted,[text]);assert.equal(p.task.value.taskType,'consultation')
+ assert.deepEqual(p.submitted,[text]);assert.equal(p.task.value.taskType,'reference_meal_preview')
 })
 
-test('普通安排请求保留原问题，继续当前咨询而不自动生成参考餐单',async()=>{
+test('输入明天早餐保留原问题并绑定本人单餐日期',async()=>{
  const p=setup();p.question.value='给我安排明天早餐';await p.sendQuestion()
- assert.deepEqual(p.opened,[]);assert.deepEqual(p.submitted,['给我安排明天早餐'])
- assert.equal(p.task.value.taskType,'consultation');assert.deepEqual(p.selections,[])
+ assert.deepEqual(p.opened,['reference_meal_preview']);assert.deepEqual(p.submitted,['给我安排明天早餐'])
+ assert.equal(p.task.value.taskType,'reference_meal_preview');assert.deepEqual(p.selections,[{mode:'reference',family_id:'family',plan_date:'2026-10-28',participant_ids:['self'],meal_types:['breakfast'],daily_base_version:0}])
 })
 test('显式生成明天早餐保留本人单餐选择、问题及日期',async()=>{
  const p=setup();p.question.value='给我安排明天早餐';await p.sendQuestion('reference_meal_preview')
@@ -53,13 +53,13 @@ test('显式指标任务入口保持原类型',async()=>{
  assert.deepEqual(p.opened,['blood_pressure_review'])
 })
 
-for(const text of ['为我配餐，必须为我进行配餐今天怎么吃','一个人，直接为我进行这顿配餐','生成今天的三餐食谱'])test(`配餐措辞仍留在连续咨询，正式生成由显式操作触发：${text}`,async()=>{
+for(const text of ['为我配餐，必须为我进行配餐今天怎么吃','一个人，直接为我进行这顿配餐','生成今天的三餐食谱'])test(`输入配餐措辞直接触发结构化计划：${text}`,async()=>{
  const p=setup();p.question.value=text;await p.sendQuestion()
- assert.deepEqual(p.opened,[]);assert.deepEqual(p.submitted,[text]);assert.equal(p.task.value.taskType,'consultation');assert.deepEqual(p.selections,[])
+ assert.deepEqual(p.opened,['reference_meal_preview']);assert.deepEqual(p.submitted,[text]);assert.equal(p.task.value.taskType,'reference_meal_preview');assert.deepEqual(p.selections[0].participant_ids,['self'])
 })
-test('多天安排作为普通咨询完整提交，不创建错误日期的正式餐单',async()=>{
+test('未支持的多天安排保留完整草稿并提示选择日期',async()=>{
  const p=setup();p.question.value='为我配餐，安排未来三天';await p.sendQuestion()
- assert.deepEqual(p.opened,[]);assert.deepEqual(p.submitted,['为我配餐，安排未来三天']);assert.equal(p.task.value.taskType,'consultation');assert.deepEqual(p.selections,[])
+ assert.deepEqual(p.opened,[]);assert.deepEqual(p.submitted,[]);assert.equal(p.question.value,'为我配餐，安排未来三天');assert.match(p.chatError.value,/今天或明天/);assert.deepEqual(p.selections,[])
 })
 test('显式生成仍拒绝未支持的多天日期，并保留原问题',async()=>{
  const p=setup();p.question.value='为我配餐，安排未来三天';await p.sendQuestion('reference_meal_preview')
