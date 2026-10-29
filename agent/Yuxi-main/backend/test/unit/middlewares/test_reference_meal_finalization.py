@@ -6,17 +6,20 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
 from test.unit.middlewares.test_health_final_answer import ControlledStreamModel, usage
 from yuxi.agents.buildin.health_meal_planner.graph import MealPlanResultMiddleware
 from yuxi.agents.toolkits import meal_planner
+from yuxi.models.chat import ChatCompletionsAdapter
 from yuxi.services import health_meal_plan_service, reference_meal_plan_service
 from yuxi.services.health_family_planner_types import FAMILY_PLANNER_TOOLS
 from yuxi.services.health_initial_meal_plan_types import INITIAL_PLANNER_TOOLS
@@ -188,6 +191,110 @@ async def run_graph(model, *, context=None, checkpoint=None, messages=None):
     ):
         native.append((message, metadata))
     return await graph.aget_state(config), observed, native
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_type", [ChatCompletionsAdapter, ChatOpenAI])
+@pytest.mark.parametrize("phase", ["preparation", "override_parallel", "saved"])
+async def test_reference_serial_tool_setting_reaches_real_openai_wire_only_during_preparation(
+    model_type, phase, services
+):
+    """真实 SDK 绑定到发送边界；准备时串行，保存后无工具且不引入参数。"""
+    wire_requests = []
+
+    def respond(request):
+        """内存 HTTP 边界只记录实际载荷，不访问网络。"""
+        wire_requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "synthetic-completion",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "gpt-6.1-sol",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "合成模型回复"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    settings = {"temperature": 0.17, "max_completion_tokens": 64}
+    if phase == "override_parallel":
+        settings["parallel_tool_calls"] = True
+    original_settings = settings.copy()
+    messages = [human(), receipt()] if phase == "saved" else [human()]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        model = model_type(
+            model="gpt-6.1-sol",
+            api_key="synthetic-test-key",
+            base_url="https://example.invalid/v1",
+            http_async_client=client,
+            use_responses_api=False,
+            max_retries=0,
+        )
+        request = request_for(messages).override(model=model, model_settings=settings)
+
+        async def call_model(prepared):
+            """沿用 create_agent 的工具绑定与 model_settings 传递方式。"""
+            bound = (
+                prepared.model.bind_tools(prepared.tools, tool_choice=prepared.tool_choice, **prepared.model_settings)
+                if prepared.tools
+                else prepared.model.bind(**prepared.model_settings)
+            )
+            result = await bound.ainvoke([prepared.system_message, *prepared.messages])
+            return ModelResponse(result=[result])
+
+        handler = AsyncMock(side_effect=call_model)
+        result = await MealPlanResultMiddleware().awrap_model_call(request, handler)
+
+    handler.assert_awaited_once()
+    prepared = handler.await_args.args[0]
+    assert prepared is not request
+    assert result.result[0].text == "合成模型回复"
+    assert len(wire_requests) == 1
+    wire = wire_requests[0]
+    assert wire["temperature"] == 0.17 and wire["max_completion_tokens"] == 64
+    assert request.model is model and request.model_settings is settings
+    assert settings == original_settings
+    assert request.tools == TOOLS and request.tool_choice == "any" and request.response_format
+    if phase == "saved":
+        assert prepared.tools == [] and prepared.tool_choice is None and prepared.response_format is None
+        assert prepared.model_settings == original_settings
+        assert "tools" not in wire and "parallel_tool_calls" not in wire
+        services.final.assert_awaited_once()
+    else:
+        assert prepared.model_settings == {**original_settings, "parallel_tool_calls": False}
+        assert prepared.model_settings is not settings
+        assert wire["parallel_tool_calls"] is False
+        assert "parallel_tool_calls" not in wire.get("extra_body", {})
+        functions = {tool["function"]["name"]: tool["function"] for tool in wire["tools"]}
+        assert list(functions) == list(REFERENCE_TOOLS)
+        assert "query" in functions["search_reference_recipes"]["parameters"]["required"]
+        services.final.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["non_reference", "non_openai", "no_tools"])
+async def test_serial_tool_setting_does_not_change_other_requests(boundary, services):
+    """非参考、非 OpenAI 和无工具准备请求不继承供应商参数。"""
+    context = Context(tools=list(SAFE_PLANNER_TOOLS)) if boundary == "non_reference" else Context()
+    settings = {"temperature": 0.17}
+    request = request_for([human()], context).override(model_settings=settings)
+    if boundary != "non_openai":
+        request = request.override(model=ChatOpenAI(model="gpt-6.1-sol", api_key="synthetic-test-key"))
+    if boundary == "no_tools":
+        request = request.override(tools=[])
+    handler = AsyncMock(return_value=ModelResponse(result=[AIMessage(content="继续准备")]))
+
+    await MealPlanResultMiddleware().awrap_model_call(request, handler)
+
+    handler.assert_awaited_once_with(request)
+    assert request.model_settings is settings and settings == {"temperature": 0.17}
+    services.final.assert_not_awaited()
 
 
 @pytest.mark.asyncio
