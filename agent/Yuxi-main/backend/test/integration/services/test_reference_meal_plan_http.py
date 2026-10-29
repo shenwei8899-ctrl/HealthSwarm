@@ -61,7 +61,7 @@ SKU = {
 }
 
 
-async def setup_reference(fixture, monkeypatch, *, allergens=None):
+async def setup_reference(fixture, monkeypatch, *, allergens=None, avoidances=None, intolerances=None):
     """正式建档和同意接口，无正式规则或菜谱，绑定当前知识文件。"""
     client, sessions, users = fixture
     monkeypatch.setenv("HEALTH_RECIPE_KB_ID", "synthetic-reference-kb")
@@ -91,6 +91,10 @@ async def setup_reference(fixture, monkeypatch, *, allergens=None):
     body.pop("processing_consents")
     if allergens:
         body["members"][0]["dietary"].update(allergyStatus="set", allergies=allergens)
+    if avoidances:
+        body["members"][0]["dietary"].update(avoidanceStatus="set", avoidances=avoidances)
+    if intolerances:
+        body["members"][0]["dietary"].update(intoleranceStatus="set", intolerances=intolerances)
     saved = await client.post(f"/api/family/{family['id']}/miniapp-profile", json=body, headers=headers)
     assert saved.status_code == 200, saved.text
     actor = body["members"][0]["member_id"]
@@ -735,8 +739,10 @@ async def test_reference_purchase_binds_exact_items_and_invalidates_changed_prod
 
 
 @pytest.mark.parametrize("field", ["allergen_codes", "product_description"])
-async def test_known_sku_allergen_conflict_is_rejected_at_save(family_profile_http, monkeypatch, field):
-    """商品从首次读取就明确冲突，不能只靠旧快照失效来掩盖漏检。"""
+async def test_unknown_allergen_cannot_pass_recipe_check_before_conflicting_sku(
+    family_profile_http, monkeypatch, field
+):
+    """花生商品仍有明确原文冲突，菜谱兼容性未核实时已先拒绝整单。"""
     current = await setup_reference(family_profile_http, monkeypatch, allergens=["花生"])
 
     async def conflicting_catalog():
@@ -746,12 +752,148 @@ async def test_known_sku_allergen_conflict_is_rejected_at_save(family_profile_ht
         }
 
     monkeypatch.setattr(service, "current_catalog", conflicting_catalog)
+    sku = (await conflicting_catalog())["items"][0]
+    assert service.reference_restriction_conflict(service.reference_product_composition(sku), ["花生"]) is True
     bound = await bind_reference(current)
     context = await running_context(current, bound.json()["thread_id"])
-    with pytest.raises(HealthVisionError, match="reference_restriction_conflict"):
+    with pytest.raises(HealthVisionError, match="reference_restriction_unverified"):
         await grounded_plan(current, context)
     async with current[1]() as db:
         assert await db.scalar(select(func.count()).select_from(HealthInitialPlanPreview)) == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "restriction", "ingredient"),
+    [
+        ("allergens", "鸡蛋", "eggs"),
+        ("allergens", "牛奶", "milk"),
+        ("avoidances", "大豆", "soybeans"),
+        ("intolerances", "麸质", "wheat flour"),
+    ],
+)
+@pytest.mark.parametrize("location", ["recipe", "product"])
+async def test_unverified_restrictions_block_recipe_and_product_saves(
+    family_profile_http, monkeypatch, field, restriction, ingredient, location
+):
+    """未知双语名称保持未核实，真实读取回执齐全也不能写预览或采购。"""
+    current = await setup_reference(family_profile_http, monkeypatch, **{field: [restriction]})
+    if location == "recipe":
+        async with current[1].begin() as db:
+            chunk = await db.scalar(select(KnowledgeChunk))
+            chunk.content = TEXT + "\n" + ingredient
+    else:
+
+        async def uncertain_catalog():
+            return {"version": "synthetic-uncertain", "items": [{**SKU, "ingredients": [ingredient]}]}
+
+        monkeypatch.setattr(service, "current_catalog", uncertain_catalog)
+        with pytest.raises(HealthVisionError, match="reference_restriction_unverified"):
+            service.reference_restriction_conflict(ingredient, [restriction])
+    bound = await bind_reference(current)
+    context = await running_context(current, bound.json()["thread_id"])
+    catalog = await service.get_reference_context(context)
+    assert catalog["restriction_verification"]["status"] == "needs_verification"
+    assert catalog["restriction_verification"]["unverified_restrictions"] == [restriction]
+    assert catalog["members"][0][field] == [restriction]
+    with pytest.raises(HealthVisionError, match="reference_restriction_unverified"):
+        await grounded_plan(current, context)
+    async with current[1]() as db:
+        assert await db.scalar(select(func.count()).select_from(HealthInitialPlanPreview)) == 0
+
+
+async def test_unverified_restriction_does_not_hide_quote_or_profile_failure(family_profile_http, monkeypatch):
+    """未核实限制之前仍保留具体引文失败与当前资料授权检查。"""
+    current = await setup_reference(family_profile_http, monkeypatch, allergens=["鸡蛋"])
+    bound = await bind_reference(current)
+    context = await running_context(current, bound.json()["thread_id"])
+    with pytest.raises(HealthVisionError, match="reference_restriction_unverified"):
+        await grounded_plan(current, context)
+    invalid = {
+        "meals": [
+            {
+                "meal_type": "breakfast",
+                "dishes": [
+                    {
+                        "file_id": "reference-file",
+                        "chunk_id": "reference-chunk",
+                        "name": "不存在的菜",
+                        "ingredients": ["大米100克"],
+                        "steps": ["加水煮熟"],
+                    }
+                ],
+            }
+        ],
+        "purchase_items": [],
+        "purchase_gaps": [{"ingredient": "大米100克", "reason": "no_match", "detail": "合成无匹配"}],
+    }
+    with pytest.raises(HealthVisionError, match="reference_quote_invalid"):
+        await service.save_reference_plan(context, invalid)
+    async with current[1].begin() as db:
+        actor = await db.get(FamilyMember, current[4])
+        actor.version += 1
+    with pytest.raises(HealthVisionError, match="reference_profile_unconfirmed"):
+        await service.save_reference_plan(context, invalid)
+
+
+@pytest.mark.parametrize(
+    ("restriction", "ingredient", "location", "code"),
+    [
+        ("鸡蛋", "eggs", "recipe", "reference_restriction_unverified"),
+        ("牛奶", "milk", "product", "reference_restriction_unverified"),
+        ("牛羊肉", "beef broth", "recipe", "reference_restriction_conflict"),
+        ("牛羊肉", "lamb", "product", "reference_restriction_conflict"),
+    ],
+)
+async def test_existing_preview_rechecks_restrictions_for_publication_history_and_purchase(
+    family_profile_http, monkeypatch, restriction, ingredient, location, code
+):
+    """构造升级前回执；当前档案哈希未变，旧结果仍须通过现有限制检查。"""
+    current = await setup_reference(family_profile_http, monkeypatch, avoidances=[restriction])
+    if location == "recipe":
+        async with current[1].begin() as db:
+            chunk = await db.scalar(select(KnowledgeChunk))
+            chunk.content = TEXT + "\n" + ingredient
+    else:
+
+        async def previous_catalog():
+            return {"version": "synthetic-previous", "items": [{**SKU, "ingredients": [ingredient]}]}
+
+        monkeypatch.setattr(service, "current_catalog", previous_catalog)
+    bound = await bind_reference(current)
+    context = await running_context(current, bound.json()["thread_id"])
+    # 仅用于准备旧版已存在的保存/发布事实；所有待测入口恢复真实修复后的检查。
+    with monkeypatch.context() as previous:
+        previous.setattr(service, "reference_restriction_conflict", lambda content, restrictions: False)
+        plan, _, _ = await grounded_plan(current, context)
+        await complete(current, context, plan)
+    async with current[1]() as db:
+        run = await db.get(AgentRun, context.run_id)
+        binding, _ = await require_consultation(db, "self", context.thread_id)
+        assert (await service.bound_reference_context(db, "self", binding))["sources"] == plan["sources"]
+        with pytest.raises(HealthVisionError, match=code):
+            await validate_initial_planner_publication(db, run, json.dumps(plan, ensure_ascii=False))
+    for path, status in (
+        (f"{ROOT}/reference-meal-plans/{plan['preview_id']}", 422),
+        (f"{ROOT}/tasks/{context.request_id}", 422),
+        (f"/api/chat/thread/{context.thread_id}/history", 404),
+    ):
+        response = await current[0].get(path, headers=current[2]["self"])
+        assert response.status_code == status, response.text
+        assert "大米100克" not in response.text
+
+    async def unexpected_purchase(*args, **kwargs):
+        raise AssertionError("未核实或冲突的旧结果不能发布采购")
+
+    monkeypatch.setattr("yuxi.services.daily_commerce_service.commerce_request", unexpected_purchase)
+    response = await current[0].post(
+        f"{ROOT}/reference-meal-plans/{plan['preview_id']}/purchase", headers=current[2]["self"]
+    )
+    assert response.status_code == 422, response.text
+    assert code in response.text
+    async with current[1]() as db:
+        with pytest.raises(HealthVisionError, match=code):
+            await service.validate_reference_purchase_source(db, {"uid": "self", "preview_id": plan["preview_id"]})
+        assert await db.scalar(select(func.count()).select_from(HealthInitialPlanPreview)) == 1
 
 
 async def test_insufficient_sku_stock_and_unselected_meal_cannot_be_saved(family_profile_http, monkeypatch):
@@ -852,6 +994,151 @@ async def test_exact_cooking_title_is_not_displaced_by_clinical_semantic_hits(fa
     assert hits["items"][1]["filename"] == "USDA家庭菜谱｜粥.md"
     assert hits["items"][2]["file_id"] == "earlier-body-file"
     assert len(hits["items"]) == 3
+
+
+async def test_home_recipe_title_precedes_other_cooking_matches(family_profile_http, monkeypatch):
+    """受控家常菜谱不能因旧前缀遗漏或其他来源先排满四项而丢失。"""
+    current = await setup_reference(family_profile_http, monkeypatch)
+    async with current[1].begin() as db:
+        file = await db.scalar(select(KnowledgeFile))
+        file.filename = "家常菜谱_红豆米饭_Red Beans and Rice.md"
+        for index in range(4):
+            fid = f"cooking-rice-{index}"
+            db.add(
+                KnowledgeFile(
+                    file_id=fid,
+                    kb_id=file.kb_id,
+                    filename=f"烹饪菜谱｜{index}米饭配菜.md",
+                    status="indexed",
+                    content_hash="synthetic-competing-cooking",
+                )
+            )
+            await db.flush()
+            db.add(
+                KnowledgeChunk(
+                    chunk_id=f"cooking-rice-chunk-{index}",
+                    file_id=fid,
+                    kb_id=file.kb_id,
+                    chunk_index=0,
+                    content="合成米饭配菜参考",
+                )
+            )
+
+    async def unexpected_fallback(*args):
+        raise AssertionError("已索引家常菜谱应由固定库直接检索")
+
+    monkeypatch.setattr(service, "search_family_nutrition_knowledge", unexpected_fallback)
+    bound = await bind_reference(current)
+    context = await running_context(current, bound.json()["thread_id"])
+    hits = await service.search_reference_recipes(context, "米饭")
+    assert len(hits["items"]) == 4
+    assert hits["items"][0]["file_id"] == "reference-file"
+    await receipt(current[1], context, "search_reference_recipes", hits)
+    opened = await service.read_reference_recipe(context, "reference-file", "reference-chunk")
+    assert opened["content"] == TEXT
+
+
+async def test_home_recipe_catalog_is_bounded_and_does_not_authorize_reading(family_profile_http, monkeypatch):
+    """目录只列固定库的当前家常标题，不扫描正文或替代检索回执。"""
+    current = await setup_reference(family_profile_http, monkeypatch)
+    first_name = "家常菜谱_00清粥.md"
+    names = [first_name, *(f"家常菜谱_合成{i:02}.md" for i in range(61))]
+    async with current[1].begin() as db:
+        file = await db.scalar(select(KnowledgeFile))
+        file.filename = first_name
+        db.add(KnowledgeBase(kb_id="other-home-kb", name="其他合成库", kb_type="milvus"))
+        await db.flush()
+        for index, name in enumerate(names[1:]):
+            db.add(
+                KnowledgeFile(
+                    file_id=f"home-catalog-{index}",
+                    kb_id=file.kb_id,
+                    filename=name,
+                    status="indexed",
+                    content_hash="synthetic-home-catalog",
+                )
+            )
+        for index, (kb, status, folder, prefix) in enumerate(
+            [
+                ("other-home-kb", "indexed", False, "家常菜谱_"),
+                (file.kb_id, "pending", False, "家常菜谱_"),
+                (file.kb_id, "indexed", True, "家常菜谱_"),
+                (file.kb_id, "indexed", False, "分类目录_"),
+                (file.kb_id, "indexed", False, "家常菜谱X"),
+            ]
+        ):
+            db.add(
+                KnowledgeFile(
+                    file_id=f"excluded-home-{index}",
+                    kb_id=kb,
+                    filename=f"{prefix}000排除{index}.md",
+                    status=status,
+                    is_folder=folder,
+                    content_hash="synthetic-excluded-home",
+                )
+            )
+            await db.flush()
+            db.add(
+                KnowledgeChunk(
+                    chunk_id=f"excluded-home-chunk-{index}",
+                    file_id=f"excluded-home-{index}",
+                    kb_id=kb,
+                    chunk_index=0,
+                    content="排除材料的合成做法",
+                )
+            )
+    bound = await bind_reference(current)
+    context = await running_context(current, bound.json()["thread_id"])
+    catalog = await service.get_reference_context(context)
+    assert catalog["recipe_catalog"] == sorted(names)[:60]
+    await receipt(current[1], context, "get_reference_plan_context", catalog)
+    with pytest.raises(HealthVisionError, match="reference_receipt_invalid"):
+        await service.read_reference_recipe(context, "reference-file", "reference-chunk")
+    calls = []
+
+    async def empty_fallback(context, query):
+        """普通来源过滤后无候选，保留固定库的原有后备检索。"""
+        calls.append(query)
+        return {"status": "insufficient_material", "sources": []}
+
+    monkeypatch.setattr(service, "search_family_nutrition_knowledge", empty_fallback)
+    hits = await service.search_reference_recipes(context, "排除")
+    assert calls == ["排除"]
+    assert hits["items"] == []
+
+
+async def test_english_meat_in_source_cannot_bypass_chinese_avoidance(family_profile_http, monkeypatch):
+    """当前原文中的英文忌口即使未被模型摘录也不能形成保存结果。"""
+    current = await setup_reference(family_profile_http, monkeypatch, avoidances=["牛羊肉"])
+    async with current[1].begin() as db:
+        chunk = await db.scalar(select(KnowledgeChunk))
+        chunk.content = TEXT + "\nOptional beef broth"
+    bound = await bind_reference(current)
+    context = await running_context(current, bound.json()["thread_id"])
+    with pytest.raises(HealthVisionError, match="reference_restriction_conflict"):
+        await grounded_plan(current, context)
+    async with current[1]() as db:
+        assert await db.scalar(select(func.count()).select_from(HealthInitialPlanPreview)) == 0
+
+
+@pytest.mark.parametrize("field", ["ingredients", "product_description"])
+async def test_english_meat_in_product_cannot_bypass_chinese_avoidance(family_profile_http, monkeypatch, field):
+    """商品配料和说明使用与菜谱相同的已知中英文忌口检查。"""
+    current = await setup_reference(family_profile_http, monkeypatch, avoidances=["牛羊肉"])
+
+    async def conflicting_catalog():
+        return {
+            "version": "synthetic-english-conflict",
+            "items": [{**SKU, field: ["lamb"] if field == "ingredients" else "Contains beef broth"}],
+        }
+
+    monkeypatch.setattr(service, "current_catalog", conflicting_catalog)
+    bound = await bind_reference(current)
+    context = await running_context(current, bound.json()["thread_id"])
+    with pytest.raises(HealthVisionError, match="reference_restriction_conflict"):
+        await grounded_plan(current, context)
+    async with current[1]() as db:
+        assert await db.scalar(select(func.count()).select_from(HealthInitialPlanPreview)) == 0
 
 
 async def test_cooking_body_hit_is_found_before_directory_and_clinical_titles(family_profile_http, monkeypatch):

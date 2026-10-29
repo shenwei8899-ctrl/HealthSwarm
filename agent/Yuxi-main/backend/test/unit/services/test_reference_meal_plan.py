@@ -10,6 +10,7 @@ from yuxi.services.reference_meal_plan_service import (
     checked_reference_meals,
     product_facts,
     reference_binding,
+    reference_restriction_conflict,
     select_reference_purchase_items,
 )
 from yuxi.services.reference_meal_plan_types import ReferencePlanDraft, ReferenceSelection
@@ -99,6 +100,114 @@ def test_omitting_an_allergen_from_selected_quotes_cannot_hide_it():
             ReferencePlanDraft.model_validate(draft()),
             document("清粥 大米100克 加水煮熟 花生"),
             [{"allergens": ["花生"]}],
+        )
+
+
+@pytest.mark.parametrize(
+    ("restriction", "ingredient"),
+    [
+        ("牛肉", "beef broth"),
+        ("牛肉", "VEAL"),
+        ("羊肉", "lamb"),
+        ("羊肉", "mutton"),
+        ("羊肉", "goat meat"),
+        ("牛羊肉", "beef"),
+        ("牛羊肉", "lamb"),
+        ("牛羊肉", "goat\nmeat"),
+        ("beef", "牛肉"),
+        ("beef", "beef"),
+        ("beef", "beef broth"),
+        ("veal", "veal"),
+        ("lamb", "羊肉"),
+        ("lamb", "lamb"),
+        ("mutton", "mutton"),
+        ("goat\nmeat", "goat meat"),
+    ],
+)
+def test_known_meat_restrictions_apply_to_the_whole_bilingual_source(restriction, ingredient):
+    """不能省略原文中的牛羊肉或通过中英文名称差异规避忌口。"""
+    assert reference_restriction_conflict(ingredient, [restriction]) is True
+    with pytest.raises(HealthVisionError, match="reference_restriction_conflict"):
+        checked_reference_meals(
+            ReferencePlanDraft.model_validate(draft()),
+            document("清粥 大米100克 加水煮熟\n" + ingredient),
+            [{"avoidances": [restriction]}],
+        )
+
+
+@pytest.mark.parametrize(
+    ("restriction", "ingredient"),
+    [
+        ("牛羊肉", "milk"),
+        ("牛羊肉", "goat milk"),
+        ("牛羊肉", "beefsteak tomato"),
+        ("牛羊肉", "lambsquarters"),
+        ("beef", "beefsteak tomato"),
+        ("lamb", "lambsquarters"),
+        ("goat\nmeat", "goat milk"),
+    ],
+)
+def test_meat_aliases_do_not_reject_milk_or_words_containing_the_alias(restriction, ingredient):
+    """牛羊肉名称按英文整词识别，不把牛奶或相似单词认作肉类。"""
+    assert reference_restriction_conflict(ingredient, [restriction]) is False
+    result = checked_reference_meals(
+        ReferencePlanDraft.model_validate(draft()),
+        document("清粥 大米100克 加水煮熟\n" + ingredient),
+        [{"avoidances": [restriction]}],
+    )
+    assert result[0]["dishes"][0]["name"] == "清粥"
+
+
+@pytest.mark.parametrize(
+    ("restriction", "ingredient"),
+    [
+        ("鸡蛋", "eggs"),
+        ("牛奶", "milk"),
+        ("大豆", "soybeans"),
+        ("麸质", "wheat flour"),
+        ("牛羊肉和鸡蛋", "rice"),
+        ("牛肉、羊肉", "milk"),
+        ("不吃牛肉，且不能有坚果", "rice"),
+    ],
+)
+def test_unsupported_restriction_is_unverified_instead_of_clear(restriction, ingredient):
+    """有限词汇不能解释其他限制或自由句时，原文未命中也不能通过。"""
+    with pytest.raises(HealthVisionError, match="reference_restriction_unverified"):
+        reference_restriction_conflict(ingredient, [restriction])
+    with pytest.raises(HealthVisionError, match="reference_restriction_unverified"):
+        checked_reference_meals(
+            ReferencePlanDraft.model_validate(draft()),
+            document("清粥 大米100克 加水煮熟\n" + ingredient),
+            [{"allergens": [restriction]}],
+        )
+
+
+@pytest.mark.parametrize("restriction", ["鸡蛋", "牛奶", "大豆", "麸质", "花生"])
+def test_literal_conflict_remains_positive_even_when_other_names_are_unverified(restriction):
+    """已有明确原文冲突仍报冲突，不被未核实状态改写为可通过。"""
+    assert reference_restriction_conflict("配料含" + restriction, [restriction, "待核实限制"]) is True
+
+
+def test_doctor_instruction_cannot_be_ignored_when_not_interpretable():
+    """自由医嘱没有受控解释，不能只因食材未命中文字就保存。"""
+    with pytest.raises(HealthVisionError, match="reference_restriction_unverified"):
+        checked_reference_meals(
+            ReferencePlanDraft.model_validate(draft()), document(), [{"doctor_instructions": "避免生食"}]
+        )
+
+
+@pytest.mark.parametrize("fault", ["quote", "unopened"])
+def test_source_errors_precede_unverified_restrictions(fault):
+    """原引文和读取回执的具体失败不被无关的未核实限制遮蔽。"""
+    with pytest.raises(
+        HealthVisionError, match="reference_quote_invalid" if fault == "quote" else "reference_receipt_invalid"
+    ):
+        checked_reference_meals(
+            ReferencePlanDraft.model_validate(draft(name="不存在"))
+            if fault == "quote"
+            else ReferencePlanDraft.model_validate(draft()),
+            document() if fault == "quote" else {},
+            [{"allergens": ["鸡蛋"]}],
         )
 
 

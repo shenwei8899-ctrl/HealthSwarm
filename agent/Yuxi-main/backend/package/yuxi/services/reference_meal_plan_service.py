@@ -137,6 +137,21 @@ async def get_reference_context(context):
     async with pg_manager.get_async_session_context() as session:
         _, binding = await require_planner_run(session, context)
         current = await bound_reference_context(session, context.uid, binding)
+        recipe_catalog = list(
+            (
+                await session.scalars(
+                    select(KnowledgeFile.filename)
+                    .where(
+                        KnowledgeFile.kb_id.in_(configured_health_kb_ids("health-meal-planner")),
+                        KnowledgeFile.is_folder.is_(False),
+                        KnowledgeFile.status == "indexed",
+                        KnowledgeFile.filename.startswith("家常菜谱_", autoescape=True),
+                    )
+                    .order_by(KnowledgeFile.filename)
+                    .limit(60)
+                )
+            ).all()
+        )
     notice = None
     try:
         catalog = await current_catalog()
@@ -155,10 +170,18 @@ async def get_reference_context(context):
         )
         if current_plan["version"] != current["selection"]["daily_base_version"]:
             raise HealthVisionError("daily_plan_version_changed", "今日计划已有更新，请重新读取后调整", 409)
+    unverified = unverified_reference_restrictions(reference_member_restrictions(current["members"]))
     return {
         "scope": "daily_reference",
         **current,
         "current_daily_plan": current_plan,
+        "restriction_verification": {
+            "status": "needs_verification" if unverified else "supported_terms",
+            "unverified_restrictions": unverified,
+            "notice": "仅现有有限牛羊肉名称可核对；其他硬限制及未完整解释的自述须先核实，不能据未命中判定无冲突。",
+        },
+        "recipe_catalog": recipe_catalog,
+        "recipe_catalog_notice": "最多60项当前家常菜谱文件名，仅作查找目录；不是原文读取回执或个人适用性证明。",
         "catalog": [
             reference_product(s)
             for s in catalog["items"]
@@ -183,9 +206,15 @@ async def search_reference_recipes(context, query):
         ]
         kb_ids = configured_health_kb_ids("health-meal-planner")
         cooking_file = or_(
-            KnowledgeFile.filename.startswith("烹饪菜谱"), KnowledgeFile.filename.startswith("USDA家庭菜谱")
+            KnowledgeFile.filename.startswith("家常菜谱_", autoescape=True),
+            KnowledgeFile.filename.startswith("烹饪菜谱"),
+            KnowledgeFile.filename.startswith("USDA家庭菜谱"),
         )
-        source_order = case((KnowledgeFile.filename.startswith("烹饪菜谱"), 0), else_=1)
+        source_order = case(
+            (KnowledgeFile.filename.startswith("家常菜谱_", autoescape=True), 0),
+            (KnowledgeFile.filename.startswith("烹饪菜谱"), 1),
+            else_=2,
+        )
         # 目录与疾病标题不截断普通菜谱召回；先找完整烹饪标题，再补正文中的食材和做法。
         matches = (
             (
@@ -345,13 +374,7 @@ async def read_reference_recipe(context, file_id, chunk_id):
 def checked_reference_meals(draft, documents, members):
     """核对原文引句及明确限制，数值和专业状态由服务端固定。"""
     result = []
-    restrictions = [
-        str(v).strip()
-        for m in members
-        for key in ("allergens", "avoidances", "intolerances")
-        for v in (m.get(key) or [])
-        if str(v).strip()
-    ]
+    restrictions = reference_member_restrictions(members)
     for meal in draft.meals:
         dishes = []
         for dish in meal.dishes:
@@ -367,7 +390,7 @@ def checked_reference_meals(draft, documents, members):
             ]
             if any(not q.strip() or q not in doc["content"] for q in quotes):
                 raise HealthVisionError("reference_quote_invalid", "菜名、食材或步骤缺少可核对的原文", 422)
-            if any(term.casefold() in doc["content"].casefold() for term in restrictions):
+            if reference_restriction_conflict(doc["content"], restrictions):
                 raise HealthVisionError("reference_restriction_conflict", "所选菜谱含已明确填写的过敏或忌口食材", 422)
             dishes.append(
                 {
@@ -413,13 +436,7 @@ async def save_reference_plan(context, draft):
             )
         seen = {str(s["sku_id"]): s for c in contexts for s in c.get("catalog", [])}
         items = []
-        restrictions = [
-            str(v).strip().casefold()
-            for member in current["members"]
-            for key in ("allergens", "avoidances", "intolerances")
-            for v in (member.get(key) or [])
-            if str(v).strip()
-        ]
+        restrictions = reference_member_restrictions(current["members"])
         for requested in draft.purchase_items:
             sku = by_sku.get(requested.sku_id)
             if (
@@ -432,14 +449,7 @@ async def save_reference_plan(context, draft):
                 != seen[requested.sku_id]["facts_hash"]
             ):
                 raise HealthVisionError("reference_product_changed", "所选商品或库存已变化，请重新读取目录", 409)
-            composition = json.dumps(
-                {
-                    k: sku.get(k)
-                    for k in ("product_name", "sku_name", "ingredients", "allergen_codes", "product_description")
-                },
-                ensure_ascii=False,
-            ).casefold()
-            if any(term in composition for term in restrictions):
+            if reference_restriction_conflict(reference_product_composition(sku), restrictions):
                 raise HealthVisionError("reference_restriction_conflict", "所选商品含已明确填写的过敏或忌口成分", 422)
             items.append({**reference_product(sku, requested.quantity), "ingredient_refs": requested.ingredient_refs})
         snapshot = {
@@ -497,12 +507,74 @@ async def reference_result_in_session(session, run, binding, preview_id):
         raise HealthVisionError("reference_receipt_invalid", "参考餐单回执不属于当前运行", 409)
     if row.snapshot["sources"] != current["sources"]:
         raise HealthVisionError("source_invalidated", "参考餐单的成员资料已变化", 410)
+    documents = []
     for meal in row.snapshot["meals"]:
         for dish in meal["dishes"]:
             fresh = await recipe_document(session, dish["file_id"], dish["chunk_id"])
             if any(fresh[k] != dish["source"][k] for k in ("kb_id", "file_hash", "chunks_hash")):
                 raise HealthVisionError("source_invalidated", "参考餐单的菜谱来源已变化", 410)
+            documents.append(fresh)
+    restrictions = reference_member_restrictions(current["members"])
+    for material in [
+        *(doc["content"] for doc in documents),
+        *(reference_product_composition(s) for s in row.snapshot["purchase_items"]),
+    ]:
+        if reference_restriction_conflict(material, restrictions):
+            raise HealthVisionError("reference_restriction_conflict", "参考餐单含当前明确限制的食材或成分", 422)
+    reference_restriction_conflict("", restrictions)
     return {"preview_id": row.id, **row.snapshot}
+
+
+def reference_member_restrictions(members):
+    """收集当前授权档案的硬限制，医嘱原文也不能作为可忽略偏好。"""
+    return [
+        str(value).strip()
+        for member in members
+        for value in [
+            *(v for key in ("allergens", "avoidances", "intolerances") for v in (member.get(key) or [])),
+            member.get("doctor_instructions") or "",
+        ]
+        if str(value).strip()
+    ]
+
+
+def unverified_reference_restrictions(restrictions):
+    """只接受现有有限词汇的完整条目，不把自由句中的局部识别当作完整解释。"""
+    supported = {"牛肉", "羊肉", "牛羊肉", "beef", "veal", "lamb", "mutton", "goat meat"}
+    return [term for term in restrictions if " ".join(term.casefold().split()) not in supported]
+
+
+def reference_product_composition(sku):
+    """菜谱保存和历史重验使用相同的商品原始成分文本。"""
+    return json.dumps(
+        {k: sku.get(k) for k in ("product_name", "sku_name", "ingredients", "allergen_codes", "product_description")},
+        ensure_ascii=False,
+    )
+
+
+def reference_restriction_conflict(content, restrictions):
+    """整份原文的冲突优先拒绝，词汇不能完整解释的硬限制显式等待核实。"""
+    content = content.casefold()
+    restrictions = [term.casefold() for term in restrictions]
+    # 完整英文肉名由下方整词规则核对；中文和未解释的自由文本保留字面命中。
+    if any(
+        term in content and (not term.isascii() or unverified_reference_restrictions([term])) for term in restrictions
+    ):
+        return True
+    for names, english in (
+        (("牛肉", "牛羊肉"), r"\b(?:beef|veal)\b"),
+        (("羊肉", "牛羊肉"), r"\b(?:lamb|mutton|goat\s+meat)\b"),
+    ):
+        if any(any(name in term for name in names) or re.search(english, term) for term in restrictions):
+            if any(name in content for name in names) or re.search(english, content):
+                return True
+    if unverified_reference_restrictions(restrictions):
+        raise HealthVisionError(
+            "reference_restriction_unverified",
+            "当前硬限制尚无法完整核对菜谱及商品成分，请先核实；不会移除或忽略该限制",
+            422,
+        )
+    return False
 
 
 async def reference_answer_in_session(session, run, binding, answer):
