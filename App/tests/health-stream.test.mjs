@@ -12,9 +12,10 @@ const runId = '55555555-5555-4555-8555-555555555555'
 const tick = () => new Promise(resolve => setImmediate(resolve))
 const delta = (content, offset = 0, id = '10-0', extra = {}) => ({ id, type: 'custom', runId, requestId, threadId,
   phase: 'streaming', messageId: 'answer-1', offset, content, ...extra })
-function fixture({ pollLimit = 45 } = {}) {
+function fixture({ pollLimit = 45, cancelMode = 'success', queued = false } = {}) {
   let account = { accountId: '17', token: 'test-session' }, revision = '1', status = 'running', reads = 0, readError = null
-  let readGate = null, finalMessageId = null
+  if(queued)status='queued'
+  let readGate = null, cancelGate = null, finalMessageId = null
   const subscriptions = [], timers = [], saved = new Map(), snapshots = [], writes = []
   const storage = { getStorageSync: key => saved.get(key), setStorageSync: (key, value) => saved.set(key, structuredClone(value)) }
   const flow = createHealthTaskFlow({ session: () => account, revision: () => revision, storage,
@@ -28,19 +29,26 @@ function fixture({ pollLimit = 45 } = {}) {
       if (options.path.endsWith('/task-entries')) return { data: { member_id: memberId, task_type: 'consultation', client_request_id: entryId,
         entry_status: 'ready', thread_id: threadId, agent_slug: 'health-consultation', request_submit_url: '/api/agent/runs' } }
       if (options.path === '/api/agent/runs') return { data: { request_id: requestId, thread_id: threadId } }
-      if (options.path.endsWith('/cancel')) { status = 'cancelled'; return { data: { status } } }
+      if (options.path.endsWith('/cancel')) {
+        if(cancelGate){const gate=cancelGate;cancelGate=null;await gate}
+        if(cancelMode==='dispatch'){status='running';cancelMode='success';throw Object.assign(new Error('已派发'),{code:409,businessCode:'request_already_dispatched'})}
+        if(cancelMode==='reject')throw Object.assign(new Error('停止未成功'),{code:400})
+        if(cancelMode==='timeout')throw Object.assign(new Error('超时'),{code:'NETWORK_ERROR'})
+        if(cancelMode==='lost'){status='cancelled';throw Object.assign(new Error('响应丢失'),{code:'NETWORK_ERROR'})}
+        if(status!=='completed')status='cancelled';return {data:{status}}
+      }
       if (options.path.includes('/tasks/')) {
         reads++
         if (readGate) { const gate = readGate; readGate = null; await gate.promise }
         if (readError) { const error = readError; readError = null; throw error }
         return { data: { request_id: requestId, member_id: memberId, task_type: 'consultation', thread_id: threadId,
-          agent_slug: 'health-consultation', run_id: runId, request_status: 'dispatched', execution_status: status, final_message_id: finalMessageId,
+          agent_slug: 'health-consultation', run_id: status==='queued'?null:runId, request_status: status==='queued'?'queued':'dispatched', execution_status: status==='queued'?'not_dispatched':status, final_message_id: finalMessageId,
           result: status === 'completed' ? { result_type: 'general_education_answer', scope: 'general_education', answer: '正式结果', citations: [] }
             : status === 'failed' ? { result_type: 'error', code: 'output_persistence_error', retryable: false } : null } }
       }
       throw new Error('Unexpected path ' + options.path)
     } })
-  return { flow, subscriptions, saved, snapshots, writes,
+  return { flow, subscriptions, saved, snapshots, writes, setCancelMode:value=>cancelMode=value,holdCancel:()=>{let release;cancelGate=new Promise(r=>release=r);return release},
     holdNextRead: () => { let release; const promise = new Promise(resolve => { release = resolve }); readGate = { promise }; return release },
     pendingTimers: () => timers.filter(row => !row.cancelled && !row.used).length,
     setFinalMessageId: value => { finalMessageId = value },
@@ -126,11 +134,12 @@ test('健康任务回读成功后恢复真实running阶段，五次断流后明�
   h.flow.hide()
 })
 
-test('手动读取暂停请求重新开启有界轮询和订阅，仍读取原request且不重发', async () => {
+test('长任务降频后手动读取仍沿用原request且不重复提交', async () => {
   const h = fixture({ pollLimit: 2 }); await start(h)
   await h.poll(); await h.poll()
-  assert.equal(h.flow.getState().streamPhase, 'paused')
-  assert.equal(h.pendingTimers(), 0)
+  assert.equal(h.flow.getState().streamPhase, 'running')
+  assert.ok(h.pendingTimers() > 0)
+  assert.match(h.flow.getState().notice, /仍在自动获取/)
   const posts = h.writes.length
   await h.flow.refresh()
   assert.equal(h.flow.getState().streamPhase, 'running')
@@ -280,4 +289,40 @@ test('WeChat chunk adapter delivers public Chinese frames before request success
   revision = 'two'; receive({ data: bytes.buffer })
   assert.equal(events.length, 1)
   close(); assert.equal(aborted, true)
+})
+
+
+test('definite cancel failure restores the same running task and allows an explicit retry',async()=>{
+ const h=fixture({cancelMode:'reject'});await start(h);await h.flow.cancelRequest()
+ assert.equal(h.flow.getState().status,'running');assert.equal(h.flow.getState().cancelPhase,'error');assert.equal(h.flow.getState().busy,false)
+ assert.ok(h.subscriptions.at(-1)&&!h.subscriptions.at(-1).closed)
+ h.setCancelMode('success');await h.flow.cancelRequest();assert.equal(h.flow.getState().status,'cancelled');assert.equal(h.flow.getState().cancelPhase,'')
+})
+test('unknown cancel result is reconciled without a blind second write',async()=>{
+ for(const mode of ['lost','timeout']){
+  const h=fixture({cancelMode:mode});await start(h);await h.flow.cancelRequest();const s=h.flow.getState()
+  assert.equal(s.cancelPhase,mode==='lost'?'':'error');assert.equal(s.status,mode==='lost'?'cancelled':'running')
+  assert.equal(h.writes.filter(w=>w.path.endsWith('/cancel')).length,1)
+  if(mode==='timeout'){assert.equal(h.subscriptions.at(-1).closed,false);h.setCancelMode('success');await h.flow.cancelRequest();assert.equal(h.flow.getState().status,'cancelled')}
+ }
+})
+test('queued-to-run cancellation verifies the original task and hands off once without invalidation',async()=>{
+ const h=fixture({queued:true,cancelMode:'dispatch'});await start(h);await h.flow.cancelRequest()
+ assert.equal(h.flow.getState().status,'cancelled');assert.notEqual(h.flow.getState().invalidated,true)
+ assert.deepEqual(h.writes.filter(w=>w.path.endsWith('/cancel')).map(w=>w.path),[`/api/agent/requests/${requestId}/cancel`,`/api/agent/runs/${runId}/cancel`])
+})
+test('a completion racing cancellation retains its verified answer',async()=>{
+ const h=fixture();await start(h);const release=h.holdCancel();const pending=h.flow.cancelRequest()
+ h.setStatus('completed');release();await pending;assert.equal(h.flow.getState().status,'completed');assert.equal(h.flow.getState().result.text,'正式结果')
+})
+test('a covered page makes an in-flight cancellation unknown and rejects the late callback',async()=>{
+ const h=fixture();await start(h);const release=h.holdCancel();const pending=h.flow.cancelRequest();h.flow.pause()
+ assert.equal(h.flow.getState().cancelPhase,'unknown');release();await pending;assert.equal(h.flow.getState().cancelPhase,'unknown')
+ await h.flow.resume();assert.equal(h.flow.getState().status,'cancelled')
+})
+
+
+test('a reconciled cancellation restores the same request and explicit stop after reopening without another write',async()=>{
+ const h=fixture({cancelMode:'timeout'});await start(h);await h.flow.cancelRequest();await h.flow.open(memberId,'consultation')
+ assert.equal(h.flow.getState().requestId,requestId);assert.equal(h.flow.getState().cancelPhase,'');assert.equal(h.subscriptions.at(-1).closed,false);assert.equal(h.writes.filter(w=>w.path.endsWith('/cancel')).length,1)
 })

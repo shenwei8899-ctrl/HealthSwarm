@@ -9,7 +9,10 @@ export function sourceTitle(value) {
   title = title.replace(/^文件名\s*[:：]\s*/, '').replace(/\.(?:markdown|md|pdf|docx?|txt|html?)$/i, '')
   // Keep the human title; ingestion often appends an English storage filename.
   if (/[\u3400-\u9fff]/.test(title)) title = title.replace(/[_]+[a-z][a-z0-9_. -]*$/i, '')
-  return title.replace(/\*\*|__|`/g, '').replace(/^\[|\]$/g, '').trim()
+  title = title.replace(/\*\*|__|`/g, '').replace(/^\[|\]$/g, '').trim()
+  // Some imported Chinese filenames append a short storage key without a separator.
+  if (/[\u3400-\u9fff]/.test(title)) title = title.replace(/[a-z]{2,12}_\d+(?:_\d+)*$/, '').trim()
+  return title
 }
 
 function extractReferences(value, citations, streaming) {
@@ -20,6 +23,11 @@ function extractReferences(value, citations, streaming) {
     else if (citation && typeof citation === 'object') add(citation.title || citation.document_title || citation.source_title || citation.name)
   }
   let text = String(value || '').replace(/\r\n?/g, '\n')
+  // Preserve the readable book title in the sentence, with the filename recorded
+  // in the existing source list. Ordinary book titles and surrounding advice stay intact.
+  text = text.replace(/《([^》\n]*\.(?:markdown|md|pdf|docx?|txt|html?))》/ig, (_, name) => {
+    const title = sourceTitle(name); add(name); return title ? `《${title}》` : ''
+  })
   text = text.replace(FILE_REFERENCE, (_, name) => { add(name); return '' }).replace(INTERNAL_REFERENCE, '').replace(/\[[0-9a-f-]{36}\]/ig, '')
   text = text.replace(/(?:资料|证据|来源|文档)\s*(?:ID|编号)?\s*[:：]\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/ig, '').replace(UUID, '')
   text = text.replace(/(?:资料|证据|来源|文档)\s*(?:ID|编号)\s*[:：]\s*[0-9a-f-]*$/ig, '')

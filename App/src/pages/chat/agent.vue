@@ -58,7 +58,6 @@ function consent() { if (consentChecked.value) { consentChecked.value = false; v
         <text v-if="view.result?.type === 'error'" class="error-note">任务未完成（{{ view.result.code }}）。如需继续，请明确提交新问题。</text>
         <button v-if="view.requestId" class="secondary-button" :disabled="view.busy || view.loading" @click="refresh">重新读取同一任务</button>
         <button v-if="view.canRetry" class="secondary-button" :disabled="view.busy" @click="retry">用同一请求键重试提交</button>
-        <button v-if="canCancel" class="secondary-button" :disabled="view.busy||view.loading" @click="flow.cancelRequest()">取消当前问题</button>
         <template v-if="canAsk">
           <textarea v-model="question" class="question-input" maxlength="4000" placeholder="输入本次想咨询的问题" />
           <button class="primary-button" :disabled="!question.trim()" @click="send">{{canCancel?'追加问题，按顺序处理':'提交问题'}}</button>

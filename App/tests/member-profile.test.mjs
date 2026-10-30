@@ -1,3 +1,6 @@
+import {restrictionIssue} from '../src/utils/onboarding-validation.js'
+import {restrictionFields} from '../src/utils/health.js'
+import {preserveMemberEdit,readMemberEdit,clearMemberEdit} from '../src/services/member-edit-draft.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -69,12 +72,13 @@ test('an unavailable requested member never falls back to the current self',asyn
 })
 
 function detail(overrides={}){
+  setup()
   const src=readFileSync(new URL('../src/components/CloudMemberDetail.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const raw=source(),m=member();let revision=1;const writes=[]
   const deps={ref,computed,defineProps:()=>({id:'mother'}),onShow(){},onHide(){},onUnload(){},sessionRevision:()=>revision,profileDraft,profileChanges,
-    readMemberProfile:async()=>({profile:{householdId:'family',isOwner:true,selfMemberId:'creator',members:[m]},member:m,source:raw}),
+    restrictionIssue,restrictionFields,preserveMemberEdit,readMemberEdit,clearMemberEdit,readMemberProfile:async()=>({profile:{householdId:'family',isOwner:true,selfMemberId:'creator',members:[m]},member:m,source:raw}),
     saveMemberProfile:async(...args)=>writes.push(args),request:async()=>({data:{}}),...overrides}
-  const page=new Function('deps',`const {${Object.keys(deps)}}=deps;${src};return {load,edit,save,canEdit,canAnalyze,profile,source,draft,error,busy,analysisBusy,editing,revokeAnalysis}`)(deps)
+  const page=new Function('deps',`const {${Object.keys(deps)}}=deps;${src};return {load,edit,save,hide,cancelEdit,section,conflictEdit,canEdit,canAnalyze,profile,source,draft,error,busy,analysisBusy,editing,revokeAnalysis}`)(deps)
   return {...page,writes,changeAccount:()=>revision++}
 }
 
@@ -122,8 +126,37 @@ test('ordinary users have one profile editor and no manual link page',()=>{
 
 test('typed requests can select their own purpose before readiness is checked',()=>{
   const chat=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
-  const disabled=chat.match(/class="send-button"[^>]*:disabled="([^"]+)"/)[1]
+  const disabled=chat.match(/class="send-button" aria-label="发送"[^>]*:disabled="([^"]+)"/)[1]
   const canSend=new Function('chatBusy','draftSaving','draftError','task',`return !(${disabled})`)
   assert.equal(canSend(false,false,'',{available:false}),true)
   assert.equal(canSend(true,false,'',{available:true}),false)
+})
+
+
+test('leaving for a report and returning restores all editor sections without a write',async()=>{
+ const p=detail();await p.load();assert.equal(p.error.value,'');p.edit();p.draft.value.weight=59;p.section.value='preferences';p.hide();assert.equal(p.draft.value,null);await p.load();assert.equal(p.error.value,'');assert.equal(p.editing.value,true);assert.equal(p.draft.value.weight,59);assert.equal(p.section.value,'preferences');assert.equal(p.writes.length,0)
+})
+test('a version change retains the old edit for comparison without restoring it over current facts',async()=>{
+ let raw=source(),m=member();const p=detail({readMemberProfile:async()=>({profile:{householdId:'family',isOwner:true,members:[m]},source:raw})});await p.load();p.edit();p.draft.value.weight=59;p.hide();raw={...raw,version:8};m={...m,weight:60};await p.load();assert.equal(p.editing.value,false);assert.equal(p.draft.value,null);assert.equal(p.conflictEdit.value.draft.weight,59);assert.equal(p.profile.value.members[0].weight,60)
+})
+test('cancelled edits are not restored on a later return',async()=>{
+ const p=detail();await p.load();p.edit();p.draft.value.weight=59;p.hide();await p.load();p.cancelEdit();p.hide();await p.load();assert.equal(p.editing.value,false);assert.equal(p.draft.value,null)
+})
+test('an account revision change cannot persist the previous private draft under the new context',async()=>{
+ const p=detail();await p.load();p.edit();p.draft.value.weight=59;p.changeAccount();p.hide();assert.equal(readMemberEdit('mother',source()),null)
+})
+
+test('a newly selected restriction with no details blocks saving in its own category',async()=>{
+ const p=detail();await p.load();p.edit();p.draft.value.allergyStatus='set';p.draft.value.allergies=[];await p.save();assert.equal(p.writes.length,0);assert.equal(p.section.value,'restrictions');assert.match(p.error.value,/具体食物过敏/)
+})
+
+test('stored member edits remain isolated between accounts and households',()=>{
+ setup();preserveMemberEdit({id:'mother',source:source(),draft:{name:'私有草稿'},additional:{},section:'health'});assert.ok(readMemberEdit('mother',source()));setSession({accountId:'other',householdId:'family',token:'other'});assert.equal(readMemberEdit('mother',source()),null);setSession({accountId:'creator',householdId:'other-family',token:'other'});assert.equal(readMemberEdit('mother',source()),null)
+})
+test('a removed editing permission discards a cached private edit',()=>{
+ setup();preserveMemberEdit({id:'mother',source:source(),draft:{weight:59},additional:{},section:'basic'});assert.equal(readMemberEdit('mother',{...source(),editable_fields:[]}),null);assert.equal(readMemberEdit('mother',source()),null)
+})
+
+test('empty identity returns to basic information with feedback and no save',async()=>{
+ const p=detail();await p.load();p.edit();p.draft.value.name=' ';p.section.value='preferences';await p.save();assert.equal(p.writes.length,0);assert.equal(p.section.value,'basic');assert.match(p.error.value,/姓名/)
 })

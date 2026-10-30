@@ -1,19 +1,17 @@
 <script setup>
-import { memberAge, shanghaiDate } from '../utils/member-age.js'
-defineProps({ member: { type: Object, required: true } })
+import { ageLabel, memberAge, shanghaiDate } from '../utils/member-age.js'
+const props=defineProps({member:{type:Object,required:true},showRelationship:{type:Boolean,default:true},readOnly:Boolean,source:Object})
+const editable=field=>!props.readOnly&&(!props.source||(field==='identity'?props.source.is_self||props.source.is_guardian||props.source.editable_fields?.length:props.source.editable_fields?.includes(field)))
 </script>
 <template>
-  <view class="basic-fields">
-    <label class="basic-row"><text>姓名／称呼</text><input v-model="member.name" aria-label="姓名或称呼" placeholder="请输入" maxlength="40" /></label>
-    <view class="basic-row"><text>性别</text><picker :range="['女','男','未填写']" @change="member.gender=['女','男','未填写'][$event.detail.value]"><view class="picker-value"><text>{{member.gender||'未填写'}}</text><text class="chevron">›</text></view></picker></view>
-    <label class="basic-row"><text>与我的关系</text><input v-model="member.relation" aria-label="与我的关系" placeholder="请输入" maxlength="30" /></label>
-    <view class="basic-row"><text>出生日期</text><picker mode="date" :end="shanghaiDate()" :value="member.birthDate" @change="member.birthDate=$event.detail.value;member.age=memberAge(member).years"><view class="picker-value" :class="{placeholder:!member.birthDate}"><text>{{member.birthDate||'请选择'}}</text><text class="chevron">›</text></view></picker></view>
-    <view class="measurements">
-      <label class="measure"><text>身高 <text class="unit">cm</text></text><input v-model="member.height" type="digit" aria-label="身高厘米，可后补" placeholder="可后补" /></label>
-      <label class="measure"><text>体重 <text class="unit">kg</text></text><input v-model="member.weight" type="digit" aria-label="体重公斤，可后补" placeholder="可后补" /></label>
-    </view>
-  </view>
+ <view class="basic-fields">
+  <label class="basic-row" id="field-name"><text>姓名／称呼</text><input v-model="member.name" :disabled="!editable('identity')" aria-label="姓名或称呼" placeholder="怎么称呼你" maxlength="40"/></label>
+  <view class="basic-row" id="field-gender"><text>性别</text><view class="gender-options" role="radiogroup" aria-label="性别"><button v-for="g in ['女','男','未填写']" :key="g" role="radio" :aria-checked="member.gender===g||!member.gender&&g==='未填写'" :class="{selected:member.gender===g||!member.gender&&g==='未填写'}" :disabled="!editable('sex')" @click="member.gender=g">{{g}}</button></view></view>
+  <label v-if="showRelationship" class="basic-row"><text>与我的关系</text><input v-model="member.relation" :disabled="!editable('identity')" aria-label="与我的关系" placeholder="例如：妈妈" maxlength="30"/></label>
+  <view class="basic-row" id="field-birth"><view class="field-label-line"><text>出生日期</text><text v-if="member.birthDate" class="age-label">{{ageLabel(member)}}</text></view><picker mode="date" :disabled="!editable('birth_date')" :end="shanghaiDate()" :value="member.birthDate" @change="member.birthDate=$event.detail.value;member.age=memberAge(member).years"><view class="picker-value" :class="{placeholder:!member.birthDate}"><text>{{member.birthDate||'请选择出生日期'}}</text><text class="chevron">›</text></view></picker></view>
+  <view class="measurements"><label class="measure"><text>身高 <text class="unit">cm</text></text><input v-model="member.height" :disabled="!editable('height_cm')" type="digit" aria-label="身高厘米，可后补" placeholder="可后补"/></label><label class="measure"><text>体重 <text class="unit">kg</text></text><input v-model="member.weight" :disabled="!editable('dietary_details')" type="digit" aria-label="体重公斤，可后补" placeholder="可后补"/></label></view>
+ </view>
 </template>
 <style scoped>
-.basic-fields{border:1rpx solid #e9ebef;border-radius:24rpx;padding:0 24rpx;background:#fff;color:#22252b}.basic-row{display:flex;align-items:center;gap:24rpx;min-height:50px;border-bottom:1rpx solid #f0f1f4;font-size:30rpx}.basic-row>text{color:#777d8d;flex-shrink:0}.basic-row input{flex:1;min-width:0;text-align:right;height:48px;font-size:30rpx;color:#24262c}.basic-row picker{flex:1;min-width:0}.picker-value{display:flex;align-items:center;justify-content:flex-end;gap:20rpx;min-height:48px}.placeholder{color:#969dab}.chevron{color:#9299a8;font-size:36rpx}.measurements{display:grid;grid-template-columns:1fr 1fr;gap:20rpx;padding:20rpx 0 24rpx}.measure{padding:16rpx 20rpx 4rpx;border:1rpx solid #ebedf2;border-radius:18rpx;font-size:27rpx;color:#777d8d}.unit{font-size:24rpx;margin-left:6rpx}.measure input{height:44px;font-size:30rpx;color:#24262c;min-width:0}
+.basic-fields{color:#3e3449}.basic-row{display:block;margin-bottom:21px;font-size:13px;color:#8d8098;font-weight:500}.basic-row>text,.field-label-line{display:block;margin-bottom:10px}.basic-row input,.picker-value{box-sizing:border-box;width:100%;min-height:48px;padding:0 15px;border:1px solid transparent;border-radius:12px;background:#f6f5f8;color:#42374e;font-size:15px;font-weight:500}.basic-row input:focus{border-color:#c8b4df}.field-label-line{display:flex;justify-content:space-between;align-items:center}.age-label{font-size:12px;color:#9a82b5}.picker-value{display:flex;align-items:center;justify-content:space-between}.placeholder{color:#b0a7b8}.chevron{font-size:24px;color:#a899b5}.gender-options{display:flex;gap:10px}.gender-options button{flex:1;min-height:45px;padding:10px 8px;border:1px solid #efedf3;border-radius:12px;background:#f7f6f9;color:#94879f;font-size:14px;font-weight:500}.gender-options button.selected{border-color:#c8b4df;background:#f0eaf8;color:#7b5ba3}.measurements{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:3px 0 12px}.measure{min-width:0;font-size:13px;color:#8d8098}.unit{font-size:11px;margin-left:3px;color:#aaa0b2}.measure input{box-sizing:border-box;width:100%;height:48px;margin-top:10px;padding:0 15px;border-radius:12px;background:#f6f5f8;color:#42374e;font-size:15px;font-weight:500}.basic-fields input[disabled]{color:#93889d}
 </style>

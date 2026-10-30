@@ -43,7 +43,31 @@
         },
         {
           "type": "file",
-          "value": "static/chat/history.png"
+          "value": "release-info.json"
+        },
+        {
+          "type": "file",
+          "value": "static/bundles/cucumber.png"
+        },
+        {
+          "type": "file",
+          "value": "static/bundles/eggs.png"
+        },
+        {
+          "type": "file",
+          "value": "static/bundles/fish-veg.png"
+        },
+        {
+          "type": "file",
+          "value": "static/bundles/grains.png"
+        },
+        {
+          "type": "file",
+          "value": "static/bundles/oats.png"
+        },
+        {
+          "type": "file",
+          "value": "static/bundles/tomato-tofu.png"
         },
         {
           "type": "file",

@@ -205,6 +205,7 @@ class ChatCompletionsAdapter(ChatOpenAI):
             return payload
         originals = self._convert_input(input_).to_messages()
         _sanitize_wire_invalid_tool_calls(payload["messages"], originals)
+        _sanitize_wire_abandoned_tool_calls(payload["messages"])
         if self.preserve_reasoning:
             self._restore_wire_reasoning(originals, payload["messages"])
         return payload
@@ -372,6 +373,36 @@ def _langchain_kwargs(provider_type: str, kwargs: dict) -> dict:
     if provider_type == "anthropic" and "max_completion_tokens" in langchain_kwargs:
         langchain_kwargs.setdefault("max_tokens", langchain_kwargs.pop("max_completion_tokens"))
     return langchain_kwargs
+
+
+def _sanitize_wire_abandoned_tool_calls(messages: list[dict]) -> None:
+    """新用户轮次之前未取得结果的工具调用改为明确失败说明，不改 checkpoint。"""
+    for index, message in enumerate(messages):
+        calls = message.get("tool_calls") if message.get("role") == "assistant" else None
+        if not calls:
+            continue
+        next_user = next(
+            (position for position in range(index + 1, len(messages)) if messages[position].get("role") == "user"),
+            None,
+        )
+        if next_user is None:
+            continue  # 当前轮的工具调用仍由 Agent 执行，不提前宣告失败。
+        outputs = {row.get("tool_call_id") for row in messages[index + 1 : next_user] if row.get("role") == "tool"}
+        missing = [call for call in calls if call.get("id") not in outputs]
+        if not missing:
+            continue
+        kept = [call for call in calls if call.get("id") in outputs]
+        if kept:
+            message["tool_calls"] = kept
+        else:
+            message.pop("tool_calls", None)
+        names = ", ".join(call.get("function", {}).get("name") or "unknown" for call in missing)
+        feedback = f"[上次工具调用未完成] {names} 没有可用结果。请根据当前问题重新判断是否需要调用工具。"
+        content = message.get("content")
+        if isinstance(content, list):
+            content.append({"type": "text", "text": feedback})
+        else:
+            message["content"] = f"{content}\n{feedback}" if content else feedback
 
 
 def _sanitize_wire_invalid_tool_calls(messages: list[dict], originals: list) -> None:

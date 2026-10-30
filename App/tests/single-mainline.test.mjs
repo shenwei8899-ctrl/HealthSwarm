@@ -17,7 +17,7 @@ function storage() {
 }
 function navigation(resolveAppEntry) {
   const source=readFileSync(new URL('../src/services/navigation.js',import.meta.url),'utf8').replace(/^import .*$/gm,'').replace(/export /g,'')
-  return new Function('isMockMode','isCommerceEnabled','resolveAppEntry','captureInvitation','rememberInvitation','storageContext','getSession',`${source};return {canOpenPage,protectedDestination,checkCurrentEntry,installRouteGuards}`)(false,true,resolveAppEntry,()=>{},rememberInvitation,storageContext,getSession)
+  return new Function('isMockMode','isCommerceEnabled','resolveAppEntry','captureInvitation','rememberInvitation','storageContext','getSession','immediateShellEntry',`${source};return {canOpenPage,protectedDestination,checkCurrentEntry,installRouteGuards}`)(false,true,resolveAppEntry,()=>{},rememberInvitation,storageContext,getSession,()=>null)
 }
 test('onboarding cannot create a separate household while an invitation is pending',async()=>{
   storage();rememberInvitation('family_'+ 'b'.repeat(48))

@@ -271,7 +271,10 @@
     },
     {
       "path": "pages/settings/index",
-      "style": { "navigationStyle": "custom", "navigationBarTitleText": "设置" }
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "设置"
+      }
     },
     {
       "path": "pages/settings/privacy",
@@ -292,6 +295,20 @@
       "style": {
         "navigationStyle": "custom",
         "navigationBarTitleText": "正在准备今日饮食"
+      }
+    },
+    {
+      "path": "pages/meals/detail",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "餐单详情"
+      }
+    },
+    {
+      "path": "pages/meals/purchase",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "全天食材"
       }
     }
   ],

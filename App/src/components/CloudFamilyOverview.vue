@@ -21,6 +21,7 @@ function detail(member){uni.navigateTo({url:'/pages/profile/member?id='+encodeUR
       <button class="switch-family" @click="uni.navigateTo({url:'/pages/family-select/index'})">切换家庭<text class="switch-arrow">›</text></button>
     </view>
     <text v-if="busy" class="loading-note">正在读取家庭档案…</text>
+    <view v-if="busy&&!profile" class="member-list" aria-hidden="true"><view v-for="row in 3" :key="row" class="member-row"><view class="avatar"/><view class="member-copy"><view class="skeleton"/><view class="skeleton"/></view></view></view>
     <view v-if="error" class="error-state"><text class="inline-error">{{error}}</text><button class="secondary-button" @click="load">重新读取</button><button class="choose-family" @click="uni.navigateTo({url:'/pages/family-select/index'})">选择家庭</button></view>
     <view v-if="profile" class="member-list">
       <button v-for="member in profile.members" :key="member.id" class="member-row" :aria-label="member.name+'，查看健康档案'" @click="detail(member)">
@@ -45,4 +46,5 @@ function detail(member){uni.navigateTo({url:'/pages/profile/member?id='+encodeUR
 .member-meta{font-size:13px;color:#777;line-height:1.5;overflow-wrap:anywhere}.member-arrow{flex:none;color:#969696;font-size:23px;line-height:1}
 .manage-members{width:100%;min-height:48px;display:flex;align-items:center;justify-content:center;margin-top:28px;padding:12px 16px;border-radius:8px;background:#222;color:#fff;font-size:16px;line-height:1.5;box-sizing:border-box}.manage-members:active{background:#383838}.member-row:active{background:#fafafa}.switch-family:active{opacity:.6}
 .loading-note,.empty-note{display:block;font-size:14px;color:#737373;line-height:1.6;padding:16px 0}.error-state{padding:0 0 20px}.choose-family{width:100%;min-height:44px;margin-top:8px;font-size:14px;color:#333}
+.skeleton{background:#f1f1f1;border-radius:6px;width:40%;height:16px}.skeleton+.skeleton{width:60%;height:12px}
 </style>

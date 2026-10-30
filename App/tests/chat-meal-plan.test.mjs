@@ -1,3 +1,6 @@
+import {watch} from 'vue'
+import {createChatEntryTransition} from '../src/services/chat-entry-transition.js'
+import {createChatKeyboardLayout} from '../src/services/chat-keyboard-layout.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parseChatMealIntent } from '../src/utils/chat-meal-intent.js'

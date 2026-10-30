@@ -29,17 +29,16 @@ export function createEntryResolver({ auth, readProfile, session, pendingPrepara
     // is ready. It is only a routing decision; chat still reads its own current
     // profile and consultation consent before enabling business actions.
     if (invitation()) return invitationRoute(invitation())
-    if (pendingPreparation()) return '/pages/onboarding/preparing'
     const selected = (session()?.families || families).find(family => family.id === id)
-    if (selected?.onboardingRequired === false) return '/pages/chat/index'
+    if (selected?.onboardingRequired === false) return pendingPreparation() ? '/pages/onboarding/preparing' : '/pages/chat/index'
     const profile = await readProfile()
     current()
     if (session()?.householdId !== id || profile.householdId !== id) throw new Error('家庭已变化，请重新选择。')
     if (invitation()) return invitationRoute(invitation())
-    if (pendingPreparation()) return '/pages/onboarding/preparing'
     if (profile.completeProfile === true || profile.onboarded === true) {
       return '/pages/chat/index'
     }
+    if (pendingPreparation()) return '/pages/onboarding/preparing'
     return '/pages/onboarding/index'
   }
 }

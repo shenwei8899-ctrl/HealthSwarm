@@ -9,10 +9,11 @@ import { commerce } from '../services/commerce.js'
 import { openAddressPicker } from '../services/address-navigation.js'
 import { resolveCheckoutAddress } from '../services/address-model.js'
 import { storageContext } from '../services/storage.js'
+import { packagePrice } from '../utils/package-presentation.js'
 const props=defineProps({route:Object})
 const offer=ref(null),publication=ref(null),address=ref(null),slots=ref([]),slotId=ref(0)
 const busy=ref(false),error=ref(''),checkoutOpen=ref(false),quote=ref(null),orderSn=ref(''),pending=ref(false)
-const money=value=>(Number(value||0)/100).toFixed(2)
+const money=value=>packagePrice(value)??'待核对'
 let alive=true,owner=storageContext(),preferredAddressId=''
 function current(scope){return alive&&scope===storageContext()}
 function reset(){preferredAddressId='';offer.value=null;publication.value=null;address.value=null;slots.value=[];slotId.value=0;quote.value=null;orderSn.value='';pending.value=false;checkoutOpen.value=false}
@@ -79,7 +80,7 @@ onMounted(load);onShow(load);onUnmounted(()=>alive=false)
 <template>
  <view class="screen package-purchase"><AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button><text class="nav-title">食材包</text><view class="nav-spacer"/></view></AppNavBar>
   <text v-if="busy" class="safe-note">正在核对食材包…</text><view v-if="error" class="card status" role="alert"><text>{{error}}</text><button :disabled="busy" @click="load">重新读取</button></view>
-  <view v-if="offer" class="package-content"><FoodImageSlot :src="offer.image_url" :label="offer.name" class="package-hero"/><view class="package-heading"><text class="display-title">{{offer.name}}</text><text class="package-meta">{{offer.spec}} · 1 包</text><text class="package-price"><text>¥</text>{{money(offer.price_cent)}}</text><text v-if="offer.note" class="package-meta">{{offer.note}}</text></view><view class="ingredients"><text class="section-title">包含食材</text><text>{{offer.ingredients?.join(' · ')}}</text></view><view class="package-bottom"><text>商品参考价 <text>¥{{money(offer.price_cent)}}</text></text><button :disabled="busy||!offer.available||!!orderSn" @click="checkout">去结算 <text>→</text></button></view></view>
+  <view v-if="offer" class="package-content"><FoodImageSlot :src="offer.image_url" :label="offer.name" class="package-hero"/><view class="package-heading"><text class="display-title">{{offer.name}}</text><text class="package-meta">{{offer.spec}} · 1 包</text><text class="package-price"><text v-if="packagePrice(offer.price_cent)!==null">¥</text>{{money(offer.price_cent)}}</text><text v-if="offer.note" class="package-meta">{{offer.note}}</text></view><view class="ingredients"><text class="section-title">包含食材</text><text>{{offer.ingredients?.join(' · ')}}</text></view><view class="package-bottom"><text>商品参考价 <text>{{packagePrice(offer.price_cent)===null?'待核对':'¥'+money(offer.price_cent)}}</text></text><button :disabled="busy||!offer.available||!!orderSn" @click="checkout">去结算 <text>→</text></button></view></view>
   <PurchaseCheckoutSheet :open="checkoutOpen" :address="address" :slots="slots" :slot-id="slotId" :quote="quote" :busy="busy" :error="error" :pending="pending" @close="checkoutOpen=false" @address="chooseAddress" @slot="slotId=$event;quote=null" @confirm="submit()" @recover="submit(true)" @quote="checkout"/>
  </view>
 </template>

@@ -1,3 +1,7 @@
+import {chatPresentation} from '../src/services/chat-presentation.js'
+import {watch} from 'vue'
+import {createChatEntryTransition} from '../src/services/chat-entry-transition.js'
+import {createChatKeyboardLayout} from '../src/services/chat-keyboard-layout.js'
 import {mealQuestionAction} from '../src/services/daily-meal-plan.js'
 import test from 'node:test'
 import {parseChatMealIntent,isMealPlanningCancelled} from '../src/utils/chat-meal-intent.js'
@@ -9,7 +13,7 @@ import {ref,computed,reactive,nextTick} from 'vue'
 function setup(route={}){
  const submitted=[],opened=[],selections=[]
  const stored=new Map(),thread='22222222-2222-4222-8222-222222222222',referenceThread='33333333-3333-4333-8333-333333333333'
- const deps={mealQuestionAction,readDailyMealPlan:async(_family,date)=>({date,status:'absent',version:0,meals:[]}),parseChatMealIntent,isMealPlanningCancelled,ref,computed,reactive,nextTick,onShow(){},onHide(){},onMounted(){},onUnmounted(){},defineProps:()=>({route}),
+ const deps={chatPresentation,watch,createChatEntryTransition,createChatKeyboardLayout,mealQuestionAction,readDailyMealPlan:async(_family,date)=>({date,status:'absent',version:0,meals:[]}),parseChatMealIntent,isMealPlanningCancelled,ref,computed,reactive,nextTick,onShow(){},onHide(){},onMounted(){},onUnmounted(){},defineProps:()=>({route}),
  storageContext:()=> 'scope',getSession:()=>({token:'unit'}),
  dailyArrangementState:()=>({phase:'ready'}),createDailyArrangementClient:()=>({dispose(){}}),
  scopedStorage:{getStorageSync:key=>stored.get(key),setStorageSync:(key,value)=>stored.set(key,value)},localDate:date=>date?'2026-10-28':'2026-10-27',

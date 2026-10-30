@@ -387,6 +387,51 @@ async def test_daily_plan_merges_selected_meal_rejects_stale_task_and_purchase(f
     assert denied.status_code in (403, 404), denied.text
 
 
+async def test_daily_reference_single_meal_purchase_keeps_current_source_guards(family_profile_http, monkeypatch):
+    """单餐采购沿真实HTTP与PG绑定当前版本，不能扩大范围或使用失效来源。"""
+    current = await setup_reference(family_profile_http, monkeypatch)
+    client, sessions, users, _, _, choice = current
+    meals = ["breakfast", "lunch", "dinner"]
+    bound = await bind_reference(current, daily_base_version=0, meal_types=meals)
+    context = await running_context(current, bound.json()["thread_id"])
+    plan, _, _ = await grounded_plan(current, context, meal_types=meals)
+    await complete(current, context, plan)
+    published = []
+
+    async def commerce(method, url, payload, **kwargs):
+        """只隔离外部商城，真实来源证明仍由服务生成和校验。"""
+        published.append(payload)
+        return {"package_sn": "synthetic-single-meal", "package_version": 1}
+
+    monkeypatch.setattr("yuxi.services.daily_commerce_service.commerce_request", commerce)
+    path = f"/api/family/{choice['family_id']}/daily-meal-plans/{choice['plan_date']}/purchase"
+    body = {"preview_id": plan["preview_id"], "version": 1, "meal_types": ["lunch"]}
+    receipt = await client.post(path, headers=users["self"], json=body)
+    assert receipt.status_code == 200, receipt.text
+    assert len(published) == 1
+    proof = published[0]["agent_source_proof"]
+    verified = await client.post(f"{ROOT}/commerce/source-validation", json=proof)
+    assert verified.status_code == 200, verified.text
+    assert published[0]["items"] == [{"sku_id": "sku-rice", "quantity": 1}]
+
+    for changes in [{"version": 0}, {"meal_types": []}, {"meal_types": ["lunch", "lunch"]}]:
+        denied = await client.post(path, headers=users["self"], json={**body, **changes})
+        assert denied.status_code in (409, 422), denied.text
+    denied = await client.post(path, headers=users["other"], json=body)
+    assert denied.status_code in (403, 404), denied.text
+    assert len(published) == 1
+
+    changed = await bind_reference(current, daily_base_version=1, meal_types=["lunch"])
+    changed_context = await running_context(current, changed.json()["thread_id"])
+    changed_plan, _, _ = await grounded_plan(current, changed_context, meal_type="lunch")
+    await complete(current, changed_context, changed_plan)
+    denied = await client.post(path, headers=users["self"], json={**body, "version": 2})
+    assert denied.status_code == 409, denied.text
+    assert len(published) == 1
+    invalidated = await client.post(f"{ROOT}/commerce/source-validation", json=proof)
+    assert invalidated.status_code == 409, invalidated.text
+
+
 async def test_daily_plan_reserves_one_active_request_and_recovers_after_failure(family_profile_http, monkeypatch):
     """跨线程并发只接受一个未结束请求，终态后允许同版本重试。"""
     from yuxi.services.daily_meal_plan_service import reserve_reference_request

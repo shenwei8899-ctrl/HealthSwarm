@@ -20,16 +20,16 @@ function page(members = [completeMember()], extras = {}) {
   const deps = { ref, computed, nextTick, watch, newMember, normalizeMember, normalizeProfile, dataWarnings, onboardingIssue,
     isMockMode: false, getProfile: () => structuredClone(profile), saveProfile() {}, backHome() {}, sessionRevision: () => 1, storageScope: () => '',
     scopedStorage: { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, value) },
-    onLoad() {}, onShow() {}, onUnload() {}, loadCloudProfile: async () => profile, readCloudReportStatus: async () => 'empty',
+    onLoad() {}, onShow() {}, onUnload() {}, onPageScroll() {}, loadCloudProfile: async () => profile, readCloudReportStatus: async () => 'empty',
     saveCloudProfile: async value => { calls.saves.push(JSON.parse(JSON.stringify(value))); return { ...value, onboarded: true } },
-    queueOnboardingPreparation: value => deps.saveCloudProfile(value), preparationRoute: () => '/pages/onboarding/preparing',
+    submitOnboardingPreparation: value => deps.saveCloudProfile(value),
     uni: { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, structuredClone(value)), pageScrollTo() {}, showToast: value => calls.toasts.push(value.title),
       showModal() { throw new Error('Required fields must not be bypassable through a warning modal') },
       navigateTo: value => calls.redirects.push(value.url), reLaunch: value => calls.redirects.push(value.url) }, ...extras }
   const script = readFileSync(new URL('../src/pages/onboarding/index.vue', import.meta.url), 'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const value = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${script};return {profile,step,current,cloudLoaded,cloudLoading,cloudError,cloudErrorCode,recoverCloud,preserveProgress,next,mode,selectMember,readCloud};`)(deps))
+  const value = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${script};return {profile,step,current,self,memberIndex,memberComplete,cloudLoaded,cloudLoading,cloudError,cloudErrorCode,recoverCloud,preserveProgress,next,mode,selectMember,readCloud};`)(deps))
   value.cloudLoaded.value = true; value.cloudLoading.value = false
   return { ...value, calls, storage, dispose: () => scope.stop() }
 }
@@ -57,7 +57,7 @@ for (const [label, mutate, step] of missing) {
 test('a complete explicit no-restriction profile can finish without height weight or sex', async () => {
   const p = page(); p.next(); assert.equal(p.step.value, 1)
   p.next(); assert.equal(p.step.value, 2); p.next(); await nextTick()
-  assert.equal(p.calls.saves.length, 1); assert.deepEqual(p.calls.redirects, ['/pages/onboarding/preparing'])
+  assert.equal(p.calls.saves.length, 1); assert.deepEqual(p.calls.redirects, ['/pages/chat/index?from=onboarding'])
   assert.equal(p.calls.saves[0].members[0].height, ''); p.dispose()
 })
 
@@ -68,7 +68,7 @@ for (const cuisines of [[], ['不限菜系'], ['粤菜']]) {
     assert.equal(p.step.value, 2); p.next(); await nextTick()
     assert.equal(p.calls.saves.length, 1)
     assert.deepEqual(p.calls.saves[0].members[0].cuisines, cuisines)
-    assert.deepEqual(p.calls.redirects, ['/pages/onboarding/preparing']); p.dispose()
+    assert.deepEqual(p.calls.redirects, ['/pages/chat/index?from=onboarding']); p.dispose()
   })
 }
 
@@ -138,6 +138,16 @@ test('a completed save from an old session cannot mark the new account onboarded
   p.step.value=2;p.next();revision=2;resolveSave({...p.profile.value,onboarded:true});await nextTick()
   assert.equal(p.cloudLoaded.value,false);assert.equal(p.storage.has('frontend-onboarded-v1'),false)
   assert.equal(p.calls.redirects.length,0);p.dispose()
+})
+
+test('onboarding stays on the form until the saved receipt then enters chat directly',async()=>{
+ let resolveSave
+ const p=page([completeMember()],{saveCloudProfile:()=>new Promise(resolve=>resolveSave=resolve)})
+ p.step.value=2;p.next()
+ assert.deepEqual(p.calls.redirects,[]);assert.notEqual(p.storage.get('frontend-onboarded-v1'),true)
+ resolveSave({profile_saved:true});await nextTick()
+ assert.deepEqual(p.calls.redirects,['/pages/chat/index?from=onboarding'])
+ assert.equal(p.storage.get('frontend-onboarded-v1'),true);p.dispose()
 })
 
 function component(file, member, exposed) {
@@ -309,4 +319,19 @@ test('settling an old unconsented profile receipt never claims the new consent a
  const analysisConsent={...profile.analysisPolicy,purpose:'consultation'}
  await h.save(profile,{analysisConsent})
  assert.deepEqual(posted[1].analysis_consent,analysisConsent);assert.equal(posted[1].members[0].name,'new name')
+})
+
+
+test('self identity follows the stable member id when relationship labels or order change',()=>{
+ const p=page([completeMember('relative'),completeMember('self')]);p.profile.value.selfMemberId='self';p.profile.value.members[1].relation='称呼已变';p.mode('个人使用');assert.equal(p.self.value.id,'self');assert.equal(p.current.value.id,'self');p.dispose()
+})
+test('cloud onboarding restores the selected member by id instead of a stale array index',async()=>{
+ const p=page([completeMember('self'),completeMember('relative')]);p.selectMember('relative');p.preserveProgress();const draft=p.storage.get('frontend-onboarding-progress-v1');draft.memberIndex=0;p.storage.set('frontend-onboarding-progress-v1',draft);await p.readCloud();assert.equal(p.current.value.id,'relative');p.dispose()
+})
+test('per-step completion uses required answers and permits height and weight to remain empty',()=>{
+ const p=page();assert.equal(p.memberComplete(p.current.value),true);p.current.value.birthDate='';assert.equal(p.memberComplete(p.current.value),false);p.dispose()
+})
+
+test('an individual draft cannot resume on a hidden relative',async()=>{
+ const p=page([completeMember('self'),completeMember('relative')]);p.mode('个人使用');p.preserveProgress();const saved=p.storage.get('frontend-onboarding-progress-v1');saved.memberId='relative';saved.memberIndex=1;p.storage.set('frontend-onboarding-progress-v1',saved);await p.readCloud();assert.equal(p.current.value.id,'self');p.dispose()
 })

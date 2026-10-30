@@ -1,6 +1,6 @@
 import { subtotal } from './demo.js'
 
-export const bundleImage = name => `/static/bundles/${name}.png`
+export const bundleImage = name => `/static/bundles/${name}.webp`
 
 // Cards and the shop share the same product IDs and package-based totals.
 export function createMealBundles(plan) {

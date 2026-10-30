@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { createVoiceCapture } from '../services/chat-voice.js'
 
-const props = defineProps({ disabled: { type: Boolean, default: false } })
+const props = defineProps({ disabled: { type: Boolean, default: false }, embedded: { type: Boolean, default: false } })
 const emit = defineEmits(['send', 'busy'])
 const state = ref({ phase: 'idle', error: '', canceling: false, hasAudio: false, permissionDenied: false })
 const levels = ref(Array(44).fill(0))
@@ -47,7 +47,7 @@ defineExpose({ cancel })
 </script>
 
 <template>
-  <view class="voice-input">
+  <view class="voice-input" :class="{'is-embedded':embedded}">
     <button class="hold-to-talk" :class="{'is-holding':overlay}" :disabled="disabled||state.phase==='transcribing'" aria-label="按住说话" @touchstart.stop.prevent="start" @touchmove.stop.prevent="recorder.move(touchY($event)||0)" @touchend.stop.prevent="end" @touchcancel.stop.prevent="recorder.cancel()" @contextmenu.prevent>{{label}}</button>
     <view v-if="state.error" class="voice-error"><text>{{state.error}}</text><button v-if="state.hasAudio" :disabled="disabled||busy" @click="recorder.retry()">重试识别</button><button v-if="state.permissionDenied" class="permission-button" @click="openSettings">去开启麦克风</button><text v-if="state.permissionDenied" class="permission-hint">开启后，返回这里按住说话</text></view>
     <view v-if="overlay" class="voice-recording-overlay" :class="{'is-canceling':state.canceling}" aria-live="polite">
@@ -59,6 +59,7 @@ defineExpose({ cancel })
 
 <style scoped>
 .voice-input{flex:1;width:100%;min-width:0}.voice-input .hold-to-talk{width:100%;height:68rpx;display:flex;align-items:center;justify-content:center;font-size:30rpx;font-weight:500;user-select:none;-webkit-user-select:none;touch-action:none;background:transparent;border:0;border-radius:12rpx}.hold-to-talk::after{border:0}.hold-to-talk.is-holding{color:transparent}.hold-to-talk[disabled]{opacity:.5}
+.voice-input.is-embedded{height:44px;border:0;border-radius:0;background:transparent}.is-embedded .hold-to-talk{height:44px;min-height:44px;border:0;background:transparent;font-size:16px;font-weight:500;color:#292c32}.is-embedded .hold-to-talk.is-holding{color:transparent}
 .voice-error{position:absolute;left:0;right:0;bottom:calc(100% + 12rpx);padding:20rpx 24rpx;border:1rpx solid #e5e5ea;border-radius:20rpx;background:#fff;font-size:25rpx;line-height:1.6;color:#63636b;box-shadow:0 8rpx 28rpx rgba(0,0,0,.06)}.voice-error>text{display:block}.voice-error button{display:inline-block;min-height:64rpx;margin-right:24rpx;font-size:25rpx;color:#292a2e;background:transparent}.voice-error button::after{border:0}
 .voice-recording-overlay{position:fixed;left:0;right:0;bottom:0;height:460rpx;padding-bottom:env(safe-area-inset-bottom);z-index:80;pointer-events:none;color:#fff}.recording-wash{position:absolute;left:0;right:0;bottom:0;height:720rpx;background:linear-gradient(to bottom,rgba(255,255,255,0),rgba(255,255,255,.94) 28%,rgba(255,255,255,.98) 100%)}.recording-glow{position:absolute;left:0;right:0;bottom:0;height:620rpx;background:radial-gradient(ellipse at 72% 100%,rgba(20,106,244,.97) 0%,rgba(35,136,248,.88) 31%,rgba(61,179,249,.58) 56%,rgba(105,205,252,.15) 72%,rgba(255,255,255,0) 88%)}.recording-content{position:absolute;left:0;right:0;bottom:calc(env(safe-area-inset-bottom) + 70rpx);display:flex;flex-direction:column;align-items:center;gap:54rpx}.recording-prompt{font-size:28rpx;letter-spacing:1rpx;color:rgba(255,255,255,.82)}.voice-waveform{height:60px;display:flex;align-items:center;justify-content:center;gap:3px;width:70%;max-width:360px}.wave-bar{width:3px;min-width:2px;flex-shrink:1;border-radius:3px;background:#fff;transition:height 90ms linear,opacity 90ms linear}.is-canceling .recording-glow{background:radial-gradient(ellipse at 50% 100%,rgba(223,82,110,.98) 0%,rgba(236,119,147,.84) 40%,rgba(246,185,198,.25) 70%,rgba(255,255,255,0) 88%)}.is-canceling .recording-prompt{color:#fff}
 .voice-error .permission-button{display:flex;align-items:center;justify-content:center;width:100%;min-height:80rpx;margin:20rpx 0 0;padding:16rpx 24rpx;border-radius:16rpx;background:#292a2e;color:#fff;font-size:28rpx;font-weight:500;line-height:1.4;box-sizing:border-box}.voice-error .permission-hint{margin-top:12rpx;font-size:25rpx;color:#767680}</style>

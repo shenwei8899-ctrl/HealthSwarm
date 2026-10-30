@@ -239,7 +239,7 @@ async def reserve_reference_request(session, uid, binding, request):
 
 
 async def require_current_reference_purchase(session, uid, daily, preview_id, plan):
-    """采购只允许整个参考来源仍属于所选每日计划版本。"""
+    """采购餐次必须仍属于当前每日版本的同一参考来源。"""
     from datetime import date
 
     day = date.fromisoformat(daily["date"])
@@ -254,7 +254,7 @@ async def require_current_reference_purchase(session, uid, daily, preview_id, pl
     if (
         not requested
         or len(requested) != len(set(requested))
-        or set(requested) != selected
+        or not set(requested).issubset(selected)
         or not selected.issubset({meal["meal_type"] for meal in plan["meals"]})
     ):
         raise HealthVisionError("daily_plan_source_changed", "采购来源中的餐次已变化，请重新核对", 409)
