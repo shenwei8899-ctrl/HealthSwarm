@@ -5,7 +5,7 @@ from contextlib import aclosing
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from yuxi.agents.base import BaseAgent
 from yuxi.agents.buildin.health_consultation.graph import HealthAuthorizationMiddleware
@@ -52,9 +52,25 @@ class MealPlanResultMiddleware(AgentMiddleware):
             tools = tuple(name for name in request.runtime.context.tools if name != "query_family_nutrition_knowledge")
             if tools == REFERENCE_TOOLS and request.tools and isinstance(request.model, ChatCompletionsAdapter):
                 # 工具参数接收完整响应后再执行；不改变原模型或无工具最终回复。
+                recovery_tool = self._reference_parameter_recovery(request)
+                original = request.system_message.text if request.system_message else ""
                 request = request.override(
                     model=request.model.model_copy(update={"complete_tool_responses": True}),
                     model_settings={**request.model_settings, "parallel_tool_calls": False},
+                    tool_choice=(
+                        {"type": "function", "function": {"name": recovery_tool}}
+                        if recovery_tool is not None
+                        else request.tool_choice
+                    ),
+                    system_message=SystemMessage(
+                        content=f"{original}\n\n每次只调用一个工具，并填写该工具的全部必填参数。"
+                        + (
+                            "上次整批调用缺少必填参数，真实工具反馈已保留；"
+                            "本次只纠正指定工具的一个调用，参数必须取自本轮已读取的真实资料，不猜测查询结果或来源标识。"
+                            if recovery_tool is not None
+                            else ""
+                        )
+                    ),
                 )
             return await handler(request)
 
@@ -87,6 +103,47 @@ class MealPlanResultMiddleware(AgentMiddleware):
             answer = json.dumps({"preview_id": preview_id}) if preview_id is not None else message.text
             result = await planner_final_result(runtime.context, answer)
             return {"messages": [message.model_copy(update={"content": json.dumps(result, ensure_ascii=False)})]}
+
+    @staticmethod
+    def _reference_parameter_recovery(request):
+        """只用当前请求真实缺参反馈选择下一节点工具，单次缺参失败即停止。"""
+        messages = request.state.get("messages", [])
+        for index in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[index], HumanMessage):
+                if messages[index].additional_kwargs.get("health_request_id") != request.runtime.context.request_id:
+                    return None
+                break
+        else:
+            return None
+
+        current = messages[index + 1 :]
+        for index in range(len(current) - 1, -1, -1):
+            if isinstance(current[index], AIMessage):
+                calls = current[index].tool_calls
+                feedback = current[index + 1 :]
+                break
+        else:
+            return None
+
+        required_tools = {"search_reference_recipes", "read_reference_recipe", "save_reference_meal_plan"}
+        allowed = {getattr(tool, "name", None) for tool in request.tools} & required_tools
+        if not calls or any(call["name"] not in allowed or call["args"] != {} for call in calls):
+            return None
+        call_ids = {call["id"] for call in calls}
+        if None in call_ids or "" in call_ids or len(call_ids) != len(calls):
+            return None
+        if len(feedback) != len(calls) or any(not isinstance(item, ToolMessage) for item in feedback):
+            return None
+        results = {item.tool_call_id: item for item in feedback}
+        if set(results) != call_ids or any(
+            results[call["id"]].status != "error" or results[call["id"]].name != call["name"] for call in calls
+        ):
+            return None
+        if len(calls) == 1:
+            raise HealthVisionError(
+                "reference_tool_parameters_invalid", "配餐工具缺少必要参数，本轮已停止，请重新生成", 422
+            )
+        return calls[0]["name"]
 
     @staticmethod
     def _saved_reference_preview(state, context):

@@ -19,7 +19,7 @@ from langgraph.stream.transformers import CustomTransformer
 from pydantic import Field
 
 from test.unit.middlewares.test_health_final_answer import ControlledStreamModel, usage
-from yuxi.agents.buildin.health_meal_planner.graph import MealPlanResultMiddleware
+from yuxi.agents.buildin.health_meal_planner.graph import HealthAuthorizationMiddleware, MealPlanResultMiddleware
 from yuxi.agents.toolkits import meal_planner
 from yuxi.models.chat import ChatCompletionsAdapter
 from yuxi.services import health_meal_plan_service, reference_meal_plan_service
@@ -238,6 +238,226 @@ def sdk_response(message, identifier, prompt_tokens, completion_tokens, *, strea
     ]
     content = "".join(f"data: {json.dumps(frame)}\n\n" for frame in frames) + "data: [DONE]\n\n"
     return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=content.encode())
+
+
+def parameter_failure_messages(names=("save_reference_meal_plan", "save_reference_meal_plan")):
+    """保留实际模型批次及逐调用失败，参数由 ToolNode 的必填校验拒绝。"""
+    calls = [{"name": name, "args": {}, "id": f"missing-{index}"} for index, name in enumerate(names)]
+    return [
+        human(),
+        AIMessage(content="", tool_calls=calls),
+        *[
+            ToolMessage(
+                content="synthetic required-field error", name=call["name"], tool_call_id=call["id"], status="error"
+            )
+            for call in calls
+        ],
+    ]
+
+
+@pytest.mark.parametrize("name", REFERENCE_TOOLS[1:])
+def test_current_failed_empty_batch_selects_only_open_required_tool(name):
+    """纠错只选择本请求已开放的服务器必填工具，不填写参数。"""
+    request = request_for(parameter_failure_messages((name, name)))
+    assert MealPlanResultMiddleware._reference_parameter_recovery(request) == name
+    assert all(message.tool_calls[0]["args"] == {} for message in request.messages if isinstance(message, AIMessage))
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "old_request",
+        "unmarked_request",
+        "older_batch",
+        "unknown",
+        "context",
+        "not_open",
+        "pending",
+        "success",
+        "different_name",
+        "nonempty",
+        "duplicate_id",
+    ],
+)
+def test_parameter_recovery_does_not_adopt_unrelated_or_unfinished_calls(boundary):
+    """旧请求、非必填工具和不完整反馈不能成为命名调用依据。"""
+    messages = parameter_failure_messages()
+    tools = TOOLS
+    if boundary == "old_request":
+        messages[0] = human("previous-request")
+    elif boundary == "unmarked_request":
+        messages[0] = HumanMessage("未绑定的合成请求")
+    elif boundary == "older_batch":
+        messages.append(human())
+    elif boundary in {"unknown", "context"}:
+        name = "unknown_tool" if boundary == "unknown" else "get_reference_plan_context"
+        messages = parameter_failure_messages((name, name))
+    elif boundary == "not_open":
+        tools = [meal_planner.search_reference_recipes]
+    elif boundary == "pending":
+        messages.pop()
+    elif boundary == "success":
+        messages[-1].status = "success"
+    elif boundary == "different_name":
+        messages[-1].name = "read_reference_recipe"
+    elif boundary == "nonempty":
+        messages[1].tool_calls[0]["args"] = DRAFT
+    elif boundary == "duplicate_id":
+        messages[1].tool_calls[1]["id"] = messages[1].tool_calls[0]["id"]
+    request = request_for(messages).override(tools=tools)
+    assert MealPlanResultMiddleware._reference_parameter_recovery(request) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["recover", "permission_revoked", "single_empty", "retry_still_empty"])
+async def test_empty_parameters_recover_on_next_real_node_with_audit_authorization_and_usage(
+    scenario, services, monkeypatch
+):
+    """真实 SDK/v3/ToolNode 将失败、纠错和收尾分别计量；权限撤回阻止下一外呼。"""
+    from yuxi.services import health_consultation_service, health_family_kb_service, health_meal_feedback_service
+
+    permission_checks = []
+
+    async def authorized(context, messages=None):
+        """只隔离权限数据库，保留实际授权 middleware 的每节点调用路径。"""
+        permission_checks.append(context.request_id)
+        if scenario == "permission_revoked" and len(permission_checks) == 2:
+            raise HealthVisionError("permission_denied", "合成授权已撤回", 403)
+
+    info = SimpleNamespace(
+        provider_id="openai", provider_type="openai", model_id="gpt-6.1-sol", spec="openai:gpt-6.1-sol"
+    )
+    monkeypatch.setattr(health_consultation_service, "require_consultation_attempt", authorized)
+    monkeypatch.setattr("yuxi.agents.buildin.health_consultation.graph.model_cache.get_model_info", lambda _: info)
+    monkeypatch.setattr(health_family_kb_service, "filter_family_kb_history", lambda messages: messages)
+    monkeypatch.setattr(
+        health_meal_feedback_service, "filter_health_history", AsyncMock(side_effect=lambda context, messages: messages)
+    )
+    audit_repository = SimpleNamespace(start=AsyncMock(return_value=(None, True)), finish=AsyncMock())
+
+    @asynccontextmanager
+    async def audit_session():
+        yield object()
+
+    monkeypatch.setattr(model_message_audit_service.pg_manager, "get_async_session_context", audit_session)
+    monkeypatch.setattr(model_message_audit_service, "ModelMessageAuditRepository", lambda db: audit_repository)
+    context = Context()
+    context.model = info.spec
+    collector = model_message_audit_service.ModelMessageAuditCollector(
+        run_id=context.run_id, request_id=context.request_id, thread_id=context.thread_id, worker_id="synthetic-worker"
+    )
+    wire_requests = []
+
+    def respond(request):
+        wire = json.loads(request.content)
+        wire_requests.append(wire)
+        index = len(wire_requests)
+        if index == 1:
+            count = 1 if scenario == "single_empty" else 2
+            calls = [
+                {
+                    "id": f"empty-{number}",
+                    "type": "function",
+                    "function": {"name": "save_reference_meal_plan", "arguments": "{}"},
+                }
+                for number in range(count)
+            ]
+        elif index == 2:
+            assert wire["tool_choice"] == {"type": "function", "function": {"name": "save_reference_meal_plan"}}
+            calls = [
+                {
+                    "id": "corrected-save",
+                    "type": "function",
+                    "function": {
+                        "name": "save_reference_meal_plan",
+                        "arguments": "{}" if scenario == "retry_still_empty" else json.dumps(DRAFT),
+                    },
+                }
+            ]
+        else:
+            assert index == 3 and "tools" not in wire and "tool_choice" not in wire
+            calls = []
+        message = {"role": "assistant", "content": "合成完成消息" if not calls else ""}
+        if calls:
+            message["tool_calls"] = calls
+        return sdk_response(message, f"parameter-recovery-{index}", 2, 3, stream=wire.get("stream") is True)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        model = ChatCompletionsAdapter(
+            model=info.model_id,
+            api_key="synthetic-test-key",
+            base_url="https://example.invalid/v1",
+            http_async_client=client,
+            use_responses_api=False,
+            max_retries=0,
+            metadata={"yuxi_provider_id": info.provider_id, "yuxi_provider_type": info.provider_type},
+        )
+        graph = create_agent(
+            model,
+            tools=TOOLS,
+            middleware=[HealthAuthorizationMiddleware(info), MealPlanResultMiddleware(), usage.TokenUsageMiddleware()],
+            context_schema=Context,
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": context.thread_id}, "recursion_limit": 80}
+
+        async def consume():
+            async with await graph.astream_events(
+                {"messages": [human()]}, context=context, config=config, version="v3", transformers=[CustomTransformer]
+            ) as events:
+                async for event in events:
+                    if event["method"] == "messages":
+                        params = event["params"]
+                        message, metadata = params["data"]
+                        await collector.consume(
+                            message,
+                            {
+                                **metadata,
+                                "stream_event": {
+                                    "namespace": params["namespace"],
+                                    "seq": event["seq"],
+                                    "timestamp": params["timestamp"],
+                                },
+                            },
+                        )
+
+        if scenario == "recover":
+            await consume()
+        else:
+            code = "permission_denied" if scenario == "permission_revoked" else "reference_tool_parameters_invalid"
+            with pytest.raises(HealthVisionError, match=code):
+                await consume()
+        state = await graph.aget_state(config)
+
+    expected_calls = 3 if scenario == "recover" else 2 if scenario == "retry_still_empty" else 1
+    assert len(wire_requests) == expected_calls
+    assert len(permission_checks) == (3 if scenario in {"recover", "retry_still_empty"} else 2)
+    assert state.values["token_usage"]["run"]["model_call_count"] == expected_calls
+    assert state.values["token_usage"]["run"]["total"] == {
+        "input_tokens": 2 * expected_calls,
+        "output_tokens": 3 * expected_calls,
+        "total_tokens": 5 * expected_calls,
+    }
+    tools = [message for message in state.values["messages"] if isinstance(message, ToolMessage)]
+    first_errors = [message for message in tools if message.tool_call_id.startswith("empty-")]
+    assert len(first_errors) == (1 if scenario == "single_empty" else 2)
+    assert all(message.status == "error" for message in first_errors)
+    assert audit_repository.finish.await_count == expected_calls
+    first_audit = audit_repository.finish.await_args_list[0].kwargs
+    assert len(first_audit["metadata"]["tool_calls"]) == len(first_errors)
+    assert all(call["args"] == {} for call in first_audit["metadata"]["tool_calls"])
+    assert all(
+        call.kwargs["run_id"] == context.run_id and call.kwargs["request_id"] == context.request_id
+        for call in audit_repository.finish.await_args_list
+    )
+    if scenario == "recover":
+        services.saved.assert_awaited_once()
+        assert json.loads(state.values["messages"][-1].text) == snapshot()
+        assert [wire.get("stream") is True for wire in wire_requests] == [False, False, True]
+        assert all(wire["parallel_tool_calls"] is False for wire in wire_requests[:2])
+        assert len([message for message in tools if message.status == "success"]) == 1
+    else:
+        services.saved.assert_not_awaited()
 
 
 @pytest.mark.asyncio
