@@ -395,3 +395,111 @@ test('minified task entry keeps its task dictionary outside WeChat async local b
       'WeChat regenerator hoists block locals; they must not shadow the task dictionary used before the first await')
   } finally { await bundle.close() }
 })
+
+function recoveringTask({pollLimit=2,loseSubmit=false}={}) {
+  const timers=new Map(),listeners=new Set(),delays=[],emitted=[]
+  let sequence=0,answer=false,failure=null
+  const taskData=()=>({request_id:requestId,member_id:memberId,task_type:taskType,
+    thread_id:threadId,agent_slug:'health-blood-glucose',request_status:'dispatched',
+    execution_status:answer?'completed':'running',result:answer?{
+      result_type:'general_education_answer',scope:'general_education',answer:'合成回复',citations:[]}:null})
+  const h=fixture({flow:{pollLimit,subscribe:()=>()=>{},onChange:s=>emitted.push(s),
+    schedule:(fn,ms)=>{const key=++sequence;timers.set(key,fn);delays.push(ms);return key},
+    cancel:key=>timers.delete(key),watchNetwork:fn=>{listeners.add(fn);return ()=>listeners.delete(fn)}},
+    send:async options=>{
+      if(options.path.includes('/tasks/')) {
+        if(failure)throw Object.assign(new Error('synthetic read failure'),{code:failure})
+        return {data:taskData()}
+      }
+      if(loseSubmit&&options.path==='/api/agent/runs')throw Object.assign(new Error('synthetic lost response'),{code:'NETWORK_ERROR'})
+      return fixtureBase(options)
+    }})
+  return {...h,timers,listeners,delays,emitted,
+    async start(){await h.flow.open(memberId,taskType);await h.flow.createEntry();await h.flow.submit('合成问题')},
+    async tick(){const [key,fn]=timers.entries().next().value;timers.delete(key);fn();await new Promise(r=>setImmediate(r))},
+    async online(){for(const fn of [...listeners])fn();await new Promise(r=>setImmediate(r))},
+    fail(code){failure=code},complete(){answer=true;failure=null}}
+}
+
+test('long tasks continue at a capped lower frequency and clear waiting notices on completion',async()=>{
+  const h=recoveringTask();await h.start()
+  for(let i=0;i<8;i++)await h.tick()
+  assert.equal(h.timers.size,1);assert.equal(h.listeners.size,1)
+  assert.ok(h.delays.at(-1)>2000);assert.ok(h.delays.every(ms=>ms<=30000))
+  assert.match(h.flow.getState().notice,/自动获取/)
+  h.complete();await h.tick()
+  assert.equal(h.flow.getState().result.text,'合成回复')
+  assert.equal(h.flow.getState().notice,'');assert.equal(h.flow.getState().error,'')
+  assert.equal(h.timers.size,0);assert.equal(h.listeners.size,0)
+  assert.equal(h.calls.filter(c=>c.path==='/api/agent/runs').length,1)
+  assert.equal(h.emitted.at(-1).notice,'');h.flow.hide()
+})
+
+for(const code of ['NETWORK_ERROR',503])test(`temporary ${code} read failures back off and recover the original task without resubmitting`,async()=>{
+  const h=recoveringTask({pollLimit:100});await h.start();h.fail(code)
+  await h.tick();const first=h.delays.at(-1);await h.tick()
+  assert.ok(first>2000);assert.ok(h.delays.at(-1)>first)
+  assert.equal(h.timers.size,1);assert.match(h.flow.getState().error,/自动重试/)
+  h.complete();await h.tick()
+  assert.equal(h.flow.getState().requestId,requestId)
+  assert.equal(h.flow.getState().result.text,'合成回复');assert.equal(h.flow.getState().error,'')
+  assert.equal(h.calls.filter(c=>c.path==='/api/agent/runs').length,1);h.flow.hide()
+})
+
+test('connectivity restoration reads immediately and removes the pending delayed read',async()=>{
+  const h=recoveringTask();await h.start();h.fail('NETWORK_ERROR');await h.tick()
+  const before=h.calls.length;h.complete();await h.online()
+  assert.equal(h.calls.length,before+1);assert.equal(h.calls.at(-1).method,undefined)
+  assert.equal(h.flow.getState().result.text,'合成回复')
+  assert.equal(h.timers.size,0);assert.equal(h.listeners.size,0);h.flow.hide()
+})
+
+test('an accepted submit stays pending when its first result read fails and recovers without another submit',async()=>{
+  const h=recoveringTask();h.fail(503);await h.start()
+  assert.equal(h.flow.getState().submitUnknown,false)
+  assert.equal(h.flow.getState().status,'queued');assert.equal(h.timers.size,1)
+  h.complete();await h.tick()
+  assert.equal(h.flow.getState().result.text,'合成回复')
+  assert.equal(h.calls.filter(c=>c.path==='/api/agent/runs').length,1);h.flow.hide()
+})
+
+test('lost submit responses are confirmed automatically with the same request key and preserve explicit retry until confirmed',async()=>{
+  const h=recoveringTask({loseSubmit:true});await h.start();h.fail(404)
+  assert.equal(h.flow.getState().canRetry,true);assert.equal(h.timers.size,1)
+  await h.tick();assert.equal(h.flow.getState().canRetry,true)
+  assert.equal(h.flow.getState().requestId,requestId);assert.equal(h.timers.size,1)
+  h.complete();await h.tick()
+  assert.equal(h.flow.getState().canRetry,false);assert.equal(h.flow.getState().result.text,'合成回复')
+  assert.equal(h.saved.get(`health-task:${memberId}:${taskType}`).pendingQuery,'')
+  assert.equal(h.calls.filter(c=>c.path==='/api/agent/runs').length,1);h.flow.hide()
+})
+
+for(const code of [401,403,404,409,410,'TASK_MISMATCH'])test(`read failure ${code} stops recovery and clears inaccessible task state`,async()=>{
+  const h=recoveringTask();await h.start();h.fail(code);await h.tick()
+  assert.equal(h.flow.getState().requestId,'');assert.equal(h.flow.getState().result,null)
+  assert.equal(h.timers.size,0);assert.equal(h.listeners.size,0);h.flow.hide()
+})
+
+for(const action of ['pause','hide','account'])test(`${action} prevents stale recovery callbacks from reading the previous task`,async()=>{
+  const h=recoveringTask();await h.start()
+  const timer=[...h.timers.values()][0],online=[...h.listeners][0]
+  if(action==='account')h.setAccount({accountId:'other',token:'synthetic-other'})
+  else h.flow[action]()
+  const before=h.calls.length;timer();online();await new Promise(r=>setImmediate(r))
+  assert.equal(h.calls.length,before)
+  if(action!=='account'){assert.equal(h.timers.size,0);assert.equal(h.listeners.size,0)}
+  h.flow.hide()
+})
+
+for(const code of ['NETWORK_ERROR',503])test(`unknown submission survives a transient ${code} task read and recovers automatically without another POST`,async()=>{
+ const h=recoveringTask({loseSubmit:true});h.fail(code);await h.start()
+ assert.equal(h.flow.getState().submitUnknown,true);assert.equal(h.timers.size,1)
+ await h.tick()
+ assert.equal(h.flow.getState().submitUnknown,true);assert.equal(h.timers.size,1)
+ h.complete();await h.tick()
+ assert.equal(h.flow.getState().submitUnknown,false)
+ assert.equal(h.flow.getState().requestId,requestId)
+ assert.equal(h.flow.getState().result.text,'合成回复')
+ assert.equal(h.calls.filter(c=>c.path==='/api/agent/runs').length,1)
+ assert.equal(h.timers.size,0);assert.equal(h.listeners.size,0);h.flow.hide()
+})

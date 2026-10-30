@@ -4,6 +4,14 @@ import { answerSegments, parseAiAnswer } from '../src/utils/ai-answer.js'
 
 const visible = answer => answer.blocks.map(block => block.segments?.map(s => s.text).join('') || block.items?.map(item => item.segments.map(s => s.text).join('')).join('\n') || block.text || '').join('\n')
 
+test('book-style imported filenames retain readable titles and ordinary advice', () => {
+  const answer = parseAiAnswer('《中国居民膳食指南2022 **准则六 规律进餐、足量饮水dg_03.md》强调规律进餐。\n\n普通书名《我的饮食日记》与维生素 B12 不变。')
+  assert.match(visible(answer), /《中国居民膳食指南2022 准则六 规律进餐、足量饮水》强调规律进餐/)
+  assert.doesNotMatch(visible(answer), /dg_03|\.md|\*\*/)
+  assert.deepEqual(answer.sources, ['中国居民膳食指南2022 准则六 规律进餐、足量饮水'])
+  assert.match(visible(answer), /《我的饮食日记》与维生素 B12 不变/)
+})
+
 test('streamed purchase receipts and evidence ids stay hidden without losing readable content', () => {
   const token = 'signed_receipt_'.repeat(12)
   assert.equal(visible(parseAiAnswer(`可核对食材清单。[食材包:${token}]`)), '可核对食材清单。')

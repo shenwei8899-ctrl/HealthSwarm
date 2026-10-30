@@ -2,7 +2,7 @@
 export function createPreparationClient({send, root, storage, onChange, newId, onSaved = () => {}, current = () => true, onInvalidated = () => {}, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), pollLimit = 150}) {
   let generation = 0, flight = null
   const valid = ticket => ticket === generation && current()
-  async function run({body = null, id = '', resume = false} = {}) {
+  async function run({body = null, id = '', resume = false, stopAfterSaved = false, throwOnError = false} = {}) {
     if (flight) return flight
     const ticket = ++generation
     flight = (async () => {
@@ -45,6 +45,7 @@ export function createPreparationClient({send, root, storage, onChange, newId, o
             onSaved()
           }
           onChange(value)
+          if (stopAfterSaved && value.profile_saved === true) return value
           if (value.status !== 'preparing') return value
           if (count >= pollLimit) {
             onChange({...value,status:'waiting',message:'准备仍在后台继续，你可以稍后继续查看。'})
@@ -61,6 +62,7 @@ export function createPreparationClient({send, root, storage, onChange, newId, o
           if(rejected){storage.setStorageSync('onboarding-preparation-pending',null);storage.setStorageSync('onboarding-preparation-existing-pending',null)}
           onChange({...value,status:rejected?'submission_error':'connection_error',profile_saved:!!value?.profile_saved,message:error.message||'暂时无法连接，请继续读取原准备。',error_code:error.businessCode||error.code,retryable:!rejected})
         }
+        if (throwOnError) throw error
       } finally {
         if (ticket === generation) flight = null
       }

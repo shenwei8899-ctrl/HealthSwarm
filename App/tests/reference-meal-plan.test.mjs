@@ -57,7 +57,7 @@ test('reference followup questions restore as readable text after reopening',()=
 })
 function card({scopeChange=false,planChange=false,version=2,available=true}={}){
  const calls=[],props={plan:{preview_id:'preview'}},hooks={};let scope='A'
- const deps={ref,defineProps:()=>props,onUnmounted:fn=>hooks.unmount=fn,storageContext:()=>scope,
+ const deps={ref,defineEmits:()=>()=>{},defineProps:()=>props,onUnmounted:fn=>hooks.unmount=fn,storageContext:()=>scope,
   request:async()=>{calls.push('publish');return {data:{preview_id:'preview',package:{package_sn:'package',package_version:version}}}},
   commerce:{connect:async()=>{if(scopeChange)scope='B';if(planChange)props.plan={preview_id:'new-preview'}},mealPackage:async(sn,v)=>{calls.push(['read',sn,v]);return {package_sn:sn,package_version:v,scope:'daily_reference',available}},addMeal:async menu=>calls.push(['cart',menu.package_version])},
   uni:{navigateTo:o=>calls.push(['route',o.url])}}

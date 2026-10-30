@@ -1,18 +1,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
-import {ref,computed,reactive,effectScope} from 'vue'
+import {ref,computed,reactive,effectScope,watch} from 'vue'
 import {newMealCommerceState,createMealCommerceController,commerceMealView} from '../src/services/meal-commerce-state.js'
 
-function mount({daily=false}={}){
+function mount({daily=false,reference=false}={}){
   const calls=[],hooks={},route={date:'2026-10-21',meal:'dinner',arrangement:'saved-1',version:'2'}
   if(daily){route.meal='daily';route.meals=['breakfast','lunch']}
-  let scope='A',linked=false,publicationVersion=2,denied=false
+  let scope='A',linked=false,publicationVersion=2,denied=false,referenceVersion=4
   const saved=new Map()
   const items=[{sku_id:'tomato',quantity:1,sku:{sku_id:'tomato',product_name:'合成番茄',price_cent:800,available_quantity:5,net_content:{value:500,unit:'g'},ingredients:[{ingredient_code:'tomato'}]}}]
   const purchase={status:'matched',available:true,catalog_version:'catalog-1',items,
     ingredient_requirements:[{ingredient_id:'tomato',ingredient_code:'tomato',required_value:'300',required_unit:'g'}]}
-  const menu={...purchase,package_sn:'pack-1',package_version:1,dishes:[]}
+  const menu={...purchase,...(reference?{scope:'daily_reference'}:{}),package_sn:'pack-1',package_version:1,dishes:[]}
   const line={cart_item_id:'line-1',sku_id:'tomato',quantity:1,version:1,selected:true,
     source_type:'recommendation_package',source_ref:'pack-1',source_version:1}
   const state=reactive(newMealCommerceState())
@@ -26,11 +26,12 @@ function mount({daily=false}={}){
   const send=async input=>{
     calls.push(input)
     if(denied)throw Object.assign(new Error('采购用途授权已撤回'),{code:403})
+    if(reference){if(input.method==='POST')return {data:{preview_id:'preview',package:{package_sn:'pack-1',package_version:1}}};return {data:{date:route.date,version:referenceVersion,purchase_options:[{kind:'reference',id:'preview',meal_types:['lunch']}]}}}
     return {data:{arrangement_id:route.arrangement,version:input.method==='POST'?publicationVersion:2,
       purchase:input.method==='POST'?{...purchase,package_sn:'pack-1',package_version:1}:structuredClone(purchase)}}
   }
-  const deps={ref,computed,onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onUnmounted:fn=>hooks.unmount=fn,
-    defineProps:()=>({route,meal:{members:[{id:'member-1'}]}}),commerce:api,request:send,
+  const deps={ref,computed,watch,defineEmits:()=>()=>{},defineExpose:()=>{},onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onUnmounted:fn=>hooks.unmount=fn,
+    defineProps:()=>({route,meal:{members:[{id:'member-1'}]},...(reference?{reference:{previewId:'preview',dailyPlanVersion:4,mealTypes:['lunch'],items:[{sku_id:'tomato',product_name:'合成番茄',quantity:1}]}}:{})}),commerce:api,request:send,
     commerceMealView,getSession:()=>({householdId:'family-1'}),storageContext:()=>scope,
     scopedStorage:{getStorageSync:key=>saved.get(scope+key),setStorageSync:(key,value)=>saved.set(scope+key,structuredClone(value))},
     useMealCommercePage:context=>({...createMealCommerceController({state,api,scope:()=>scope,context}),state,
@@ -40,7 +41,7 @@ function mount({daily=false}={}){
   const vueScope=effectScope()
   const component=vueScope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {refresh,checkout,toggle,selected,preview,products,picked,total,state,loginOpen,error,purchaseReady}`)(deps))
   return {...component,calls,deny(){denied=true},pending(){purchase.available=false;purchase.confirmation_pending=true;items[0].sku.available_quantity=0},unavailable(){purchase.available=false;purchase.confirmation_pending=false},link(){linked=true},wrongVersion(){publicationVersion=3},switch(){scope='B'},
-    dispose(){hooks.unmount();vueScope.stop()}}
+    changeReferenceVersion(){referenceVersion++},dispose(){hooks.unmount();vueScope.stop()}}
 }
 
 test('opening a saved meal reads current products without commerce login or a purchase write',async()=>{
@@ -102,7 +103,7 @@ test('daily purchase preview and explicit publication reference the chosen meals
 test('daily summary clears former account dishes before awaiting a new read',async()=>{
   const route={arrangement:'saved-1',version:'2',date:'2026-10-21'},hooks={}
   let scope='A',answer={status:'ready',id:'saved-1',version:2,meals:[{members:[],dishes:[{name:'前账号菜品'}]}]},release
-  const deps={ref,computed,onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onUnmounted:fn=>hooks.unmount=fn,
+  const deps={ref,computed,watch,defineEmits:()=>()=>{},defineExpose:()=>{},onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onUnmounted:fn=>hooks.unmount=fn,
     defineProps:()=>({route}),storageContext:()=>scope,getSession:()=>({householdId:scope}),
     request:async()=>answer?{data:answer}:new Promise(resolve=>{release=resolve})}
   const source=readFileSync(new URL('../src/components/CloudDailyPurchase.vue',import.meta.url),'utf8')
@@ -116,16 +117,14 @@ test('daily summary clears former account dishes before awaiting a new read',asy
   hooks.unmount()
 })
 
-test('each arrangement card opens the procurement for its own date and saved ID',()=>{
-  const source=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
-  const action=source.match(/function shop\(arrangement\)\{[^\n]+/)[0]
-  const urls=[],open=new Function('uni',`${action};return shop`)({navigateTo:value=>urls.push(value.url)})
-  open({id:'today',date:'2026-10-21',version:1});open({id:'tomorrow',date:'2026-10-22',version:3})
-  assert.match(urls[1],/date=2026-10-22&arrangement=tomorrow&version=3/)
-  const card=readFileSync(new URL('../src/components/DailyArrangementCard.vue',import.meta.url),'utf8')
-  assert.match(card,/\$emit\('shop',arrangement\)/)
+test('each arrangement card opens a detail purchase for its own date and saved ID',()=>{
+ const source=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
+ const action=source.match(/function shop\(arrangement\)\{[^\n]+/)[0]
+ const calls=[],open=new Function('openFormalDetail',`${action};return shop`)((meal,arrangement,date,options)=>calls.push({meal,arrangement,date,options}))
+ open({id:'today',date:'2026-10-21',version:1,meals:[{type:'breakfast',members:[]}]});open({id:'tomorrow',date:'2026-10-22',version:3,meals:[{type:'dinner',members:[]}]})
+ assert.equal(calls[1].date,'2026-10-22');assert.equal(calls[1].arrangement.id,'tomorrow');assert.equal(calls[1].arrangement.version,3)
+ assert.deepEqual(calls[1].options.purchaseMeals,['dinner']);assert.equal(calls[1].options.initialView,'purchase')
 })
-
 
 test('an uncertain purchase stays reachable to confirm the original result without claiming stock is available',async()=>{
   const f=mount();try{
@@ -144,4 +143,16 @@ test('an uncertain purchase stays reachable to confirm the original result witho
     assert.match(view, /!purchaseReady/)
     assert.match(view, /确认上次采购结果/)
   }finally{f.dispose()}
+})
+
+test('reference sheet reads without publishing, leaves prices unknown and quotes only on explicit checkout',async()=>{
+ const f=mount({reference:true});try{await f.refresh();assert.equal(f.products.value[0].priceCents,null);assert.equal(f.calls.some(c=>c?.method==='POST'),false)
+ f.link();await f.checkout();const write=f.calls.find(c=>c?.method==='POST');assert.deepEqual(write.data,{preview_id:'preview',version:4,meal_types:['lunch']});assert.ok(f.state.quote)
+ }finally{f.dispose()}
+})
+test('changed reference plan prevents publication and discards a prior quote',async()=>{
+ const f=mount({reference:true});try{await f.refresh();f.link();f.changeReferenceVersion();await f.checkout();assert.equal(f.calls.some(c=>c?.method==='POST'),false);assert.equal(f.state.quote,null);assert.match(f.error.value,/参考餐单已更新/)}finally{f.dispose()}
+})
+test('revoked reference purchase does not leave prior products visible',async()=>{
+ const f=mount({reference:true});try{await f.refresh();f.deny();await f.refresh();assert.equal(f.products.value.length,0);assert.equal(f.state.quote,null)}finally{f.dispose()}
 })

@@ -17,11 +17,19 @@ export function onboardingIssue(member, throughStep = 2) {
   }
   if (member.cuisines?.length && !answered(member.cuisines)) return { step: 1, message: '请补充具体菜系偏好' }
   if (throughStep < 2) return null
-  for (const cfg of Object.values(restrictionFields)) {
-    if (!['none', 'set'].includes(member[cfg.status])) return { step: 2, message: '请选择' + cfg.title + '状态' }
-    if (member[cfg.status] === 'set' && !answered(member[cfg.field])) return { step: 2, message: '请补充具体' + cfg.title + '内容' }
+  for(const type of [...Object.keys(restrictionFields),'doctor']){const issue=restrictionIssue(member,type);if(issue)return issue}
+  return null
+}
+
+export function restrictionIssue(member,type){
+  if(type==='doctor'){
+    if(!['none','set'].includes(member.doctorStatus))return {step:2,message:'请选择医生饮食要求状态'}
+    if(member.doctorStatus==='set'&&!member.clinicianGuidance?.trim())return {step:2,message:'请填写具体医生饮食要求'}
+    return null
   }
-  if (!['none', 'set'].includes(member.doctorStatus)) return { step: 2, message: '请选择医生饮食要求状态' }
-  if (member.doctorStatus === 'set' && !member.clinicianGuidance?.trim()) return { step: 2, message: '请填写具体医生饮食要求' }
+  const cfg=restrictionFields[type]
+  if(!cfg)return null
+  if(!['none','set'].includes(member[cfg.status]))return {step:2,message:'请选择'+cfg.title+'状态'}
+  if(member[cfg.status]==='set'&&!answered(member[cfg.field]))return {step:2,message:'请补充具体'+cfg.title+'内容'}
   return null
 }

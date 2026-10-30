@@ -14,7 +14,23 @@ export async function readCloudReportStatus(memberId) {
   return observations.data.length?'done':vision.data.drafts.some(d=>d.review_status==='pending_confirmation')?'review':'empty'
 }
 
-export async function loadCloudProfile({openConsultation=true, readConfiguration=true} = {}) {
+let profileRead = null
+export async function loadCloudProfile(options = {}) {
+  const account = getSession()
+  // Share only concurrent, read-only requests for an already selected family.
+  // Consultation/consent writes and first-family creation are never coalesced.
+  if (options.openConsultation !== false || options.readConfiguration !== false || !account?.householdId) {
+    return fetchCloudProfile(options)
+  }
+  const key = JSON.stringify([account.accountId, account.token, account.householdId, sessionRevision(), pendingInvitation()])
+  if (profileRead?.key === key) return profileRead.promise
+  const flight = {key}
+  profileRead = flight
+  flight.promise = fetchCloudProfile(options).finally(() => { if (profileRead === flight) profileRead = null })
+  return flight.promise
+}
+
+async function fetchCloudProfile({openConsultation=true, readConfiguration=true} = {}) {
   let session = getSession()
   if (!session?.token) throw Object.assign(new Error('请先微信登录'), { code: 401 })
   if (pendingInvitation()) throw Object.assign(new Error('请先查看并决定是否接受家庭邀请。'), {code:'INVITATION_PENDING'})

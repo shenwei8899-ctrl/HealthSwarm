@@ -19,7 +19,7 @@ const terminalStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupt
 const privateFailure = error => [401, 403, 404, 409, 410].includes(Number(error?.code))
 const uncertainFailure = error => error?.code === 'NETWORK_ERROR' || Number(error?.code) >= 500
 const mismatch = () => Object.assign(new Error('任务与当前成员或线程不一致，请返回重新核对'), { code: 'TASK_MISMATCH' })
-const streamState = () => ({ streamText: '', streamMessageId: '', streamOffset: 0, streamPhase: '', streamStatus: '', queuePosition: null })
+const streamState = () => ({ streamText: '', streamMessageId: '', streamOffset: 0, streamPhase: '', streamStatus: '', queuePosition: null, cancelPhase: '', cancelError: '' })
 const streamLabels = { queued: '请求已收到，正在排队', running: '正在结合资料整理建议', validating: '正在核对内容与资料来源',
   streaming: '正在生成回答', finalizing: '正在整理最终结果', reconnecting: '连接暂时中断，正在恢复回答',
   polling: '正在读取服务端处理结果', cancelling: '正在停止生成' }
@@ -33,18 +33,32 @@ function newerCursor(next, previous = '0-0') {
   return false
 }
 
+function watchTaskNetwork(onConnected) {
+  if (typeof uni !== 'undefined' && uni.onNetworkStatusChange && uni.offNetworkStatusChange) {
+    const listener = event => { if (event.isConnected) onConnected() }
+    uni.onNetworkStatusChange(listener)
+    return () => uni.offNetworkStatusChange(listener)
+  }
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('online', onConnected)
+    return () => window.removeEventListener('online', onConnected)
+  }
+  return () => {}
+}
 
 export function createHealthTaskFlow({ send = request, session = getSession, revision = sessionRevision,
   storage = scopedStorage, newId = newHealthRequestId, onChange = () => {},
   subscribe = subscribeHealthEvents,
+  watchNetwork = watchTaskNetwork,
   schedule = (fn, ms) => setTimeout(fn, ms), cancel = handle => clearTimeout(handle),
   pollInterval = 2000, pollLimit = 45, daily = false, day = () => new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10) } = {}) {
   let indicatorSelection = null, forceNewEntry = false
   let conversationOptions = null
   let epoch = 0, readVersion = 0, timer = null, polls = 0, pendingQuery = '', storageKey = '', activeRead = null
-  let streams = [], streamKey = '', streamAttempts = 0, streamEpoch = 0, cursors = {}, pendingImages = [], cancelRequested = false
+  let streams = [], streamKey = '', streamAttempts = 0, streamEpoch = 0, cursors = {}, pendingImages = []
   let state = { memberId: '', taskType: '', title: '', loading: false, busy: false, refreshing: false, available: false, readOnly: false, finalMessageId: null,
     consentOption: null, entry: null, requestId: '', runId: '', requests: [], submitUnknown: false, status: '', result: null, error: '', notice: '', ...streamState() }
+  let readFailures = 0, pollingNotice = '', stopNetwork = null
   const emit = () => onChange({ ...state, canRetry: (!!pendingQuery || pendingImages.length > 0) && state.submitUnknown,
     pendingText:state.submitUnknown?pendingQuery:'',pendingImages:state.submitUnknown?[...pendingImages]:[],
     entry: state.entry && { ...state.entry }, result: state.result && { ...state.result } })
@@ -52,9 +66,14 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   const current = ticket => ticket.epoch === epoch && ticket.revision === revision() &&
     ticket.accountId && ticket.accountId === session()?.accountId && ticket.householdId === session()?.householdId
   function stopStreams() { streamEpoch++; const old = streams; streams = []; streamKey = ''; old.forEach(close => close?.()) }
-  function stop() { if (timer !== null) cancel(timer); timer = null; polls = 0; streamAttempts = 0; stopStreams() }
+  function clearPollingNotice() {
+    if (state.notice === pollingNotice) state.notice = ''
+    pollingNotice = ''
+  }
+  function stop() { if (timer !== null) cancel(timer); timer = null; polls = 0; readFailures = 0; streamAttempts = 0; stopNetwork?.(); stopNetwork = null; clearPollingNotice(); stopStreams() }
   function phase(value) { state.streamPhase = value; state.streamStatus = streamLabels[value] || '' }
-  function clearStream() { Object.assign(state, streamState()); cancelRequested = false }
+  function clearStream() { Object.assign(state, streamState()) }
+  const cancellationActive = () => ['requesting','confirming','unknown'].includes(state.cancelPhase)
   const invalidKey = () => `health-chat-invalid:${state.memberId}:${day()}`
   function invalidateThread() {
     if (daily && !conversationOptions && state.entry?.thread_id) {
@@ -73,7 +92,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   }
   function hide() {
     forceNewEntry = false
-    epoch++; readVersion++; activeRead = null; stop(); pendingQuery = ''; pendingImages = []; storageKey = ''; cursors = {}; cancelRequested = false
+    epoch++; readVersion++; activeRead = null; stop(); pendingQuery = ''; pendingImages = []; storageKey = ''; cursors = {}
     conversationOptions = null
     state = { memberId: '', taskType: '', title: '', loading: false, busy: false, refreshing: false, available: false, readOnly: false, finalMessageId: null,
       consentOption: null, entry: null, requestId: '', runId: '', requests: [], submitUnknown: false, status: '', result: null, error: '', notice: '', ...streamState() }
@@ -81,7 +100,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   }
   // A covered page keeps its task and uncertain submission, but rejects late callbacks.
   function pause() {
-    epoch++; readVersion++; activeRead=null; stop(); state.busy = false; state.loading = false; state.refreshing=false
+    epoch++; readVersion++; activeRead=null; stop(); if(state.cancelPhase==='requesting'){state.cancelPhase='unknown';save()} state.busy = false; state.loading = false; state.refreshing=false
     emit()
   }
   async function resume() {
@@ -117,7 +136,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   }
   function save() {
     storage.setStorageSync(storageKey, { memberId: state.memberId, taskType: state.taskType,
-      entry: state.entry, requestId: state.requestId, requests: state.requests, cursors, submitUnknown: state.submitUnknown,
+      entry: state.entry, requestId: state.requestId, requests: state.requests, cursors, cancelPhase: state.cancelPhase, cancelRequestId: state.requestId, submitUnknown: state.submitUnknown,
       // 仅结果未知时保留原提交；回读确认后立即清除，不缓存模型正文。
       pendingQuery: state.submitUnknown ? pendingQuery : '', pendingImages: state.submitUnknown ? pendingImages : [] })
   }
@@ -240,6 +259,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
         state.entry = verifiedEntry || saved.entry; state.requestId = saved.requestId || ''
         state.requests = Array.isArray(saved.requests) ? saved.requests.filter(row => uuidPattern.test(row.request_id)).slice(-50) : []
         state.submitUnknown = saved.submitUnknown === true
+        state.cancelPhase = saved.cancelRequestId === state.requestId && ['requesting','confirming','unknown'].includes(saved.cancelPhase) ? 'unknown' : ''
         cursors = saved.cursors && typeof saved.cursors === 'object' ? Object.fromEntries(Object.entries(saved.cursors).filter(([id, value]) => uuidPattern.test(id) && /^\d+-\d+$/.test(value))) : {}
         pendingQuery = state.submitUnknown && typeof saved.pendingQuery === 'string' && saved.pendingQuery.length <= 4000 ? saved.pendingQuery : ''
         pendingImages = state.submitUnknown && Array.isArray(saved.pendingImages) ? saved.pendingImages.filter(validImage).slice(0, 1) : []
@@ -362,13 +382,18 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
           query: text, meta: { request_id: state.requestId }, ...(selectedImages.length ? { image_content: selectedImages } : {}) } })
       if (!current(ticket)) return
       if (response.data?.request_id !== state.requestId || response.data?.thread_id !== state.entry.thread_id) throw mismatch()
-      state.submitUnknown = false; pendingQuery = ''; pendingImages = []; save()
+      state.submitUnknown = false; state.status = 'queued'; pendingQuery = ''; pendingImages = []; save()
       await refresh(ticket)
       return true
     } catch (error) {
       if (current(ticket)) {
         if (!uncertainFailure(error)) { state.requestId = ''; state.submitUnknown = false; pendingQuery = ''; pendingImages = []; save() }
         handle(error, ticket)
+        // A lost submission response is resolved by GET with the original key, never another automatic POST.
+        if (uncertainFailure(error) && state.requestId && state.submitUnknown) {
+          state.error = '提交结果尚未确认，正在自动核对；也可以点击输入框旁的“核对”，或点开消息感叹号查看恢复操作。'
+          readFailures++; startPolling(ticket)
+        }
       }
       return false
     } finally { if (current(ticket)) { state.busy = false; emit() } }
@@ -403,12 +428,19 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
         ? data.request_status : data.execution_status
       state.runId = data.run_id || ''
       state.finalMessageId = data.execution_status === 'completed' && Number.isSafeInteger(data.final_message_id) && data.final_message_id > 0 ? data.final_message_id : null
-      if (!cancelRequested) {
+      if (state.status === 'cancel_requested') state.cancelPhase = 'confirming'
+      else if (state.cancelPhase === 'unknown' && ['queued','dispatched','pending','running'].includes(state.status)) {
+        state.cancelPhase = 'error'
+        state.cancelError = '任务仍在处理，尚未确认停止，可以重试停止。'
+      }
+      if (!cancellationActive()) {
         if (['queued', 'pending'].includes(state.status)) phase('queued')
         else if (streamAttempts >= 5 && !streamKey) phase('polling')
         else if (state.streamText) phase('streaming')
         else if (!['validating', 'finalizing'].includes(state.streamPhase)) phase('running')
       }
+      if (cancellationActive()) phase('cancelling')
+      readFailures = 0; clearPollingNotice()
       const known = state.requests.some(row => row.request_id === expectedId)
       state.requests = known ? state.requests.map(row => row.request_id === expectedId ? { ...row, status: state.status } : row) : [...state.requests, { request_id: expectedId, status: state.status }]
       if (data.result?.result_type === 'error') state.result = { type: 'error', code: data.result.code, retryable: data.result.retryable === true }
@@ -448,28 +480,43 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       if (!current(givenTicket) || read !== readVersion) return
       if (state.submitUnknown && Number(error?.code) === 404) {
         state.error = pendingQuery
-          ? '提交结果尚未确认；可重新读取，或在本页用同一请求键重试。'
-          : '提交结果尚未确认；请重新读取同一请求，暂勿重复提问。'
+          ? '提交结果尚未确认，正在自动核对；也可以点击输入框旁的“核对”，或点开消息感叹号查看恢复操作。'
+          : '提交结果尚未确认，正在自动核对，请勿重复提问。'
+        readFailures++; startPolling(givenTicket)
         emit()
       } else {
         handle(error, givenTicket)
-        if (current(givenTicket) && uncertainFailure(error) && !state.submitUnknown && !terminalStatuses.has(state.status)) {
-          phase('reconnecting'); emit(); startPolling(givenTicket)
+        if (current(givenTicket) && uncertainFailure(error) && !terminalStatuses.has(state.status)) {
+          readFailures++; state.error = '暂时无法获取回复，正在自动重试。'; phase('reconnecting'); emit(); startPolling(givenTicket)
         }
       }
     }
   }
   function startPolling(ticket) {
     if (timer !== null || !current(ticket)) return
-    if (polls >= pollLimit) {
-      stopStreams(); state.notice = '等待已暂停，服务端可能仍在执行。请手动读取同一任务。'
-      state.streamPhase = 'paused'; state.streamStatus = state.notice; emit(); return
+    const id = state.requestId
+    if (!id || terminalStatuses.has(state.status)) return
+    if (!stopNetwork) stopNetwork = watchNetwork(() => {
+      if (!current(ticket) || id !== state.requestId || terminalStatuses.has(state.status)) return
+      if (timer !== null) cancel(timer)
+      timer = null; polls = 0; readFailures = 0
+      void refresh(ticket)
+    })
+    // Long-running tasks keep being read at a lower frequency while the page is visible.
+    const backoff = Math.max(readFailures, polls >= pollLimit ? 3 + Math.floor((polls - pollLimit) / 5) : 0)
+    const delay = Math.min(30000, pollInterval * 2 ** Math.min(backoff, 4))
+    if (polls >= pollLimit && !state.notice) {
+      pollingNotice = '回复用时较长，仍在自动获取结果，请稍候。'
+      state.notice = pollingNotice
     }
-    timer = schedule(() => { timer = null; polls++; void refresh(ticket) }, pollInterval)
+    timer = schedule(() => {
+      if (!current(ticket) || id !== state.requestId) return
+      timer = null; polls++; void refresh(ticket)
+    }, delay)
   }
   function startStreams(ticket) {
     const id = state.requestId, runId = state.runId, key = `${id}:${runId}`
-    if (streamKey === key || streamAttempts >= 5 || cancelRequested) return
+    if (streamKey === key || streamAttempts >= 5 || cancellationActive()) return
     stopStreams(); streamKey = key; streamAttempts++
     const generation = streamEpoch
     const active = () => current(ticket) && generation === streamEpoch && id === state.requestId && runId === state.runId
@@ -538,18 +585,41 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
     await refresh()
     return !state.invalidated&&state.requestId===id
   }
+  /** 取消原请求；派发竞争只在核对同一任务后承接到 Run。 */
   async function cancelRequest() {
-    if (state.busy || !state.requestId || state.submitUnknown || terminalStatuses.has(state.status)) return
-    const ticket = token(), id = state.requestId, runId = state.runId
-    cancelRequested = true; stopStreams(); state.streamText = ''; state.streamMessageId = ''; state.streamOffset = 0; phase('cancelling')
-    state.busy = true; state.error = ''; emit()
+    if (state.busy || !state.requestId || state.submitUnknown || terminalStatuses.has(state.status) || ['requesting','confirming'].includes(state.cancelPhase)) return
+    const ticket = token(), id = state.requestId
+    const valid = () => current(ticket) && state.requestId === id
+    const post = runId => send({ path: runId ? `/api/agent/runs/${encodeURIComponent(runId)}/cancel` : `/api/agent/requests/${encodeURIComponent(id)}/cancel`, method: 'POST' })
+    state.cancelPhase = 'requesting'; state.cancelError = ''; stopStreams()
+    state.streamText = ''; state.streamMessageId = ''; state.streamOffset = 0
+    if (state.runId) cursors[state.runId] = '0-0'
+    phase('cancelling'); state.busy = true; state.error = ''; save(); emit()
     try {
-      await send({ path: runId ? `/api/agent/runs/${encodeURIComponent(runId)}/cancel` : `/api/agent/requests/${encodeURIComponent(id)}/cancel`, method: 'POST' })
-      if (!current(ticket)) return
+      try { await post(state.runId) }
+      catch (error) {
+        if (!valid()) return
+        if (Number(error.code) !== 409 || error.businessCode !== 'request_already_dispatched') throw error
+        // 这个 409 表示排队已转运行，不是资料或权限失效。
+        await refresh(ticket)
+        if (!valid() || terminalStatuses.has(state.status)) return
+        if (!state.runId) throw new Error('任务已派发，暂未读到运行编号，请重新核对后停止。')
+        await post(state.runId)
+      }
+      if (!valid()) return
+      state.cancelPhase = 'confirming'; save(); emit()
       await refresh(ticket)
-    } catch (error) { handle(error, ticket) }
-    finally { if (current(ticket)) { state.busy = false; emit() } }
+    } catch (error) {
+      if (!valid()) return
+      if (privateFailure(error) || error.code === 'SESSION_CHANGED' || error.code === 'TASK_MISMATCH') { handle(error,ticket); return }
+      state.cancelPhase = uncertainFailure(error) ? 'unknown' : 'error'
+      state.cancelError = state.cancelPhase === 'unknown' ? '停止结果尚未确认，请核对原任务。' : error.message || '停止未成功，可以重试。'
+      state.error = ''; save(); emit()
+      await refresh(ticket)
+      if (valid() && state.cancelPhase === 'error') startStreams(ticket)
+    } finally { if (valid()) { state.busy = false; save(); emit() } }
   }
+
   return { open, hide, pause, resume, acceptConsent, createEntry, submit, refresh, selectRequest, restoreRequest, restoreReferenceRequest, cancelRequest, invalidateThread,
     getState: () => ({ ...state, canRetry: (!!pendingQuery || pendingImages.length > 0) && state.submitUnknown }) }
 }

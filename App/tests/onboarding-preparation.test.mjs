@@ -67,3 +67,23 @@ test('pending submission can enter preparation before the cloud profile is compl
  const resolve=createEntryResolver({auth:{restore:async()=>session},session:()=>session,readProfile:async()=>({householdId:'family',completeProfile:false}),pendingPreparation:()=>true})
  assert.equal(await resolve(),'/pages/onboarding/preparing')
 })
+
+test('a confirmed profile can enter chat while an older submission remains uncertain',async()=>{
+ const session={accountId:'self',token:'synthetic',householdId:'family',families:[{id:'family'}]}
+ const resolve=createEntryResolver({auth:{restore:async()=>session},session:()=>session,readProfile:async()=>({householdId:'family',completeProfile:true}),pendingPreparation:()=>true})
+ assert.equal(await resolve(),'/pages/chat/index')
+})
+
+test('direct onboarding returns the saved receipt without polling meal preparation',async()=>{
+ const f=setup(()=>saved)
+ const result=await f.client.run({body:{client_request_id:'original-key'},stopAfterSaved:true,throwOnError:true})
+ assert.equal(result.profile_saved,true);assert.equal(result.status,'preparing');assert.equal(f.calls.length,1)
+ assert.equal(f.saves,1);assert.equal(f.stored.get('onboarding-preparation-pending'),null)
+})
+
+test('direct onboarding propagates an unknown write for retry with its original key',async()=>{
+ const error=Object.assign(new Error('请求超时'),{code:'NETWORK_ERROR'})
+ const f=setup(()=>{throw error})
+ await assert.rejects(f.client.run({body:{client_request_id:'original-key'},stopAfterSaved:true,throwOnError:true}),e=>e===error)
+ assert.equal(f.saves,0);assert.equal(f.calls[0].headers['Idempotency-Key'],'original-key')
+})

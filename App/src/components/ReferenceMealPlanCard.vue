@@ -4,7 +4,8 @@ import {request} from '../services/request.js'
 import {commerce} from '../services/commerce.js'
 import {storageContext} from '../services/storage.js'
 import {sourceTitle} from '../utils/ai-answer.js'
-const props=defineProps({plan:{type:Object,required:true}})
+const props=defineProps({plan:{type:Object,required:true},detailMode:Boolean})
+const emit=defineEmits(['detail'])
 const expanded=ref(false),busy=ref(false),error=ref('')
 const names={breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}
 const gapNames={no_match:'暂无匹配商品',needs_confirmation:'商品资料待确认',not_sold:'自行准备',catalog_unavailable:'商品目录暂不可用'}
@@ -42,13 +43,13 @@ async function purchase(){
     <template v-if="expanded"><text>食材原文：{{dish.ingredients.join('；')}}</text><text v-for="(step,i) in dish.steps" :key="i">{{i+1}}. {{step}}</text><text v-if="dish.nutrition_quote">原食谱营养说明：{{dish.nutrition_quote}}</text><text class="reference-note">个人营养量尚未核算，未知值不按零处理。</text></template>
    </view>
   </view>
-  <button class="reference-detail" @click="expanded=!expanded">{{expanded?'收起原文详情':'查看食材、做法与营养说明'}}</button>
-  <view v-if="plan.purchase_items?.length" class="reference-products"><text class="meal-title">采购建议 · 请核对商品与包装数量</text><view v-for="item in plan.purchase_items" :key="item.sku_id"><text>{{item.product_name}} {{item.sku_name||''}} × {{item.quantity}}</text><text v-if="item.ingredient_refs?.length">用于：{{item.ingredient_refs.join('、')}}</text><text v-if="item.composition_notice" class="reference-note">{{item.composition_notice}}</text></view><button :disabled="busy" @click="purchase">{{busy?'正在核对来源…':'确认这些商品并加入购物车'}}</button></view>
-  <text v-else class="reference-note">{{plan.purchase_gaps?.length?'本次未选定采购商品，原因见下方。':'这份餐单未记录采购商品及原因，可重新生成参考餐单。'}}</text>
+  <button class="reference-detail" @click="detailMode?emit('detail',plan):expanded=!expanded">{{expanded?'收起原文详情':'查看食材、做法与营养说明'}}</button>
+  <view v-if="plan.purchase_items?.length&&!detailMode" class="reference-products"><text class="meal-title">采购建议 · 请核对商品与包装数量</text><view v-for="item in plan.purchase_items" :key="item.sku_id"><text>{{item.product_name}} {{item.sku_name||''}} × {{item.quantity}}</text><text v-if="item.ingredient_refs?.length">用于：{{item.ingredient_refs.join('、')}}</text><text v-if="item.composition_notice" class="reference-note">{{item.composition_notice}}</text></view><button :disabled="busy" @click="purchase">{{busy?'正在核对来源…':'确认这些商品并加入购物车'}}</button></view>
+  <button v-else-if="detailMode&&plan.purchase_items?.length" @click="emit('detail',{plan,purchase:true})">查看采购食材</button><text v-else class="reference-note">{{plan.purchase_gaps?.length?'本次未选定采购商品，原因见下方。':'这份餐单未记录采购商品及原因，可重新生成参考餐单。'}}</text>
   <view v-if="plan.purchase_gaps?.length" class="reference-products"><text class="meal-title">{{plan.purchase_items?.length?'其余食材':'食材采购说明'}}</text><view v-for="gap in plan.purchase_gaps" :key="gap.ingredient"><text>{{gap.ingredient}} · {{gapNames[gap.reason]||'待核对'}}</text><text class="reference-note">{{gap.detail}}</text></view></view>
   <text v-if="error" class="reference-error" role="alert">{{error}}</text>
  </view>
 </template>
 <style scoped>
-.reference-plan{display:flex;flex-direction:column;gap:14px;margin:18px 0;padding:18px;border:1px solid #e5e6df;border-radius:14px;background:#fbfbf7;color:#302e28;font-size:14px;line-height:1.8}.reference-heading{display:flex;align-items:center;justify-content:space-between;font-size:17px;font-weight:600}.reference-tag{font-size:11px;padding:2px 9px;background:#e9eadc;border-radius:12px;color:#62684c}.reference-note,.source-name,.reference-members{font-size:12px;color:#77766b;overflow-wrap:anywhere}.reference-meal,.reference-dish,.reference-products,.reference-products>view{display:flex;flex-direction:column;gap:7px}.reference-meal{padding-top:10px;border-top:1px solid #e9e9df}.meal-title,.dish-name{font-weight:600}.reference-plan button{align-self:flex-start;min-height:44px;padding:8px 14px;font-size:14px;line-height:1.8;border-radius:8px;background:#556349;color:#fff}.reference-plan .reference-detail{background:transparent;color:#556349;padding-left:0}.reference-plan button:after{border:0}.reference-error{color:#9a453c}.reference-plan button[disabled]{opacity:.5}
+.reference-plan{display:flex;flex-direction:column;gap:14px;margin:18px 0;padding:18px;border:0;border-radius:var(--ui-radius);background:var(--ui-surface);color:#302e28;font-size:14px;line-height:1.8}.reference-heading{display:flex;align-items:center;justify-content:space-between;font-size:17px;font-weight:500}.reference-tag{font-size:11px;padding:2px 9px;background:var(--ui-accent-soft);border-radius:12px;color:#6b5a86}.reference-note,.source-name,.reference-members{font-size:12px;color:var(--ui-muted);overflow-wrap:anywhere}.reference-meal,.reference-dish,.reference-products,.reference-products>view{display:flex;flex-direction:column;gap:7px}.reference-meal{padding-top:10px;border-top:1px solid var(--ui-line)}.meal-title,.dish-name{font-weight:500}.reference-plan button{align-self:flex-start;min-height:44px;padding:8px 14px;font-size:14px;line-height:1.8;border-radius:14px;background:var(--ui-accent);color:#fff}.reference-plan .reference-detail{background:transparent;color:var(--ui-accent);padding-left:0}.reference-plan button:after{border:0}.reference-error{color:#9a453c}.reference-plan button[disabled]{opacity:.5}
 </style>

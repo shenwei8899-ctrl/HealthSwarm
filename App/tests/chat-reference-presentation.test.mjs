@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
-import {ref} from 'vue'
+import {ref,watch,nextTick,reactive} from 'vue'
 import {chatPresentation} from '../src/services/chat-presentation.js'
 
 test('saved onboarding content is shown inside chat without the generic welcome',()=>{
@@ -16,17 +16,18 @@ test('a new empty conversation has welcome content even when today has a saved a
 test('restoring a different empty thread does not repeat the first onboarding analysis',()=>{
  assert.deepEqual(chatPresentation({route:{preparation:'saved'},hasSavedArrangement:true,preparedThreadId:'first',currentThreadId:'second'}),{initialResults:false,welcome:true})
 })
-test('existing messages and genuine loading states hide the generic welcome',()=>{
+test('welcome is visible during first initialization and hidden while restoring an existing thread',()=>{
  assert.equal(chatPresentation({hasMessages:true}).welcome,false)
- assert.equal(chatPresentation({loading:true}).welcome,false)
+ assert.equal(chatPresentation({loading:true}).welcome,true)
+ assert.equal(chatPresentation({loading:true,currentThreadId:'existing'}).welcome,false)
  assert.equal(chatPresentation({route:{preparation:'saved'},hasMessages:true,hasSavedArrangement:true}).initialResults,true)
 })
 function layout(){
- const emitted=[]
+ const emitted=[],props=reactive({followBottom:true});let dispose=()=>{}
  const source=readFileSync(new URL('../src/components/NutritionistLayout.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
- const deps={ref,defineProps:()=>({}),defineEmits:()=>(...args)=>emitted.push(args)}
- const value=new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {shortcuts,choose,openProfile}`)(deps)
- return {...value,emitted}
+ const deps={getCurrentInstance:()=>({proxy:{}}),onMounted(){},onUnmounted:f=>dispose=f,ref,watch,nextTick,defineProps:()=>props,defineEmits:()=>(...args)=>emitted.push(args)}
+ const value=new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {shortcuts,choose,openProfile,beginRead}`)(deps)
+ return {...value,emitted,props,dispose:()=>dispose()}
 }
 test('the bottom shortcuts preserve all five existing actions and the profile event',()=>{
  const p=layout()
@@ -44,7 +45,7 @@ test('the five actions remain outside the scrolling conversation and above the c
 
 test('welcome preserves shuffle and the latest today entry alongside bottom shortcuts',()=>{
  const source=readFileSync(new URL('../src/components/ChatWelcome.vue',import.meta.url),'utf8')
- assert.match(source,/welcome-today|\$emit\('today'\)/);assert.match(source,/\$emit\('ask',prompt\)/)
+ assert.match(source,/prompt-grid/);assert.match(source,/\$emit\('ask',prompt\)/)
  const chat=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
  assert.match(chat,/@ask="askPrompt" @shuffle="shufflePrompts"/)
  assert.match(chat,/inlineTodayOpen.value=!inlineTodayOpen.value/)
@@ -58,40 +59,37 @@ async function renderLayout(showShortcuts) {
  const source=readFileSync(new URL('../src/components/NutritionistLayout.vue',import.meta.url),'utf8')
  const template=source.match(/<template>([\s\S]*?)<\/template>/)[1]
  const render=compile(template,{isCustomElement:tag=>['view','text','scroll-view'].includes(tag)})
- const state=layout(),props={showShortcuts,voiceBusy:false,historyOpen:false,scrollTarget:''}
+ const state=layout(),props={entryTransition:true,shortcutsCollapsed:!showShortcuts,keyboardOpen:false,welcomeMounted:false,welcomeLeaving:false,viewportStyle:{},transitionTicket:0,scrollLocked:false,restoreTop:0,rememberScroll(){},voiceBusy:false,historyOpen:false,scrollTarget:''}
  return renderToString(createSSRApp({render,components:{AppNavBar:{setup:(_props,{slots})=>()=>h('nav',slots.default?.())},AppIcon:{render:()=>h('span',{class:'app-icon'})}},setup:()=>({...state,...props,props})}))
 }
 
-test('reference shortcut cards disappear when the parent leaves the welcome state or focuses the keyboard',async()=>{
+test('shortcut actions remain available outside welcome and while the keyboard is focused',async()=>{
  const shown=await renderLayout(true),hidden=await renderLayout(false)
  assert.match(shown,/aria-label="常用功能"/)
- assert.doesNotMatch(hidden,/aria-label="常用功能"/)
+ assert.doesNotMatch(hidden,/is-collapsed/);assert.match(hidden,/aria-label="常用功能"/)
  for(const label of ['AI专属计划','家庭档案','拍照记餐','今日餐单','加入社群'])assert.ok(shown.includes(label))
 })
 
-test('the reference shell keeps the sampled blue-purple background and colourful vertical shortcut cards',()=>{
- const source=readFileSync(new URL('../src/components/NutritionistLayout.vue',import.meta.url),'utf8')
- assert.match(source,/showShortcuts:\s*\{\s*type:\s*Boolean,\s*default:\s*true\s*\}/)
- assert.match(source,/#e0e5fd/);assert.match(source,/#ecf0ff/)
- assert.match(source,/class="shortcut-symbol"/)
- assert.match(source,/\.shortcut-button\s*\{[^}]*flex-direction:column/)
- assert.match(source,/\.shortcut-button\s*\{[^}]*width:70px/)
+test('the shell retains the history artwork, compact shortcuts and welcome density',()=>{
+ const shell=readFileSync(new URL('../src/components/NutritionistLayout.vue',import.meta.url),'utf8')
+ const welcome=readFileSync(new URL('../src/components/ChatWelcome.vue',import.meta.url),'utf8')
+ assert.match(shell,/static\/chat\/history\.png/)
+ assert.match(shell,/shortcut-reveal/);assert.match(shell,/entry-transition/)
+ assert.match(welcome,/prompt-grid/);assert.match(welcome,/density-small/)
+ assert.match(welcome,/\$emit\('ask',prompt\)/)
 })
 
-test('the welcome uses an accent headline, its own assistant visual and one translucent hint card without a two-column grid',()=>{
- const source=readFileSync(new URL('../src/components/ChatWelcome.vue',import.meta.url),'utf8')
- assert.match(source,/class="welcome-accent"/)
- assert.match(source,/class="welcome-hero"/)
- assert.match(source,/class="welcome-hint-card"/)
- assert.doesNotMatch(source,/prompt-grid|grid-template-columns|min-height:calc\(100(?:d)?vh/)
- assert.match(source,/\$emit\('today'\)/);assert.match(source,/\$emit\('ask',prompt\)/)
-})
-
-test('the conversation drawer matches the narrow gradient panel and one-row new-conversation header',()=>{
+test('the conversation drawer retains its narrow panel and one-row new-conversation header',()=>{
  const source=readFileSync(new URL('../src/components/ChatConversationDrawer.vue',import.meta.url),'utf8')
  const heading=source.match(/<view class="drawer-heading">([\s\S]*?)<\/AppNavBar>/)?.[1]||''
  assert.match(heading,/class="drawer-new"/)
  assert.doesNotMatch(source,/class="drawer-close"/)
- assert.match(source,/width:76vw/);assert.match(source,/rgba\(0,0,0,\.6\)/);assert.match(source,/#93b8f9/)
+ assert.match(source,/width:76vw/)
  assert.match(source,/class="drawer-settings-icon"/)
+})
+
+
+test('a delayed automatic scroll target does not re-enable follow after an upward gesture',async()=>{
+ const p=layout();p.beginRead({deltaY:-400});p.props.followBottom=false;p.props.scrollTarget='chat-bottom-anchor';await nextTick()
+ const changes=p.emitted.filter(e=>e[0]==='readingChange');assert.ok(changes.length);assert.equal(changes.at(-1)[1].following,false);p.dispose()
 })

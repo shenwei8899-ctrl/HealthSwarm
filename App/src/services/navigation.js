@@ -1,5 +1,5 @@
 import { isMockMode, isCommerceEnabled } from './config.js'
-import { resolveAppEntry } from './app-entry.js'
+import { resolveAppEntry, immediateShellEntry } from './app-entry.js'
 import { captureInvitation, rememberInvitation } from './family-invitations.js'
 import { storageContext } from './storage.js'
 import { getSession } from './session.js'
@@ -7,8 +7,9 @@ const apiPages = new Set(['pages/index/index', 'pages/invite/index', 'pages/acco
   'pages/records/index', 'pages/meal-photo/index', 'pages/indicators/index', 'pages/chat/agent', 'pages/chat/camera', 'pages/chat/history', 'pages/profile/member', 'pages/scan/index', 'pages/records/detail', 'pages/memories/index', 'pages/feedback/index', 'pages/exclusive-plans/index', 'pages/exclusive-plans/detail', 'pages/exclusive-plans/schedule', 'pages/health/vision', 'pages/health/plans',
   'pages/family-select/index', 'pages/my/index', 'pages/profile/index', 'pages/settings/index', 'pages/settings/privacy',
   'pages/onboarding/index', 'pages/onboarding/preparing', 'pages/chat/index', 'pages/shop/index', 'pages/recipe/index',
-  'pages/orders/index', 'pages/orders/detail', 'pages/address/index', 'pages/address/edit'])
+  'pages/orders/index', 'pages/orders/detail', 'pages/address/index', 'pages/address/edit', 'pages/meals/detail', 'pages/meals/purchase'])
 const commercePages = new Set(['pages/purchase/index'])
+const shellPages = new Set(['/pages/exclusive-plans/index', '/pages/profile/index', '/pages/scan/index', '/pages/chat/history', '/pages/my/index'])
 export function launchRoute(options) {
   const query = Object.entries(options?.query || {}).map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(String(value))).join('&')
   return (options?.path || '') + (query ? '?' + query : '')
@@ -48,6 +49,12 @@ export function protectedDestination(requested, entry) {
 function currentRoute(options) {
   const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : []
   const page = pages.at(-1)
+  // #ifdef H5
+  if(typeof window!=='undefined' && window.location.hash.startsWith('#/')) {
+    const route=window.location.hash.slice(1)
+    return route==='/'?'/pages/index/index':route
+  }
+  // #endif
   return '/' + launchRoute(page ? {path:page.route,query:page.options || {}} : options || {path:'pages/index/index'}).replace(/^\//,'')
 }
 function forward(method, options) {
@@ -66,15 +73,10 @@ function forward(method, options) {
   let settle
   const flight={scope,method,url:options.url,done:new Promise(resolve=>{settle=resolve})}
   navigationFlight=flight
-  const feedbackPaths=['/pages/exclusive-plans/index','/pages/profile/index','/pages/scan/index','/pages/chat/history','/pages/my/index']
-  let showing=false
-  const timer=method==='navigateTo' && feedbackPaths.includes(options.url?.split('?')[0])
-    ? setTimeout(()=>{showing=true;uni.showLoading?.({title:'正在打开',mask:true})},400) : null
+  const shellEntry=!isMockMode && method==='navigateTo' && shellPages.has(options.url?.split('?')[0]) ? immediateShellEntry() : null
   function finish(failed,value) {
     if(flight.finished)return
     flight.finished=true
-    if(timer)clearTimeout(timer)
-    if(showing)uni.hideLoading?.()
     if(navigationFlight===flight)navigationFlight=null
     settle({failed,value})
     options[failed?'fail':'success']?.(value);options.complete?.(value)
@@ -82,11 +84,22 @@ function forward(method, options) {
       uni.showToast?.({title:value.errMsg?.replace(/^\w+:fail\s*/, '')||'页面打开失败，请重试',icon:'none'})
   }
   flight.cancel=()=>finish(true,{errMsg:method+':fail 账号已变化',code:'SESSION_CHANGED'})
+  // #ifdef H5
+  // H5 can acknowledge navigateTo before the lazy page updates its route.
+  if(shellEntry && typeof window!=='undefined') {
+    const ready=()=>{
+      window.removeEventListener('hashchange',ready)
+      flight.done.then(result=>{if(!result.failed && current() && currentRoute()===options.url)void checkCurrentEntry()})
+    }
+    window.addEventListener('hashchange',ready,{once:true})
+    flight.done.then(result=>{if(result.failed || currentRoute()===options.url)ready()})
+  }
+  // #endif
   void (async()=>{
     try {
       if(!current()) {finish(true,{errMsg:method+':fail 账号已变化',code:'SESSION_CHANGED'});return}
       let url=options.url
-      if(!isMockMode && url.split('?')[0]!=='/pages/index/index') url=protectedDestination(url,await resolveAppEntry())
+      if(!isMockMode && url.split('?')[0]!=='/pages/index/index') url=protectedDestination(url,shellEntry || await resolveAppEntry())
       else if(isMockMode&&!canOpenPage(url))url='/pages/chat/index'
       if(!current()) {finish(true,{errMsg:method+':fail 账号已变化',code:'SESSION_CHANGED'});return}
       if(['reLaunch','redirectTo','switchTab'].includes(method)&&url===currentRoute()) {finish(false,{errMsg:method+':ok'});return}
@@ -100,18 +113,25 @@ function forward(method, options) {
       finish(true,{errMsg:method+':fail '+(error.message||'导航未完成'),code:error.code})
     }
   })()
+  if(shellEntry) flight.done.then(result=>{
+    // Native completion comes first. Never let an old navigation validate a
+    // different page, account, or household after the user has moved on.
+    if(!result.failed && current() && currentRoute()===options.url) void checkCurrentEntry()
+  })
   return flight.done
 }
 export function checkCurrentEntry(options) {
   if (isMockMode) return
   captureInvitation(options)
   if(navigationFlight)return navigationFlight.done
-  if(entryCheck)return entryCheck
   const initialRoute=currentRoute(options)
   if (initialRoute === '/pages/index/index') return
   const scope=storageContext(),account=getSession()
+  if(entryCheck?.scope===scope && entryCheck.route===initialRoute)return entryCheck.promise
   const current=()=>scope===storageContext()||!account?.householdId&&account?.accountId===getSession()?.accountId&&account?.token===getSession()?.token
-  entryCheck=(async()=>{
+  const check={scope,route:initialRoute}
+  entryCheck=check
+  check.promise=(async()=>{
     try {
       const entry=await resolveAppEntry({fresh:true})
       if(!current()||navigationFlight)return
@@ -124,13 +144,18 @@ export function checkCurrentEntry(options) {
         if(result.failed&&result.value.code!=='SESSION_CHANGED')uni.showToast({title:result.value.errMsg,icon:'none'})
       }
     } catch(error) {
-      if(scope===storageContext()&&error.code!=='SESSION_CHANGED') {
+      const sameIdentity=['accountId','token','householdId','clientRevision'].every(key=>account?.[key]===getSession()?.[key])
+      if(navigationFlight || currentRoute(options)!==initialRoute)return
+      // A parallel page request may clear the expired session first; our own
+      // request then reports SESSION_CHANGED rather than the original 401.
+      if(account?.token && !getSession()?.token){await forward('reLaunch',{url:'/pages/index/index'});return}
+      if(sameIdentity && error.code!=='SESSION_CHANGED') {
         uni.showToast({title:error.message||'请重新读取登录状态',icon:'none'})
-        if([401,403,404].includes(Number(error.code)))await forward('reLaunch',{url:'/pages/index/index'})
+        if([401,403,404].includes(Number(error.code)) || ['WECHAT_LOGIN_REQUIRED','SESSION_IDENTITY_CHANGED'].includes(error.code))await forward('reLaunch',{url:'/pages/index/index'})
       }
     }
-  })().finally(()=>{entryCheck=null})
-  return entryCheck
+  })().finally(()=>{if(entryCheck===check)entryCheck=null})
+  return check.promise
 }
 export function installRouteGuards() {
   if(installed)return

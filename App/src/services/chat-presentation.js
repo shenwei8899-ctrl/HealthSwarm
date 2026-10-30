@@ -2,5 +2,5 @@
 export function chatPresentation({route = {}, hasMessages = false, hasSavedArrangement = false, loading = false, newConversation = false, preparedThreadId = '', currentThreadId = ''}) {
   const separateThread = !!preparedThreadId && !!currentThreadId && preparedThreadId !== currentThreadId
   const initialResults = hasSavedArrangement && !newConversation && !separateThread && (!!route.preparation || route.from === 'onboarding')
-  return {initialResults, welcome: !hasMessages && !initialResults && !loading}
+  return {initialResults, welcome: !hasMessages && !initialResults && !(loading && currentThreadId)}
 }

@@ -1,3 +1,6 @@
+import {watch} from 'vue'
+import {createChatEntryTransition} from '../src/services/chat-entry-transition.js'
+import {createChatKeyboardLayout} from '../src/services/chat-keyboard-layout.js'
 import {mealQuestionAction,readDailyMealPlan} from '../src/services/daily-meal-plan.js'
 import {selectChatPrompts,CHAT_PROMPT_POOL} from '../src/services/chat-prompts.js'
 import {chatTimestamp,chatBusinessDate} from '../src/services/cloud-chat.js'
@@ -21,7 +24,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
 function workflow(options = {}) {
   const calls = [], writes = [], cache = new Map(), threads = new Map(), bindings = new Map(), hooks = {}
   const identity = { scope: 'account-a', accountId: 'account-a', token: 'synthetic-a', householdId: 'family-a', dailyThread: uuid(1) }
-  const clock = { day: '2026-10-28' }, route = options.route || {}
+  const clock = { day: '2026-10-28' }, route = options.route || {entry:'conversation'}
   let serial = 100, flow, snapshotOverride = null
   const id = () => uuid(++serial)
   const profile = () => { const value=({ onboarded: true, completeProfile: true, source: 'api', householdId: identity.householdId,
@@ -105,7 +108,7 @@ function workflow(options = {}) {
     }
     return flow
   }
-  const deps = { mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
+  const deps = { watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
     onMounted: fn => { hooks.mount = fn }, onUnmounted: fn => { hooks.unmount = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn },
     chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, parseChatMealIntent,isMealPlanningCancelled,
     newHealthRequestId: id, storageContext: () => identity.scope, getSession: () => ({ ...identity }), scopedStorage,
@@ -133,13 +136,224 @@ function workflow(options = {}) {
   }
   const code = readFileSync(new URL('../src/components/CloudNutritionChat.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
+  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
   const historyRow = threadId => { const row = threads.get(threadId); return { thread_id: threadId, member_id: row.memberId, agent_slug: row.agent, business_date: row.businessDate } }
   return { ...page, calls, writes, identity, clock, hooks, scopedStorage, threads, addThread, historyRow,
+    get flow(){return flow},
     publish: value => flow.publish(value), setSnapshot: value => { snapshotOverride = value },
     dispose() { hooks.unmount?.(); scope.stop() },
   }
 }
+
+test('a home suggestion appears and clears the composer before conversation creation or history reads finish',async()=>{
+ const p=workflow({route:{}}),createGate=deferred(),historyGate=deferred(),submitGate=deferred()
+ try{
+  await p.load();const create=p.flow.createEntry,submit=p.flow.submit
+  p.flow.createEntry=async()=>{await createGate.promise;await create()}
+  p.flow.submit=async(...args)=>{await submitGate.promise;return submit(...args)}
+  p.setSnapshot(async()=>{await historyGate.promise;return {messages:[],runs:[]}})
+  const pending=p.askPrompt({text:'忙起来怎么规律吃饭？',action:'consultation'})
+  const row=p.messages.value[0],localId=row.id
+  assert.equal(row.text,'忙起来怎么规律吃饭？');assert.equal(row.status,'sending')
+  assert.equal(row.requestId,undefined);assert.equal(p.question.value,'');assert.equal(p.chatBusy.value,true)
+  await p.askPrompt({text:'不要重复发送',action:'consultation'})
+  assert.equal(p.messages.value.length,1);assert.equal(p.question.value,'')
+  createGate.resolve();await flush()
+  assert.equal(p.messages.value[0].id,localId);assert.equal(p.question.value,'')
+  historyGate.resolve();await flush()
+  assert.equal(p.messages.value.length,1);assert.equal(p.messages.value[0].id,localId)
+  p.question.value='下一条新草稿';submitGate.resolve();await pending
+  const users=p.messages.value.filter(m=>m.role==='user')
+  assert.equal(users.length,1);assert.equal(users[0].id,localId);assert.ok(users[0].requestId)
+  assert.equal(p.question.value,'下一条新草稿');assert.equal(p.calls.filter(c=>c.action==='submit').length,1)
+ }finally{createGate.resolve();historyGate.resolve();submitGate.resolve();p.dispose()}
+})
+
+test('history recovery cannot bind the newly displayed question to an old completed request',async()=>{
+ const p=workflow({route:{}}),gate=deferred(),oldRequest=uuid(911)
+ try{
+  await p.load();const create=p.flow.createEntry
+  p.flow.createEntry=async()=>{await gate.promise;await create()}
+  const pending=p.askPrompt({text:'忙起来怎么规律吃饭？',action:'consultation'})
+  p.publish({requestId:oldRequest,status:'completed',result:{type:'answer',text:'旧任务的回复'}})
+  assert.equal(p.messages.value.find(m=>m.text==='忙起来怎么规律吃饭？').requestId,undefined)
+  gate.resolve();await pending
+  const row=p.messages.value.find(m=>m.text==='忙起来怎么规律吃饭？')
+  assert.notEqual(row.requestId,oldRequest);assert.equal(p.messages.value.filter(m=>m.text===row.text).length,1)
+ }finally{gate.resolve();p.dispose()}
+})
+
+for(const edit of ['unchanged','new draft','edited then erased'])test(`creation failure retains the displayed question and respects ${edit}`,async()=>{
+ const p=workflow({route:{}}),gate=deferred()
+ try{
+  await p.load();p.flow.createEntry=async()=>{await gate.promise;throw new Error('合成创建失败')}
+  const pending=p.askPrompt({text:'忙起来怎么规律吃饭？',action:'consultation'})
+  assert.equal(p.question.value,'')
+  if(edit!=='unchanged')p.question.value='新的草稿'
+  if(edit==='edited then erased')p.question.value=''
+  gate.resolve();await pending
+  assert.equal(p.messages.value[0].text,'忙起来怎么规律吃饭？');assert.equal(p.messages.value[0].status,'failed')
+  assert.equal(p.question.value,edit==='unchanged'?'忙起来怎么规律吃饭？':edit==='new draft'?'新的草稿':'')
+  assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('hiding during conversation history restores an unsubmitted question and rejects the late send',async()=>{
+ const p=workflow({route:{}}),gate=deferred()
+ try{
+  await p.load();p.setSnapshot(async()=>{await gate.promise;return {messages:[],runs:[]}})
+  const pending=p.askPrompt({text:'忙起来怎么规律吃饭？',action:'consultation'});await flush()
+  assert.equal(p.question.value,'');p.hooks.hide()
+  assert.equal(p.question.value,'忙起来怎么规律吃饭？')
+  gate.resolve();await pending
+  assert.equal(p.messages.value[0].status,'failed');assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('an account change while preparing cannot republish the question or replace the new draft',async()=>{
+ const p=workflow({route:{}}),gate=deferred()
+ try{
+  await p.load();p.setSnapshot(async()=>{await gate.promise;return {messages:[],runs:[]}})
+  const pending=p.askPrompt({text:'旧账号的提问',action:'consultation'});await flush()
+  p.identity.scope='account-b';p.identity.accountId='account-b';p.identity.householdId='family-b'
+  await p.load();p.question.value='新账号草稿'
+  gate.resolve();await pending
+  assert.equal(p.question.value,'新账号草稿');assert.equal(p.messages.value.some(m=>m.text==='旧账号的提问'),false)
+  assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('invalidated history removes optimistic text without restoring private content into the composer',async()=>{
+ const p=workflow({route:{}}),gate=deferred()
+ try{
+  await p.load();p.setSnapshot(async()=>{await gate.promise;throw Object.assign(new Error('来源已失效'),{code:409})})
+  const pending=p.askPrompt({text:'忙起来怎么规律吃饭？',action:'consultation'});await flush()
+  gate.resolve();await pending
+  assert.deepEqual(p.messages.value,[]);assert.equal(p.question.value,'')
+  assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('a lost submission response reuses the displayed message and never clears the next draft',async()=>{
+ const p=workflow({route:{}}),gate=deferred(),requestId=uuid(912)
+ try{
+  await p.load()
+  p.flow.submit=async text=>{
+   p.publish({requestId,status:'提交中',busy:true,submitUnknown:true,canRetry:true,pendingText:text})
+   await gate.promise;p.publish({busy:false,error:'提交结果尚未确认'});return false
+  }
+  const pending=p.askPrompt({text:'忙起来怎么规律吃饭？',action:'consultation'}),id=p.messages.value[0].id
+  await flush();assert.equal(p.messages.value.filter(m=>m.role==='user').length,1)
+  assert.equal(p.question.value,'');p.question.value='下一条草稿';gate.resolve();await pending
+  const row=p.messages.value.find(m=>m.role==='user')
+  assert.equal(row.id,id);assert.equal(row.requestId,requestId);assert.equal(row.status,'unknown')
+  assert.equal(p.question.value,'下一条草稿')
+  p.publish({submitUnknown:false,canRetry:false,status:'queued',error:''})
+  assert.equal(p.question.value,'下一条草稿');assert.equal(p.messages.value.filter(m=>m.role==='user').length,1)
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('plain login or cold entry shows home despite an existing server daily conversation',async()=>{
+  const p=workflow({route:{}})
+  try{
+    await p.load();await flush()
+    assert.equal(p.welcomeMounted.value,true)
+    assert.equal(p.entryView.value.phase,'home')
+    assert.deepEqual(p.messages.value,[])
+    assert.notEqual(p.conversationId.value,p.identity.dailyThread)
+    assert.equal(p.conversationThreadId.value,'')
+    assert.equal(p.calls.some(c=>c.action==='snapshot'||c.action==='create'||c.action==='submit'),false)
+    assert.equal(p.writes.some(w=>w.key==='homepage-conversation'||w.key==='homepage-chat-task'),false)
+    const id=p.conversationId.value
+    await p.load();await flush()
+    assert.equal(p.conversationId.value,id,'a reread must not create a new landing identity')
+  }finally{p.dispose()}
+})
+
+test('home ignores saved conversation and pending task without deleting or replacing them',async()=>{
+  const p=workflow({route:{}}),oldId=uuid(91)
+  const saved={id:oldId,threadId:oldId,memberId:member,scope:p.identity.scope}
+  const pending={memberId:member,type:'reference_meal_preview',date:p.clock.day,conversationId:oldId,requestId:uuid(92),submitUnknown:true}
+  try{
+    p.scopedStorage.setStorageSync('homepage-conversation',saved)
+    p.scopedStorage.setStorageSync('homepage-chat-task',pending)
+    await p.load();await flush()
+    assert.equal(p.welcomeMounted.value,true)
+    assert.deepEqual(p.messages.value,[])
+    assert.notEqual(p.conversationId.value,oldId)
+    assert.deepEqual(p.scopedStorage.getStorageSync('homepage-conversation'),saved)
+    assert.deepEqual(p.scopedStorage.getStorageSync('homepage-chat-task'),pending)
+    assert.equal(p.calls.some(c=>c.action==='snapshot'||c.action==='submit'),false)
+  }finally{p.dispose()}
+})
+
+test('the first home question starts its own conversation and return preserves its draft and messages',async()=>{
+  const p=workflow({route:{}})
+  try{
+    await p.load();await flush()
+    p.question.value='合成的首页新问题';await p.sendQuestion();await flush()
+    const threadId=p.conversationThreadId.value,id=p.conversationId.value
+    assert.notEqual(threadId,p.identity.dailyThread)
+    assert.equal(p.calls.filter(c=>c.action==='create').length,1)
+    assert.equal(p.calls.filter(c=>c.action==='submit').length,1)
+    assert.equal(p.entryView.value.phase==='home',false)
+    assert.equal(p.messages.value.some(m=>m.id==='daily-old'),false)
+    p.question.value='合成的未发送草稿';p.hooks.hide();p.hooks.show();await flush()
+    assert.equal(p.conversationId.value,id)
+    assert.equal(p.conversationThreadId.value,threadId)
+    assert.equal(p.question.value,'合成的未发送草稿')
+    assert.ok(p.messages.value.some(m=>m.text==='合成的首页新问题'))
+    assert.equal(p.calls.filter(c=>c.action==='submit').length,1)
+  }finally{p.dispose()}
+})
+
+test('returning to an untouched home preserves the home and its unsubmitted draft',async()=>{
+  const p=workflow({route:{}})
+  try{
+    await p.load();await flush()
+    const id=p.conversationId.value
+    p.hooks.hide();p.hooks.show();await flush()
+    assert.equal(p.welcomeMounted.value,true)
+    p.question.value='尚未发送';p.hooks.hide();p.hooks.show();await flush()
+    assert.equal(p.conversationId.value,id)
+    assert.equal(p.question.value,'尚未发送')
+    assert.equal(p.calls.some(c=>c.action==='snapshot'||c.action==='create'||c.action==='submit'),false)
+  }finally{p.dispose()}
+})
+
+test('choosing history from home opens that thread and later rereads do not reset it to home',async()=>{
+  const p=workflow({route:{}})
+  try{
+    await p.load();await p.selectConversation(p.historyRow(p.identity.dailyThread));await flush()
+    assert.equal(p.conversationThreadId.value,p.identity.dailyThread)
+    assert.ok(p.messages.value.some(m=>m.id==='daily-old'))
+    assert.equal(p.welcomeMounted.value,false)
+    await p.load();await flush()
+    assert.equal(p.conversationThreadId.value,p.identity.dailyThread)
+    assert.ok(p.messages.value.some(m=>m.id==='daily-old'))
+  }finally{p.dispose()}
+})
+
+test('a business question prepares its own conversation without restoring unrelated old messages',async()=>{
+  const p=workflow({route:{question:'合成的订单咨询'}})
+  try{
+    await p.load();await flush()
+    assert.equal(p.question.value,'合成的订单咨询')
+    assert.deepEqual(p.messages.value,[])
+    await p.sendQuestion()
+    assert.equal(p.calls.filter(c=>c.action==='submit').at(-1).text,'合成的订单咨询')
+    assert.notEqual(p.conversationThreadId.value,p.identity.dailyThread)
+  }finally{p.dispose()}
+})
+
+test('history selected from an explicit task carries conversation intent through navigation',async()=>{
+  const p=workflow({route:{taskType:'consultation'}})
+  try{
+    await p.load();await p.selectConversation(p.historyRow(p.identity.dailyThread))
+    assert.equal(p.calls.find(c=>c.action==='reLaunch').url,'/pages/chat/index?entry=conversation')
+    assert.equal(p.scopedStorage.getStorageSync('homepage-conversation').threadId,p.identity.dailyThread)
+  }finally{p.dispose()}
+})
 
 test('unknown submission blocks new questions but allows idle retry of its original request',async()=>{
   const p=workflow()

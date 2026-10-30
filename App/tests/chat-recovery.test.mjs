@@ -1,3 +1,6 @@
+import {watch} from 'vue'
+import {createChatEntryTransition} from '../src/services/chat-entry-transition.js'
+import {createChatKeyboardLayout} from '../src/services/chat-keyboard-layout.js'
 import {selectChatPrompts} from '../src/services/chat-prompts.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -37,8 +40,8 @@ function fixture({cached=true,createFailure=false}={}){
   if(o.path.includes('/reference-meal-plans/')||o.path.includes('/daily-arrangements/'))return {data:{status:'absent'}}
   throw new Error('Unexpected endpoint '+o.path)
  }
- const deps={selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,HEALTH_TEXT_TASKS,chatPresentation,chatTimestamp,chatBusinessDate,isReferencePlan:()=>false,
-  defineProps:()=>({route:{}}),onMounted:f=>hooks.mount=f,onShow:f=>hooks.show=f,onHide:f=>hooks.hide=f,onUnmounted:f=>hooks.unmount=f,
+ const deps={createChatEntryTransition,createChatKeyboardLayout,watch,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,HEALTH_TEXT_TASKS,chatPresentation,chatTimestamp,chatBusinessDate,isReferencePlan:()=>false,
+  defineProps:()=>({route:{entry:'conversation'}}),onMounted:f=>hooks.mount=f,onShow:f=>hooks.show=f,onHide:f=>hooks.hide=f,onUnmounted:f=>hooks.unmount=f,
   storageContext:()=>account,scopedStorage:storage,getSession:session,localDate:()=>date,newHealthRequestId:()=>rid,
   loadCloudProfile:async()=>({onboarded:true,householdId:'family',selfMemberId:'self',members:[{id:'self',relation:'本人',healthMemberId:member}]}),
   dailyArrangementState:()=>({phase:'idle',busy:false}),createDailyArrangementClient:()=>({pause(){},reset(){},dispose(){}}),
@@ -74,7 +77,7 @@ test('entry restores a failed original question and shows welcome without genera
  const h=fixture();await h.page.load()
  assert.equal(h.page.entryReady.value,true);assert.equal(h.page.failedTask.value,true)
  assert.equal(h.page.failedQuestion.value.text,'请安排今天早餐')
- assert.deepEqual(h.page.visibleMessages.value,[]);assert.equal(h.page.presentation.value.welcome,true)
+ assert.equal(h.page.visibleMessages.value.length,1);assert.equal(h.page.visibleMessages.value[0].role,'user');assert.equal(h.page.presentation.value.welcome,false)
  assert.equal(h.calls.some(c=>c.method==='POST'),false);h.dispose()
 })
 test('editing a failed question opens ordinary chat and restores text without submitting it',async()=>{

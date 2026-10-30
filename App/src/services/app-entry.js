@@ -22,3 +22,18 @@ export function rememberChatEntry(profile) {
       scopedStorage.getStorageSync('onboarding-preparation-pending')) return
   resolveAppEntry.remember('/pages/chat/index')
 }
+
+// This is only permission to render a page shell. Its data still comes from
+// authenticated APIs, and the entry is revalidated after native navigation.
+export function immediateShellEntry() {
+  const account = getSession()
+  if (!account?.token || account.isDemo || !account.accountId || !account.householdId ||
+      !Number.isFinite(account.expiresAt) || account.expiresAt * 1000 <= Date.now()) return null
+  const family = account.families?.find(item => item.id === account.householdId)
+  if (!family) return null
+  const invitation = pendingInvitation()
+  if (invitation) return invitationRoute(invitation)
+  if (scopedStorage.getStorageSync('onboarding-preparation-pending')) return '/pages/onboarding/preparing'
+  if (family.onboardingRequired === false) return '/pages/chat/index'
+  return null
+}
