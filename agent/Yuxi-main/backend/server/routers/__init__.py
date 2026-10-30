@@ -16,6 +16,7 @@ from server.routers.family_router import family
 from server.routers.filesystem_router import filesystem_router
 from server.routers.graph_router import graph
 from server.routers.health_vision_router import health_vision
+from server.routers.health_voice_router import health_voice
 from server.routers.knowledge_dashboard_router import knowledge_dashboard
 from server.routers.knowledge_eval_router import evaluation
 from server.routers.knowledge_router import knowledge
@@ -34,6 +35,7 @@ from server.routers.workspace_router import workspace, workspace_knowledge
 router = APIRouter()
 
 router.include_router(family)
+router.include_router(health_voice)
 router.include_router(daily_arrangement)
 router.include_router(exclusive_plan)
 
