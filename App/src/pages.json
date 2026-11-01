@@ -221,13 +221,6 @@
       }
     },
     {
-      "path": "pages/supplier/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "合作商合作"
-      }
-    },
-    {
       "path": "pages/address/index",
       "style": {
         "navigationStyle": "custom",
@@ -327,5 +320,19 @@
     "rpxCalcMaxDeviceWidth": 480,
     "rpxCalcBaseDeviceWidth": 375,
     "rpxCalcIncludeWidth": 750
-  }
+  },
+  "subPackages": [
+    {
+      "root": "pages/supplier",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "合作申请"
+          }
+        }
+      ]
+    }
+  ]
 }

@@ -13,6 +13,7 @@ use addons\shop\library\v5\RecommendationPackageService;
 use addons\shop\library\v5\RefundService;
 use addons\shop\library\v5\OutboxDispatcher;
 use addons\shop\library\v5\SecretCipher;
+use addons\shop\library\v5\PartnerApplicationService;
 use addons\shop\library\v5\SupplierOrderService;
 use app\common\controller\Backend;
 use think\Db;
@@ -20,8 +21,33 @@ use think\Response;
 
 class Workspace extends Backend
 {
-    protected $noNeedRight = ['supplierApiConfig','saveSupplierApiConfig'];
+    protected $noNeedRight = ['supplierApiConfig','saveSupplierApiConfig','partnerApplicationDetail','followPartnerApplication'];
     protected $workspace = '';
+
+    public function partnerApplicationDetail()
+    {
+        if (!$this->request->isGet()) $this->error('请求方式错误');
+        if (!$this->auth->check('shop/v5/workspace/suppliers')) $this->error('无权查看合作申请');
+        header('Cache-Control: private, no-store');
+        try { $data=(new PartnerApplicationService())->detail((int)$this->request->get('id',0)); }
+        catch (DomainException $error) { $this->error($error->getMessage()); }
+        $data['can_follow']=$this->auth->check('shop/v5/workspace/save');
+        $data['__token__']=$this->request->token();
+        $this->success('读取成功',null,$data);
+    }
+
+    public function followPartnerApplication()
+    {
+        \app\admin\model\AdminLog::setTitle('合作意向跟进');
+        \app\admin\model\AdminLog::setContent(['application_id'=>(int)$this->request->post('id',0),'action'=>'更新联系状态与备注']);
+        if (!$this->request->isPost()) $this->error('请求方式错误');
+        if (!$this->auth->check('shop/v5/workspace/suppliers') || !$this->auth->check('shop/v5/workspace/save')) $this->error('无权跟进合作申请');
+        $this->token();
+        header('Cache-Control: private, no-store');
+        try { (new PartnerApplicationService())->followUp((int)$this->request->post('id',0),$this->auth->id,$this->request->post()); }
+        catch (DomainException $error) { $this->error($error->getMessage(),null,['__token__'=>$this->request->token()]); }
+        $this->success('跟进已保存',null,['__token__'=>$this->request->token()]);
+    }
 
     public function supplierApiConfig()
     {
@@ -186,7 +212,7 @@ class Workspace extends Backend
         $resource = $this->request->get('resource', '');
         $definition = $this->resource($resource);
         header('Cache-Control: no-store');
-        $resourcePages=['members'=>'members','external_identities'=>'members','ingredient_maps'=>'product','nutrition'=>'product','components'=>'product','catalog_reviews'=>'product'];
+        $resourcePages=['supplier_applications'=>'suppliers','members'=>'members','external_identities'=>'members','ingredient_maps'=>'product','nutrition'=>'product','components'=>'product','catalog_reviews'=>'product'];
         if (isset($resourcePages[$resource]) && !$this->auth->check('shop/v5/workspace/'.$resourcePages[$resource])) $this->error('无权查看此业务资料');
         if ($resource === 'catalog_readiness') {
             if (!$this->auth->check('shop/v5/workspace/product')) $this->error('无权查看商品资料');
@@ -199,7 +225,7 @@ class Workspace extends Backend
         $allowedColumns = array_keys($definition['columns']);
         // These are calculated from the SKU table and are not physical columns
         // on shop_goods, so never include them in the SQL select list.
-        $virtualColumns = ['price_range','available_sku_count','total_stocks','account_source','linked_account','binding_status','wechat_status'];
+        $virtualColumns = ['price_range','available_sku_count','total_stocks','account_source','linked_account','binding_status','wechat_status','location'];
         $queryColumns = array_values(array_diff($allowedColumns, array_merge(['secret_configured'], $virtualColumns)));
         // Edit dialogs need persisted fields even when the list hides those columns.
         $editColumns = array_keys(array_filter($definition['fields'], function ($field) { return $field['type'] !== 'password'; }));
@@ -212,6 +238,7 @@ class Workspace extends Backend
         // ThinkPHP 5 shares bound parameters when a query object is cloned. Build
         // the count and row queries independently so fixed filters do not bind twice.
         $total = $this->buildResourceQuery($definition, $filter, $q, $queryColumns)->count();
+        if ($resource === 'supplier_applications') { $queryColumns[] = 'submission_key'; $queryColumns[] = 'location_json'; }
         if (in_array($resource, ['integration_clients', 'suppliers'], true)) {
             $queryColumns[] = 'secret_ciphertext';
         }
@@ -221,6 +248,11 @@ class Workspace extends Backend
         $query = $this->buildResourceQuery($definition, $filter, $q, $queryColumns);
         $rows = $query->field(implode(',', array_unique($queryColumns)))->order($sort, $order)->limit($offset, $limit)->select();
         foreach ($rows as &$row) {
+            if ($resource === 'supplier_applications') {
+                $row['intent_only'] = !empty($row['submission_key']);
+                $row['location'] = implode(' ', array_column(\addons\shop\library\v5\Json::decode($row['location_json'] ?? '', []), 'name'));
+                unset($row['submission_key'], $row['location_json']);
+            }
             if ($resource === 'integration_clients') {
                 $row['secret_configured'] = empty($row['secret_ciphertext']) ? '否' : '是';
                 unset($row['secret_ciphertext']);
@@ -871,6 +903,7 @@ class Workspace extends Backend
             try {
                 $application=Db::name('shop_supplier_application')->where('id',$id)->lock(true)->find();
                 if (!$application || $application['review_status']!=='pending') throw new DomainException('申请不存在或已处理',40910,409);
+                if (!empty($application['submission_key'])) throw new DomainException('该记录为合作意向，请先完成沟通与资质核验，再维护正式合作档案',40910,409);
                 $supplierId=0;
                 if ($decision==='approved' && ($application['partner_type']??'supplier')==='supplier') {
                     $supplierId=Db::name('shop_supplier')->insertGetId([
@@ -1266,7 +1299,7 @@ class Workspace extends Backend
                 'supplier_code'=>$this->f('供应商编码','text',true), 'name'=>$this->f('名称','text',true), 'company_name'=>$this->f('公司主体','text',true),
                 'credit_code'=>$this->f('统一信用代码'), 'contact_name'=>$this->f('联系人'), 'priority'=>$this->f('优先级','number'), 'status'=>$this->f('状态','select',true,$status),
             ], true),
-            'supplier_applications' => $this->r('shop_supplier_application', ['id'=>'ID','application_sn'=>'申请编号','user_id'=>'用户ID','company_name'=>'公司名称','partner_type'=>'合作类型','credit_code'=>'信用代码','contact_name'=>'联系人','review_status'=>'审核状态','review_admin_id'=>'审核人','review_comment'=>'审核意见','supplier_id'=>'供应商ID','submitted_at'=>'提交时间','reviewed_at'=>'审核时间'], ['application_sn','company_name','credit_code']),
+            'supplier_applications' => $this->r('shop_supplier_application', ['id'=>'ID','application_sn'=>'申请编号','user_id'=>'用户ID','company_name'=>'主体名称','partner_type'=>'合作类型','credit_code'=>'信用代码','contact_name'=>'联系人','location'=>'所在地区','follow_up_status'=>'联系状态','review_status'=>'正式审核状态','review_admin_id'=>'审核人','review_comment'=>'审核意见','supplier_id'=>'供应商ID','submitted_at'=>'提交时间','reviewed_at'=>'审核时间'], ['application_sn','company_name','credit_code']),
             'supplier_skus' => $this->r('shop_supplier_sku', ['id'=>'ID','supplier_id'=>'供应商ID','sku_id'=>'平台SKU','supplier_sku_code'=>'供应商SKU','supplier_sku_name'=>'供应商商品名','purchase_price_cent'=>'采购价(分)','minimum_order_quantity'=>'最小起订量','stock_status'=>'库存状态','stock_quantity'=>'供应商库存','stock_updated_at'=>'同步时间','priority'=>'优先级','status'=>'状态'], ['supplier_sku_code','supplier_sku_name'], [
                 'supplier_id'=>$this->f('供应商ID','number',true), 'sku_id'=>$this->f('平台SKU ID','number',true),
                 'supplier_sku_code'=>$this->f('供应商SKU编码','text',true), 'supplier_sku_name'=>$this->f('供应商商品名'),

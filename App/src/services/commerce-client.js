@@ -292,6 +292,20 @@ export function createCommerceClient({
     connect,
     request,
     mutate,
+    async submitPartnerApplication(data, key) {
+      let policy;
+      try { policy = await request('/supplier-applications/policy'); }
+      catch (error) {
+        if (Number(error.status) === 404 || Number(error.code) === 404) throw failure('合作申请暂时无法提交，请稍后重试', 'PARTNER_NOT_READY');
+        throw error;
+      }
+      if (policy?.policy_version !== data.privacy_consent_version) throw failure('合作联系说明已更新，请重新进入申请页面', 'PARTNER_NOT_READY');
+      const result = await request('/supplier-applications', {method:'POST',data,key});
+      if (!/^supplierapply_[a-z0-9_]+$/i.test(result?.application_sn || '') || !Number.isSafeInteger(result?.submitted_at) || result.submitted_at <= 0 || result.policy_version !== data.privacy_consent_version) {
+        throw failure('提交结果尚未确认，请重试原申请', 'INVALID_RESPONSE');
+      }
+      return result;
+    },
     upload,
     payOrder,
     pendingOrder: () =>

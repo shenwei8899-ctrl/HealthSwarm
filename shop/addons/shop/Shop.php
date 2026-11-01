@@ -254,6 +254,7 @@ class Shop extends Addons
             ['api/v1/commerce/aftersales/:id/confirm', 'addons/shop/api.v1.commerce_aftersale/confirm', 'POST'],
             ['api/v1/commerce/aftersales/:id/timeline', 'addons/shop/api.v1.commerce_aftersale/timeline', 'GET'],
             ['api/v1/commerce/orders/:order_sn', 'addons/shop/api.v1.commerce_order/detail', 'GET'],
+            ['api/v1/commerce/supplier-applications/policy', 'addons/shop/api.v1.commerce_supplier_application/policy', 'GET'],
             ['api/v1/commerce/supplier-applications', 'addons/shop/api.v1.commerce_supplier_application/create', 'POST'],
             ['api/v1/commerce/supplier-applications/:application_sn', 'addons/shop/api.v1.commerce_supplier_application/detail', 'GET'],
         ];

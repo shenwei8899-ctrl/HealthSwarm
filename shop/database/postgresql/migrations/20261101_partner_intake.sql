@@ -1,0 +1,11 @@
+BEGIN;
+ALTER TABLE fa_shop_supplier_application ADD COLUMN IF NOT EXISTS location_json text;
+ALTER TABLE fa_shop_supplier_application ADD COLUMN IF NOT EXISTS contact_wechat varchar(64) NOT NULL DEFAULT '';
+ALTER TABLE fa_shop_supplier_application ADD COLUMN IF NOT EXISTS submission_key varchar(64);
+ALTER TABLE fa_shop_supplier_application ADD COLUMN IF NOT EXISTS submission_hash varchar(64);
+ALTER TABLE fa_shop_supplier_application ADD COLUMN IF NOT EXISTS follow_up_status varchar(20) NOT NULL DEFAULT 'pending';
+ALTER TABLE fa_shop_supplier_application ADD COLUMN IF NOT EXISTS follow_up_note varchar(1000) NOT NULL DEFAULT '';
+ALTER TABLE fa_shop_supplier_application ADD COLUMN IF NOT EXISTS follow_up_admin_id bigint NOT NULL DEFAULT 0;
+ALTER TABLE fa_shop_supplier_application ADD COLUMN IF NOT EXISTS follow_up_at bigint NOT NULL DEFAULT 0;
+CREATE UNIQUE INDEX IF NOT EXISTS fa_shop_partner_submission ON fa_shop_supplier_application(user_id, submission_key);
+COMMIT;

@@ -58,7 +58,7 @@ class Migrator
     {
         // 安装和插件升级共用版本记录；与幂等DDL在同一事务提交。
         $root = ROOT_PATH . 'database' . DS . 'postgresql' . DS . 'migrations' . DS;
-        $paths = [$root . '20261019_001_agent_meal_source.sql', $root . '20261021_commerce_catalog_review.sql', $root . '20261022_miniapp_user_access.sql', $root . '20261023_wechat_phone.sql', $root . '20261025_021_exclusive_plan_contract.sql', $root . '20261026_address_preferences.sql'];
+        $paths = [$root . '20261019_001_agent_meal_source.sql', $root . '20261021_commerce_catalog_review.sql', $root . '20261022_miniapp_user_access.sql', $root . '20261023_wechat_phone.sql', $root . '20261025_021_exclusive_plan_contract.sql', $root . '20261026_address_preferences.sql', $root . '20261101_partner_intake.sql'];
         foreach ($paths as $path) {
             if (!is_file($path)) throw new \RuntimeException('Shop migration file missing: ' . basename($path));
             $version = pathinfo($path, PATHINFO_FILENAME);
@@ -154,6 +154,15 @@ class Migrator
             ],
             'shop_supplier_application' => [
                 'partner_type' => "varchar(20) NOT NULL DEFAULT 'supplier' COMMENT 'supplier/channel/distributor'",
+                'location_json' => "text DEFAULT NULL",
+                'contact_wechat' => "varchar(64) NOT NULL DEFAULT ''",
+                'submission_key' => "varchar(64) DEFAULT NULL",
+                'submission_hash' => "varchar(64) DEFAULT NULL",
+                'follow_up_status' => "varchar(20) NOT NULL DEFAULT 'pending'",
+                'follow_up_note' => "varchar(1000) NOT NULL DEFAULT ''",
+                'follow_up_admin_id' => "bigint NOT NULL DEFAULT 0",
+                'follow_up_at' => "bigint NOT NULL DEFAULT 0",
+
             ],
             'shop_supplier_sku' => [
                 'supplier_goods_code' => "varchar(100) NOT NULL DEFAULT '' COMMENT '供应商商品编码'",
