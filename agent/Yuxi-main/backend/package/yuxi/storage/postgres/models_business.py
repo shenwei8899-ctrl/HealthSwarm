@@ -31,6 +31,27 @@ Base = declarative_base()
 JSON_VALUE = JSON().with_variant(JSONB, "postgresql")
 
 
+class ProductFeedback(Base):
+    """账号产品意见与私有截图元数据，提交编号是幂等边界。"""
+
+    __tablename__ = "product_feedback"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'submitted')", name="ck_product_feedback_status"),
+        CheckConstraint(
+            "status = 'draft' OR (content IS NOT NULL AND length(trim(content)) BETWEEN 1 AND 200)",
+            name="ck_product_feedback_content",
+        ),
+        Index("ix_product_feedback_user_created", "user_id", "created_at"),
+    )
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    content = Column(String(200), nullable=True)
+    images = Column(JSON_VALUE, nullable=False, default=list)
+    status = Column(String(20), nullable=False, default="draft")
+    created_at = Column(DateTime, nullable=False, default=utc_now_naive)
+    submitted_at = Column(DateTime, nullable=True)
+
+
 class WechatIdentity(Base):
     """微信身份摘要关联，软删除账号仍保留绑定事实。"""
 

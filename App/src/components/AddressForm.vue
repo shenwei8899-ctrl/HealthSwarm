@@ -126,7 +126,8 @@ onShow(() => { if (owner !== storageContext()) { owner = storageContext(); load(
 </script>
 <template>
  <view class="screen address-screen address-form-screen">
-  <AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" :disabled="busy" @click="back">‹</button><text class="nav-title">{{addressId?'编辑收货地址':'新增收货地址'}}</text><view class="nav-spacer"/></view></AppNavBar>
+  <view class="address-page-wash" aria-hidden="true"/>
+  <AppNavBar centered><view class="nav-row"><button class="icon-button" aria-label="返回" :disabled="busy" @click="back">‹</button><text class="nav-title">{{addressId?'编辑收货地址':'新增收货地址'}}</text><view class="nav-spacer"/></view></AppNavBar>
   <view v-if="!loaded" class="address-state"><text>{{busy?'正在读取地址信息…':error||'地址信息尚未读取'}}</text><button v-if="!busy" class="address-retry" @click="load">重新读取</button></view>
   <template v-else>
    <view class="form-section">

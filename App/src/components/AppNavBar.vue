@@ -1,6 +1,6 @@
 <script setup>
 import { ref } from 'vue'
-const props = defineProps({ belowCapsule: Boolean, capsuleAligned: Boolean })
+const props = defineProps({ belowCapsule: Boolean, capsuleAligned: Boolean, centered: Boolean })
 const layout = ref({ paddingTop: '0px', paddingRight: '0px' })
 // #ifdef MP-WEIXIN
 function alignedLayout(info, capsule) {
@@ -31,9 +31,9 @@ try {
   const capsule = uni.getMenuButtonBoundingClientRect()
   layout.value = props.capsuleAligned ? alignedLayout(info, capsule) : {
     paddingTop: `${props.belowCapsule ? capsule.bottom + 8 : (info.statusBarHeight || 24)}px`,
-    paddingRight: `${props.belowCapsule ? 0 : Math.max(0, info.windowWidth - capsule.left - 16)}px`,
+    paddingRight: `${props.belowCapsule || props.centered ? 0 : Math.max(0, info.windowWidth - capsule.left - 16)}px`,
   }
-} catch { layout.value = props.capsuleAligned ? alignedLayout(info, null) : { paddingTop: props.belowCapsule ? '72px' : '28px', paddingRight: props.belowCapsule ? '0px' : '90px' } }
+} catch { layout.value = props.capsuleAligned ? alignedLayout(info, null) : { paddingTop: props.belowCapsule ? '72px' : '28px', paddingRight: props.belowCapsule || props.centered ? '0px' : '90px' } }
 // #endif
 </script>
 <template><view class="app-nav" :style="layout"><slot /></view></template>

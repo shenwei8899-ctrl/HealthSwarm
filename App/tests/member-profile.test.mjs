@@ -75,10 +75,10 @@ function detail(overrides={}){
   setup()
   const src=readFileSync(new URL('../src/components/CloudMemberDetail.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const raw=source(),m=member();let revision=1;const writes=[]
-  const deps={ref,computed,defineProps:()=>({id:'mother'}),onShow(){},onHide(){},onUnload(){},sessionRevision:()=>revision,profileDraft,profileChanges,
+  const deps={ref,computed,defineOptions(){},defineProps:()=>({id:'mother'}),defineEmits:()=>()=>{},defineExpose(){},onMounted(){},onUnmounted(){},onShow(){},onHide(){},onUnload(){},sessionRevision:()=>revision,profileDraft,profileChanges,
     restrictionIssue,restrictionFields,preserveMemberEdit,readMemberEdit,clearMemberEdit,readMemberProfile:async()=>({profile:{householdId:'family',isOwner:true,selfMemberId:'creator',members:[m]},member:m,source:raw}),
     saveMemberProfile:async(...args)=>writes.push(args),request:async()=>({data:{}}),...overrides}
-  const page=new Function('deps',`const {${Object.keys(deps)}}=deps;${src};return {load,edit,save,hide,cancelEdit,section,conflictEdit,canEdit,canAnalyze,profile,source,draft,error,busy,analysisBusy,editing,revokeAnalysis}`)(deps)
+  const page=new Function('deps',`const {${Object.keys(deps)}}=deps;${src};return {load,edit,save,hide,cancelEdit,section,conflictEdit,canEdit,canAnalyze,profile,source,draft,error,busy,analysisBusy,editing,revokeAnalysis,requestClose,reload,writing,dirty,writeUncertain}`)(deps)
   return {...page,writes,changeAccount:()=>revision++}
 }
 
@@ -159,4 +159,33 @@ test('a removed editing permission discards a cached private edit',()=>{
 
 test('empty identity returns to basic information with feedback and no save',async()=>{
  const p=detail();await p.load();p.edit();p.draft.value.name=' ';p.section.value='preferences';await p.save();assert.equal(p.writes.length,0);assert.equal(p.section.value,'basic');assert.match(p.error.value,/姓名/)
+})
+
+test('sheet opening is read-only and dirty close can retain a draft without any cloud write',async()=>{
+ const events=[],options=[],modals=[]
+ const p=detail({defineProps:()=>({id:'mother',embedded:true}),defineEmits:()=> (...args)=>events.push(args),readMemberProfile:async(id,opts)=>{options.push(opts);return {profile:{householdId:'family',isOwner:true,members:[member()]},source:source()}}})
+ await p.load();assert.deepEqual(options,[{readOnly:true}]);p.edit();p.draft.value.weight=59
+ uni.showModal=spec=>modals.push(spec);p.requestClose();assert.equal(events.length,0);assert.equal(p.writes.length,0)
+ assert.equal(modals[0].confirmText,'暂存并关闭');modals[0].success({confirm:true});assert.equal(events[0][0],'close')
+ assert.equal(readMemberEdit('mother',source()).draft.weight,59)
+ p.hide();await p.load();assert.equal(p.editing.value,true);assert.equal(p.draft.value.weight,59);assert.equal(p.writes.length,0)
+})
+test('sheet cancel explicitly discards local edits only after confirmation',async()=>{
+ const p=detail({defineProps:()=>({id:'mother',embedded:true})});await p.load();p.edit();p.draft.value.weight=59
+ let modal;uni.showModal=value=>{modal=value};p.cancelEdit();assert.equal(p.editing.value,true)
+ modal.success({confirm:false});assert.equal(p.draft.value.weight,59)
+ p.cancelEdit();modal.success({confirm:true});assert.equal(p.editing.value,false);assert.equal(p.profile.value.members[0].weight,55);assert.equal(p.writes.length,0)
+})
+test('sheet blocks close during a write and emits only freshly reread saved facts',async()=>{
+ let release,reads=0;const events=[],toasts=[]
+ const p=detail({defineProps:()=>({id:'mother',embedded:true}),defineEmits:()=> (...args)=>events.push(args),saveMemberProfile:()=>new Promise(resolve=>{release=resolve}),readMemberProfile:async()=>({profile:{householdId:'family',isOwner:true,members:[{...member(),weight:reads++?59:55}]},source:source()})})
+ await p.load();p.edit();p.draft.value.weight=59;uni.showToast=value=>toasts.push(value)
+ const saving=p.save();assert.equal(p.writing.value,true);p.requestClose();assert.equal(events.length,0);assert.equal(toasts[0].title,'正在保存，请稍候')
+ release();await saving;assert.equal(p.writing.value,false);assert.equal(events[0][0],'saved');assert.equal(events[0][1].members[0].weight,59);assert.equal(p.editing.value,false)
+})
+test('uncertain sheet save keeps a comparison draft and never automatically replays a write',async()=>{
+ let writes=0,reads=0
+ const p=detail({defineProps:()=>({id:'mother',embedded:true}),saveMemberProfile:async()=>{writes++;throw Object.assign(new Error('timeout'),{code:'NETWORK_ERROR'})},readMemberProfile:async()=>({profile:{householdId:'family',isOwner:true,members:[{...member(),weight:reads++?60:55}]},source:source()})})
+ await p.load();p.edit();p.draft.value.weight=59;await p.save();assert.equal(p.writeUncertain.value,true);assert.equal(p.draft.value.weight,59)
+ await p.reload();assert.equal(writes,1);assert.equal(p.editing.value,false);assert.equal(p.conflictEdit.value.draft.weight,59);assert.equal(p.profile.value.members[0].weight,60)
 })

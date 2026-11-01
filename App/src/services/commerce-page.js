@@ -33,7 +33,17 @@ export function useCommercePage(clear) {
     } catch (e) {
       if (active()) error.value = e.message || "操作未完成，请重试";
     } finally {
-      if (active()) busy.value = false;
+      // A login refresh can change the commerce revision while work is pending.
+      // The operation still owns its loading flag unless a newer generation
+      // replaced it; stale data must remain hidden, but loading must always end.
+      if (ticket === generation) {
+        if (scope !== storageContext()) {
+          clear?.();
+          pageScope = storageContext();
+          error.value = "登录状态已更新，请重新读取";
+        }
+        busy.value = false;
+      }
     }
   }
   return { busy, error, run };

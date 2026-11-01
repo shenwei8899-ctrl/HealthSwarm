@@ -25,7 +25,7 @@ function setup({linked=true,available=true,entry=true,notice='',error='',prepare
       async submit(text,retry=false){submits.push(text);submitCalls.push({text,retry,requestId:page.task.value.requestId});return true},hide(){},
     })}
   const code=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
-  const page=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${code};return {showMemberArchive,needsProfileLink,recoveryNotice,messageStatus,conversationId,returnVerified,draftImage,flow,inputBusy,chatBusy,primaryMode,captureDraft,settleDraft,markDraftInput,removeDraft,reading,latestAvailable,detailOpen,historyOpen,scrollLatest,scrollTarget,stageSubmitted:s=>{submittedDraft=s},profile,question,task,chatError,sendQuestion,sendVoice,switchInputMode,voiceMode,voiceBusy,draftSaving,messages,entryReady,entryError}`)(deps)
+  const page=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${code};return {messageStatus,canRetryMessage,showMemberArchive,needsProfileLink,recoveryNotice,conversationId,returnVerified,draftImage,flow,inputBusy,chatBusy,primaryMode,captureDraft,settleDraft,markDraftInput,removeDraft,reading,latestAvailable,detailOpen,historyOpen,scrollLatest,scrollTarget,stageSubmitted:s=>{submittedDraft=s},profile,question,task,chatError,sendQuestion,sendVoice,switchInputMode,voiceMode,voiceBusy,draftSaving,messages,entryReady,entryError}`)(deps)
   page.entryReady.value=initialized
   page.entryError.value=initializationError
   page.profile.value={selfMemberId:'self',members:[{id:'self',relation:'爸爸',...(linked?{healthMemberId:'health-self'}:{})}]}
@@ -58,22 +58,40 @@ test('submitting, queueing, generating and reconnecting show no archive or foote
   assert.equal(p.showMemberArchive.value,false,JSON.stringify(state))
   assert.equal(p.recoveryNotice.value,'',JSON.stringify(state))
  }
- p.task.value={available:false,notice:'请核对成员授权'}
+ p.task.value={available:false}
+ assert.equal(p.showMemberArchive.value,false)
+ p.task.value={memberId:'health-self',available:false,notice:'请核对成员授权'}
  assert.equal(p.showMemberArchive.value,true);assert.equal(p.recoveryNotice.value,'请核对成员授权')
 })
 
-test('reply template removes manual reread and retry buttons while preserving the composer check action',()=>{
+test('reply template keeps recovery out of the footer and exposes safe unknown-message confirmation',()=>{
  const template=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8').split('<template>')[1]
  assert.doesNotMatch(template,/重新读取本次回复|重试原问题|task\.canRetry/)
- assert.match(template,/v-if="recoveryNotice" class="dialogue-status recovery-status"/)
+ assert.doesNotMatch(template,/class="dialogue-status recovery-status"/)
+ assert.match(template,/class="message-issue" role="img" aria-label="咨询未完成"/)
  assert.match(template,/v-if="showMemberArchive"/)
- assert.match(template,/primaryMode==='check'[\s\S]*?@click="flow.refresh\(\)"/)
+ assert.match(template,/@click="message\.status==='unknown'&&messageStatus\(message\)"/)
+ assert.match(template,/primaryMode==='check'[\s\S]*?aria-label="消息状态未确认"/);assert.ok(!template.includes('aria-label="核对本次任务结果"'))
 })
 
 function unknownMessage(p){
  p.task.value={...p.task.value,requestId:'original',status:'提交中',submitUnknown:true,canRetry:true,busy:false}
  return {role:'user',status:'unknown',requestId:'original'}
 }
+
+test('an uncertain submission stays blocked and offers no reason modal or duplicate question',async()=>{
+ const p=setup();unknownMessage(p);p.question.value='另一个问题'
+ assert.equal(p.primaryMode.value,'check');assert.equal(p.recoveryNotice.value,'')
+ await p.sendQuestion();assert.equal(p.submitCalls.length,0);assert.equal(p.modals.length,0)
+ assert.equal(p.question.value,'另一个问题')
+})
+
+test('terminal messages expose no recovery modal while internal cancellation failure remains available',()=>{
+ const p=setup();p.task.value={...p.task.value,submitUnknown:false,status:'failed',error:'处理失败'}
+ assert.equal(p.recoveryNotice.value,'');assert.equal(p.modals.length,0)
+ p.task.value={...p.task.value,status:'running',cancelPhase:'error',cancelError:'停止未成功'}
+ assert.equal(p.recoveryNotice.value,'停止未成功')
+})
 
 test('unknown submission recovery uses the message modal and retries the original request only on confirmation',async()=>{
  const p=setup(),message=unknownMessage(p)

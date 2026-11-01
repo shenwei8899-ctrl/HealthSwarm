@@ -24,6 +24,7 @@ from server.routers.mcp_router import mcp
 from server.routers.mention_router import mention_router
 from server.routers.model_provider_router import model_providers
 from server.routers.project_router import projects
+from server.routers.product_feedback_router import product_feedback
 from server.routers.scheduled_agent_router import scheduled_agents
 from server.routers.skill_router import skills, user_skills
 from server.routers.system_router import system
@@ -33,6 +34,7 @@ from server.routers.user_router import user_router
 from server.routers.workspace_router import workspace, workspace_knowledge
 
 router = APIRouter()
+router.include_router(product_feedback)
 
 router.include_router(family)
 router.include_router(health_voice)

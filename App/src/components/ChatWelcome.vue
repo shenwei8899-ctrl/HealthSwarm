@@ -6,7 +6,7 @@ defineEmits(['ask','shuffle'])
 <template>
  <view class="chat-welcome" :class="[{'is-compact':compact},density?'density-'+density:'']">
   <view class="welcome-intro">
-   <view v-if="!compact" class="welcome-logo" aria-hidden="true"><NutritionistCharacter :size="density==='small'?64:density==='medium'?76:88" decorative/></view>
+   <view v-if="!compact" class="welcome-logo" aria-hidden="true"><NutritionistCharacter :size="density==='small'?56:density==='medium'?76:88" decorative/></view>
    <text class="welcome-title">你好，我是家庭营养师。</text>
    <text class="welcome-description">{{'聊聊今天怎么吃，\n也可以一起安排家人的三餐。'}}</text>
   </view>

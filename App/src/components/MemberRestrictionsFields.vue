@@ -1,6 +1,6 @@
 <script setup>
 import { restrictionFields, restrictionSummary } from '../utils/health.js'
-const props=defineProps({member:Object,readOnly:Boolean,source:Object})
+const props=defineProps({member:Object,readOnly:Boolean,source:Object,archive:Boolean})
 const emit=defineEmits(['changed'])
 const keys={allergy:'allergens',intolerance:'dietary_details',avoidance:'avoidances',doctor:'doctor_instructions'}
 const editable=type=>!props.readOnly&&(!props.source||['dietary_details',keys[type]].every(k=>props.source.editable_fields?.includes(k)))
@@ -11,7 +11,7 @@ function add(type){if(!editable(type))return;const key='restrictionDraft_'+type,
 defineExpose({flush(){for(const type of Object.keys(restrictionFields))if(props.member[restrictionFields[type].status]==='set')add(type)}})
 </script>
 <template>
- <view class="inline-restrictions">
+ <view class="inline-restrictions" :class="{'archive-restrictions':archive}">
   <view v-for="(cfg,type) in restrictionFields" :key="type" class="restriction-block" :id="'restriction-'+type">
    <view class="restriction-title"><text>{{cfg.title}}</text><text v-if="!['none','set'].includes(member[cfg.status])" class="unanswered">待确认</text></view>
    <text v-if="readOnly" class="restriction-summary">{{restrictionSummary(member,type)}}</text>
@@ -25,4 +25,6 @@ defineExpose({flush(){for(const type of Object.keys(restrictionFields))if(props.
 </template>
 <style scoped>
 .restriction-block{padding:0 0 22px;margin-bottom:21px;border-bottom:1px solid #f0edf4}.restriction-block:last-child{margin-bottom:0;border-bottom:0}.restriction-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;color:#3c3445;font-size:15px;font-weight:600}.unanswered{font-size:11px;font-weight:400;color:#a69aaf}.restriction-choices{display:flex;gap:10px}.restriction-choices button{display:flex;align-items:center;gap:9px;flex:1;min-height:46px;padding:11px 14px;background:#f7f6f9;border:1px solid #efedf3;border-radius:12px;color:#8a7e95;font-size:14px;font-weight:500;text-align:left}.restriction-choices button.selected{background:#f0eaf8;border-color:#c4b1de;color:#75559c}.choice-dot{width:14px;height:14px;border:1px solid #c8c0d1;border-radius:50%;flex-shrink:0}.selected .choice-dot{border:4px solid #9d80be;background:#fff;box-sizing:border-box;width:16px;height:16px}.restriction-details{padding:16px 0 0}.detail-note{font-size:12px;color:#9a8da6}.restriction-tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:11px}.restriction-tags button{min-height:39px;padding:8px 12px;border-radius:10px;border:1px solid #ece7f0;background:#faf9fb;color:#82728e;font-size:12px}.restriction-tags button.selected{background:#f0eaf8;border-color:#c8b5df;color:#7958a4}.custom-tags:empty{display:none}.restriction-custom{display:flex;gap:9px;margin-top:12px}.restriction-custom input{flex:1;min-width:0;height:44px;padding:0 12px;border-radius:10px;background:#f7f5f9;font-size:13px;color:#51425f}.restriction-custom button{min-height:44px;font-size:13px;color:#8464ad}.doctor-guidance{box-sizing:border-box;width:100%;min-height:100px;margin-top:14px;padding:13px;border-radius:12px;background:#f7f5f9;font-size:14px;line-height:1.7;color:#51425f}.restriction-summary{font-size:13px;line-height:1.8;color:#8b7e96}
+
+.archive-restrictions .restriction-title{font-size:16px;font-weight:600;color:#3d3852}.archive-restrictions .restriction-summary{font-size:14px;font-weight:500;color:#3f4055}.archive-restrictions .restriction-choices button.selected,.archive-restrictions .restriction-tags button.selected{color:#7544e0;background:#f0eaff;border-color:#bda5f0;font-weight:600}.archive-restrictions .selected .choice-dot{border-color:#8c70b2}.archive-restrictions .doctor-guidance{font-size:16px;font-weight:500;color:#373447;background:#f7f7fc}
 </style>

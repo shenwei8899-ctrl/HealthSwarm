@@ -15,7 +15,7 @@ test('family overview omits bottom navigation and its reserved space while prese
   const source=readFileSync(new URL('../src/pages/profile/index.vue',import.meta.url),'utf8')
   assert.ok(!source.includes('bottom-nav'))
   assert.ok(!source.includes('padding-bottom:150rpx'))
-  for(const action of ['@click="backHome"','@click="share"','@click="detail(m)"','@click="add"']) assert.ok(source.includes(action))
+  for(const action of ['@click="backHome"','@click="share"','@open="detail"','@click="add"']) assert.ok(source.includes(action))
 })
 test('community entry is a tool chip immediately after today plan and keeps its popup action',()=>{
   const source=readFileSync(new URL('../src/pages/chat/index.vue',import.meta.url),'utf8')
