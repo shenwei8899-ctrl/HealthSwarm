@@ -100,8 +100,8 @@ function workflow(options = {}) {
         return true
       },
       async acceptConsent() { calls.push({ action: 'consent' }) },
-      pause() { generation++ },
-      async resume() { return true },
+      pause() { generation++;publish({busy:false,loading:false,refreshing:false}) },
+      async resume() { return !!(state.memberId&&state.taskType&&identity.token) },
       async refresh() { calls.push({ action: 'refresh' }) },
       invalidateThread() { publish({ invalidated: true, available: false, entry: null }) },
       publish,
@@ -136,7 +136,7 @@ function workflow(options = {}) {
   }
   const code = readFileSync(new URL('../src/components/CloudNutritionChat.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
+  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {showMemberArchive,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
   const historyRow = threadId => { const row = threads.get(threadId); return { thread_id: threadId, member_id: row.memberId, agent_slug: row.agent, business_date: row.businessDate } }
   return { ...page, calls, writes, identity, clock, hooks, scopedStorage, threads, addThread, historyRow,
     get flow(){return flow},
@@ -167,6 +167,123 @@ test('a home suggestion appears and clears the composer before conversation crea
   assert.equal(users.length,1);assert.equal(users[0].id,localId);assert.ok(users[0].requestId)
   assert.equal(p.question.value,'下一条新草稿');assert.equal(p.calls.filter(c=>c.action==='submit').length,1)
  }finally{createGate.resolve();historyGate.resolve();submitGate.resolve();p.dispose()}
+})
+
+test('the first preparation frame shows an enabled stop action and cancellation prevents a late create from sending',async()=>{
+ const p=workflow({route:{}}),gate=deferred()
+ let pending
+ try{
+  await p.load();const create=p.flow.createEntry
+  p.flow.createEntry=async()=>{p.publish({busy:true});await gate.promise;await create()}
+  p.question.value='合成的第一条提问';pending=p.sendQuestion();await flush()
+  assert.equal(p.sendPhase.value,'正在准备对话');assert.equal(p.task.value.busy,true)
+  assert.equal(p.preparingSend.value,true);assert.equal(p.primaryMode.value,'stop')
+  assert.equal(p.question.value,'');assert.equal(p.messages.value[0].text,'合成的第一条提问')
+  p.question.value='保留新输入的草稿';p.stopQuestion()
+  assert.equal(p.chatBusy.value,false);assert.equal(p.question.value,'保留新输入的草稿')
+  assert.equal(p.showMemberArchive.value,false)
+  assert.equal(p.messages.value[0].status,'cancelled')
+  gate.resolve();await pending
+  assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
+  assert.equal(p.question.value,'保留新输入的草稿');assert.equal(p.primaryMode.value,'send')
+ }finally{gate.resolve();await pending;p.dispose()}
+})
+
+test('a meal request is displayed and removed from the composer before its plan lookup finishes',async()=>{
+ const gate=deferred(),p=workflow({readDailyMealPlan:async(_family,date)=>{await gate.promise;return {date,status:'absent',version:0,meals:[]}}})
+ let pending
+ try{
+  await p.load();p.question.value='推荐几道菜';pending=p.sendQuestion()
+  assert.equal(p.question.value,'');assert.equal(p.messages.value.at(-1).text,'推荐几道菜')
+  assert.equal(p.primaryMode.value,'stop');assert.equal(p.preparingSend.value,true)
+  p.question.value='下一条草稿';p.stopQuestion();gate.resolve();await pending
+  assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
+  assert.equal(p.question.value,'下一条草稿');assert.equal(p.messages.value.at(-1).status,'cancelled')
+ }finally{gate.resolve();await pending;p.dispose()}
+})
+
+for(const phase of ['conversation creation','plan lookup'])test(`stopped ${phase} remains resumable after leaving without replaying the cancelled question`,async()=>{
+ const gate=deferred(),p=workflow({route:{},readDailyMealPlan:async(_family,date)=>{
+  if(phase==='plan lookup')await gate.promise
+  return {date,status:'absent',version:0,meals:[]}
+ }})
+ let pending
+ try{
+  await p.load()
+  if(phase==='conversation creation'){
+   const create=p.flow.createEntry
+   p.flow.createEntry=async()=>{p.publish({busy:true});await gate.promise;await create()}
+  }
+  p.question.value='请安排今天三餐';pending=p.sendQuestion();await flush()
+  assert.equal(p.preparingSend.value,true)
+  p.stopQuestion();gate.resolve();await pending
+  p.question.value='返回后的一般营养咨询';p.hooks.hide();p.hooks.show();await flush();await flush()
+  assert.equal(p.chatBusy.value,false,'the stopped preparation must leave a recoverable task context')
+  assert.equal(p.calls.filter(call=>call.action==='submit').length,0)
+  assert.equal(p.messages.value.find(message=>message.text==='请安排今天三餐').status,'cancelled')
+  assert.equal(p.question.value,'返回后的一般营养咨询')
+  await p.sendQuestion()
+  assert.deepEqual(p.calls.filter(call=>call.action==='submit').map(call=>call.text),['返回后的一般营养咨询'])
+ }finally{gate.resolve();await pending;p.dispose()}
+})
+
+test('a successful meal submission clears only the sent sentence and preserves a newer draft',async()=>{
+ const gate=deferred(),p=workflow({readDailyMealPlan:async(_family,date)=>{await gate.promise;return {date,status:'absent',version:0,meals:[]}}})
+ let pending
+ try{
+  await p.load();p.question.value='推荐几道菜';pending=p.sendQuestion()
+  assert.equal(p.question.value,'');p.question.value='下一条草稿';gate.resolve();await pending
+  assert.equal(p.calls.filter(c=>c.action==='submit').length,1)
+  assert.equal(p.messages.value.filter(m=>m.role==='user'&&m.text==='推荐几道菜').length,1)
+  assert.equal(p.question.value,'下一条草稿');assert.equal(p.preparingSend.value,false)
+ }finally{gate.resolve();await pending;p.dispose()}
+})
+
+test('cancelling a delayed history read cannot later submit or overwrite a new conversation draft',async()=>{
+ const p=workflow({route:{}}),gate=deferred()
+ let pending
+ try{
+  await p.load();p.setSnapshot(async()=>{await gate.promise;return {messages:[],runs:[]}})
+  p.question.value='取消历史读取前的提问';pending=p.sendQuestion();await flush()
+  assert.equal(p.primaryMode.value,'stop');p.stopQuestion()
+  await p.newConversation();p.question.value='新的会话草稿';const conversation=p.conversationId.value
+  gate.resolve();await pending
+  assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
+  assert.equal(p.conversationId.value,conversation);assert.equal(p.question.value,'新的会话草稿')
+  assert.equal(p.messages.value.length,0)
+ }finally{gate.resolve();await pending;p.dispose()}
+})
+
+test('after submission starts the stop action delegates to the current server request',async()=>{
+ const p=workflow(),gate=deferred(),requestId=uuid(922)
+ let pending,cancels=0
+ try{
+  await p.load()
+  p.flow.cancelRequest=async()=>{cancels++}
+  p.flow.submit=async()=>{p.publish({requestId,status:'queued',busy:false,result:null});await gate.promise;return true}
+  p.question.value='合成队列中的问题';pending=p.sendQuestion();await flush()
+  assert.equal(p.preparingSend.value,false);assert.equal(p.primaryMode.value,'stop')
+  await p.stopQuestion();assert.equal(cancels,1)
+  gate.resolve();await pending
+ }finally{gate.resolve();await pending;p.dispose()}
+})
+
+test('a cancelled preparation failing late cannot clear or replace a newer send in progress',async()=>{
+ const p=workflow({route:{}}),oldGate=deferred(),newGate=deferred()
+ let first,second,creates=0
+ try{
+  await p.load();const create=p.flow.createEntry
+  p.flow.createEntry=async()=>{if(++creates===1){await oldGate.promise;throw new Error('旧准备的迟到失败')}await newGate.promise;await create()}
+  p.question.value='旧问题';first=p.sendQuestion();await flush();p.stopQuestion()
+  p.question.value='新问题';second=p.sendQuestion();await flush()
+  assert.equal(p.primaryMode.value,'stop');oldGate.resolve();await first
+  assert.equal(p.chatBusy.value,true);assert.equal(p.primaryMode.value,'stop')
+  assert.equal(p.question.value,'');assert.equal(p.chatError.value,'')
+  assert.equal(p.messages.value.find(m=>m.text==='旧问题').status,'cancelled')
+  assert.equal(p.messages.value.find(m=>m.text==='新问题').status,'sending')
+  newGate.resolve();await second
+  assert.deepEqual(p.calls.filter(c=>c.action==='submit').map(c=>c.text),['新问题'])
+ }finally{oldGate.resolve();newGate.resolve();await first;await second;p.dispose()}
 })
 
 test('history recovery cannot bind the newly displayed question to an old completed request',async()=>{
@@ -244,6 +361,7 @@ test('a lost submission response reuses the displayed message and never clears t
   }
   const pending=p.askPrompt({text:'忙起来怎么规律吃饭？',action:'consultation'}),id=p.messages.value[0].id
   await flush();assert.equal(p.messages.value.filter(m=>m.role==='user').length,1)
+  assert.equal(p.preparingSend.value,false);assert.equal(p.primaryMode.value,'check')
   assert.equal(p.question.value,'');p.question.value='下一条草稿';gate.resolve();await pending
   const row=p.messages.value.find(m=>m.role==='user')
   assert.equal(row.id,id);assert.equal(row.requestId,requestId);assert.equal(row.status,'unknown')

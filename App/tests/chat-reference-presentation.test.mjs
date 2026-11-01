@@ -63,11 +63,13 @@ async function renderLayout(showShortcuts) {
  return renderToString(createSSRApp({render,components:{AppNavBar:{setup:(_props,{slots})=>()=>h('nav',slots.default?.())},AppIcon:{render:()=>h('span',{class:'app-icon'})}},setup:()=>({...state,...props,props})}))
 }
 
-test('shortcut actions remain available outside welcome and while the keyboard is focused',async()=>{
+test('current bottom shortcuts remain available after leaving the welcome state',async()=>{
  const shown=await renderLayout(true),hidden=await renderLayout(false)
  assert.match(shown,/aria-label="常用功能"/)
- assert.doesNotMatch(hidden,/is-collapsed/);assert.match(hidden,/aria-label="常用功能"/)
- for(const label of ['AI专属计划','家庭档案','拍照记餐','今日餐单','加入社群'])assert.ok(shown.includes(label))
+ assert.doesNotMatch(hidden,/is-collapsed/)
+ for(const label of ['AI专属计划','家庭档案','拍照记餐','今日餐单','加入社群']){
+  assert.ok(shown.includes(label));assert.ok(hidden.includes(label))
+ }
 })
 
 test('the shell retains the history artwork, compact shortcuts and welcome density',()=>{

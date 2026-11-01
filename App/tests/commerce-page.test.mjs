@@ -82,6 +82,48 @@ test("page scope rejects late results and clears private state on account change
   assert.equal(data.value, "");
 });
 
+test("login revision changes release loading and allow a fresh address read", async () => {
+  const h = fixture(), data = ref("previous address");
+  const page = h.deps.useCommercePage(() => { data.value = ""; });
+  let release;
+  const pending = page.run(async active => {
+    await new Promise(resolve => { release = resolve; });
+    if (active()) data.value = "stale address";
+  });
+  // Login may finish without another onShow event being delivered.
+  h.switch(); release(); await pending;
+  assert.equal(page.busy.value, false);
+  assert.equal(data.value, "");
+  assert.match(page.error.value, /登录状态.*重新读取/);
+  await page.run(async active => { if (active()) data.value = "current address"; });
+  assert.equal(data.value, "current address");
+  assert.equal(page.error.value, "");
+  assert.equal(page.busy.value, false);
+});
+
+test("expired credentials cannot leave an address read loading forever", async () => {
+  const h = fixture(), page = h.deps.useCommercePage();
+  await page.run(async () => {
+    h.switch();
+    throw Object.assign(new Error("商城登录已过期"), { code: 401 });
+  });
+  assert.equal(page.busy.value, false);
+  assert.match(page.error.value, /重新读取/);
+});
+
+test("an older operation cannot release a newer operation's loading flag", async () => {
+  const h = fixture(), page = h.deps.useCommercePage();
+  let releaseOld, releaseNew;
+  const old = page.run(() => new Promise(resolve => { releaseOld = resolve; }));
+  h.switch(); h.show();
+  const current = page.run(() => new Promise(resolve => { releaseNew = resolve; }));
+  releaseOld(); await old;
+  assert.equal(page.busy.value, true);
+  assert.equal(page.error.value, "");
+  releaseNew(); await current;
+  assert.equal(page.busy.value, false);
+});
+
 test("real detail mounts with page-owned order ID and photo picker preserves the form", async () => {
   const h = fixture(),
     calls = [];
@@ -146,7 +188,8 @@ test("return from native payment preserves its work and rereads the server order
 
 test("expired commerce credentials remove the protected view immediately", async () => {
   let session = { token: "valid" }, changed, mounted;
-  const deps = {ref, computed, onUnmounted:()=>{}, defineProps:()=>({entry:false,enabled:true}), defineEmits:()=>()=>{}, usesCommerceIdentity:false, usesAgentIdentity:false, onMounted: cb => {mounted=cb}, onShow: () => {},
+  const events = [];
+  const deps = {ref, computed, onUnmounted:()=>{}, defineProps:()=>({entry:false,enabled:true}), defineEmits:()=>(name)=>events.push(name), usesCommerceIdentity:false, usesAgentIdentity:false, onMounted: cb => {mounted=cb}, onShow: () => {},
     watch: (_, cb) => {changed=cb}, commerceSessionEpoch: ref(0),
     commerceContext: () => session?.token || "guest",
     commerce: {session:()=>session,restore:async()=>session},
@@ -156,7 +199,8 @@ test("expired commerce credentials remove the protected view immediately", async
   const page=new Function("deps",`const {${Object.keys(deps)}}=deps;${code};return {ready,error}`)(deps);
   await mounted(); assert.equal(page.ready.value,true);
   session=null; changed();
-  assert.equal(page.ready.value,false); assert.equal(page.ready.value,false);
+  assert.equal(page.ready.value,false);
+  assert.deepEqual(events, ['ready', 'unavailable']);
 });
 
 function memberAccess(commerce) {
@@ -184,6 +228,21 @@ test('unmount while automatic association is pending cannot expose protected con
   const pending=h.mount();h.unmount();release();await pending
   assert.equal(h.page.ready.value,false);assert.equal(h.events(),0)
 })
+
+test('a failed restore invalidates mounted address content and can be retried', async () => {
+  let connected = true;
+  const h = memberAccess({ session: () => ({ token: 'linked' }), restore: async () => {
+    if (!connected) throw new Error('网络暂不可用');
+  } });
+  await h.mount(); assert.equal(h.page.ready.value, true);
+  connected = false; await h.page.restore();
+  assert.equal(h.page.ready.value, false);
+  assert.equal(h.page.error.value, '网络暂不可用');
+  assert.equal(h.events(), 2);
+  connected = true; await h.page.restore();
+  assert.equal(h.page.ready.value, true);
+  assert.equal(h.page.error.value, '');
+});
 
 function shop(delivery) {
   const h = fixture();

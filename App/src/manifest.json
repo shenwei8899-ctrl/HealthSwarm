@@ -72,6 +72,14 @@
         {
           "type": "file",
           "value": "static/chat/assistant-leaf-v1.png"
+        },
+        {
+          "type": "file",
+          "value": "static/chat/nutrition-boy-v1.png"
+        },
+        {
+          "type": "file",
+          "value": "static/chat/today-menu-plate.svg"
         }
       ]
     }

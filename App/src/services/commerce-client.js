@@ -266,11 +266,15 @@ export function createCommerceClient({
     session: () => { const session = read().session; return session?.scope === parent.scope() && (!isAgentMode() || read().loginMode === 'agent' && session.agentAccountId === String(parent.read()?.accountId)) ? session : null; },
     sessionRevision: () => read().session?.revision || read().session?.token || "guest",
     restore: async () => {
+      const scope = parent.scope();
       let session = await connect(), result;
       try { result = await request('/session'); }
       catch (error) {
         // Refresh only the read-only session check. Never retry a cart/order write here.
-        if (!isAgentMode() || Number(error.code) !== 401) throw error;
+        // A parallel read can clear the expired token before this check returns.
+        current(scope);
+        const expired = Number(error.code) === 401 || error.code === 'SESSION_CHANGED' && !read().session?.token;
+        if (!isAgentMode() || !expired) throw error;
         session = await connect();
         result = await request('/session');
       }

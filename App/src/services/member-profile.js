@@ -37,8 +37,8 @@ function currentSession(familyId) {
   return ()=>{if(sessionRevision()!==revision||getSession()?.householdId!==familyId)throw Object.assign(new Error('账号或家庭已变化，请重新读取。'),{code:'SESSION_CHANGED'})}
 }
 
-export async function readMemberProfile(id) {
-  const profile=await loadCloudProfile(),current=currentSession(profile.householdId)
+export async function readMemberProfile(id, { readOnly = false } = {}) {
+  const profile=await loadCloudProfile(readOnly?{openConsultation:false,readConfiguration:false}:undefined),current=currentSession(profile.householdId)
   const {data}=await request({path:'/api/family/'+encodeURIComponent(profile.householdId)})
   current()
   const member=profile.members.find(m=>m.id===id),source=data.members?.find(m=>m.id===id&&m.is_active)

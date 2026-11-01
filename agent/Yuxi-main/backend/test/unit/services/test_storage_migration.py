@@ -23,6 +23,7 @@ def family_schema_upgrade(monkeypatch):
     monkeypatch.setattr(storage_migration, "upgrade_family_archives", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_family_care", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_wechat_identity", upgrade)
+    monkeypatch.setattr(storage_migration, "upgrade_product_feedback", upgrade)
 
 
 class _Session:
@@ -293,7 +294,7 @@ async def test_main_rejects_unsupported_business_schema_before_ddl(monkeypatch, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("business_version", [2, 7, 8, 9])
+@pytest.mark.parametrize("business_version", [2, 7, 8, 9, 13])
 async def test_supported_legacy_business_schema_is_converged_and_versioned_as_current(monkeypatch, business_version):
     calls: list[str] = []
     sessions = [_Session(), _Session(), _Session()]
@@ -338,11 +339,15 @@ async def test_supported_legacy_business_schema_is_converged_and_versioned_as_cu
     monkeypatch.setattr(storage_migration, "mark_v071_skills_migrated", lambda: calls.append("mark_skills"))
     monkeypatch.setattr(storage_migration, "migrate_runtime_storage_identity", lambda: calls.append("runtime_identity"))
 
+    monkeypatch.setattr(
+        storage_migration, "upgrade_product_feedback", lambda _manager: _record(calls, "feedback_schema")
+    )
     await storage_migration.main()
+    assert calls.index("feedback_schema") < calls.index(f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}")
 
     assert ("business_schema" in calls) is (business_version in {2, 7, 8})
     assert f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}" in calls
-    assert "create_business" in calls
+    assert ("create_business" in calls) is (business_version in {2, 7, 8, 9, 10})
     assert {"checkpoint", "knowledge_schema"}.isdisjoint(calls)
 
 

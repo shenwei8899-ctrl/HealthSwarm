@@ -1,10 +1,10 @@
 <script setup>
 import { ageLabel, memberAge, shanghaiDate } from '../utils/member-age.js'
-const props=defineProps({member:{type:Object,required:true},showRelationship:{type:Boolean,default:true},readOnly:Boolean,source:Object})
+const props=defineProps({member:{type:Object,required:true},showRelationship:{type:Boolean,default:true},readOnly:Boolean,source:Object,archive:Boolean})
 const editable=field=>!props.readOnly&&(!props.source||(field==='identity'?props.source.is_self||props.source.is_guardian||props.source.editable_fields?.length:props.source.editable_fields?.includes(field)))
 </script>
 <template>
- <view class="basic-fields">
+ <view class="basic-fields" :class="{'archive-basics':archive}">
   <label class="basic-row" id="field-name"><text>姓名／称呼</text><input v-model="member.name" :disabled="!editable('identity')" aria-label="姓名或称呼" placeholder="怎么称呼你" maxlength="40"/></label>
   <view class="basic-row" id="field-gender"><text>性别</text><view class="gender-options" role="radiogroup" aria-label="性别"><button v-for="g in ['女','男','未填写']" :key="g" role="radio" :aria-checked="member.gender===g||!member.gender&&g==='未填写'" :class="{selected:member.gender===g||!member.gender&&g==='未填写'}" :disabled="!editable('sex')" @click="member.gender=g">{{g}}</button></view></view>
   <label v-if="showRelationship" class="basic-row"><text>与我的关系</text><input v-model="member.relation" :disabled="!editable('identity')" aria-label="与我的关系" placeholder="例如：妈妈" maxlength="30"/></label>
@@ -14,4 +14,6 @@ const editable=field=>!props.readOnly&&(!props.source||(field==='identity'?props
 </template>
 <style scoped>
 .basic-fields{color:#3e3449}.basic-row{display:block;margin-bottom:21px;font-size:13px;color:#8d8098;font-weight:500}.basic-row>text,.field-label-line{display:block;margin-bottom:10px}.basic-row input,.picker-value{box-sizing:border-box;width:100%;min-height:48px;padding:0 15px;border:1px solid transparent;border-radius:12px;background:#f6f5f8;color:#42374e;font-size:15px;font-weight:500}.basic-row input:focus{border-color:#c8b4df}.field-label-line{display:flex;justify-content:space-between;align-items:center}.age-label{font-size:12px;color:#9a82b5}.picker-value{display:flex;align-items:center;justify-content:space-between}.placeholder{color:#b0a7b8}.chevron{font-size:24px;color:#a899b5}.gender-options{display:flex;gap:10px}.gender-options button{flex:1;min-height:45px;padding:10px 8px;border:1px solid #efedf3;border-radius:12px;background:#f7f6f9;color:#94879f;font-size:14px;font-weight:500}.gender-options button.selected{border-color:#c8b4df;background:#f0eaf8;color:#7b5ba3}.measurements{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:3px 0 12px}.measure{min-width:0;font-size:13px;color:#8d8098}.unit{font-size:11px;margin-left:3px;color:#aaa0b2}.measure input{box-sizing:border-box;width:100%;height:48px;margin-top:10px;padding:0 15px;border-radius:12px;background:#f6f5f8;color:#42374e;font-size:15px;font-weight:500}.basic-fields input[disabled]{color:#93889d}
+
+.archive-basics .basic-row,.archive-basics .measure,.archive-basics .field-label-line{font-size:14px;font-weight:600;color:#494658}.archive-basics .basic-row input,.archive-basics .measure input,.archive-basics .picker-value{font-size:16px;font-weight:500;color:#373447;background:#f7f7fc;border:1px solid #eeedf5}.archive-basics .gender-options button.selected{color:#7544e0;background:#f0eaff;border-color:#bda5f0;font-weight:600}
 </style>

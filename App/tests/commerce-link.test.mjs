@@ -77,6 +77,36 @@ test('unified cart and order writes are never automatically retried after authen
   }
 })
 
+test('session restore recovers when a parallel address read clears expired credentials', async () => {
+  let exchanges = 0, checks = 0, releaseSession, sessionStarted;
+  const started = new Promise(resolve => { sessionStarted = resolve });
+  const f = unified(o => {
+    if (o.url.endsWith('/exchange')) { exchanges++; return exchangeResponse('17') }
+    if (o.url.endsWith('/addresses')) return { statusCode: 401, data: { code: 40100 } };
+    checks++;
+    if (checks === 1) return new Promise(resolve => { releaseSession = resolve; sessionStarted() });
+    return { statusCode: 200, data: { code: 0, data: { user: { id: 7 } } } };
+  });
+  await f.client.connect();
+  const restore = f.client.restore(); await started;
+  await assert.rejects(f.client.addressBook(), e => e.code === 401);
+  releaseSession({ statusCode: 401, data: { code: 40100 } });
+  assert.equal((await restore).userId, '7');
+  assert.equal(exchanges, 2); assert.equal(checks, 2);
+  assert.equal(f.calls.filter(o => o.url.endsWith('/addresses')).length, 1);
+});
+
+test('session restore never reconnects a different account after a pending check', async () => {
+  let release, started;
+  const waiting = new Promise(resolve => { started = resolve });
+  const f = unified(o => o.url.endsWith('/exchange') ? exchangeResponse('17') : new Promise(resolve => { release = resolve; started() }));
+  await f.client.connect();
+  const restore = f.client.restore(); await waiting;
+  f.change(); release({ statusCode: 401, data: { code: 40100 } });
+  await assert.rejects(restore, e => e.code === 'SESSION_CHANGED');
+  assert.equal(f.calls.filter(o => o.url.endsWith('/exchange')).length, 1);
+});
+
 function paymentFixture(reply, getCode = async () => 'fresh-wechat-code') {
   let scope = 'agent-A', count = 0, charges = 0
   const calls = [], values = new Map()

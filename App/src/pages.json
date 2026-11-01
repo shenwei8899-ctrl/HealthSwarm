@@ -310,6 +310,13 @@
         "navigationStyle": "custom",
         "navigationBarTitleText": "全天食材"
       }
+    },
+    {
+      "path": "pages/settings/feedback",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "反馈"
+      }
     }
   ],
   "globalStyle": {

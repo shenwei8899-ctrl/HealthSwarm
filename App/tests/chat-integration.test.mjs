@@ -14,32 +14,38 @@ const attribute=(node,name)=>node.props.find(p=>p.type===6&&p.name===name)?.valu
 
 test('rendered reference cards wire their detail event to the corresponding selected business date',()=>{
  const cards=elements.filter(n=>n.tag==='DailyMealPlanCard'&&n.props.some(p=>p.name==='detail-mode'))
- assert.equal(cards.length,2)
+ assert.equal(cards.length,1)
  for(const card of cards){
   const date=directive(card,'bind','plan').includes('message.planDate')?'message.planDate':'todayPlan.date'
   assert.equal(directive(card,'on','detail'),`openDailyMeal($event,${date})`)
  }
+ const menu=elements.find(n=>n.tag==='TodayMealPlanSheet')
+ assert.ok(menu)
+ assert.equal(directive(menu,'on','detail'),'openDailyMeal($event,todayPlan.date)')
+ assert.equal(directive(menu,'on','plan'),'acceptTodayPlan')
 })
 test('the generating composer exposes an explicit stop control connected to task cancellation',()=>{
  const stop=elements.find(n=>n.tag==='button'&&attribute(n,'aria-label')==='停止生成')
  assert.ok(stop);assert.equal(directive(stop,'else-if'),"primaryMode==='stop'");assert.equal(attribute(stop,'key'),'stop')
- assert.equal(directive(stop,'on','click'),'flow.cancelRequest()')
+ assert.equal(directive(stop,'on','click'),'stopQuestion')
+ assert.equal(directive(stop,'bind','disabled'),'!preparingSend&&task.busy')
 })
 test('failed and interrupted messages keep only the message marker without a recovery card',()=>{
  const marker=elements.find(n=>attribute(n,'class')==='message-issue')
  assert.ok(marker);assert.equal(directive(marker,'if'),'hasMessageIssue(message)')
  assert.equal(elements.some(n=>attribute(n,'class')==='recovery-card'),false)
  assert.equal(elements.some(n=>n.tag==='button'&&['editFailedQuestion','restartChat'].includes(directive(n,'on','click'))),false)
- assert.equal(directive(marker,'on','click'),'messageStatus(message)')
+ assert.equal(directive(marker,'on','click'),"message.status==='unknown'&&messageStatus(message)")
+ assert.equal(directive(marker,'bind','role'),"message.status==='unknown'?'button':'img'")
+ assert.equal(directive(marker,'bind','tabindex'),"message.status==='unknown'?0:undefined")
  assert.match(source,/\.message-issue\{[^}]*background:#d83a3a/)
 })
 
-
 test('a cancellation reconciled to a running task makes the wired stop button reachable again',()=>{
  const expression=source.match(/const primaryMode=computed\(\(\)=>?([^\n]+)\)/)[1]
- const mode=new Function('task','canCancel','voiceMode','hasDraftContent',`return ${expression}`)
- assert.equal(mode({value:{status:'running',cancelPhase:'error'}},{value:true},{value:false},{value:false}),'stop')
- assert.equal(mode({value:{status:'running',cancelPhase:'unknown'}},{value:true},{value:false},{value:false}),'check')
+ const mode=new Function('task','canCancel','voiceMode','hasDraftContent','preparingSend',`return ${expression}`)
+ assert.equal(mode({value:{status:'running',cancelPhase:'error'}},{value:true},{value:false},{value:false},{value:false}),'stop')
+ assert.equal(mode({value:{status:'running',cancelPhase:'unknown'}},{value:true},{value:false},{value:false},{value:false}),'check')
  const stop=elements.find(n=>n.tag==='button'&&attribute(n,'aria-label')==='停止生成')
- assert.equal(directive(stop,'on','click'),'flow.cancelRequest()')
+ assert.equal(directive(stop,'on','click'),'stopQuestion')
 })

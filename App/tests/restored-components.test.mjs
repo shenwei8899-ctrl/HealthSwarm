@@ -30,6 +30,27 @@ function mount(file,fields,extras={}){
 }
 function storage(){const m=new Map();return {getStorageSync:k=>jsonClone(m.get(k)),setStorageSync:(k,v)=>m.set(k,jsonClone(v)),getStorageInfoSync:()=>({keys:[...m.keys()]})}}
 
+test('memory heading identifies the authorized family member when the self member has no AI consent',async()=>{
+ const calls=[],person={id:'health-mother',display_name:'妈妈',relationship_label:'妈妈',scopes:['ai_use']}
+ const p=mount('CloudMemories.vue','load,memberId,members,memories,busy,error,pending,truncated,memberLabel,edit,remove,perform',{
+  storageContext:()=> 'account:family',scopedStorage:storage(),newHealthRequestId:()=>requestId,
+  request:async options=>{calls.push(options.path);return {data:options.path==='/api/health/v1/members'
+   ?[{id:'health-self',display_name:'我',relationship_label:'本人',is_owner:true,scopes:[]},person]
+   :{memories:[{memory_id:'mother-memory',content:'妈妈自述的偏好',version:1}],truncated:false}}},
+ })
+ try{
+  await p.load()
+  assert.equal(p.memberId.value,'health-mother')
+  assert.deepEqual(calls,['/api/health/v1/members','/api/health/v1/members/health-mother/memory'])
+  const Vue=await import('vue'),{renderToString}=await import('vue/server-renderer')
+  const template=readFileSync(new URL('../src/components/CloudMemories.vue',import.meta.url),'utf8').match(/<template>([\s\S]*?)<\/template>/)[1]
+  const render=Vue.compile(template)
+  const html=await renderToString(Vue.createSSRApp({setup:()=>p,render,components:{AppNavBar:{setup:(_,ctx)=>()=>Vue.h('view',ctx.slots.default?.())}}}))
+  assert.match(html,/妈妈的记忆/)
+  assert.doesNotMatch(html,/<button[^>]*>妈妈/)
+ }finally{p.dispose()}
+})
+
 test('confirmed dishes save without an extra nutrition switch and preserve unknown nutrition',async()=>{
  const cache=storage(),calls=[];let serial=0,submitted=null
  const send=async options=>{
@@ -274,10 +295,13 @@ test('chat layout is unconditional and initialization errors are rendered inside
  assert.doesNotMatch(source,/查看已有档案/)
 })
 
-test('unknown chat retry settles the original bubble and removes only its original draft',async()=>{
+test('unknown chat retry keeps sent text cleared, settles the same bubble and removes its original photo',async()=>{
  const h=chat(),p=mount('CloudNutritionChat.vue','load,question,draftImage,messages,sendQuestion,retryQuestion,flow,task',h.deps)
- await p.load();p.question.value='original';p.draftImage.value={localPath:'data:image/png;base64,QQ=='};await p.sendQuestion();assert.equal(p.messages.value[0].status,'unknown');assert.equal(p.question.value,'original')
- await p.retryQuestion();assert.equal(p.question.value,'');assert.equal(p.draftImage.value,null);assert.equal(p.messages.value[0].status,'sent');assert.deepEqual(p.messages.value.map(m=>m.role),['user','assistant']);assert.equal(h.calls.filter(c=>c.path==='/api/agent/runs').length,2);p.dispose()
+ try{
+  await p.load();p.question.value='original';p.draftImage.value={localPath:'data:image/png;base64,QQ=='};await p.sendQuestion();assert.equal(p.messages.value[0].status,'unknown');assert.equal(p.question.value,'')
+  assert.equal(p.messages.value[0].text,'original')
+  await p.retryQuestion();assert.equal(p.question.value,'');assert.equal(p.draftImage.value,null);assert.equal(p.messages.value[0].status,'sent');assert.deepEqual(p.messages.value.map(m=>m.role),['user','assistant']);assert.equal(h.calls.filter(c=>c.path==='/api/agent/runs').length,2)
+ }finally{p.dispose()}
 })
 test('a caught send TypeError retains the draft and logs only its stage and public code frames',async()=>{
  const h=chat(),logs=[],secret='synthetic-private-question-profile-token'
@@ -639,6 +663,39 @@ test('return keeps the existing chat and draft visible while a profile read is p
  rejectRead(Object.assign(new Error('网络暂不可用'),{code:'NETWORK_ERROR'}));await new Promise(setImmediate)
  assert.equal(p.entryReady.value,true);assert.equal(p.returning.value,false);assert.equal(p.returnVerified.value,false);assert.match(p.returnError.value,/网络/)
  assert.equal(p.inputBusy.value,false);assert.equal(p.messages.value[0].text,'之前的内容');p.dispose()
+})
+
+function quietReturnRetry(){
+ const h=chat(),original=h.deps.loadCloudProfile,timers=new Map();let reads=0
+ h.deps.loadCloudProfile=async()=>{if(++reads===2)throw Object.assign(new Error('合成临时网络故障'),{code:'NETWORK_ERROR'});return original()}
+ h.deps.setTimeout=(fn,delay)=>{const id=Symbol('timer');timers.set(id,{fn,delay});return id}
+ h.deps.clearTimeout=id=>timers.delete(id)
+ const page=mount('CloudNutritionChat.vue','load,refreshReturn,returnVerified,returnError,question,messages',h.deps)
+ return {page,timers,get reads(){return reads}}
+}
+
+test('return validation quietly retries a temporary failure and preserves the current draft and messages',async()=>{
+ const h=quietReturnRetry(),p=h.page
+ try{
+  await p.load();p.question.value='保留当前草稿';p.messages.value=[{id:'old',role:'user',text:'之前的内容'}]
+  await p.refreshReturn();assert.equal(p.returnVerified.value,false)
+  const retry=[...h.timers.entries()].find(([,job])=>job.delay>=1500)
+  assert.ok(retry);h.timers.delete(retry[0]);retry[1].fn();await new Promise(setImmediate)
+  assert.equal(p.returnVerified.value,true);assert.equal(p.returnError.value,'')
+  assert.equal(p.question.value,'保留当前草稿');assert.equal(p.messages.value[0].text,'之前的内容')
+  assert.equal([...h.timers.values()].some(job=>job.delay>=1500),false)
+ }finally{p.dispose()}
+})
+
+for(const leave of ['hide','unmount'])test(`quiet return retry is cancelled on ${leave} and ignores a late timer`,async()=>{
+ const h=quietReturnRetry(),p=h.page
+ try{
+  await p.load();await p.refreshReturn()
+  const retry=[...h.timers.entries()].find(([,job])=>job.delay>=1500);assert.ok(retry)
+  if(leave==='hide')p.hooks.hide();else p.dispose()
+  assert.equal(h.timers.has(retry[0]),false)
+  const reads=h.reads;retry[1].fn();await new Promise(setImmediate);assert.equal(h.reads,reads)
+ }finally{p.dispose()}
 })
 
 test('a session change during the background return clears old private content',async()=>{

@@ -14,7 +14,7 @@ const frameStyle=computed(()=>({width:props.size+props.unit,height:props.size+pr
 </script>
 <template>
  <view class="nutritionist-character" :class="['character-'+variant,'state-'+visualState]" :style="frameStyle" role="img" :aria-hidden="decorative?'true':undefined" :aria-label="decorative?undefined:stateLabels[visualState]">
-  <view class="character-portrait"><image class="character-image" src="/static/chat/nutrition-boy-v1.png" mode="aspectFit" aria-hidden="true"/></view>
+  <view class="character-portrait"><image class="character-image" src="/static/chat/nutrition-boy-v1.webp" mode="aspectFit" aria-hidden="true"/></view>
   <view v-if="visualState!=='idle'" class="character-status" aria-hidden="true">
    <text v-if="visualState==='success'" class="status-check">✓</text>
    <view v-else class="status-dots"><view/><view/><view/></view>
