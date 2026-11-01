@@ -151,7 +151,7 @@ function stopQuestion(){
  // an empty conversation may finish creating, but this question cannot submit.
  operation.message.status='cancelled'
  epoch++;sendGeneration++;localSend.value=null;sendPhase.value='';pendingUser=null;submittedDraft=null
- sending.value=false;restoring=false;chatError.value='';flow.hide()
+ sending.value=false;restoring=false;chatError.value='';flow.pause()
 }
 function rememberReading(value){if(!readingSuspended.value){reading.value=value;if(value.following)latestAvailable.value=false;else{scrollRevision++;scrollTarget.value=''}}}
 watch(readingSuspended,locked=>{scrollRevision++;if(locked)reading.value={...reading.value,following:false}},{flush:'sync'})

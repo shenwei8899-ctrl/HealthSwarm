@@ -100,8 +100,8 @@ function workflow(options = {}) {
         return true
       },
       async acceptConsent() { calls.push({ action: 'consent' }) },
-      pause() { generation++ },
-      async resume() { return true },
+      pause() { generation++;publish({busy:false,loading:false,refreshing:false}) },
+      async resume() { return !!(state.memberId&&state.taskType&&identity.token) },
       async refresh() { calls.push({ action: 'refresh' }) },
       invalidateThread() { publish({ invalidated: true, available: false, entry: null }) },
       publish,
@@ -199,6 +199,31 @@ test('a meal request is displayed and removed from the composer before its plan 
   p.question.value='下一条草稿';p.stopQuestion();gate.resolve();await pending
   assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
   assert.equal(p.question.value,'下一条草稿');assert.equal(p.messages.value.at(-1).status,'cancelled')
+ }finally{gate.resolve();await pending;p.dispose()}
+})
+
+for(const phase of ['conversation creation','plan lookup'])test(`stopped ${phase} remains resumable after leaving without replaying the cancelled question`,async()=>{
+ const gate=deferred(),p=workflow({route:{},readDailyMealPlan:async(_family,date)=>{
+  if(phase==='plan lookup')await gate.promise
+  return {date,status:'absent',version:0,meals:[]}
+ }})
+ let pending
+ try{
+  await p.load()
+  if(phase==='conversation creation'){
+   const create=p.flow.createEntry
+   p.flow.createEntry=async()=>{p.publish({busy:true});await gate.promise;await create()}
+  }
+  p.question.value='请安排今天三餐';pending=p.sendQuestion();await flush()
+  assert.equal(p.preparingSend.value,true)
+  p.stopQuestion();gate.resolve();await pending
+  p.question.value='返回后的一般营养咨询';p.hooks.hide();p.hooks.show();await flush();await flush()
+  assert.equal(p.chatBusy.value,false,'the stopped preparation must leave a recoverable task context')
+  assert.equal(p.calls.filter(call=>call.action==='submit').length,0)
+  assert.equal(p.messages.value.find(message=>message.text==='请安排今天三餐').status,'cancelled')
+  assert.equal(p.question.value,'返回后的一般营养咨询')
+  await p.sendQuestion()
+  assert.deepEqual(p.calls.filter(call=>call.action==='submit').map(call=>call.text),['返回后的一般营养咨询'])
  }finally{gate.resolve();await pending;p.dispose()}
 })
 
