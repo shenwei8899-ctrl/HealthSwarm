@@ -1021,6 +1021,15 @@ CREATE TABLE IF NOT EXISTS `__PREFIX__shop_supplier_application` (
   `application_sn` varchar(64) NOT NULL,
   `user_id` bigint unsigned NOT NULL DEFAULT 0,
   `company_name` varchar(255) NOT NULL,
+  `partner_type` varchar(20) NOT NULL DEFAULT 'supplier',
+  `location_json` text,
+  `contact_wechat` varchar(64) NOT NULL DEFAULT '',
+  `submission_key` varchar(64) DEFAULT NULL,
+  `submission_hash` varchar(64) DEFAULT NULL,
+  `follow_up_status` varchar(20) NOT NULL DEFAULT 'pending',
+  `follow_up_note` varchar(1000) NOT NULL DEFAULT '',
+  `follow_up_admin_id` bigint NOT NULL DEFAULT 0,
+  `follow_up_at` bigint NOT NULL DEFAULT 0,
   `credit_code` varchar(64) NOT NULL DEFAULT '',
   `contact_name` varchar(100) NOT NULL,
   `contact_mobile_encrypted` varchar(255) NOT NULL,
@@ -1041,6 +1050,7 @@ CREATE TABLE IF NOT EXISTS `__PREFIX__shop_supplier_application` (
   `updatetime` bigint unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_supplier_application_sn` (`application_sn`),
+  UNIQUE KEY `uk_partner_submission` (`user_id`,`submission_key`),
   KEY `idx_supplier_application_user` (`user_id`,`createtime`),
   KEY `idx_supplier_application_review` (`review_status`,`submitted_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='供应商合作申请';

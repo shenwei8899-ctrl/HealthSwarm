@@ -23,6 +23,13 @@ for(const file of included.filter(f=>/\.(js|wxml|wxss|json)$/.test(f.name)&&f.na
 const bytes=included.reduce((sum,f)=>sum+f.bytes,0)
 // Leave room for WeChat's own compilation and packaging overhead.
 const budget=Math.floor(1.8*1024*1024)
-assert.ok(bytes<=budget,`Mini-program upload files use ${bytes} bytes; budget is ${budget}`)
+const app=JSON.parse(readFileSync(join(root,'app.json'),'utf8'))
+const roots=(app.subPackages||app.subpackages||[]).map(item=>item.root.replace(/\/+$/,'')+'/')
+assert.equal(new Set(roots).size,roots.length,'Subpackage roots must be unique')
+assert.ok(roots.every(name=>name!=='/'&&!name.startsWith('/')&&!name.split('/').includes('..')),'Subpackage roots must be relative')
+const packages=[{name:'main',upload_bytes:included.filter(f=>!roots.some(name=>f.name.startsWith(name))).reduce((sum,f)=>sum+f.bytes,0)},
+ ...roots.map(name=>({name,upload_bytes:included.filter(f=>f.name.startsWith(name)).reduce((sum,f)=>sum+f.bytes,0)}))]
+for(const entry of packages)assert.ok(entry.upload_bytes<=budget,`${entry.name} uses ${entry.upload_bytes} bytes; package budget is ${budget}`)
+assert.ok(bytes<=20*1024*1024,'Total mini-program upload exceeds 20MB')
 console.log(JSON.stringify({upload_bytes:bytes,budget_bytes:budget,limit_bytes:2*1024*1024,
- included_files:included.length,excluded:files.filter(f=>excluded.has(f.name)).map(({name,bytes})=>({name,bytes}))}))
+ packages,included_files:included.length,excluded:files.filter(f=>excluded.has(f.name)).map(({name,bytes})=>({name,bytes}))}))

@@ -36,6 +36,11 @@ define(['jquery', 'bootstrap', 'backend', 'table', 'form'], function ($, undefin
                 $('.modal-backdrop').last().css('z-index', 1055);
             });
             $('a[data-toggle="tab"]').on('shown.bs.tab', function (e) { self.load($($(e.target).attr('href')), 1); });
+            $('.tab-pane[data-resource="supplier_applications"]').each(function () {
+                var $pane=$(this);
+                $pane.find('.v5-query').before('<select class="form-control v5-partner-type" style="display:inline-block;width:140px;margin-right:8px" aria-label="筛选合作类型"><option value="">全部合作类型</option><option value="supplier">供应商</option><option value="channel">渠道商</option><option value="distributor">经销商</option></select>');
+                $pane.find('.v5-partner-type').on('change',function(){self.load($pane,1);});
+            });
             this.load(this.activePane(), 1);
         },
         activePane: function () { return $('.v5-main-panel .tab-pane.active'); },
@@ -48,7 +53,7 @@ define(['jquery', 'bootstrap', 'backend', 'table', 'form'], function ($, undefin
             if (!$pane || !$pane.length) return;
             var self = this, resource = $pane.data('resource'), cfg = this.tabConfig(resource), limit = 20;
             page = Math.max(1, page || 1); $pane.addClass('v5-loading');
-            $.getJSON('shop/v5/workspace/data', {resource: resource, offset: (page - 1) * limit, limit: limit, q: $pane.find('.v5-query').val() || ''})
+            $.getJSON('shop/v5/workspace/data', {resource: resource, offset: (page - 1) * limit, limit: limit, q: $pane.find('.v5-query').val() || '', filter: JSON.stringify(resource==='supplier_applications' && $pane.find('.v5-partner-type').val() ? {partner_type:$pane.find('.v5-partner-type').val()} : {})})
                 .done(function (res) {
                     if (!res || !Array.isArray(res.rows) || typeof res.total === 'undefined') {
                         self.loadError($pane, cfg, (res && res.msg) || '数据返回异常，请刷新重试');
@@ -136,6 +141,8 @@ define(['jquery', 'bootstrap', 'backend', 'table', 'form'], function ($, undefin
             stock_status: { sufficient: '充足', low: '偏低', out: '缺货', unknown: '未知' },
             basis_type: { per_100g: '每100克', per_serving: '每份' },
             role: { primary: '主食材', component: '组成', alternative: '备选' },
+            partner_type: {supplier:'供应商',channel:'渠道商',distributor:'经销商'},
+            follow_up_status: {pending:'待联系',contacted:'已联系',closed:'已结束'},
             review_status: { pending: '待审核', approved: '已通过', rejected: '已拒绝', supplement_required: '需补充资料' },
             nutrition_status: { pending: '待校验', passed: '已通过', failed: '未通过', blocked: '已阻断' },
             trade_status: { pending: '待校验', passed: '已通过', failed: '未通过', blocked: '已阻断' },
@@ -159,7 +166,8 @@ define(['jquery', 'bootstrap', 'backend', 'table', 'form'], function ($, undefin
             if (cfg.editable && resource !== 'goods') out.push('<button class="btn btn-xs btn-primary" data-v5-action="edit" data-id="' + id + '"><i class="fa fa-pencil"></i></button>');
             if (resource === 'suppliers' && this.config.canManageSupplierApi) out.push('<button class="btn btn-xs btn-info" data-v5-action="supplierApi" data-id="'+id+'">API 与回调配置</button>');
             if (['orders_normal','orders_all','orders_pending','orders_unpaid','orders_shipping','orders_completed','orders_closed'].indexOf(resource)>=0 && (!state.order_type || state.order_type==='normal') && Number((row.__raw || row).paystate) === 1 && Number((row.__raw || row).orderstate) === 0 && Number((row.__raw || row).shippingstate) === 0) out.push('<button class="btn btn-xs btn-success" data-v5-action="ship" data-id="' + id + '">安排发货</button>');
-            if (resource === 'supplier_applications' && state.review_status === 'pending') out.push('<button class="btn btn-xs btn-success" data-v5-action="approve" data-id="' + id + '">审核</button>');
+            if (resource === 'supplier_applications') out.push('<button class="btn btn-xs btn-info" data-v5-action="partnerDetail" data-id="'+id+'">详情与跟进</button>');
+            if (resource === 'supplier_applications' && !state.intent_only && state.review_status === 'pending') out.push('<button class="btn btn-xs btn-success" data-v5-action="approve" data-id="' + id + '">审核</button>');
             if (resource === 'supplier_orders' && ['pending','failed'].indexOf(state.push_status)>=0 && ['created','pushing'].indexOf(state.status)>=0) out.push('<button class="btn btn-xs btn-warning" data-v5-action="retry" data-id="' + id + '">重试</button>');
             if (/^exceptions/.test(resource) && ['open','processing'].indexOf(state.status)>=0) out.push('<button class="btn btn-xs btn-default" data-v5-action="resolve" data-id="' + id + '">关闭</button>');
             if (resource === 'skus') out.push('<button class="btn btn-xs btn-default" data-v5-action="stock" data-id="' + id + '">调库存</button>');
@@ -177,6 +185,7 @@ define(['jquery', 'bootstrap', 'backend', 'table', 'form'], function ($, undefin
         hasAction: function (resource) { return ['orders_all','orders_pending','orders_unpaid','orders_shipping','orders_completed','orders_closed','aftersales_pending','suppliers','members','purchase_lists','catalog_readiness','orders_normal','goods','supplier_applications','supplier_orders','skus','recommendations','batches_prepare','policies','aftersales','outbox_events','imports'].indexOf(resource) >= 0 || /^exceptions/.test(resource); },
         handle: function (action, $pane, row) {
             var self = this, resource = $pane.data('resource');
+            if (action === 'partnerDetail') return this.partnerDetail($pane,row.id);
             if (action === 'supplierApi') return this.supplierApiConfig($pane,row.id);
             if (action === 'commerceDetail') return $.getJSON('shop/v5/workspace/commerceDetail',{resource:resource,id:row.id}).done(function(res){if(Number(res.code)!==1){Toastr.error(res.msg||'读取失败');return;}self.showCommerceDetail(res.data||{});}).fail(function(){Toastr.error('详情读取失败');});
             if (action === 'ship') return this.prompt('物流公司', '', function (carrier) { self.prompt('运单号', '', function (tracking) { Fast.api.ajax({url:'shop/v5/workspace/shipOrder',type:'POST',data:{order_sn:row.order_sn,carrier:carrier,tracking_no:tracking,__token__:self.config.csrfToken}},function(data){self.config.csrfToken=data.__token__||self.config.csrfToken;self.load($pane,1);return false;},function(data){if(data&&data.__token__)self.config.csrfToken=data.__token__;return true;}); }); });
@@ -203,6 +212,26 @@ define(['jquery', 'bootstrap', 'backend', 'table', 'form'], function ($, undefin
                     self.showImportResult(res.data || {}, $pane);
                 }).fail(function () { Toastr.error('导入详情加载失败'); });
             }
+        },
+        partnerDetail: function ($pane, id) {
+            var self=this;
+            $.getJSON('shop/v5/workspace/partnerApplicationDetail',{id:id}).done(function(res){
+                if(!res || Number(res.code)!==1){Toastr.error(res&&res.msg||'申请详情读取失败');return;}
+                var data=res.data||{}, rows=[['合作类型',self.textValue('partner_type',data.partner_type,{})],['主体名称',data.company_name],['联系人',data.contact_name],['联系电话',data.contact_mobile],['微信号',data.contact_wechat||'未填写'],['所在地区',(data.location||[]).map(function(item){return item.name;}).join(' ')||'旧申请未填写'],['合作介绍',data.capacity_summary||'未填写']], html='<div class="partner-application-detail" style="padding:24px;line-height:1.8">';
+                rows.forEach(function(row){html+='<div style="margin-bottom:14px"><strong>'+self.escape(row[0])+'</strong><div style="white-space:pre-wrap;overflow-wrap:anywhere">'+self.escape(row[1])+'</div></div>';});
+                html+='<p class="text-muted">此处记录联系进展。正式合作需在核对资料后另行维护。</p><label>联系状态</label><select class="form-control partner-follow-status" '+(data.can_follow?'':'disabled')+'>';
+                ['pending','contacted','closed'].forEach(function(value){html+='<option value="'+value+'" '+(data.follow_up_status===value?'selected':'')+'>'+self.escape(self.textValue('follow_up_status',value,{}))+'</option>';});
+                html+='</select><label style="margin-top:16px">跟进备注</label><textarea class="form-control partner-follow-note" rows="4" maxlength="1000" '+(data.can_follow?'':'disabled')+'>'+self.escape(data.follow_up_note||'')+'</textarea></div>';
+                var busy=false;
+                Layer.open({type:1,title:'合作申请详情',area:[Math.min(720,$(window).width()-24)+'px','85%'],content:html,btn:data.can_follow?['保存跟进','关闭']:['关闭'],yes:function(index,layer){
+                    if(!data.can_follow){Layer.close(index);return;}
+                    if(busy)return;busy=true;
+                    Fast.api.ajax({url:'shop/v5/workspace/followPartnerApplication',type:'POST',data:{id:id,version:data.version,follow_up_status:$(layer).find('.partner-follow-status').val(),follow_up_note:$(layer).find('.partner-follow-note').val(),__token__:data.__token__}},function(result){
+                        if(result&&result.__token__)self.config.csrfToken=result.__token__;
+                        Layer.close(index);self.load($pane,1);Toastr.success('跟进已保存');return false;
+                    },function(result){busy=false;if(result&&result.__token__)data.__token__=result.__token__;return true;});
+                }});
+            }).fail(function(){Toastr.error('申请详情读取失败，请重试');});
         },
         reviewSupplierApplication: function ($pane, row, decision) {
             var self=this;

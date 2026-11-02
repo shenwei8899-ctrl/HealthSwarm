@@ -17,7 +17,7 @@ function finishEntrance(event){if(event.target?.id===event.currentTarget?.id)ent
 const name=computed(()=>accountNickname.value||getSession()?.accountName||profile.value?.members.find(m=>m.relation==='本人')?.name||'我')
 const unavailableFeatures = {
 
-  devices: '健康设备', supplier: '合作商合作',
+  devices: '健康设备',
 }
 const dietItems = [
   { icon: 'journal', name: '饮食记录', desc: '', url: '/pages/records/index' },
@@ -37,7 +37,7 @@ const profileItems = [
 const settingItems = [
   { icon: 'shield', name: '隐私与账号', desc: '', url: '/pages/settings/privacy' },
   ...(isCommerceEnabled ? [{ icon: 'pin', name: '收货地址', desc: '', url: '/pages/address/index' }] : []),
-  { icon: 'supplier', name: '合作商合作', desc: '正式服务尚未接入', url: 'supplier' },
+  { icon: 'supplier', name: '合作商合作', desc: '填写合作申请', url: '/pages/supplier/index' },
 ]
 let epoch=0
 async function load(){if(busy.value)return;const mine=++epoch;profile.value=null;error.value='';busy.value=true;try{const account=await wechatAuth.restore();if(mine!==epoch)return;if(!account){uni.reLaunch({url:'/pages/index/index'});return}const result=await loadCloudProfile({openConsultation:false,readConfiguration:false});if(mine===epoch)profile.value=result}catch(e){if(mine===epoch)error.value=e.message}finally{if(mine===epoch)busy.value=false}}
@@ -50,7 +50,7 @@ function logout(){uni.showModal({title:'退出账号？',content:'已保存的�
 // Reuse the existing entries and commerce visibility; only their presentation changes.
 const quickItems=[planItems[0],planItems[1],dietItems[0],profileItems[0]]
 const commerceItems=isCommerceEnabled?[...planItems.slice(2),settingItems.find(item=>item.url==='/pages/address/index')]:[]
-const serviceItems=[dietItems[1],profileItems[1],settingItems.find(item=>item.url==='supplier')]
+const serviceItems=[dietItems[1],profileItems[1],settingItems.find(item=>item.url==='/pages/supplier/index')]
 </script>
 <template>
   <view id="my-page" class="screen cloud-my" :class="{'is-entering':entering}" @animationend="finishEntrance">
