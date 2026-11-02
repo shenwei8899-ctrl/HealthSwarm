@@ -1,5 +1,8 @@
 """配餐师固定工具，只检索发布菜谱并计算未审核预览。"""
 
+import json
+
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolRuntime
 from pydantic import Field
 
@@ -7,7 +10,8 @@ from yuxi.agents.toolkits.registry import tool
 from yuxi.agents.toolkits.health import HealthKnowledgeInput, HealthReadInput
 from yuxi.services.health_meal_plan_types import MealPlanSpec
 from yuxi.services.health_family_planner_types import FamilySwapToolInput, FamilyParticipationToolInput
-from yuxi.services.reference_meal_plan_types import ReferencePlanDraft
+from yuxi.services.reference_meal_plan_types import REFERENCE_TOOLS, ReferencePlanDraft
+from yuxi.services.health_vision_types import HealthVisionError
 
 
 class RecipeSearch(HealthReadInput):
@@ -64,13 +68,79 @@ async def read_reference_recipe(file_id: str, chunk_id: str, runtime: ToolRuntim
 @tool(category="health", display_name="保存日常参考餐单", args_schema=ReferencePlanToolInput)
 async def save_reference_meal_plan(
     meals: list, purchase_items: list, purchase_gaps: list, runtime: ToolRuntime
-) -> dict:
+) -> dict | ToolMessage:
     """保存原文可核对的三餐，未知营养保持缺失。"""
     from yuxi.services.reference_meal_plan_service import save_reference_plan
 
-    return await save_reference_plan(
-        runtime.context, {"meals": meals, "purchase_items": purchase_items, "purchase_gaps": purchase_gaps}
-    )
+    try:
+        return await save_reference_plan(
+            runtime.context, {"meals": meals, "purchase_items": purchase_items, "purchase_gaps": purchase_gaps}
+        )
+    except HealthVisionError as error:
+        tools = tuple(
+            name for name in getattr(runtime.context, "tools", ()) if name != "query_family_nutrition_knowledge"
+        )
+        if error.code != "reference_quote_invalid" or tools != REFERENCE_TOOLS:
+            raise
+        messages = runtime.state.get("messages", [])
+        human_index = next((i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)), None)
+        if (
+            human_index is None
+            or messages[human_index].additional_kwargs.get("health_request_id") != runtime.context.request_id
+        ):
+            raise
+        latest = messages[-1]
+        if (
+            not isinstance(latest, AIMessage)
+            or sum(
+                call["id"] == runtime.tool_call_id and call["name"] == "save_reference_meal_plan"
+                for call in latest.tool_calls
+            )
+            != 1
+        ):
+            raise
+        if reference_quote_failure_index(messages, runtime.context.request_id) is not None:
+            raise
+        return ToolMessage(
+            name="save_reference_meal_plan",
+            tool_call_id=runtime.tool_call_id,
+            status="error",
+            content=json.dumps(
+                {"error_code": error.code, "request_id": runtime.context.request_id, "message": error.message},
+                ensure_ascii=False,
+            ),
+        )
+
+
+def reference_quote_failure_index(messages, request_id):
+    """定位本请求真实保存调用的首次引文失败，不采纳旧轮次或模型正文。"""
+    human_index = next((i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)), None)
+    if human_index is None or messages[human_index].additional_kwargs.get("health_request_id") != request_id:
+        return None
+    declared = {}
+    for index in range(human_index + 1, len(messages)):
+        message = messages[index]
+        if isinstance(message, AIMessage):
+            for call in message.tool_calls:
+                declared[call["id"]] = call["name"] if call["id"] not in declared else None
+        elif (
+            isinstance(message, ToolMessage)
+            and message.status == "error"
+            and message.name == "save_reference_meal_plan"
+        ):
+            if declared.get(message.tool_call_id) != message.name:
+                continue
+            try:
+                payload = json.loads(message.content)
+            except (ValueError, TypeError):
+                continue
+            if (
+                isinstance(payload, dict)
+                and payload.get("error_code") == "reference_quote_invalid"
+                and payload.get("request_id") == request_id
+            ):
+                return index
+    return None
 
 
 @tool(category="health", display_name="初始配餐当前上下文", args_schema=HealthReadInput)

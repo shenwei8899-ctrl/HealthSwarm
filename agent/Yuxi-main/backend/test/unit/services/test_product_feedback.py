@@ -21,7 +21,9 @@ def test_feedback_reencodes_image_and_discards_text_metadata():
     assert (mime, extension) == ("image/jpeg", "jpg")
 
 
-@pytest.mark.parametrize("data", [b"", b"not-a-photo", b"x" * (5 * 1024 * 1024 + 1)])
+@pytest.mark.parametrize(
+    "data", [b"", b"not-a-photo", b"x" * (5 * 1024 * 1024 + 1)], ids=("empty", "not-an-image", "over-limit")
+)
 def test_feedback_rejects_invalid_or_oversized_image(data):
     """伪造后缀和超限图片在对象写入之前失败。"""
     with pytest.raises(HTTPException) as error:

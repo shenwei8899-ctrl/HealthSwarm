@@ -23,7 +23,7 @@ from yuxi.agents.buildin.health_meal_planner.graph import HealthAuthorizationMid
 from yuxi.agents.toolkits import meal_planner
 from yuxi.models.chat import ChatCompletionsAdapter
 from yuxi.services import health_meal_plan_service, reference_meal_plan_service
-from yuxi.services import model_message_audit_service
+from yuxi.services import model_message_audit_service, tool_message_audit_service
 from yuxi.services.health_family_planner_types import FAMILY_PLANNER_TOOLS
 from yuxi.services.health_initial_meal_plan_types import INITIAL_PLANNER_TOOLS
 from yuxi.services.health_safe_planner_types import SAFE_PLANNER_TOOLS
@@ -175,6 +175,52 @@ def request_for(messages, context=None):
     )
 
 
+@pytest.mark.asyncio
+async def test_quote_correction_budget_applies_to_every_model(services):
+    """修正参数仍无效时，各模型都在再次外呼前停止，缺少保存工具同样拒绝。"""
+    failed_call = {"id": "first-save", "name": "save_reference_meal_plan", "args": DRAFT, "type": "tool_call"}
+    first_failure = [
+        human(),
+        AIMessage(content="", tool_calls=[failed_call]),
+        ToolMessage(
+            content=json.dumps({"error_code": "reference_quote_invalid", "request_id": "synthetic-request"}),
+            name="save_reference_meal_plan",
+            tool_call_id="first-save",
+            status="error",
+        ),
+    ]
+    invalid_correction = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    **failed_call,
+                    "id": "corrected-save",
+                    "args": {"meals": [], "purchase_items": [], "purchase_gaps": []},
+                }
+            ],
+        ),
+        ToolMessage(
+            content="合成 schema 错误",
+            name="save_reference_meal_plan",
+            tool_call_id="corrected-save",
+            status="error",
+        ),
+    ]
+    models = [ControlledStreamModel(plan=[]), ChatCompletionsAdapter(model="synthetic", api_key="synthetic-test-key")]
+    for model in models:
+        for messages, tools, code in (
+            (first_failure + invalid_correction, TOOLS, "reference_quote_correction_exhausted"),
+            (first_failure, [], "reference_quote_correction_invalid"),
+        ):
+            request = request_for(messages).override(model=model, tools=tools)
+            handler = AsyncMock()
+            with pytest.raises(HealthVisionError, match=code):
+                await MealPlanResultMiddleware().awrap_model_call(request, handler)
+            handler.assert_not_awaited()
+    services.saved.assert_not_awaited()
+
+
 async def run_graph(model, *, context=None, checkpoint=None, messages=None):
     """真实 create_agent、ToolNode、流桥和 checkpoint 驱动全部 hook。"""
     observed = ObserveRequests()
@@ -309,7 +355,23 @@ def test_parameter_recovery_does_not_adopt_unrelated_or_unfinished_calls(boundar
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", ["recover", "permission_revoked", "single_empty", "retry_still_empty"])
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "recover",
+        "permission_revoked",
+        "single_empty",
+        "retry_still_empty",
+        "quote_recover",
+        "quote_repeat",
+        "quote_invalid_draft",
+        "quote_multiple",
+        "quote_invalid_extra",
+        "quote_other_tool",
+        "quote_with_knowledge",
+        "quote_revoked",
+    ],
+)
 async def test_empty_parameters_recover_on_next_real_node_with_audit_authorization_and_usage(
     scenario, services, monkeypatch
 ):
@@ -321,7 +383,7 @@ async def test_empty_parameters_recover_on_next_real_node_with_audit_authorizati
     async def authorized(context, messages=None):
         """只隔离权限数据库，保留实际授权 middleware 的每节点调用路径。"""
         permission_checks.append(context.request_id)
-        if scenario == "permission_revoked" and len(permission_checks) == 2:
+        if scenario in {"permission_revoked", "quote_revoked"} and len(permission_checks) == 2:
             raise HealthVisionError("permission_denied", "合成授权已撤回", 403)
 
     info = SimpleNamespace(
@@ -341,39 +403,93 @@ async def test_empty_parameters_recover_on_next_real_node_with_audit_authorizati
 
     monkeypatch.setattr(model_message_audit_service.pg_manager, "get_async_session_context", audit_session)
     monkeypatch.setattr(model_message_audit_service, "ModelMessageAuditRepository", lambda db: audit_repository)
+    tool_repository = SimpleNamespace(
+        start=AsyncMock(return_value=(None, True)), fail=AsyncMock(), complete=AsyncMock(), observe_error=AsyncMock()
+    )
+    monkeypatch.setattr(tool_message_audit_service, "ToolMessageAuditRepository", lambda db: tool_repository)
     context = Context()
     context.model = info.spec
+    if scenario == "quote_with_knowledge":
+        context.tools = [*REFERENCE_TOOLS, "query_family_nutrition_knowledge"]
     collector = model_message_audit_service.ModelMessageAuditCollector(
         run_id=context.run_id, request_id=context.request_id, thread_id=context.thread_id, worker_id="synthetic-worker"
     )
+    tool_collector = tool_message_audit_service.ToolMessageAuditCollector(
+        run_id=context.run_id, request_id=context.request_id, thread_id=context.thread_id, worker_id="synthetic-worker"
+    )
+    quote_case = scenario.startswith("quote_")
+    if quote_case:
+
+        async def checked_save(context, payload):
+            """保留实际逐字引用 guard，只有来源读取与持久化使用合成边界。"""
+            document = {
+                "content": "合成食谱\n合成食材\n合成步骤",
+                "file_id": "synthetic-file",
+                "chunk_id": "synthetic-chunk",
+                "kb_id": "synthetic-kb",
+                "filename": "合成食谱",
+                "file_hash": "synthetic-hash",
+                "chunks_hash": "synthetic-chunks",
+            }
+            reference_meal_plan_service.checked_reference_meals(
+                ReferencePlanDraft.model_validate(payload), {("synthetic-file", "synthetic-chunk"): document}, []
+            )
+            return snapshot()
+
+        services.saved.side_effect = checked_save
     wire_requests = []
+    invalid_quote_draft = json.loads(json.dumps(DRAFT))
+    invalid_quote_draft["meals"][0]["dishes"][0]["portion_quote"] = "每人建议一份合成份量"
 
     def respond(request):
         wire = json.loads(request.content)
         wire_requests.append(wire)
         index = len(wire_requests)
         if index == 1:
-            count = 1 if scenario == "single_empty" else 2
+            count = 1 if quote_case or scenario == "single_empty" else 2
+            first_args = {}
+            if quote_case:
+                first_args = invalid_quote_draft
             calls = [
                 {
                     "id": f"empty-{number}",
                     "type": "function",
-                    "function": {"name": "save_reference_meal_plan", "arguments": "{}"},
+                    "function": {"name": "save_reference_meal_plan", "arguments": json.dumps(first_args)},
                 }
                 for number in range(count)
             ]
         elif index == 2:
             assert wire["tool_choice"] == {"type": "function", "function": {"name": "save_reference_meal_plan"}}
+            corrected = invalid_quote_draft if scenario == "quote_repeat" else json.loads(json.dumps(DRAFT))
+            if quote_case and scenario != "quote_repeat":
+                corrected["meals"][0]["dishes"][0]["portion_quote"] = None
             calls = [
                 {
                     "id": "corrected-save",
                     "type": "function",
                     "function": {
                         "name": "save_reference_meal_plan",
-                        "arguments": "{}" if scenario == "retry_still_empty" else json.dumps(DRAFT),
+                        "arguments": "{}" if scenario == "retry_still_empty" else json.dumps(corrected),
                     },
                 }
             ]
+            if scenario == "quote_multiple":
+                calls.append({**calls[0], "id": "forbidden-extra-save"})
+            if scenario == "quote_invalid_extra":
+                calls.append(
+                    {
+                        "id": "forbidden-invalid-save",
+                        "type": "function",
+                        "function": {"name": "save_reference_meal_plan", "arguments": "invalid-json"},
+                    }
+                )
+            if scenario == "quote_invalid_draft":
+                calls[0]["function"]["arguments"] = json.dumps({"meals": [], "purchase_items": [], "purchase_gaps": []})
+            if scenario == "quote_other_tool":
+                calls[0]["function"] = {
+                    "name": "read_reference_recipe",
+                    "arguments": '{"file_id":"synthetic-file","chunk_id":"synthetic-chunk"}',
+                }
         else:
             assert index == 3 and "tools" not in wire and "tool_choice" not in wire
             calls = []
@@ -420,18 +536,60 @@ async def test_empty_parameters_recover_on_next_real_node_with_audit_authorizati
                                 },
                             },
                         )
+                    elif event["method"] == "tools":
+                        params = event["params"]
+                        data = dict(params["data"])
+                        if isinstance(data.get("output"), ToolMessage):
+                            data["output"] = data["output"].model_dump()
+                        await tool_collector.consume(
+                            {
+                                "method": "tools",
+                                "namespace": params["namespace"],
+                                "seq": event["seq"],
+                                "timestamp": params["timestamp"],
+                                "data": data,
+                            }
+                        )
 
-        if scenario == "recover":
+        if scenario in {"recover", "quote_recover", "quote_with_knowledge"}:
             await consume()
         else:
-            code = "permission_denied" if scenario == "permission_revoked" else "reference_tool_parameters_invalid"
+            code = (
+                "permission_denied"
+                if scenario in {"permission_revoked", "quote_revoked"}
+                else "reference_quote_invalid"
+                if scenario == "quote_repeat"
+                else "reference_quote_correction_invalid"
+                if scenario in {"quote_multiple", "quote_invalid_extra", "quote_other_tool"}
+                else "reference_quote_correction_exhausted"
+                if scenario == "quote_invalid_draft"
+                else "reference_tool_parameters_invalid"
+            )
             with pytest.raises(HealthVisionError, match=code):
                 await consume()
         state = await graph.aget_state(config)
 
-    expected_calls = 3 if scenario == "recover" else 2 if scenario == "retry_still_empty" else 1
+    expected_calls = (
+        3
+        if scenario in {"recover", "quote_recover", "quote_with_knowledge"}
+        else 2
+        if scenario
+        in {
+            "retry_still_empty",
+            "quote_repeat",
+            "quote_invalid_draft",
+            "quote_multiple",
+            "quote_invalid_extra",
+            "quote_other_tool",
+        }
+        else 1
+    )
     assert len(wire_requests) == expected_calls
-    assert len(permission_checks) == (3 if scenario in {"recover", "retry_still_empty"} else 2)
+    assert len(permission_checks) == (
+        3
+        if scenario in {"recover", "retry_still_empty", "quote_recover", "quote_with_knowledge", "quote_invalid_draft"}
+        else 2
+    )
     assert state.values["token_usage"]["run"]["model_call_count"] == expected_calls
     assert state.values["token_usage"]["run"]["total"] == {
         "input_tokens": 2 * expected_calls,
@@ -440,24 +598,39 @@ async def test_empty_parameters_recover_on_next_real_node_with_audit_authorizati
     }
     tools = [message for message in state.values["messages"] if isinstance(message, ToolMessage)]
     first_errors = [message for message in tools if message.tool_call_id.startswith("empty-")]
-    assert len(first_errors) == (1 if scenario == "single_empty" else 2)
+    assert len(first_errors) == (1 if quote_case or scenario == "single_empty" else 2)
     assert all(message.status == "error" for message in first_errors)
     assert audit_repository.finish.await_count == expected_calls
     first_audit = audit_repository.finish.await_args_list[0].kwargs
     assert len(first_audit["metadata"]["tool_calls"]) == len(first_errors)
-    assert all(call["args"] == {} for call in first_audit["metadata"]["tool_calls"])
+    if quote_case:
+        assert tool_repository.fail.await_count == 1
+        first_failed_tool = tool_repository.fail.await_args_list[0].kwargs
+        assert first_failed_tool["tool_call_id"] == "empty-0"
+        assert json.loads(first_failed_tool["content"])["error_code"] == "reference_quote_invalid"
+        assert tool_repository.observe_error.await_count == (
+            1 if scenario in {"quote_repeat", "quote_invalid_draft"} else 0
+        )
+    else:
+        assert all(call["args"] == {} for call in first_audit["metadata"]["tool_calls"])
     assert all(
         call.kwargs["run_id"] == context.run_id and call.kwargs["request_id"] == context.request_id
         for call in audit_repository.finish.await_args_list
     )
-    if scenario == "recover":
-        services.saved.assert_awaited_once()
+    if scenario in {"recover", "quote_recover", "quote_with_knowledge"}:
+        assert services.saved.await_count == (2 if quote_case else 1)
+        if quote_case:
+            rejected = ReferencePlanDraft.model_validate(services.saved.await_args_list[0].args[1]).model_dump()
+            corrected = ReferencePlanDraft.model_validate(services.saved.await_args_list[1].args[1]).model_dump()
+            assert rejected["meals"][0]["dishes"][0]["portion_quote"] == "每人建议一份合成份量"
+            assert corrected["meals"][0]["dishes"][0]["portion_quote"] is None
+            assert ReferencePlanDraft.model_validate(corrected).model_dump(exclude_none=True) == DRAFT
         assert json.loads(state.values["messages"][-1].text) == snapshot()
         assert [wire.get("stream") is True for wire in wire_requests] == [False, False, True]
         assert all(wire["parallel_tool_calls"] is False for wire in wire_requests[:2])
         assert len([message for message in tools if message.status == "success"]) == 1
     else:
-        services.saved.assert_not_awaited()
+        assert services.saved.await_count == (2 if scenario == "quote_repeat" else 1 if quote_case else 0)
 
 
 @pytest.mark.asyncio

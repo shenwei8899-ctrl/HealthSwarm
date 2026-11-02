@@ -49,7 +49,7 @@ async def environment(monkeypatch):
     if not database_url:
         pytest.skip("需要显式配置 VOICE_TEST_DATABASE_URL 指向隔离 PostgreSQL")
     schema = "voice_" + uuid4().hex
-    engine = create_async_engine(database_url, connect_args={"options": f"-csearch_path={schema},public"})
+    engine = create_async_engine(database_url, connect_args={"server_settings": {"search_path": f"{schema},public"}})
     async with engine.begin() as connection:
         await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
         await connection.run_sync(lambda sync: Department.__table__.create(sync))

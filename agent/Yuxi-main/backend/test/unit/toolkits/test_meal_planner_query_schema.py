@@ -25,6 +25,7 @@ from yuxi.agents.toolkits.meal_planner import (
     query_initial_nutrition_knowledge,
     search_meal_plan_recipes,
     search_reference_recipes,
+    save_reference_meal_plan,
 )
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.models_knowledge import KnowledgeChunk, KnowledgeFile
@@ -239,3 +240,87 @@ async def test_valid_keyword_does_not_swallow_authorization_or_source_errors(sea
         await graph.ainvoke({"messages": [HumanMessage("合成：查询参考")]}, context=SearchContext())
     assert failure.value.code == code
     search_services.authorize.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "code,boundary",
+    [
+        ("reference_quote_invalid", "current"),
+        ("reference_quote_invalid", "optional_knowledge"),
+        ("reference_quote_invalid", "old_request"),
+        ("reference_quote_invalid", "unmarked_request"),
+        ("reference_quote_invalid", "wrong_call_id"),
+        ("reference_quote_invalid", "non_reference"),
+        ("reference_quote_invalid", "unbound_failure"),
+        ("reference_quote_invalid", "old_failure"),
+        ("not_authorized", "current"),
+        ("source_invalidated", "current"),
+    ],
+)
+async def test_reference_save_only_exposes_first_current_quote_failure(monkeypatch, code, boundary):
+    """专用工具保留真实失败身份，其他业务错误继续抛出。"""
+    from yuxi.services import reference_meal_plan_service
+    from yuxi.services.reference_meal_plan_types import REFERENCE_TOOLS
+
+    context = SearchContext()
+    context.tools = list(REFERENCE_TOOLS)
+    current = [
+        HumanMessage("合成保存请求", additional_kwargs={"health_request_id": context.request_id}),
+        AIMessage(content="", tool_calls=[{"id": "save-quote", "name": "save_reference_meal_plan", "args": {}}]),
+    ]
+    if boundary == "optional_knowledge":
+        context.tools.append("query_family_nutrition_knowledge")
+    elif boundary == "old_request":
+        current[0].additional_kwargs["health_request_id"] = "previous-request"
+    elif boundary == "unmarked_request":
+        current[0].additional_kwargs.clear()
+    elif boundary == "non_reference":
+        context.tools = []
+    elif boundary in {"unbound_failure", "old_failure"}:
+        prior = ToolMessage(
+            name="save_reference_meal_plan",
+            tool_call_id="unbound-save",
+            status="error",
+            content=json.dumps({"error_code": "reference_quote_invalid", "request_id": context.request_id}),
+        )
+        if boundary == "old_failure":
+            current[:0] = [
+                HumanMessage("旧请求", additional_kwargs={"health_request_id": "previous-request"}),
+                AIMessage(content="", tool_calls=[{"id": prior.tool_call_id, "name": prior.name, "args": {}}]),
+                prior,
+            ]
+        else:
+            current.insert(1, prior)
+    operation = ToolRuntime(
+        state={"messages": current},
+        context=context,
+        config={},
+        stream_writer=lambda _: None,
+        tool_call_id="other-call" if boundary == "wrong_call_id" else "save-quote",
+        store=None,
+    )
+    failure = HealthVisionError(code, "合成原文核验拒绝", 422)
+    service = AsyncMock(side_effect=failure)
+    monkeypatch.setattr(reference_meal_plan_service, "save_reference_plan", service)
+    if code != "reference_quote_invalid" or boundary in {
+        "old_request",
+        "unmarked_request",
+        "wrong_call_id",
+        "non_reference",
+    }:
+        with pytest.raises(HealthVisionError) as caught:
+            await save_reference_meal_plan.coroutine([], [], [], operation)
+        assert caught.value is failure
+        return
+    result = await save_reference_meal_plan.coroutine([], [], [], operation)
+    assert isinstance(result, ToolMessage) and result.status == "error"
+    assert result.name == "save_reference_meal_plan" and result.tool_call_id == "save-quote"
+    assert json.loads(result.content)["error_code"] == code
+    current.append(result)
+    current.append(AIMessage(content="", tool_calls=[{"id": "save-retry", "name": result.name, "args": {}}]))
+    operation.tool_call_id = "save-retry"
+    with pytest.raises(HealthVisionError) as caught:
+        await save_reference_meal_plan.coroutine([], [], [], operation)
+    assert caught.value is failure
+    assert service.await_count == 2

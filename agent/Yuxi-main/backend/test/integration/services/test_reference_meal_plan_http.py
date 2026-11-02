@@ -1377,3 +1377,157 @@ async def test_latest_catalog_receipt_decides_unavailability_reason(family_profi
             await service.save_reference_plan(context, draft)
     else:
         assert (await service.save_reference_plan(context, draft))["purchase_status"] == "unselected"
+
+
+async def test_reference_quote_failure_audit_then_null_correction(family_profile_http, monkeypatch):
+    """真实 ToolNode/v3 审计在两次显式操作之间落库；模型声明合成，不冒充完整 worker。"""
+    from langchain_core.messages import HumanMessage
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.prebuilt import ToolCallTransformer
+    from langgraph.stream.transformers import CustomTransformer
+    from yuxi.agents.toolkits.meal_planner import save_reference_meal_plan
+    from yuxi.repositories.model_message_audit_repository import ModelMessageAuditRepository
+    from yuxi.services.reference_meal_plan_types import REFERENCE_TOOLS
+    from yuxi.services.tool_message_audit_service import ToolMessageAuditCollector
+    from yuxi.storage.postgres.models_business import ToolCall
+
+    current = await setup_reference(family_profile_http, monkeypatch)
+    bound = await bind_reference(current)
+    context = await running_context(current, bound.json()["thread_id"])
+    context.tools = list(REFERENCE_TOOLS)
+    sessions = current[1]
+    await receipt(sessions, context, "get_reference_plan_context", await service.get_reference_context(context))
+    await receipt(
+        sessions, context, "search_reference_recipes", await service.search_reference_recipes(context, "清粥")
+    )
+    await receipt(
+        sessions,
+        context,
+        "read_reference_recipe",
+        await service.read_reference_recipe(context, "reference-file", "reference-chunk"),
+    )
+    draft = {
+        "meals": [
+            {
+                "meal_type": "breakfast",
+                "dishes": [
+                    {
+                        "file_id": "reference-file",
+                        "chunk_id": "reference-chunk",
+                        "name": "清粥",
+                        "ingredients": ["大米100克"],
+                        "steps": ["加水煮熟"],
+                        "portion_quote": "个人建议一人份",
+                    }
+                ],
+            }
+        ],
+        "purchase_items": [],
+        "purchase_gaps": [{"ingredient": "大米100克", "reason": "needs_confirmation", "detail": "请确认实际包装需求"}],
+    }
+    builder = StateGraph(MessagesState, context_schema=BaseContext)
+    builder.add_node("tools", ToolNode([save_reference_meal_plan], handle_tool_errors=False))
+    builder.add_edge(START, "tools")
+    builder.add_edge("tools", END)
+    graph = builder.compile(checkpointer=InMemorySaver(), transformers=[ToolCallTransformer])
+    config = {"configurable": {"thread_id": context.thread_id}}
+    collector = ToolMessageAuditCollector(
+        run_id=context.run_id, request_id=context.request_id, thread_id=context.thread_id, worker_id=context.worker_id
+    )
+    first_failed_audit = None
+    plan = None
+    for attempt in range(2):
+        call_id = str(uuid4())
+        call = {"id": call_id, "name": "save_reference_meal_plan", "args": deepcopy(draft), "type": "tool_call"}
+        model_operation = str(uuid4())
+        async with sessions.begin() as db:
+            repo = ModelMessageAuditRepository(db)
+            await repo.start(
+                run_id=context.run_id,
+                request_id=context.request_id,
+                thread_id=context.thread_id,
+                worker_id=context.worker_id,
+                operation_id=model_operation,
+                sequence=attempt * 100,
+                started_at=utc_now_naive(),
+            )
+            await repo.finish(
+                run_id=context.run_id,
+                request_id=context.request_id,
+                thread_id=context.thread_id,
+                worker_id=context.worker_id,
+                operation_id=model_operation,
+                content="",
+                finished_at=utc_now_naive(),
+                duration_ms=0,
+                usage=None,
+                metadata={"tool_calls": [call]},
+            )
+        incoming = (
+            [HumanMessage("生成早餐", additional_kwargs={"health_request_id": context.request_id})]
+            if not attempt
+            else []
+        ) + [AIMessage(content="", tool_calls=[call])]
+        async with await graph.astream_events(
+            {"messages": incoming}, context=context, config=config, version="v3", transformers=[CustomTransformer]
+        ) as events:
+            async for event in events:
+                if event["method"] != "tools":
+                    continue
+                params = event["params"]
+                data = dict(params["data"])
+                if isinstance(data.get("output"), ToolMessage):
+                    data["output"] = data["output"].model_dump()
+                await collector.consume(
+                    {
+                        "method": "tools",
+                        "namespace": params["namespace"],
+                        "seq": event["seq"],
+                        "timestamp": params["timestamp"],
+                        "data": data,
+                    }
+                )
+        state = await graph.aget_state(config)
+        result = state.values["messages"][-1]
+        async with sessions() as db:
+            audit = await db.scalar(
+                select(Message).where(
+                    Message.run_id == context.run_id,
+                    Message.operation_id == call_id,
+                    Message.message_type == "tool_audit",
+                )
+            )
+            compat = await db.scalar(select(ToolCall).where(ToolCall.langgraph_tool_call_id == call_id))
+            assert audit is not None and compat is not None
+            if not attempt:
+                assert result.status == "error" and audit.execution_status == "failed" and compat.status == "error"
+                assert json.loads(audit.content)["error_code"] == "reference_quote_invalid"
+                assert not audit.extra_metadata.get("awaiting_run_terminal")
+                assert (
+                    await db.scalar(
+                        select(func.count())
+                        .select_from(HealthInitialPlanPreview)
+                        .where(HealthInitialPlanPreview.run_id == context.run_id)
+                    )
+                    == 0
+                )
+                first_failed_audit = audit.id
+            else:
+                assert (
+                    result.status == "success" and audit.execution_status == "completed" and compat.status == "success"
+                )
+                plan = json.loads(result.content)
+                assert plan["meals"][0]["dishes"][0]["portion_quote"] is None
+                assert (
+                    len(
+                        await service.tool_payloads(
+                            db, await db.get(AgentRun, context.run_id), "save_reference_meal_plan"
+                        )
+                    )
+                    == 1
+                )
+                assert (await db.get(Message, first_failed_audit)).execution_status == "failed"
+        draft["meals"][0]["dishes"][0]["portion_quote"] = None
+    assert (await planner_final_result(context, json.dumps({"preview_id": plan["preview_id"]})))["preview_id"] == plan[
+        "preview_id"
+    ]
