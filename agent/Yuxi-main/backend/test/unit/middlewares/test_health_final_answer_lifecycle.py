@@ -266,11 +266,11 @@ async def test_legacy_twenty_steps_stops_before_finalize_and_any_custom(role, li
     [
         ("health-diet-analyst", False, 20),
         ("health-meal-planner", False, 40),
-        ("health-meal-planner", True, 80),
+        ("health-meal-planner", True, 224),
         ("health-quality", False, 40),
         ("health-purchase", False, 40),
     ],
 )
-def test_non_education_owner_limits_remain_unchanged(role, reference, expected):
-    """角色修改不扩大非教育任务原有限制。"""
+def test_non_education_owner_limits_follow_each_fixed_mode(role, reference, expected):
+    """仅参考三餐为完整检索读取保留224步，其他模式继续使用原有限制。"""
     assert owner_step_limit(role, reference=reference) == expected

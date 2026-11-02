@@ -172,7 +172,11 @@ async def test_changed_profile_restarts_same_arrangement_but_revocation_still_de
     monkeypatch.setattr(health_vision_service, "configuration", configured)
     client, sessions, users = family_profile_http
     family, profile_path, data, headers = await source(client, users["self"])
-    data["analysis_consent"] = {"processor": "synthetic-processor", "policy_version": "synthetic-policy"}
+    data["analysis_consent"] = {
+        "purpose": "meal_plan",
+        "processor": "synthetic-processor",
+        "policy_version": "synthetic-policy",
+    }
     response = await client.post(profile_path, json=data, headers=headers)
     assert response.status_code == 200, response.text
     rid = str(uuid4())

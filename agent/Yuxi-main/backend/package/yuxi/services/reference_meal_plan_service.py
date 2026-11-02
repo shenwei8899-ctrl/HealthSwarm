@@ -183,10 +183,12 @@ async def get_reference_context(context):
         "recipe_catalog": recipe_catalog,
         "recipe_catalog_notice": "最多60项当前家常菜谱文件名，仅作查找目录；不是原文读取回执或个人适用性证明。",
         "catalog": [
-            reference_product(s)
+            {k: v for k, v in reference_product(s).items() if k not in {"product_description", "data_issues"}}
             for s in catalog["items"]
             if s.get("sale_status") == "available" and int(s.get("available_quantity", 0)) > 0
         ],
+        "catalog_notice": "仅提供商品名称、包装、配料、过敏原与完整性状态；营销详情和重复缺项说明不进入配餐上下文。"
+        "资料不完整时仍须核对包装；保存时按完整商品事实重新检查，不能视为个人适用性证明。",
         "commerce_notice": notice,
         "boundary": "日常烹饪参考，未作专业审核；未核算营养和个人达标结论。",
     }

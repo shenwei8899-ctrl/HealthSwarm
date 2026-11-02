@@ -242,6 +242,108 @@ async def run_graph(model, *, context=None, checkpoint=None, messages=None):
     return await graph.aget_state(config), observed, native
 
 
+@pytest.mark.asyncio
+async def test_reference_model_history_preserves_current_receipts_and_original_checkpoint():
+    """旧轮大目录不再发送，用户约束、追问及本轮来源保留且审计不被改写。"""
+    old_human = human("old-request")
+    old_call = AIMessage(content="", tool_calls=[{"id": "old", "name": "get_reference_plan_context", "args": {}}])
+    old_result = ToolMessage(content="旧轮大目录" * 1000, name="get_reference_plan_context", tool_call_id="old")
+    question = AIMessage(content='{"questions":["合成追问"]}')
+    current_result = ToolMessage(content="本轮原文", name="read_reference_recipe", tool_call_id="current")
+    messages = [old_human, old_call, old_result, question, human(), current_result]
+    request = request_for(messages)
+    handler = AsyncMock()
+    await MealPlanResultMiddleware().awrap_model_call(request, handler)
+    sent = handler.call_args.args[0]
+    assert sent.messages == [old_human, question, messages[4], current_result]
+    assert sent.state["messages"] == messages
+    assert request.messages == messages
+    assert old_result.content == "旧轮大目录" * 1000
+    unmatched = request_for([old_human, old_call, old_result])
+    assert MealPlanResultMiddleware._reference_model_messages(unmatched) == unmatched.messages
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("old_limit", [True, False])
+async def test_full_three_meal_graph_has_room_for_fifteen_recipes_and_final_receipt(old_limit, services, monkeypatch):
+    """生产构图与准备配置支持完整三餐；80步在原原因上复现失败。"""
+    from langgraph.errors import GraphRecursionError
+
+    from yuxi.agents.context import BaseContext
+    from yuxi.agents.buildin.health_meal_planner import graph as planner
+    from yuxi.services import health_consultation_service, health_family_kb_service, health_meal_feedback_service
+
+    context = BaseContext(
+        uid="synthetic", run_id="synthetic-run", request_id="synthetic-request", thread_id="synthetic-thread"
+    )
+    binding = SimpleNamespace(initial_planner_selection={"selection": {"mode": "reference", "plan_date": "2099-01-01"}})
+    info = SimpleNamespace(
+        provider_id="synthetic", provider_type="openai", model_id="synthetic", spec="synthetic:model"
+    )
+    monkeypatch.setattr(
+        health_consultation_service, "require_consultation", AsyncMock(return_value=(binding, {"model": info.spec}))
+    )
+    monkeypatch.setattr(health_consultation_service, "require_consultation_attempt", AsyncMock())
+    monkeypatch.setattr(
+        "yuxi.services.agent_request_queue_service.should_end_run_for_steer", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(health_family_kb_service, "filter_family_kb_history", lambda messages: messages)
+    monkeypatch.setattr(
+        health_meal_feedback_service, "filter_health_history", AsyncMock(side_effect=lambda context, messages: messages)
+    )
+    monkeypatch.setattr(planner.model_cache, "get_model_info", lambda _: info)
+    await health_consultation_service.prepare_consultation_context(
+        context,
+        None,
+        SimpleNamespace(agent_slug="health-meal-planner", input_payload={"health_processing": {"synthetic": True}}),
+    )
+    calls = [("get_reference_plan_context", {})]
+    for number in range(15):
+        calls.extend(
+            [
+                ("search_reference_recipes", {"query": f"合成菜{number}"}),
+                ("read_reference_recipe", {"file_id": f"file-{number}", "chunk_id": f"chunk-{number}"}),
+            ]
+        )
+    calls.append(("save_reference_meal_plan", DRAFT))
+    chunks = [
+        [
+            AIMessageChunk(
+                content="",
+                tool_call_chunks=[{"name": name, "args": json.dumps(args), "id": f"call-{index}", "index": 0}],
+            )
+        ]
+        for index, (name, args) in enumerate(calls)
+    ]
+    model = ControlledStreamModel(plan=[*chunks, [AIMessageChunk(content="最终回复")]])
+    monkeypatch.setattr(planner, "load_chat_model", lambda **_: model)
+    monkeypatch.setattr(planner.HealthMealPlannerAgent, "_get_checkpointer", AsyncMock(return_value=InMemorySaver()))
+    for name in ["get_reference_context", "search_reference_recipes", "read_reference_recipe"]:
+        monkeypatch.setattr(reference_meal_plan_service, name, AsyncMock(return_value={"synthetic": True}))
+    graph = await planner.HealthMealPlannerAgent().get_graph(context=context)
+    config = {
+        "configurable": {"thread_id": context.thread_id},
+        "recursion_limit": 80 if old_limit else context.max_execution_steps,
+    }
+
+    async def consume():
+        """走真实流式执行路径直到最终快照。"""
+        async for _ in graph.astream({"messages": [human()]}, context=context, config=config, stream_mode="messages"):
+            pass
+
+    if old_limit:
+        with pytest.raises(GraphRecursionError):
+            await consume()
+        services.saved.assert_not_awaited()
+    else:
+        await consume()
+        state = await graph.aget_state(config)
+        assert json.loads(state.values["messages"][-1].text) == snapshot()
+        assert len(model.calls) == 33
+        assert model.calls[-1]["tools"] == []
+        assert len([m for m in state.values["messages"] if isinstance(m, ToolMessage)]) == 32
+
+
 def sdk_response(message, identifier, prompt_tokens, completion_tokens, *, stream=False):
     """内存 HTTP 提供完整工具 JSON，只有无工具最终回复使用真实 SSE 格式。"""
     usage_data = {
@@ -1057,7 +1159,7 @@ async def test_same_checkpoint_new_request_must_save_again(services):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("boundary", ["no_human", "untagged", "latest_other_request", "save_before_current_human"])
-async def test_old_or_unscoped_receipts_keep_original_request(boundary, services):
+async def test_old_or_unscoped_receipts_cannot_finalize_current_request(boundary, services):
     """只检查最新 Human 的请求边界，不向前搜寻可利用的旧请求标签。"""
     messages = {
         "no_human": [receipt()],
@@ -1068,7 +1170,14 @@ async def test_old_or_unscoped_receipts_keep_original_request(boundary, services
     request = request_for(messages)
     handler = AsyncMock(return_value=ModelResponse(result=[AIMessage(content="继续准备")]))
     await MealPlanResultMiddleware().awrap_model_call(request, handler)
-    handler.assert_awaited_once_with(request)
+    handler.assert_awaited_once()
+    sent = handler.call_args.args[0]
+    assert sent.tools == request.tools and sent.tool_choice == request.tool_choice
+    assert sent.state == request.state
+    if boundary == "save_before_current_human":
+        assert sent.messages == [messages[0], messages[2]]
+    else:
+        assert sent is request
     services.final.assert_not_awaited()
 
 

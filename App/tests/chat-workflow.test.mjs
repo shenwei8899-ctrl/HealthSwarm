@@ -542,11 +542,29 @@ test('typed meal intent uses the current profile and a dinner revision preserves
   } finally { p.dispose() }
 })
 
+for(const hasPlan of [false,true])test(`explicit tomorrow dinner change uses persisted meal state: ${hasPlan}`,async()=>{
+  const p=workflow({readDailyMealPlan:async(_family,date)=>hasPlan?{date,status:'ready',version:1,meals:['breakfast','lunch','dinner'].map(meal_type=>({meal_type,members:[{id:'self'}],meal:{dishes:[{name:meal_type}]},source:{id:'saved-'+meal_type}}))}:{date,status:'absent',version:0,meals:[]}})
+  try{
+    await p.load()
+    p.question.value='配餐验收乙：只换明天晚餐，早餐和午餐不变';await p.sendQuestion()
+    const submits=p.calls.filter(call=>call.action==='submit')
+    if(hasPlan){
+      assert.equal(submits.at(-1).taskType,'reference_meal_preview')
+      assert.deepEqual(submits.at(-1).selection.meal_types,['dinner'])
+      assert.equal(submits.at(-1).selection.plan_date,'2026-10-29')
+      assert.equal(submits.at(-1).selection.daily_base_version,1)
+    }else{
+      assert.equal(submits.length,0)
+      assert.match(p.chatError.value,/还没有饮食计划.*先生成/)
+    }
+  }finally{p.dispose()}
+})
+
 for(const prompt of [false,true])test(`nutrition questions leave a pending meal follow-up${prompt?' from ordinary prompt cards':' when typed'}`,async()=>{
   const p=workflow()
   try{
     await p.load()
-    for(const text of ['日常蛋白质怎么选？','蔬菜怎么做更好吃？','鸡蛋番茄怎么搭配？','早餐怎样省时准备？']){
+    for(const text of ['日常蛋白质怎么选？','蔬菜怎么做更好吃？','鸡蛋番茄怎么搭配？','早餐怎样省时准备？','怎么换明天晚餐？']){
       p.question.value='按我的档案为我配餐';await p.sendQuestion()
       p.publish({status:'completed',result:{type:'needs_input',questions:['需要安排哪些餐次？']}})
       p.question.value=text;await p.sendQuestion(prompt?'consultation':'')

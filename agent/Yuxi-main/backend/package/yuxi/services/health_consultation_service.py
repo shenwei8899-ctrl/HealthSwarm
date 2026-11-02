@@ -1068,7 +1068,9 @@ async def prepare_consultation_context(context, db, run):
     # 科普图的准备、finalize和最终正文都包含授权/计量/引用超级步，完整四轮需29步。
     # 40仍是有限执行上限；每次模型外呼继续独立审批、预留预算且禁用SDK自动重试。
     context.max_execution_steps = (
-        80
+        # 三餐最多15道菜，各需检索和读取，加上下文、保存、一次纠错与最终回复。
+        # 每轮包含授权/计量等图节点，80超级步只能完成约13次工具调用。
+        224
         if run.agent_slug == PLANNER_SLUG and reference_binding(binding)
         else 40
         if run.agent_slug in EDUCATION_HEALTH_AGENTS

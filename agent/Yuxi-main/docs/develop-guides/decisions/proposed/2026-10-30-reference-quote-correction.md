@@ -31,7 +31,7 @@ Owner：backend/package/yuxi/agents/toolkits/meal_planner.py
 | 局部回放保留首个引句失败身份 | 假成功或错误被吞掉 | 专用工具、ToolMessageAuditCollector | 实际 SDK/v3、ToolRuntime、Collector 算法的源码 AST 组装回放，Repository 为合成依赖 | 其他错误、旧请求、错误 call ID 不恢复 | Passed |
 | 局部图的下一节点只允许一次保存修正 | inline 重试、并行调用或重复修正 | 配餐 middleware | 同一新增测试加载 Git HEAD 旧保存函数恢复首个引句错误；当前实现失败、修正、最终模型三次调用累计 15 tokens | 重复错误、多工具、夹带无效调用、其他工具、撤权时停止 | Passed |
 | 可选份量修正不削弱逐字校验 | 静默删掉必填或程序改写原文 | checked_reference_meals | 实际逐字校验拒绝错误 portion_quote；仅改为 null 后通过，必填引用保持相同 | 既有必填原文、权限及来源校验保持原实现 | Passed |
-| 真实 PG 首失败即时关闭且没有预览 | 审计悬置或失败被当成功 | ToolMessageAuditRepository、保存服务 | 新增 HTTP/PG fixture 加真实 ToolNode/v3 的 integration | 首个 failed 不进入成功回执，修正后仅一个成功保存 | Not run |
+| 真实 PG 首失败即时关闭且没有预览 | 审计悬置或失败被当成功 | ToolMessageAuditRepository、保存服务 | HTTP/PG fixture 加真实 ToolNode/v3 的 integration，2026-11-02 独立 PG 重验 | 首个 failed 不进入成功回执，修正后仅一个成功保存 | Passed |
 | 完整 Linux 装配及真实配餐可用 | 局部回放未覆盖生产路径 | 项目 unit、Worker 与客户端 | Linux unit、PG integration、独立审查和真实 UI 配餐 | 权限、来源、预算及运行终态 | Not run |
 
 局部回放执行了既有测试文件中的 12 个 SDK/v3 场景和 10 个身份、模式及错误码边界；真实 HealthAuthorization、默认 TokenUsage、两类 Collector 算法及逐字校验保留，权限存储、来源读取、最终结果和审计 Repository 使用显式合成依赖。该证据不覆盖完整项目装配、Steer、真实数据库或外部模型。
@@ -47,5 +47,7 @@ Owner：backend/package/yuxi/agents/toolkits/meal_planner.py
 诊断快照 `ea05e7b614d7` 的完整 Linux 5424 项通过，但其打包输入误将历史 PostgreSQL、Redis 回执作为同名证据附件，和运行期的独占写入路径冲突，集成阶段因此以 `FileExistsError` 停止。附件中的旧结果及旧清理状态均不代表该轮结果。后续验证包将历史附件统一放入独立文件名前缀，并在冻结、执行前检查附件名与全部运行期输出名互斥；原失败包保持不变。该打包修复仍不证明剩余业务审计用例已通过。
 
 ## 风险
+
+2026-11-02 此前五文件补丁阶段（参考餐单224步及上下文精简修改之前）的失败审计单例及整组参考配餐 42 项通过；候选镜像组合的 56 项真实 HTTP/PG 和 120 项定向 unit 全部通过。两轮参考餐单断言覆盖早餐、午餐完整保留、晚餐来源替换、数据库版本递增及原预览不变。该阶段源码 unit 为 5431 项通过。API、Worker 于12:09使用经独立审查的五文件增量，源码摘要与候选一致，接流量检查通过。真实用户两轮配餐仍单独验收；这些结果不证明专业资料、真实交易或微信端延迟目标完成。
 
 命名调用不保证外部模型正确理解修正，因此执行前还需要调用数量和名称校验。错误反馈不代表新来源或专业通过。checkpoint 重放继续遵循既有 at-least-once 语义，一次修正指一个逻辑操作，不新增跨崩溃的绝对物理执行保证。

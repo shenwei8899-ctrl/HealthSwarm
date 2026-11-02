@@ -5,11 +5,24 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parseChatMealIntent } from '../src/utils/chat-meal-intent.js'
 import { loadChatMealPlan } from '../src/services/chat-meal-plan.js'
+import { referenceSelection } from '../src/services/reference-meal-plan.js'
+import { mealQuestionAction } from '../src/services/daily-meal-plan.js'
 
 const day = '2026-10-31'
 const parse = text => parseChatMealIntent(text, day)
 const profile = { selfMemberId: 'self', defaultDiners: ['self', 'other'], members: [{id:'self'}, {id:'other'}] }
 const arrangement = () => ({date:day, version:1, meals:['breakfast','lunch','dinner'].map(type=>({type,members:[{id:'self'},{id:'other'}]}))})
+
+test('explicit dinner changes route to planning even after the previous generation failed', () => {
+  for (const text of ['只换明天晚餐，早餐和午餐不变', '配餐验收乙：只换明天晚餐，早餐和午餐不变', '请替换今天的晚餐']) {
+    assert.ok(parse(text), text)
+    assert.equal(mealQuestionAction(text), 'change')
+    const selection = referenceSelection({...profile,householdId:'family'}, text, {today:day,tomorrow:'2026-11-01'})
+    assert.deepEqual(selection.meal_types, ['dinner'])
+    assert.equal(selection.plan_date, text.includes('今天') ? day : '2026-11-01')
+  }
+  for (const text of ['怎么换明天晚餐？', '不要换明天晚餐', '换个话题', '晚餐为什么要换？']) assert.equal(parse(text), null, text)
+})
 
 test('explicit requests in the reported conversation enter real meal planning', () => {
   for (const text of ['为我配餐，必须为我进行配餐今天怎么吃', '一个人，直接为我进行这顿配餐', '今天怎么吃', '帮我搭配今天的三餐', '配餐']) {

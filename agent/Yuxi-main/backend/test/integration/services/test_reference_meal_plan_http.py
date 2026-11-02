@@ -5,6 +5,7 @@ import json
 from copy import deepcopy
 from datetime import timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -33,6 +34,7 @@ from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import Agent, AgentRun, AgentRunRequest, Message, FamilyMember
 from yuxi.storage.postgres.models_health import (
+    HealthDailyMealPlan,
     HealthFamilyProfileLink,
     HealthInitialPlanPreview,
     HealthMealPlan,
@@ -475,6 +477,13 @@ async def test_daily_purchase_only_includes_meals_still_using_reference_source(f
     first = await running_context(current, bound.json()["thread_id"])
     original, _, _ = await grounded_plan(current, first, meal_types=meals)
     await complete(current, first, original)
+    choice = current[-1]
+    path = f"/api/family/{choice['family_id']}/daily-meal-plans/{choice['plan_date']}"
+    before = await current[0].get(path, headers=current[2]["self"])
+    assert before.status_code == 200, before.text
+    assert before.json()["version"] == 1
+    original_meals = {meal["meal_type"]: meal for meal in before.json()["meals"]}
+    assert set(original_meals) == set(meals)
     published = []
 
     async def commerce(method, url, payload, **kwargs):
@@ -491,10 +500,26 @@ async def test_daily_purchase_only_includes_meals_still_using_reference_source(f
     changed = await running_context(current, changed_binding.json()["thread_id"])
     replacement, _, _ = await grounded_plan(current, changed, meal_type="dinner")
     await complete(current, changed, replacement)
-    choice = current[-1]
-    path = f"/api/family/{choice['family_id']}/daily-meal-plans/{choice['plan_date']}"
     response = await current[0].get(path, headers=current[2]["self"])
     assert response.status_code == 200, response.text
+    assert response.json()["version"] == 2
+    current_meals = {meal["meal_type"]: meal for meal in response.json()["meals"]}
+    assert set(current_meals) == set(meals)
+    for meal in ("breakfast", "lunch"):
+        assert current_meals[meal] == original_meals[meal]
+    assert current_meals["dinner"]["source"]["id"] == replacement["preview_id"]
+    assert current_meals["dinner"]["source"] != original_meals["dinner"]["source"]
+    async with current[1]() as db:
+        stored = await db.scalar(
+            select(HealthDailyMealPlan).where(HealthDailyMealPlan.family_id == choice["family_id"])
+        )
+        assert stored.version == 2
+        assert stored.meal_sources == {
+            meal: {"kind": "reference", "id": replacement["preview_id"] if meal == "dinner" else original["preview_id"]}
+            for meal in meals
+        }
+        old_preview = await db.get(HealthInitialPlanPreview, original["preview_id"])
+        assert old_preview.snapshot["meals"] == original["meals"]
     option = next(item for item in response.json()["purchase_options"] if item["id"] == original["preview_id"])
     assert option["meal_types"] == ["breakfast", "lunch"]
     assert "其他餐次" in option["quantity_notice"]
@@ -1081,6 +1106,25 @@ async def test_home_recipe_title_precedes_other_cooking_matches(family_profile_h
     await receipt(current[1], context, "search_reference_recipes", hits)
     opened = await service.read_reference_recipe(context, "reference-file", "reference-chunk")
     assert opened["content"] == TEXT
+
+
+async def test_reference_catalog_summary_preserves_validation_facts(family_profile_http, monkeypatch):
+    """模型目录省略长详情，完整事实哈希与真实PG保存校验继续生效。"""
+    current = await setup_reference(family_profile_http, monkeypatch)
+    bound = await bind_reference(current)
+    context = await running_context(current, bound.json()["thread_id"])
+    sku = {**deepcopy(SKU), "product_description": "合成详情" * 800, "data_issues": ["合成缺项" * 200]}
+    monkeypatch.setattr(service, "current_catalog", AsyncMock(return_value={"version": "synthetic-v1", "items": [sku]}))
+    result = await service.get_reference_context(context)
+    summary = result["catalog"][0]
+    assert "product_description" not in summary and "data_issues" not in summary
+    for key in ("sku_id", "product_name", "net_content", "ingredients", "allergen_codes", "data_completeness"):
+        assert summary[key] == sku[key]
+    assert summary["facts_hash"] == service.reference_product(sku)["facts_hash"]
+    assert len(json.dumps(summary)) < len(json.dumps(service.reference_product(sku))) / 3
+    plan, _, _ = await grounded_plan(current, context)
+    assert plan["purchase_items"][0]["product_description"] == sku["product_description"]
+    assert plan["purchase_items"][0]["data_issues"] == sku["data_issues"]
 
 
 async def test_home_recipe_catalog_is_bounded_and_does_not_authorize_reading(family_profile_http, monkeypatch):

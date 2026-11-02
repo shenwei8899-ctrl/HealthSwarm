@@ -48,6 +48,11 @@ class MealPlanResultMiddleware(AgentMiddleware):
         """本轮参考餐单保存成功后，只进行一次真实的无工具最终调用。"""
         from yuxi.services.health_meal_plan_service import planner_final_result
 
+        tools = tuple(name for name in request.runtime.context.tools if name != "query_family_nutrition_knowledge")
+        if tools == REFERENCE_TOOLS:
+            messages = self._reference_model_messages(request)
+            if messages != request.messages:
+                request = request.override(messages=messages)
         preview_id = self._saved_reference_preview(request.state, request.runtime.context)
         if preview_id is None:
             tools = tuple(name for name in request.runtime.context.tools if name != "query_family_nutrition_knowledge")
@@ -143,6 +148,22 @@ class MealPlanResultMiddleware(AgentMiddleware):
             answer = json.dumps({"preview_id": preview_id}) if preview_id is not None else message.text
             result = await planner_final_result(runtime.context, answer)
             return {"messages": [message.model_copy(update={"content": json.dumps(result, ensure_ascii=False)})]}
+
+    @staticmethod
+    def _reference_model_messages(request):
+        """模型不再重复读取旧轮工具流水；原 checkpoint 和当前轮来源回执保持完整。"""
+        messages = request.messages
+        for index in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[index], HumanMessage):
+                if messages[index].additional_kwargs.get("health_request_id") != request.runtime.context.request_id:
+                    return messages
+                return [
+                    message
+                    for message in messages[:index]
+                    if not isinstance(message, ToolMessage)
+                    and not (isinstance(message, AIMessage) and (message.tool_calls or message.invalid_tool_calls))
+                ] + messages[index:]
+        return messages
 
     @staticmethod
     def _reference_parameter_recovery(request):

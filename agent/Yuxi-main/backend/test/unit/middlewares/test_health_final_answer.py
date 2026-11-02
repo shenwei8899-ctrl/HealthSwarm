@@ -1,6 +1,7 @@
 """真实 create_agent 图验证最终无工具调用的生成时点与私有准备边界。"""
 
 import asyncio
+import json
 import importlib.util
 import sys
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
@@ -69,7 +70,9 @@ class ControlledStreamModel(BaseChatModel):
     async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
         """按预先指定的消息脚本发送，在最终调用中暴露确定性的阻塞点。"""
         index = len(self.calls)
-        self.calls.append({"tools": kwargs.get("tools", []), "tool_choice": kwargs.get("tool_choice")})
+        self.calls.append(
+            {"tools": kwargs.get("tools", []), "tool_choice": kwargs.get("tool_choice"), "system": messages[0].text}
+        )
         for offset, message in enumerate(self.plan[index]):
             if not kwargs.get("tools") and offset == 1 and self.released is not None:
                 await asyncio.wait_for(self.released.wait(), timeout=3)
@@ -135,6 +138,59 @@ async def run_graph(model, *, context=None, checkpointer=None, on_custom=None, m
             elif event["method"] == "messages":
                 native.append(event["params"]["data"])
     return graph, custom, native, observed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_matches", [True, False])
+async def test_final_graph_provides_only_current_successful_family_citation_labels(request_matches):
+    """实际图最终调用携带完整标签，旧轮与失败回执不贡献来源。"""
+    source_id = "11111111-1111-4111-8111-111111111111"
+    filename = "合成营养资料 完整版.docx"
+    label = f"[资料:{source_id}]（{filename}）"
+
+    @tool
+    async def query_family_nutrition_knowledge() -> dict:
+        """返回合成的当前成功工具资料，不调用外部知识库。"""
+        return {"sources": [{"source_id": source_id, "filename": filename}]}
+
+    model = ControlledStreamModel(
+        plan=[
+            [tool_chunk(query_family_nutrition_knowledge.name)],
+            [tool_chunk(production.finalize_health_answer.name)],
+            [AIMessageChunk(content="合成正文。" + label)],
+        ]
+    )
+    graph = create_agent(
+        model,
+        tools=[query_family_nutrition_knowledge, production.finalize_health_answer],
+        system_prompt="保留原来源校验。",
+        middleware=[production.HealthFinalAnswerMiddleware()],
+        context_schema=Context,
+    )
+    old_call = {"name": "query_family_nutrition_knowledge", "id": "old-call", "args": {}}
+    old = json.dumps({"sources": [{"source_id": "old-source", "filename": "旧资料.pdf"}]})
+    incoming = [
+        HumanMessage("上一轮", additional_kwargs={"health_request_id": "old-request"}),
+        AIMessage("", tool_calls=[old_call]),
+        ToolMessage(old, name=old_call["name"], tool_call_id=old_call["id"]),
+        HumanMessage(
+            "本轮问题", additional_kwargs={"health_request_id": "synthetic-request" if request_matches else "wrong"}
+        ),
+        AIMessage("", tool_calls=[{**old_call, "id": "failed-call"}]),
+        ToolMessage(old, name=old_call["name"], tool_call_id="failed-call", status="error"),
+        AIMessage("", tool_calls=[{**old_call, "name": "unrelated_tool", "id": "other-call"}]),
+        ToolMessage(old, name="unrelated_tool", tool_call_id="other-call"),
+    ]
+    async with await graph.astream_events(
+        {"messages": incoming}, context=Context(), version="v3", transformers=[CustomTransformer]
+    ) as events:
+        async for _ in events:
+            pass
+    assert len(model.calls) == 3 and model.calls[-1]["tools"] == []
+    assert (label in model.calls[-1]["system"]) is request_matches
+    assert "old-source" not in model.calls[-1]["system"]
+    assert filename not in model.calls[0]["system"]
+    assert "保留原来源校验。" in model.calls[-1]["system"]
 
 
 @pytest.mark.asyncio

@@ -9,8 +9,9 @@ export function parseChatMealIntent(value, today) {
   const text = String(value || '').trim()
   if (!text || isMealPlanningCancelled(text)) return null
   const education = /(?:什么是|介绍|解释|科普|原则|注意事项|怎么理解|如何理解|有何区别|有什么区别)/.test(text)
+  const changeMeal = /(?:^|[：:，。！？；,;\s])(?:请)?(?:只)?(?:更换|替换|换|调整)(?:一下)?(?:今天|今日|明天|明日|今晚|明晚)?(?:的)?(?:早餐|午餐|晚餐|早饭|午饭|晚饭)/.test(text)
   const request = /配餐|配菜|推荐(?:几|两|三|一|些|点|道).*(?:菜|吃)|(?:安排|生成|制定|规划|推荐|设计|提供|给我|帮我|为我).*(?:餐|早饭|午饭|晚饭|食谱|菜单|吃)|(?:今天|今日|明天|明日|今晚|今早|明早|早饭|午饭|晚饭|早餐|午餐|晚餐|一日三餐).*(?:怎么吃|吃什么|吃啥|如何吃|吃点什么|推荐|安排|搭配)|(?:今天|明天|今晚|明晚|今早|明早).*(?:早餐|午餐|晚餐|早饭|午饭|晚饭).*(?:不要|避免|不能吃|不吃|过敏)/.test(text)
-  if (!request || education) return null
+  if ((!request && !changeMeal) || education) return null
   const condition = /糖尿病|高血压|高血脂|肾病|肾脏|妊娠|孕期|哺乳|婴儿/.test(text)
   if (condition && !/(?:为我|给我|帮我|给我们|为我们|帮我们|全家|一家人).*(?:安排|生成|制定|配餐)/.test(text)) return null
 
