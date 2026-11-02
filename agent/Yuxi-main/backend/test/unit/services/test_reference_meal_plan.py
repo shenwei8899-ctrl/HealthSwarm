@@ -1,6 +1,8 @@
 """参考模式拒绝虚构数值和来源，明确缺失与正式状态的分界。"""
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -317,13 +319,99 @@ def test_empty_procurement_cannot_silently_omit_ingredient_decisions():
         ReferencePlanDraft.model_validate(value)
 
 
-def test_catalog_description_reaches_agent_and_changes_selection_fingerprint():
+def test_full_product_facts_keep_description_and_issues_in_selection_fingerprint():
+    """上下文裁剪不改变完整商品事实和保存时使用的来源指纹。"""
     from yuxi.services.reference_meal_plan_service import reference_product
 
-    sku = {"sku_id": "56", "product_description": "鸡蛋10枚，包装声明见标签"}
+    sku = {"sku_id": "56", "product_description": "鸡蛋10枚，包装声明见标签", "data_issues": ["待核对包装"]}
     first = reference_product(sku)
     assert first["product_description"] == sku["product_description"]
+    assert first["data_issues"] == sku["data_issues"]
     assert first["facts_hash"] != reference_product({**sku, "product_description": "含花生成分"})["facts_hash"]
+    assert first["facts_hash"] != reference_product({**sku, "data_issues": []})["facts_hash"]
+
+
+@pytest.mark.asyncio
+async def test_reference_context_trims_only_description_and_issues(monkeypatch):
+    """只裁剪营销正文与缺项说明，保留采购身份、成分、风险状态和完整事实指纹。"""
+    from yuxi.services import reference_meal_plan_service as service
+
+    sku = {
+        "sku_id": "synthetic-rice",
+        "product_id": "synthetic-product",
+        "product_name": "合成大米",
+        "sku_name": "500克包装",
+        "net_content": "500g",
+        "ingredients": ["大米"],
+        "allergen_codes": ["待核对"],
+        "data_completeness": "partial",
+        "data_issues": ["包装成分尚待核对"],
+        "product_description": "合成营销说明",
+        "price_cent": 500,
+        "available_quantity": 3,
+        "sale_status": "available",
+    }
+    full_product = service.reference_product(sku)
+    session = SimpleNamespace(scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: ["家常菜谱_清粥.md"])))
+
+    @asynccontextmanager
+    async def session_context():
+        yield session
+
+    monkeypatch.setattr(service.pg_manager, "get_async_session_context", session_context)
+    monkeypatch.setattr(
+        service, "require_planner_run", AsyncMock(return_value=(SimpleNamespace(id="synthetic-run"), object()))
+    )
+    monkeypatch.setattr(
+        service,
+        "bound_reference_context",
+        AsyncMock(return_value={"selection": {"meal_types": ["breakfast"]}, "members": [], "sources": {}}),
+    )
+    monkeypatch.setattr(service, "configured_health_kb_ids", lambda slug: ["synthetic-recipes"])
+    monkeypatch.setattr(service, "current_catalog", AsyncMock(return_value={"items": [sku]}))
+
+    result = await service.get_reference_context(SimpleNamespace(uid="synthetic-owner"))
+    product = result["catalog"][0]
+    assert set(full_product) - set(product) == {"product_description", "data_issues"}
+    assert not set(product) - set(full_product)
+    for field in (
+        "sku_id",
+        "product_id",
+        "product_name",
+        "sku_name",
+        "net_content",
+        "ingredients",
+        "allergen_codes",
+        "data_completeness",
+        "price_cent",
+        "available_quantity",
+    ):
+        assert product[field] == sku[field]
+    for field in ("quantity", "facts_version", "facts_hash", "description_truncated", "composition_notice"):
+        assert product[field] == full_product[field]
+    assert product["data_completeness"] == "partial"
+    assert "未完成核对" in product["composition_notice"]
+    assert "包装信息确认" in product["composition_notice"]
+    assert "保存时按完整商品事实重新检查" in result["catalog_notice"]
+    assert result["commerce_notice"] is None
+    assert service.reference_product(sku) == full_product
+
+    receipt = document()[("recipe", "chunk")]
+
+    async def tool_payloads(session, run, name):
+        return {"read_reference_recipe": [receipt], "get_reference_plan_context": [result]}[name]
+
+    monkeypatch.setattr(service, "tool_payloads", tool_payloads)
+    monkeypatch.setattr(service, "recipe_document", AsyncMock(return_value=receipt))
+    value = draft()
+    value.update(
+        purchase_items=[{"sku_id": sku["sku_id"], "quantity": 1, "ingredient_refs": ["大米100克"]}],
+        purchase_gaps=[],
+    )
+    for changed in ({"product_description": "修改后的合成说明"}, {"data_issues": []}):
+        monkeypatch.setattr(service, "current_catalog", AsyncMock(return_value={"items": [{**sku, **changed}]}))
+        with pytest.raises(HealthVisionError, match="reference_product_changed"):
+            await service.save_reference_plan(SimpleNamespace(uid="synthetic-owner"), value)
 
 
 @pytest.mark.parametrize(

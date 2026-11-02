@@ -706,13 +706,15 @@ async def test_empty_parameters_recover_on_next_real_node_with_audit_authorizati
     first_audit = audit_repository.finish.await_args_list[0].kwargs
     assert len(first_audit["metadata"]["tool_calls"]) == len(first_errors)
     if quote_case:
-        assert tool_repository.fail.await_count == 1
+        assert tool_repository.fail.await_count == (2 if scenario == "quote_invalid_draft" else 1)
         first_failed_tool = tool_repository.fail.await_args_list[0].kwargs
         assert first_failed_tool["tool_call_id"] == "empty-0"
         assert json.loads(first_failed_tool["content"])["error_code"] == "reference_quote_invalid"
-        assert tool_repository.observe_error.await_count == (
-            1 if scenario in {"quote_repeat", "quote_invalid_draft"} else 0
-        )
+        assert tool_repository.observe_error.await_count == (1 if scenario == "quote_repeat" else 0)
+        if scenario == "quote_invalid_draft":
+            second_failed = tool_repository.fail.await_args_list[1].kwargs
+            assert second_failed["tool_call_id"] == "corrected-save"
+            assert json.loads(second_failed["content"])["error_code"] == "reference_plan_validation_failed"
     else:
         assert all(call["args"] == {} for call in first_audit["metadata"]["tool_calls"])
     assert all(

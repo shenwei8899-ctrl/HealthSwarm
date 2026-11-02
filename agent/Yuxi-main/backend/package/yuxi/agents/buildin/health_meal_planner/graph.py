@@ -24,7 +24,7 @@ from yuxi.agents.toolkits.meal_planner import (
     search_reference_recipes,
     read_reference_recipe,
     save_reference_meal_plan,
-    reference_quote_failure_index,
+    reference_save_failure_index,
 )
 from yuxi.agents.toolkits.health import query_family_nutrition_knowledge
 from yuxi.services.health_family_planner_types import FAMILY_PLANNER_TOOLS
@@ -56,24 +56,29 @@ class MealPlanResultMiddleware(AgentMiddleware):
         preview_id = self._saved_reference_preview(request.state, request.runtime.context)
         if preview_id is None:
             tools = tuple(name for name in request.runtime.context.tools if name != "query_family_nutrition_knowledge")
-            quote_failure = None
+            save_failure = None
+            correction_kind = "save"
             if tools == REFERENCE_TOOLS:
                 messages = request.state.get("messages", [])
-                quote_failure = reference_quote_failure_index(messages, request.runtime.context.request_id)
-                if quote_failure is not None:
+                save_failure = reference_save_failure_index(messages, request.runtime.context.request_id)
+                if save_failure is not None:
+                    if json.loads(messages[save_failure].content).get("error_code") == "reference_quote_invalid":
+                        correction_kind = "quote"
                     if "save_reference_meal_plan" not in {getattr(tool, "name", None) for tool in request.tools}:
                         raise HealthVisionError(
-                            "reference_quote_correction_invalid", "原文引用修正的保存工具当前不可用", 422
+                            f"reference_{correction_kind}_correction_invalid", "餐单保存修正工具当前不可用", 422
                         )
-                    if any(isinstance(message, AIMessage) for message in messages[quote_failure + 1 :]):
+                    if any(isinstance(message, AIMessage) for message in messages[save_failure + 1 :]):
                         raise HealthVisionError(
-                            "reference_quote_correction_exhausted", "原文引用修正未完成，本轮已停止，请重新生成", 422
+                            f"reference_{correction_kind}_correction_exhausted",
+                            "餐单保存修正未完成，本轮已停止，请重新生成",
+                            422,
                         )
 
             if tools == REFERENCE_TOOLS and request.tools and isinstance(request.model, ChatCompletionsAdapter):
                 # 工具参数接收完整响应后再执行；不改变原模型或无工具最终回复。
                 recovery_tool = self._reference_parameter_recovery(request)
-                if quote_failure is not None:
+                if save_failure is not None:
                     recovery_tool = "save_reference_meal_plan"
                 original = request.system_message.text if request.system_message else ""
                 request = request.override(
@@ -91,13 +96,15 @@ class MealPlanResultMiddleware(AgentMiddleware):
                         + (
                             "上次整批调用缺少必填参数，真实工具反馈已保留；"
                             "本次只纠正指定工具的一个调用，参数必须取自本轮已读取的真实资料，不猜测查询结果或来源标识。"
-                            if recovery_tool is not None and quote_failure is None
+                            if recovery_tool is not None and save_failure is None
                             else ""
                         )
                         + (
-                            "原文引用核验失败，本轮只允许一次保存修正。仅从本 Run 已读取原文逐字复制菜名、食材、"
-                            "步骤及可选引句，不翻译、改写或规范化原文；只调用一次保存工具，不执行其他工具。"
-                            if quote_failure is not None
+                            "餐单保存校验失败，本轮只允许一次保存修正。按真实工具反馈纠正餐次、规格或食材采购对应，"
+                            "每种食材原文必须且只能对应一个采购商品或一条真实未选原因；不编造商品或原因。"
+                            "菜名、食材、步骤及可选引句仍只从本 Run 已读取原文逐字复制，不翻译、改写或规范化；"
+                            "只调用一次保存工具，不执行其他工具。"
+                            if save_failure is not None
                             else ""
                         )
                     ),
@@ -127,11 +134,15 @@ class MealPlanResultMiddleware(AgentMiddleware):
 
         message = state["messages"][-1]
         preview_id = self._saved_reference_preview(state, runtime.context)
+        save_failure = None
+        if (
+            tuple(name for name in runtime.context.tools if name != "query_family_nutrition_knowledge")
+            == REFERENCE_TOOLS
+        ):
+            save_failure = reference_save_failure_index(state["messages"], runtime.context.request_id)
         if (
             preview_id is None
-            and tuple(name for name in runtime.context.tools if name != "query_family_nutrition_knowledge")
-            == REFERENCE_TOOLS
-            and reference_quote_failure_index(state["messages"], runtime.context.request_id) is not None
+            and save_failure is not None
             and message.type == "ai"
             and (
                 message.invalid_tool_calls
@@ -139,8 +150,13 @@ class MealPlanResultMiddleware(AgentMiddleware):
                 or message.tool_calls[0]["name"] != "save_reference_meal_plan"
             )
         ):
+            kind = (
+                "quote"
+                if json.loads(state["messages"][save_failure].content).get("error_code") == "reference_quote_invalid"
+                else "save"
+            )
             raise HealthVisionError(
-                "reference_quote_correction_invalid", "原文引用修正须只提交一个保存调用，本轮已停止", 422
+                f"reference_{kind}_correction_invalid", "餐单保存修正须只提交一个保存调用，本轮已停止", 422
             )
         if preview_id is not None and message.type == "ai" and (message.tool_calls or message.invalid_tool_calls):
             raise HealthVisionError("planner_finalization_invalid", "餐单保存后的最终回复不允许继续调用工具", 422)

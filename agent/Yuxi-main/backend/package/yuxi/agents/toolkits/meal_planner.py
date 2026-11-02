@@ -4,7 +4,7 @@ import json
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolRuntime
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from yuxi.agents.toolkits.registry import tool
 from yuxi.agents.toolkits.health import HealthKnowledgeInput, HealthReadInput
@@ -99,7 +99,7 @@ async def save_reference_meal_plan(
             != 1
         ):
             raise
-        if reference_quote_failure_index(messages, runtime.context.request_id) is not None:
+        if reference_save_failure_index(messages, runtime.context.request_id) is not None:
             raise
         return ToolMessage(
             name="save_reference_meal_plan",
@@ -114,6 +114,16 @@ async def save_reference_meal_plan(
 
 def reference_quote_failure_index(messages, request_id):
     """定位本请求真实保存调用的首次引文失败，不采纳旧轮次或模型正文。"""
+    return _reference_save_failure_index(messages, request_id, include_validation=False)
+
+
+def reference_save_failure_index(messages, request_id):
+    """定位本请求可纠正的真实保存失败，引文与参数校验共享一次预算。"""
+    return _reference_save_failure_index(messages, request_id, include_validation=True)
+
+
+def _reference_save_failure_index(messages, request_id, *, include_validation):
+    """仅接受当前请求唯一声明的工具调用及静态可修复错误回执。"""
     human_index = next((i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)), None)
     if human_index is None or messages[human_index].additional_kwargs.get("health_request_id") != request_id:
         return None
@@ -122,25 +132,92 @@ def reference_quote_failure_index(messages, request_id):
         message = messages[index]
         if isinstance(message, AIMessage):
             for call in message.tool_calls:
-                declared[call["id"]] = call["name"] if call["id"] not in declared else None
-        elif (
+                if not call["id"]:
+                    if call["name"] == "save_reference_meal_plan":
+                        raise HealthVisionError(
+                            "reference_save_correction_invalid", "保存调用标识缺失，无法核对回执，本轮已停止", 422
+                        )
+                    continue
+                if call["id"] in declared:
+                    previous = declared[call["id"]]
+                    if call["name"] == "save_reference_meal_plan" or (
+                        previous is not None and previous[0] == "save_reference_meal_plan"
+                    ):
+                        raise HealthVisionError(
+                            "reference_save_correction_invalid", "保存调用标识重复，无法核对回执，本轮已停止", 422
+                        )
+                    declared[call["id"]] = None
+                else:
+                    declared[call["id"]] = (call["name"], index)
+    for index in range(human_index + 1, len(messages)):
+        message = messages[index]
+        if (
             isinstance(message, ToolMessage)
             and message.status == "error"
             and message.name == "save_reference_meal_plan"
         ):
-            if declared.get(message.tool_call_id) != message.name:
+            declaration = declared.get(message.tool_call_id)
+            if declaration is None or declaration[0] != message.name or declaration[1] >= index:
                 continue
             try:
                 payload = json.loads(message.content)
             except (ValueError, TypeError):
                 continue
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("error_code") == "reference_quote_invalid" and payload.get("request_id") == request_id:
+                return index
             if (
-                isinstance(payload, dict)
-                and payload.get("error_code") == "reference_quote_invalid"
-                and payload.get("request_id") == request_id
+                include_validation
+                and payload.get("error_code")
+                in {"reference_duplicate_meals", "reference_duplicate_sku", "reference_purchase_coverage_invalid"}
+                and payload.get("retryable") is True
+                and payload.get("request_id", request_id) == request_id
             ):
                 return index
     return None
+
+
+def _reference_save_validation_error(error: ValidationError) -> str:
+    """只公开固定校验说明，不把稿件、运行对象或异常正文送回模型。"""
+    details = (
+        error.errors(include_input=False, include_url=False, include_context=False)
+        if isinstance(error, ValidationError)
+        else []
+    )
+    payload = {
+        "error_code": "reference_plan_validation_failed",
+        "message": "保存参数未通过校验，本次未保存；请停止本轮保存并如实说明失败。",
+        "retryable": False,
+    }
+    if any(item["loc"] and item["loc"][0] == "runtime" for item in details):
+        payload = {
+            "error_code": "reference_runtime_invalid",
+            "message": "保存工具的服务端运行上下文校验失败，本次未保存；请停止本轮保存，不能补造运行对象。",
+            "retryable": False,
+        }
+    elif len(details) == 1 and details[0]["loc"] == () and details[0]["type"] == "value_error":
+        known_errors = {
+            "Value error, 参考餐次不能重复": (
+                "reference_duplicate_meals",
+                "餐次不能重复；仅提交所选餐次，每个餐次一次。",
+            ),
+            "Value error, 相同规格须合并数量": (
+                "reference_duplicate_sku",
+                "相同SKU须合并为一项并合计包装数量；每条食材原文仍只对应一个采购决定。",
+            ),
+            "Value error, 每种食材原文必须且只能对应一个采购商品或一条未选原因": (
+                "reference_purchase_coverage_invalid",
+                "每条食材原文必须且只能对应一个采购商品或一条未选原因；检查重复、遗漏和多余对应，"
+                "逐字使用已读取原文，不移除食材或放宽限制。",
+            ),
+        }
+        if match := known_errors.get(details[0]["msg"]):
+            payload = {"error_code": match[0], "message": match[1], "retryable": True}
+    return json.dumps(payload, ensure_ascii=False)
+
+
+save_reference_meal_plan.handle_validation_error = _reference_save_validation_error
 
 
 @tool(category="health", display_name="初始配餐当前上下文", args_schema=HealthReadInput)
