@@ -45,7 +45,11 @@ function toggle(type){expanded.value={...expanded.value,[type]:!expanded.value[t
    <text v-else class="note">尚未安排</text>
   </view>
   <view v-for="option in plan.purchase_options||[]" :key="option.kind+option.id" class="details">
-   <template v-if="option.kind==='reference'"><text class="meal-title">采购建议 · {{option.meal_types.map(type=>names[type]).join('、')}}</text><text class="note">{{option.quantity_notice}}</text><text v-for="product in option.items" :key="product.sku_id">{{product.product_name}} {{product.sku_name||''}} × {{product.quantity}}</text><text v-for="gap in option.gaps" :key="gap.ingredient">{{gap.ingredient}}：{{gap.detail}}</text></template>
+   <template v-if="option.kind==='reference'">
+    <text class="meal-title">采购建议 · {{(option.meal_types||[]).map(type=>names[type]).join('、')}}</text>
+    <text v-if="detailMode" class="note">{{option.items?.length||0}} 项商品 · {{option.gaps?.length||0}} 项食材待核对</text>
+    <template v-else><text class="note">{{option.quantity_notice}}</text><text v-for="product in option.items||[]" :key="product.sku_id">{{product.product_name}} {{product.sku_name||''}} × {{product.quantity}}</text><text v-for="gap in option.gaps||[]" :key="gap.ingredient">{{gap.ingredient}}：{{gap.detail}}</text></template>
+   </template>
    <button class="buy" :disabled="busy" @click="emit('shop',option)">{{detailMode?'查看采购食材':option.kind==='formal'?'一键选购':'确认这些商品并加入购物车'}}</button>
   </view>
  </view>
