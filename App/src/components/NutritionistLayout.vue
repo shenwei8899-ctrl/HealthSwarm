@@ -1,4 +1,6 @@
 <script setup>
+// 微信插槽在布局组件内渲染，需要接收聊天组件共享的输入栏样式。
+defineOptions({options:{styleIsolation:'apply-shared'}})
 import {ref,watch,nextTick,onMounted,onUnmounted,getCurrentInstance} from 'vue'
 import AppNavBar from './AppNavBar.vue'
 import AppIcon from './AppIcon.vue'

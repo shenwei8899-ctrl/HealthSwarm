@@ -1,5 +1,6 @@
 import { request } from './request.js'
 import { sessionRevision } from './session.js'
+import { scopedStorage } from './storage.js'
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i
 // The history API's legacy timestamps are UTC even when the zone is omitted.
@@ -47,10 +48,30 @@ export async function readConversations(memberId, offset = 0, send = request) {
   const revision = sessionRevision()
   const { data } = await send({ path: `/api/health/v1/members/${memberId}/consultations?limit=${conversationPageSize}&offset=${offset}` })
   if (revision !== sessionRevision()) throw new Error('账号已变化，请重新读取对话')
+  const page = conversationPage(data, memberId, offset), links = []
+  for (const row of page.items) {
+    if (row.unavailable || row.title !== '新对话') continue
+    const saved = scopedStorage.getStorageSync('conversation-index:' + row.thread_id)
+    if (saved?.memberId !== memberId || !conversationUuid.test(saved.id || '')) continue
+    const pointers = scopedStorage.getStorageSync('conversation-threads:' + saved.id) || []
+    if (!Array.isArray(pointers)) continue
+    for (const pointer of pointers.slice(0, 50)) {
+      if (pointer?.task_type === 'reference_meal_preview' && conversationUuid.test(pointer.thread_id || '')) {
+        links.push({ root_thread_id: row.thread_id, thread_id: pointer.thread_id })
+      }
+    }
+  }
+  if (!links.length) return page
+  const enriched = await send({path:`/api/health/v1/members/${memberId}/consultations/directory`,method:'POST',data:{offset,links}})
+  if (revision !== sessionRevision()) throw new Error('账号已变化，请重新读取对话')
+  return conversationPage(enriched.data, memberId, offset)
+}
+function conversationPage(data, memberId, offset) {
   const items = data?.items
   if (!Array.isArray(items) || items.length > conversationPageSize || typeof data.has_more !== 'boolean' ||
       items.some(row => !row || !conversationUuid.test(row.thread_id || '') || !sameId(row.member_id, memberId) ||
         row.agent_slug !== 'health-consultation' || !(row.business_date === null || validBusinessDate(row.business_date)) ||
+        typeof row.title !== 'string' || Array.from(row.title).length > 121 || typeof row.unavailable !== 'boolean' ||
         typeof row.created_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(row.created_at) ||
         !validBusinessDate(row.created_at.slice(0, 10)) || !Number.isFinite(Date.parse(row.created_at))) ||
       new Set(items.map(row => row.thread_id.toLowerCase())).size !== items.length ||
@@ -59,7 +80,7 @@ export async function readConversations(memberId, offset = 0, send = request) {
   }
   return {
     items: items.map(row => ({ thread_id: row.thread_id, member_id: row.member_id, agent_slug: row.agent_slug,
-      business_date: row.business_date, created_at: row.created_at })),
+      business_date: row.business_date, created_at: row.created_at, title: conversationTitle(row.title), unavailable: row.unavailable })),
     hasMore: data.has_more, nextOffset: data.next_offset,
   }
 }
@@ -69,11 +90,13 @@ export function chatText(content) {
 }
 export function chatMessages(value) {
   if (!Array.isArray(value?.history)) throw new Error('对话返回不完整，请重新读取')
+  let requestedMeals
   return value.history.flatMap(item => {
     const role = ({ human: 'user', user: 'user', ai: 'assistant', assistant: 'assistant' })[item.type || item.role]
     if (!role) return []
     const images = (item.image_contents || (item.image_content ? [item.image_content] : [])).filter(path => typeof path === 'string' && /^data:image\//.test(path))
     let text=chatText(item.content),business=null
+    if(role==='user'){const patterns=[['breakfast',/早餐|早饭|早上|今早|明早/],['lunch',/午餐|午饭|中午/],['dinner',/晚餐|晚饭|晚上|今晚|明晚/]];requestedMeals=patterns.filter(([,pattern])=>pattern.test(text)).map(([type])=>type);if(/三餐|全天|一天/.test(text)||!requestedMeals.length)requestedMeals=['breakfast','lunch','dinner']}
     if(role==='assistant'&&text.trim().startsWith('{')){
       try{const data=JSON.parse(text)
         if((data.result_type==='needs_input'||data.status==='needs_input')&&Array.isArray(data.questions))text=data.questions.join('\n')
@@ -85,8 +108,10 @@ export function chatMessages(value) {
     const purchaseRequestId = role === 'assistant' && /\[食材包:[A-Za-z0-9_-]{100,4096}\]/.test(text) ? item.request_id || item.extra_metadata?.request_id || '' : ''
     if (role === 'assistant') text = text.replace(/\[食材包:[A-Za-z0-9_-]{100,4096}\]/g, '').trim()
     return [{ id: String(item.id), role, text, business, purchaseRequestId,
-      ...(business?.data?.scope==='daily_reference'?{planDate:business.data.plan_date}:{}), createdAt: chatTimestamp(item.created_at),
+      recordedMeals: Array.isArray(item.recorded_meals) ? item.recorded_meals : [],
+      ...(business?.data?.scope==='daily_reference'?{planDate:business.data.plan_date,planMeals:requestedMeals||business.data.meals.map(meal=>meal.meal_type)}:{}), createdAt: chatTimestamp(item.created_at),
       requestId: item.request_id || item.extra_metadata?.request_id || '', status: item.delivery_status || 'saved',
+      errorCode: typeof item.failure_code === 'string' ? item.failure_code : '',
       ...(images.length ? { image: { localPath: images[0] } } : {}) }]
   })
 }
@@ -113,7 +138,11 @@ export async function readChatSnapshot(threadId, send = request) {
     title: typeof metadata.title === 'string' ? conversationTitle(metadata.title, 120) : '',
     agentId: typeof (metadata.agent_id ?? metadata.agentId) === 'string' ? (metadata.agent_id ?? metadata.agentId).slice(0, 120) : '',
   } : null
-  return {messages:chatMessages(data),runs:Array.isArray(data.runs)?data.runs:[],thread}
+  const related = data?.related_threads || []
+  if (!Array.isArray(related) || related.some(row => !conversationUuid.test(row?.thread_id || '') ||
+      !conversationUuid.test(row?.member_id || '') || row.task_type !== 'reference_meal_preview')) throw new Error('关联对话返回不完整，请重新读取')
+  return {messages:chatMessages(data),runs:Array.isArray(data.runs)?data.runs:[],thread,
+    relatedThreads: related.map(row => ({thread_id:row.thread_id,memberId:row.member_id,task_type:row.task_type}))}
 }
 
 // The chat Run API accepts image content. This never creates a meal draft/log.

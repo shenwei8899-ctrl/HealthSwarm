@@ -2,11 +2,11 @@
 import { computed, ref, watch, onUnmounted } from 'vue'
 import { onShow, onHide } from '@dcloudio/uni-app'
 import AppNavBar from './AppNavBar.vue'
-import { readConversations, readChatSnapshot, conversationTitle, conversationSummary } from '../services/cloud-chat.js'
-import { scopedStorage, storageContext } from '../services/storage.js'
+import { readConversations } from '../services/cloud-chat.js'
+import { storageContext } from '../services/storage.js'
 import { sessionRevision } from '../services/session.js'
 
-const props = defineProps({ open: Boolean, memberId: String, activeThreadId: String, busy: Boolean, displayName: String })
+const props = defineProps({ open: Boolean, memberId: String, activeThreadId: String, busy: Boolean, newBusy: Boolean, displayName: String })
 const emit = defineEmits(['close', 'new', 'select', 'profile'])
 const rows = ref([]), loading = ref(false), error = ref(''), notice = ref(''), hasMore = ref(false), nextOffset = ref(null)
 let epoch = 0, disposed = false, directoryTicket = null
@@ -22,7 +22,6 @@ const groups = computed(() => {
   }
   return [...result.values()].sort((a, b) => b.date.localeCompare(a.date))
 })
-const hasSummaryFailures = computed(() => rows.value.some(row => row.summaryFailed))
 function reset() {
   epoch++; directoryTicket = null; rows.value = []; loading.value = false; error.value = ''; notice.value = ''; hasMore.value = false; nextOffset.value = null
 }
@@ -34,32 +33,6 @@ function current(value) {
 function discardChangedIdentity(value) {
   if (value.epoch === epoch && (value.scope !== storageContext() || value.revision !== sessionRevision())) reset()
 }
-const summaryKey = row => `conversation-summary:${props.memberId}:${row.thread_id}`
-async function summaries(targets, value) {
-  let index = 0
-  async function worker() {
-    while (index < targets.length && current(value)) {
-      const row = targets[index++]
-      try {
-        const snapshot = await readChatSnapshot(row.thread_id)
-        if (!current(value)) { discardChangedIdentity(value); return }
-        row.title = conversationSummary(snapshot.messages)
-        row.summaryPending = false
-        try { scopedStorage.setStorageSync(summaryKey(row), { title: row.title, updatedAt: new Date().toISOString() }) } catch {}
-      } catch (failure) {
-        if (!current(value)) { discardChangedIdentity(value); return }
-        row.summaryPending = false
-        if ([403, 404, 409, 410].includes(Number(failure.code))) {
-          row.unavailable = true; row.title = '该对话暂不可访问'
-        } else { row.title = '暂未读取到标题'; row.summaryFailed = true }
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(4, targets.length) }, worker))
-  if (!current(value)) return
-  notice.value = [rows.value.some(row => row.unavailable) ? '部分对话的授权或资料来源已变化，暂不可访问。' : '',
-    hasSummaryFailures.value ? '部分标题暂未读取到，可以重试。' : ''].filter(Boolean).join(' ')
-}
 async function load(more = false) {
   if (!props.open || disposed || loading.value || more && !hasMore.value) return
   if (!props.memberId) { reset(); error.value = '咨询资料尚未读到，请稍后重新读取。'; return }
@@ -70,17 +43,10 @@ async function load(more = false) {
     const page = await readConversations(value.memberId, offset)
     if (!current(value)) { discardChangedIdentity(value); return }
     directoryTicket = value
-    const fresh = page.items.filter(row => !rows.value.some(old => old.thread_id === row.thread_id)).map(row => {
-      let cached
-      try { cached = scopedStorage.getStorageSync(summaryKey(row)) } catch {}
-      const title = typeof cached?.title === 'string' && cached.title.trim() ? conversationTitle(cached.title) : ''
-      return { ...row, title: title || '正在读取对话…', summaryPending: !title, unavailable: false, summaryFailed: false }
-    })
+    const fresh = page.items.filter(row => !rows.value.some(old => old.thread_id === row.thread_id))
     rows.value = [...rows.value, ...fresh]
     hasMore.value = page.hasMore; nextOffset.value = page.nextOffset
-    // Use the reactive rows; mutating the original pre-proxy objects would not update Vue's list.
-    const ids = new Set(fresh.filter(row => row.summaryPending).map(row => row.thread_id))
-    await summaries(rows.value.filter(row => ids.has(row.thread_id)), value)
+    notice.value = rows.value.some(row => row.unavailable) ? '部分对话的授权或资料来源已变化，暂不可访问。' : ''
   } catch (failure) {
     if (current(value)) {
       if ([401, 403, 404, 409, 410].includes(Number(failure.code))) { reset(); error.value = '登录或成员授权已变化，请重新进入对话。' }
@@ -89,15 +55,8 @@ async function load(more = false) {
     else discardChangedIdentity(value)
   } finally { if (current(value)) loading.value = false }
 }
-async function retryTitles() {
-  if (loading.value || !props.open) return
-  const value = ticket(), targets = rows.value.filter(row => row.summaryFailed)
-  loading.value = true; notice.value = ''
-  targets.forEach(row => { row.summaryFailed = false; row.summaryPending = true })
-  try { await summaries(targets, value) } finally { if (current(value)) loading.value = false }
-}
 function close() { reset(); emit('close') }
-function newConversation() { if (props.open && !props.busy) emit('new') }
+function newConversation() { if (props.open && !props.busy && !props.newBusy) emit('new') }
 function select(row) { if (!props.busy && !row.unavailable && directoryTicket && current(directoryTicket)) emit('select', { ...row }) }
 function profile() { emit('profile') }
 function loadMore() { if (hasMore.value && !loading.value) void load(true) }
@@ -111,7 +70,7 @@ onUnmounted(() => { disposed = true; reset() })
   <view v-if="open" class="conversation-drawer">
     <button class="drawer-backdrop" aria-label="关闭对话列表" @click="close" @touchmove.stop.prevent/>
     <view class="drawer-panel" role="dialog" aria-modal="true" aria-label="对话列表" @tap.stop>
-      <AppNavBar below-capsule><view class="drawer-heading"><text>对话</text><button class="drawer-new" :disabled="busy" @click="newConversation"><view class="drawer-compose-icon" aria-hidden="true"><view/></view><text>新对话</text></button></view></AppNavBar>
+      <AppNavBar below-capsule><view class="drawer-heading"><text>对话</text><button class="drawer-new" :disabled="busy||newBusy" @click="newConversation"><view class="drawer-compose-icon" aria-hidden="true"><view/></view><text>新对话</text></button></view></AppNavBar>
       <text v-if="busy" class="drawer-busy" role="status">请等待当前回复结束，再新建或切换对话。</text>
       <scroll-view class="drawer-list" scroll-y :show-scrollbar="false" @scrolltolower="loadMore">
         <view v-for="group in groups" :key="group.date" class="drawer-group">
@@ -122,7 +81,7 @@ onUnmounted(() => { disposed = true; reset() })
         </view>
         <text v-if="loading" class="drawer-status" role="status">正在读取对话…</text>
         <view v-if="error" class="drawer-error" role="alert"><text>{{error}}</text><button @click="load(rows.length>0)">重新读取</button></view>
-        <view v-if="notice" class="drawer-notice" role="status"><text>{{notice}}</text><button v-if="hasSummaryFailures" :disabled="loading" @click="retryTitles">重试标题</button></view>
+        <view v-if="notice" class="drawer-notice" role="status"><text>{{notice}}</text></view>
         <view v-if="!loading&&!error&&!rows.length" class="drawer-empty"><text>还没有对话</text><text>与你的家庭营养师聊聊，记录会保存在这里。</text></view>
         <button v-if="hasMore&&!error" class="drawer-more" :disabled="loading" @click="loadMore">{{loading?'正在读取…':'更早的对话'}}</button>
       </scroll-view>

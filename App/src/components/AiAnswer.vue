@@ -1,21 +1,49 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { parseAiAnswer } from '../utils/ai-answer.js'
+import { chatMealAnswerBlocks } from '../utils/chat-meal-suggestions.js'
+import ChatMealSuggestionCard from './ChatMealSuggestionCard.vue'
 
 const props = defineProps({
   text: { type: String, default: '' },
   citations: { type: Array, default: () => [] },
   streaming: { type: Boolean, default: false },
   compact: { type: Boolean, default: false },
+  animateMeals: { type: Boolean, default: false },
+  messageKey: { type: String, default: '' },
+  shownMeals: { type: Array, default: () => [] },
 })
+const emit = defineEmits(['mealShown'])
 const answer = computed(() => parseAiAnswer(props.text, { citations: props.citations, streaming: props.streaming }))
+const displayBlocks = ref([]), entered = new Map()
+let motionOwner = props.messageKey
+watch([answer, () => props.messageKey], ([next, owner]) => {
+  if (owner !== motionOwner) { entered.clear(); motionOwner = owner }
+  let fresh = 0
+  const occurrences = {}
+  displayBlocks.value = chatMealAnswerBlocks(next.blocks, { streaming: props.streaming }).map(block => {
+    if (block.type !== 'meal-suggestions') return block
+    const meals = block.meals.map(meal => {
+      const occurrence = occurrences[meal.type] || 0
+      occurrences[meal.type] = occurrence + 1
+      const key = `${meal.type}:${occurrence}`
+      if (!entered.has(key)) {
+        const animate = !!(props.animateMeals && owner && !props.shownMeals.includes(key))
+        entered.set(key, { animate, delay: animate ? fresh++ * 90 : 0 })
+        if (animate) emit('mealShown', { requestId: owner, key })
+      }
+      return { ...meal, key, ...entered.get(key) }
+    })
+    return { ...block, meals, pending: block.pending || !meals.length && props.streaming }
+  })
+}, { immediate: true })
 const sourcesOpen = ref(false)
 function segmentClass(segment) { return { 'answer-strong': segment.strong, 'answer-emphasis': segment.emphasis, 'answer-inline-code': segment.code } }
 </script>
 
 <template>
   <view class="ai-answer" :class="{ 'is-streaming': streaming, 'is-compact': compact }">
-    <view v-for="(block, index) in answer.blocks" :key="index" class="answer-block" :class="'answer-' + block.type">
+    <view v-for="(block, index) in displayBlocks" :key="index" class="answer-block" :class="'answer-' + block.type">
       <template v-if="block.type === 'heading' || block.type === 'paragraph' || block.type === 'quote'">
         <text class="answer-copy" :class="{ 'answer-heading-small': block.level > 2 }" :selectable="!streaming"><text v-for="(segment, segmentIndex) in block.segments" :key="segmentIndex" :class="segmentClass(segment)">{{ segment.text }}</text></text>
       </template>
@@ -24,6 +52,10 @@ function segmentClass(segment) { return { 'answer-strong': segment.strong, 'answ
           <view class="answer-list-marker" :class="{ 'answer-list-number': item.marker }"><text v-if="item.marker">{{ item.marker }}</text><view v-else class="answer-list-dot" /></view>
           <text class="answer-list-copy" :selectable="!streaming"><text v-for="(segment, segmentIndex) in item.segments" :key="segmentIndex" :class="segmentClass(segment)">{{ segment.text }}</text></text>
         </view>
+      </view>
+      <view v-else-if="block.type === 'meal-suggestions'" class="answer-meal-cards">
+        <ChatMealSuggestionCard v-for="meal in block.meals" :key="meal.key" :meal="meal" :animate="meal.animate" :delay="meal.delay" :streaming="streaming" />
+        <view v-if="block.pending" class="answer-meal-pending" role="status"><view /><text>正在整理下一餐…</text></view>
       </view>
       <view v-else-if="block.type === 'table'" class="answer-table-cards">
         <view v-for="(row, rowIndex) in block.rows" :key="rowIndex" class="answer-table-row">
@@ -47,4 +79,5 @@ function segmentClass(segment) { return { 'answer-strong': segment.strong, 'answ
 .ai-answer{width:100%;min-width:0;color:var(--ui-text);font-size:30rpx;line-height:1.8;word-break:break-word;overflow-wrap:anywhere}.answer-block+.answer-block{margin-top:28rpx}.answer-copy,.answer-code-copy{display:block;white-space:pre-wrap}.answer-strong{font-weight:500;color:inherit}.answer-emphasis{color:#62557f}.answer-heading{margin-top:34rpx!important;font-size:33rpx;line-height:1.6;font-weight:500}.answer-heading:first-child{margin-top:0!important}.answer-heading-small{font-size:30rpx}.answer-list-items{display:flex;flex-direction:column;gap:24rpx}.answer-list-item{display:flex;align-items:flex-start;gap:14rpx}.answer-list-marker{width:26rpx;min-width:26rpx;display:flex;justify-content:center;align-items:center;min-height:54rpx}.answer-list-dot{width:7rpx;height:7rpx;border-radius:50%;background:#a59abf}.answer-list-number{margin-top:9rpx;height:36rpx;min-height:36rpx;background:var(--ui-accent-soft);border-radius:10rpx;color:#706083;font-size:23rpx}.answer-list-copy{flex:1;min-width:0;white-space:pre-wrap}.answer-indent-1{margin-left:28rpx}.answer-indent-2{margin-left:44rpx}.answer-quote{padding:22rpx 24rpx;border-radius:20rpx;background:var(--ui-soft);color:#696273;font-size:28rpx}.answer-divider{height:1rpx;background:var(--ui-line);margin:28rpx 0}.answer-table-cards{display:flex;flex-direction:column;gap:16rpx}.answer-table-row{background:var(--ui-soft);border-radius:22rpx;padding:24rpx;display:flex;flex-direction:column;gap:14rpx}.answer-table-field{display:flex;align-items:flex-start;gap:18rpx;min-width:0}.answer-table-label{width:132rpx;flex-shrink:0;color:var(--ui-muted);font-size:25rpx;line-height:1.8}.answer-table-value{flex:1;min-width:0;white-space:pre-wrap;font-size:28rpx}.answer-table-field:first-child .answer-table-value{font-weight:500}.answer-table-pending{color:var(--ui-muted);font-size:25rpx}.answer-code{padding:20rpx;border-radius:18rpx;background:var(--ui-soft)}.answer-code-copy,.answer-inline-code{font-family:monospace;font-size:26rpx}.answer-inline-code{padding:0 5rpx;background:var(--ui-soft);border-radius:5rpx}.answer-writing{display:flex;align-items:center;gap:12rpx;margin-top:20rpx;color:var(--ui-muted);font-size:24rpx}.answer-writing-dot{height:9rpx;width:9rpx;border-radius:50%;background:var(--ui-accent)}.answer-sources{border-top:1rpx solid var(--ui-line);margin-top:30rpx;padding-top:6rpx}.answer-source-toggle{width:100%;min-height:44px;padding:6rpx 0;background:transparent;display:flex;align-items:center;justify-content:space-between;gap:20rpx;color:var(--ui-muted);font-size:24rpx;line-height:1.6;text-align:left}.answer-source-toggle:after{border:0}.answer-source-toggle>text:last-child{white-space:nowrap;color:#706083}.answer-source-list{display:flex;flex-direction:column;gap:14rpx;padding:8rpx 0 10rpx}.answer-source{display:flex;gap:14rpx;font-size:24rpx;line-height:1.8;color:var(--ui-muted)}.answer-source-index{flex-shrink:0}.answer-source-title{min-width:0;word-break:break-word}
 .is-compact{font-size:16px;line-height:1.75}.is-compact .answer-block+.answer-block{margin-top:16px}.is-compact .answer-heading{font-size:17px;margin-top:20px!important}.is-compact .answer-heading-small{font-size:16px}.is-compact .answer-list-items{gap:14px}.is-compact .answer-list-item{gap:8px}.is-compact .answer-list-marker{width:14px;min-width:14px;min-height:28px}.is-compact .answer-list-dot{width:4px;height:4px}.is-compact .answer-list-number{height:20px;min-height:20px;margin-top:4px;border-radius:6px;font-size:12px}.is-compact .answer-quote{padding:12px 14px;border-radius:12px;font-size:15px}.is-compact .answer-table-row{padding:14px;border-radius:14px}.is-compact .answer-table-field{gap:10px}.is-compact .answer-table-label{width:68px;font-size:13px}.is-compact .answer-table-value{font-size:14px}.is-compact .answer-sources{margin-top:18px}.is-compact .answer-source-toggle,.is-compact .answer-source{font-size:12px}.is-compact .answer-code-copy,.is-compact .answer-inline-code{font-size:13px}.is-compact .answer-divider{margin:18px 0}
 @media(max-width:350px){.is-compact{font-size:15px}}
+.answer-meal-cards{display:flex;flex-direction:column;gap:14px;padding:2px 0 6px;white-space:normal}.answer-meal-pending{display:flex;align-items:center;gap:8px;padding:10px 7px;font-size:13px;font-weight:500;line-height:1.6;color:var(--ui-muted)}.answer-meal-pending>view{width:6px;height:6px;border-radius:50%;background:#b3bba7}
 </style>

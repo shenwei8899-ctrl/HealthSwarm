@@ -10,10 +10,12 @@ const server = http.createServer((incoming, outgoing) => {
   if (origin && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) { outgoing.writeHead(403); outgoing.end(); return }
   const cors = origin ? {'Access-Control-Allow-Origin':origin,'Vary':'Origin','Access-Control-Allow-Headers':'Authorization, Content-Type, Idempotency-Key, If-Match','Access-Control-Allow-Methods':'GET, POST, PUT, PATCH, DELETE, OPTIONS'} : {}
   if (incoming.method === 'OPTIONS') { outgoing.writeHead(204,cors); outgoing.end(); return }
-  if (!incoming.url?.startsWith('/api/') || incoming.url.startsWith('//')) { outgoing.writeHead(404,cors);outgoing.end();return }
+  const publicCover=/^\/minio\/public\/recipe-covers\/nhlbi\/[a-f0-9]{64}\.jpg(?:\?.*)?$/.test(incoming.url||'')&&['GET','HEAD'].includes(incoming.method)
+  if ((!incoming.url?.startsWith('/api/')&&!publicCover) || incoming.url.startsWith('//')) { outgoing.writeHead(404,cors);outgoing.end();return }
   const path = incoming.url.startsWith('/api/v1/commerce/') ? '/commerce-api' + incoming.url : incoming.url
   const headers = {...incoming.headers,host:target.host}
   delete headers.origin
+  if(publicCover){delete headers.authorization;delete headers.cookie}
   const remote = (target.protocol === 'https:' ? https : http).request(new URL(path,target),{method:incoming.method,headers,timeout:30000}, response => {
     outgoing.writeHead(response.statusCode,{...response.headers,...cors,'Cache-Control':'no-store'})
     response.pipe(outgoing)
@@ -23,4 +25,4 @@ const server = http.createServer((incoming, outgoing) => {
   incoming.on('aborted',()=>remote.destroy())
   incoming.pipe(remote)
 })
-server.listen(port,'127.0.0.1',()=>process.stdout.write(`Health API proxy: http://127.0.0.1:${port} -> ${target.origin}\n`))
+server.listen(port,'127.0.0.1',()=>process.stdout.write(`Health API proxy: http://127.0.0.1:${server.address().port} -> ${target.origin}\n`))

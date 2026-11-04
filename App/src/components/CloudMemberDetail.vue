@@ -4,11 +4,10 @@ import { onShow,onHide,onUnload } from '@dcloudio/uni-app'
 import ProfileFormLayout from './ProfileFormLayout.vue'
 import {preserveMemberEdit,readMemberEdit,clearMemberEdit} from '../services/member-edit-draft.js'
 import MemberFields from './MemberFields.vue'
-import { readCloudReportStatus } from '../services/cloud-profile.js'
+import { readCloudReportStatus } from '../services/report-entry.js'
 import { readMemberProfile, saveMemberProfile } from '../services/member-profile.js'
 import { profileDraft, profileChanges } from '../services/family-archive-fields.js'
 import MemberAdditionalFields from './MemberAdditionalFields.vue'
-import { request } from '../services/request.js'
 import { sessionRevision } from '../services/session.js'
 import { ageLabel } from '../utils/member-age.js'
 import { diseaseSummary,restrictionFields } from '../utils/health.js'
@@ -17,15 +16,16 @@ import { localDate } from '../utils/meal-state.js'
 import { mealDate } from '../services/diet-journal-client.js'
 // Keep the sheet's flex containers adjacent in WeChat's native component tree.
 defineOptions({options:{virtualHost:true}})
-const props=defineProps({id:String,shareReady:Boolean,scrollTop:{type:Number,default:0},initialSection:String,embedded:Boolean})
-const emit=defineEmits(['close','saved'])
+const props=defineProps({id:String,shareReady:Boolean,shareError:String,shareBusy:Boolean,scrollTop:{type:Number,default:0},initialSection:String,embedded:Boolean})
+const emit=defineEmits(['close','saved','prepare-invite','manage-invite'])
 const writing=ref(false)
 const profile=ref(null),draft=ref(null),editing=ref(false),busy=ref(false),error=ref(''),records=ref([]),dietError=ref(''),reportError=ref('')
 const member=computed(()=>profile.value?.members.find(m=>String(m.id)===props.id))
-const source=ref(null),additional=ref({}),analysis=ref(null),analysisError=ref(''),analysisBusy=ref(false),writeUncertain=ref(false)
+const source=ref(null),additional=ref({}),writeUncertain=ref(false)
 const canEdit=computed(()=>!!source.value?.editable_fields?.length&&(source.value.is_self||source.value.is_guardian||profile.value?.isOwner))
-const canAnalyze=computed(()=>source.value?.is_self||source.value?.is_guardian)
-const analysisEntry=computed(()=>analysis.value?.entries?.find(e=>e.entry_type==='consultation'))
+const reportBusy=ref(false)
+const canOpenReport=computed(()=>!!member.value)
+const reportHint=computed(()=>reportBusy.value?'正在准备…':member.value?.reportStatus==='loading'?'读取中…':member.value?.reportStatus==='done'?'已核对':member.value?.reportStatus==='review'?'待核对':member.value?.reportStatus==='failed'?'点击重试':'可添加')
 const labels={breakfast:'早餐',lunch:'午餐',dinner:'晚餐',snack:'加餐'}
 let epoch=0,loadedRevision=-1,initialSectionApplied=false
 const section=ref('basic'),conflictEdit=ref(null),showConflictEdit=ref(false)
@@ -35,32 +35,43 @@ function discardEdit(){clearMemberEdit(props.id);draft.value=null;additional.val
 function cancelEdit(){if(props.embedded&&dirty.value){const mine=epoch,rev=sessionRevision();uni.showModal({title:'放弃本次修改？',content:'将恢复为上次保存的资料。',cancelText:'继续填写',confirmText:'放弃修改',success:r=>{if(r.confirm&&mine===epoch&&rev===sessionRevision())discardEdit()}});return}discardEdit()}
 function stash(){if(loadedRevision===sessionRevision()&&editing.value&&draft.value)preserveMemberEdit({id:props.id,source:source.value,draft:draft.value,additional:additional.value,section:section.value,uncertain:writeUncertain.value||writing.value})}
 function requestClose(){
- if(writing.value||analysisBusy.value){uni.showToast({title:'正在保存，请稍候',icon:'none'});return}
+ if(writing.value){uni.showToast({title:'正在保存，请稍候',icon:'none'});return}
  if((editing.value&&dirty.value)||writeUncertain.value){const mine=epoch,rev=sessionRevision();uni.showModal({title:'修改还未保存',content:writeUncertain.value?'上次保存结果还需核对，暂存后下次重新读取确认。':'可以暂存本次填写，下次打开时继续；暂存不会更新云端档案。',cancelText:'继续填写',confirmText:'暂存并关闭',success:r=>{if(r.confirm&&mine===epoch&&rev===sessionRevision()){stash();emit('close')}}});return}
  if(editing.value)discardEdit();emit('close')
 }
 function back(){if(props.embedded){requestClose();return}if(editing.value){cancelEdit();return}uni.navigateBack()}
 function reload(){if(writing.value)return;if(props.embedded)stash();return load()}
 defineExpose({requestClose})
-function report(){if(member.value?.healthMemberId)uni.navigateTo({url:'/pages/health/vision?kind=report&memberId='+encodeURIComponent(member.value.healthMemberId)})}
-function invite(){uni.navigateTo({url:'/pages/profile/member?id='+encodeURIComponent(props.id)})}
+async function report(){
+ if(reportBusy.value||!canOpenReport.value||!member.value)return
+ const mine=epoch,rev=sessionRevision(),person=member.value;reportBusy.value=true;reportError.value=''
+ try{
+  const healthId=person.healthMemberId
+  if(!healthId)throw new Error('成员报告档案尚未关联，请保存成员档案后重试。')
+  if(mine!==epoch||rev!==sessionRevision())return
+  person.healthMemberId=healthId
+  await uni.navigateTo({url:'/pages/health/vision?kind=report&memberId='+encodeURIComponent(healthId)})
+ }catch(e){if(mine===epoch&&rev===sessionRevision())reportError.value=e.message}
+ finally{if(mine===epoch&&rev===sessionRevision())reportBusy.value=false}
+}
 function history(){uni.navigateTo({url:'/pages/family-shared/index?memberId='+encodeURIComponent(member.value.id)})}
-function hide(){stash();epoch++;conflictEdit.value=null;showConflictEdit.value=false;source.value=null;analysis.value=null;additional.value={};analysisError.value='';analysisBusy.value=false;writeUncertain.value=false;writing.value=false;profile.value=null;records.value=[];busy.value=false;error.value='';dietError.value='';reportError.value='';draft.value=null;editing.value=false}
-async function load(){if(busy.value)return;const mine=++epoch,rev=sessionRevision();busy.value=true;error.value='';editing.value=false;draft.value=null;profile.value=null;source.value=null;analysis.value=null;analysisError.value='';dietError.value='';reportError.value='';records.value=[];try{const loaded=await readMemberProfile(props.id,{readOnly:props.embedded===true});if(mine!==epoch||rev!==sessionRevision())return;const p=loaded.profile;profile.value=p;source.value=loaded.source;additional.value=profileDraft(source.value.profile);writeUncertain.value=false;loadedRevision=rev;
+function hide(){stash();epoch++;conflictEdit.value=null;showConflictEdit.value=false;source.value=null;additional.value={};reportBusy.value=false;writeUncertain.value=false;writing.value=false;profile.value=null;records.value=[];busy.value=false;error.value='';dietError.value='';reportError.value='';draft.value=null;editing.value=false}
+async function load(){if(busy.value)return;const mine=++epoch,rev=sessionRevision();busy.value=true;error.value='';editing.value=false;draft.value=null;profile.value=null;source.value=null;dietError.value='';reportError.value='';records.value=[];try{const loaded=await readMemberProfile(props.id,{readOnly:props.embedded===true});if(mine!==epoch||rev!==sessionRevision())return;const p=loaded.profile;profile.value=p;source.value=loaded.source;additional.value=profileDraft(source.value.profile);writeUncertain.value=false;loadedRevision=rev;
  if(!initialSectionApplied){section.value=sections.some(s=>s.key===props.initialSection)?props.initialSection:'basic';initialSectionApplied=true}
  const cached=readMemberEdit(props.id,source.value);conflictEdit.value=null;
  if(cached){if(cached.conflict)conflictEdit.value=cached;else if(canEdit.value){draft.value=cached.draft;additional.value=cached.additional;section.value=sections.some(s=>s.key===cached.section)?cached.section:'basic';editing.value=true}}
- if(!member.value)throw new Error('这位成员已不在当前家庭，请返回重新选择');if(member.value.healthMemberId){if(props.embedded)void extras(member.value,mine,rev);else await extras(member.value,mine,rev)}else dietError.value='尚未开始健康分析，已有家庭资料已保存。'}catch(e){if(mine===epoch){if(rev!==sessionRevision()||[401,403,404,410].includes(Number(e.code))){hide();error.value='当前授权或来源已变化，请重新读取。'}else error.value=e.message}}finally{if(mine===epoch){if(rev!==sessionRevision())hide();else busy.value=false}}}
+ if(!member.value)throw new Error('这位成员已不在当前家庭，请返回重新选择');if(profile.value.isOwner&&member.value.claimed===false)emit('prepare-invite');if(member.value.healthMemberId){if(props.embedded)void extras(member.value,mine,rev);else await extras(member.value,mine,rev)}else dietError.value='尚未开始健康分析，已有家庭资料已保存。'}catch(e){if(mine===epoch){if(rev!==sessionRevision()||[401,403,404,410].includes(Number(e.code))){hide();error.value='当前授权或来源已变化，请重新读取。'}else error.value=e.message}}finally{if(mine===epoch){if(rev!==sessionRevision())hide();else busy.value=false}}}
 async function extras(person,mine,rev){
  const current=()=>mine===epoch&&rev===sessionRevision()
+ if(current())person.reportStatus='loading'
  await Promise.all([
-  readCloudReportStatus(person.healthMemberId).then(status=>{if(current()){person.reportStatus=status;if(draft.value)draft.value.reportStatus=status}}).catch(e=>{if(current())reportError.value=e.message}),
+  readCloudReportStatus(person.healthMemberId).then(status=>{if(current()){person.reportStatus=status;reportError.value='';if(draft.value)draft.value.reportStatus=status}}).catch(e=>{if(current()){person.reportStatus='failed';reportError.value=Number(e.code)===401?'登录已过期，请重新登录后查看报告。':'报告状态暂未读取，可点击入口重试。'}}),
  ])
 }
 
 function edit(){if(!canEdit.value)return;draft.value=JSON.parse(JSON.stringify(member.value));additional.value=profileDraft(source.value.profile);editing.value=true}
 async function save(){
-  if(busy.value||analysisBusy.value||writeUncertain.value||!canEdit.value||!draft.value)return
+  if(busy.value||writeUncertain.value||!canEdit.value||!draft.value)return
   if(!draft.value.name?.trim()){error.value='请填写姓名／称呼';section.value='basic';return}
   for(const type of [...Object.keys(restrictionFields),'doctor']){
     const cfg=restrictionFields[type],status=cfg?.status||'doctorStatus',field=cfg?.field||'clinicianGuidance'
@@ -76,12 +87,6 @@ async function save(){
     if(mine+1===epoch&&rev===sessionRevision()&&profile.value&&!error.value){emit('saved',profile.value);if(props.embedded)uni.showToast({title:'档案已保存',icon:'success'})}
   }catch(e){if(mine===epoch){writeUncertain.value=e.partialSave||e.code==='NETWORK_ERROR'||Number(e.code)>=500||Number(e.code)===409;error.value=e.message;if(rev!==sessionRevision()||[401,403,404,410].includes(Number(e.code))){hide();error.value='当前授权或来源已变化，请重新读取。'}}}
   finally{if((mine===epoch||mine+1===epoch)&&rev===sessionRevision()){busy.value=false;writing.value=false}}
-}
-async function revokeAnalysis(){
-  if(analysisBusy.value||!member.value?.healthMemberId||!canAnalyze.value)return
-  const mine=epoch,rev=sessionRevision();analysisBusy.value=true;analysisError.value=''
-  try{await request({path:`/api/health/v1/members/${member.value.healthMemberId}/processing-consents`,method:'POST',data:{purpose:'consultation',accepted:false,processor:profile.value.analysisPolicy?.processor||'withdrawn',policy_version:profile.value.analysisPolicy?.policy_version||'withdrawn'}});if(mine!==epoch||rev!==sessionRevision())return;analysisBusy.value=false;await load()}
-  catch(e){if(mine===epoch)analysisError.value=e.message}finally{if(mine===epoch)analysisBusy.value=false}
 }
 function consult(){if(member.value?.healthMemberId)uni.navigateTo({url:'/pages/chat/agent?memberId='+encodeURIComponent(member.value.healthMemberId)+'&taskType=consultation'})}
 function record(r){uni.navigateTo({url:'/pages/records/detail?id='+encodeURIComponent(r.id)+'&memberId='+encodeURIComponent(member.value.healthMemberId)})}
@@ -109,11 +114,10 @@ onMounted(()=>{if(props.embedded)void load()});onUnmounted(hide)
     <view v-show="section==='preferences'" class="archive-read"><view v-for="item in [{t:'饮食目标',v:member.goals},{t:'口味',v:member.tastePreferences},{t:'菜系',v:member.cuisines}]" :key="item.t" class="read-row"><text class="read-label">{{item.t}}</text><text class="read-value">{{item.v.join('、')||'待补充'}}</text></view><MemberAdditionalFields :archive="embedded" :draft="additional" :source="source" :editing="false" section="preferences"/></view>
     <view v-show="section==='restrictions'" class="archive-read"><MemberFields :archive="embedded" :member="member" read-only :sections="['restrictions']" inline-restrictions/><MemberAdditionalFields :archive="embedded" :draft="additional" :source="source" :editing="false" section="restrictions"/></view>
    </template>
-   <view class="archive-links"><button :disabled="!member.healthMemberId" @click="report"><view><text>体检报告</text><text>{{!member.healthMemberId?'完成建档后可补充':member.reportStatus==='done'?'已核对':member.reportStatus==='review'?'待核对':'可后补'}}</text></view><text>›</text></button></view><text v-if="reportError" class="form-error">{{reportError}}</text>
-   <view v-if="canAnalyze&&!editing" class="analysis-permission"><button v-if="member.healthMemberId" class="archive-share" :disabled="analysisBusy||writing" @click="revokeAnalysis">撤回 AI 咨询授权</button><text v-if="analysisError" class="form-error" role="alert">{{analysisError}}</text></view>
-   <template v-if="!editing"><template v-if="profile?.isOwner&&!member.claimed"><button v-if="embedded" class="archive-share" @click="invite">邀请本人加入 ›</button><button v-else class="archive-share" open-type="share" :disabled="!shareReady">邀请本人加入</button></template></template>
+   <view class="archive-links"><button :disabled="reportBusy||!canOpenReport" @click="report"><view><text>体检报告</text><text>{{reportHint}}</text></view><text>›</text></button></view><text v-if="reportError" class="form-error" role="alert">{{reportError}}</text>
+   <template v-if="!editing"><template v-if="profile?.isOwner&&!member.claimed"><button class="archive-share" :open-type="shareReady?'share':undefined" :data-invite-key="member.id" :disabled="!shareReady">{{shareBusy?'正在准备邀请…':'邀请'+member.name+'加入'}}</button><text v-if="shareError" class="form-error" role="alert">{{shareError}}</text><button v-if="!shareReady&&!shareBusy" class="archive-share" @click="emit('prepare-invite')">重新准备邀请</button><button class="archive-share" @click="emit('manage-invite')">管理邀请</button></template></template>
   </template>
-  <template #footer><view class="profile-footer-actions"><template v-if="editing"><button class="form-cancel archive-cancel" :disabled="busy" @click="cancelEdit">取消</button><button class="archive-submit" :disabled="busy||analysisBusy||writeUncertain" @click="save">{{writing?'正在保存…':'保存修改'}}</button></template><button v-else-if="canEdit" class="archive-submit" :disabled="busy||analysisBusy||writeUncertain" @click="edit">{{embedded?'修改档案':'修改资料'}}</button><button v-else class="archive-submit" @click="back">{{embedded?'关闭档案':'返回'}}</button></view></template>
+  <template #footer><view class="profile-footer-actions"><template v-if="editing"><button class="form-cancel archive-cancel" :disabled="busy" @click="cancelEdit">取消</button><button class="archive-submit" :disabled="busy||writeUncertain" @click="save">{{writing?'正在保存…':'保存修改'}}</button></template><button v-else-if="canEdit" class="archive-submit" :disabled="busy||writeUncertain" @click="edit">{{embedded?'修改档案':'修改资料'}}</button><button v-else class="archive-submit" @click="back">{{embedded?'关闭档案':'返回'}}</button></view></template>
  </ProfileFormLayout>
  </view>
 </template>

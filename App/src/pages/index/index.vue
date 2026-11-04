@@ -14,11 +14,14 @@ import { scopedStorage, storageContext } from '../../services/storage.js'
 import { getProfile, saveProfile, newMember, normalizeMember } from '../../utils/profile.js'
 const loggingIn = ref(false), loginError = ref(''), loginOpen = ref(false), testAccount = ref('creator')
 const identifier = ref(''), password = ref(''), phoneUncertain = ref(false)
-let isWechat = false
+const awaitingPhoneAuthorization = ref(false)
+let isWechat = false, isWechatDevtools = false
 // #ifdef MP-WEIXIN
 isWechat = true
+isWechatDevtools = typeof uni !== 'undefined' && uni.getDeviceInfo?.().platform === 'devtools'
 // #endif
 const isPhoneLogin = isWechat && isCommerceEnabled && !canUseBusinessLogin
+const needsPhoneAuthorization = ref(!isWechatDevtools)
 let phoneFlow = null
 function phoneLogin() {
   if (!phoneFlow) phoneFlow = createPhoneLogin({
@@ -28,11 +31,13 @@ function phoneLogin() {
     randomKey: () => 'phone-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + Math.random().toString(36).slice(2),
     resolveEntry: resolveAppEntry,
     navigate: url => new Promise((resolve,reject) => uni.reLaunch({url,success:resolve,fail:reject})),
-    update: state => { loggingIn.value=state.busy;loginError.value=state.error;phoneUncertain.value=state.uncertain },
+    update: state => { loggingIn.value=state.busy;loginError.value=state.error;phoneUncertain.value=state.uncertain;awaitingPhoneAuthorization.value=state.awaitingAuthorization;if(state.needsAuthorization)needsPhoneAuthorization.value=true },
   })
   return phoneFlow
 }
 function authorizePhone(event) { if(isPhoneLogin)void phoneLogin().authorize(event.detail) }
+function beginPhoneAuthorization() { if(isPhoneLogin)phoneLogin().beginAuthorization() }
+function loginWechatAccount() { if(isPhoneLogin)void phoneLogin().login() }
 function retryPhoneLogin() { if(isPhoneLogin)void phoneLogin().restore() }
 let visible = true, generation = 0
 async function loginDestination() {
@@ -83,7 +88,8 @@ async function continueLogin() {
 <template>
 <view class="screen welcome-screen"><image class="welcome-backdrop" src="/static/food/welcome-kitchen-20261026.jpg" mode="aspectFill" aria-hidden="true"/><view class="welcome-shade" aria-hidden="true"/><AppNavBar><view class="nav-row"><text class="brand">家庭营养师</text></view></AppNavBar><view class="hero-copy"><text class="display-title">{{ '好好吃饭\n照顾全家' }}</text><text class="hero-description">{{ '让每个家庭，\n拥有自己的 AI 营养师。' }}</text></view><view class="login-panel">
 <!-- #ifdef MP-WEIXIN -->
-<button v-if="isPhoneLogin" class="primary-button" open-type="getPhoneNumber" :disabled="loggingIn || phoneUncertain" :loading="loggingIn" @getphonenumber="authorizePhone">{{loggingIn?'正在登录…':'微信登录，开始使用'}}</button>
+<button v-if="isPhoneLogin && needsPhoneAuthorization" class="primary-button" open-type="getPhoneNumber" :disabled="loggingIn || phoneUncertain" :loading="loggingIn" @click="beginPhoneAuthorization" @getphonenumber="authorizePhone">{{loggingIn?'正在登录…':awaitingPhoneAuthorization?'请在微信弹窗中授权手机号':'微信登录，开始使用'}}</button>
+<button v-if="isPhoneLogin && !needsPhoneAuthorization" class="primary-button" :disabled="loggingIn || phoneUncertain" :loading="loggingIn" @click="loginWechatAccount">{{loggingIn?'正在登录…':'微信登录，开始使用'}}</button>
 <!-- #endif -->
 <button v-if="!isPhoneLogin" class="primary-button" :disabled="loggingIn" @click="start">{{loggingIn?'正在登录…':canUseBusinessLogin?'测试账号登录，开始使用':'微信登录，开始使用'}}</button><text v-if="loginError" class="login-error" role="alert">{{loginError}}</text><button v-if="isPhoneLogin && (loginError || phoneUncertain)" class="secondary-button" :disabled="loggingIn" @click="retryPhoneLogin">重新检查登录状态</button><text v-if="isPhoneLogin" class="safe-note">微信授权手机号后继续使用，手机号绑定到当前账号。</text><text v-if="phoneBindingDemo" class="safe-note">隔离环境演示</text><text v-if="canUseBusinessLogin" class="safe-note">{{canUseH5TestLogin?'功能测试 · 使用独立测试账号':'本机联调 · 使用真实业务账号'}}</text><text v-if="isMockMode" class="safe-note">前端体验版 · 登录、推荐与交易均为模拟</text></view><view v-if="loginOpen && canUseBusinessLogin" class="sheet-mask" @click="closeLoginSheet"><view class="sheet" @click.stop><view class="sheet-head"><text class="section-title">测试账号登录</text><button aria-label="关闭登录" @click="closeLoginSheet">×</button></view><text class="demo-label">使用业务账号连接真实服务，资料会保存到服务端。</text><input v-model="identifier" class="field-input" maxlength="100" placeholder="业务测试账号" aria-label="业务测试账号" :disabled="loggingIn"/><input v-model="password" class="field-input" password maxlength="128" placeholder="密码" aria-label="密码" :disabled="loggingIn" confirm-type="done" @confirm="continueLogin"/><text v-if="loginError" class="login-error" role="alert">{{loginError}}</text><button class="primary-button" :disabled="loggingIn || !identifier.trim() || !password" @click="continueLogin">{{loggingIn?'正在登录…':'登录并继续'}}</button></view></view><view v-if="loginOpen && isMockMode" class="sheet-mask" @click="closeLoginSheet"><view class="sheet" @click.stop><view class="sheet-head"><text class="section-title">模拟微信登录</text><button @click="closeLoginSheet">×</button></view><text class="demo-label">此处仅创建本机测试身份，不是真实微信授权。</text><input v-model="testAccount" class="field-input" maxlength="40" placeholder="测试账号名称"/><text v-if="loginError" class="login-error" role="alert">{{loginError}}</text><button class="primary-button" :disabled="loggingIn" :loading="loggingIn" @click="continueLogin">{{loggingIn?'正在登录…':'模拟登录并继续'}}</button></view></view></view>
 </template>

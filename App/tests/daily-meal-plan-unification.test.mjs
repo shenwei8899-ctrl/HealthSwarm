@@ -9,6 +9,7 @@ import { ref, reactive, computed, nextTick, effectScope } from 'vue'
 import { mealQuestionAction, readDailyMealPlan } from '../src/services/daily-meal-plan.js'
 import { referenceSelection, isReferencePlan } from '../src/services/reference-meal-plan.js'
 import { chatPresentation } from '../src/services/chat-presentation.js'
+import { canPurchaseAllMeals } from '../src/utils/meal-presentation.js'
 
 const today='2026-10-27',member='11111111-1111-4111-8111-111111111111'
 const meal=(type,id='old')=>({meal_type:type,source:{kind:'reference',id},meal:{meal_type:type,dishes:[{name:id}]},members:[{id:'self',name:'我'}]})
@@ -39,7 +40,8 @@ function mount({read=async()=>plan()}={}){
   const flow={hide(){},async open(memberId,taskType,selection){calls.push({action:'open',memberId,taskType,selection});notify({memberId,taskType,available:true,entry:{thread_id:'thread'}})},async submit(text){calls.push({action:'submit',text});return true},async refresh(){calls.push({action:'refresh'});notify({taskType:'reference_meal_preview',requestId:'req',status:'completed',available:true})}}
   const state=()=>({phase:'idle',busy:false})
   const deps={createChatEntryTransition,createChatKeyboardLayout,watch,ref,reactive,computed,nextTick,defineProps:()=>({route:{entry:'conversation'}}),onMounted:fn=>hooks.mounted=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
-    parseChatMealIntent,isMealPlanningCancelled,chatPresentation,chooseReference:referenceSelection,isReferencePlan,readDailyMealPlan:read,mealQuestionAction,
+    parseChatMealIntent,isMealPlanningCancelled,chatPresentation,chooseReference:referenceSelection,isReferencePlan,readDailyMealPlan:read,mealQuestionAction,canPurchaseAllMeals,
+    openMealPage:(target,options)=>calls.push({action:'navigate',target,options}),
     dailyArrangementState:state,createDailyArrangementClient:()=>({reset(){},dispose(){}}),
     createHealthTaskFlow:({onChange})=>{notify=onChange;return flow},
     HEALTH_TEXT_TASKS:{consultation:'咨询',reference_meal_preview:'餐单'},
@@ -49,10 +51,30 @@ function mount({read=async()=>plan()}={}){
     readCurrentPreparation:async()=>({status:'absent'}),request:async()=>({data:{}})}
   const source=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const scope=effectScope()
-  const page=scope.run(()=>new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {conversationThreadId,dailyPlans,todayPlan,loadDailyPlan,reloadToday,profile,task,entryReady,question,sendQuestion,messages,setReference:value=>referenceSelection=value}`)(deps))
+  const page=scope.run(()=>new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {conversationThreadId,dailyPlans,todayPlan,loadDailyPlan,reloadToday,profile,task,entryReady,question,sendQuestion,messages,buyAllMeals,voiceBusy,planPurchaseBusy,setReference:value=>referenceSelection=value}`)(deps))
   page.conversationThreadId.value='existing-consultation-anchor';page.profile.value={householdId:'family',selfMemberId:'self',members:[{id:'self',healthMemberId:member}]};page.entryReady.value=true
   return {page,calls,notify,dispose(){hooks.unmount?.();scope.stop()}}
 }
+
+test('all-meal purchase opens the clicked plan date and version rather than today',()=>{
+ const h=mount(),tomorrow=plan(7,undefined,'2026-10-28')
+ tomorrow.purchase_options=[{kind:'reference',id:'old',meal_types:['breakfast','lunch','dinner']}]
+ h.page.dailyPlans.value[today]=plan(2)
+ h.page.buyAllMeals(tomorrow)
+ assert.deepEqual(h.calls,[{action:'navigate',target:{date:'2026-10-28',version:7},options:{all:true}}])
+ h.dispose()
+})
+
+test('all-meal purchase ignores partial menus and busy interactions',()=>{
+ const h=mount(),full=plan()
+ full.purchase_options=[{kind:'reference',id:'old',meal_types:['breakfast','lunch','dinner']}]
+ h.page.buyAllMeals({...full,meals:[meal('dinner')]})
+ h.page.buyAllMeals(null)
+ h.page.voiceBusy.value=true;h.page.buyAllMeals(full)
+ h.page.voiceBusy.value=false;h.page.planPurchaseBusy.value=true;h.page.buyAllMeals(full)
+ assert.deepEqual(h.calls,[])
+ h.dispose()
+})
 
 test('view and repeated generation read the existing plan without submitting another task',async()=>{
   const h=mount();h.page.question.value='查看今天的餐单';await h.page.sendQuestion('reference_meal_preview')
@@ -159,3 +181,5 @@ test('manual reload refreshes a running chat request when the plan is still pend
   await h.page.reloadToday()
   assert.equal(h.calls.filter(call=>call.action==='refresh').length,1);assert.equal(h.page.task.value.status,'completed');h.dispose()
 })
+
+for(const question of ['查看今天晚餐餐单','看看今天晚饭的菜单','今天晚上可以吃什么'])test('read-only dinner scope is retained: '+question,async()=>{const h=mount();h.page.question.value=question;await h.page.sendQuestion();assert.deepEqual(h.page.messages.value.at(-1).planMeals,['dinner']);assert.equal(h.calls.some(c=>c.action==='submit'),false);h.dispose()})

@@ -30,7 +30,7 @@ function fixture(h5=false,delayRoute=false) {
   return {nav,uni,calls,checks,pending,loadings,toasts,shell,completeRoute(value){route=value;for(const fn of [...hashListeners])fn()},get account(){return account},set account(value){account=value},set route(value){route=value},get route(){return route},set invite(value){invite=value},set preparing(value){preparing=value}}
 }
 
-for(const url of ['/pages/profile/index','/pages/my/index','/pages/chat/history','/pages/exclusive-plans/index','/pages/scan/index']) {
+for(const url of ['/pages/profile/index','/pages/my/index','/pages/chat/history','/pages/exclusive-plans/index','/pages/scan/index','/pages/meals/detail']) {
   test('native shell opens before unresolved network: '+url,async()=>{
     const h=fixture();let settled=false
     h.uni.navigateTo({url,complete:()=>settled=true})
@@ -42,16 +42,20 @@ for(const url of ['/pages/profile/index','/pages/my/index','/pages/chat/history'
   })
 }
 test('unknown, expired, unselected and unfinished sessions cannot use the shell shortcut',()=>{
+ for(const url of ['/pages/exclusive-plans/index','/pages/meals/detail']) {
   for(const change of [h=>h.account=null,h=>h.account.expiresAt=1,h=>h.account.families=[],h=>h.account.families[0].onboardingRequired=true,h=>delete h.account.expiresAt]){
-    const h=fixture();change(h);h.uni.navigateTo({url:'/pages/exclusive-plans/index'})
+    const h=fixture();change(h);h.uni.navigateTo({url})
     assert.equal(h.calls.length,0);assert.equal(h.checks.length,1)
   }
+ }
 })
 test('invitation and pending preparation still take priority',()=>{
-  const h=fixture();h.invite='test-invite';h.uni.navigateTo({url:'/pages/exclusive-plans/index'})
+ for(const url of ['/pages/exclusive-plans/index','/pages/meals/detail']) {
+  const h=fixture();h.invite='test-invite';h.uni.navigateTo({url})
   assert.equal(h.calls[0].url,'/pages/invite/index?token=test-invite')
-  const p=fixture();p.preparing=true;p.uni.navigateTo({url:'/pages/exclusive-plans/index'})
+  const p=fixture();p.preparing=true;p.uni.navigateTo({url})
   assert.equal(p.calls[0].url,'/pages/onboarding/preparing')
+ }
 })
 test('server entry decision corrects a shell after it has opened',async()=>{
   const h=fixture();h.uni.navigateTo({url:'/pages/exclusive-plans/index'});await flush()

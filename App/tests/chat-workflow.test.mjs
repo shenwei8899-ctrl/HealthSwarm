@@ -63,6 +63,8 @@ function workflow(options = {}) {
       async open(memberId, taskType, selectedValues = null, fourth = {}) {
         const mine = ++generation
         calls.push({ action: 'open', memberId, taskType, selection: clone(selectedValues), options: clone(fourth) })
+        if(options.beforeOpen)await options.beforeOpen(fourth)
+        if(mine!==generation)return
         selection = clone(selectedValues); flowOptions = clone(fourth) || {}
         state = { ...fresh(), memberId, taskType, available: true }
         selected = flowOptions.threadId || (flowOptions.conversationId ? bindings.get(bindingKey()) : taskType === 'consultation' ? identity.dailyThread : null)
@@ -108,11 +110,11 @@ function workflow(options = {}) {
     }
     return flow
   }
-  const deps = { watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
+  const deps = { defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
     onMounted: fn => { hooks.mount = fn }, onUnmounted: fn => { hooks.unmount = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn },
     chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, parseChatMealIntent,isMealPlanningCancelled,
     newHealthRequestId: id, storageContext: () => identity.scope, getSession: () => ({ ...identity }), scopedStorage,
-    loadCloudProfile: async () => profile(), localDate: value => value ? nextDay(clock.day) : clock.day,
+    loadCloudProfile: async () => {if(options.beforeProfile)await options.beforeProfile();return profile()}, localDate: value => value ? nextDay(clock.day) : clock.day,
     dailyArrangementState: () => ({ phase: 'idle', busy: false, date: clock.day, arrangement: null }),
     createDailyArrangementClient: ({ state }) => ({ pause() {},reset() { state.phase = 'idle'; state.busy = false; state.arrangement = null }, dispose() {},
       adopt(value) { state.phase = 'ready'; state.arrangement = value; state.date = value.date },
@@ -131,12 +133,12 @@ function workflow(options = {}) {
     createHealthTaskFlow, chatImageContent: async image => image.localPath,
     persistChatImage: async image => ({ localPath: image.path }),
     loadChatMealPlan: async () => { calls.push({ action: 'loadChatMealPlan' }); throw new Error('normal chat must not create a saved plan') },
-    uni: { showToast(value) { calls.push({ action: 'toast', ...value }) }, hideKeyboard() {}, navigateTo(value) { calls.push({ action: 'navigate', ...value }) },
+    uni: { showModal(value){calls.push({action:'modal',...value})}, showToast(value) { calls.push({ action: 'toast', ...value }) }, hideKeyboard() {}, navigateTo(value) { calls.push({ action: 'navigate', ...value }) },
       reLaunch(value) { calls.push({ action: 'reLaunch', ...value }) }, redirectTo(value) { calls.push({ action: 'redirect', ...value }) } },
   }
   const code = readFileSync(new URL('../src/components/CloudNutritionChat.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {showMemberArchive,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
+  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
   const historyRow = threadId => { const row = threads.get(threadId); return { thread_id: threadId, member_id: row.memberId, agent_slug: row.agent, business_date: row.businessDate } }
   return { ...page, calls, writes, identity, clock, hooks, scopedStorage, threads, addThread, historyRow,
     get flow(){return flow},
@@ -144,6 +146,115 @@ function workflow(options = {}) {
     dispose() { hooks.unmount?.(); scope.stop() },
   }
 }
+
+test('a question appears immediately during entry checks and submits only once after readiness',async()=>{
+ const gate=deferred(),p=workflow({beforeProfile:()=>gate.promise,route:{}})
+ try{
+  const opening=p.load();p.question.value='今天怎么吃得均衡？'
+  const sending=p.sendQuestion();const repeat=p.sendQuestion()
+  assert.equal(p.messages.value.at(-1).text,'今天怎么吃得均衡？')
+  assert.equal(p.messages.value.at(-1).status,'sending')
+  assert.equal(p.calls.some(call=>call.action==='submit'),false)
+  gate.resolve();await opening;await Promise.all([sending,repeat])
+  assert.equal(p.calls.filter(call=>call.action==='submit').length,1)
+  assert.equal(p.calls.find(call=>call.action==='submit').text,'今天怎么吃得均衡？')
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('leaving during entry checks keeps the draft and never submits it later',async()=>{
+ const gate=deferred(),p=workflow({beforeProfile:()=>gate.promise,route:{}})
+ try{
+  const opening=p.load();p.question.value='先保留的问题';const sending=p.sendQuestion()
+  assert.equal(p.messages.value.at(-1).text,'先保留的问题')
+  p.hooks.hide();gate.resolve();await Promise.all([opening,sending])
+  assert.equal(p.question.value,'先保留的问题')
+  assert.equal(p.calls.some(call=>call.action==='submit'),false)
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('returning to an idle or completed conversation never presents background checks as a new reply',async()=>{
+ for(const completed of [false,true]){
+  const p=workflow(),gate=deferred()
+  try{
+   await p.load()
+   if(completed)p.publish({requestId:uuid(901),status:'completed',result:{type:'answer',text:'已完成的合成回答',citations:[]}})
+   p.flow.resume=async()=>{p.publish({loading:true});await gate.promise;p.publish({loading:false});return true}
+   p.hooks.hide();p.hooks.show();await flush()
+   assert.equal(p.returnVerified.value,false)
+   assert.equal(p.task.value.loading,true)
+   assert.equal(p.chatBusy.value,true)
+   assert.equal(p.replyPending.value,false)
+   assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
+   gate.resolve();await flush();await flush()
+   assert.equal(p.returnVerified.value,true)
+   assert.equal(p.chatBusy.value,false)
+   assert.equal(p.replyPending.value,false)
+  }finally{gate.resolve();p.dispose()}
+ }
+})
+
+test('a saved meal remains visible when the model reply fails and moves to its completed assistant turn once',async()=>{
+ const p=workflow(),requestId=uuid(973),record={id:'saved-meal',source_version:1,status:'saved'}
+ try{
+  await p.load()
+  p.messages.value.push({id:'user-meal',role:'user',requestId,text:'我今天午餐吃了番茄炒蛋'})
+  p.publish({requestId,status:'failed',recordedMeals:[record],result:{type:'error',code:'execution_failed'}})
+  assert.deepEqual(p.messages.value.find(row=>row.id==='user-meal').recordedMeals,[record])
+  p.publish({requestId,status:'completed',recordedMeals:[record],result:{type:'answer',text:'已记录',recordedMeals:[record]}})
+  assert.deepEqual(p.messages.value.find(row=>row.id==='user-meal').recordedMeals,[])
+  assert.equal(p.messages.value.filter(row=>row.recordedMeals?.some(item=>item.id===record.id)).length,1)
+ }finally{p.dispose()}
+})
+
+test('a failed background history read stays silent and a later successful check unlocks the same conversation',async()=>{
+ const p=workflow()
+ try{
+  await p.load();p.question.value='保留未发送的合成草稿'
+  const thread=p.conversationThreadId.value
+  p.setSnapshot(async()=>{throw Object.assign(new Error('合成：历史读取超时'),{code:'NETWORK_ERROR'})})
+  await p.refreshReturn()
+  assert.equal(p.returnVerified.value,false)
+  assert.match(p.returnError.value,/历史读取超时/)
+  assert.equal(p.replyPending.value,false)
+  p.setSnapshot(null);await p.refreshReturn()
+  assert.equal(p.returnVerified.value,true)
+  assert.equal(p.returnError.value,'')
+  assert.equal(p.chatBusy.value,false)
+  assert.equal(p.conversationThreadId.value,thread)
+  assert.equal(p.question.value,'保留未发送的合成草稿')
+  assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
+ }finally{p.dispose()}
+})
+
+test('switching history reads the selected conversation without showing reply progress',async()=>{
+ const p=workflow(),gate=deferred()
+ let changing
+ try{
+  await p.load();p.setSnapshot(async()=>{await gate.promise;return {messages:[],runs:[]}})
+  changing=p.selectConversation(p.historyRow(p.identity.dailyThread));await flush()
+  assert.equal(p.chatBusy.value,true)
+  assert.equal(p.replyPending.value,false)
+  assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
+  gate.resolve();await changing
+  assert.equal(p.chatBusy.value,false)
+ }finally{gate.resolve();await changing;p.dispose()}
+})
+
+test('only an actual active request keeps reply progress across background checks',async()=>{
+ const p=workflow(),gate=deferred()
+ let returning
+ try{
+  await p.load();p.publish({requestId:uuid(902),status:'running',result:null})
+  p.flow.resume=async()=>{await gate.promise;return true}
+  returning=p.refreshReturn();await flush()
+  assert.equal(p.replyPending.value,true)
+  assert.equal(p.primaryMode.value,'stop')
+  gate.resolve();await returning
+  for(const status of ['completed','failed','rejected','interrupted','cancelled']){
+   p.publish({status});assert.equal(p.replyPending.value,false,status)
+  }
+ }finally{gate.resolve();await returning;p.dispose()}
+})
 
 test('a home suggestion appears and clears the composer before conversation creation or history reads finish',async()=>{
  const p=workflow({route:{}}),createGate=deferred(),historyGate=deferred(),submitGate=deferred()
@@ -156,6 +267,7 @@ test('a home suggestion appears and clears the composer before conversation crea
   const row=p.messages.value[0],localId=row.id
   assert.equal(row.text,'忙起来怎么规律吃饭？');assert.equal(row.status,'sending')
   assert.equal(row.requestId,undefined);assert.equal(p.question.value,'');assert.equal(p.chatBusy.value,true)
+  assert.equal(p.replyPending.value,true,'an explicit send keeps progress before the request is created')
   await p.askPrompt({text:'不要重复发送',action:'consultation'})
   assert.equal(p.messages.value.length,1);assert.equal(p.question.value,'')
   createGate.resolve();await flush()
@@ -181,7 +293,6 @@ test('the first preparation frame shows an enabled stop action and cancellation 
   assert.equal(p.question.value,'');assert.equal(p.messages.value[0].text,'合成的第一条提问')
   p.question.value='保留新输入的草稿';p.stopQuestion()
   assert.equal(p.chatBusy.value,false);assert.equal(p.question.value,'保留新输入的草稿')
-  assert.equal(p.showMemberArchive.value,false)
   assert.equal(p.messages.value[0].status,'cancelled')
   gate.resolve();await pending
   assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
@@ -361,10 +472,11 @@ test('a lost submission response reuses the displayed message and never clears t
   }
   const pending=p.askPrompt({text:'忙起来怎么规律吃饭？',action:'consultation'}),id=p.messages.value[0].id
   await flush();assert.equal(p.messages.value.filter(m=>m.role==='user').length,1)
-  assert.equal(p.preparingSend.value,false);assert.equal(p.primaryMode.value,'check')
+  assert.equal(p.preparingSend.value,false);assert.equal(p.primaryMode.value,'submitting')
   assert.equal(p.question.value,'');p.question.value='下一条草稿';gate.resolve();await pending
   const row=p.messages.value.find(m=>m.role==='user')
   assert.equal(row.id,id);assert.equal(row.requestId,requestId);assert.equal(row.status,'unknown')
+  assert.equal(p.primaryMode.value,'check');assert.equal(p.chatError.value,'')
   assert.equal(p.question.value,'下一条草稿')
   p.publish({submitUnknown:false,canRetry:false,status:'queued',error:''})
   assert.equal(p.question.value,'下一条草稿');assert.equal(p.messages.value.filter(m=>m.role==='user').length,1)
@@ -857,6 +969,22 @@ test('a relative needs-input meal question reenters within its original conversa
   }finally{p.dispose()}
 })
 
+test('a today-menu follow-up resumes its bound task even before a saved menu exists',async()=>{
+  const p=workflow(),reference=uuid(910),request=uuid(911)
+  try{
+    await p.load()
+    p.addThread(reference,{memberId:relative,taskType:'reference_meal_preview',agent:'health-meal-planner'})
+    const pending={status:'needs_input',member_id:relative,thread_id:reference,request_id:request,questions:['合成待补充问题'],selection:{mode:'reference',family_id:'family-a',plan_date:p.clock.day,participant_ids:['father'],meal_types:['lunch'],daily_base_version:0}}
+    await p.resumePlanQuestion({...pending,selection:{...pending.selection,family_id:'other-family'}})
+    assert.equal(p.task.value.taskType,'consultation')
+    await p.resumePlanQuestion(pending)
+    assert.equal(p.task.value.entry.thread_id,reference)
+    assert.equal(p.task.value.requestId,request)
+    assert.equal(p.task.value.memberId,relative)
+    assert.equal(p.calls.some(call=>call.action==='submit'),false)
+  }finally{p.dispose()}
+})
+
 test('a late history read from the previous account cannot overwrite the new account view, draft or summary cache', async () => {
   const p = workflow(), second = uuid(2), accountB = uuid(9), delayed = deferred()
   p.addThread(second)
@@ -875,7 +1003,7 @@ test('a late history read from the previous account cannot overwrite the new acc
   } finally { p.dispose() }
 })
 
-test('a thread invalidated while its history is loading cannot restore the late saved messages', async () => {
+test('a thread invalidated during history loading recovers without restoring revoked late messages', async () => {
   const p = workflow(), second = uuid(2), delayed = deferred()
   p.addThread(second)
   try {
@@ -886,8 +1014,9 @@ test('a thread invalidated while its history is loading cannot restore the late 
     assert.deepEqual(p.messages.value, [])
     delayed.resolve({ messages: [{ id: 'revoked-late-history', role: 'assistant', text: '不得重新显示的失效正文', createdAt: '2026-10-28T10:00:00+08:00' }], runs: [] })
     await selection
-    assert.equal(p.task.value.invalidated, true)
-    assert.deepEqual(p.messages.value, [])
+    await flush()
+    assert.equal(p.entryReady.value,true)
+    assert.equal(p.messages.value.some(message=>message.id==='revoked-late-history'),false)
     assert.equal(p.writes.some(write => JSON.stringify(write.value).includes('不得重新显示的失效正文')), false)
   } finally { p.dispose() }
 })
@@ -902,4 +1031,104 @@ test('meal suggestion cards use the same structured route as typed requests',asy
     assert.ok(p.calls.filter(call=>call.action==='submit').every(call=>call.taskType==='reference_meal_preview'))
     assert.equal(p.calls.some(call=>call.action==='startPlan'),false)
   }finally{p.dispose()}
+})
+
+
+test('selected history renders while continuation checks remain pending and sends stay blocked',async()=>{
+ const gate=deferred(),second=uuid(401)
+ const p=workflow({beforeOpen:async options=>{if(options.threadId===second)await gate.promise}})
+ p.addThread(second,{messages:[{id:'fast-body',role:'user',text:'先显示的历史正文',createdAt:'2026-10-28T10:00:00+08:00'}]})
+ let selection
+ try{
+  await p.load();selection=p.selectConversation(p.historyRow(second));await flush()
+  assert.deepEqual(p.messages.value.map(m=>m.text),['先显示的历史正文'])
+  assert.equal(p.historyLoading.value,false);assert.equal(p.continuationChecking.value,true)
+  p.question.value='检查中不发送';await p.sendQuestion();assert.equal(p.calls.some(c=>c.action==='submit'),false)
+  gate.resolve();await selection;assert.equal(p.continuationChecking.value,false);assert.equal(p.chatBusy.value,false)
+ }finally{gate.resolve();await selection;p.dispose()}
+})
+test('a slow related history does not hold back already authorized main history',async()=>{
+ const p=workflow(),second=uuid(402),child=uuid(403),gate=deferred()
+ p.addThread(second);p.addThread(child,{taskType:'reference_meal_preview',agent:'health-meal-planner'})
+ try{
+  await p.load()
+  p.setSnapshot(async id=>id===child?gate.promise:{messages:[{id:'main-visible',role:'user',text:'主咨询先显示',createdAt:'2026-10-28T10:00:00+08:00'}],runs:[],relatedThreads:[{thread_id:child,memberId:relative,task_type:'reference_meal_preview'}]})
+  const selection=p.selectConversation(p.historyRow(second));await flush()
+  assert.equal(p.messages.value[0].text,'主咨询先显示');assert.equal(p.historyLoading.value,true)
+  gate.resolve({messages:[{id:'meal-history',role:'assistant',text:'关联餐单',createdAt:'2026-10-28T10:01:00+08:00',recordedMeals:[{id:'saved-receipt'}]}],runs:[]})
+  await selection;assert.deepEqual(p.messages.value.map(m=>m.text),['主咨询先显示','关联餐单'])
+  assert.equal(p.messages.value[1].memberId,relative);assert.equal(p.messages.value[1].recordedMeals[0].id,'saved-receipt')
+ }finally{gate.resolve({messages:[],runs:[]});p.dispose()}
+})
+test('rapid selection ignores the previous conversation body and late continuation',async()=>{
+ const second=uuid(404),third=uuid(405),gate=deferred()
+ const p=workflow({beforeOpen:async options=>{if(options.threadId===second)await gate.promise}})
+ p.addThread(second,{messages:[{id:'second',role:'user',text:'第二段',createdAt:'2026-10-28T10:00:00+08:00'}]})
+ p.addThread(third,{messages:[{id:'third',role:'user',text:'第三段',createdAt:'2026-10-28T10:00:00+08:00'}]})
+ try{
+  await p.load();const old=p.selectConversation(p.historyRow(second));await flush()
+  await p.selectConversation(p.historyRow(third));gate.resolve();await old
+  assert.equal(p.conversationThreadId.value,third);assert.deepEqual(p.messages.value.map(m=>m.text),['第三段'])
+  assert.equal(p.historyLoading.value,false);assert.equal(p.continuationChecking.value,false)
+ }finally{gate.resolve();p.dispose()}
+})
+test('a continuation network error keeps authorized history visible and blocks submission',async()=>{
+ const second=uuid(406),p=workflow({beforeOpen:async options=>{if(options.threadId===second)throw new Error('核对暂时超时')}})
+ p.addThread(second,{messages:[{id:'safe-history',role:'user',text:'仍可阅读的正文',createdAt:'2026-10-28T10:00:00+08:00'}]})
+ try{await p.load();await p.selectConversation(p.historyRow(second));assert.equal(p.messages.value[0].text,'仍可阅读的正文');assert.ok(p.continuationError.value);p.question.value='不能重复提交';await p.sendQuestion();assert.equal(p.calls.some(c=>c.action==='submit'),false)}finally{p.dispose()}
+})
+
+
+test('a continuation failure still allows starting a new independent conversation',async()=>{
+ const second=uuid(407),p=workflow({beforeOpen:async options=>{if(options.threadId===second)throw new Error('核对失败')}})
+ p.addThread(second)
+ try{await p.load();await p.selectConversation(p.historyRow(second));assert.ok(p.continuationError.value);await p.newConversation();assert.equal(p.newConversationWelcome.value,true);assert.equal(p.continuationError.value,'');assert.equal(p.messages.value.length,0)}finally{p.dispose()}
+})
+
+
+for(const first of ['history','continuation'])test(`parallel recovery merges the same answer once: ${first}`,async()=>{
+ const thread=uuid(9910),request=uuid(9911),gate=deferred();
+ const p=workflow({beforeOpen:async options=>{if(first==='history'&&options.threadId===thread)await gate.promise}});
+ p.addThread(thread,{taskSnapshot:{requestId:request,status:'completed',result:{type:'answer',text:'同一条答复',citations:[]}}});
+ try{
+  await p.load();p.setSnapshot(async()=>{if(first==='continuation')await gate.promise;return {messages:[{id:'server-answer',role:'assistant',requestId:request,text:'同一条答复',createdAt:'2026-10-28T10:00:00+08:00'}],runs:[]}});
+  const selecting=p.selectConversation(p.historyRow(thread));await flush();gate.resolve();await selecting;
+  const answers=p.messages.value.filter(m=>m.role==='assistant'&&m.requestId===request);
+  assert.equal(answers.length,1);assert.equal(answers[0].threadId,thread);assert.equal(answers[0].id,'server-answer');
+ }finally{gate.resolve();p.dispose()}
+});
+
+test('failed message exposes its own safe reason and restores only an empty draft without submitting',async()=>{
+ const p=workflow();
+ try{
+  await p.load();const message={id:'failed',role:'user',text:'买菜怎样减少浪费？',status:'failed',requestId:uuid(9921),errorCode:'answer_finalization_required'};
+  p.messages.value.push(message);p.messageStatus(message);
+  const modal=p.calls.findLast(c=>c.action==='modal');assert.match(modal.content,/答复/);assert.equal(modal.confirmText,'编辑问题');
+  modal.success({confirm:true});assert.equal(p.question.value,message.text);assert.equal(p.calls.some(c=>c.action==='submit'),false);
+  p.question.value='保留新的草稿';p.messageStatus(message);p.calls.findLast(c=>c.action==='modal').success({confirm:true});assert.equal(p.question.value,'保留新的草稿');
+ }finally{p.dispose()}
+});
+
+
+test('late failure modal cannot restore a private question after changing the account',async()=>{
+ const p=workflow();try{
+  await p.load();p.messageStatus({id:'old',role:'user',text:'旧账号问题',status:'failed'});
+  const modal=p.calls.findLast(c=>c.action==='modal');p.identity.scope='another-account';modal.success({confirm:true});assert.equal(p.question.value,'');
+ }finally{p.dispose()}
+});
+
+test('restored failed history uses its own code rather than the current task error',async()=>{
+ const p=workflow(),thread=uuid(9930),request=uuid(9931);p.addThread(thread,{messages:[{id:'old-failure',role:'user',requestId:request,text:'旧问题',status:'failed',errorCode:'catalog_tool_required'}]});
+ try{await p.load();await p.selectConversation(p.historyRow(thread));p.publish({requestId:uuid(9932),status:'failed',result:{type:'error',code:'budget_exceeded'}});p.messageStatus(p.messages.value.find(m=>m.id==='old-failure'));assert.match(p.calls.findLast(c=>c.action==='modal').content,/商品查询/)}finally{p.dispose()}
+});
+
+
+test('an empty anchor with revoked related history shows its notice instead of the new-chat home',async()=>{
+ const p=workflow(),root=uuid(408),child=uuid(409)
+ p.addThread(root)
+ try{
+  await p.load();p.setSnapshot(async id=>{if(id===child)throw Object.assign(new Error('denied'),{code:403});return {messages:[],runs:[],relatedThreads:[{thread_id:child,memberId:relative,task_type:'reference_meal_preview'}]}})
+  await p.selectConversation(p.historyRow(root));await flush()
+  assert.equal(p.messages.value.length,0);assert.equal(p.welcomeMounted.value,false);assert.equal(p.task.value.available,true)
+ }finally{p.dispose()}
 })

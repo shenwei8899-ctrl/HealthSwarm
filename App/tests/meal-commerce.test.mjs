@@ -60,6 +60,35 @@ function fixture(){
   return {state,controller,calls,menu,api,member:value=>{members=value},switch:()=>{account='B';controller.sync()},failOrder:()=>{failOrder=true},defer:promise=>{deferMenu=promise}}
 }
 
+test('unified repricing updates quantities without republishing the meal cart',async()=>{
+ const f=fixture();f.api.slots=async()=>({supported:true,items:[{id:10,available:true}]})
+ await f.controller.load();await f.controller.prepare({reuseCart:true,requireSlot:true})
+ f.controller.quantity('2',3);f.controller.toggle('3')
+ await f.controller.prepare({reuseCart:true,requireSlot:true})
+ assert.equal(f.calls.filter(c=>c[0]==='addMeal').length,1)
+ const quote=f.calls.filter(c=>c[0]==='quote').at(-1)
+ assert.equal(quote[1].length,1);assert.equal(quote[1][0].quantity,3)
+})
+
+test('a dismissed unified sheet cannot accept a late quote',async()=>{
+ const f=fixture();await f.controller.load()
+ let finish,started
+ const waiting=new Promise(resolve=>{started=resolve})
+ f.api.quote=async()=>{started();return new Promise(resolve=>{finish=resolve})}
+ const reading=f.controller.prepare();await waiting
+ f.controller.invalidateQuote()
+ finish({checkout_token:'stale',expires_at:new Date(Date.now()+60000).toISOString()})
+ await reading
+ assert.equal(f.state.quote,null)
+})
+
+test('unified checkout requires a currently available delivery slot before cart writes',async()=>{
+ const f=fixture();await f.controller.load()
+ await f.controller.prepare({reuseCart:true,requireSlot:true})
+ assert.match(f.state.checkoutError,/配送时段/)
+ assert.equal(f.calls.some(c=>c[0]==='addMeal'),false)
+})
+
 test('saved meal procurement reads its exact package and never substitutes the current menu', async () => {
   const f=fixture(), calls=[]
   f.api.meal=async()=>{ throw new Error('must not read the current menu') }

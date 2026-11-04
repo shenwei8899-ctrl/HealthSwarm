@@ -6,7 +6,26 @@ import { scopedStorage } from './storage.js'
 import { newHealthRequestId } from './health-task-flow.js'
 
 const root = '/api/health/v1', clone = value => JSON.parse(JSON.stringify(value))
-export const photoState = () => ({ members: [], memberId: '', config: null, uploads: [], jobs: [], drafts: [],
+export const mealPhotoFailure = code => ({
+  budget_price_unavailable: '识别服务的计费配置尚未就绪，请联系管理员。',
+  budget_exceeded: '本月识别额度不足或待核账，可先手动填写菜品。',
+  policy_changed: '识别配置或授权已变化，请重新检查服务并确认同意。',
+  file_too_large: '照片处理副本超过识别限额，请重新选择照片。',
+  model_schema_invalid: '识别结果无法可靠读取，请重新选择照片或手动填写菜品。',
+  provider_unavailable: '照片识别服务暂时无法连接，可稍后重试或手动填写菜品。',
+  cancelled: '本次识别已取消，可重新选择照片或手动填写菜品。',
+})[code] || '本次识别未完成，可重新选择照片或手动填写菜品。'
+/** 补充区域就地展示真实状态，失败不再伪装成等待识别。 */
+export function mealPhotoUploadMessage(state) {
+  if(state.busy)return '正在上传或识别…'
+  if(state.error)return state.error
+  if(state.pending)return '上次识别请求的结果尚未确认，请恢复原照片任务。'
+  if(['pending','running'].includes(state.job?.execution_status))return '正在识别新食物，原来的这一餐不会改变。'
+  if(['failed','cancelled'].includes(state.job?.execution_status))return mealPhotoFailure(state.job.error_code||state.job.execution_status)
+  if(state.job)return '识别任务已有结果，请读取本次识别结果。'
+  return state.uploads.length?'照片已上传，可以开始识别。':'照片尚未上传成功，请重新选择照片。'
+}
+export const photoState = () => ({ members: [], memberId: '', config: null, consent: null, uploads: [], jobs: [], drafts: [],
   jobsOffset: 0, draftsOffset: 0, jobsNext: null, draftsNext: null, job: null, draft: null, meal: null,
   calculation: null, dirty: false, conflict: false, pending: null, saved: null, sources: [], busy: false, error: '', notice: '' })
 
@@ -14,11 +33,31 @@ export const photoState = () => ({ members: [], memberId: '', config: null, uplo
 export function createMealPhotoClient({ state, send = request, upload = uploadMealPhoto, revision = sessionRevision,
   storage = scopedStorage, newId = newHealthRequestId } = {}) {
   let generation = 0
+  let declined = false
   const key = () => 'meal-photo-flow:' + state.memberId
   const checkpoint = () => storage.setStorageSync(key(), { taskId: state.job?.task_id || null,
     draftId: state.draft?.id || null, pending: state.pending && state.pending.operation !== 'patch' ? state.pending : null,
     uploads: state.uploads.map(row => ({ upload_id: row.upload_id })) })
-  const discard = () => { generation++; Object.assign(state, photoState()) }
+  const discard = () => { generation++; declined = false; Object.assign(state, photoState()) }
+  const matchesConsent = (config, consent = state.consent) => !!consent &&
+    consent.memberId === state.memberId &&
+    consent.policy_version === config?.policy_version && consent.processor === config?.meal?.processor
+  async function readConsent(current) {
+    if (!state.memberId || !state.members.find(row => row.id === state.memberId)?.scopes?.includes('ai_use')) return
+    const { data } = await send({ path: `${root}/members/${state.memberId}/processing-consents?purpose=meal` })
+    if (!current()) return
+    if (!declined && state.config?.meal?.available && data.accepted && data.processor === state.config.meal.processor && data.policy_version === state.config.policy_version) {
+      state.consent = { memberId: state.memberId, processor: data.processor, policy_version: data.policy_version, persisted: true }
+    } else if (state.consent?.persisted) state.consent = null
+  }
+  async function readConfiguration(current) {
+    const config = (await send({ path: root + '/configuration' })).data
+    if (!current()) return null
+    state.config = config
+    if (!config.meal?.available || !matchesConsent(config)) state.consent = null
+    await readConsent(current)
+    return config
+  }
   async function run(action) {
     if (state.busy) return
     const epoch = generation, rev = revision(), current = () => epoch === generation && rev === revision()
@@ -69,6 +108,26 @@ export function createMealPhotoClient({ state, send = request, upload = uploadMe
   }
   return {
     discard,
+    resetSelection() {
+      if (state.busy || state.pending || ['pending', 'running'].includes(state.job?.execution_status)) return false
+      generation++
+      Object.assign(state, { uploads: [], job: null, draft: null, meal: null, calculation: null, dirty: false, conflict: false, saved: null, error: '', notice: '' })
+      checkpoint()
+      return true
+    },
+    setConsent(accepted) {
+      declined = !accepted
+      state.consent = accepted && !state.busy && state.config?.meal?.available && state.uploads.length ? {
+        memberId: state.memberId, processor: state.config.meal.processor,
+        policy_version: state.config.policy_version,
+      } : null
+    },
+    revokeConsent() { return run(async current => {
+      await send({ path: `${root}/members/${state.memberId}/processing-consents`, method: 'POST', data: {
+        purpose: 'meal', accepted: false, processor: state.config.meal.processor, policy_version: state.config.policy_version } })
+      if (current()) { declined = true; state.consent = null }
+    }) },
+    refreshConfiguration() { return run(readConfiguration) },
     open(memberId = '', initialMembers = null) {
       discard()
       return run(async current => {
@@ -79,6 +138,7 @@ export function createMealPhotoClient({ state, send = request, upload = uploadMe
         if (!state.memberId) return
         const stored = storage.getStorageSync(key()) || {}
         state.pending = stored.pending || null; state.uploads = stored.uploads || []
+        await readConsent(current); if (!current()) return
         await list(current); if (!current()) return
         if (stored.draftId) await readDraft(stored.draftId, current)
         if (current() && stored.taskId) await readJob(stored.taskId, current)
@@ -90,17 +150,22 @@ export function createMealPhotoClient({ state, send = request, upload = uploadMe
       return run(async current => { const data = await upload(state.memberId, filePath); if (current()) { state.uploads.push(data); checkpoint() } })
     },
     removePhoto(id) { if (state.busy || state.pending) return; state.uploads = state.uploads.filter(row => row.upload_id !== id); checkpoint() },
-    start(mealType, eatenAt, accepted) {
-      if (state.pending || !state.memberId || !state.uploads.length) return
+    start(mealType, eatenAt) {
+      if (state.pending) return
+      if (!state.memberId) { state.error = '请先重新读取记餐成员'; return }
+      if (!state.uploads.length) { state.error = '照片尚未上传成功，请重新选择照片'; return }
       return run(async current => {
-        const config = (await send({ path: root + '/configuration' })).data
+        const config = await readConfiguration(current)
         if (!current()) return
-        const prior = state.config; state.config = config
         if (!config.meal.available) throw new Error(config.meal.reason || '识别服务未启用')
         if (!state.members.find(row => row.id === state.memberId)?.scopes?.includes('ai_use')) throw new Error('需要成员 AI 使用授权')
-        if (!accepted || prior.policy_version !== config.policy_version || prior.meal.processor !== config.meal.processor) throw new Error('请核对当前处理方和政策后重新勾选同意')
-        await send({ path: `${root}/members/${state.memberId}/processing-consents`, method: 'POST', data: {
-          purpose: 'meal', accepted: true, processor: config.meal.processor, policy_version: config.policy_version } })
+        if (!matchesConsent(config)) throw new Error('请核对当前处理方和政策后重新勾选同意')
+        if (!state.consent.persisted) {
+          const { data } = await send({ path: `${root}/members/${state.memberId}/processing-consents`, method: 'POST', data: {
+            purpose: 'meal', accepted: true, processor: config.meal.processor, policy_version: config.policy_version } })
+          if (!data.accepted) throw new Error('授权未保存，请重新确认')
+          if (current()) state.consent.persisted = true
+        }
         if (!current()) return
         const id = newId()
         state.pending = { operation: 'task', request: { path: root + '/meal-photo-tasks', method: 'POST', headers: { 'Idempotency-Key': id },

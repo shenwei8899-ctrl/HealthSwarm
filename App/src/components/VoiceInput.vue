@@ -29,7 +29,7 @@ function start(event) {
   levels.value=Array(44).fill(0);recorder.begin(touchY(event)||0)
 }
 function end(event) { recorder.end(touchY(event)) }
-function cancel() { if (busy.value) recorder.cancel() }
+function cancel() { recorder.cancel() }
 function openSettings() {
   uni.openSetting({
     success: result => {

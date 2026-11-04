@@ -9,10 +9,31 @@ import { memberProfileChanges, saveMemberProfile, startMemberAnalysis } from '..
 import { setSession } from '../src/services/session.js'
 import { profileDraft, profileChanges } from '../src/services/family-archive-fields.js'
 import { createFamilyArchivesClient, archiveState } from '../src/services/family-archives-client.js'
+import { readCloudReportStatus } from '../src/services/report-entry.js'
 
 function setup(){const values=new Map();globalThis.uni={getStorageSync:k=>values.get(k),setStorageSync:(k,v)=>values.set(k,structuredClone(v))};setSession({accountId:'creator',householdId:'family',token:'synthetic'});return values}
 const source=()=>({id:'mother',is_active:true,is_self:false,version:7,relationship_version:2,confirmed:true,editable_fields:['sex','birth_date','height_cm','dietary_details','goal','allergens','avoidances','doctor_instructions'],profile:{dietary_details:{statedWeightKg:55,conditions:['合成情况'],recentNote:'保留原文'},medications:'保留用药记录'}})
 const member=()=>({id:'mother',name:'妈妈',relation:'妈妈',weight:55,gender:'女',conditions:['合成情况'],recentNote:'保留原文',allergyStatus:'none',allergies:[],goals:['饮食均衡']})
+
+test('report status checks report grants before reading private reports',async()=>{
+  setup();const calls=[]
+  const status=await readCloudReportStatus('health',async o=>{calls.push(o.path);return {data:[{id:'health',scopes:['ai_use','diet_edit','profile_view']}]}})
+  assert.equal(status,'restricted');assert.deepEqual(calls,['/api/health/v1/members'])
+})
+
+test('report status distinguishes an empty authorized archive from missing access and expired login',async()=>{
+  const granted=async o=>({data:o.path.endsWith('/members')?[{id:'health',scopes:['report_view']}]:o.path.includes('/observations')?[]:{drafts:[]}})
+  assert.equal(await readCloudReportStatus('health',granted),'empty')
+  assert.equal(await readCloudReportStatus('health',async()=>({data:[]})),'unavailable')
+  assert.equal(await readCloudReportStatus('health',async o=>{if(o.path.endsWith('/members'))return {data:[{id:'health',scopes:['report_view']}]};throw Object.assign(new Error('revoked'),{code:404})}),'restricted')
+  await assert.rejects(readCloudReportStatus('health',async()=>{throw Object.assign(new Error('login expired'),{code:401})}),/login expired/)
+})
+
+test('family report status uses server member permissions without an enable write',async()=>{
+  setup();const calls=[]
+  const result=await readCloudReportStatus('health',async o=>{calls.push(o);return {data:o.path.endsWith('/members')?[{id:'health',scopes:['report_view','report_upload','profile_edit']}]:o.path.endsWith('/observations')?[]:{drafts:[]}}})
+  assert.equal(result,'empty');assert.equal(calls.length,3);assert.ok(calls.every(o=>!o.method||o.method==='GET'))
+})
 
 test('editing a claimed mother changes only her weight without confirming her or submitting consent',async()=>{
   setup();const original=member(),draft={...original,weight:57},calls=[]
@@ -78,14 +99,38 @@ function detail(overrides={}){
   const deps={ref,computed,defineOptions(){},defineProps:()=>({id:'mother'}),defineEmits:()=>()=>{},defineExpose(){},onMounted(){},onUnmounted(){},onShow(){},onHide(){},onUnload(){},sessionRevision:()=>revision,profileDraft,profileChanges,
     restrictionIssue,restrictionFields,preserveMemberEdit,readMemberEdit,clearMemberEdit,readMemberProfile:async()=>({profile:{householdId:'family',isOwner:true,selfMemberId:'creator',members:[m]},member:m,source:raw}),
     saveMemberProfile:async(...args)=>writes.push(args),request:async()=>({data:{}}),...overrides}
-  const page=new Function('deps',`const {${Object.keys(deps)}}=deps;${src};return {load,edit,save,hide,cancelEdit,section,conflictEdit,canEdit,canAnalyze,profile,source,draft,error,busy,analysisBusy,editing,revokeAnalysis,requestClose,reload,writing,dirty,writeUncertain}`)(deps)
+  const page=new Function('deps',`const {${Object.keys(deps)}}=deps;${src};return {load,edit,save,hide,cancelEdit,section,conflictEdit,canEdit,profile,source,draft,error,busy,editing,requestClose,reload,writing,dirty,writeUncertain,report,reportError,reportBusy,reportHint,canOpenReport}`)(deps)
   return {...page,writes,changeAccount:()=>revision++}
 }
 
+test('self report entry opens the linked member directly without an enable request',async()=>{
+  const opened=[]
+  const p=detail({readMemberProfile:async()=>({profile:{householdId:'family',members:[{...member(),healthMemberId:'same-health'}]},source:{...source(),is_self:true}}),readCloudReportStatus:async()=> 'empty'})
+  uni.navigateTo=o=>opened.push(o.url)
+  await p.load();assert.equal(p.reportError.value,'');assert.equal(p.reportHint.value,'可添加')
+  await p.report();assert.deepEqual(opened,['/pages/health/vision?kind=report&memberId=same-health'])
+})
+
+test('ordinary family members can open the shared members report directly',async()=>{
+  const opened=[]
+  const p=detail({readMemberProfile:async()=>({profile:{householdId:'family',isOwner:true,members:[{...member(),healthMemberId:'family-health'}]},source:source()}),readCloudReportStatus:async()=> 'empty'})
+  uni.navigateTo=o=>opened.push(o.url)
+  await p.load();assert.equal(p.reportError.value,'');assert.equal(p.reportHint.value,'可添加');assert.equal(p.canOpenReport.value,true)
+  await p.report();assert.deepEqual(opened,['/pages/health/vision?kind=report&memberId=family-health'])
+})
+
+test('report navigation ignores overlapping clicks and hidden archives cannot start another navigation',async()=>{
+  let resolve;const opened=[]
+  const p=detail({readMemberProfile:async()=>({profile:{householdId:'family',members:[{...member(),healthMemberId:'family-health'}]},source:source()}),readCloudReportStatus:async()=> 'empty'})
+  uni.navigateTo=o=>{opened.push(o.url);return new Promise(r=>resolve=r)}
+  await p.load();const first=p.report();await p.report();assert.equal(opened.length,1)
+  p.hide();resolve();await first;await p.report();assert.equal(opened.length,1);assert.equal(p.profile.value,null)
+})
+
 test('creator can edit a claimed relative but gets no confirm or analysis authority',async()=>{
-  const p=detail();await p.load();assert.equal(p.canEdit.value,true);assert.equal(Boolean(p.canAnalyze.value),false)
+  const p=detail();await p.load();assert.equal(p.canEdit.value,true)
   p.edit();p.draft.value.weight=57;await p.save();assert.equal(p.writes.length,1);assert.equal(p.writes[0][1].id,'mother')
-  assert.equal(p.analysisBusy.value,false)
+  assert.equal(p.busy.value,false)
 })
 
 test('a late member read cannot expose an earlier accounts details',async()=>{
@@ -105,15 +150,15 @@ test('conflict reread discards the old draft so another editors allergy change c
 
 test('a verified non-owner guardian retains the unified editor',async()=>{
   const p=detail({readMemberProfile:async()=>({profile:{householdId:'family',isOwner:false,members:[member()]},source:{...source(),is_guardian:true}})})
-  await p.load();assert.equal(p.canEdit.value,true);assert.equal(p.canAnalyze.value,true)
+  await p.load();assert.equal(p.canEdit.value,true)
 })
 
-test('consent can be withdrawn even when model configuration and readiness are unavailable',async()=>{
+test('profile reading does not write a separate consultation processing consent',async()=>{
   const writes=[]
   const p=detail({readMemberProfile:async()=>({profile:{householdId:'family',analysisPolicy:null,members:[{...member(),healthMemberId:'health'}]},source:{...source(),is_self:true}}),readCloudReportStatus:async()=>{throw new Error('unavailable')},request:async o=>{if(o.method==='POST'){writes.push(o);return {data:{}}}throw new Error('unavailable')}})
-  await p.load();await p.revokeAnalysis();assert.equal(writes.length,1);assert.equal(writes[0].data.accepted,false)
+  await p.load();assert.equal(writes.length,0)
   const template=readFileSync(new URL('../src/components/CloudMemberDetail.vue',import.meta.url),'utf8')
-  assert.match(template,/v-if="member.healthMemberId"[^>]*@click="revokeAnalysis"/)
+  assert.doesNotMatch(template,/revokeAnalysis|撤回 AI 咨询授权|AI 咨询需要另行同意/)
 })
 
 test('ordinary users have one profile editor and no manual link page',()=>{
@@ -127,7 +172,7 @@ test('ordinary users have one profile editor and no manual link page',()=>{
 test('typed requests can select their own purpose before readiness is checked',()=>{
   const chat=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
   const disabled=chat.match(/class="send-button" aria-label="发送"[^>]*:disabled="([^"]+)"/)[1]
-  const canSend=new Function('chatBusy','draftSaving','draftError','task',`return !(${disabled})`)
+  const canSend=new Function('chatBusy','draftSaving','draftError','task','profileLoading=false','returning=false','entryError=""',`return !(${disabled})`)
   assert.equal(canSend(false,false,'',{available:false}),true)
   assert.equal(canSend(true,false,'',{available:true}),false)
 })

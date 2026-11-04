@@ -3,8 +3,11 @@ import App from './App.vue'
 import { installRouteGuards, guardInitialH5Route } from './services/navigation.js'
 import AppNavBar from './components/AppNavBar.vue'
 import AppIcon from './components/AppIcon.vue'
+import { registerApiAdapters } from './services/index.js'
+import { uploadVoice } from './services/voice-upload.js'
 
 export function createApp() {
+  registerApiAdapters({ transcribeVoice: uploadVoice })
   // #ifdef H5
   guardInitialH5Route(window.location, window.history)
   // #endif

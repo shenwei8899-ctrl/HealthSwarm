@@ -1,9 +1,10 @@
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, nextTick, reactive, ref } from 'vue'
 import { onLoad, onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import AppNavBar from '../../components/AppNavBar.vue'
 import HealthMealEditor from '../../components/HealthMealEditor.vue'
-import { createHealthVisionClient, visionState } from '../../services/health-vision-client.js'
+import ReportUploadWorkspace from '../../components/ReportUploadWorkspace.vue'
+import { createHealthVisionClient, visionState, visionPermissions } from '../../services/health-vision-client.js'
 import { newHealthRequestId } from '../../services/health-task-flow.js'
 import { sessionRevision } from '../../services/session.js'
 import { previewMealPhoto } from '../../services/health-upload.js'
@@ -11,7 +12,7 @@ const state = reactive(visionState()), route = ref({}), files = ref([]), payload
 const client = createHealthVisionClient({ state })
 const previewPath=ref('')
 const title = computed(() => state.kind === 'report' ? '报告上传与核对' : '饮食照片与核对')
-const dirty = computed(() => !!payload.value && JSON.stringify(payload.value) !== JSON.stringify(state.draft?.payload))
+const dirty = computed(() => !!state.draft && !!payload.value && JSON.stringify(payload.value) !== JSON.stringify(state.draft.payload))
 const statuses = { pending: '等待处理', running: '正在处理', success: '处理完成', failed: '处理失败', cancelled: '已取消' }
 let selecting = false, pickerHidden = false, pageRevision = '', alive = true
 onLoad(options => { route.value = { memberId: options.memberId || '', kind: options.kind === 'meal' ? 'meal' : 'report' } })
@@ -24,7 +25,7 @@ onShow(() => {
 function hide() { if (selecting) { pickerHidden = true; return }; alive = false; client.discard(); files.value = []; payload.value = null; previewPath.value='' }
 onHide(hide); onUnload(() => { selecting = false; pickerHidden = false; hide() })
 function pick(file = false) {
-  if (state.busy || state.pending) return
+  if (state.busy || state.pending || (state.kind === 'report' && !visionPermissions(state).upload)) return
   selecting = true; const revision = sessionRevision()
   const done = result => {
     if (alive && revision === sessionRevision()) files.value = (result.tempFiles || []).map(item => ({ path: item.path || item.tempFilePath, name: item.name || '照片', size: item.size }))
@@ -37,9 +38,23 @@ function pick(file = false) {
   else uni.chooseImage({ count: state.kind === 'meal' ? 3 : 9, sourceType: ['camera', 'album'], sizeType: ['original'], success: done, fail })
 }
 function editCurrent() { payload.value = state.draft ? JSON.parse(JSON.stringify(state.draft.payload)) : null; reason.value = ''; accept.value = false;previewPath.value='' }
-async function draft(row) { await client.draft(row); editCurrent() }
+function draft(row) {
+  if (state.busy || state.pending) return
+  allowDiscard(async () => { await client.draft(row); editCurrent(); await revealReport() })
+}
 async function manual() { await client.manual(); editCurrent() }
-async function readJob(row) { await client.readJob(row); if (state.draft) editCurrent() }
+function readJob(row) {
+  if (state.busy || state.pending) return
+  allowDiscard(async () => {
+    state.draft = null; state.calculation = null; payload.value = null; previewPath.value = ''
+    await client.readJob(row); if (state.draft) editCurrent()
+    await revealReport()
+  })
+}
+async function revealReport() {
+  await nextTick()
+  if (alive && state.kind === 'report') uni.pageScrollTo({ scrollTop: 0, duration: 200 })
+}
 async function save() { await client.saveDraft(payload.value, reason.value); if (!state.blocked && !state.error) editCurrent() }
 function addField() { payload.value.fields.push({ field_id: newHealthRequestId(), name: '', value_raw: '', value_numeric: null, unit_raw: '', reference_raw: '', source: 'manual', observation_code: 'unknown', evidence: null, excluded: false }) }
 function excludePage(index, excluded) {
@@ -48,6 +63,30 @@ function excludePage(index, excluded) {
   payload.value.excluded_pages = [...current]
 }
 async function acceptPolicy() { if (consent.value) await client.acceptConsent() }
+function clearLocal() { files.value = []; payload.value = null; previewPath.value = ''; consent.value = false; reason.value = ''; accept.value = false }
+function reloadMember(memberId = route.value.memberId) {
+  if (state.busy || state.pending) return
+  route.value.memberId = memberId || ''; clearLocal()
+  return client.open(route.value.memberId, route.value.kind)
+}
+function allowDiscard(action) {
+  if (dirty.value) uni.showModal({ title: '还有未保存的修改', content: '继续会放弃本次尚未保存的指标修改。', confirmText: '放弃修改', success: result => { if (result.confirm) action() } })
+  else action()
+}
+function switchMember(memberId) { if (!state.busy && !state.pending) allowDiscard(() => reloadMember(memberId)) }
+function newReport() {
+  if (state.busy || state.pending) return
+  allowDiscard(() => { clearLocal(); state.job = null; state.draft = null; state.confirmation = null; state.records = []; state.calculation = null; state.error = ''; state.notice = '' })
+}
+function back() { allowDiscard(() => uni.navigateBack({ fail: () => uni.reLaunch({ url: '/pages/profile/index' }) })) }
+async function recognizeReport() {
+  if (state.busy || state.pending || !visionPermissions(state).recognize || !files.value.length) return
+  const revision = sessionRevision(), memberId = state.memberId
+  if (!state.consent) { if (!consent.value) return; await client.acceptConsent() }
+  if (alive && revision === sessionRevision() && memberId === state.memberId && state.consent && !state.error) await client.recognize(files.value)
+}
+function removeFile(index) { if (!state.busy && !state.pending) files.value.splice(index, 1) }
+function cancelReport(job) { return job === 'upload' ? client.cancelUpload() : client.cancel(job) }
 async function preview(uploadId,pageIndex) {
   const revision=sessionRevision(),draftId=state.draft?.id;previewPath.value=''
   try{const path=await previewMealPhoto(uploadId,pageIndex);if(alive&&revision===sessionRevision()&&state.draft?.id===draftId)previewPath.value=path}
@@ -55,7 +94,12 @@ async function preview(uploadId,pageIndex) {
 }
 </script>
 <template>
-  <view class="screen health-vision"><AppNavBar><view class="nav-row"><button class="icon-button" @click="uni.navigateBack()">‹</button><text class="nav-title">{{title}}</text></view></AppNavBar>
+  <ReportUploadWorkspace v-if="route.kind!=='meal'" :state="state" :files="files" :payload="payload" :dirty="dirty" :preview-path="previewPath" v-model:reason="reason" v-model:consent="consent"
+    @back="back" @reload="reloadMember()" @member="switchMember" @pick="pick" @remove="removeFile" @recognize="recognizeReport" @manual="manual"
+    @recover="client.retryPending()" @configuration="consent=false;client.refreshConfiguration()" @page="(jobs,drafts)=>client.page(jobs,drafts)"
+    @job="readJob" @cancel="cancelReport" @retry="client.retry" @draft="draft" @preview="preview" @reprocess="index=>client.reprocessPages([index])"
+    @exclude="excludePage" @add-field="addField" @save="save" @confirm="client.confirm(false)" @new-report="newReport"/>
+  <view v-else class="screen health-vision"><AppNavBar><view class="nav-row"><button class="icon-button" @click="uni.navigateBack()">‹</button><text class="nav-title">{{title}}</text></view></AppNavBar>
     <view class="page-heading"><text class="display-title">{{state.kind==='report'?'先核对，再保存':'把这一餐，记清楚'}}</text><text class="subtitle">识别内容为待确认候选。仅由你确认后保存正式记录。</text></view>
     <text v-if="state.error" class="inline-error">{{state.error}}</text><text v-if="state.notice" class="safe-note">{{state.notice}}</text><text v-if="state.busy" class="safe-note">正在核对服务端状态…</text>
     <button v-if="!state.members.length" class="secondary-button" :disabled="state.busy" @click="client.open(route.memberId,route.kind)">重新读取授权成员</button>

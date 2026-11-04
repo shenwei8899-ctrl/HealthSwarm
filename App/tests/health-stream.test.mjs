@@ -4,6 +4,15 @@ import { readFileSync } from 'node:fs'
 import { createHealthEventParser, subscribeHealthEvents } from '../src/services/health-events.js'
 import { createHealthTaskFlow } from '../src/services/health-task-flow.js'
 
+test('分类选品进度只接收固定阶段，不把工具正文或任意提示显示给用户',()=>{
+  const events=[],parse=createHealthEventParser(event=>events.push(event))
+  for(const phase of ['reading_categories','choosing_categories','reading_products','preparing_answer','private-phase']){
+    parse('event: custom\ndata: '+JSON.stringify({payload:{name:'yuxi.health_progress',chunk:{phase,message:'PRIVATE',input:'PRIVATE'}}})+'\n\n')
+  }
+  assert.deepEqual(events.map(event=>event.phase),['reading_categories','choosing_categories','reading_products','preparing_answer','running'])
+  assert.ok(!JSON.stringify(events).includes('PRIVATE'))
+})
+
 const memberId = '11111111-1111-4111-8111-111111111111'
 const entryId = '22222222-2222-4222-8222-222222222222'
 const requestId = '33333333-3333-4333-8333-333333333333'
@@ -33,6 +42,7 @@ function fixture({ pollLimit = 45, cancelMode = 'success', queued = false } = {}
         if(cancelGate){const gate=cancelGate;cancelGate=null;await gate}
         if(cancelMode==='dispatch'){status='running';cancelMode='success';throw Object.assign(new Error('已派发'),{code:409,businessCode:'request_already_dispatched'})}
         if(cancelMode==='reject')throw Object.assign(new Error('停止未成功'),{code:400})
+        if(cancelMode==='missing')throw Object.assign(new Error('停止入口暂不可用'),{code:404})
         if(cancelMode==='timeout')throw Object.assign(new Error('超时'),{code:'NETWORK_ERROR'})
         if(cancelMode==='lost'){status='cancelled';throw Object.assign(new Error('响应丢失'),{code:'NETWORK_ERROR'})}
         if(status!=='completed')status='cancelled';return {data:{status}}
@@ -146,7 +156,7 @@ test('长任务降频后手动读取仍沿用原request且不重复提交', asyn
   assert.equal(h.flow.getState().requestId, requestId)
   assert.ok(h.pendingTimers() > 0)
   assert.ok(h.subscriptions.some(row => !row.closed))
-  assert.equal(h.flow.getState().notice, '')
+  assert.match(h.flow.getState().notice, /仍在自动获取/)
   assert.equal(h.writes.length, posts)
   h.setStatus('completed'); await h.poll()
   assert.equal(h.flow.getState().result.text, '正式结果')
@@ -325,4 +335,13 @@ test('a covered page makes an in-flight cancellation unknown and rejects the lat
 test('a reconciled cancellation restores the same request and explicit stop after reopening without another write',async()=>{
  const h=fixture({cancelMode:'timeout'});await start(h);await h.flow.cancelRequest();await h.flow.open(memberId,'consultation')
  assert.equal(h.flow.getState().requestId,requestId);assert.equal(h.flow.getState().cancelPhase,'');assert.equal(h.subscriptions.at(-1).closed,false);assert.equal(h.writes.filter(w=>w.path.endsWith('/cancel')).length,1)
+})
+
+
+test('cancel endpoint 404 checks the original task without clearing an accessible conversation',async()=>{
+ const h=fixture({cancelMode:'missing'});await start(h);await h.flow.cancelRequest()
+ assert.notEqual(h.flow.getState().invalidated,true)
+ assert.equal(h.flow.getState().requestId,requestId)
+ assert.equal(h.flow.getState().status,'running')
+ assert.equal(h.flow.getState().cancelPhase,'error');h.flow.hide()
 })

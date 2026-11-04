@@ -423,3 +423,21 @@ test('无效对话 ID、线程或任务组合在读取前拒绝，不默默恢�
     assert.equal(h.flow.getState().entry, null)
   }
 })
+
+
+test('reference task creation freezes its verified main conversation across an uncertain retry',async()=>{
+ let attempts=0
+ const h=fixture(options=>{if(options.path.endsWith('/task-entries')&&!attempts++)throw Object.assign(new Error('synthetic timeout'),{code:503})})
+ const selection={family_id:uuid(90),plan_date:'2026-10-28',participant_ids:[memberId],meal_types:['lunch']}
+ try{
+  await h.flow.open(memberId,'reference_meal_preview',selection,{conversationId:firstConversation,rootThreadId:firstThread})
+  await h.flow.createEntry()
+  const pending=h.flow.getState().entry
+  assert.equal(pending.root_thread_id,firstThread)
+  await h.flow.open(memberId,'reference_meal_preview',selection,{conversationId:firstConversation,rootThreadId:secondThread})
+  await h.flow.createEntry()
+  const calls=h.calls.filter(c=>c.path.endsWith('/task-entries'))
+  assert.equal(calls.length,2);assert.equal(calls[0].data.root_thread_id,firstThread);assert.equal(calls[1].data.root_thread_id,firstThread)
+  assert.equal(calls[0].data.client_request_id,calls[1].data.client_request_id)
+ }finally{h.flow.hide()}
+})

@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
     server: {
       proxy: {
         '/api': { target: process.env.VITE_HEALTH_API_PROXY || env.VITE_HEALTH_API_PROXY || 'http://127.0.0.1:15050', changeOrigin: true },
+        '/minio/public/recipe-covers/': { target: process.env.VITE_HEALTH_API_PROXY || env.VITE_HEALTH_API_PROXY || 'http://127.0.0.1:15050', changeOrigin: true },
         '/commerce-api': {
           target: env.COMMERCE_PROXY_TARGET || 'http://127.0.0.1:18081',
           changeOrigin: true,
@@ -25,6 +26,11 @@ export default defineConfig(({ mode }) => {
       name: 'wechat-config',
       generateBundle(_options, bundle) {
         if (process.env.UNI_PLATFORM !== 'mp-weixin') return
+        // 同时固定插槽提供方和接收方，避免源码 options 未写入组件 JSON 后样式再次隔离。
+        for (const [name, styleIsolation] of Object.entries({CloudNutritionChat:'shared',NutritionistLayout:'apply-shared'})) {
+          const asset = bundle[`components/${name}.json`]
+          if (asset?.type === 'asset') asset.source = JSON.stringify({ ...JSON.parse(String(asset.source)), styleIsolation })
+        }
         // Generated JSON whitespace counts toward WeChat's package size limit.
         for (const [name, asset] of Object.entries(bundle)) {
           if (name.endsWith('.json') && asset.type === 'asset') {

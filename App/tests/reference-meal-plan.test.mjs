@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
-import {ref} from 'vue'
+import {ref,computed,watch} from 'vue'
+import {dishTitle,recipeDisplay,ingredientLabels,referenceIngredientLabel,referenceGapDetail} from '../src/utils/meal-presentation.js'
 import {referenceSelection,isReferencePlan} from '../src/services/reference-meal-plan.js'
 import {chatMessages} from '../src/services/cloud-chat.js'
 import {sourceTitle} from '../src/utils/ai-answer.js'
@@ -57,8 +58,8 @@ test('reference followup questions restore as readable text after reopening',()=
 })
 function card({scopeChange=false,planChange=false,version=2,available=true}={}){
  const calls=[],props={plan:{preview_id:'preview'}},hooks={};let scope='A'
- const deps={ref,defineEmits:()=>()=>{},defineProps:()=>props,onUnmounted:fn=>hooks.unmount=fn,storageContext:()=>scope,
-  request:async()=>{calls.push('publish');return {data:{preview_id:'preview',package:{package_sn:'package',package_version:version}}}},
+ const deps={ref,computed,watch,ingredientLabels,defineEmits:()=>()=>{},defineProps:()=>props,onUnmounted:fn=>hooks.unmount=fn,storageContext:()=>scope,
+  request:async options=>{if(!options.method)return {data:props.plan};calls.push('publish');return {data:{preview_id:'preview',package:{package_sn:'package',package_version:version}}}},
   commerce:{connect:async()=>{if(scopeChange)scope='B';if(planChange)props.plan={preview_id:'new-preview'}},mealPackage:async(sn,v)=>{calls.push(['read',sn,v]);return {package_sn:sn,package_version:v,scope:'daily_reference',available}},addMeal:async menu=>calls.push(['cart',menu.package_version])},
   uni:{navigateTo:o=>calls.push(['route',o.url])}}
  const source=readFileSync(new URL('../src/components/ReferenceMealPlanCard.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
@@ -80,18 +81,17 @@ test('unavailable reference product cannot be added to cart',async()=>{
 })
 
 
-test('rendered reference card explains partial selection and distinguishes historical empty results',async()=>{
+test('rendered reference card hides incomplete historical menus and permits verified results',async()=>{
  const {compile,createSSRApp}=await import('vue')
  const {renderToString}=await import('vue/server-renderer')
  const template=readFileSync(new URL('../src/components/ReferenceMealPlanCard.vue',import.meta.url),'utf8').match(/<template>([\s\S]*?)<\/template>\s*<style/)[1]
  const render=compile(template)
- async function html(plan){return renderToString(createSSRApp({render,setup:()=>({plan,sourceTitle,names:{breakfast:'早餐'},gapNames:{not_sold:'自行准备'},expanded:false,busy:false,error:'',purchase(){}})}))}
- const partial=await html({meals:[],purchase_items:[{sku_id:'56',product_name:'富硒鸡蛋',sku_name:'10枚',quantity:1,ingredient_refs:['鸡蛋1个']}],purchase_gaps:[{ingredient:'水适量',reason:'not_sold',detail:'饮用水自行准备'}]})
- assert.match(partial,/富硒鸡蛋/);assert.match(partial,/用于：鸡蛋1个/);assert.match(partial,/饮用水自行准备/)
- assert.match(partial,/确认这些商品并加入购物车/)
- const empty=await html({meals:[],purchase_items:[],purchase_gaps:[{ingredient:'水适量',reason:'not_sold',detail:'饮用水自行准备'}]})
- assert.match(empty,/本次未选定采购商品，原因见下方/);assert.doesNotMatch(empty,/确认这些商品并加入购物车/)
- assert.match(await html({meals:[],purchase_items:[]}),/这份餐单未记录采购商品及原因/)
- const meal=await html({meals:[{meal_type:'breakfast',dishes:[{name:'燕麦粥',ingredients:[],source:{filename:'成人食谱_reference_96c82ed8-b878-469e-9110-e893c9bbb6a8.md'}}]}],purchase_items:[]})
- assert.match(meal,/来源：成人食谱/);assert.doesNotMatch(meal,/96c82ed8|_reference|\.md/)
+ async function html(plan){return renderToString(createSSRApp({render,setup:()=>({plan,purchaseComplete:plan.purchase_ready===true||plan.purchase_validation_version===1,sourceTitle,dishTitle,recipeDisplay,referenceIngredientLabel,referenceGapDetail,labels:ingredientLabels((plan.meals||[]).flatMap(m=>m.dishes||[])),detailMode:false,displayError:'',names:{breakfast:'早餐'},gapNames:{not_sold:'自行准备'},expanded:false,busy:false,error:'',purchase(){}})}))}
+ const old={meals:[{meal_type:'breakfast',dishes:[{name:'未配齐的菜',ingredients:[]}]}],purchase_items:[{sku_id:'56',product_name:'富硒鸡蛋',quantity:1}],purchase_gaps:[{ingredient:'盐',reason:'no_match'}]}
+ const unavailable=await html(old)
+ assert.match(unavailable,/需要重新安排/)
+ assert.doesNotMatch(unavailable,/未配齐的菜|富硒鸡蛋|确认这些商品/)
+ const ready=await html({purchase_ready:true,meals:[],purchase_items:[{sku_id:'56',product_name:'富硒鸡蛋',sku_name:'10枚',quantity:1}],purchase_gaps:[]})
+ assert.match(ready,/富硒鸡蛋/);assert.match(ready,/确认这些商品并加入购物车/)
+ assert.match(await html({meals:[],purchase_items:[]}),/需要重新安排/)
 })

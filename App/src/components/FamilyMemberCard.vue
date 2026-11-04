@@ -14,7 +14,7 @@ const age = computed(() => ageLabel(props.member) === '0 个月' ? '未满1个�
   <view v-if="!frontOnly" class="card-backplate" aria-hidden="true"><view class="backplate-ribbon"/></view>
   <view v-if="!backOnly" class="card-face">
    <view class="card-slot" aria-hidden="true"/>
-   <view class="card-identity"><view class="card-avatar" aria-hidden="true"><view class="avatar-halo"/><text>{{name.slice(0,1)}}</text></view><view class="card-person"><text class="card-relation">{{relation}} · {{age}}</text><text class="card-name">{{name}}</text></view></view>
+   <view class="card-identity"><view class="card-avatar" aria-hidden="true"><view class="avatar-halo"/><text>{{name.slice(0,1)}}</text></view><view class="card-person"><text class="card-relation">{{relation}} · {{age}}</text><text class="card-name">{{name}}</text><text v-if="relation!=='本人'&&typeof member.claimed==='boolean'" class="member-join-state">{{member.claimed?'已加入':'待加入'}}</text></view></view>
    <view class="card-facts"><view><text class="fact-label">性别</text><text class="fact-value">{{member.gender||'未填写'}}</text></view><view><text class="fact-label">身高</text><text class="fact-value">{{member.height?member.height+' cm':'待补充'}}</text></view><view><text class="fact-label">体重</text><text class="fact-value">{{member.weight?member.weight+' kg':'待补充'}}</text></view></view>
    <view class="card-goal"><text class="fact-label">饮食目标</text><text class="goal-value">{{memberGoalSummary(member)}}</text></view>
    <view class="card-watermark" aria-hidden="true"><view/><view/><view/></view>
@@ -24,6 +24,7 @@ const age = computed(() => ageLabel(props.member) === '0 个月' ? '未满1个�
  </view>
 </template>
 <style scoped>
+.member-join-state{display:block;margin-top:4px;font-size:10px;color:#93879e}
 .member-card-object{position:relative;width:100%;height:100%;perspective:1000px;isolation:isolate}
 .card-backplate{position:absolute;inset:18px 3px 22px 27px;border:1px solid rgba(255,255,255,.92);border-radius:30px;background:linear-gradient(145deg,rgba(255,255,255,.76),rgba(233,230,246,.65));transform:translateX(8px) rotate(-7deg);transform-origin:50% 50%;overflow:hidden;box-shadow:0 8px 22px rgba(82,73,111,.035)}
 .backplate-ribbon{position:absolute;left:44%;top:-20px;width:15px;height:65px;background:linear-gradient(90deg,rgba(255,255,255,.1),rgba(255,255,255,.8));transform:rotate(-25deg)}

@@ -24,11 +24,19 @@ export async function readDietRecord(memberId,id,send=request){
 export function portionNote(item){return (item.uncertainties||[]).find(s=>s.startsWith('本人粗略份量：'))?.slice(7)||'不确定'}
 export function personalMeal(dishes,person,{mealType,eatenAt,captureScope,oil='不确定'},newId=newHealthRequestId){
   if(!mealLabels[mealType]||!Number.isFinite(Date.parse(eatenAt)))throw new Error('请选择有效的餐次和日期')
-  const items=dishes.filter(d=>person.dishes.includes(d.name)).map(d=>({item_id:newId(),name:d.name,
-    ...(d.recipe_version_id?{recipe_version_id:d.recipe_version_id}:{}),...(d.food_id?{food_id:d.food_id}:{}),
+  const items=dishes.filter(d=>person.dishes.includes(d.name)).map(d=>({item_id:d.item_id||newId(),name:d.name,
+    recipe_version_id:d.recipe_version_id||null,food_id:d.food_id||null,
+    nutrition_source:d.nutrition_source||null,
+    photo_estimate:d.photo_estimate?copy(d.photo_estimate):null,
+    adjustments:copy(d.adjustments||[]),
     // A person's combined weight cannot be silently assigned to each dish.
-    grams:person.dishes.length===1&&Number(person.grams)>0?Number(person.grams):null,
-    share_ratio:person.dishes.length===1&&Number(person.grams)>0?1:null,portion_source:person.dishes.length===1&&Number(person.grams)>0?'manual':'unknown',
+    ...(captureScope==='单人餐盘'&&d.portion_confirmed?{
+      grams:d.portion_reference_id||d.source_basis==='per_serving'?null:Number(d.grams),
+      servings:d.source_basis==='per_serving'?Number(d.servings):null,
+      portion_reference_id:d.portion_reference_id||null,portion_count:d.portion_reference_id?Number(d.portion_count):null,
+      share_ratio:1,portion_source:d.portion_reference_id?'estimated':d.portion_source||'manual',
+    }:{servings:null,grams:d.source_basis!=='per_serving'&&person.dishes.length===1&&Number(person.grams)>0?Number(person.grams):null,portion_reference_id:null,portion_count:null,
+      share_ratio:person.dishes.length===1&&Number(person.grams)>0?1:null,portion_source:person.dishes.length===1&&Number(person.grams)>0?'manual':'unknown'}),
     uncertainties:[`本人粗略份量：${person.portion||'不确定'}`,`记录方式：${captureScope}`,`烹饪用油：${oil}`,
       ...(person.dishes.length>1&&Number(person.grams)>0?[`本人所选菜品合计重量：${Number(person.grams)}g；各菜重量未知`]:[])]}))
   if(!items.length)throw new Error('请确认本人实际吃过的菜；未吃的成员不创建摄入记录')
@@ -51,13 +59,13 @@ export function createCloudMealSaver({send=request,storage=scopedStorage,revisio
     busy=true
     try{
       for(const row of group.rows){
-        current();if(row.phase==='saved')continue
+        current();if(row.phase==='saved'){row.record=await readDietRecord(row.memberId,row.recordId,send);current();checkpoint();continue}
         if(row.phase==='rejected')throw new Error('请先重新核对未保存成员，再提交修正后的内容')
         try{
         if(row.phase==='patching'){
           const {data:draft}=await send({path:`${root}/meal-drafts/${row.draftId}`});current()
           if(draft.member_id!==row.memberId||draft.review_status!=='pending_confirmation')throw Object.assign(new Error('照片候选已变化，请重新核对原餐次'),{code:409})
-          const stable=value=>JSON.stringify({...value,photos:value.photos||[],items:value.items.map(item=>({candidates:[],cooking_method:'未知',visible_ingredients:[],locations:[],uncertainties:[],food_id:null,recipe_version_id:null,grams:null,portion_reference_id:null,portion_count:null,share_ratio:null,portion_source:'unknown',adjustments:[],excluded:false,...item}))},(key,item)=>['grams','share_ratio','portion_count'].includes(key)&&item!==null?Number(item):item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item)
+          const stable=value=>JSON.stringify({...value,photos:value.photos||[],items:value.items.map(item=>({candidates:[],cooking_method:'未知',visible_ingredients:[],locations:[],uncertainties:[],food_id:null,recipe_version_id:null,nutrition_source:null,photo_estimate:null,servings:null,grams:null,portion_reference_id:null,portion_count:null,share_ratio:null,portion_source:'unknown',adjustments:[],excluded:false,...item}))},(key,item)=>['grams','share_ratio','portion_count','servings'].includes(key)&&item!==null?Number(item):item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item)
           if(stable(draft.payload)===stable(row.meal)){row.version=draft.version;row.phase='draft';checkpoint()}
           else{
             if(draft.version!==row.draftVersion)throw Object.assign(new Error('照片候选已被修改，请重新读取后核对份量'),{code:409})

@@ -27,14 +27,16 @@ export function createEntryResolver({ auth, readProfile, session, pendingPrepara
     }
     // The fresh WeChat session already proves this member's confirmed profile
     // is ready. It is only a routing decision; chat still reads its own current
-    // profile and consultation consent before enabling business actions.
+    // profile and member access before enabling business actions.
     if (invitation()) return invitationRoute(invitation())
     const selected = (session()?.families || families).find(family => family.id === id)
+    if (selected?.invitationReviewPending === true) return '/pages/onboarding/index'
     if (selected?.onboardingRequired === false) return pendingPreparation() ? '/pages/onboarding/preparing' : '/pages/chat/index'
     const profile = await readProfile()
     current()
     if (session()?.householdId !== id || profile.householdId !== id) throw new Error('家庭已变化，请重新选择。')
     if (invitation()) return invitationRoute(invitation())
+    if (profile.invitationReviewPending === true) return '/pages/onboarding/index'
     if (profile.completeProfile === true || profile.onboarded === true) {
       return '/pages/chat/index'
     }
@@ -53,7 +55,7 @@ export function createEntryCoordinator({ resolve, session, invitation = () => ''
     const account = session()
     return JSON.stringify([account?.accountId, account?.token, account?.householdId,
       account?.authSource, account?.clientRevision,
-      (account?.families || []).map(family => [family.id, family.onboardingRequired]),
+      (account?.families || []).map(family => [family.id, family.onboardingRequired, family.invitationReviewPending]),
       invitation(), pendingPreparation(), profileState()])
   }
   function resolveEntry({ fresh = false } = {}) {
