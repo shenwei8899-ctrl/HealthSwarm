@@ -67,6 +67,6 @@ onUnmounted(()=>{active.value=false;motionQuery?.removeEventListener?.('change',
 @keyframes character-breathe{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-1px) scale(1.01)}}
 @keyframes character-acknowledge{0%,100%{transform:translateY(0) rotate(0)}38%{transform:translateY(-3px) rotate(-1deg)}72%{transform:translateY(-1px) rotate(.4deg)}}
 @keyframes character-dot{0%,70%,100%{opacity:.4;transform:translateY(0)}35%{opacity:1;transform:translateY(-2px)}}
-.motion-off .character-portrait,.motion-off .status-dots>view{animation:none}
-@media(prefers-reduced-motion:reduce){.character-hero .character-portrait,.character-hero .status-dots>view{animation:none}.character-sprite{display:none;animation:none}.character-poster.poster-covered{opacity:1}}
+.nutritionist-character.motion-off .character-portrait,.motion-off .status-dots>view{animation:none}
+@media(prefers-reduced-motion:reduce){.nutritionist-character.character-hero .character-portrait,.character-hero .status-dots>view{animation:none}.character-sprite{display:none;animation:none}.character-poster.poster-covered{opacity:1}}
 </style>
