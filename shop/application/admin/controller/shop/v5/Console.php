@@ -199,6 +199,7 @@ class Console extends Workspace
         if(!in_array($resource,['goods','skus','categories','specs','spec_values','suppliers','supplier_skus'],true))$this->error('该资源不支持此保存方式');
         $row=$this->request->post('row/a',[]);
         foreach($row as $value)if(!is_scalar($value)&&$value!==null)$this->error('表单字段格式无效');
+        if($resource==='goods' && isset($row['content']) && (mb_strlen((string)$row['content'])>30000 || strpos((string)$row['content'],"\0")!==false))$this->error('商品详情最多30000字符，不能包含空字符');
         $templateId=$this->request->post('template_value_id','');
         if ($templateId !== '') {
             if ($resource !== 'skus' || (int)$this->request->post('id',0)!==0) $this->error('规格模板仅用于新增商品规格，已有规格请直接编辑');

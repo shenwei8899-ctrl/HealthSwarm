@@ -41,7 +41,7 @@ class CommerceProduct extends Base
                 $items[] = (new CatalogService())->getSku($skuId, true);
             }
             $goods = Db::name('shop_goods')->where('id', (int)$product_id)->field('title,content')->find();
-            return ['product_id' => (string)$product_id, 'product_name' => $goods['title'], 'description' => strip_tags((string)($goods['content'] ?? '')), 'skus' => $items];
+            return ['product_id' => (string)$product_id, 'product_name' => $goods['title'], 'description' => strip_tags((string)($goods['content'] ?? '')), 'product_description' => (string)($goods['content'] ?? ''), 'product_description_hash' => hash('sha256', (string)($goods['content'] ?? '')), 'skus' => $items];
         });
     }
 
