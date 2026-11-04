@@ -95,14 +95,15 @@ async def search_family_nutrition_knowledge(context, query: str) -> dict:
     return result
 
 
-async def retrieve_family_nutrition_knowledge(query: str) -> dict:
-    """供已授权营养业务检索固定家庭库，保持单库来源回执。"""
-    return await _retrieve_nutrition_knowledge(query, (configured_family_kb_id(),), agent_slug=CONSULTATION_SLUG)
+async def retrieve_family_nutrition_knowledge(query: str, *, kind: str = "food") -> dict:
+    """按候选类型检索既有固定库，默认保持家庭科普来源。"""
+    agent_slug = _nutrition_knowledge_agent(kind)
+    return await _retrieve_nutrition_knowledge(query, configured_health_kb_ids(agent_slug), agent_slug=agent_slug)
 
 
-async def validate_nutrition_knowledge_sources(session, payload):
-    """消费配餐或导入候选前按固定家庭库重验并锁定来源。"""
-    return await _validate_payload(session, payload, lock_sources=True)
+async def validate_nutrition_knowledge_sources(session, payload, *, kind: str = "food"):
+    """按提取时的候选类型重验固定范围并锁定来源。"""
+    return await _validate_payload(session, payload, agent_slug=_nutrition_knowledge_agent(kind), lock_sources=True)
 
 
 async def validate_family_kb_checkpoint(session, context, binding, tool_message) -> None:
@@ -247,6 +248,15 @@ def configured_education_kb_ids(agent_slug: str) -> tuple[str, ...]:
     if not 1 <= len(ids) <= 5 or any(not value for value in ids) or len(set(ids)) != len(ids):
         raise HealthVisionError("knowledge_unavailable", "专题科普知识库尚未正确配置", 503)
     return ids
+
+
+def _nutrition_knowledge_agent(kind: str) -> str:
+    """未知候选类型不能回退到另一知识库。"""
+    if kind == "food":
+        return CONSULTATION_SLUG
+    if kind == "recipe":
+        return PLANNER_SLUG
+    raise HealthVisionError("nutrition_candidate_kind_invalid", "营养候选类型无效", 422)
 
 
 async def _retrieve_nutrition_knowledge(query: str, kb_ids: tuple[str, ...], *, agent_slug: str) -> dict:

@@ -5,6 +5,15 @@ import { useUserStore } from '@/stores/user'
 const user = useUserStore(), status = ref(null), recipes = ref([]), selected = ref(null), source = ref(null)
 const busy = ref(false), error = ref(''), notice = ref('')
 const draft = reactive({ source_ref: '', steps: '', ingredient_codes: {}, dish_type_code: '', allowed_meal_types: [] })
+const ruleReasons = {
+  not_configured: '尚未指定日常配餐规则',
+  not_delivered: '指定规则尚未登记',
+  revoked: '指定规则已撤回',
+  expired: '指定规则已过期',
+  future_attestation: '指定规则尚未生效',
+  integrity_mismatch: '指定规则来源或内容需重新核验',
+  knowledge_source_changed: '指定规则引用的原文已变化'
+}
 let revision = 0
 
 async function load() {
@@ -61,6 +70,44 @@ watch(() => user.uid, () => { revision++; status.value = null; source.value = nu
       <p>食材营养 {{ status.counts.foods }} 个版本 · 菜谱 {{ status.counts.recipes }} 个版本 · 做法和采购映射 {{ status.counts.recipe_sources }} 个版本。</p>
       <p>配餐模型：{{ status.meal_plan.available ? '配置可用' : '尚未配置完成' }}；规则：{{ status.rules_ready ? '当前版本可用' : '待发布或指定' }}；商城签名调用：{{ status.commerce_configured ? '已配置，需核验调用' : '待配置' }}。</p>
       <p>配置状态与资料数量不代表已完成真实三餐验收。</p>
+      <p v-if="status.rules">
+        规则历史 {{ status.counts.rule_versions }} 个版本；{{
+          status.rules_ready
+            ? `当前指定规则 ${status.rules.code} · 第 ${status.rules.version} 版有效`
+            : ruleReasons[status.rules.reason] || '指定规则尚未就绪'
+        }}。历史版本数不代表当前有效版本数。
+      </p>
+      <p v-if="status.knowledge_bindings">
+        食品整理来源：{{
+          status.knowledge_bindings.food.available
+            ? '家庭营养库绑定正常'
+            : status.knowledge_bindings.food.configured
+              ? '绑定的资料库不可用'
+              : '尚未配置资料库'
+        }}；菜谱整理来源：{{
+          status.knowledge_bindings.recipe.available
+            ? '菜谱库绑定正常'
+            : status.knowledge_bindings.recipe.configured
+              ? '绑定的资料库不可用'
+              : '尚未配置菜谱库'
+        }}。
+      </p>
+      <template v-if="status.candidate_batches">
+        <p>
+          本账号保存的食品候选 {{ status.candidate_batches.food.rows }} 行（{{
+            status.candidate_batches.food.invalid
+          }}
+          行需修正，{{ status.candidate_batches.food.pending_review }} 行待审）；菜谱候选
+          {{ status.candidate_batches.recipe.rows }} 行（{{
+            status.candidate_batches.recipe.invalid
+          }}
+          行需修正，{{ status.candidate_batches.recipe.pending_review }} 行待审）。
+        </p>
+        <p>
+          候选行数包含不同批次的重复资料，尚未计入正式目录。资料整理、专业签发、正式发布和方案采用分别执行。
+        </p>
+      </template>
+
     </template>
     <a-button :disabled="busy" @click="load">重新读取准备状态</a-button>
     <a-select v-model:value="selected" :disabled="busy" placeholder="选择已发布的菜谱版本" :options="recipes.map(recipe => ({ value: recipe.id, label: `${recipe.name} · ${recipe.dataset_version}` }))" @change="readSource" />

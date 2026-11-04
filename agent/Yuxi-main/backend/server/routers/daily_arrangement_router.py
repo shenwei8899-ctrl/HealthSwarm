@@ -374,7 +374,7 @@ async def recipe_source_read(rid: UUID, user=Depends(get_admin_user)):
 @daily_arrangement.get("/health/v1/nutrition-setup/readiness")
 async def nutrition_setup_readiness(user=Depends(get_admin_user)):
     """区分服务配置和专业资料缺项，不读取成员健康内容。"""
-    return await daily_setup_readiness()
+    return await daily_setup_readiness(user.uid)
 
 
 @daily_arrangement.get("/health/v1/reference-meal-plans/{preview_id}")

@@ -8,7 +8,7 @@ from uuid import UUID, uuid5, NAMESPACE_URL
 from pydantic import Field
 from sqlalchemy import select
 
-from yuxi.services.health_nutrition_import_service import prepare_nutrition_import, read_nutrition_import
+from yuxi.services.health_nutrition_import_service import prepare_nutrition_import_in_session, read_nutrition_import
 from yuxi.services.health_nutrition_import_types import NutritionImportInput
 from yuxi.services.health_vision_types import HealthDTO, HealthVisionError, FoodInput, RecipeInput
 from yuxi.services.task_service import tasker
@@ -92,7 +92,7 @@ async def run_knowledge_nutrition(context):
             {"id": row.id, "name": row.name, "cooking_state": row.cooking_state}
             for row in (await session.scalars(select(FoodRecord).order_by(FoodRecord.id).limit(500))).all()
         ]
-    material = await retrieve_family_nutrition_knowledge(payload["query"])
+    material = await retrieve_family_nutrition_knowledge(payload["query"], kind=payload["kind"])
     if not material["sources"]:
         raise HealthVisionError("knowledge_material_missing", "未检索到可用于候选整理的资料", 422)
     model = FoodInput if payload["kind"] == "food" else RecipeInput
@@ -119,15 +119,19 @@ async def run_knowledge_nutrition(context):
         fresh = await health_vision_service.configuration(session)
         if fresh["meal_plan"] != config["meal_plan"] or fresh["policy_version"] != config["policy_version"]:
             raise HealthVisionError("policy_changed", "提取期间模型处理配置已变化", 409)
-        await validate_nutrition_knowledge_sources(session, material)
-    report = await prepare_nutrition_import(uid, data)
+        await validate_nutrition_knowledge_sources(session, material, kind=payload["kind"])
+    report = None
 
-    async def save_evidence(session, _task):
+    async def save_candidates(session, _task):
+        """任务仍持有 lease 时才将候选与可重验的依据一起提交。"""
+        nonlocal report
+        await require_evidence_admin(session, uid)
+        report = await prepare_nutrition_import_in_session(session, uid, data)
+        await validate_nutrition_knowledge_sources(session, material, kind=payload["kind"])
         batch = await session.get(NutritionImportBatch, report["id"])
-        await validate_nutrition_knowledge_sources(session, material)
         batch.report = {**batch.report, "knowledge_sources": material["sources"], "evidence": evidence}
 
-    await context.run_owned_transaction(save_evidence)
+    await context.run_owned_transaction(save_candidates)
     return {"batch_id": report["id"]}
 
 

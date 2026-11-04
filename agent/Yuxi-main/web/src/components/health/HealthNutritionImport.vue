@@ -1,9 +1,13 @@
 <script setup>
-import { ref, watch, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { healthVisionApi as api } from '@/apis/health_vision_api'
 import { useUserStore } from '@/stores/user'
 const user = useUserStore()
-const knowledgeQuery = ref(''), knowledgeTask = ref(null), knowledgePending = ref(null)
+const knowledgeQuery = ref(''),
+  knowledgeTask = ref(null),
+  knowledgePending = ref(null)
+const batchId = ref(''),
+  referenceReport = ref(null)
 let pollTimer = null
 const kind = ref('food'),
   text = ref(''),
@@ -11,6 +15,19 @@ const kind = ref('food'),
   busy = ref(false),
   error = ref(''),
   pending = ref(null)
+const locked = computed(() => busy.value || !!pending.value || !!knowledgePending.value)
+const candidateJson = computed(() =>
+  report.value
+    ? JSON.stringify(
+        report.value.items.map((row) => row.candidate),
+        null,
+        2
+      )
+    : ''
+)
+const evidenceReport = computed(() =>
+  report.value?.knowledge_sources?.length ? report.value : referenceReport.value
+)
 let epoch = 0
 const codes = {
   metadata_required: '待补来源/许可/版本',
@@ -32,22 +49,64 @@ function reset() {
   knowledgeQuery.value = ''
   knowledgeTask.value = null
   knowledgePending.value = null
+  batchId.value = ''
+  referenceReport.value = null
   clearTimeout(pollTimer)
+}
+
+/** 回读原批次；未知写入结果须先沿用原请求重试。 */
+async function loadBatch() {
+  if (locked.value || !batchId.value.trim()) return
+  const ticket = epoch
+  const id = batchId.value.trim()
+  busy.value = true
+  error.value = ''
+  report.value = null
+  referenceReport.value = null
+  try {
+    const value = await api.nutritionImport(id)
+    if (ticket !== epoch) return
+    report.value = value
+    batchId.value = value.id
+  } catch (exc) {
+    if (ticket === epoch) error.value = exc.message
+  } finally {
+    if (ticket === epoch) busy.value = false
+  }
+}
+
+/** 仅复制候选到编辑区，修正后须生成新的校验批次。 */
+function editCandidates() {
+  if (locked.value || !report.value) return
+  if (report.value.knowledge_sources?.length) referenceReport.value = report.value
+  kind.value = report.value.kind
+  text.value = candidateJson.value
+  error.value = ''
 }
 
 /** 后台提取保留原片段；页面只读取候选和异常，不自动发布。 */
 async function prepareKnowledge() {
-  if (busy.value) return
+  if (busy.value || pending.value || (!knowledgePending.value && !knowledgeQuery.value.trim()))
+    return
   const ticket = epoch
   busy.value = true
   error.value = ''
   try {
-    knowledgePending.value ||= { kind: kind.value, query: knowledgeQuery.value.trim(), client_request_id: crypto.randomUUID() }
-    knowledgeTask.value = await api.prepareKnowledgeNutrition(knowledgePending.value)
+    knowledgePending.value ||= {
+      kind: kind.value,
+      query: knowledgeQuery.value.trim(),
+      client_request_id: crypto.randomUUID()
+    }
+    const value = await api.prepareKnowledgeNutrition(knowledgePending.value)
     if (ticket !== epoch) return
+    knowledgeTask.value = value
     await pollKnowledge(ticket)
   } catch (exc) {
-    if (ticket === epoch) { error.value = exc.message; busy.value = false }
+    if (ticket === epoch) {
+      if ([400, 401, 403, 409, 422].includes(exc.status)) knowledgePending.value = null
+      error.value = exc.message
+      busy.value = false
+    }
   }
 }
 
@@ -59,6 +118,8 @@ async function pollKnowledge(ticket) {
     knowledgeTask.value = value
     if (value.status === 'success') {
       report.value = value.report
+      batchId.value = value.report.id
+      referenceReport.value = null
       busy.value = false
       knowledgePending.value = null
       return
@@ -79,7 +140,7 @@ async function pollKnowledge(ticket) {
 }
 /** 候选导入仅登记异常和待审清单。 */
 async function prepare() {
-  if (busy.value) return
+  if (busy.value || knowledgePending.value) return
   const ticket = epoch
   busy.value = true
   error.value = ''
@@ -94,6 +155,7 @@ async function prepare() {
     const value = await api.prepareNutritionImport(pending.value)
     if (ticket !== epoch) return
     report.value = value
+    batchId.value = value.id
     pending.value = null
   } catch (exc) {
     if (ticket !== epoch) return
@@ -113,13 +175,35 @@ onBeforeUnmount(reset)
       粘贴食品或菜谱 JSON 数组，每批最多500行、1MB。食品营养值按每100克填写：能量 kcal，钠 mg，其余
       g；缺失值用 null。
     </p>
-    <p>这里只保存候选、异常和待审清单。资料通过专业审核后，再走原有发布流程。</p>
-    <a-input v-model:value="knowledgeQuery" :disabled="busy || !!knowledgePending" :maxlength="120" placeholder="从已有知识库整理，例如：燕麦的每百克营养或家常菜配方" />
-    <a-button :disabled="busy || !knowledgeQuery.trim()" @click="prepareKnowledge">{{ knowledgePending ? '重试读取原提取任务' : '从已有知识库整理候选' }}</a-button>
-    <p v-if="knowledgeTask && busy">后台正在整理资料，退出页面后任务仍会继续。任务 {{ knowledgeTask.task_id }}</p>
+    <p>
+      这里只保存候选、异常和待审清单。恢复、修正和重新校验均不发布正式资料；资料通过专业审核后，再走原有发布流程。
+    </p>
+    <label
+      >已有候选批次 ID<a-input
+        v-model:value="batchId"
+        :disabled="locked"
+        :maxlength="80"
+        placeholder="粘贴已保存报告中的批次 ID"
+        @press-enter="loadBatch"
+    /></label>
+    <a-button :disabled="locked || !batchId.trim()" @click="loadBatch">恢复候选报告</a-button>
+    <a-input
+      v-model:value="knowledgeQuery"
+      :disabled="busy || !!knowledgePending"
+      :maxlength="120"
+      placeholder="从已有知识库整理，例如：燕麦的每百克营养或家常菜配方"
+    />
+    <a-button
+      :disabled="busy || !!pending || (!knowledgePending && !knowledgeQuery.trim())"
+      @click="prepareKnowledge"
+      >{{ knowledgePending ? '重试读取原提取任务' : '从已有知识库整理候选' }}</a-button
+    >
+    <p v-if="knowledgeTask && busy">
+      后台正在整理资料，退出页面后任务仍会继续。任务 {{ knowledgeTask.task_id }}
+    </p>
     <a-select
       v-model:value="kind"
-      :disabled="busy || !!pending"
+      :disabled="locked"
       :options="[
         { label: '食品候选', value: 'food' },
         { label: '菜谱候选', value: 'recipe' }
@@ -127,13 +211,16 @@ onBeforeUnmount(reset)
     />
     <a-textarea
       v-model:value="text"
-      :disabled="busy || !!pending"
+      :disabled="locked"
       :rows="6"
       placeholder='[{"record_code":"...","name":"...","cooking_state":"熟","nutrients":{"energy_kcal":null}}]'
     />
-    <a-button :disabled="!text.trim()" :loading="busy" @click="prepare">{{
-      pending ? '重试原批次' : '校验并保存候选'
-    }}</a-button>
+    <a-button
+      :disabled="busy || !!knowledgePending || (!pending && !text.trim())"
+      :loading="busy"
+      @click="prepare"
+      >{{ pending ? '重试原批次' : '校验并保存候选' }}</a-button
+    >
     <a-alert v-if="error" type="error" :message="error" show-icon />
     <template v-if="report">
       <p>
@@ -151,16 +238,25 @@ onBeforeUnmount(reset)
           </p>
         </article>
       </div>
-      <small>批次 {{ report.id }} 已保存；后续需补来源版本、许可、适用范围和专业审核。</small>
-      <details v-if="report.knowledge_sources?.length">
-        <summary>核对原文来源与数值证据</summary>
-        <article v-for="source in report.knowledge_sources" :key="source.source_id">
-          <strong>{{ source.filename }}</strong><p>{{ source.content }}</p>
-          <small>片段 {{ source.chunk_id }} · 版本 {{ source.chunk_hash }}</small>
-        </article>
-        <pre>{{ JSON.stringify(report.evidence, null, 2) }}</pre>
+      <details>
+        <summary>查看本批候选 JSON</summary>
+        <pre>{{ candidateJson }}</pre>
       </details>
+      <a-button :disabled="locked" @click="editCandidates">将本批候选带入编辑区修正</a-button>
+      <small>批次 {{ report.id }} 已保存；后续需补来源版本、许可、适用范围和专业审核。</small>
     </template>
+    <p v-if="report || evidenceReport">
+      候选中的文件名尚未绑定为已核验的来源原件。正式发布前须人工选择并核对原件、版本及许可；修正后的内容须重新核对依据。
+    </p>
+    <details v-if="evidenceReport?.knowledge_sources?.length">
+      <summary>核对原批次 {{ evidenceReport.id }} 的原文来源与数值证据</summary>
+      <article v-for="source in evidenceReport.knowledge_sources" :key="source.source_id">
+        <strong>{{ source.filename }}</strong>
+        <p>{{ source.content }}</p>
+        <small>片段 {{ source.chunk_id }} · 版本 {{ source.chunk_hash }}</small>
+      </article>
+      <pre>{{ JSON.stringify(evidenceReport.evidence, null, 2) }}</pre>
+    </details>
   </section>
 </template>
 <style scoped>
@@ -184,5 +280,15 @@ onBeforeUnmount(reset)
 .report article {
   padding: 10px;
   border-bottom: 1px solid var(--gray-150);
+}
+label {
+  display: grid;
+  gap: 6px;
+}
+pre {
+  max-height: 400px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 </style>

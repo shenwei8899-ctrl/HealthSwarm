@@ -75,11 +75,11 @@ def search_services(monkeypatch):
     retrieve = AsyncMock(return_value={"results": []})
     knowledge = load_functions(
         "health_family_kb_service.py",
-        ["retrieve_family_nutrition_knowledge", "_retrieve_nutrition_knowledge"],
+        ["retrieve_family_nutrition_knowledge", "_retrieve_nutrition_knowledge", "_nutrition_knowledge_agent"],
         {
             "HealthVisionError": HealthVisionError,
             "pg_manager": manager,
-            "configured_family_kb_id": lambda: "synthetic-kb",
+            "configured_health_kb_ids": lambda role: ("synthetic-kb",),
             "_require_fixed_kb": kb_guard,
             "knowledge_base": SimpleNamespace(retrieve=retrieve),
             "MAX_SOURCES": 4,

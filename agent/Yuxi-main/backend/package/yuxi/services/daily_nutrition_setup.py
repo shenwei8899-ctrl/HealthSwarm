@@ -15,10 +15,12 @@ from yuxi.storage.postgres.models_health import (
     HealthRuleSnapshot,
     HealthRecipeCommerceSource,
     HealthPublishedRecipeClassification,
+    NutritionImportBatch,
 )
+from yuxi.storage.postgres.models_knowledge import KnowledgeBase
 
 
-async def daily_setup_readiness():
+async def daily_setup_readiness(uid):
     """只报告资料和配置是否存在，不将这些状态冒充完整流程验收。"""
     async with pg_manager.get_async_session_context() as session:
         counts = {
@@ -34,11 +36,63 @@ async def daily_setup_readiness():
         config = await health_vision_service.configuration(session)
         rule_code = os.environ.get("HEALTH_DAILY_RULE_CODE", "")
         rule = external_projection(await HealthQualityRepository(session).rules(rule_code), "rules", rule_code)
+        kind = NutritionImportBatch.report["kind"].as_string()
+        summaries = (
+            await session.execute(
+                select(
+                    kind,
+                    func.count(),
+                    func.sum(NutritionImportBatch.report["summary"]["total"].as_integer()),
+                    func.sum(NutritionImportBatch.report["summary"]["invalid"].as_integer()),
+                    func.sum(NutritionImportBatch.report["summary"]["pending_review"].as_integer()),
+                )
+                .where(NutritionImportBatch.actor_uid == uid)
+                .group_by(kind)
+            )
+        ).all()
+        candidates = {name: {"batches": 0, "rows": 0, "invalid": 0, "pending_review": 0} for name in ("food", "recipe")}
+        for name, batches, total, invalid, pending in summaries:
+            if name in candidates:
+                candidates[name] = {
+                    "batches": int(batches),
+                    "rows": int(total or 0),
+                    "invalid": int(invalid or 0),
+                    "pending_review": int(pending or 0),
+                }
+        bindings = {
+            "food": os.getenv("HEALTH_FAMILY_NUTRITION_KB_ID", "").strip(),
+            "recipe": os.getenv("HEALTH_RECIPE_KB_ID", "").strip(),
+        }
+        existing = set(
+            (
+                await session.scalars(
+                    select(KnowledgeBase.kb_id).where(
+                        KnowledgeBase.kb_id.in_(set(bindings.values()) - {""}), KnowledgeBase.kb_type == "milvus"
+                    )
+                )
+            ).all()
+        )
     return {
         "counts": counts,
         "meal_plan": {key: config["meal_plan"][key] for key in ("available", "reason_code", "model")},
         "policy_configured": bool(config["policy_version"]),
         "rules_ready": rule["status"] == "ready",
+        "rules": {
+            "configured": bool(rule_code),
+            "code": rule_code,
+            "status": rule["status"],
+            "reason": rule["reason"] if rule_code else "not_configured",
+            "version": rule["version"],
+        },
+        "candidate_batches": candidates,
+        "knowledge_bindings": {
+            name: {
+                "configured": bool(kb_id),
+                "available": kb_id in existing,
+                "reason": None if kb_id in existing else "not_found" if kb_id else "not_configured",
+            }
+            for name, kb_id in bindings.items()
+        },
         "commerce_configured": bool(os.environ.get("HEALTH_COMMERCE_URL") or os.environ.get("HEALTH_COMMERCE_API_URL"))
         and all(os.environ.get(key) for key in ("HEALTH_COMMERCE_CLIENT_ID", "HEALTH_COMMERCE_CLIENT_SECRET"))
         and len(os.environ.get("HEALTH_COMMERCE_SOURCE_SECRET", "")) >= 32,
