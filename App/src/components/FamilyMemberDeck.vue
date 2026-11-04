@@ -44,7 +44,7 @@ function restrictionText(member) { const p = restrictionProgress(member); return
   <text class="switch-hint">{{members.length>1?'轻滑卡片，看看每位家人的档案':'一份属于你的健康档案'}}</text>
   <view class="deck-stage" :class="{'is-switching':motion.busy}" :aria-busy="motion.busy" :style="{'--card-direction':motion.direction,'--card-duration':FAMILY_CARD_DURATION+'ms'}" @touchstart="touchStart" @touchend="touchEnd" @touchcancel="cancelTouch">
    <view v-if="motion.to" class="deck-backing"><FamilyMemberCard :member="motion.to" :self-id="selfId" back-only/></view>
-   <button v-if="members.length>1" class="deck-switch" :disabled="motion.busy" aria-label="切换下一位家人的档案" @click.stop="nextMember"><image src="/static/chat/nutrition-boy-v1.webp" mode="aspectFit" aria-hidden="true"/><text aria-hidden="true">⇄</text></button>
+   <button v-if="members.length>1" class="deck-switch" :disabled="motion.busy" aria-label="切换下一位家人的档案" @click.stop="nextMember"><image src="/static/chat/nutrition-boy-v2-poster.png" mode="aspectFit" aria-hidden="true"/><text aria-hidden="true">⇄</text></button>
    <view v-for="layer in layers" :id="'family-page-'+layer.ticket+'-'+layer.role" :key="layer.ticket+'-'+layer.role+'-'+layer.member.id" class="member-page" :class="['page-'+layer.role,motion.direction<0?'direction-back':'direction-forward']" :aria-hidden="motion.busy?'true':'false'" @animationend="finish($event,layer.ticket,layer.role)">
     <FamilyMemberCard :member="layer.member" :self-id="selfId" front-only :disabled="motion.busy" @open="open"/>
    </view>

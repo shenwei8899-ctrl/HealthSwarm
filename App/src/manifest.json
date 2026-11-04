@@ -79,6 +79,10 @@
         },
         {
           "type": "file",
+          "value": "static/chat/nutrition-boy-v1.webp"
+        },
+        {
+          "type": "file",
           "value": "static/chat/today-menu-plate.svg"
         }
       ]

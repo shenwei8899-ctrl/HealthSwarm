@@ -56,7 +56,7 @@ onUnmounted(()=>{remembered=null;clearSheet();discard()})
   <view v-if="sheetId" class="archive-sheet-mask" :class="{'is-closing':sheetClosing}">
    <view class="archive-sheet-backdrop" aria-hidden="true" @click="requestSheetClose" @touchmove.stop.prevent @wheel.prevent/>
    <view class="archive-sheet-window" :class="{'is-expanded':sheetExpanded}" role="dialog" aria-modal="true" :aria-label="sheetName+'的健康档案'">
-    <view class="archive-sheet-hero" @touchstart="beginDrag" @touchend="endDrag"><view class="sheet-grab"/><text class="sheet-title">健康档案</text><text class="sheet-person">{{sheetName}}</text><image class="sheet-assistant" src="/static/chat/nutrition-boy-v1.webp" mode="aspectFit" aria-hidden="true"/><button class="sheet-close" aria-label="关闭档案面板" @click.stop="requestSheetClose">×</button></view>
+    <view class="archive-sheet-hero" @touchstart="beginDrag" @touchend="endDrag"><view class="sheet-grab"/><text class="sheet-title">健康档案</text><text class="sheet-person">{{sheetName}}</text><image class="sheet-assistant" src="/static/chat/nutrition-boy-v2-poster.png" mode="aspectFit" aria-hidden="true"/><button class="sheet-close" aria-label="关闭档案面板" @click.stop="requestSheetClose">×</button></view>
     <view class="sheet-detail"><CloudMemberDetail ref="sheetDetail" :key="sheetId" :id="sheetId" :initial-section="sheetSection" embedded @close="closeSheet" @saved="updateSaved"/></view>
    </view>
   </view>
