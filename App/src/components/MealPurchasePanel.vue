@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import FoodImageSlot from './FoodImageSlot.vue'
 const props = defineProps({ products: Array, picked: Array, address: Object, slots: Array, slotId: [String,Number], quote: Object,
+  title: { type: String, default: '本餐食材' }, fixed: Boolean,
   busy: Boolean, pricing: Boolean, ready: Boolean, pending: Boolean, error: String, accessRequired: Boolean, canSubmit: Boolean })
 defineEmits(['address','slot','toggle','quantity','confirm','recover','retry','scroll'])
 const timesOpen = ref(false)
@@ -20,15 +21,15 @@ const total = computed(() => !props.ready ? '—' : props.picked?.length ? money
           <button class="mp-delivery-time" :disabled="busy||!slots?.length" @click="timesOpen=!timesOpen"><text>配送时间</text><text class="mp-time-value">{{slot?slotName(slot):ready?(address?'暂无可用时段':'添加地址后选择'):'正在读取…'}}</text><text class="mp-chevron">›</text></button>
           <view v-if="timesOpen&&slots?.length" class="mp-times"><button v-for="item in slots" :key="item.id" :class="{chosen:String(item.id)===String(slotId)}" :disabled="busy" @click="$emit('slot',item.id);timesOpen=false"><text>{{slotName(item)}}</text><text v-if="String(item.id)===String(slotId)">✓</text></button></view>
         </view>
-        <view v-if="busy&&!ready" class="mp-loading" role="status">正在准备本餐商品与价格…</view>
+        <view v-if="busy&&!ready" class="mp-loading" role="status">{{fixed?'正在准备商品与价格…':'正在准备本餐商品与价格…'}}</view>
         <view v-if="error" class="mp-error" role="alert"><text>{{error}}</text><button :disabled="busy" @click="$emit('retry')">重新核对</button></view>
         <template v-if="ready">
-          <view class="mp-section-heading"><text>本餐食材</text><text>家中已有可取消</text></view>
+          <view class="mp-section-heading"><text>{{title}}</text><text v-if="!fixed">家中已有可取消</text></view>
           <view class="mp-products mp-surface">
             <view v-for="item in products" :key="item.id" class="mp-product">
-              <button class="mp-select" :aria-pressed="picked.includes(item.id)" :aria-label="(picked.includes(item.id)?'取消选择':'选择')+item.name" :disabled="busy||pending" @click="$emit('toggle',item.id)"><view :class="{'is-selected':picked.includes(item.id)}">{{picked.includes(item.id)?'✓':''}}</view></button>
+              <button v-if="!fixed" class="mp-select" :aria-pressed="picked.includes(item.id)" :aria-label="(picked.includes(item.id)?'取消选择':'选择')+item.name" :disabled="busy||pending" @click="$emit('toggle',item.id)"><view :class="{'is-selected':picked.includes(item.id)}">{{picked.includes(item.id)?'✓':''}}</view></button>
               <FoodImageSlot :src="item.imageUrl" :label="item.name" :width="52" :height="58" :radius="14" fallback-icon/>
-              <view class="mp-product-copy"><text class="mp-product-name">{{item.name}}</text><text class="mp-support">{{item.packLabel}} · {{money(item.priceCents)}}/包</text><view class="mp-quantity"><button :aria-label="'减少'+item.name+'数量'" :disabled="busy||pending||item.quantity<=1" @click="$emit('quantity',item,-1)">−</button><text>{{item.quantity}}</text><button :aria-label="'增加'+item.name+'数量'" :disabled="busy||pending||item.quantity>=item.availableQuantity" @click="$emit('quantity',item,1)">＋</button></view></view>
+              <view class="mp-product-copy"><text class="mp-product-name">{{item.name}}</text><text class="mp-support">{{item.packLabel}} · {{money(item.priceCents)}}/包</text><view v-if="fixed" class="mp-support">×{{item.quantity}} 包</view><view v-else class="mp-quantity"><button :aria-label="'减少'+item.name+'数量'" :disabled="busy||pending||item.quantity<=1" @click="$emit('quantity',item,-1)">−</button><text>{{item.quantity}}</text><button :aria-label="'增加'+item.name+'数量'" :disabled="busy||pending||item.quantity>=item.availableQuantity" @click="$emit('quantity',item,1)">＋</button></view></view>
               <text class="mp-product-price">{{money(item.priceCents*item.quantity)}}</text>
             </view>
           </view>

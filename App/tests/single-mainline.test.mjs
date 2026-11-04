@@ -2,11 +2,12 @@ import { resolveCheckoutAddress } from './address-test-helpers.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { createEntryResolver } from '../src/services/entry-routing.js'
 import { createWechatAuthClient } from '../src/services/wechat-auth-client.js'
 import { getSession, setSession, clearSession, sessionRevision } from '../src/services/session.js'
 import { storageContext } from '../src/services/storage.js'
+import { packageSpec } from '../src/utils/package-presentation.js'
 import { rememberInvitation, pendingInvitation, clearInvitation } from '../src/services/family-invitations.js'
 
 function storage() {
@@ -213,16 +214,17 @@ test('explicit acceptance selects the accepted household before own onboarding',
 function packagePage() {
   const {redirects}=storage(),calls=[]
   let failConfirm=true,pending=null,expires=new Date(Date.now()+60000).toISOString(),scope='self',release
-  const offer={offer_token:'signed-offer',available:true,name:'青椒肉丝'}
+  let amounts={goods_amount_cent:1500,shipping_fee_cent:300,payable_amount_cent:1800}
+  const offer={offer_token:'signed-offer',available:true,name:'青椒肉丝',sku_id:'sku',price_cent:1350}
   const commerce={pendingOrder:()=>pending,connect:async()=>{},addresses:async()=>[{id:'address',isDefault:true}],slots:async()=>({supported:true,items:[{id:1,available:true},{id:2,available:false}]}),
     confirmRecommendation:async()=>{calls.push('confirm');if(failConfirm)throw new Error('confirm offline')},
-    quoteRecommendation:async()=>{calls.push('quote');return {checkout_token:'quote',expires_at:expires}},
+    quoteRecommendation:async()=>{calls.push('quote');return {checkout_token:'quote',expires_at:expires,...amounts}},
     createOrder:async()=>{calls.push('create');pending={intent:'original'};throw new Error('unknown order')},retryOrder:async()=>{calls.push('recover');pending=null;return {order_sn:'original-order'}}}
-  const deps={ref,resolveCheckoutAddress,defineProps:()=>({route:{conversation:'request',offer:'signed-offer'}}),onMounted(){},onShow(){},onUnmounted(){},storageContext:()=>scope,commerce,
+  const deps={computed,ref,packageSpec,resolveCheckoutAddress,defineProps:()=>({route:{conversation:'request',offer:'signed-offer'}}),onMounted(){},onShow(){},onUnmounted(){},storageContext:()=>scope,commerce,
     request:async options=>{calls.push(options.method||'GET');if(release)await release;return {data:options.method==='POST'?{package:{package_sn:'package',package_version:1,status:'available'}}:{offers:[offer]}}}}
   const code=readFileSync(new URL('../src/components/ConversationPackagePurchase.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
-  const page=new Function('deps',`const {${Object.keys(deps)}}=deps;${code};return {load,checkout,submit,slots,quote,pending,error,offer,busy}`)(deps)
-  return {page,calls,redirects,confirm:()=>failConfirm=false,invalidExpiry:()=>expires='invalid',switch:()=>scope='other',delay:p=>release=p}
+  const page=new Function('deps',`const {${Object.keys(deps)}}=deps;${code};return {load,checkout,submit,slots,quote,pending,error,offer,busy,canSubmit,products}`)(deps)
+  return {page,calls,redirects,confirm:()=>failConfirm=false,invalidExpiry:()=>expires='invalid',invalidAmounts:()=>amounts={...amounts,goods_amount_cent:null},switch:()=>scope='other',delay:p=>release=p}
 }
 test('viewing food package does not publish; checkout retries confirmation and uses actual available delivery slots',async()=>{
   const h=packagePage();await h.page.load();assert.deepEqual(h.calls,['GET'])
@@ -232,14 +234,32 @@ test('viewing food package does not publish; checkout retries confirmation and u
   assert.equal(h.calls.filter(call=>call==='confirm').length,2)
   assert.deepEqual(h.page.slots.value.map(slot=>slot.id),[1])
   assert.equal(h.page.quote.value.checkout_token,'quote')
+  assert.equal(h.page.products.value[0].priceCents,1500)
+  assert.equal(h.page.canSubmit.value,true)
+})
+test('partial checkout amounts block ordering and never show the stale offer price',async()=>{
+  const h=packagePage();h.confirm();h.invalidAmounts();await h.page.load();await h.page.checkout()
+  assert.equal(h.page.canSubmit.value,false)
+  assert.equal(Number.isNaN(h.page.products.value[0].priceCents),true)
+  await h.page.submit()
+  assert.equal(h.calls.includes('create'),false)
+  assert.match(h.page.error.value,/报价已失效/)
+})
+test('returning from address selection refreshes the original package quote without republishing',async()=>{
+  const h=packagePage();h.confirm();await h.page.load();await h.page.checkout()
+  await h.page.load()
+  assert.equal(h.calls.filter(call=>call==='POST').length,1)
+  assert.equal(h.calls.filter(call=>call==='quote').length,2)
+  assert.equal(h.page.quote.value.checkout_token,'quote')
 })
 test('malformed quote expiry cannot create an order; unknown order retries the original intent',async()=>{
   const h=packagePage();h.confirm();h.invalidExpiry();await h.page.load();await h.page.checkout();await h.page.submit()
   assert.equal(h.calls.includes('create'),false);assert.equal(h.page.quote.value,null)
-  h.page.quote.value={checkout_token:'quote',expires_at:new Date(Date.now()+60000).toISOString()}
+  h.page.quote.value={checkout_token:'quote',expires_at:new Date(Date.now()+60000).toISOString(),goods_amount_cent:1500,shipping_fee_cent:300,payable_amount_cent:1800}
   await h.page.submit();assert.equal(h.page.pending.value,true)
   await h.page.submit(true);assert.equal(h.calls.filter(call=>call==='create').length,1)
   assert.equal(h.redirects.at(-1),'/pages/orders/detail?id=original-order')
+  await h.page.submit();assert.equal(h.calls.filter(call=>call==='create').length,1)
 })
 test('late package read cannot expose the prior account offer',async()=>{
   const h=packagePage();let release;h.delay(new Promise(resolve=>release=resolve))
