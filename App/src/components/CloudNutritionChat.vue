@@ -333,16 +333,17 @@ const flow=createHealthTaskFlow({daily:true,onChange:next=>{
   if(next.result&&next.requestId&&!(next.result.type==='error'&&!props.route.taskType)){
     const id=next.requestId+'-answer',index=messages.value.findIndex(m=>m.requestId===next.requestId&&m.role==='assistant')
     const result=next.result
+    const candidates=result.type==='business'&&result.kind==='meal_plan_candidates'
     if(result.type==='business'&&isReferencePlan(result.data)){
       latestReference.value=result.data
     }
     const message={threadId:next.entry?.thread_id||conversationThreadId.value,id:messages.value[index]?.id||id,serverMessageId:next.finalMessageId,requestId:next.requestId,role:'assistant',createdAt:messages.value[index]?.createdAt||new Date().toISOString(),citations:result.citations||[],
-      text:result.type==='answer'?result.text:result.type==='needs_input'?result.questions.join('\n'):result.type==='error'?(failureText[result.code]||'这次处理未能完成，请重新读取或编辑问题后再试。'):isReferencePlan(result.data)?'餐单已更新。':'餐单结果已返回，请核对后决定是否使用。',
-      memberId:next.memberId,recordedMeals:continuationChecking.value&&!result.recordedMeals?.length?(messages.value[index]?.recordedMeals||[]):result.recordedMeals||messages.value[index]?.recordedMeals||[],mealEnter:messages.value[index]?.mealEnter??(index<0&&!restoring&&!returning.value&&visible),purchaseEnter:index<0&&!restoring&&!returning.value,purchaseOffers:result.purchaseOffers,purchaseRequestId:result.purchaseOffers?.length?next.requestId:'',error:result.type==='error',errorCode:result.code,retryable:result.retryable===true,business:result.type==='business'?result:null,planDate:isReferencePlan(result.data)?result.data.plan_date:'',planMeals:isReferencePlan(result.data)?(result.data.meals||[]).map(meal=>meal.meal_type):undefined}
+      text:result.type==='answer'?result.text:result.type==='needs_input'?result.questions.join('\n'):result.type==='error'?(failureText[result.code]||'这次处理未能完成，请重新读取或编辑问题后再试。'):candidates?'待核对候选已返回，个人适用性尚未确认。':isReferencePlan(result.data)?'餐单已更新。':'餐单结果已返回，请核对后决定是否使用。',
+      memberId:next.memberId,recordedMeals:candidates?[]:continuationChecking.value&&!result.recordedMeals?.length?(messages.value[index]?.recordedMeals||[]):result.recordedMeals||messages.value[index]?.recordedMeals||[],mealEnter:messages.value[index]?.mealEnter??(index<0&&!restoring&&!returning.value&&visible),purchaseEnter:!candidates&&index<0&&!restoring&&!returning.value,purchaseOffers:candidates?[]:result.purchaseOffers,purchaseRequestId:!candidates&&result.purchaseOffers?.length?next.requestId:'',error:result.type==='error',errorCode:result.code,retryable:result.retryable===true,business:result.type==='business'?result:null,planDate:!candidates&&isReferencePlan(result.data)?result.data.plan_date:'',planMeals:!candidates&&isReferencePlan(result.data)?(result.data.meals||[]).map(meal=>meal.meal_type):undefined}
     if(index<0)messages.value.push(message);else messages.value[index]={...messages.value[index],...message}
     if(!restoring&&!returning.value&&visible)void scrollLatest()
   }
-  if(next.requestId&&Array.isArray(next.recordedMeals)&&(!continuationChecking.value||next.recordedMeals.length)){
+  if(next.result?.kind!=='meal_plan_candidates'&&next.requestId&&Array.isArray(next.recordedMeals)&&(!continuationChecking.value||next.recordedMeals.length)){
     const turns=messages.value.filter(row=>row.requestId===next.requestId)
     for(const row of turns)row.recordedMeals=[]
     const target=turns.find(row=>row.role==='assistant')||turns.find(row=>row.role==='user')
@@ -965,7 +966,7 @@ async function sendQuestion(promptAction=''){
   }}
 }
 async function resumePlanQuestion(pending=todayPlan.value?.pending){
-  if(chatBusy.value||pending?.status!=='needs_input'||pending.selection?.family_id!==profile.value?.householdId||pending.selection?.plan_date!==localDate())return
+  if(chatBusy.value||!['needs_input','reference_candidates'].includes(pending?.status)||pending.selection?.family_id!==profile.value?.householdId||pending.selection?.plan_date!==localDate())return
   inlineTodayOpen.value=false
   const scope=storageContext(),mine=epoch
   try{

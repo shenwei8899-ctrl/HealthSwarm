@@ -98,7 +98,7 @@ def test_table_entities_inline_formatting_and_whitespace_are_cell_local(html, ex
         '<table><tr><td>血糖</td><td><img src="https://example.invalid/6.8"/></td></tr></table>',
         "<table><tr>血糖 6.8<td>mmol/L</td></tr></table>",
         "<table><td>血糖 6.8</td></table>",
-        '<table><tr><td rowspan="2">血糖</td><td>6.8</td></tr><tr><td>7.1</td></tr></table>',
+        '<table><tr><td rowspan="3">血糖</td><td>6.8</td></tr><tr><td>7.1</td></tr></table>',
         '<table><tr><td colspan="0">血糖 6.8</td></tr></table>',
         "<table></table>",
         "<table><tr><td>血糖 6.8</td></tr></table><table><tr><td>血糖 7.1</td></tr></table>",
@@ -118,9 +118,48 @@ def test_table_entities_inline_formatting_and_whitespace_are_cell_local(html, ex
     ],
 )
 def test_unprovable_table_structure_is_explicit_page_parse_failure(html):
-    """不自动修复、执行主动内容或继承跨行单元格。"""
+    """结构不完整或含主动内容时不自动修复，也不丢弃错误。"""
     with pytest.raises(HealthVisionError, match="parser_contract_invalid"):
         normalize_report_blocks(table_input(html), {"page_index": 0, "width": 200, "height": 400})
+
+
+def test_complete_rowspan_preserves_raw_rows_without_inheriting_or_verifying_values():
+    """完整跨行只保留实际单元格，覆盖行不获数值验证或虚构行级坐标。"""
+    html = (
+        "<table><tr><th>项目</th><th>结果</th><th>单位</th></tr>"
+        '<tr><td rowspan="2">葡萄糖</td><td>6.8</td><td>mmol/L</td></tr>'
+        "<tr><td>7.1</td><td>mmol/L</td></tr>"
+        "<tr><td>甘油三酯</td><td>1.7</td><td>mmol/L</td></tr></table>"
+    )
+    blocks = normalize_report_blocks(table_input(html), {"page_index": 0, "width": 200, "height": 400})
+    assert [block["raw_text"] for block in blocks] == [
+        "项目\t结果\t单位",
+        "葡萄糖\t6.8\tmmol/L",
+        "7.1\tmmol/L",
+        "甘油三酯\t1.7\tmmol/L",
+    ]
+    assert all(block["bbox"] == [0.1, 0.2, 0.8, 0.3] for block in blocks)
+    assert blocks[1]["table_columns"] is blocks[2]["table_columns"] is None
+    for index, value in [(1, "6.8"), (2, "7.1")]:
+        item = {
+            "name": "葡萄糖",
+            "value_raw": value,
+            "value_numeric": value,
+            "unit_raw": "mmol/L",
+            "block_id": blocks[index]["block_id"],
+        }
+        field = verify_report_fields([item], blocks)[0]
+        assert field["value_numeric"] is None and "row_evidence_mismatch" in field["review_flags"]
+    safe = redact_report_blocks(blocks, "父亲")
+    assert safe == [blocks[1], blocks[3]]
+    item = {
+        "name": "甘油三酯",
+        "value_raw": "1.7",
+        "value_numeric": "1.7",
+        "unit_raw": "mmol/L",
+        "block_id": blocks[3]["block_id"],
+    }
+    assert verify_report_fields([item], safe)[0]["value_numeric"] == "1.7"
 
 
 @pytest.mark.parametrize(

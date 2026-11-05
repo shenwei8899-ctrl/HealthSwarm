@@ -525,7 +525,7 @@ async def test_empty_parameters_recover_on_next_real_node_with_audit_authorizati
         async def checked_save(context, payload):
             """保留实际逐字引用 guard，只有来源读取与持久化使用合成边界。"""
             document = {
-                "content": "合成食谱\n合成食材\n合成步骤",
+                "content": "# 合成食谱\n## 食材\n- 合成食材\n## 步骤\n1. 合成步骤",
                 "file_id": "synthetic-file",
                 "chunk_id": "synthetic-chunk",
                 "kb_id": "synthetic-kb",
@@ -728,7 +728,7 @@ async def test_empty_parameters_recover_on_next_real_node_with_audit_authorizati
             corrected = ReferencePlanDraft.model_validate(services.saved.await_args_list[1].args[1]).model_dump()
             assert rejected["meals"][0]["dishes"][0]["portion_quote"] == "每人建议一份合成份量"
             assert corrected["meals"][0]["dishes"][0]["portion_quote"] is None
-            assert ReferencePlanDraft.model_validate(corrected).model_dump(exclude_none=True) == DRAFT
+            assert ReferencePlanDraft.model_validate(corrected) == ReferencePlanDraft.model_validate(DRAFT)
         assert json.loads(state.values["messages"][-1].text) == snapshot()
         assert [wire.get("stream") is True for wire in wire_requests] == [False, False, True]
         assert all(wire["parallel_tool_calls"] is False for wire in wire_requests[:2])
@@ -962,7 +962,9 @@ async def test_complete_tool_responses_keep_arguments_audit_usage_and_streamed_f
     assert len(tools) == 4 and all(message.status == "success" for message in tools)
     assert services.saved.await_count == 1
     assert services.saved.await_args.args[0] == context
-    assert ReferencePlanDraft.model_validate(services.saved.await_args.args[1]).model_dump(exclude_none=True) == DRAFT
+    assert ReferencePlanDraft.model_validate(services.saved.await_args.args[1]) == ReferencePlanDraft.model_validate(
+        DRAFT
+    )
     assert [json.loads(call.args[1]) for call in services.final.await_args_list] == [{"preview_id": PREVIEW}] * 2
     final = state.values["messages"][-1]
     assert json.loads(final.text) == snapshot()
@@ -1106,7 +1108,9 @@ async def test_successful_save_triggers_one_real_tool_free_model_and_preserves_i
     assert len(model.finished) == 2
     services.saved.assert_awaited_once()
     assert services.saved.await_args.args[0] == Context()
-    assert ReferencePlanDraft.model_validate(services.saved.await_args.args[1]).model_dump(exclude_none=True) == DRAFT
+    assert ReferencePlanDraft.model_validate(services.saved.await_args.args[1]) == ReferencePlanDraft.model_validate(
+        DRAFT
+    )
     assert len([item for item in state.values["messages"] if isinstance(item, ToolMessage)]) == 1
     assert len(observed.requests) == 2
     final_request = observed.requests[-1]

@@ -987,6 +987,18 @@ class HealthRecipeCommerceSource(Base):
     published_by = Column(String, ForeignKey("users.uid"), nullable=False)
 
 
+class HealthRecipeTranslation(Base):
+    """独立于不可变餐单回执的中文辅助译文。"""
+
+    __tablename__ = "health_recipe_translation"
+    id = Column(String(64), primary_key=True)
+    source = Column(JSON_VALUE, nullable=False)
+    display = Column(JSON_VALUE, nullable=False)
+    producer = Column(String(200), nullable=False)
+    translation_version = Column(String(40), nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
 HEALTH_TABLES = HEALTH_BUDGET_TABLES + [
     model.__table__
     for model in (
@@ -998,6 +1010,7 @@ HEALTH_TABLES = HEALTH_BUDGET_TABLES + [
         HealthDailyArrangement,
         HealthExclusivePlanGroup,
         HealthRecipeCommerceSource,
+        HealthRecipeTranslation,
         FamilyMember,
         HealthGrant,
         HealthFamilyProfileLink,

@@ -5,6 +5,7 @@ import { getSession, sessionRevision } from './session.js'
 import { scopedStorage } from './storage.js'
 import { readDietRecord } from './cloud-meals.js'
 import { subscribeHealthEvents, HEALTH_PROGRESS_LABELS } from './health-events.js'
+import { isMealPlanCandidates } from './reference-meal-plan.js'
 
 export const HEALTH_TEXT_TASKS = Object.freeze({
   consultation: '营养咨询', blood_glucose_review: '血糖记录回顾',
@@ -486,6 +487,19 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
             purchaseOffers: Array.isArray(data.result.purchase_offers) ? data.result.purchase_offers : [],
             recordedMeals: state.recordedMeals,
             citations: data.result.citations.map(item => item.title).filter(Boolean) }
+        } else if (data.result?.result_type === 'meal_plan_candidates' ||
+            data.result?.data?.status === 'reference_candidates' || data.result?.data?.scope === 'cooking_reference') {
+          const candidate = data.result.data
+          if (data.result.result_type !== 'meal_plan_candidates' || data.result.validation !== 'current_business_sources' ||
+              !isMealPlanCandidates(candidate)) throw invalidResult()
+          if (indicatorSelection?.family_id && candidate.selection.family_id !== indicatorSelection.family_id ||
+              indicatorSelection?.plan_date && candidate.plan_date !== indicatorSelection.plan_date ||
+              indicatorSelection?.participant_ids && (candidate.selection.participant_ids.length !== indicatorSelection.participant_ids.length ||
+                candidate.selection.participant_ids.some(id => !indicatorSelection.participant_ids.includes(id))) ||
+              indicatorSelection?.meal_types && (candidate.meals.length !== indicatorSelection.meal_types.length ||
+                candidate.meals.some(meal => !indicatorSelection.meal_types.includes(meal.meal_type)))) throw mismatch()
+          state.recordedMeals = []
+          state.result = { type: 'business', kind: 'meal_plan_candidates', data: candidate }
         } else if (data.result?.result_type === 'meal_feedback' && data.result.data) {
           const receipt = data.result.data
           if (receipt.status !== 'saved' || receipt.feedback?.status !== 'active' ||

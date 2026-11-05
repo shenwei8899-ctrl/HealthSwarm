@@ -3,12 +3,72 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {ref,computed,watch} from 'vue'
 import {dishTitle,recipeDisplay,ingredientLabels,referenceIngredientLabel,referenceGapDetail} from '../src/utils/meal-presentation.js'
-import {referenceSelection,isReferencePlan} from '../src/services/reference-meal-plan.js'
+import {referenceSelection,isReferencePlan,isMealPlanCandidates} from '../src/services/reference-meal-plan.js'
+import {mealCandidates} from './fixtures/meal-candidates.mjs'
 import {chatMessages} from '../src/services/cloud-chat.js'
 import {sourceTitle} from '../src/utils/ai-answer.js'
 
 const profile={householdId:'family',selfMemberId:'self',members:[{id:'self',healthMemberId:'health-self'},{id:'mother',healthMemberId:'health-mother'}]}
 const dates={today:'2026-10-26',tomorrow:'2026-10-27'}
+
+test('source-based candidates retain their date, breakfast, restrictions and material gaps without becoming a saved daily plan',()=>{
+ const data=mealCandidates('2026-10-27')
+ assert.equal(isMealPlanCandidates(data),true);assert.equal(isReferencePlan(data),false)
+ const [message]=chatMessages({history:[{id:1,type:'ai',content:JSON.stringify(data),recorded_meals:[{id:'not-a-candidate-receipt'}],request_id:'original'}]})
+ assert.equal(message.business.kind,'meal_plan_candidates');assert.deepEqual(message.business.data,data)
+ assert.equal(message.planDate,undefined);assert.equal(message.planMeals,undefined);assert.equal(message.purchaseRequestId,'')
+ assert.deepEqual(message.recordedMeals,[]);assert.match(message.text,/待核对候选.*尚未确认/)
+})
+
+test('candidate identifiers cannot be repeated across different meals',()=>{
+ const data=mealCandidates('2026-10-27','self',['breakfast','lunch'])
+ assert.equal(isMealPlanCandidates(data),true)
+ data.meals[1].dishes[0].id=data.meals[0].dishes[0].id
+ data.candidate_selection[1].candidate_ids=[data.meals[0].dishes[0].id]
+ assert.equal(isMealPlanCandidates(data),false)
+})
+
+for(const change of [data=>data.status='reference_ready',data=>data.scope='daily_reference',data=>data.purchase_allowed=true,
+ data=>data.purchase_items.push({sku_id:'unsafe'}),data=>data.preview_id='unsafe',data=>data.plan_id='unsafe',
+ data=>data.purchase_ready=true,data=>data.approval_status='approved',data=>data.restriction_verification.status='verified',
+ data=>data.meals[0].dishes[0].source.kind='verbatim',data=>data.meals[0].dishes[0].source.content_hash='',
+ data=>data.meals[0].dishes[0].steps=[],data=>data.selection.plan_date='2026-11-01',data=>data.meals={},
+ data=>delete data.selection,data=>delete data.restriction_verification,
+ data=>data.result_type='meal_plan_candidates',data=>data.meals[0].dishes[0].source.url='http://example.com/rice',
+ data=>data.members=[null],data=>data.members[0].id='other-member',data=>data.restriction_verification.restrictions[0].member_id='other-member',
+ data=>data.selection.meal_types=['breakfast','lunch']]){
+ test('a candidate with an unverified identity or readiness claim fails closed: '+change.toString(),()=>{
+  const data=mealCandidates();change(data);assert.equal(isMealPlanCandidates(data),false)
+  const [message]=chatMessages({history:[{id:1,type:'ai',content:JSON.stringify(data)}]})
+  assert.equal(message.business,null);assert.equal(message.planDate,undefined);assert.equal(message.purchaseRequestId,'')
+  assert.match(message.text,/无法核对/)
+ })
+}
+
+test('the rendered candidate card shows complete cooking notes and source text with no save, purchase or navigation control',async()=>{
+ const {compile,createSSRApp}=await import('vue'),{renderToString}=await import('vue/server-renderer')
+ const source=readFileSync(new URL('../src/components/HealthChatBusinessCard.vue',import.meta.url),'utf8')
+ const template=source.slice(source.indexOf('<template>')+10,source.lastIndexOf('</template>'))
+ const data=mealCandidates('2026-10-27'),result={type:'business',kind:'meal_plan_candidates',data}
+ const calls=[],props={result,memberId:'self'},deps={ref,defineProps:()=>props,defineEmits:()=>()=>{},
+  onUnmounted(){},storageContext:()=> 'scope',scopedStorage:{getStorageSync:()=>null,setStorageSync:()=>calls.push('storage')},request:()=>calls.push('request'),uni:{navigateTo:()=>calls.push('navigate')}}
+ const script=source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
+ const card=new Function('deps',`const {${Object.keys(deps)}}=deps;${script};return {save,inspect,sourceDetails,toggleSourceDetails,names,busy,error,saved}`)(deps)
+ const render=compile(template),html=await renderToString(createSSRApp({render,setup:()=>({...card,result:props.result})}))
+ for(const value of ['2026-10-27','早餐','待核对候选','非逐字原文','个人适用性尚未确认','未保存为每日餐单','暂不提供采购',data.notice,
+  ...data.unresolved_materials,...data.meals[0].dishes[0].ingredients,...data.meals[0].dishes[0].steps,
+  data.meals[0].dishes[0].source.title,data.meals[0].dishes[0].source.url,'合成限制仍需核对'])assert.ok(html.includes(value),value)
+ assert.doesNotMatch(html,/<navigator|<a\b|确认这些商品|保存这份餐单|已保存餐单/)
+ assert.equal(html.includes(data.meals[0].dishes[0].source.notes),false);assert.match(html,/aria-expanded="false"/)
+ card.toggleSourceDetails(data.meals[0].dishes[0].id)
+ const expanded=await renderToString(createSSRApp({render,setup:()=>({...card,result:props.result})}))
+ assert.ok(expanded.includes(data.meals[0].dishes[0].source.notes));assert.match(expanded,/aria-expanded="true"/)
+ card.toggleSourceDetails(data.meals[0].dishes[0].id)
+ const collapsed=await renderToString(createSSRApp({render,setup:()=>({...card,result:props.result})}))
+ assert.equal(collapsed.includes(data.meals[0].dishes[0].source.notes),false)
+ props.result={...result,data:{...data,preview_id:'cannot-save',plan_id:'cannot-open'}}
+ await card.save();card.inspect();assert.deepEqual(calls,[])
+})
 test('reference choice preserves requested meal set, date and actor scope',()=>{
  assert.deepEqual(referenceSelection(profile,'全家明天的早餐和午餐',dates),{mode:'reference',family_id:'family',plan_date:'2026-10-27',participant_ids:['mother','self'],meal_types:['breakfast','lunch']})
  assert.deepEqual(referenceSelection(profile,'今天晚餐',{...dates,memberId:'health-mother'}).participant_ids,['mother'])
@@ -70,7 +130,9 @@ test('explicit reference purchase uses returned package version and actual cart 
  const h=card();await h.page.purchase()
  assert.deepEqual(h.calls,['publish',['read','package',2],['cart',2],['route','/pages/shop/index?commerce=1&cart=1']])
  const pages=JSON.parse(readFileSync(new URL('../src/pages.json',import.meta.url)))
- assert.ok(pages.pages.some(p=>p.path==='pages/shop/index'))
+ const routes=[...pages.pages.map(page=>page.path),...(pages.subPackages||[]).flatMap(pack=>pack.pages.map(page=>pack.root+'/'+page.path))]
+ assert.ok(routes.includes('pages/shop/index'))
+ assert.ok(readFileSync(new URL('../src/pages/shop/index.vue',import.meta.url),'utf8').includes('<template>'))
 })
 for(const options of [{scopeChange:true},{planChange:true}])test('changed account or preview cancels purchase before writing a package',async()=>{
  const h=card(options);await h.page.purchase();assert.deepEqual(h.calls,[])

@@ -33,6 +33,8 @@ LIST_ITEM = {
     "agent_slug": "health-consultation",
     "business_date": None,
     "created_at": "2026-10-11T01:02:03Z",
+    "title": "日常饮食咨询",
+    "unavailable": False,
 }
 
 
@@ -81,7 +83,15 @@ def test_openapi_preserves_required_fields_nulls_and_fixed_role(contract_app):
         "FamilyProfileUnlinkedResult": {"member_id", "source_member_id", "scope"},
         "FamilyProfileLinkResult": {"member_id", "source_member_id", "family_id", "scope"},
         "ConsultationResult": {"thread_id", "member_id", "agent_slug", "business_date", "feedback_selection"},
-        "ConsultationListItem": {"thread_id", "member_id", "agent_slug", "business_date", "created_at"},
+        "ConsultationListItem": {
+            "thread_id",
+            "member_id",
+            "agent_slug",
+            "business_date",
+            "created_at",
+            "title",
+            "unavailable",
+        },
         "ConsultationListResult": {"items", "has_more", "next_offset"},
     }
     for name, expected in fields.items():

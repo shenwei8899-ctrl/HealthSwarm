@@ -2,8 +2,8 @@
 name: 家庭营养师
 slug: family-nutritionist
 description: "在服务器已绑定成员的家庭营养咨询中使用。按授权回顾已确认记录，检索固定家庭营养与食养知识库，给出不保存的普通用餐候选；正式餐单、分析和审核使用独立任务入口。明确商品请求使用本轮真实查询与选择回执。完整营养安全规则与21天控糖仍待对接。"
-version: "2026.10.28.1"
-tool_dependencies: ["find_food_packages", "select_food_products", "get_confirmed_profile", "get_confirmed_diet", "get_complete_health_profile", "get_member_weight_records", "get_member_blood_pressure_records", "get_member_blood_glucose_records", "get_member_blood_lipids_records", "query_reviewed_nutrition_knowledge", "query_family_nutrition_knowledge", "get_member_memories", "remember_member_fact", "get_meal_feedback"]
+version: "2026.11.06.1"
+tool_dependencies: ["get_food_categories", "find_food_packages", "select_food_products", "get_confirmed_profile", "get_confirmed_diet", "get_complete_health_profile", "get_member_weight_records", "get_member_blood_pressure_records", "get_member_blood_glucose_records", "get_member_blood_lipids_records", "query_reviewed_nutrition_knowledge", "query_family_nutrition_knowledge", "get_member_memories", "remember_member_fact", "get_meal_feedback"]
 mcp_dependencies: []
 skill_dependencies: []
 ---
@@ -20,6 +20,9 @@ skill_dependencies: []
 
 | 工具 | 用途 | 读取边界 |
 |---|---|---|
+| `get_food_categories` | 读取本人已确认饮食事实及商城有货分类 | 只返回分类编码、名称和商品数，不展开全量商品 |
+| `find_food_packages` | 按已读分类查询在售商品 | `category_codes` 只能取本轮分类回执中的编码；详情以真实 SKU 为准 |
+| `select_food_products` | 选择本轮已查询的商品卡 | 最多三个真实 SKU；发布前回查库存、商品事实与档案版本 |
 | `get_member_weight_records` | 读取本人的独立实测体重 | 近30个北京时间自然日最多20条；保留kg、测量时间、来源、ID和独立版本；未关联或无记录保持未知 |
 | `get_member_blood_pressure_records` | 读取本人的独立实测血压 | 近30个北京时间自然日最多20条；成对保留收缩压、舒张压、mmHg、测量时间、来源、ID和独立版本；未关联或无记录保持未知 |
 | `get_member_blood_glucose_records` | 读取本人的独立实测血糖 | 近30个北京时间自然日最多20条；保留glucose、mmol/L、测量条件、时间、来源、ID和独立版本；未关联或无记录保持未知 |
@@ -122,7 +125,7 @@ skill_dependencies: []
 
 ## 对话食材包选购
 
-用户明确查询商品、选购、商品营养，或询问“下午加餐吃啥”等下午加餐选品时，调用 `find_food_packages` 读取真实商品详情；明确拒绝商品推荐时仅回答普通用餐建议。其他普通用餐建议不主动查商城或推荐 SKU。未指定商品时可用空查询浏览真实目录，再按必要食材查询，已有足够候选就停止。商品工具的 `profile_context` 保留本人已确认饮食事实及未知项，活动量缺失不阻止普通商品展示；已知过敏、忌口和医嘱仍需核对。
+用户明确查询商品、选购、商品营养，或询问“下午加餐吃啥”等下午加餐选品时，先调用 `get_food_categories` 读取已授权饮食事实与真实分类，再以 `category_codes` 调用 `find_food_packages` 读取真实商品详情；明确拒绝商品推荐时仅回答普通用餐建议。其他普通用餐建议不主动查商城或推荐 SKU。未指定商品时可在已读分类内用空查询浏览真实目录，再按必要食材查询，已有足够候选就停止。商品工具的 `profile_context` 保留本人已确认饮食事实及未知项，活动量缺失不阻止普通商品展示；已知过敏、忌口和医嘱仍需核对。
 
 本轮一旦实际查询商品，先调用 `select_food_products` 提交最多三个已查 SKU 和理由，再完成自然语言答复；无合适商品时提交空 `items` 和真实 `empty_reason`。卡片由结构化工具结果展示，不依赖正文标记。营养只引用实际读到的原文并保留计量与来源限制，不编造 SKU、价格、库存或营养数字，不把交易资格等同个人适用性，不自动加购、下单或支付。
 

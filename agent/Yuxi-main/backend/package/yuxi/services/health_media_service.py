@@ -9,6 +9,8 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from yuxi.services.health_vision_types import HealthVisionError, ReportPreparationInput
 
 MAX_PIXELS = 25_000_000
+MEAL_IMAGE_MAX_BYTES = 3 * 1024 * 1024
+MEAL_IMAGE_MAX_EDGE = 1600
 
 
 def prepare_upload(
@@ -68,6 +70,8 @@ def prepare_upload(
                 image = ImageOps.exif_transpose(original).convert("RGB")
                 page = _clean_page(image, 0, preparation, original.size, orientation, "encoded_image")
                 image.close()
+                if purpose == "meal":
+                    page = _prepare_meal_page(page)
                 return mime, [page]
     except HealthVisionError:
         raise
@@ -145,3 +149,25 @@ def _clean_page(image, index, preparation, source_size, orientation, source_spac
         "source_to_processed": matrix,
         "data": output.getvalue(),
     }
+
+
+def _prepare_meal_page(page: dict) -> dict:
+    """缩放私有饮食副本，使三张 Base64 图片仍能装入兼容接口请求。"""
+    with Image.open(io.BytesIO(page["data"])) as image:
+        image.thumbnail((MEAL_IMAGE_MAX_EDGE, MEAL_IMAGE_MAX_EDGE), Image.Resampling.LANCZOS)
+        while True:
+            output = io.BytesIO()
+            image.save(output, format="PNG")
+            data = output.getvalue()
+            if len(data) <= MEAL_IMAGE_MAX_BYTES:
+                break
+            image.thumbnail((max(1, int(image.width * 0.8)), max(1, int(image.height * 0.8))), Image.Resampling.LANCZOS)
+        scale_x, scale_y = image.width / page["width"], image.height / page["height"]
+        a, b, c, d, e, f = page["source_to_processed"]
+        return {
+            **page,
+            "data": data,
+            "width": image.width,
+            "height": image.height,
+            "source_to_processed": [a * scale_x, b * scale_x, c * scale_x, d * scale_y, e * scale_y, f * scale_y],
+        }

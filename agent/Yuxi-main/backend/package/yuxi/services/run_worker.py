@@ -103,6 +103,13 @@ def health_execution_timeout_seconds(job_timeout: int) -> int:
     return seconds
 
 
+def health_agent_timeout_seconds(agent_slug: str, health_timeout: float, job_timeout: float) -> float:
+    """配餐检索与有界修正共享双倍总预算，保留外层任务清理余量。"""
+    if agent_slug == "health-meal-planner":
+        return min(max(health_timeout, min(health_timeout * 2, 600)), job_timeout - HEALTH_EXECUTION_CLEANUP_MARGIN_SECONDS)
+    return health_timeout
+
+
 class RetryableRunError(RetryJob):
     """Error type that should trigger ARQ retry."""
 
@@ -992,7 +999,8 @@ async def process_agent_run(ctx, run_id: str):
                 raise NonRetryableRunError("已领取健康Run缺少持久首次执行时间")
             run = claimed_run
             execution_scope = await _start_health_execution_scope(
-                run.started_at, WorkerSettings.health_execution_timeout
+                run.started_at,
+                health_agent_timeout_seconds(agent_slug, WorkerSettings.health_execution_timeout, WorkerSettings.job_timeout),
             )
 
         if not isinstance(run.input_payload, dict):

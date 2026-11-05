@@ -23,7 +23,7 @@ def model_request(text="帮我推荐商城食材", after=(), request_id="request
     def override(**kwargs):
         """返回带指定工具的新请求，不改变原消息。"""
         overrides.append(kwargs)
-        return SimpleNamespace(**vars(request), **kwargs)
+        return SimpleNamespace(**{**vars(request), **kwargs})
 
     request.override = override
     return request, overrides
@@ -84,3 +84,33 @@ async def test_verified_current_selection_permits_final_answer():
     answer = model_answer()
     assert await HealthCatalogMiddleware().awrap_model_call(request, AsyncMock(return_value=answer)) is answer
     assert overrides == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["帮我推荐商城食材", "下午加餐吃啥"])
+async def test_current_category_query_precedes_product_tools(text):
+    """新版分类入口存在时，明确商品意图先取得本轮分类，不能直接查询或选品。"""
+    request, overrides = model_request(text)
+    request.tools.extend(SimpleNamespace(name=name) for name in ("get_food_categories", "finalize_health_answer"))
+    original_tools = list(request.tools)
+    answer = model_answer("get_food_categories")
+    handler = AsyncMock(return_value=answer)
+    assert await HealthCatalogMiddleware().awrap_model_call(request, handler) is answer
+    assert overrides[-1]["tool_choice"]["function"]["name"] == "get_food_categories"
+    assert {tool.name for tool in overrides[-1]["tools"]} == {"get_food_categories", "finalize_health_answer"}
+    assert request.tools == original_tools
+
+
+@pytest.mark.asyncio
+async def test_successful_category_from_another_turn_cannot_open_product_tools():
+    """恢复历史里的分类只属于旧轮，当前商品请求仍强制先取得分类。"""
+    request, overrides = model_request()
+    request.tools.append(SimpleNamespace(name="get_food_categories"))
+    request.messages[:0] = [
+        HumanMessage(content="旧轮", additional_kwargs={"health_request_id": "old"}),
+        ToolMessage(content='{"categories":[]}', tool_call_id="old", name="get_food_categories"),
+    ]
+    await HealthCatalogMiddleware().awrap_model_call(
+        request, AsyncMock(return_value=model_answer("get_food_categories"))
+    )
+    assert overrides[-1]["tool_choice"]["function"]["name"] == "get_food_categories"

@@ -5,6 +5,7 @@ import json
 from sqlalchemy import DateTime, and_, cast, or_, select
 
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
+from yuxi.repositories.health_meal_source_repository import HealthMealSourceRepository
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.models_health import DietLog, MealFeedback, VisionConfirmation
 from yuxi.storage.postgres.models_business import TOOL_AUDIT_MESSAGE_TYPE, AgentRun, Message
@@ -31,6 +32,9 @@ class HealthDietAnalysisRepository:
             raise HealthVisionError("source_invalidated", "餐次已更正或撤回，请选择当前确认记录", 410)
         if source_version is not None and (record.version or confirmation.draft_version) != source_version:
             raise HealthVisionError("version_conflict", "确认来源版本不一致，请刷新餐次", 409)
+        await HealthMealSourceRepository(self.session).require_snapshot_access(
+            uid, record.snapshot.get("nutrition", {}).get("sources", []), meal=record.snapshot.get("meal")
+        )
         return record, confirmation
 
     async def period_sources(self, uid, member_id, start, stop):

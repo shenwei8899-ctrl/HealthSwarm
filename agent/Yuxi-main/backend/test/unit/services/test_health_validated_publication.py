@@ -495,7 +495,7 @@ async def test_old_redis_candidates_are_not_replayed_even_after_completed_commit
     ]
     assert PRIVATE not in "".join(chunks) and "untrusted" not in "".join(chunks)
     assert [chunk.splitlines()[0] for chunk in chunks] == ["event: custom", "event: error", "event: end"]
-    assert "正在校验答复来源与引用" in "".join(chunks)
+    assert "正在核对内容与资料来源" in "".join(chunks)
     assert "health_execution_failed" in "".join(chunks)
     data = json.loads(next(line[6:] for line in chunks[0].splitlines() if line.startswith("data: ")))
     assert data["payload"]["chunk"]["phase"] == "validating"
@@ -668,7 +668,11 @@ async def test_published_health_history_does_not_expose_legacy_reasoning_metadat
     monkeypatch.setattr(conversation_service, "require_user_conversation", AsyncMock(return_value=conv))
     monkeypatch.setattr(conversation_service, "_consultation_message_is_public", AsyncMock(return_value=True))
     monkeypatch.setattr(conversation_service, "_serialize_thread", AsyncMock(return_value={"id": "thread"}))
+    monkeypatch.setattr("yuxi.services.health_chat_meal_service.chat_meal_receipts", AsyncMock(return_value=[]))
+    related = AsyncMock(return_value=[])
+    monkeypatch.setattr(conversation_service.HealthConsultationRepository, "conversation_threads", related)
     result = await conversation_service.get_thread_history_view(thread_id="thread", current_uid="actor", db=object())
+    related.assert_awaited_once_with("actor", ["thread"])
     assert PRIVATE not in str(result)
     answer = result["history"][0]
     assert answer["content"] == "经过来源校验的正式正文" and answer["reasoning_content"] == ""

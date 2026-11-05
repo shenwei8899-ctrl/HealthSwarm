@@ -44,7 +44,7 @@ def completion(content, model_id):
 
 @pytest.mark.asyncio
 async def test_frozen_meal_snapshot_omits_json_mode_but_validates_json(httpx_mock, monkeypatch):
-    """冻结快照省略 response_format，仍解析候选且不产生模型份量。"""
+    """冻结快照省略 response_format，候选无位置且不产生个人摄入份量。"""
     model_id = "qwen3-vl-flash-2026-01-22"
     spec = configured_model(monkeypatch, model_id)
     candidate = {
@@ -52,7 +52,7 @@ async def test_frozen_meal_snapshot_omits_json_mode_but_validates_json(httpx_moc
         "candidates": ["合成米饭"],
         "cooking_method": "蒸煮",
         "visible_ingredients": ["米粒"],
-        "locations": [{"image_index": 0, "bbox": [0.1, 0.2, 0.8, 0.9]}],
+        "locations": [],
         "uncertainties": [],
     }
     httpx_mock.add_response(
@@ -78,15 +78,12 @@ async def test_frozen_meal_snapshot_omits_json_mode_but_validates_json(httpx_moc
     for element in (
         '"visible_ingredients"',
         '"locations"',
-        '"image_index"',
-        '"bbox"',
-        "从0编号",
-        "归一化",
-        "每张照片至多一个位置",
-        "无法可靠定位时locations为空",
+        "locations固定为空数组",
+        "不输出坐标",
         "不能据此证明没有隐藏食材或过敏原",
     ):
         assert element in prompt, f"饮食观察提示词缺少契约：{element}"
+    assert '"image_index"' not in prompt and '"bbox"' not in prompt
     assert wire["messages"][1]["content"][1] == {
         "type": "image_url",
         "image_url": {"url": "data:image/png;base64,c3ludGhldGljLWltYWdl"},

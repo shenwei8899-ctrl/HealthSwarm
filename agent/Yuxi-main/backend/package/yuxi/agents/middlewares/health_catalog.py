@@ -26,6 +26,9 @@ class HealthCatalogMiddleware(AgentMiddleware):
         if human.additional_kwargs.get("health_request_id") != request.runtime.context.request_id:
             raise HealthVisionError("catalog_request_mismatch", "当前商品咨询轮次无法核对", 409)
         current = request.messages[human_index + 1 :]
+        categories_missing = "get_food_categories" in available and not any(
+            isinstance(m, ToolMessage) and m.name == "get_food_categories" and m.status == "success" for m in current
+        )
         queried = [
             m for m in current if isinstance(m, ToolMessage) and m.name == "find_food_packages" and m.status != "error"
         ]
@@ -46,10 +49,19 @@ class HealthCatalogMiddleware(AgentMiddleware):
 
         forced = None
         if not queried and food_product_intent(human.text):
-            forced = "find_food_packages"
+            forced = "get_food_categories" if categories_missing else "find_food_packages"
         elif queried and not selected and len(queried) >= 4:
             forced = "select_food_products"
-        response = await handler(request.override(tool_choice=tool_choice(forced)) if forced else request)
+        overrides = {}
+        if categories_missing:
+            overrides["tools"] = [
+                tool for tool in request.tools if tool.name not in {"find_food_packages", "select_food_products"}
+            ]
+        elif queried and not selected:
+            overrides["tools"] = [tool for tool in request.tools if tool.name != "finalize_health_answer"]
+        if forced:
+            overrides["tool_choice"] = tool_choice(forced)
+        response = await handler(request.override(**overrides) if overrides else request)
         calls = [
             call
             for message in getattr(response, "model_response", response).result
@@ -83,9 +95,9 @@ def food_product_intent(text):
         if re.search(r"(?:不想|不需要|不用|不要|别|不)(?:再|给我|为我|向我|帮我|去)*" + purchase_action, clause):
             continue
         clause = re.sub(
-            r"(?:不要|不用|不需要|别|不买)(?:再|给我|为我|向我|帮我)?"
+            r"(?:不要|不用|不需要|不想|别|不买)(?:再|给我|为我|向我|帮我)?"
             r"(?:(?:推荐|查询|查|展示|显示|购买|选购)?(?:商品|商城|食材包)|"
-            r"推荐食材|推荐食物|商品推荐|食材推荐|配菜|推荐|购物|购买)(?:[、\s]|$)",
+            r"推荐食材|推荐食物|商品推荐|商城推荐|食材推荐|配菜|推荐|购物|购买)(?:[、\s]|$)",
             " ",
             clause,
         )

@@ -1,6 +1,7 @@
 import { request } from './request.js'
 import { sessionRevision } from './session.js'
 import { scopedStorage } from './storage.js'
+import { isMealPlanCandidates } from './reference-meal-plan.js'
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i
 // The history API's legacy timestamps are UTC even when the zone is omitted.
@@ -101,14 +102,18 @@ export function chatMessages(value) {
       try{const data=JSON.parse(text)
         if((data.result_type==='needs_input'||data.status==='needs_input')&&Array.isArray(data.questions))text=data.questions.join('\n')
         else if(data.result_type==='meal_feedback'&&data.feedback?.details?.comment)text=data.feedback.details.comment
-        else if(data.preview_id&&Array.isArray(data.meals)){business={type:'business',kind:'meal_plan_preview',data};text='餐单预览已返回，请核对菜品与份量。'}
+        else if(data.status==='reference_candidates'||data.scope==='cooking_reference'){
+          if(isMealPlanCandidates(data)){business={type:'business',kind:'meal_plan_candidates',data};text='待核对候选已返回，个人适用性尚未确认。'}
+          else text='候选内容暂时无法核对，请刷新原任务。'
+        }
+        else if((!data.result_type||data.result_type==='meal_plan_preview')&&data.preview_id&&Array.isArray(data.meals)){business={type:'business',kind:'meal_plan_preview',data};text='餐单预览已返回，请核对菜品与份量。'}
         else if(data.result_type==='diet_analysis'&&Array.isArray(data.findings)){business={type:'business',kind:'diet_analysis',data};text='已保存饮食的回顾。'}
       }catch{}
     }
     const purchaseRequestId = role === 'assistant' && /\[食材包:[A-Za-z0-9_-]{100,4096}\]/.test(text) ? item.request_id || item.extra_metadata?.request_id || '' : ''
     if (role === 'assistant') text = text.replace(/\[食材包:[A-Za-z0-9_-]{100,4096}\]/g, '').trim()
     return [{ id: String(item.id), role, text, business, purchaseRequestId,
-      recordedMeals: Array.isArray(item.recorded_meals) ? item.recorded_meals : [],
+      recordedMeals: business?.kind==='meal_plan_candidates' ? [] : Array.isArray(item.recorded_meals) ? item.recorded_meals : [],
       ...(business?.data?.scope==='daily_reference'?{planDate:business.data.plan_date,planMeals:requestedMeals||business.data.meals.map(meal=>meal.meal_type)}:{}), createdAt: chatTimestamp(item.created_at),
       requestId: item.request_id || item.extra_metadata?.request_id || '', status: item.delivery_status || 'saved',
       errorCode: typeof item.failure_code === 'string' ? item.failure_code : '',

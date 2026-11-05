@@ -4,7 +4,7 @@ import asyncio
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from test.integration.services.test_health_family_profile_http import family_profile_http  # noqa: F401
 from test.integration.services.test_health_family_profile_http import ensure_live_api_schema  # noqa: F401
@@ -17,6 +17,7 @@ from yuxi.storage.postgres.models_health import (
     HealthFamilyProfileLink,
     HealthGrant,
     HealthProfileSnapshot,
+    HealthProcessingConsent,
     HealthDailyArrangement,
 )
 
@@ -331,9 +332,12 @@ async def test_incomplete_onboarding_does_not_mark_family_complete(family_profil
 
 async def test_missing_real_planner_dependencies_cannot_publish_a_placeholder(family_profile_http):  # noqa: F811
     """尚无真实健康关联时是服务缺项，不生成空三餐或示例菜单。"""
-    client, _, users = family_profile_http
+    client, sessions, users = family_profile_http
     family, path, data, headers = await source(client, users["self"])
     assert (await client.post(path, headers=headers, json=data)).status_code == 200
+    # 正常建档会建立报告关联；本用例显式制造配餐来源缺项。
+    async with sessions.begin() as db:
+        await db.execute(delete(HealthFamilyProfileLink).where(HealthFamilyProfileLink.family_id == family["id"]))
     root = f"/api/family/{family['id']}/daily-arrangements"
     response = await client.get(root + "/2026-10-17", headers=users["self"])
     assert response.status_code == 200 and response.json()["status"] == "absent"
@@ -345,14 +349,17 @@ async def test_missing_real_planner_dependencies_cannot_publish_a_placeholder(fa
     )
     assert response.status_code == 503 and response.json()["code"] == "daily_member_sources_unavailable"
     assert "meals" not in response.json()
+    async with sessions() as db:
+        assert await db.scalar(select(func.count()).select_from(HealthDailyArrangement)) == 0
 
 
 async def test_explicit_save_and_analyse_binds_actor_without_fake_professional_confirmation(
     family_profile_http,  # noqa: F811
     monkeypatch,
 ):
-    """缺少用途的旧提交明确拒绝；建档同意只关联当前本人，不代家人授权。"""
+    """缺少用途的旧提交明确拒绝；普通报告关联不替家人建立 AI 用途同意。"""
     from yuxi.services.health_vision_service import health_vision_service
+    from yuxi.services.health_vision_types import FAMILY_REPORT_SCOPES
 
     async def configured(session=None):
         return {
@@ -374,12 +381,17 @@ async def test_explicit_save_and_analyse_binds_actor_without_fake_professional_c
     assert (await client.post(path, headers=headers, json=data)).status_code == 200
     async with sessions() as db:
         links = list((await db.scalars(select(HealthFamilyProfileLink))).all())
-        assert len(links) == 1 and links[0].source_kind == "miniapp_reported"
-        assert links[0].source_member_id == response.json()["selfMemberId"]
+        assert len(links) == 2 and all(link.source_kind == "miniapp_reported" for link in links)
+        own = next(link for link in links if link.source_member_id == response.json()["selfMemberId"])
         assert await db.scalar(select(func.count()).select_from(HealthProfileSnapshot)) == 0
         grants = list((await db.scalars(select(HealthGrant))).all())
-        assert len(grants) == 1
-        assert all(set(grant.scopes) == {"ai_use", "diet_edit", "profile_view"} for grant in grants)
+        assert len(grants) == 2
+        for grant in grants:
+            assert set(grant.scopes) == FAMILY_REPORT_SCOPES | (
+                {"ai_use", "diet_edit", "profile_view"} if grant.member_id == own.member_id else set()
+            )
+        consents = list((await db.scalars(select(HealthProcessingConsent))).all())
+        assert [(consent.member_id, consent.purpose) for consent in consents] == [(own.member_id, "meal_plan")]
 
 
 async def test_saved_initial_result_replays_without_regeneration_but_rechecks_access(family_profile_http, monkeypatch):  # noqa: F811
@@ -451,11 +463,11 @@ async def test_daily_purchase_source_survives_other_meal_changes_but_not_revocat
     members = {
         row["healthMemberId"]: {"id": row["id"], "version": row["version"]}
         for row in profile["members"]
-        if row["healthMemberId"]
+        if row["id"] == profile["selfMemberId"]
     }
     breakfast = {
         "type": "breakfast",
-        "members": [{"id": row["id"]} for row in profile["members"] if row["healthMemberId"]],
+        "members": [{"id": member["id"]} for member in members.values()],
         "dishes": [{"id": "synthetic-recipe-A"}],
         "memberNotes": [{"grams": 100}],
     }

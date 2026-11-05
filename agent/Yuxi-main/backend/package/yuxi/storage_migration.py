@@ -44,6 +44,7 @@ from yuxi.storage_migrations.v011_family import upgrade_family_archives
 from yuxi.storage_migrations.v012_family_care import upgrade_family_care
 from yuxi.storage_migrations.v013_wechat_identity import upgrade_wechat_identity
 from yuxi.storage_migrations.v014_product_feedback import upgrade_product_feedback
+from yuxi.storage_migrations.v015_family_invitations import upgrade_family_invitations
 
 _QUIESCENCE_TOKEN_ENV = "YUXI_STORAGE_MIGRATION_QUIESCENCE_TOKEN"
 _QUIESCENCE_FILE_ENV = "YUXI_STORAGE_MIGRATION_QUIESCENCE_FILE"
@@ -73,7 +74,7 @@ async def main() -> None:
                 "business",
                 business_version,
                 BUSINESS_SCHEMA_VERSION,
-                upgrade_from=(2, 7, 8, 9, 10, 11, 12, 13),
+                upgrade_from=(2, 7, 8, 9, 10, 11, 12, 13, 14),
             )
             knowledge_version = versions.get("knowledge")
             _require_supported_version(
@@ -120,6 +121,8 @@ async def main() -> None:
                     30,
                     31,
                     32,
+                    33,
+                    34,
                 ),
             )
 
@@ -145,6 +148,7 @@ async def main() -> None:
                 await upgrade_family_care(pg_manager)
                 await upgrade_wechat_identity(pg_manager)
                 await upgrade_product_feedback(pg_manager)
+                await upgrade_family_invitations(pg_manager)
 
             if knowledge_version is None:
                 await pg_manager.create_knowledge_tables()
@@ -188,8 +192,11 @@ async def main() -> None:
                 30,
                 31,
                 32,
+                33,
+                34,
             ):
                 await pg_manager.create_health_tables()
+                await pg_manager.remove_health_ai_monthly_limit()
                 await pg_manager.record_schema_version("health", HEALTH_SCHEMA_VERSION)
 
             await _converge_database_state(fail_nonterminal_runs=requires_quiescence)

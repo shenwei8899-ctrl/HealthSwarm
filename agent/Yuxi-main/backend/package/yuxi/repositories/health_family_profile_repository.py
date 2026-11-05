@@ -24,21 +24,21 @@ from yuxi.utils.datetime_utils import format_utc_datetime, utc_now_naive
 
 
 class HealthFamilyProfileRepository:
-    """由用例拥有事务；健康锁后家庭锁，正式档案写入不反向锁健康对象。"""
+    """由用例拥有事务，关联档案统一按家庭、健康成员的顺序持锁。"""
 
     def __init__(self, session):
         self.session = session
 
     async def link(self, uid, member_id, family_id, source_member_id):
         """本人确认身份后建立唯一关联；重复调用返回同一事实。"""
-        member = await HealthVisionRepository(self.session).authorize(member_id, uid, "profile_edit", lock=True)
-        if member.owner_uid != uid or member.relationship_label != "本人":
-            raise HealthVisionError("not_found", "仅能关联自己的本人健康对象", 404)
         family_repo = FamilyRepository(self.session)
         family = await family_repo.get_family(family_id, uid)
         source = await family_repo.member(family_id, source_member_id) if family else None
         if source is None or not source.is_active or source.subject_uid != uid:
             raise HealthVisionError("not_found", "仅能关联自己已认领的家庭成员", 404)
+        member = await HealthVisionRepository(self.session).authorize(member_id, uid, "profile_edit", lock=True)
+        if member.owner_uid != uid or member.relationship_label != "本人":
+            raise HealthVisionError("not_found", "仅能关联自己的本人健康对象", 404)
         existing = await self.session.get(HealthFamilyProfileLink, member_id, populate_existing=True)
         if existing is not None:
             if existing.source_member_id != source_member_id or existing.family_id != family_id:

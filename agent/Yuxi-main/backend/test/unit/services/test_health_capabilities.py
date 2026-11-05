@@ -11,6 +11,7 @@ from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKEN
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
 from yuxi.services import health_capability_service as service_module
 from yuxi.services.health_vision_types import HEALTH_SCOPES, HealthVisionError
+from yuxi.storage.postgres.models_health import FamilyMember, HealthFamilyProfileLink, HealthGrant
 
 
 @pytest.fixture
@@ -345,30 +346,77 @@ async def test_ready_profile_does_not_skip_selection_and_revoked_latest_is_prese
     sources.health.authorize.assert_awaited_with(sources.member_id, sources.uid, "profile_view")
 
 
-@pytest.mark.parametrize("scopes", [[], ["unknown"], ["ai_use", "unknown"], ["ai_use", 1], None, "ai_use"])
-async def test_visibility_repository_rejects_empty_or_invalid_stored_scope(scopes):
-    """持久化损坏或空授权不产生成员可见性。"""
-    session = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(one_or_none=lambda: (object(), scopes))))
+@pytest.fixture
+def visibility_records():
+    """固定当前账号、独立成员与 grant，家庭关联仍由真实查询判定不存在。"""
+    records = SimpleNamespace(
+        uid="synthetic-actor",
+        member_id=str(uuid4()),
+        user=SimpleNamespace(uid="synthetic-actor", role="admin"),
+        member=object(),
+        grant=SimpleNamespace(scopes=["diet_edit"], revoked_at=None),
+    )
+
+    async def get_record(model, key, **kwargs):
+        """只提供当前成员的存储记录，不替代仓库授权判定。"""
+        if model is FamilyMember:
+            assert key == records.member_id
+            return records.member
+        if model is HealthFamilyProfileLink:
+            assert key == records.member_id and kwargs == {"populate_existing": True}
+            return None
+        if model is HealthGrant:
+            assert key == (records.member_id, records.uid) and kwargs == {"populate_existing": True}
+            return records.grant
+        raise AssertionError(f"非预期的持久化读取: {model}")
+
+    records.session = SimpleNamespace(
+        scalar=AsyncMock(side_effect=lambda statement: records.user),
+        get=AsyncMock(side_effect=get_record),
+    )
+    return records
+
+
+@pytest.mark.parametrize("scopes", [[], ["unknown"], [1], "ai_use"])
+async def test_visibility_repository_rejects_empty_or_invalid_stored_scope(visibility_records, scopes):
+    """独立成员没有任何有效 scope 时，管理员也不能取得可见性。"""
+    records = visibility_records
+    records.grant.scopes = scopes
     with pytest.raises(HealthVisionError) as error:
-        await HealthVisionRepository(session).visible_member_scopes(str(uuid4()), "synthetic-actor")
+        await HealthVisionRepository(records.session).visible_member_scopes(records.member_id, records.uid)
     assert (error.value.code, error.value.status) == ("not_found", 404)
 
 
-async def test_visibility_repository_valid_scope_is_returned_without_implicit_owner_scope():
-    """有效的最小授权原样返回，不自动扩成建档人或管理员权限。"""
-    user = object()
-    session = SimpleNamespace(
-        execute=AsyncMock(return_value=SimpleNamespace(one_or_none=lambda: (user, ["diet_edit"])))
-    )
-    assert await HealthVisionRepository(session).visible_member_scopes(str(uuid4()), "synthetic-actor") == (
-        user,
+@pytest.mark.parametrize("scopes", [["diet_edit"], ["diet_edit", "unknown"], ["diet_edit", 1]])
+async def test_visibility_repository_valid_scope_is_returned_without_implicit_owner_scope(visibility_records, scopes):
+    """只返回 grant 内已知的合法 scope，不借未知值、建档人或管理员扩权。"""
+    records = visibility_records
+    records.grant.scopes = scopes
+    assert await HealthVisionRepository(records.session).visible_member_scopes(records.member_id, records.uid) == (
+        records.user,
         {"diet_edit"},
     )
+    records.session.scalar.assert_awaited_once()
+    sql = str(records.session.scalar.await_args.args[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "users.uid = 'synthetic-actor'" in sql and "users.is_deleted = 0" in sql
 
 
-async def test_visibility_repository_no_matching_current_grant_is_not_found():
-    """不存在、删除账号与已撤权都没有可见查询行，统一无权响应。"""
-    session = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(one_or_none=lambda: None)))
+async def test_visibility_repository_corrupt_null_scope_does_not_return_visibility(visibility_records):
+    """存储损坏的 null 当前抛 TypeError，不能误称为已实现统一 404。"""
+    records = visibility_records
+    records.grant.scopes = None
+    with pytest.raises(TypeError):
+        await HealthVisionRepository(records.session).visible_member_scopes(records.member_id, records.uid)
+
+
+@pytest.mark.parametrize("missing", ["user", "member", "grant", "revoked_grant"])
+async def test_visibility_repository_no_matching_current_grant_is_not_found(visibility_records, missing):
+    """账号、成员或当前 grant 缺失及撤权均不能返回可见成员。"""
+    records = visibility_records
+    if missing == "revoked_grant":
+        records.grant.revoked_at = object()
+    else:
+        setattr(records, missing, None)
     with pytest.raises(HealthVisionError) as error:
-        await HealthVisionRepository(session).visible_member_scopes(str(uuid4()), "synthetic-actor")
+        await HealthVisionRepository(records.session).visible_member_scopes(records.member_id, records.uid)
     assert (error.value.code, error.value.status) == ("not_found", 404)

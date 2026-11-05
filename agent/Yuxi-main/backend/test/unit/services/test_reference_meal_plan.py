@@ -45,8 +45,13 @@ def draft(**dish_updates):
     }
 
 
-def document(content="清粥 大米100克 加水煮熟 原食谱供两人食用"):
-    """来源由存储事实提供。"""
+def document(content=None):
+    """结构化完整原谱由存储边界提供，附加限制仍针对整份正文。"""
+    original = "# 清粥\n\n## 食材\n- 大米100克\n\n## 做法\n1. 加水煮熟\n\n## 份量\n原食谱供两人食用\n"
+    if content is None:
+        content = original
+    elif content.startswith("清粥 大米100克 加水煮熟"):
+        content = original + content.removeprefix("清粥 大米100克 加水煮熟").strip()
     return {
         ("recipe", "chunk"): {
             "file_id": "recipe",
@@ -332,27 +337,27 @@ def test_full_product_facts_keep_description_and_issues_in_selection_fingerprint
 
 
 @pytest.mark.asyncio
-async def test_reference_context_trims_only_description_and_issues(monkeypatch):
-    """只裁剪营销正文与缺项说明，保留采购身份、成分、风险状态和完整事实指纹。"""
+async def test_reference_context_limits_categories_then_preserves_selected_product_facts(monkeypatch):
+    """先给分类再读商品，裁剪展示详情仍保留完整事实哈希与保存重验。"""
     from yuxi.services import reference_meal_plan_service as service
 
     sku = {
         "sku_id": "synthetic-rice",
         "product_id": "synthetic-product",
-        "product_name": "合成大米",
+        "product_name": "大米",
         "sku_name": "500克包装",
+        "category_code": "grain",
         "net_content": "500g",
         "ingredients": ["大米"],
         "allergen_codes": ["待核对"],
         "data_completeness": "partial",
         "data_issues": ["包装成分尚待核对"],
-        "product_description": "合成营销说明",
+        "product_description": "合成营销说明" * 100,
         "price_cent": 500,
         "available_quantity": 3,
         "sale_status": "available",
     }
-    full_product = service.reference_product(sku)
-    session = SimpleNamespace(scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: ["家常菜谱_清粥.md"])))
+    session = SimpleNamespace()
 
     @asynccontextmanager
     async def session_context():
@@ -367,18 +372,40 @@ async def test_reference_context_trims_only_description_and_issues(monkeypatch):
         "bound_reference_context",
         AsyncMock(return_value={"selection": {"meal_types": ["breakfast"]}, "members": [], "sources": {}}),
     )
-    monkeypatch.setattr(service, "configured_health_kb_ids", lambda slug: ["synthetic-recipes"])
-    monkeypatch.setattr(service, "current_catalog", AsyncMock(return_value={"items": [sku]}))
+    monkeypatch.setattr(
+        service,
+        "commerce_request",
+        AsyncMock(
+            return_value={
+                "catalog_version": "v1",
+                "items": [{"category_code": "grain", "name": "米面", "product_count": 1}],
+            }
+        ),
+    )
+    monkeypatch.setattr(service, "current_catalog", AsyncMock(return_value={"version": "v1", "items": [sku]}))
+    context = SimpleNamespace(uid="synthetic-owner")
+    result = await service.get_reference_context(context)
+    assert result["categories"] == [{"category_code": "grain", "name": "米面", "product_count": 1}]
+    assert "catalog" not in result and result["commerce_notice"] is None
+    receipts = {"get_reference_plan_context": [result], "read_reference_recipe": [document()[("recipe", "chunk")]]}
 
-    result = await service.get_reference_context(SimpleNamespace(uid="synthetic-owner"))
-    product = result["catalog"][0]
-    assert set(full_product) - set(product) == {"product_description", "data_issues"}
-    assert not set(product) - set(full_product)
+    async def tool_payloads(session, run, name):
+        return receipts[name]
+
+    monkeypatch.setattr(service, "tool_payloads", tool_payloads)
+    read = await service.find_reference_products(context, ["grain"])
+    receipts["find_reference_products"] = [read]
+    product = read["catalog"][0]
+    assert product["product_description"] == sku["product_description"][:320]
+    assert product["description_truncated"] is True
+    assert product["data_issues"] == sku["data_issues"]
+    assert product["facts_hash"] == service.reference_product(sku)["facts_hash"]
     for field in (
         "sku_id",
         "product_id",
         "product_name",
         "sku_name",
+        "category_code",
         "net_content",
         "ingredients",
         "allergen_codes",
@@ -387,31 +414,17 @@ async def test_reference_context_trims_only_description_and_issues(monkeypatch):
         "available_quantity",
     ):
         assert product[field] == sku[field]
-    for field in ("quantity", "facts_version", "facts_hash", "description_truncated", "composition_notice"):
-        assert product[field] == full_product[field]
-    assert product["data_completeness"] == "partial"
-    assert "未完成核对" in product["composition_notice"]
-    assert "包装信息确认" in product["composition_notice"]
-    assert "保存时按完整商品事实重新检查" in result["catalog_notice"]
-    assert result["commerce_notice"] is None
-    assert service.reference_product(sku) == full_product
-
-    receipt = document()[("recipe", "chunk")]
-
-    async def tool_payloads(session, run, name):
-        return {"read_reference_recipe": [receipt], "get_reference_plan_context": [result]}[name]
-
-    monkeypatch.setattr(service, "tool_payloads", tool_payloads)
-    monkeypatch.setattr(service, "recipe_document", AsyncMock(return_value=receipt))
+    monkeypatch.setattr(service, "recipe_document", AsyncMock(return_value=document()[("recipe", "chunk")]))
     value = draft()
     value.update(
-        purchase_items=[{"sku_id": sku["sku_id"], "quantity": 1, "ingredient_refs": ["大米100克"]}],
-        purchase_gaps=[],
+        purchase_items=[{"sku_id": sku["sku_id"], "quantity": 1, "ingredient_refs": ["大米100克"]}], purchase_gaps=[]
     )
     for changed in ({"product_description": "修改后的合成说明"}, {"data_issues": []}):
-        monkeypatch.setattr(service, "current_catalog", AsyncMock(return_value={"items": [{**sku, **changed}]}))
+        monkeypatch.setattr(
+            service, "current_catalog", AsyncMock(return_value={"version": "v1", "items": [{**sku, **changed}]})
+        )
         with pytest.raises(HealthVisionError, match="reference_product_changed"):
-            await service.save_reference_plan(SimpleNamespace(uid="synthetic-owner"), value)
+            await service.save_reference_plan(context, value)
 
 
 @pytest.mark.parametrize(

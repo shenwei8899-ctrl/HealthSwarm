@@ -25,15 +25,51 @@ from yuxi.storage.postgres.manager import pg_manager
 OFFER_PATTERN = re.compile(r"\[食材包:([A-Za-z0-9_-]{32,4096})\]")
 
 
-async def find_conversation_packages(context, query, offset=0):
-    """按名称分页读取在售商品原文；展示与购买资格分别校验。"""
+async def get_conversation_categories(context):
+    """读取本人已确认饮食事实及商城当前有货的分类摘要。"""
+    from yuxi.services.health_consultation_service import require_consultation, require_consultation_attempt
+
+    await require_consultation_attempt(context)
+    async with pg_manager.get_async_session_context() as session:
+        run = await HealthConsultationRepository(session).require_attempt(context)
+        binding, _ = await require_consultation(
+            session, context.uid, context.thread_id, expected=run.input_payload["health_processing"]
+        )
+        member = await require_shopping_member(session, binding)
+        response = await commerce_request("GET", "/api/v1/integration/ai/catalog/categories")
+        categories = response.get("items")
+        if not isinstance(categories, list) or not isinstance(response.get("catalog_version"), str):
+            raise HealthVisionError("catalog_invalid", "商城分类暂时无法核对", 503)
+        if any(
+            not isinstance(row, dict)
+            or not isinstance(row.get("category_code"), str)
+            or not row["category_code"]
+            or not isinstance(row.get("name"), str)
+            or not isinstance(row.get("product_count"), int)
+            or row["product_count"] < 1
+            for row in categories
+        ):
+            raise HealthVisionError("catalog_invalid", "商城分类暂时无法核对", 503)
+        return {
+            "catalog_context_version": 1,
+            "catalog_version": response["catalog_version"],
+            "profile_context": dietary_profile_context(member),
+            "categories": categories,
+            "message": (
+                "先结合当前提问和已确认饮食事实选择最多四个真实分类编码，再查询这些分类的商品；"
+                "分类名称和数量不证明个人适用性。"
+            ),
+        }
+
+
+async def find_conversation_packages(context, query, offset=0, category_codes=None):
+    """先验分类回执，再只读取选定分类的在售商品详情。"""
     from yuxi.services.health_consultation_service import (
         require_consultation,
         require_consultation_attempt,
     )
 
     await require_consultation_attempt(context)
-    catalog = await current_catalog()
     async with pg_manager.get_async_session_context() as session:
         run = await HealthConsultationRepository(session).require_attempt(context)
         binding, _ = await require_consultation(
@@ -43,10 +79,28 @@ async def find_conversation_packages(context, query, offset=0):
             expected=run.input_payload["health_processing"],
         )
         member = await require_shopping_member(session, binding)
+        category_receipts = await ConversationPurchaseRepository(session).catalog_profile_payloads(
+            binding, run_id=run.id, tool_names=("get_food_categories",)
+        )
+        if not category_receipts:
+            raise HealthVisionError("catalog_categories_required", "请先读取商城分类和本人饮食事实", 409)
+        for receipt in category_receipts:
+            await validate_catalog_profile_payload(session, binding, receipt)
+        categories = json.loads(category_receipts[-1]).get("categories", [])
+        available_codes = {row["category_code"] for row in categories}
+        if (
+            not isinstance(category_codes, list)
+            or not 1 <= len(category_codes) <= 4
+            or any(not isinstance(code, str) for code in category_codes)
+            or len(set(category_codes)) != len(category_codes)
+            or any(code not in available_codes for code in category_codes)
+        ):
+            raise HealthVisionError("catalog_category_invalid", "只能查询本轮商城实际可售的分类", 422)
         if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0 or offset > 10000:
             raise HealthVisionError("catalog_query_invalid", "商品分页位置无效", 422)
         if not isinstance(query, str) or len(query) > 80:
             raise HealthVisionError("catalog_query_invalid", "商品查询词无效", 422)
+        catalog = await current_catalog(category_codes=category_codes)
         matches = [
             item
             for item in catalog["items"]
@@ -63,6 +117,7 @@ async def find_conversation_packages(context, query, offset=0):
                 "run_id": run.id,
                 "request_id": run.request_id,
                 "query": query,
+                "category_code": item["category_code"],
                 "catalog_version": catalog["version"],
                 "sku_id": str(item["sku_id"]),
                 "composition_hash": composition_hash(item),
@@ -87,13 +142,14 @@ async def find_conversation_packages(context, query, offset=0):
                 if catalog_visible(item)
             ],
             "catalog_context_version": 1,
+            "category_codes": category_codes,
             "profile_context": dietary_profile_context(member),
             "total": len(matches),
             "offset": offset,
             "next_offset": offset + 3 if offset + 3 < len(matches) else None,
             "catalog_version": catalog["version"],
             "message": (
-                "catalog_index是实际在售目录索引，不能从名称猜营养。"
+                "catalog_index仅含已选分类的实际在售商品，不能从名称猜营养。"
                 "offers才是本次查到完整营养原文的候选；"
                 "结合profile_context中的已确认饮食事实及本轮需求，"
                 "按目录里的实际名称继续查询需要的商品。"
@@ -105,11 +161,11 @@ async def find_conversation_packages(context, query, offset=0):
                 "purchase_eligible仅表示交易资格。"
             )
             if offers
-            else "该查询没有匹配的在售商品，可使用单个食材名称或空查询浏览；不要编造商品。",
+            else "所选分类中没有匹配的在售商品；可在已读分类中换类别或食材关键词，不要编造商品。",
         }
 
 
-async def select_conversation_products(context, items, empty_reason=""):
+async def select_conversation_products(context, items, empty_reason="", *, ready_to_answer=False):
     """仅从本次真实查询的规格中选择，沿用工具审计保存结果而不写订单。"""
     from yuxi.services.health_consultation_service import require_consultation, require_consultation_attempt
 
@@ -143,6 +199,7 @@ async def select_conversation_products(context, items, empty_reason=""):
         member = await require_shopping_member(session, binding)
         return {
             "selection_version": 1,
+            "ready_to_answer": ready_to_answer,
             "catalog_context_version": 1,
             "profile_context": dietary_profile_context(member),
             "offers": [{**offer, "recommendation_reason": reasons[offer["sku_id"]]} for offer in offers],
@@ -183,12 +240,13 @@ async def offers_for_answer(session, run, binding, content, *, publication=False
                 if isinstance(original, str):
                     short_receipts[hashlib.sha256(original.encode()).hexdigest()[:32]] = original
     member = await require_shopping_member(session, binding)
-    catalog = await current_catalog()
+    sources = [decode_offer(short_receipts.get(token, "") if len(token) == 32 else token) for token in tokens]
+    categories = sorted({source["category_code"] for source in sources if source.get("category_code")})
+    catalog = await current_catalog(category_codes=categories if all(s.get("category_code") for s in sources) else None)
     offers = []
-    for token in tokens:
+    for token, source in zip(tokens, sources):
         if len(token) == 32:
             token = short_receipts.get(token, "")
-        source = decode_offer(token)
         verify_offer_owner(source, run, binding)
         item = next(
             (item for item in catalog["items"] if str(item["sku_id"]) == source["sku_id"]),
@@ -196,10 +254,13 @@ async def offers_for_answer(session, run, binding, content, *, publication=False
         )
         display_valid = bool(
             item
-            and source["expires_at"] > time.time()
+            # 已完成消息中的回执是历史引用；每次展示、核价和下单仍重验当前来源。
+            # 新答复发布继续受查询回执的30分钟期限约束。
+            and (source["expires_at"] > time.time() or (run.status == "completed" and not publication))
             and source["profile_hash"] == input_fingerprint(member.profile)
             and source["composition_hash"] == composition_hash(item)
             and catalog_visible(item)
+            and (not source.get("category_code") or item.get("category_code") == source["category_code"])
             and (not source.get("description_hash") or source["description_hash"] == description_hash(item))
         )
         available = bool(

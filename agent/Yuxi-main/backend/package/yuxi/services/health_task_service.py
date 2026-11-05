@@ -142,6 +142,8 @@ async def create_health_task_entry(uid: str, member_id: str, data: HealthTaskEnt
             "safe_meal_revision": PLANNER_SLUG,
         }[chosen.task_type]
         selections = {}
+        if chosen.task_type == "reference_meal_preview" and chosen.root_thread_id is not None:
+            selections["root_thread_id"] = str(chosen.root_thread_id)
         if chosen.selection is not None:
             keyword = {
                 "initial_meal_preview": "initial_selection",
@@ -193,6 +195,10 @@ async def read_health_task_in_session(session, uid: str, request_id: str) -> Hea
         run_events_url=f"/api/agent/runs/{run.id}/events" if run else None,
         query_url=f"/api/health/v1/tasks/{request.request_id}",
     )
+    if request.agent_slug == CONSULTATION_SLUG:
+        from yuxi.services.health_chat_meal_service import chat_meal_receipts
+
+        response.recorded_meals = await chat_meal_receipts(session, uid, {"request_id": request_id})
     terminal = run.status if run else request.status
     error_codes = {
         "failed": "execution_failed",
@@ -232,7 +238,9 @@ async def read_health_task_in_session(session, uid: str, request_id: str) -> Hea
 
         answer, offers = await offers_for_answer(session, run, current_binding, message.content)
         response.result = HealthTaskGeneralAnswer(
-            answer=answer, citations=[citations[citation_id] for citation_id in ids], purchase_offers=offers
+            answer=answer,
+            citations=[citations[citation_id] for citation_id in ids],
+            purchase_offers=offers,
         )
         return response
 
@@ -254,6 +262,12 @@ async def read_health_task_in_session(session, uid: str, request_id: str) -> Hea
         }[run.agent_slug]
         if payload.get("result_type") == "meal_feedback":
             result_type = "meal_feedback"
+        if payload.get("status") == "reference_candidates" and payload.get("scope") == "cooking_reference":
+            result_type = "meal_plan_candidates"
+        if payload.get("scope") == "daily_reference" and payload.get("preview_id"):
+            from yuxi.services.reference_meal_plan_service import reference_plan_display
+
+            payload = await reference_plan_display(session, payload)
         response.result = HealthTaskValidatedResult(result_type=result_type, data=payload)
     return response
 

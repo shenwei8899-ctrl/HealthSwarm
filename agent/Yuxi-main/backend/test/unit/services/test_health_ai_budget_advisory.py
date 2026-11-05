@@ -48,7 +48,7 @@ async def test_advisory_missing_price_never_creates_fake_reservation(monkeypatch
 
     monkeypatch.setattr(budget.pg_manager, "get_async_session_context", Session)
     monkeypatch.setattr(budget, "HealthAiBudgetRepository", lambda _: repo)
-    assert (await budget.model_budget_readiness(None, model_info))["available"]
+    assert (await budget.model_budget_readiness(None, model_info, purpose="consultation"))["available"]
     reservation = await budget.reserve_model("consultation", "synthetic-run", model_info.spec)
     assert reservation.call_id is None and reservation.price is None
     assert reservation.model_info is model_info
@@ -61,7 +61,7 @@ async def test_strict_missing_price_still_refuses(monkeypatch, model_info):
     monkeypatch.delenv("HEALTH_AI_BUDGET_MODE", raising=False)
     repo = SimpleNamespace(now=AsyncMock(return_value=datetime(2026, 10, 26)), price=AsyncMock(return_value=None))
     monkeypatch.setattr(budget, "HealthAiBudgetRepository", lambda _: repo)
-    result = await budget.model_budget_readiness(None, model_info)
+    result = await budget.model_budget_readiness(None, model_info, purpose="consultation")
     assert not result["available"] and result["reason_code"] == "budget_price_unavailable"
 
 
@@ -69,7 +69,7 @@ async def test_strict_missing_price_still_refuses(monkeypatch, model_info):
 async def test_advisory_does_not_accept_missing_model_credentials(monkeypatch, model_info):
     monkeypatch.setenv("HEALTH_AI_BUDGET_MODE", "advisory")
     model_info.api_key = ""
-    assert not (await budget.model_budget_readiness(None, model_info))["available"]
+    assert not (await budget.model_budget_readiness(None, model_info, purpose="consultation"))["available"]
 
 
 def test_advisory_model_has_output_limit_and_no_sdk_retry(monkeypatch, model_info):
@@ -108,7 +108,8 @@ async def test_advisory_status_keeps_unknown_money_null_even_with_old_block(monk
     result = await budget.budget_status()
     assert result["mode"] == "advisory" and not result["blocked"]
     assert result["limit_cny"] is result["occupied_cny"] is result["remaining_cny"] is None
-    assert result["reference_budget_cny"] == "40"
+    assert result["reference_budget_cny"] is None
+    assert result["advisory_purposes"] == ["consultation", "indicator_review", "diet_analysis"]
 
 
 @pytest.mark.parametrize("value", ["", "false", "unlimited", "ADVISORY"])

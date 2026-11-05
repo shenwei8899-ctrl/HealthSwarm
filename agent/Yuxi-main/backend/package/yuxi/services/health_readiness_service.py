@@ -159,14 +159,14 @@ async def member_readiness(uid: str, member_id: str) -> HealthMemberReadiness:
                 from yuxi.services.health_vision_service import current_health_model_info
 
                 info = await current_health_model_info(session, configuration["consultation"]["model"])
-                budget = await model_budget_readiness(session, info)
+                budget = await model_budget_readiness(session, info, purpose="consultation")
                 if not budget["available"]:
                     entry.status = "unavailable"
                     entry.reason_code = "configuration_unavailable"
                     entry.configuration_reason_code = budget["reason_code"]
             entries.append(entry)
 
-        for kind, required_scopes in (("report", {"report_upload", "ai_use"}), ("meal", {"diet_edit", "ai_use"})):
+        for kind, required_scopes in (("report", {"report_upload"}), ("meal", {"diet_edit", "ai_use"})):
             entry = HealthEntryReadiness(entry_type=f"{kind}_photo", status="unavailable")
             authorized = required_scopes.issubset(scopes)
             if authorized:

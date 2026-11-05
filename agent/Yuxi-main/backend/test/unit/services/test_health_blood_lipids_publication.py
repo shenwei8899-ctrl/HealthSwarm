@@ -359,11 +359,13 @@ async def test_actual_graph_binds_and_executes_fixed_blood_lipids_tool(monkeypat
     )
     read.assert_awaited_once_with(context)
     assert tool_lists and all("get_member_blood_lipids_records" in tools for tools in tool_lists)
-    assert all(
-        set(tools) == (set(health_consultation_service.HEALTH_TOOL_NAMES) | {"finalize_health_answer"})
-        for tools in tool_lists
-    )
-    assert system_prompts and all('version: "2026.10.28.1"' in prompt for prompt in system_prompts)
+    # 未读取分类时，真实目录中间件暂不向模型开放查询和选择工具。
+    expected_tools = (set(health_consultation_service.HEALTH_TOOL_NAMES) | {"finalize_health_answer"}) - {
+        "find_food_packages",
+        "select_food_products",
+    }
+    assert all(set(tools) == expected_tools for tools in tool_lists)
+    assert system_prompts and all('version: "2026.11.06.1"' in prompt for prompt in system_prompts)
     tool_result = next(message for message in result["messages"] if message.type == "tool")
     assert tool_result.name == "get_member_blood_lipids_records"
     assert json.loads(tool_result.content) == read.return_value

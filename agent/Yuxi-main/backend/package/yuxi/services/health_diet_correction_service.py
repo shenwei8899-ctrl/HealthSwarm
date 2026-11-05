@@ -8,8 +8,10 @@ from yuxi.repositories.health_diet_correction_repository import HealthDietCorrec
 from yuxi.repositories.health_diet_analysis_repository import HealthDietAnalysisRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
 from yuxi.repositories.health_source_repository import HealthSourceRepository
+from yuxi.repositories.health_meal_source_repository import HealthMealSourceRepository
 from yuxi.services.health_source_types import nutrition_source_references
 from yuxi.services.health_diet_analysis_service import analyze_confirmed_meal
+from yuxi.services.health_meal_source_service import meal_source_inputs
 from yuxi.services.health_nutrition_service import CALCULATION_VERSION, calculate_nutrition, input_fingerprint
 from yuxi.services.health_vision_types import HealthVisionError, MealPayload
 from yuxi.storage.postgres.manager import pg_manager
@@ -37,7 +39,11 @@ async def correct_diet_log(uid, record_id, data):
         draft = await HealthVisionRepository(session).draft(confirmation.draft_id, uid, "meal")
         payload = data.meal.model_dump(mode="json")
         _validate_evidence(payload, draft.original_payload)
-        nutrition = calculate_nutrition(data.meal, *await repo.nutrition_inputs(data.meal))
+        nutrition = calculate_nutrition(
+            data.meal,
+            *await repo.nutrition_inputs(data.meal),
+            references=await meal_source_inputs(session, uid, data.meal, lock=True),
+        )
         await HealthSourceRepository(session).require_current_sources(nutrition_source_references(nutrition["sources"]))
         if not nutrition["complete"] and not data.accept_incomplete:
             raise HealthVisionError("nutrition_incomplete", "营养数据不完整；请补充或明确接受不完整日记")
@@ -108,6 +114,10 @@ async def diet_log_revisions(uid, record_id):
         record = await repo.record(uid, record_id, lock=True)
         record, confirmation = await HealthDietAnalysisRepository(session).source(uid, record.member_id, record_id)
         revisions = await repo.revisions(record_id)
+        for revision in revisions:
+            await HealthMealSourceRepository(session).require_snapshot_access(
+                uid, revision.snapshot.get("nutrition", {}).get("sources", []), meal=revision.snapshot.get("meal")
+            )
         return {
             "id": record.id,
             "source_version": record.version or confirmation.draft_version,

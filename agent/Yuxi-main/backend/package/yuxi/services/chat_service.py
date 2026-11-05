@@ -46,7 +46,7 @@ from yuxi.repositories.tool_message_audit_repository import ToolMessageAuditRepo
 from yuxi.services.agent_run_manifest_service import PreparedRunExecution
 from yuxi.services.attachment_service import serialize_attachment
 from yuxi.services.input_message_service import AgentRunInputMessage
-from yuxi.services.health_answer_stream import TrustedHealthFinalAnswerStream
+from yuxi.services.health_answer_stream import TrustedHealthFinalAnswerStream, health_catalog_tool_phase
 from yuxi.services.langfuse_service import (
     LangfuseRunContext,
     build_run_context,
@@ -1276,6 +1276,8 @@ async def stream_agent_chat(
                         and _is_root_tool_audit_event(event_payload, thread_id)
                     ):
                         await tool_audit.consume(event_payload)
+                        if withhold_health_output and (phase := health_catalog_tool_phase(event_payload)):
+                            yield make_chunk(status="health_progress", phase=phase, meta=meta)
                     if withhold_health_output:
                         continue
                     yield make_chunk(
@@ -1573,6 +1575,8 @@ async def stream_agent_resume(
                         and _is_root_tool_audit_event(event_payload, thread_id)
                     ):
                         await tool_audit.consume(event_payload)
+                        if withhold_health_output and (phase := health_catalog_tool_phase(event_payload)):
+                            yield make_resume_chunk(status="health_progress", phase=phase, meta=meta)
                     if withhold_health_output:
                         continue
                     yield make_resume_chunk(

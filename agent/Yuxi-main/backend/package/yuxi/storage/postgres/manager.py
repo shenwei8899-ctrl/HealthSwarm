@@ -23,9 +23,9 @@ from yuxi.utils import logger
 from yuxi.utils.singleton import SingletonMeta
 
 AGENT_RUN_TERMINAL_STATUS_SQL = ", ".join(f"'{status}'" for status in AGENT_RUN_TERMINAL_STATUSES)
-BUSINESS_SCHEMA_VERSION = 14
+BUSINESS_SCHEMA_VERSION = 15
 KNOWLEDGE_SCHEMA_VERSION = 2
-HEALTH_SCHEMA_VERSION = 33
+HEALTH_SCHEMA_VERSION = 35
 SCHEMA_VERSION_TABLE = "yuxi_schema_migrations"
 AGENT_RUN_LEASE_SCHEMA_STATEMENTS = (
     "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS worker_id VARCHAR(128)",
@@ -632,6 +632,21 @@ class PostgresManager(metaclass=SingletonMeta):
                 ON CONFLICT (actor_uid, member_id, plan_date) DO NOTHING
             """)
             )
+
+    async def remove_health_ai_monthly_limit(self):
+        """幂等替换旧40元检查，保留非负约束和现有账本。"""
+        self._check_initialized()
+        async with self.async_engine.begin() as conn:
+            for table, old_name, new_name in (
+                ("health_ai_month", "ck_health_ai_month_limit", "ck_health_ai_month_nonnegative"),
+                ("health_ai_opening", "ck_health_ai_opening_amount", "ck_health_ai_opening_amount"),
+            ):
+                await conn.execute(text(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {old_name}"))
+                if new_name != old_name:
+                    await conn.execute(text(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {new_name}"))
+                await conn.execute(
+                    text(f"ALTER TABLE {table} ADD CONSTRAINT {new_name} CHECK (occupied_cny >= 0)")
+                )
 
     async def upgrade_knowledge_schema_v1_to_v2(self) -> None:
         """为知识文件处理中间态增加 Durable Task attempt owner。"""

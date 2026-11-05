@@ -30,6 +30,7 @@ test('rendered reference cards wire their detail event to the corresponding sele
  assert.ok(menu)
  assert.equal(directive(menu,'on','detail'),'openDailyMeal($event,todayPlan.date)')
  assert.equal(directive(menu,'on','plan'),'acceptTodayPlan')
+ assert.equal(directive(menu,'bind','read-only'),undefined)
 })
 
 test('chat and today menu send their own plan to the shared all-meal purchase handler',()=>{

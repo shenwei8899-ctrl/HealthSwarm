@@ -180,4 +180,8 @@ def miniapp_profile_complete(member):
 
 def miniapp_onboarding_ready(member, family):
     """保留建档完成标记，咨询自动衔接只使用完整的服务端档案。"""
-    return miniapp_profile_complete(member) and member.confirmed_version == member.version
+    return (
+        miniapp_profile_complete(member)
+        and member.confirmed_version == member.version
+        and not getattr(member, "invitation_review_pending", False)
+    )

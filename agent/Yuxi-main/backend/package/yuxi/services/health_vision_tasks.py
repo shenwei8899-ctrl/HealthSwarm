@@ -11,6 +11,7 @@ from yuxi.config.options import health_vision_opts
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
 from yuxi.services.health_vision_provider import (
     call_json_model,
+    extract_report_checkbox_fields,
     parse_report_page,
     recognize_meal,
     redact_report_blocks,
@@ -44,7 +45,8 @@ async def check_job_access(session, job, *, expected_ocr_kwargs=None):
     member = await repo.authorize(
         job.member_id, job.actor_uid, "report_upload" if job.kind == "report" else "diet_edit", lock=True
     )
-    await repo.authorize(job.member_id, job.actor_uid, "ai_use")
+    if job.kind != "report":
+        await repo.authorize(job.member_id, job.actor_uid, "ai_use")
     await repo.require_consent(job.member_id, job.actor_uid, job.kind, job.input_snapshot)
     if job.kind == "meal" and job.input_snapshot.get("prompt_version") != MEAL_PROMPT_VERSION:
         raise HealthVisionError("policy_changed", "饮食提示词已变化，请重新创建任务", 409)
@@ -209,18 +211,22 @@ async def run_health_vision(context):
                     )
                     parsed_pages.append({"page_index": index, **parsed})
                     safe_blocks = redact_report_blocks(parsed["blocks"], member_name)
-                    await authorize_external_call()
-                    token_usages.append(None)
-                    response, metadata = await call_json_model(
-                        snapshot["model"],
-                        prompt,
-                        [{"type": "text", "text": json.dumps(safe_blocks, ensure_ascii=False)}],
-                        context,
-                        authorize=authorize_external_call,
-                    )
-                    usages.append(metadata)
-                    token_usages[-1] = metadata.get("usage")
-                    page_fields = verify_report_fields(response.get("fields"), safe_blocks)
+                    page_fields = extract_report_checkbox_fields(parsed["blocks"])
+                    if safe_blocks:
+                        await authorize_external_call()
+                        token_usages.append(None)
+                        response, metadata = await call_json_model(
+                            snapshot["model"],
+                            prompt,
+                            [{"type": "text", "text": json.dumps(safe_blocks, ensure_ascii=False)}],
+                            context,
+                            authorize=authorize_external_call,
+                        )
+                        usages.append(metadata)
+                        token_usages[-1] = metadata.get("usage")
+                        page_fields.extend(verify_report_fields(response.get("fields"), safe_blocks))
+                    if not page_fields:
+                        raise HealthVisionError("parser_contract_invalid", "未找到可核对的报告指标或勾选结果")
                 except HealthVisionError as error:
                     # 只吸收可复核的页级失败；授权、取消和 lease 仍必须终止整份任务。
                     if error.code not in get_args(ReportPageErrorCode):
@@ -238,7 +244,7 @@ async def run_health_vision(context):
                 raise HealthVisionError(failed_pages[0]["error_code"], "所有报告页均未识别成功，请重试或人工录入", 503)
             payload = ReportPayload(fields=fields).model_dump(mode="json")
             raw_result = {"pages": parsed_pages, "usages": usages, "failed_pages": failed_pages}
-            parser_version, model_version = "PaddleOCR-VL-1.6", usages[-1]["model"]
+            parser_version, model_version = "PaddleOCR-VL-1.6", usages[-1]["model"] if usages else None
         await context.raise_if_cancelled()
 
         async def register_result_key(session, _task):
@@ -285,6 +291,10 @@ async def finish_health_vision(session, task_record, result):
     # 复核页面坐标与上传的同一份处理页绑定，内部对象键不暴露。
     if job.kind == "report":
         payload = {**payload, "pages": pages}
+    else:
+        for item in payload["items"]:
+            if estimate := item.get("photo_estimate"):
+                estimate["draft_id"] = result["result_id"]
     raw_key = result.pop("_raw_result_key")
     parser_version, model_version = result.pop("_parser_version"), result.pop("_model_version")
     if reprocess := job.input_snapshot.get("reprocess"):
@@ -374,8 +384,10 @@ async def fail_health_vision(session, task_record, error: str):
             "provider_unavailable",
             "provider_timeout",
             "provider_failed",
+            "provider_quota_exhausted",
             "provider_job_unavailable",
             "model_schema_invalid",
+            "file_too_large",
             "parser_contract_invalid",
             "evidence_invalid",
             "source_invalidated",

@@ -30,3 +30,36 @@ export function isReferencePlan(value) {
     value.professional_status === 'not_reviewed' && value.nutrition_status === 'not_calculated' &&
     typeof value.preview_id === 'string' && Array.isArray(value.meals) && value.meals.length > 0
 }
+
+export function isMealPlanCandidates(value) {
+  const text = item => typeof item === 'string' && item.trim().length > 0
+  const strings = items => Array.isArray(items) && items.length > 0 && items.every(text)
+  const sameSet = (left,right) => left.length === right.length && new Set(left).size === left.length && left.every(item => right.includes(item))
+  if (value?.status !== 'reference_candidates' || value.scope !== 'cooking_reference' ||
+      ['result_type','preview_id','plan_id','purchase_ready'].some(key => Object.hasOwn(value,key)) ||
+      value.approved === true || ['approved','reviewed','ready'].includes(value.professional_status) ||
+      ['approved','reviewed','ready'].includes(value.approval_status) || ['approved','ready'].includes(value.purchase_status) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(value.plan_date || '') ||
+      value.purchase_allowed !== false || !Array.isArray(value.purchase_items) || value.purchase_items.length ||
+      !text(value.notice) || !strings(value.unresolved_materials) || !Array.isArray(value.members) || !value.members.length ||
+      !Array.isArray(value.meals) || !value.meals.length) return false
+  const selection = value.selection, verification = value.restriction_verification
+  if (selection?.mode !== 'reference' || !text(selection.family_id) || selection.plan_date !== value.plan_date ||
+      !strings(selection.participant_ids) || !strings(selection.meal_types) ||
+      selection.meal_types.some(type => !['breakfast','lunch','dinner'].includes(type)) ||
+      !value.members.every(member => text(member?.id) && text(member.name)) ||
+      !sameSet(value.members.map(member => member.id),selection.participant_ids) ||
+      !sameSet(value.meals.map(meal => meal?.meal_type),selection.meal_types) ||
+      verification?.status !== 'unresolved' || !Array.isArray(verification.restrictions) ||
+      !verification.restrictions.every(item => selection.participant_ids.includes(item?.member_id) && text(item.field) && text(item.text)) ||
+      verification.notice != null && !text(verification.notice)) return false
+  if (!value.meals.every(meal => Array.isArray(meal.dishes) && meal.dishes.length > 0 && meal.dishes.every(dish =>
+      text(dish?.id) && text(dish.name) && strings(dish.ingredients) && strings(dish.steps) &&
+      dish.source?.kind === 'source_based_notes' && text(dish.source.title) &&
+      /^https:\/\/[^\s]+$/.test(dish.source.url || '') && /^[a-f0-9]{64}$/i.test(dish.source.content_hash || '')))) return false
+  const dishIds = value.meals.flatMap(meal => meal.dishes.map(dish => dish.id))
+  if (new Set(dishIds).size !== dishIds.length) return false
+  return Array.isArray(value.candidate_selection) && sameSet(value.candidate_selection.map(item => item?.meal_type),selection.meal_types) &&
+    value.candidate_selection.every(item => strings(item.candidate_ids) &&
+      sameSet(item.candidate_ids,value.meals.find(meal => meal.meal_type === item.meal_type).dishes.map(dish => dish.id)))
+}

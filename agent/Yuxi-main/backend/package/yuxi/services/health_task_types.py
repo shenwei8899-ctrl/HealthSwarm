@@ -77,6 +77,7 @@ class ReferenceTaskEntry(HealthDTO):
     task_type: Literal["reference_meal_preview"]
     client_request_id: UUID
     selection: ReferenceSelection | None = None
+    root_thread_id: UUID | None = None
 
 
 class FamilyTaskEntry(HealthDTO):
@@ -191,7 +192,12 @@ class HealthTaskValidatedResult(HealthDTO):
     """当前业务服务复核的快照，专业批准由业务快照另行表达。"""
 
     result_type: Literal[
-        "meal_plan_preview", "diet_analysis", "meal_feedback", "quality_check", "ingredient_requirements"
+        "meal_plan_preview",
+        "meal_plan_candidates",
+        "diet_analysis",
+        "meal_feedback",
+        "quality_check",
+        "ingredient_requirements",
     ]
     validation: Literal["current_business_sources"] = "current_business_sources"
     data: dict[str, JsonValue]
@@ -229,6 +235,7 @@ class HealthTaskResult(HealthDTO):
     request_events_url: str | None = None
     run_events_url: str | None = None
     query_url: str
+    recorded_meals: list[dict[str, JsonValue]] = Field(default_factory=list)
     result: (
         Annotated[
             HealthTaskNeedsInput | HealthTaskGeneralAnswer | HealthTaskValidatedResult | HealthTaskError,

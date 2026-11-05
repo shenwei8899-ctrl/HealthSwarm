@@ -17,7 +17,7 @@ class HealthAiOpening(Base):
     approved_by = Column(String, nullable=False)
     __table_args__ = (
         CheckConstraint("id = 1", name="ck_health_ai_opening_singleton"),
-        CheckConstraint("occupied_cny >= 0 AND occupied_cny <= 40", name="ck_health_ai_opening_amount"),
+        CheckConstraint("occupied_cny >= 0", name="ck_health_ai_opening_amount"),
     )
 
 
@@ -42,7 +42,7 @@ class HealthAiMonth(Base):
     month = Column(Date, primary_key=True)
     occupied_cny = Column(Numeric(18, 6), nullable=False, default=0)
     blocked = Column(Boolean, nullable=False, default=False)
-    __table_args__ = (CheckConstraint("occupied_cny >= 0 AND occupied_cny <= 40", name="ck_health_ai_month_limit"),)
+    __table_args__ = (CheckConstraint("occupied_cny >= 0", name="ck_health_ai_month_nonnegative"),)
 
 
 class HealthAiCall(Base):

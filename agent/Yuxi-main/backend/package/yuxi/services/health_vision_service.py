@@ -14,8 +14,10 @@ from yuxi.models.providers.cache import ModelInfo, model_cache
 from yuxi.models.providers import repository as provider_repository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
 from yuxi.repositories.health_source_repository import HealthSourceRepository
+from yuxi.repositories.health_meal_source_repository import HealthMealSourceRepository
 from yuxi.services.health_source_types import nutrition_source_references
 from yuxi.services.health_media_service import prepare_upload
+from yuxi.services.health_meal_source_service import meal_source_inputs, search_meal_sources, validate_photo_estimates
 from yuxi.services.health_nutrition_service import (
     CALCULATION_VERSION,
     calculate_nutrition,
@@ -58,7 +60,6 @@ from yuxi.storage.postgres.models_health import (
 from yuxi.utils.datetime_utils import format_utc_datetime, utc_now_naive
 
 PRIVATE_BUCKET = "health-private"
-MEAL_MODEL_ID = "qwen3-vl-flash-2026-01-22"
 
 
 async def current_health_model_info(session, spec):
@@ -166,9 +167,6 @@ class HealthVisionService:
             elif info is None or not info.api_key:
                 reason = "请先配置并启用模型供应商及识别模型"
                 reason_code = "model_unavailable"
-            elif kind == "meal" and info.model_id != MEAL_MODEL_ID:
-                reason = f"饮食模型须使用已冻结版本 {MEAL_MODEL_ID}"
-                reason_code = "meal_model_version_required"
             ocr_kwargs = {}
             if kind == "report":
                 try:
@@ -184,6 +182,16 @@ class HealthVisionService:
             if reason is None and values.get(f"approved_{kind}_processor") != processor:
                 reason = "供应商端点或请求配置已变化，请重新审批服务配置并取得用途同意"
                 reason_code = "processor_approval_changed"
+            if reason is None and kind == "meal":
+                from yuxi.services.health_ai_budget_service import model_budget_readiness
+
+                readiness = await model_budget_readiness(session, info, purpose="meal")
+                reason, reason_code = readiness["reason"], readiness["reason_code"]
+            if reason is None and kind == "report":
+                from yuxi.services.health_ai_budget_service import report_budget_readiness
+
+                readiness = await report_budget_readiness(session, info, ocr_kwargs)
+                reason, reason_code = readiness["reason"], readiness["reason_code"]
             result[kind] = {
                 "available": reason is None,
                 "reason": reason,
@@ -221,8 +229,6 @@ class HealthVisionService:
                 or info.provider_type not in {"openai", "openrouter"}
             ):
                 raise HealthVisionError("model_not_configured", "请选择已配置凭据的兼容模型")
-            if kind == "meal" and info.model_id != MEAL_MODEL_ID:
-                raise HealthVisionError("model_version_required", f"饮食模型须为 {MEAL_MODEL_ID}")
             if any(alias in info.model_id.lower() for alias in ("latest", "preview")):
                 raise HealthVisionError("model_version_required", "请使用经验证的固定版本，而非浮动别名")
             ocr_kwargs = {}
@@ -255,16 +261,17 @@ class HealthVisionService:
     async def members(self, uid: str):
         """读取当前账号已授权成员。"""
         async with pg_manager.get_async_session_context() as session:
-            records = await HealthVisionRepository(session).list_members(uid)
+            repo = HealthVisionRepository(session)
+            records = await repo.list_member_access(uid)
             return [
                 {
                     "id": item.id,
                     "display_name": item.display_name,
                     "relationship_label": item.relationship_label,
                     "is_owner": item.owner_uid == uid,
-                    "scopes": (await session.get(HealthGrant, (item.id, uid))).scopes,
+                    "scopes": sorted(scopes),
                 }
-                for item in records
+                for item, scopes in records
             ]
 
     async def create_member(self, uid: str, data):
@@ -301,6 +308,41 @@ class HealthVisionService:
                 )
         return {"saved": True}
 
+    async def consent_status(self, uid: str, member_id: str, purpose: str):
+        """按服务端当前配置读取本人有效授权，照片不参与授权身份。"""
+        async with pg_manager.get_async_session_context() as session:
+            repo = HealthVisionRepository(session)
+            await repo.authorize(member_id, uid, "report_upload" if purpose == "report" else "ai_use")
+            config = await self.configuration(session)
+            record = await repo.processing_consent(member_id, uid, purpose)
+            processor = config[purpose]["processor"]
+            accepted = bool(
+                record is not None
+                and record.revoked_at is None
+                and record.processor == processor
+                and record.policy_version == config["policy_version"]
+            )
+            return {
+                "purpose": purpose,
+                "accepted": accepted,
+                "processor": processor,
+                "policy_version": config["policy_version"],
+            }
+
+    async def preview_nutrition(self, uid: str, member_id: str, meal: MealPayload):
+        """仅预览确定性营养，不写草稿、计算收据或正式饮食记录。"""
+        async with pg_manager.get_async_session_context() as session:
+            repo = HealthVisionRepository(session)
+            await repo.authorize(member_id, uid, "diet_edit")
+            foods, recipes, portions = await repo.nutrition_inputs(meal)
+            result = calculate_nutrition(
+                meal, foods, recipes, portions, references=await meal_source_inputs(session, uid, meal)
+            )
+            await HealthSourceRepository(session).require_current_sources(
+                nutrition_source_references(result["sources"])
+            )
+            return {"member_id": member_id, "input_hash": input_fingerprint(meal.model_dump(mode="json")), **result}
+
     async def consent(self, uid: str, member_id: str, data):
         """用途同意和访问授权分开，不把上传视为同意。"""
         config = await self.configuration()
@@ -311,7 +353,9 @@ class HealthVisionService:
         ):
             raise HealthVisionError("policy_changed", "处理配置未就绪或已变化，请刷新", 409)
         async with pg_manager.get_async_session_context() as session:
-            await HealthVisionRepository(session).authorize(member_id, uid, "ai_use", lock=True)
+            await HealthVisionRepository(session).authorize(
+                member_id, uid, "report_upload" if data.purpose == "report" else "ai_use", lock=True
+            )
             record = await session.get(HealthProcessingConsent, (member_id, uid, data.purpose))
             if record is None:
                 record = HealthProcessingConsent(member_id=member_id, actor_uid=uid, purpose=data.purpose)
@@ -427,7 +471,8 @@ class HealthVisionService:
                     raise HealthVisionError("reprocess_conflict", "该草稿已有重识别任务，请等待任务结束", 409)
             if not config[kind]["available"]:
                 raise HealthVisionError("provider_not_configured", config[kind]["reason"], 503)
-            await repo.authorize(member_id, uid, "ai_use")
+            if kind != "report":
+                await repo.authorize(member_id, uid, "ai_use")
             snapshot = {
                 "model": config[kind]["model"],
                 "processor": config[kind]["processor"],
@@ -631,6 +676,8 @@ class HealthVisionService:
             await HealthVisionRepository(session).authorize(
                 member_id, uid, "profile_edit" if data.kind == "report" else "diet_edit", lock=True
             )
+            if data.kind == "meal":
+                await validate_photo_estimates(session, uid, data.meal, lock=True)
             draft = VisionDraft(
                 id=draft_id,
                 member_id=member_id,
@@ -647,7 +694,10 @@ class HealthVisionService:
     async def get_draft(self, uid: str, draft_id: str, kind: str):
         """读当前候选与其版本。"""
         async with pg_manager.get_async_session_context() as session:
-            return serialize_draft(await HealthVisionRepository(session).draft(draft_id, uid, kind))
+            draft = await HealthVisionRepository(session).draft(draft_id, uid, kind)
+            if kind == "meal" and any(item.get("photo_estimate") for item in draft.payload.get("items", [])):
+                await validate_photo_estimates(session, uid, MealPayload.model_validate(draft.payload))
+            return serialize_draft(draft)
 
     async def patch_draft(self, uid: str, draft_id: str, kind: str, data):
         """人工修订保留抽取证据，版本变化使旧计算失效。"""
@@ -674,6 +724,7 @@ class HealthVisionService:
                     if field["source"] == "ocr" and (source is None or field["evidence"] != source["evidence"]):
                         raise HealthVisionError("evidence_invalid", "原文证据不可修改或伪造")
             else:
+                await validate_photo_estimates(session, uid, data.meal, lock=True)
                 original = MealPayload.model_validate(draft.original_payload).model_dump(mode="json")
                 if payload["photos"] != original["photos"]:
                     raise HealthVisionError("evidence_invalid", "照片来源不可修改或伪造")
@@ -701,25 +752,10 @@ class HealthVisionService:
             draft = await HealthVisionRepository(session).draft(draft_id, uid, "meal", write=True)
             require_editable(draft, version)
             payload = MealPayload.model_validate(draft.payload)
-            ids = {str(item.food_id) for item in payload.items if item.food_id}
-            ids.update(str(entry.food_id) for item in payload.items for entry in item.adjustments)
-            foods = {
-                item.id: item
-                for item in (await session.scalars(select(FoodRecord).where(FoodRecord.id.in_(ids)))).all()
-            }
-            recipe_ids = {str(item.recipe_version_id) for item in payload.items if item.recipe_version_id}
-            portion_ids = {str(item.portion_reference_id) for item in payload.items if item.portion_reference_id}
-            recipes = {
-                item.id: item
-                for item in (await session.scalars(select(RecipeVersion).where(RecipeVersion.id.in_(recipe_ids)))).all()
-            }
-            portions = {
-                item.id: item
-                for item in (
-                    await session.scalars(select(PortionReference).where(PortionReference.id.in_(portion_ids)))
-                ).all()
-            }
-            result = calculate_nutrition(payload, foods, recipes, portions)
+            foods, recipes, portions = await HealthVisionRepository(session).nutrition_inputs(payload)
+            result = calculate_nutrition(
+                payload, foods, recipes, portions, references=await meal_source_inputs(session, uid, payload, lock=True)
+            )
             await HealthSourceRepository(session).require_current_sources(
                 nutrition_source_references(result["sources"])
             )
@@ -805,6 +841,7 @@ class HealthVisionService:
                 await HealthSourceRepository(session).require_current_sources(
                     nutrition_source_references(calculation.result["sources"])
                 )
+                await meal_source_inputs(session, uid, MealPayload.model_validate(draft.payload), lock=True)
                 target_id = str(uuid4())
                 targets.append(target_id)
                 session.add(
@@ -839,6 +876,21 @@ class HealthVisionService:
                 "records": await self._visible_records(session, repo, uid, rows[:limit], "meal"),
                 "next_offset": offset + limit if len(rows) > limit else None,
             }
+
+    async def meal_sources(self, uid: str, member_id: str, query: str):
+        """记餐来源复用既有发布目录和有权读取的营养资料。"""
+        async with pg_manager.get_async_session_context() as session:
+            repo = HealthVisionRepository(session)
+            await repo.authorize(member_id, uid, "diet_edit")
+            foods = [
+                {**self.serialize_food(row), "type": "food", "basis": "per100g", "basis_label": "100 克可食部"}
+                for row in await repo.foods(query)
+            ]
+            recipes = [
+                {**self._serialize_recipe(row), "type": "recipe", "basis": "per100g", "basis_label": "100 克成品"}
+                for row in await repo.recipes(query)
+            ]
+            return foods + recipes + await search_meal_sources(session, uid, query)
 
     async def foods(self, query: str):
         """提供已发布食品供人工映射。"""
@@ -1048,10 +1100,14 @@ class HealthVisionService:
         """人工草稿可见；识图草稿仍须保留当前有效源。"""
         result = []
         for draft in rows:
+            if draft.review_status == "withdrawn":
+                continue
             try:
                 await repo.authorize(draft.member_id, uid, "report_view" if draft.kind == "report" else "diet_edit")
                 if draft.job_id:
                     await repo.active_uploads(await session.get(VisionJob, draft.job_id))
+                if draft.kind == "meal" and any(item.get("photo_estimate") for item in draft.payload.get("items", [])):
+                    await validate_photo_estimates(session, uid, MealPayload.model_validate(draft.payload))
             except HealthVisionError:
                 continue
             result.append(serialize_draft(draft))
@@ -1063,7 +1119,13 @@ class HealthVisionService:
         for record in rows:
             confirmation = await session.get(VisionConfirmation, record.confirmation_id)
             try:
-                await repo.draft(confirmation.draft_id, uid, kind)
+                draft = await repo.draft(confirmation.draft_id, uid, kind)
+                if draft.review_status != "confirmed":
+                    continue
+                if kind == "meal":
+                    await HealthMealSourceRepository(session).require_snapshot_access(
+                        uid, record.snapshot.get("nutrition", {}).get("sources", []), meal=record.snapshot.get("meal")
+                    )
             except HealthVisionError:
                 continue
             item = {

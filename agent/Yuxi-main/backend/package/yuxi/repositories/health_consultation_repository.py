@@ -1,6 +1,6 @@
 """健康咨询的会话身份及当前执行所有权查询。"""
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, func, or_, select, text
 
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
 from yuxi.services.health_vision_types import HealthVisionError
@@ -79,6 +79,53 @@ class HealthConsultationRepository:
         )
         return result.all()
 
+    async def conversation_threads(self, uid, root_thread_ids, *, extra_thread_ids=()):
+        """只返回本人有效主咨询及其已绑定任务，不把本地指针当作归属。"""
+        result = await self.session.execute(
+            select(Conversation, HealthConsultation)
+            .join(HealthConsultation, HealthConsultation.conversation_id == Conversation.id)
+            .join(Project, Project.id == Conversation.project_id)
+            .where(
+                Conversation.uid == uid,
+                HealthConsultation.actor_uid == uid,
+                Conversation.status == "active",
+                Project.uid == uid,
+                Project.status == "active",
+                or_(
+                    and_(Conversation.thread_id.in_(root_thread_ids), Conversation.agent_id == CONSULTATION_SLUG),
+                    and_(
+                        Conversation.extra_metadata["health_conversation_root"].as_string().in_(root_thread_ids),
+                        Conversation.agent_id == PLANNER_SLUG,
+                    ),
+                    and_(Conversation.thread_id.in_(extra_thread_ids), Conversation.agent_id == PLANNER_SLUG),
+                ),
+            )
+            .order_by(Conversation.created_at, Conversation.id)
+        )
+        return result.all()
+
+    async def first_questions(self, conversation_ids):
+        """每个线程只投影第一条用户输入的短文本，不加载正文、附件或模型审计。"""
+        first = (
+            select(
+                Message.conversation_id,
+                func.substr(Message.content, 1, 1024).label("content"),
+                Message.image_content.is_not(None).label("has_image"),
+                Message.created_at,
+                Message.id,
+                func.row_number()
+                .over(partition_by=Message.conversation_id, order_by=(Message.created_at, Message.id))
+                .label("position"),
+            )
+            .where(
+                Message.conversation_id.in_(conversation_ids),
+                Message.role == "user",
+                or_(func.trim(Message.content) != "", Message.image_content.is_not(None)),
+            )
+            .subquery()
+        )
+        return (await self.session.execute(select(first).where(first.c.position == 1))).mappings().all()
+
     async def lock_request(self, uid, request_id):
         """同账号同幂等键串行创建，跨成员重放也共享锁。"""
         await self.session.execute(
@@ -134,7 +181,9 @@ class HealthConsultationRepository:
             raise HealthVisionError("consent_required", "请先同意当前咨询用途", 403)
         return consent
 
-    async def authorize(self, uid, thread_id, *, lock=False, preview_history=False):
+    async def authorize(
+        self, uid, thread_id, *, lock=False, preview_history=False, allow_stale_reference_results=False
+    ):
         """逐次验证会话、项目、账号及成员 grant，成员锁与撤回排序。"""
         binding = await self.session.scalar(
             select(HealthConsultation)
@@ -237,7 +286,9 @@ class HealthConsultationRepository:
                 if preview_history:
                     from yuxi.services.reference_meal_plan_service import validate_reference_history
 
-                    await validate_reference_history(self.session, binding)
+                    await validate_reference_history(
+                        self.session, binding, allow_stale_results=allow_stale_reference_results
+                    )
             else:
                 await authorize_initial_planner_binding(self.session, binding)
             return binding
@@ -309,11 +360,10 @@ class HealthConsultationRepository:
                     }
                 ):
                     scopes += ("profile_view",)
-        if conversation.agent_id in EDUCATION_HEALTH_AGENTS:
-            await self.require_active_consultation_consent(binding.member_id, uid)
         for scope in dict.fromkeys(scopes):
             await health_repo.authorize(binding.member_id, uid, scope)
         if conversation.agent_id in EDUCATION_HEALTH_AGENTS:
+            await self.require_active_consultation_consent(binding.member_id, uid)
             from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
             from yuxi.repositories.health_weight_repository import HealthWeightRepository
             from yuxi.repositories.health_blood_pressure_repository import HealthBloodPressureRepository

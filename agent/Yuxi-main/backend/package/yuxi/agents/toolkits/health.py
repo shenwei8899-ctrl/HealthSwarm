@@ -10,6 +10,7 @@ from pydantic import Field, field_validator
 from yuxi.agents.toolkits.registry import tool
 from yuxi.services.health_vision_types import HealthDTO
 from yuxi.services.health_memory_types import MemoryKind
+from yuxi.services.health_chat_meal_types import ChatMealFood, ChatMealStatement
 
 
 class HealthReadInput(HealthDTO):
@@ -88,19 +89,60 @@ class HealthKnowledgeInput(HealthReadInput):
     query: str = Field(min_length=1, max_length=120, description="营养科普短关键词，不传入成员身份或病历正文")
 
 
-class FoodPackageQuery(HealthReadInput):
-    """查询商城商品名称或分页浏览；身份与健康资料不作为检索参数。"""
+class HealthChatMealInput(HealthReadInput, ChatMealStatement):
+    """只允许原文事实；身份、时间与写入权限在服务端核对。"""
 
-    query: str = Field(default="", max_length=80, description="单个商品或食材名称；空字符串浏览目录，不填写病历或身份")
+
+@tool(category="health", display_name="记录实际吃过的一餐", args_schema=HealthChatMealInput)
+async def record_actual_meal(
+    source_quotes: list[str],
+    meal_type: str,
+    items: list[ChatMealFood],
+    runtime: ToolRuntime,
+    subject: str = "我",
+    day_text: str = "",
+    intake_quote: str = "",
+) -> dict:
+    """已吃事实及成员、餐次明确时自动保存；无需再次确认，份量可未知。缺信息先追问，计划/推荐/问句不保存。"""
+    from yuxi.services.health_chat_meal_service import record_chat_meal
+
+    statement = ChatMealStatement.model_validate(
+        {
+            "source_quotes": source_quotes,
+            "meal_type": meal_type,
+            "items": items,
+            "subject": subject,
+            "day_text": day_text,
+            "intake_quote": intake_quote,
+        }
+    )
+    return await record_chat_meal(runtime.context, statement)
+
+
+@tool(category="health", display_name="读取本人饮食事实与商城分类", args_schema=HealthReadInput)
+async def get_food_categories(runtime: ToolRuntime) -> dict:
+    """仅返回本人已确认饮食事实和商城有货分类，不展开商品。"""
+    from yuxi.services.conversation_purchase_service import get_conversation_categories
+
+    return await get_conversation_categories(runtime.context)
+
+
+class FoodPackageQuery(HealthReadInput):
+    """只查询已读取的商城分类；身份与健康资料不作为检索参数。"""
+
+    category_codes: list[str] = Field(
+        min_length=1, max_length=4, description="本轮分类工具返回的真实分类编码，最多四个"
+    )
+    query: str = Field(default="", max_length=80, description="单个商品或食材名称；空字符串浏览所选分类")
     offset: int = Field(default=0, ge=0, le=10000, description="分页偏移，下一页使用工具返回的next_offset")
 
 
 @tool(category="health", display_name="查询商城商品及营养原文", args_schema=FoodPackageQuery)
-async def find_food_packages(runtime: ToolRuntime, query: str = "", offset: int = 0) -> dict:
-    """查商城在售商品、规格、价格和营养说明原文；空查询分页浏览，不读取订单或自动下单。"""
+async def find_food_packages(runtime: ToolRuntime, category_codes: list[str], query: str = "", offset: int = 0) -> dict:
+    """按已核对分类查在售商品原文；不读取订单或自动下单。"""
     from yuxi.services.conversation_purchase_service import find_conversation_packages
 
-    return await find_conversation_packages(runtime.context, query, offset)
+    return await find_conversation_packages(runtime.context, query, offset, category_codes)
 
 
 class FoodProductSelection(HealthDTO):
@@ -117,14 +159,23 @@ class FoodProductSelections(HealthReadInput):
 
     items: list[FoodProductSelection] = Field(max_length=3)
     empty_reason: str = Field(default="", max_length=500)
+    ready_to_answer: bool = Field(
+        default=False,
+        strict=True,
+        description="本轮所有必要资料已取得时传true，选择成功后直接生成最终回复；还需其他工具时传false",
+    )
 
 
 @tool(category="health", display_name="选择本轮商城推荐商品", args_schema=FoodProductSelections)
-async def select_food_products(runtime: ToolRuntime, items: list[FoodProductSelection], empty_reason: str = "") -> dict:
+async def select_food_products(
+    runtime: ToolRuntime, items: list[FoodProductSelection], empty_reason: str = "", ready_to_answer: bool = False
+) -> dict:
     """查询商城后提交最多3个已读取详情的SKU及理由，生成现有商品卡片；不加购或下单。无候选传空items及原因。"""
     from yuxi.services.conversation_purchase_service import select_conversation_products
 
-    return await select_conversation_products(runtime.context, [item.model_dump() for item in items], empty_reason)
+    return await select_conversation_products(
+        runtime.context, [item.model_dump() for item in items], empty_reason, ready_to_answer=ready_to_answer
+    )
 
 
 @tool(category="health", display_name="审核营养科普检索", args_schema=HealthKnowledgeInput)

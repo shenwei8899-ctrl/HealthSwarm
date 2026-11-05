@@ -12,7 +12,7 @@ from yuxi.services.family_service import authorized_fields, guardian_active
 from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.health_quality_types import ProfileProjection, QualityRules
 from yuxi.services.health_quality_checks import external_projection
-from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.health_vision_types import FAMILY_REPORT_SCOPES, HealthVisionError
 from yuxi.storage.postgres.models_health import (
     FamilyMember,
     HealthFamilyProfileLink,
@@ -89,7 +89,11 @@ async def bind_submitted_profile(session, uid, family, members, consent):
                 session.add(health)
                 await session.flush()
                 session.add(
-                    HealthGrant(member_id=health.id, actor_uid=uid, scopes=["ai_use", "diet_edit", "profile_view"])
+                    HealthGrant(
+                        member_id=health.id,
+                        actor_uid=uid,
+                        scopes=sorted(FAMILY_REPORT_SCOPES | {"ai_use", "diet_edit", "profile_view"}),
+                    )
                 )
             else:
                 grant = await session.get(HealthGrant, (health.id, uid))
@@ -106,15 +110,17 @@ async def bind_submitted_profile(session, uid, family, members, consent):
         elif link.actor_uid != uid:
             if (
                 link.source_kind != "miniapp_reported"
-                or member.subject_uid != uid
+                or (member.subject_uid != uid and not guardian_active(member, uid))
                 or link.actor_uid != family.owner_uid
             ):
                 raise HealthVisionError("profile_link_conflict", "成员已有独立的分析来源，请使用原有授权", 409)
             health = await session.get(FamilyMember, link.member_id)
             if health is None or health.owner_uid != link.actor_uid:
                 raise HealthVisionError("profile_link_conflict", "成员分析来源归属已变化，请重新核对", 409)
-            previous = await session.get(HealthGrant, (link.member_id, link.actor_uid))
-            if previous is not None:
+            previous_grants = await session.scalars(
+                select(HealthGrant).where(HealthGrant.member_id == link.member_id, HealthGrant.actor_uid != uid)
+            )
+            for previous in previous_grants:
                 previous.revoked_at = utc_now_naive()
             health.owner_uid = uid
             health.relationship_label = "本人"
@@ -122,10 +128,17 @@ async def bind_submitted_profile(session, uid, family, members, consent):
             own_grant = await session.get(HealthGrant, (link.member_id, uid))
             if own_grant is None:
                 session.add(
-                    HealthGrant(member_id=link.member_id, actor_uid=uid, scopes=["ai_use", "diet_edit", "profile_view"])
+                    HealthGrant(
+                        member_id=link.member_id,
+                        actor_uid=uid,
+                        scopes=sorted(FAMILY_REPORT_SCOPES | {"ai_use", "diet_edit", "profile_view"}),
+                    )
                 )
             else:
-                if own_grant.revoked_at is not None or "ai_use" not in own_grant.scopes:
+                if own_grant.revoked_at is not None or (
+                    "ai_use" not in own_grant.scopes
+                    and not ("purpose" in consent and FAMILY_REPORT_SCOPES <= set(own_grant.scopes))
+                ):
                     raise HealthVisionError("missing_scopes", "健康服务访问授权已撤回，请先核查授权", 403)
             from yuxi.repositories.health_quality_repository import HealthQualityRepository
 
@@ -133,8 +146,29 @@ async def bind_submitted_profile(session, uid, family, members, consent):
         # 既有专业确认来源保留原语义，不能因再次建档降为自述并丢失临床资料。
         await session.flush()
         grant = await session.get(HealthGrant, (link.member_id, uid), populate_existing=True)
+        # 报告先行的档案，只有当前明确用途同意才衔接 AI；普通读取提前返回。
+        if (
+            grant is not None
+            and grant.revoked_at is None
+            and "purpose" in consent
+            and {"report_view", "report_upload", "profile_edit"} <= set(grant.scopes)
+            and "ai_use" not in grant.scopes
+        ):
+            previous_ai = await session.scalar(
+                select(HealthProcessingConsent.member_id)
+                .where(
+                    HealthProcessingConsent.member_id == link.member_id,
+                    HealthProcessingConsent.actor_uid == uid,
+                    HealthProcessingConsent.purpose != "report",
+                )
+                .limit(1)
+            )
+            if previous_ai is not None:
+                raise HealthVisionError("missing_scopes", "健康服务访问授权已撤回，请先核查授权", 403)
+            grant.scopes = sorted(set(grant.scopes) | {"ai_use", "diet_edit", "profile_view"})
         if grant is None or grant.revoked_at is not None or "ai_use" not in grant.scopes:
             raise HealthVisionError("missing_scopes", "健康服务访问授权已撤回，请先核查授权", 403)
+        grant.scopes = sorted(set(grant.scopes) | FAMILY_REPORT_SCOPES)
         record = await session.get(HealthProcessingConsent, (link.member_id, uid, purpose))
         if record is None:
             record = HealthProcessingConsent(member_id=link.member_id, actor_uid=uid, purpose=purpose)

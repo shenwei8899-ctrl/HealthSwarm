@@ -5,7 +5,7 @@ import DailyMealPlanCard from './DailyMealPlanCard.vue'
 import { todayMealPlanState,createTodayMealPlan } from '../services/today-meal-plan.js'
 import { detailGesture } from '../services/meal-detail-client.js'
 import { localDate } from '../utils/meal-state.js'
-const props=defineProps({open:Boolean,profile:Object,busy:Boolean,unavailable:Boolean})
+const props=defineProps({open:Boolean,profile:Object,busy:Boolean,unavailable:Boolean,readOnly:Boolean})
 const emit=defineEmits(['close','plan','detail','all','dish','continue'])
 const state=reactive(todayMealPlanState())
 const client=createTodayMealPlan({state,onPlan:plan=>emit('plan',plan)})
@@ -16,13 +16,14 @@ const displayDate=computed(()=>{
  const [year,month,day]=(state.date||localDate()).split('-').map(Number)
  return `${month}月${day}日 · 周${'日一二三四五六'[new Date(year,month-1,day).getDay()]}`
 })
-const loadingLabel=computed(()=>state.phase==='generating'?'正在搭配今天的三餐':'正在读取今日餐单')
-const actionLabels={refresh:'刷新状态',regenerate:'重新安排餐次',answer:'继续回答'}
+const loadingLabel=computed(()=>state.label)
+const actionLabels={refresh:'刷新状态',regenerate:'重新安排餐次',answer:'继续回答',candidates:'查看待核对候选'}
+const actionLabel=computed(()=>props.readOnly&&state.action==='regenerate'?'刷新状态':actionLabels[state.action]||'重新读取')
 let touch=null
 function load(){
  if(!props.profile||props.unavailable){client.clear();if(props.open&&props.unavailable)state.phase='error';return}
  if(!visible.value||!props.open){client.pause();return}
- void client.open(props.profile)
+ void client.open(props.profile,{readOnly:props.readOnly})
 }
 function start(event){const point=event.touches?.[0];touch=point?{x:point.clientX,y:point.clientY}:null}
 function cancelTouch(){touch=null}
@@ -38,11 +39,11 @@ function detail(item){if(state.verified&&visible.value&&props.open)emit('detail'
 function dish(value){if(state.verified&&visible.value&&props.open)emit('dish',value)}
 function act(){
  if(props.busy||!visible.value||!props.open)return
- if(state.action==='answer')emit('continue',state.pending)
+ if(['answer','candidates'].includes(state.action))emit('continue',state.pending)
  else if(state.action==='refresh'&&props.profile)void client.open(props.profile,{readOnly:true})
  else if(state.action==='regenerate'||state.phase==='error')load()
 }
-watch(()=>[props.open,props.profile?.householdId,props.profile?.selfMemberId,props.profile?.familyVersion,props.unavailable],load,{immediate:true})
+watch(()=>[props.open,props.profile?.householdId,props.profile?.selfMemberId,props.profile?.familyVersion,props.unavailable,props.readOnly],load,{immediate:true})
 watch(()=>props.open,open=>{touch=null;if(open)expanded.value=false})
 onHide(()=>{visible.value=false;touch=null;client.pause()})
 onShow(()=>{if(!visible.value){visible.value=true;load()}})
@@ -60,10 +61,10 @@ onUnmounted(()=>client.dispose())
     <view v-if="state.plan&&state.notice" class="tm-status" role="status" aria-live="polite">
      <text>{{state.notice}}</text>
      <text v-for="(question,index) in state.pending?.status==='needs_input'?state.pending.questions:[]" :key="index" class="tm-question">{{question}}</text>
-     <button v-if="state.action" class="tm-retry" :disabled="busy" @click="act">{{actionLabels[state.action]}}</button>
+     <button v-if="state.action" class="tm-retry" :disabled="busy" @click="act">{{actionLabel}}</button>
     </view>
     <DailyMealPlanCard v-if="state.plan" workspace detail-mode compact :plan="state.plan" :busy="busy" :interactive="state.verified&&visible&&open" @dish="dish" @detail="detail"/>
-    <view v-else-if="state.phase==='error'" class="tm-error" role="status" aria-live="polite"><text class="tm-error-title">暂时无法读取餐单</text><text>{{state.notice||'请稍后重试，我们会重新核对餐单状态。'}}</text><text v-for="(question,index) in state.pending?.status==='needs_input'?state.pending.questions:[]" :key="index" class="tm-question">{{question}}</text><button class="tm-retry" :disabled="busy" @click="act">{{actionLabels[state.action]||'重新读取'}}</button></view>
+    <view v-else-if="state.phase==='error'" class="tm-error" role="status" aria-live="polite"><text class="tm-error-title">{{state.pending?.status==='reference_candidates'?'待核对候选':'暂时无法读取餐单'}}</text><text>{{state.notice||'请稍后重试，我们会重新核对餐单状态。'}}</text><text v-for="(question,index) in state.pending?.status==='needs_input'?state.pending.questions:[]" :key="index" class="tm-question">{{question}}</text><button class="tm-retry" :disabled="busy" @click="act">{{actionLabel}}</button></view>
     <view v-else class="tm-loading" :aria-busy="true">
      <view class="tm-loading-status" role="status" aria-live="polite"><view class="tm-pulse" aria-hidden="true"/><text>{{loadingLabel}}</text></view>
      <view class="tm-skeletons" aria-hidden="true"><view v-for="meal in meals" :key="meal.type" class="tm-skeleton-card"><view class="tm-skeleton-head"><text>{{meal.name}}</text><view class="tm-placeholder tm-skeleton-link"/></view><view class="tm-skeleton-row"><view class="tm-placeholder tm-skeleton-image"/><view class="tm-skeleton-lines"><view class="tm-placeholder tm-skeleton-line"/><view class="tm-placeholder tm-skeleton-line tm-skeleton-short"/></view></view></view></view>

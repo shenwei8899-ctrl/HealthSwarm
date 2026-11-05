@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createHealthTaskFlow } from '../src/services/health-task-flow.js'
+import {mealCandidates} from './fixtures/meal-candidates.mjs'
 
 const memberId = '11111111-1111-4111-8111-111111111111'
 const entryId = '22222222-2222-4222-8222-222222222222'
@@ -104,6 +105,62 @@ test('a reference followup can restore the original authorized thread and questi
  assert.equal(h.flow.getState().entry.thread_id,threadId)
  assert.deepEqual(h.flow.getState().result.questions,['早餐需要避开什么食材？'])
 })
+
+async function candidateFlow(payload,selection={mode:'reference',plan_date:'2026-10-31',meal_types:['breakfast']},
+ wrapper={result_type:'meal_plan_candidates',validation:'current_business_sources'}){
+ const result={...wrapper,data:payload}
+ const referenceType='reference_meal_preview',h=fixture({send:async options=>{
+  if(options.path==='/api/health/v1/members')return {data:[{id:memberId,is_owner:true}]}
+  if(options.path.endsWith('/readiness'))return {data:{capabilities:{member_id:memberId},entries:[{entry_type:referenceType,status:'available'}]}}
+  if(options.path.endsWith('/tasks/'+requestId))return {data:{request_id:requestId,member_id:memberId,task_type:referenceType,
+   thread_id:threadId,agent_slug:'health-meal-planner',request_status:'dispatched',execution_status:'completed',recorded_meals:[{id:'not-a-saved-meal'}],result}}
+  throw new Error('unexpected '+options.path)
+ }})
+ await h.flow.open(memberId,referenceType,selection);await h.flow.restoreReferenceRequest(threadId,requestId);return h
+}
+
+test('a completed cooking candidate is terminal, preserves its original request and never grants purchase or saved meals',async()=>{
+ const data=mealCandidates(),h=await candidateFlow(data)
+ try{
+  const state=h.flow.getState()
+  assert.equal(state.status,'completed');assert.equal(state.loading,false);assert.equal(state.busy,false);assert.equal(state.submitUnknown,false)
+  assert.equal(state.requestId,requestId);assert.deepEqual(state.result,{type:'business',kind:'meal_plan_candidates',data})
+  assert.deepEqual(state.recordedMeals,[]);assert.equal(state.result.purchaseOffers,undefined)
+  assert.equal(h.scheduled.length,0);assert.equal(h.calls.some(call=>call.method==='POST'),false)
+ }finally{h.flow.hide()}
+})
+
+test('a candidate claiming purchase readiness is rejected after bounded reads without submitting another task',async()=>{
+ const h=await candidateFlow({...mealCandidates(),purchase_ready:true})
+ try{
+  await h.flow.refresh();await h.flow.refresh()
+  assert.equal(h.flow.getState().status,'failed');assert.deepEqual(h.flow.getState().result,{type:'error',code:'answer_unavailable',retryable:false})
+  assert.equal(h.calls.filter(call=>call.path.includes('/tasks/')).length,3)
+  assert.equal(h.calls.some(call=>call.method==='POST'),false)
+ }finally{h.flow.hide()}
+})
+
+for(const wrapper of [{result_type:'meal_plan_candidates'},
+ {result_type:'meal_plan_candidates',validation:'unverified'},
+ {result_type:'meal_plan_preview',validation:'current_business_sources'},
+ {result_type:'diet_analysis',validation:'current_business_sources'}])test('candidate data requires the exact validated Task wrapper: '+JSON.stringify(wrapper),async()=>{
+ const h=await candidateFlow(mealCandidates(),undefined,wrapper)
+ try{
+  await h.flow.refresh();await h.flow.refresh()
+  assert.equal(h.flow.getState().status,'failed');assert.deepEqual(h.flow.getState().result,{type:'error',code:'answer_unavailable',retryable:false})
+  assert.equal(h.calls.filter(call=>call.path.includes('/tasks/')).length,3);assert.equal(h.calls.some(call=>call.method==='POST'),false)
+ }finally{h.flow.hide()}
+})
+
+for(const selection of [{mode:'reference',plan_date:'2026-11-01',meal_types:['breakfast']},
+ {mode:'reference',plan_date:'2026-10-31',meal_types:['breakfast','lunch','dinner']},
+ {mode:'reference',family_id:'another-family',plan_date:'2026-10-31',meal_types:['breakfast']},
+ {mode:'reference',participant_ids:['another-member'],plan_date:'2026-10-31',meal_types:['breakfast']}]){
+ test('a cooking candidate cannot change the requested date or meal range: '+JSON.stringify(selection),async()=>{
+  const h=await candidateFlow(mealCandidates(),selection)
+  try{assert.equal(h.flow.getState().invalidated,true);assert.equal(h.flow.getState().result,null);assert.equal(h.calls.some(call=>call.method==='POST'),false)}finally{h.flow.hide()}
+ })
+}
 
 function fixtureBase(options) {
   if (options.path === '/api/health/v1/members') return { data: [{ id: memberId, is_owner: true }] }

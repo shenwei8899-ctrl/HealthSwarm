@@ -20,7 +20,6 @@ from yuxi.services.family_schemas import (
 )
 from yuxi.storage.postgres.models_business import FamilyArchive, FamilyMeasurement, FamilyMember, FamilyProfileRevision
 from yuxi.utils.datetime_utils import format_utc_datetime, utc_now_naive
-from yuxi.utils.auth_utils import AuthUtils
 
 DISPLAY_ZONE = ZoneInfo("Asia/Shanghai")
 
@@ -344,6 +343,9 @@ class FamilyService:
         member = FamilyMember(id=str(uuid.uuid4()), family_id=fid, name=name, relationship=relationship)
         self.db.add(member)
         await self.db.flush()
+        from yuxi.services.miniapp_report_service import ensure_member_reports
+
+        await ensure_member_reports(self, family, member)
         result = member_view(family, member, self.uid)
         await self.repo.audit(fid, member.id, self.uid, "member.create")
         await self.db.commit()
@@ -403,11 +405,13 @@ class FamilyService:
         await self.db.commit()
         return result
 
-    async def revoke_invitation(self, fid, mid):
+    async def revoke_invitation(self, fid, mid, code=None):
         """管理员撤销未认领邀请，下次生成不同代码。"""
         family, member = await self.context(fid, mid)
         if family.owner_uid != self.uid or member.subject_uid:
             raise HTTPException(403, "当前成员不能撤销邀请")
+        if code and member.invite_hash and member.invite_hash != hashlib.sha256(code.encode()).hexdigest():
+            raise HTTPException(409, "邀请已变化，请重新读取后再操作")
         member.invite_hash, member.invite_expires_at = None, None
         await self.repo.audit(fid, mid, self.uid, "member.invite.revoke")
         await self.db.commit()
@@ -418,14 +422,12 @@ class FamilyService:
         family, member = await self.context(fid, mid)
         if family.owner_uid != self.uid or member.subject_uid:
             raise HTTPException(403, "当前成员不能重新邀请")
-        if not member.invite_expires_at or member.invite_expires_at <= utc_now_naive():
-            member.invite_expires_at = utc_now_naive() + timedelta(days=2)
-        key, _, _ = AuthUtils.derive_api_key(f"family-invitation:{member.invite_expires_at.isoformat()}", member.id)
-        code = "family_" + key.removeprefix("yxkey_")
-        member.invite_hash = hashlib.sha256(code.encode()).hexdigest()
+        from yuxi.services.family_invitation_service import prepare_member_invitation
+
+        ticket = prepare_member_invitation(member)
         await self.repo.audit(fid, mid, self.uid, "member.invite")
         await self.db.commit()
-        return {"code": code, "expires_at": format_utc_datetime(member.invite_expires_at)}
+        return ticket
 
     async def join(self, code):
         """已登录本人认领后共享普通档案，AI 等用途仍独立授权。"""
@@ -437,13 +439,7 @@ class FamilyService:
         family = await self.db.scalar(select(FamilyArchive).where(FamilyArchive.id == fid).with_for_update())
         member = await self.repo.member(fid, mid)
         await self.db.refresh(member)
-        valid = (
-            member.is_active
-            and member.invite_hash == digest
-            and member.invite_expires_at
-            and member.invite_expires_at > utc_now_naive()
-        )
-        if valid and member.subject_uid == self.uid:
+        if member.is_active and member.invite_hash == digest and member.subject_uid == self.uid:
             return await self.family(fid)
         if (
             member.invite_hash != digest
@@ -456,8 +452,13 @@ class FamilyService:
         if family.owner_uid == self.uid or await self.repo.subject_member(fid, self.uid):
             raise HTTPException(409, "当前账户已经是此家庭成员")
         member.subject_uid = self.uid
+        member.invitation_review_pending = True
+        member.invitation_analysis_pending = True
         member.confirmed_version = None
         member.confirmed_at = None
+        from yuxi.services.miniapp_report_service import ensure_member_reports
+
+        await ensure_member_reports(self, family, member)
         await self.repo.audit(fid, mid, self.uid, "member.claim")
         await self.db.commit()
         return await self.family(fid)
@@ -533,6 +534,8 @@ class FamilyService:
         if member.subject_uid != self.uid and not guardian_active(member, self.uid):
             raise HTTPException(403, "档案确认须由本人或有效监护人完成")
         self.require_version(member, expected_version)
+        if member.subject_uid == self.uid:
+            member.invitation_review_pending = False
         if member.confirmed_version != member.version:
             member.confirmed_version = member.version
             member.confirmed_at = utc_now_naive()

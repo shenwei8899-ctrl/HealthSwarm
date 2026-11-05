@@ -24,6 +24,8 @@ def knowledge_source_reference(kb_id: str, file_id: str, content_hash: str) -> s
 
 def nutrition_source_references(sources):
     """枚举计算快照中的食物、份量与菜谱原料出处。"""
-    return [item["source"] for item in sources] + [
-        ingredient["food"]["source"] for item in sources for ingredient in item.get("ingredients", [])
-    ]
+    return (
+        [item["source"] for item in sources]
+        + [item["parent_source"] for item in sources if item.get("parent_source")]
+        + [ingredient["food"]["source"] for item in sources for ingredient in item.get("ingredients", [])]
+    )

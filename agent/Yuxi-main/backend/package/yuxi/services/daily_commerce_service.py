@@ -64,16 +64,29 @@ async def commerce_request(method, path, payload=None, *, request_id=None):
     return result["data"]
 
 
-async def current_catalog():
-    """读取完整可售目录，跨页版本变化时重读而不是混合库存。"""
+async def current_catalog(category_codes=None):
+    """按选定业务分类读取可售目录；跨页版本变化时重读。"""
+    if category_codes is not None and (
+        not isinstance(category_codes, list)
+        or not 1 <= len(category_codes) <= 4
+        or any(not isinstance(code, str) or not code or len(code) > 50 for code in category_codes)
+    ):
+        raise HealthVisionError("catalog_category_invalid", "商品分类选择无效", 422)
     for _ in range(2):
         items, cursor, seen, version = [], "", set(), None
         while True:
+            params = {"limit": 200, "cursor": cursor}
+            if category_codes is not None:
+                params["category_codes[]"] = category_codes
             page = await commerce_request(
-                "GET", "/api/v1/integration/ai/catalog/products?" + urlencode({"limit": 200, "cursor": cursor})
+                "GET", "/api/v1/integration/ai/catalog/products?" + urlencode(params, doseq=True)
             )
             if version is not None and version != page["catalog_version"]:
                 break
+            if category_codes is not None and any(
+                item.get("category_code") not in category_codes for item in page["items"]
+            ):
+                raise HealthVisionError("catalog_invalid", "商城商品分类与查询条件不符", 503)
             version = page["catalog_version"]
             items.extend(page["items"])
             if not page.get("has_more"):

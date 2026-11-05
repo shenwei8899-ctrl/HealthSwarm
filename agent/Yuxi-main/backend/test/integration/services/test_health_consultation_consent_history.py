@@ -18,6 +18,23 @@ from yuxi.utils.datetime_utils import utc_now_naive
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_test_sandboxes():
+    """本文件只创建自有 PG schema，不创建或清理外部沙盒。"""
+    yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_test_knowledge_resources():
+    """合成会话不创建知识库资源，清理由自有 schema 的 finally 完成。"""
+    yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_live_api_schema():
+    """真实 PG 使用本文件的独立 schema，不依赖运行中的 API。"""
+
+
 async def test_revoked_consultation_consent_hides_existing_threads():
     """真实 PG 中保留成员 grant 时，撤回用途同意仍拒绝四类科普会话历史。"""
     schema, admin_engine, engine, manager = await _create_isolated_manager("pytest_consultation_consent_history")

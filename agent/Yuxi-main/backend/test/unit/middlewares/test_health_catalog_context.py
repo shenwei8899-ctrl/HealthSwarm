@@ -14,6 +14,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from yuxi.agents.middlewares.health_catalog_context import (
     HealthCatalogContextMiddleware,
+    catalog_selection_ready,
     compact_catalog_messages,
 )
 
@@ -33,6 +34,7 @@ def catalog(version="v1"):
         "catalog_version": version,
         "catalog_index": [{"sku_id": str(i), "name": "合成食材" + str(i), "spec": "1份"} for i in range(95)],
         "profile_context": {"allergyStatus": "unknown", "doctorStatus": "unknown"},
+        "categories": [{"code": "synthetic-vegetables", "name": "合成蔬菜"}],
         "offers": [
             {
                 "sku_id": "1",
@@ -130,12 +132,18 @@ async def test_projection_reduces_payload_and_preserves_original_safety_receipts
     assert len(payloads[0]["catalog_index"]) == 95
     assert payloads[1]["catalog_index_from_tool_call_id"] == "a"
     assert "catalog_index" not in payloads[1]
-    for payload in payloads:
+    for index, payload in enumerate(payloads):
         offer = payload["offers"][0]
         assert offer["product_description"] == catalog()["offers"][0]["product_description"]
         assert offer["note"] == "适用性待核实。"
         assert offer["purchase_eligible"] is False
-        assert payload["profile_context"] == catalog()["profile_context"]
+        for field in ("profile_context", "categories"):
+            if index == 0:
+                assert payload[field] == catalog()[field]
+            else:
+                assert field not in payload
+                assert payload[field + "_from_tool_call_id"] == "a"
+                assert payloads[0][field] == catalog()[field]
         assert "offer_token" not in offer
     assert [message.model_dump() for message in originals] == before
     assert sum(len(m.content) for m in compacted) < sum(len(m.content) for m in originals) * 0.45
@@ -155,6 +163,53 @@ async def test_new_catalog_or_new_turn_keeps_its_own_index_and_legacy_receipts()
     for index in [1, 2, 4]:
         assert "catalog_index" in json.loads(compacted[index].content)
     assert compacted[-1] is legacy
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "not_ready",
+        "wrong_version",
+        "unexplained_empty",
+        "too_many",
+        "new_query",
+        "parallel_selection",
+        "other_request",
+    ],
+)
+async def test_only_current_standalone_structured_selection_can_finish_preparation(mutation):
+    """直接进入最终阶段只接受本轮独立选品及有说明的真实空选择。"""
+    selection = {
+        "selection_version": 1,
+        "catalog_context_version": 1,
+        "ready_to_answer": True,
+        "offers": [],
+        "empty_reason": "合成商品均不适用。",
+    }
+    if mutation == "not_ready":
+        selection["ready_to_answer"] = False
+    elif mutation == "wrong_version":
+        selection["selection_version"] = 2
+    elif mutation == "unexplained_empty":
+        selection.pop("empty_reason")
+    elif mutation == "too_many":
+        selection["offers"] = [{"sku_id": str(index)} for index in range(4)]
+    selected_call = {"name": "select_food_products", "args": {}, "id": "select", "type": "tool_call"}
+    calls = [selected_call]
+    if mutation == "parallel_selection":
+        calls.append(call("parallel"))
+    messages = [
+        HumanMessage("合成选品", additional_kwargs={"health_request_id": "current"}),
+        AIMessage("", tool_calls=[call("query")]),
+        result("query"),
+        AIMessage("", tool_calls=calls),
+        ToolMessage(content=json.dumps(selection), name="select_food_products", tool_call_id="select"),
+    ]
+    if mutation == "new_query":
+        messages.extend([AIMessage("", tool_calls=[call("later")]), result("later")])
+    request_id = "foreign" if mutation == "other_request" else "current"
+    assert catalog_selection_ready(messages, request_id) is (mutation is None)
 
 
 class CatalogModel(BaseChatModel):

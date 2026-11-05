@@ -9,6 +9,7 @@ from server.utils.auth_middleware import get_admin_user, get_db, get_required_us
 from yuxi.services.family_schemas import (
     AuthorizationInput,
     FamilyInput,
+    FamilyInviteRevoke,
     FamilyUpdate,
     GuardianRequest,
     GuardianReview,
@@ -24,6 +25,7 @@ from yuxi.services.family_schemas import (
     VersionInput,
 )
 from yuxi.services.family_service import FamilyService
+from yuxi.services.miniapp_report_service import enable_reports
 from yuxi.services.family_invitation_service import FamilyInvitationService
 from yuxi.storage.postgres.models_business import User
 
@@ -39,6 +41,14 @@ def family_service(db: AsyncSession = Depends(get_db), user: User = Depends(get_
 
 
 family = APIRouter(prefix="/family", tags=["family"], dependencies=[Depends(private_response)])
+
+
+@family.post("/{fid}/members/{mid}/report-access")
+async def report_access(fid: str, mid: str, payload: VersionInput, service=Depends(family_service)):
+    """兼容旧客户端的报告关联准备，报告随有效家庭关系共享。"""
+    return await enable_reports(service, fid, mid, payload.expected_version)
+
+
 
 
 @family.get("")
@@ -75,6 +85,18 @@ async def invitation_decline(code: str, service=Depends(family_service)):
 async def ordinary_invitation(fid: str, service=Depends(family_service)):
     """家庭总览页转发不绑定成员的普通邀请。"""
     return await FamilyInvitationService(service).create(fid)
+
+
+@family.post("/{fid}/invitations/prepare")
+async def prepare_invitations(fid: str, service=Depends(family_service)):
+    """为选人弹层准备凭证，预览和转发均不建立成员关系。"""
+    return await FamilyInvitationService(service).prepare(fid)
+
+
+@family.post("/{fid}/invite/revoke")
+async def revoke_ordinary_invitation(fid: str, payload: FamilyInviteRevoke, service=Depends(family_service)):
+    """仅创建人可撤销普通邀请，不停用已加入的账号。"""
+    return await FamilyInvitationService(service).revoke(fid, payload.expected_version)
 
 
 @family.get("/{fid}")
@@ -170,9 +192,9 @@ async def authorize_member(fid: str, mid: str, payload: AuthorizationInput, serv
 
 
 @family.post("/{fid}/members/{mid}/invite/revoke")
-async def revoke_invitation(fid: str, mid: str, service=Depends(family_service)):
+async def revoke_invitation(fid: str, mid: str, payload: JoinInput | None = None, service=Depends(family_service)):
     """撤销尚未认领的邀请。"""
-    return await service.revoke_invitation(fid, mid)
+    return await service.revoke_invitation(fid, mid, payload.code if payload else None)
 
 
 @family.get("/{fid}/members/{mid}/measurements")

@@ -166,7 +166,7 @@ async def test_real_create_agent_receives_feedback_then_only_saves_the_corrected
     service.assert_awaited_once()
     context, saved = service.await_args.args
     assert context == SaveContext()
-    assert ReferencePlanDraft.model_validate(saved).model_dump(exclude_none=True) == draft()
+    assert ReferencePlanDraft.model_validate(saved) == ReferencePlanDraft.model_validate(draft())
     assert "synthetic-saved-preview" in receipts[-1].content
 
 
@@ -271,8 +271,8 @@ def test_save_failure_index_rejects_non_true_validation_flags(retryable):
 
 
 @pytest.mark.asyncio
-async def test_validation_then_quote_failure_cannot_receive_a_second_correction(monkeypatch):
-    """参数错误已占用一次纠正机会，后续引文失败继续抛出。"""
+async def test_validation_then_quote_failure_has_one_separate_bounded_correction(monkeypatch):
+    """采购和引文各有一次修正，同类引文再次失败必须抛出。"""
     context = SaveContext()
     messages = [
         HumanMessage("合成保存", additional_kwargs={"health_request_id": context.request_id}),
@@ -284,10 +284,15 @@ async def test_validation_then_quote_failure_cannot_receive_a_second_correction(
     service = AsyncMock(side_effect=error)
     monkeypatch.setattr(reference_meal_plan_service, "save_reference_plan", service)
     runtime = ToolRuntime({"messages": messages}, context, {}, lambda _: None, "corrected", None)
+    feedback = await save_reference_meal_plan.coroutine(runtime=runtime, meals=[], purchase_items=[], purchase_gaps=[])
+    assert isinstance(feedback, ToolMessage) and feedback.status == "error"
+    assert json.loads(feedback.content)["error_code"] == "reference_quote_invalid"
+    messages.extend([feedback, declared("second-quote")])
+    runtime = ToolRuntime({"messages": messages}, context, {}, lambda _: None, "second-quote", None)
     with pytest.raises(HealthVisionError) as caught:
-        await save_reference_meal_plan.coroutine([], [], [], runtime)
+        await save_reference_meal_plan.coroutine(runtime=runtime, meals=[], purchase_items=[], purchase_gaps=[])
     assert caught.value is error
-    assert reference_save_failure_index(messages, context.request_id) == 2
+    assert reference_save_failure_index(messages, context.request_id) == 4
 
 
 @pytest.mark.asyncio

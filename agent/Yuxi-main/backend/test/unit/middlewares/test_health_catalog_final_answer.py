@@ -2,6 +2,7 @@
 
 import ast
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,15 +28,29 @@ catalog = production_middleware("health_catalog")
 
 
 @tool
-async def find_food_packages() -> str:
-    """返回合成目录，不查询真实商城。"""
-    return "synthetic catalog"
+async def get_food_categories() -> str:
+    """返回本轮合成分类，先查分类是生产选品协议的一部分。"""
+    return json.dumps({"catalog_context_version": 1, "categories": [{"code": "synthetic-vegetables"}]})
 
 
 @tool
-async def select_food_products() -> str:
+async def find_food_packages() -> str:
+    """返回合成目录，不查询真实商城。"""
+    return json.dumps({"catalog_context_version": 1, "offers": [{"sku_id": "synthetic-sku"}]})
+
+
+@tool
+async def select_food_products(ready_to_answer: bool = False) -> str:
     """返回合成选择，不写商品、订单或实际业务数据。"""
-    return "synthetic selection"
+    return json.dumps(
+        {
+            "selection_version": 1,
+            "catalog_context_version": 1,
+            "ready_to_answer": ready_to_answer,
+            "offers": [],
+            "empty_reason": "合成候选均不适用，暂不推荐商品。",
+        }
+    )
 
 
 class ReplacingBudgetOracle(AgentMiddleware):
@@ -62,14 +77,22 @@ def receipt(name, *, status="success"):
     return ToolMessage(content="synthetic receipt", name=name, tool_call_id="call-" + name, status=status)
 
 
-async def catalog_graph(model, messages, *, final=False, on_custom=None, system_prompt=None, extra_tools=()):
+async def catalog_graph(
+    model, messages, *, final=False, on_custom=None, system_prompt=None, extra_tools=(), categories=False
+):
     """保持生产Catalog→Budget→Final顺序，通过实际v3桥消费custom。"""
     context = Context()
     budget = ReplacingBudgetOracle()
     checkpoint = InMemorySaver()
     graph = create_agent(
         model,
-        tools=[find_food_packages, select_food_products, *extra_tools, production.finalize_health_answer],
+        tools=[
+            *([get_food_categories] if categories else []),
+            find_food_packages,
+            select_food_products,
+            *extra_tools,
+            production.finalize_health_answer,
+        ],
         system_prompt=system_prompt,
         middleware=[catalog.HealthCatalogMiddleware(), budget, production.HealthFinalAnswerMiddleware()],
         context_schema=Context,
@@ -106,6 +129,7 @@ async def test_catalog_forced_tools_and_final_generation_keep_budget_order_and_o
     gate = asyncio.Event()
     model = ControlledStreamModel(
         plan=[
+            [tool_chunk(get_food_categories.name)],
             [AIMessageChunk(content="PRIVATE_QUERY_PLAN"), tool_chunk(find_food_packages.name)],
             [tool_chunk(production.finalize_health_answer.name)],
             [tool_chunk(select_food_products.name)],
@@ -118,18 +142,22 @@ async def test_catalog_forced_tools_and_final_generation_keep_budget_order_and_o
     def consume(value):
         """第二正文块暂停时，首个实际custom已产生，回调未被预算替换丢失。"""
         if value["type"] == "health_final_answer_delta" and value["offset"] == 0:
-            assert len(model.calls) == 5 and len(model.finished) == 4
+            assert len(model.calls) == 6 and len(model.finished) == 5
             gate.set()
 
-    graph, custom, budget = await catalog_graph(model, [human(question)], on_custom=consume)
+    graph, custom, budget = await catalog_graph(model, [human(question)], on_custom=consume, categories=True)
     assert [call["tool_choice"] for call in model.calls] == [
+        catalog.tool_choice(get_food_categories.name),
         catalog.tool_choice(find_food_packages.name),
         "any",
         catalog.tool_choice(select_food_products.name),
         "any",
         None,
     ]
-    assert budget.calls == len(model.calls) == 5
+    assert budget.calls == len(model.calls) == 6
+    assert not {find_food_packages.name, select_food_products.name} & set(model.calls[0]["tools"])
+    assert {find_food_packages.name, select_food_products.name} <= set(model.calls[1]["tools"])
+    assert production.finalize_health_answer.name not in model.calls[2]["tools"]
     assert all(call["tools"] for call in model.calls[:-1]) and model.calls[-1]["tools"] == []
     assert [value["type"] for value in custom].count("health_final_answer_start") == 1
     assert [value["type"] for value in custom].count("health_final_answer_end") == 1
@@ -139,10 +167,54 @@ async def test_catalog_forced_tools_and_final_generation_keep_budget_order_and_o
     state = await graph.aget_state({"configurable": {"thread_id": Context().thread_id}})
     assert state.values["messages"][-1].text == "公开首句🥦。公开次句。"
     assert [message.name for message in state.values["messages"] if isinstance(message, ToolMessage)] == [
+        get_food_categories.name,
         find_food_packages.name,
         select_food_products.name,
         production.finalize_health_answer.name,
     ]
+
+
+@pytest.mark.asyncio
+async def test_standalone_ready_selection_enters_one_final_stream_without_an_extra_finalize_round():
+    """新版有效选品回执直接结束准备；每次模型调用仍经过预算，正文只有一轮。"""
+    select = AIMessageChunk(
+        content="",
+        tool_call_chunks=[
+            {"name": select_food_products.name, "args": '{"ready_to_answer":true}', "id": "ready-select", "index": 0}
+        ],
+    )
+    model = ControlledStreamModel(
+        plan=[
+            [tool_chunk(get_food_categories.name)],
+            [tool_chunk(find_food_packages.name)],
+            [select],
+            [AIMessageChunk(content="仅使用本轮选品回执的合成正文。")],
+        ]
+    )
+    graph, custom, budget = await catalog_graph(model, [human()], categories=True)
+    assert budget.calls == len(model.calls) == 4
+    assert [call["tool_choice"] for call in model.calls] == [
+        catalog.tool_choice(get_food_categories.name),
+        catalog.tool_choice(find_food_packages.name),
+        "any",
+        None,
+    ]
+    assert model.calls[-1]["tools"] == []
+    assert [value["type"] for value in custom] == [
+        "health_final_answer_start",
+        "health_final_answer_delta",
+        "health_final_answer_end",
+    ]
+    state = await graph.aget_state({"configurable": {"thread_id": Context().thread_id}})
+    receipts = [message for message in state.values["messages"] if isinstance(message, ToolMessage)]
+    assert [message.name for message in receipts] == [
+        get_food_categories.name,
+        find_food_packages.name,
+        select_food_products.name,
+    ]
+    assert json.loads(receipts[-1].content)["ready_to_answer"] is True
+    assert state.values["health_answer_phase"] == "final"
+    assert state.values["messages"][-1].text == "仅使用本轮选品回执的合成正文。"
 
 
 @pytest.mark.asyncio
@@ -248,10 +320,24 @@ async def test_preparation_keeps_existing_explicit_tool_choice(choice):
     async def handler(prepared):
         """记录真实ModelRequest覆盖结果，不发起模型请求。"""
         observed.append(prepared.tool_choice)
-        return ModelResponse(result=[AIMessage(content="", tool_calls=[])])
+        return ModelResponse(
+            result=[
+                AIMessage(
+                    content="", tool_calls=[{"name": find_food_packages.name, "args": {}, "id": "preparing-query"}]
+                )
+            ]
+        )
 
     await production.HealthFinalAnswerMiddleware().awrap_model_call(request, handler)
     assert observed == [choice if choice is not None else "any"]
+
+    async def unfinished(prepared):
+        """保留旧失败输入作为负控，任何显式策略都不能把空准备结果当成完成。"""
+        assert prepared.tool_choice == observed[0]
+        return ModelResponse(result=[AIMessage(content="", tool_calls=[])])
+
+    with pytest.raises(HealthVisionError, match="answer_finalization_required"):
+        await production.HealthFinalAnswerMiddleware().awrap_model_call(request, unfinished)
 
 
 def test_production_graph_retains_catalog_selection_and_callback_safe_order():
@@ -272,3 +358,4 @@ def test_production_graph_retains_catalog_selection_and_callback_safe_order():
     tools = next(item.value for item in build.keywords if item.arg == "tools")
     assert any(isinstance(item, ast.Name) and item.id == "finalize_health_answer" for item in tools.elts)
     assert any(isinstance(node, ast.Name) and node.id == "select_food_products" for node in ast.walk(tree))
+    assert any(isinstance(node, ast.Name) and node.id == "get_food_categories" for node in ast.walk(tree))

@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "references": [
+    {
+      "id": "source-hard-cooked-egg",
+      "meal_types": [
+        "breakfast",
+        "lunch",
+        "dinner"
+      ],
+      "name": "水煮全熟鸡蛋",
+      "ingredient_food": "鸡蛋",
+      "ingredients": [
+        "鸡蛋",
+        "水"
+      ],
+      "steps": [
+        "鸡蛋在锅中单层摆放，加入冷自来水，水面至少高出鸡蛋 1 英寸；加盖并迅速加热至刚沸腾。",
+        "关火后保持加盖静置：中号蛋 12 分钟、大号蛋 15 分钟、特大号蛋 18 分钟。",
+        "立即用冷自来水冲蛋，轻敲蛋壳并在流水下剥壳；2 小时内冷藏，冷藏保存不超过 7 天。"
+      ],
+      "no_added_oil": true,
+      "no_added_salt": true,
+      "source": {
+        "title": "USDA FSIS — How long does it take to hard cook an egg?",
+        "url": "https://ask.fsis.usda.gov/article/How-long-does-it-take-to--hard-cook-an-egg",
+        "kind": "source_based_notes",
+        "hash_algorithm": "sha256",
+        "hash_scope": "reference_without_source_content_hash_canonical_json_utf8",
+        "notes": "中文来源做法整理，非逐字原文，不代表个体适用性或商品成分确认。哈希为整理稿哈希，覆盖本条目除 source.content_hash 外全部字段；JSON 按键排序、紧凑分隔、保留 Unicode 后以 UTF-8 编码计算 SHA-256，非网页原文哈希。本条整理关火加盖法，时间按来源的蛋大小区分；来源未给蛋的总数量。",
+        "content_hash": "dbba9bce8fa3a9bceacc74204ebc536f2dbf531343c96baa62c82c31f22419d0"
+      }
+    },
+    {
+      "id": "source-plain-rice",
+      "meal_types": [
+        "breakfast",
+        "lunch",
+        "dinner"
+      ],
+      "name": "清水长粒米饭",
+      "ingredient_food": "大米",
+      "ingredients": [
+        "大米",
+        "水"
+      ],
+      "steps": [
+        "按来源的长粒米批量示例，将 1 杯生长粒米与 1¾ 至 2 杯水放入约 2 至 3 夸脱的锅中；此为烹饪比例，不是个人建议份量。",
+        "加热至沸腾，开始沸腾时搅拌一两次，转小火并盖紧锅盖。",
+        "小火煮 15 分钟；若米未软或水未吸收，重新加盖续煮 2 至 4 分钟，搅拌后盛出。"
+      ],
+      "no_added_oil": true,
+      "no_added_salt": true,
+      "source": {
+        "title": "University of Nebraska–Lincoln — All About Cooking Rice",
+        "url": "https://food.unl.edu/article/nutrition-education-program-nep/all-about-cooking-rice/",
+        "kind": "source_based_notes",
+        "hash_algorithm": "sha256",
+        "hash_scope": "reference_without_source_content_hash_canonical_json_utf8",
+        "notes": "中文来源做法整理，非逐字原文，不代表个体适用性或商品成分确认。哈希为整理稿哈希，覆盖本条目除 source.content_hash 外全部字段；JSON 按键排序、紧凑分隔、保留 Unicode 后以 UTF-8 编码计算 SHA-256，非网页原文哈希。仅整理 Basics of Cooking Rice 中的长粒米基础做法；盐和黄油或人造黄油在原文明确可选，本条不添加。未采用同页另列的 Easy Stir Fry 菜谱。",
+        "content_hash": "86fb35e01e6bb8cd2cad7450e53f2fa6e1fb67d45c4b6929c55c6ed6da36e28d"
+      }
+    },
+    {
+      "id": "source-boiled-potato",
+      "meal_types": [
+        "breakfast",
+        "lunch",
+        "dinner"
+      ],
+      "name": "清水煮土豆",
+      "ingredient_food": "土豆",
+      "ingredients": [
+        "土豆",
+        "水"
+      ],
+      "steps": [
+        "选无发绿、无严重发芽或皱缩的土豆；充分冲洗并刷去泥土，保留正常外皮。",
+        "用少量水加盖水煮：整颗土豆煮 30 至 40 分钟，切块土豆煮 20 至 30 分钟。"
+      ],
+      "no_added_oil": true,
+      "no_added_salt": true,
+      "source": {
+        "title": "Montana State University Extension — Potatoes",
+        "url": "https://www.montana.edu/extension/buyeatlivebetter/other_nep_resources/fact_sheets/potatoes/",
+        "kind": "source_based_notes",
+        "hash_algorithm": "sha256",
+        "hash_scope": "reference_without_source_content_hash_canonical_json_utf8",
+        "notes": "中文来源做法整理，非逐字原文，不代表个体适用性或商品成分确认。哈希为整理稿哈希，覆盖本条目除 source.content_hash 外全部字段；JSON 按键排序、紧凑分隔、保留 Unicode 后以 UTF-8 编码计算 SHA-256，非网页原文哈希。仅整理 Buying、Preparing 和 Boiling 的基础内容；来源未给食材份量及具体水量，不补写。未采用另列的薯泥、配料建议或 Featured Recipes。",
+        "content_hash": "fb7c29f41d3061408586b1544b8ac04f503bcadb2edb8e5d962e601ec53aa080"
+      }
+    },
+    {
+      "id": "source-boiled-carrot",
+      "meal_types": [
+        "breakfast",
+        "lunch",
+        "dinner"
+      ],
+      "name": "清水煮胡萝卜",
+      "ingredient_food": "胡萝卜",
+      "ingredients": [
+        "胡萝卜",
+        "水"
+      ],
+      "steps": [
+        "胡萝卜去皮，或用刷子充分刷去泥土，再切成圆片。",
+        "放入水中煮 5 至 7 分钟；来源未给食材份量或具体水量。",
+        "新鲜蔬菜与生肉及生肉汁分开放置，避免交叉污染。"
+      ],
+      "no_added_oil": true,
+      "no_added_salt": true,
+      "source": {
+        "title": "Purdue Extension FoodLink — carrot",
+        "url": "https://extension.purdue.edu/foodlink/food.php?food=carrot",
+        "kind": "source_based_notes",
+        "hash_algorithm": "sha256",
+        "hash_scope": "reference_without_source_content_hash_canonical_json_utf8",
+        "notes": "中文来源做法整理，非逐字原文，不代表个体适用性或商品成分确认。哈希为整理稿哈希，覆盖本条目除 source.content_hash 外全部字段；JSON 按键排序、紧凑分隔、保留 Unicode 后以 UTF-8 编码计算 SHA-256，非网页原文哈希。仅整理 Preparation 中的 Boil 方法及同页食品安全提示；未采用另列的煎炒、烘烤或配料搭配。",
+        "content_hash": "f99b7abd27f18221cdcf71241159b42d9dc6d451163f91cb548ccb6a4e85f100"
+      }
+    }
+  ]
+}

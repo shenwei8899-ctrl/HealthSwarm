@@ -271,6 +271,7 @@ async def test_ordinary_consultation_contract_authorization_and_idempotency(fami
 
     # 固定数据库事实，UTC 文本 oracle 不调用生产格式化函数。
     timestamps = [datetime(2026, 10, 10, 3, 4, 5, 123456), datetime(2026, 10, 11, 3, 4, 5, 654321)]
+    titles = ["合成首问：早餐如何搭配", "合成首问：午餐如何搭配"]
     async with sessions() as session:
         bindings = (
             await session.scalars(select(HealthConsultation).order_by(HealthConsultation.conversation_id))
@@ -294,6 +295,11 @@ async def test_ordinary_consultation_contract_authorization_and_idempotency(fami
             assert await session.scalar(select(func.count()).select_from(model)) == 0
         assert await session.scalar(select(func.count()).select_from(Project)) == 2
         assert await session.scalar(select(func.count()).select_from(Conversation)) == 2
+        # 首问与会话标题独立落盘，目录必须返回合成首问而非实现中的默认标题。
+        for binding, title, created_at in zip(bindings, titles, timestamps, strict=True):
+            conversation = await session.get(Conversation, binding.conversation_id)
+            conversation.title = "合成会话标题"
+            session.add(Message(conversation_id=conversation.id, role="user", content=title, created_at=created_at))
         await session.commit()
 
     expected_items = [
@@ -303,6 +309,8 @@ async def test_ordinary_consultation_contract_authorization_and_idempotency(fami
             "agent_slug": "health-consultation",
             "business_date": None,
             "created_at": "2026-10-11T03:04:05.654321Z",
+            "title": titles[1],
+            "unavailable": False,
         },
         {
             "thread_id": responses[0]["thread_id"],
@@ -310,6 +318,8 @@ async def test_ordinary_consultation_contract_authorization_and_idempotency(fami
             "agent_slug": "health-consultation",
             "business_date": None,
             "created_at": "2026-10-10T03:04:05.123456Z",
+            "title": titles[0],
+            "unavailable": False,
         },
     ]
     denied = await client.get(path, headers=headers)

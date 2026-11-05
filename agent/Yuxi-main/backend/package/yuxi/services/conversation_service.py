@@ -49,13 +49,18 @@ MODEL_HISTORY_METADATA_KEYS = frozenset(
 )
 
 
-async def require_user_conversation(conv_repo: ConversationRepository, thread_id: str, uid: str):
+async def require_user_conversation(
+    conv_repo: ConversationRepository, thread_id: str, uid: str, *, allow_stale_reference_results=False
+):
     conversation = await conv_repo.get_conversation_by_thread_id(thread_id)
     if not conversation or conversation.uid != str(uid) or conversation.status == "deleted":
         raise HTTPException(status_code=404, detail="对话线程不存在")
     if conversation.agent_id in HEALTH_AGENT_BACKENDS:
         try:
-            await HealthConsultationRepository(conv_repo.db).authorize(str(uid), thread_id, preview_history=True)
+            await HealthConsultationRepository(conv_repo.db).authorize(
+                str(uid), thread_id, preview_history=True,
+                allow_stale_reference_results=allow_stale_reference_results,
+            )
         except HealthVisionError as exc:
             raise HTTPException(status_code=404, detail="对话线程不存在或无权访问") from exc
     return conversation
@@ -462,7 +467,9 @@ async def get_thread_history_view(
 ) -> dict:
     """读取线程、Run 与历史消息，保留独立的已读写操作。"""
     conv_repo = ConversationRepository(db)
-    conversation = await require_user_conversation(conv_repo, thread_id, str(current_uid))
+    conversation = await require_user_conversation(
+        conv_repo, thread_id, str(current_uid), allow_stale_reference_results=True
+    )
 
     messages = await conv_repo.get_messages(conversation.id)
     messages = [
@@ -472,6 +479,47 @@ async def get_thread_history_view(
     ]
 
     runs = await conv_repo.list_agent_runs_for_history(conversation.id)
+    unverified_reference_runs = set()
+    reference_displays = {}
+    if conversation.agent_id == "health-meal-planner" and runs:
+        import json
+
+        from yuxi.services.reference_meal_plan_types import REFERENCE_CATALOG_CHAIN_VERSION
+        from yuxi.services.reference_meal_plan_service import read_reference_plan_in_session, reference_plan_display
+        from yuxi.storage.postgres.models_health import HealthInitialPlanPreview
+
+        previews = (
+            await db.scalars(
+                select(HealthInitialPlanPreview).where(
+                    HealthInitialPlanPreview.actor_uid == str(current_uid),
+                    HealthInitialPlanPreview.conversation_id == conversation.id,
+                    HealthInitialPlanPreview.run_id.in_([run.id for run in runs]),
+                )
+            )
+        ).all()
+        reference_previews = {
+            preview.id: preview for preview in previews if preview.selection.get("mode") == "reference"
+        }
+        run_map = {run.id: run for run in runs}
+        for message in messages:
+            run = run_map.get(message.run_id)
+            if message.role != "assistant" or run is None or run.output_message_id != message.id:
+                continue
+            try:
+                payload = json.loads(message.content)
+            except (TypeError, ValueError):
+                continue
+            preview = reference_previews.get(str(payload.get("preview_id"))) if isinstance(payload, dict) else None
+            if preview is None:
+                continue
+            if (preview.snapshot or {}).get("catalog_chain_version") != REFERENCE_CATALOG_CHAIN_VERSION:
+                unverified_reference_runs.add(run.id)
+                continue
+            try:
+                _, verified = await read_reference_plan_in_session(db, str(current_uid), preview.id)
+                reference_displays[message.id] = await reference_plan_display(db, verified)
+            except HealthVisionError:
+                unverified_reference_runs.add(run.id)
     if conversation.agent_id in EDUCATION_HEALTH_AGENTS:
         run_map = {run.id: run for run in runs}
         public_messages = []
@@ -530,7 +578,8 @@ async def get_thread_history_view(
                     break
 
         health_answer = conversation.agent_id in EDUCATION_HEALTH_AGENTS and msg.role == "assistant"
-        extra_metadata = {} if health_answer else _serialize_history_metadata(msg)
+        unverified_reference = msg.role == "assistant" and msg.run_id in unverified_reference_runs
+        extra_metadata = {} if health_answer or unverified_reference else _serialize_history_metadata(msg)
         request_id = extra_metadata.get("request_id")
         if msg.role == "user" and request_id and not extra_metadata.get("attachments"):
             extra_metadata["attachments"] = attachments_by_request_id.get(str(request_id), [])
@@ -538,7 +587,7 @@ async def get_thread_history_view(
         msg_dict = {
             "id": msg.id,
             "type": role_type_map.get(msg.role, msg.role),
-            "content": msg.content,
+            "content": "这份餐单的商城食材尚未完成核对，请重新安排。" if unverified_reference else msg.content,
             "created_at": msg.created_at.isoformat() if msg.created_at else None,
             "run_id": msg.run_id,
             "request_id": msg.request_id,
@@ -556,19 +605,46 @@ async def get_thread_history_view(
         }
 
         if msg.role == "assistant":
-            if health_answer:
+            if health_answer or unverified_reference:
                 msg_dict["reasoning_content"] = ""  # 校验的正式正文不包含模型审计推理或工具候选。
             else:
                 msg_dict.update(parse_assistant_message_body(msg.content, msg.extra_metadata or {}))
 
-        if msg.tool_calls and not health_answer:
+        if msg.tool_calls and not health_answer and not unverified_reference:
             msg_dict["tool_calls"] = [_serialize_tool_call(tool_call) for tool_call in msg.tool_calls]
 
+        if msg.id in reference_displays:
+            msg_dict["content"] = json.dumps(reference_displays[msg.id], ensure_ascii=False)
         history.append(msg_dict)
 
+    if conversation.agent_id == "health-consultation":
+        from yuxi.services.health_chat_meal_service import chat_meal_receipts
+
+        meals = await chat_meal_receipts(db, str(current_uid), {"thread_id": thread_id})
+        for meal in meals:
+            for request_id in meal.pop("request_ids", []):
+                matching = [
+                    row for row in history if row.get("request_id") == request_id and row["type"] in {"human", "ai"}
+                ]
+                if matching:
+                    matching[-1].setdefault("recorded_meals", []).append(meal)
     logger.info(f"Loaded {len(history)} messages with feedback for thread {thread_id}")
+    related_threads = []
+    if conversation.agent_id == "health-consultation":
+        for child, binding in await HealthConsultationRepository(db).conversation_threads(
+            str(current_uid), [thread_id]
+        ):
+            if child.thread_id != thread_id:
+                related_threads.append(
+                    {
+                        "thread_id": child.thread_id,
+                        "member_id": binding.member_id,
+                        "task_type": "reference_meal_preview",
+                    }
+                )
     return {
         "thread": thread,
+        "related_threads": related_threads,
         "runs": [
             {
                 **_serialize_run_trace(run),

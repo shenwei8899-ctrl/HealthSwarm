@@ -18,6 +18,7 @@ HEALTH_SCOPES = {
     "ai_use",
     "professional_review",
 }
+FAMILY_REPORT_SCOPES = frozenset({"report_view", "report_upload", "profile_edit"})
 NUTRIENTS = {"energy_kcal": "kcal", "protein_g": "g", "fat_g": "g", "carbohydrate_g": "g", "sodium_mg": "mg"}
 HEALTH_TASK_TYPES = {
     "onboarding_preparation_v1",
@@ -27,7 +28,7 @@ HEALTH_TASK_TYPES = {
     "nutrition_knowledge_prepare_v1",
     "exclusive_plan_v1",
 }
-MEAL_PROMPT_VERSION = "health-meal-v2"
+MEAL_PROMPT_VERSION = "health-meal-v3"
 ReportPageErrorCode = Literal[
     "provider_unavailable",
     "provider_timeout",
@@ -174,13 +175,15 @@ class ConsultationResult(HealthDTO):
 
 
 class ConsultationListItem(HealthDTO):
-    """咨询列表仅公开线程元信息，不包含正文或反馈选择。"""
+    """咨询目录返回已授权的短标题，不返回完整正文或反馈选择。"""
 
     thread_id: UUID
     member_id: UUID
     agent_slug: Literal["health-consultation"]
     business_date: date | None
     created_at: str
+    title: str = Field(max_length=121)
+    unavailable: bool
 
 
 class ConsultationListResult(HealthDTO):
@@ -189,6 +192,20 @@ class ConsultationListResult(HealthDTO):
     items: list[ConsultationListItem]
     has_more: bool
     next_offset: int | None
+
+
+class ConsultationDirectoryLink(HealthDTO):
+    """旧客户端映射只是读取提示，服务端仍独立核对每条历史授权。"""
+
+    root_thread_id: UUID
+    thread_id: UUID
+
+
+class ConsultationDirectoryInput(HealthDTO):
+    """批量恢复当前目录页的旧标题，不保存或迁移关系。"""
+
+    offset: int = Field(default=0, ge=0)
+    links: list[ConsultationDirectoryLink] = Field(max_length=1000)
 
 
 class VisionTaskInput(HealthDTO):
@@ -358,6 +375,35 @@ class MealPhoto(HealthDTO):
     upload_page_index: Literal[0] = 0
 
 
+class MealNutritionReference(HealthDTO):
+    """用户只选原件版本，营养数值由服务端重新读取。"""
+
+    reference: str = Field(pattern=r"^knowledge://[A-Za-z0-9_-]{1,80}/[A-Za-z0-9_-]{1,64}#[0-9a-f]{64}$")
+    version: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class MealPhotoEstimate(HealthDTO):
+    """原始照片估计只由 worker 绑定出处，实际摄入克重独立调整。"""
+
+    grams: Decimal = Field(gt=0, le=10000)
+    nutrients: dict[str, Decimal | None]
+    draft_id: UUID | None = None
+
+    @field_validator("nutrients")
+    @classmethod
+    def finite_per100g(cls, value):
+        """每百克可食部分使用受控单位，未知不得填零。"""
+        limits = {"energy_kcal": 900, "protein_g": 100, "fat_g": 100, "carbohydrate_g": 100, "sodium_mg": 40000}
+        if set(value) - limits.keys() or any(
+            amount is not None and (not amount.is_finite() or amount < 0 or amount > limits[code])
+            for code, amount in value.items()
+        ):
+            raise ValueError("照片营养估计超出每百克有效范围")
+        if sum((value.get(code) or Decimal(0)) for code in ("protein_g", "fat_g", "carbohydrate_g")) > 100:
+            raise ValueError("每百克宏量营养素总和不能超过100克")
+        return {code: value.get(code) for code in NUTRIENTS}
+
+
 class MealItem(HealthDTO):
     item_id: UUID
     name: str = Field(min_length=1, max_length=120)
@@ -370,6 +416,9 @@ class MealItem(HealthDTO):
     uncertainties: list[str] = Field(default_factory=list, max_length=20)
     food_id: UUID | None = None
     recipe_version_id: UUID | None = None
+    nutrition_source: MealNutritionReference | None = None
+    photo_estimate: MealPhotoEstimate | None = None
+    servings: Decimal | None = Field(default=None, gt=0, le=1000)
     grams: Decimal | None = Field(default=None, gt=0, le=10000)
     portion_reference_id: UUID | None = None
     portion_count: Decimal | None = Field(default=None, gt=0, le=1000)
@@ -381,8 +430,22 @@ class MealItem(HealthDTO):
     @model_validator(mode="after")
     def consistent_mapping_and_portion(self):
         """两种数据映射与数量来源互斥，参考份量不能伪装称重。"""
-        if self.food_id and self.recipe_version_id:
+        if (
+            sum(
+                bool(value)
+                for value in (self.food_id, self.recipe_version_id, self.nutrition_source, self.photo_estimate)
+            )
+            > 1
+        ):
             raise ValueError("食品与食谱映射只能选择一种")
+        if self.servings is not None and (
+            self.nutrition_source is None or self.grams is not None or self.portion_reference_id is not None
+        ):
+            raise ValueError("原文份数须关联营养资料，不能同时填写克数或参考规格")
+        if self.nutrition_source and (self.adjustments or self.portion_reference_id):
+            raise ValueError("原文营养不含可验证配方，不能替换油糖或套用其他版本的份量")
+        if self.photo_estimate and (self.adjustments or self.portion_reference_id):
+            raise ValueError("照片估计只能按可食克重换算，不能套用其他配方或份量")
         if self.portion_reference_id:
             if self.grams is not None or self.portion_count is None or self.portion_source != "estimated":
                 raise ValueError("碗勺参考须填写数量、留空克数并标记估算")

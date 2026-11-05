@@ -121,6 +121,8 @@ def test_explicit_product_requests_keep_catalog_obligation(text):
         "不需要买东西，帮我安排晚餐",
         "不用帮我下单，聊聊晚餐",
         "不要推荐商品，下午加餐吃啥",
+        "不要商城推荐，下午加餐吃什么",
+        "不想商品推荐，今晚吃什么",
         "不需要购买商品，下午加餐吃什么",
     ],
 )
@@ -171,7 +173,9 @@ async def test_meal_advice_can_finish_without_catalog_round_trips(text):
             [AIMessageChunk(content="合成候选建议，未保存餐单。")],
         ]
     )
-    graph, custom, budget = await catalog_graph(model, [human(text)], system_prompt=consultation_prompt())
+    graph, custom, budget = await catalog_graph(
+        model, [human(text)], system_prompt=consultation_prompt(), categories=True
+    )
     assert budget.calls == len(model.calls) == 2
     assert [call["tool_choice"] for call in model.calls] == ["any", None]
     assert [item["content"] for item in custom if item["type"] == "health_final_answer_delta"] == [

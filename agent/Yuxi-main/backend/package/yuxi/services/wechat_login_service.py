@@ -187,6 +187,7 @@ class WechatLoginService:
                     "name": family.name,
                     "is_owner": family.owner_uid == user.uid,
                     "onboarding_required": not ready,
+                    "invitation_review_pending": bool(member and member.invitation_review_pending),
                 }
             )
         return {"account": {"id": user.id, "uid": user.uid, "name": user.username}, "families": families}

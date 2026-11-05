@@ -7,6 +7,7 @@ from sqlalchemy import select, text
 from yuxi.repositories.daily_arrangement_repository import DailyArrangementRepository
 from yuxi.services.family_service import FamilyService
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.reference_meal_plan_types import REFERENCE_CATALOG_CHAIN_VERSION
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_health import HealthDailyMealPlan, HealthInitialPlanPreview
 from yuxi.utils.datetime_utils import utc_now_naive
@@ -34,7 +35,6 @@ async def current_row(session, uid, family_id, day, *, lock=False):
 async def legacy_sources(session, uid, family_id, day):
     """没有关联记录时读取已有正式安排或最近完成的参考结果。"""
     from yuxi.services.daily_arrangement_service import authorize_sources
-    from yuxi.services.reference_meal_plan_service import read_reference_plan_in_session
     from yuxi.repositories.health_task_repository import HealthTaskRepository
     from yuxi.storage.postgres.models_business import AgentRun
     import json
@@ -67,112 +67,186 @@ async def legacy_sources(session, uid, family_id, day):
         message = await HealthTaskRepository(session).final_message(run)
         preview_id = json.loads(message.content).get("preview_id")
         if preview_id:
-            _, plan = await read_reference_plan_in_session(session, uid, preview_id)
-            return {meal["meal_type"]: {"kind": "reference", "id": preview_id} for meal in plan["meals"]}
+            preview = await session.get(HealthInitialPlanPreview, preview_id)
+            if preview is None or preview.actor_uid != uid:
+                continue
+            if (preview.snapshot or {}).get("catalog_chain_version") != REFERENCE_CATALOG_CHAIN_VERSION:
+                return {
+                    meal["meal_type"]: {"kind": "reference", "id": preview_id}
+                    for meal in preview.snapshot.get("meals", [])
+                    if meal.get("meal_type") in MEALS
+                }
+            return {
+                meal["meal_type"]: {"kind": "reference", "id": preview_id}
+                for meal in preview.snapshot["meals"]
+            }
     return {}
 
 
-async def read_current_plan(uid, family_id, day):
+async def read_current_plan(uid, family_id, day, session=None):
     """回读每个来源并重验权限，结果不会触发模型或写入。"""
     from yuxi.services.daily_arrangement_service import authorize_sources
     from yuxi.services.reference_meal_plan_service import read_reference_plan_in_session
 
-    async with pg_manager.get_async_session_context() as session:
-        row = await current_row(session, uid, family_id, day)
-        refs = dict(row.meal_sources) if row else await legacy_sources(session, uid, family_id, day)
-        sources, meals = {}, []
-        for kind in MEALS:
-            ref = refs.get(kind)
-            if not ref:
+    if session is None:
+        async with pg_manager.get_async_session_context() as owned:
+            return await read_current_plan(uid, family_id, day, session=owned)
+    from yuxi.services.meal_dish_service import selected_source, attach_origins
+
+    row = await current_row(session, uid, family_id, day)
+    refs = dict(row.meal_sources) if row else await legacy_sources(session, uid, family_id, day)
+    sources, meals, needs_regeneration, regeneration_participants = {}, [], [], {}
+
+    def mark_reference_regeneration(kind, preview):
+        """来源失效时仅提示重排，并保留已存餐单供审计。"""
+        needs_regeneration.append(kind)
+        old_meal = next((item for item in preview.snapshot.get("meals", []) if item.get("meal_type") == kind), {})
+        participants = old_meal.get("members", preview.snapshot.get("members", []))
+        ids = sorted({str(member["id"]) for member in participants if isinstance(member, dict) and member.get("id")})
+        if ids:
+            regeneration_participants[kind] = ids
+
+    stale_codes = {
+        "reference_product_changed", "reference_source_unavailable", "source_invalidated",
+        "reference_restriction_conflict", "reference_restriction_unverified",
+    }
+    for kind in MEALS:
+        ref = refs.get(kind)
+        if not ref:
+            continue
+        if ref["kind"] == "reference":
+            preview = await session.get(HealthInitialPlanPreview, ref["id"])
+            if (
+                preview is not None
+                and preview.actor_uid == uid
+                and (preview.snapshot or {}).get("catalog_chain_version") != REFERENCE_CATALOG_CHAIN_VERSION
+            ):
+                mark_reference_regeneration(kind, preview)
                 continue
-            key = (ref["kind"], ref["id"], ref.get("version"))
-            if key not in sources:
-                if ref["kind"] == "reference":
+        key = (ref["kind"], ref["id"], ref.get("version"))
+        if key not in sources:
+            if ref["kind"] == "reference":
+                try:
                     _, source = await read_reference_plan_in_session(session, uid, ref["id"])
-                    if (
-                        source.get("plan_date") != day.isoformat()
-                        or source.get("sources", {}).get("family_id") != family_id
-                    ):
-                        raise HealthVisionError("daily_plan_source_invalid", "餐单日期或家庭不一致", 409)
-                elif ref["kind"] == "formal":
-                    _, arrangement = await DailyArrangementRepository(session, uid, family_id).context(day)
-                    if (
-                        not arrangement
-                        or arrangement.id != ref["id"]
-                        or not arrangement.snapshot
-                        or arrangement.snapshot.get("version") != ref.get("version")
-                    ):
-                        raise HealthVisionError("daily_plan_source_changed", "今日计划来源已变化，请重新核对", 409)
-                    await authorize_sources(session, uid, arrangement, published=True)
-                    source = arrangement.snapshot
-                else:
-                    raise HealthVisionError("daily_plan_source_invalid", "今日计划来源无法核对", 409)
-                sources[key] = source
-            source = sources[key]
-            meal = next((item for item in source["meals"] if item.get("meal_type", item.get("type")) == kind), None)
-            if meal is None:
-                raise HealthVisionError("daily_plan_source_invalid", "今日计划餐次无法核对", 409)
-            meals.append(
+                except HealthVisionError as error:
+                    if error.code not in stale_codes or preview is None:
+                        raise
+                    mark_reference_regeneration(kind, preview)
+                    continue
+                if (
+                    source.get("plan_date") != day.isoformat()
+                    or source.get("sources", {}).get("family_id") != family_id
+                ):
+                    raise HealthVisionError("daily_plan_source_invalid", "餐单日期或家庭不一致", 409)
+            elif ref["kind"] == "formal":
+                _, arrangement = await DailyArrangementRepository(session, uid, family_id).context(day)
+                if (
+                    not arrangement
+                    or arrangement.id != ref["id"]
+                    or not arrangement.snapshot
+                    or arrangement.snapshot.get("version") != ref.get("version")
+                ):
+                    raise HealthVisionError("daily_plan_source_changed", "今日计划来源已变化，请重新核对", 409)
+                await authorize_sources(session, uid, arrangement, published=True)
+                source = arrangement.snapshot
+            elif ref["kind"] == "selection":
+                source = await selected_source(session, uid, family_id, ref, kind)
+            else:
+                raise HealthVisionError("daily_plan_source_invalid", "今日计划来源无法核对", 409)
+            sources[key] = source
+        source = sources[key]
+        meal = next((item for item in source["meals"] if item.get("meal_type", item.get("type")) == kind), None)
+        if meal is None:
+            raise HealthVisionError("daily_plan_source_invalid", "今日计划餐次无法核对", 409)
+        if ref["kind"] == "reference":
+            from yuxi.services.reference_meal_plan_service import reference_meal_media
+
+            try:
+                meal = await reference_meal_media(session, meal)
+                from yuxi.services.reference_recipe_presentation import attach_recipe_products
+                from yuxi.services.reference_meal_plan_service import current_reference_items
+
+                current_products = await current_reference_items(source.get("purchase_items", []))
+                products = [{**p, "image_url": current_products[str(p["sku_id"])].get("image_url", "")} for p in source.get("purchase_items", [])]
+                meal = attach_recipe_products(meal, products)
+            except HealthVisionError as error:
+                if error.code not in stale_codes or preview is None:
+                    raise
+                mark_reference_regeneration(kind, preview)
+                continue
+        if ref["kind"] != "selection":
+            meal = attach_origins(meal, ref, day, kind)
+        meals.append(
+            {
+                "meal_type": kind,
+                "source": ref,
+                "meal": meal,
+                "members": meal.get("members", source.get("members", [])),
+            }
+        )
+    purchase_options = []
+    for key, source in sources.items():
+        selected = {
+            item["meal_type"] for item in meals if item["source"]["kind"] == key[0] and item["source"]["id"] == key[1]
+        }
+        if not selected:
+            continue
+        original = {item.get("meal_type", item.get("type")) for item in source["meals"]}
+        if key[0] == "reference" and source.get("purchase_items"):
+            from yuxi.services.reference_meal_plan_service import select_reference_purchase_items
+
+            items = select_reference_purchase_items(source, sorted(selected))
+            ingredients = {
+                ingredient
+                for meal in source["meals"]
+                if meal["meal_type"] in selected
+                for dish in meal["dishes"]
+                for ingredient in dish["ingredients"]
+            }
+            if not items:
+                continue
+            purchase_options.append(
                 {
-                    "meal_type": kind,
-                    "source": ref,
-                    "meal": meal,
-                    "members": meal.get("members", source.get("members", [])),
+                    "kind": "reference",
+                    "id": key[1],
+                    "meal_types": sorted(selected),
+                    "items": items,
+                    "ingredient_labels": {
+                        original: translated
+                        for item in meals
+                        if item["source"]["kind"] == key[0] and item["source"]["id"] == key[1]
+                        for dish in item["meal"]["dishes"]
+                        if dish.get("display_zh")
+                        for original, translated in zip(
+                            dish["ingredients"], dish["display_zh"]["ingredients"], strict=True
+                        )
+                    },
+                    "gaps": [gap for gap in source.get("purchase_gaps", []) if gap["ingredient"] in ingredients],
+                    "quantity_notice": "数量沿用原餐单的采购建议，可能包含其他餐次份量，请核对包装数量。"
+                    if selected != original
+                    else "请核对商品与包装数量。",
                 }
             )
-        purchase_options = []
-        for key, source in sources.items():
-            selected = {
-                item["meal_type"]
-                for item in meals
-                if item["source"]["kind"] == key[0] and item["source"]["id"] == key[1]
-            }
-            original = {item.get("meal_type", item.get("type")) for item in source["meals"]}
-            if key[0] == "reference" and source.get("purchase_items"):
-                from yuxi.services.reference_meal_plan_service import select_reference_purchase_items
-
-                items = select_reference_purchase_items(source, sorted(selected))
-                ingredients = {
-                    ingredient
-                    for meal in source["meals"]
-                    if meal["meal_type"] in selected
-                    for dish in meal["dishes"]
-                    for ingredient in dish["ingredients"]
-                }
-                if not items:
-                    continue
-                purchase_options.append(
-                    {
-                        "kind": "reference",
-                        "id": key[1],
-                        "meal_types": sorted(selected),
-                        "items": items,
-                        "gaps": [gap for gap in source.get("purchase_gaps", []) if gap["ingredient"] in ingredients],
-                        "quantity_notice": "数量沿用原餐单的采购建议，可能包含其他餐次份量，请核对包装数量。"
-                        if selected != original
-                        else "请核对商品与包装数量。",
-                    }
-                )
-            if key[0] == "formal" and len(selected) == 3 and selected == original:
-                purchase_options.append(
-                    {"kind": "formal", "id": key[1], "version": key[2], "meal_types": sorted(selected)}
-                )
-        formal = None
-        if len(sources) == 1 and len(meals) == 3:
-            key, source = next(iter(sources.items()))
-            if key[0] == "formal":
-                formal = source
-        pending = await pending_request(session, row) if row else None
-        return {
-            "status": "ready" if meals else "absent",
-            "id": row.id if row else None,
-            "version": row.version if row else 0,
-            "date": day.isoformat(),
-            "meals": meals,
-            "formal_arrangement": formal,
-            "purchase_options": purchase_options,
-            "pending": pending,
-        }
+        if key[0] == "formal" and len(selected) == 3 and selected == original:
+            purchase_options.append({"kind": "formal", "id": key[1], "version": key[2], "meal_types": sorted(selected)})
+    formal = None
+    if len(sources) == 1 and len(meals) == 3:
+        key, source = next(iter(sources.items()))
+        if key[0] == "formal":
+            formal = source
+    pending = await pending_request(session, row) if row else None
+    return {
+        "status": "ready" if meals else "needs_regeneration" if needs_regeneration else "absent",
+        "id": row.id if row else None,
+        "version": row.version if row else 0,
+        "date": day.isoformat(),
+        "meals": meals,
+        "formal_arrangement": formal,
+        "purchase_options": purchase_options,
+        "pending": pending,
+        "needs_regeneration": needs_regeneration,
+        "regeneration_participants": regeneration_participants,
+    }
 
 
 async def pending_request(session, row):
@@ -196,6 +270,12 @@ async def pending_request(session, row):
             result.update(
                 status="needs_input",
                 questions=task.result.questions,
+                member_id=task.member_id,
+                selection=saved.get("selection"),
+            )
+        elif task.result and task.result.result_type == "meal_plan_candidates":
+            result.update(
+                status="reference_candidates",
                 member_id=task.member_id,
                 selection=saved.get("selection"),
             )

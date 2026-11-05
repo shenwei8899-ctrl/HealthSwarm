@@ -7,13 +7,17 @@ from uuid import UUID
 from pydantic import Field, model_validator
 
 from yuxi.services.health_vision_types import HealthDTO
+from yuxi.services.recipe_translation_types import RecipeChineseDisplay
 
 REFERENCE_TOOLS = (
     "get_reference_plan_context",
+    "find_reference_products",
     "search_reference_recipes",
     "read_reference_recipe",
     "save_reference_meal_plan",
 )
+
+REFERENCE_CATALOG_CHAIN_VERSION = 3
 
 
 class ReferenceSelection(HealthDTO):
@@ -39,6 +43,13 @@ class ReferenceSelection(HealthDTO):
         return self
 
 
+class RecipeNutritionHighlight(HealthDTO):
+    """只摘录本轮商城商品实际提供的营养说明。"""
+
+    sku_id: str = Field(min_length=1, max_length=80)
+    quote: str = Field(min_length=2, max_length=800)
+
+
 class ReferenceDish(HealthDTO):
     """菜名和食材、步骤来自本 Run 打开的原食谱。"""
 
@@ -49,6 +60,10 @@ class ReferenceDish(HealthDTO):
     steps: list[str] = Field(min_length=1, max_length=20)
     portion_quote: str | None = Field(default=None, max_length=400)
     nutrition_quote: str | None = Field(default=None, max_length=1200)
+    display_zh: RecipeChineseDisplay | None = None
+    cooking_minutes: int | None = Field(default=None, ge=1, le=1440, strict=True,
+                                       description="预计总制作分钟数，包含备菜；按原文步骤估算，不是商品事实")
+    nutrition_highlights: list[RecipeNutritionHighlight] = Field(default_factory=list, max_length=8)
 
 
 class ReferenceMeal(HealthDTO):
@@ -70,7 +85,7 @@ class ReferencePurchaseGap(HealthDTO):
     """未选商品必须指向菜谱中的食材并说明实际原因。"""
 
     ingredient: str = Field(min_length=1, max_length=1200)
-    reason: Literal["no_match", "needs_confirmation", "not_sold", "catalog_unavailable"]
+    reason: Literal["no_match", "needs_confirmation", "not_sold", "catalog_unavailable", "optional_not_selected"]
     detail: str = Field(min_length=2, max_length=300, pattern=r"\S")
 
 

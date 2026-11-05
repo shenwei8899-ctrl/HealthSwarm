@@ -310,9 +310,12 @@ async def test_actual_graph_only_binds_fixed_read_tools_and_checks_each_model_tu
         context=context,
     )
     assert result["messages"][-1].content == "合成记录解释，不是医疗建议"
-    assert tool_lists and all(
-        set(names) == (set(service.HEALTH_TOOL_NAMES) | {"finalize_health_answer"}) for names in tool_lists
-    )
+    # 当前轮尚未读取商城分类，固定角色的查询和选品工具保持门控。
+    expected_tools = (set(service.HEALTH_TOOL_NAMES) | {"finalize_health_answer"}) - {
+        "find_food_packages",
+        "select_food_products",
+    }
+    assert tool_lists and all(set(names) == expected_tools for names in tool_lists)
     assert system_prompts and all(prompt.startswith(service.CONSULTATION_PROMPT) for prompt in system_prompts)
     assert all("slug: family-nutritionist" in prompt and "## 咨询流程" in prompt for prompt in system_prompts)
     assert ownership.await_count == 9  # 构图一次，四个模型轮次在预留前后各校验一次。

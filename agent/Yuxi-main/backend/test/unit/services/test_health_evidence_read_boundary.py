@@ -278,7 +278,7 @@ async def test_generic_history_keeps_legacy_assistant_and_tool_messages(monkeypa
         (42, "ai", "普通旧正文"),
         (43, "tool", "普通工具结果"),
     ]
-    authorize.assert_awaited_once_with(repo, "thread", "actor")
+    authorize.assert_awaited_once_with(repo, "thread", "actor", allow_stale_reference_results=True)
     gate.assert_not_awaited()
 
 

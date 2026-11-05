@@ -172,9 +172,15 @@ test('ordinary users have one profile editor and no manual link page',()=>{
 test('typed requests can select their own purpose before readiness is checked',()=>{
   const chat=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
   const disabled=chat.match(/class="send-button" aria-label="发送"[^>]*:disabled="([^"]+)"/)[1]
-  const canSend=new Function('chatBusy','draftSaving','draftError','task','profileLoading=false','returning=false','entryError=""',`return !(${disabled})`)
+  const blocked=chat.match(/const sendBlocked=computed\(\(\)=>([^\r\n]+)\)/)[1]
+  const evaluate=new Function('deps',`const {inputBusy,sending,draftSaving,draftError,familyState,task,entryReady}=deps;const sendBlocked=(${blocked});return !(${disabled})`)
+  const canSend=(chatBusy,draftSaving,draftError,task,entryReady=false)=>evaluate({inputBusy:{value:chatBusy},sending:{value:false},draftSaving:{value:draftSaving},draftError:{value:draftError},familyState:{busy:false},task:{value:task},entryReady:{value:entryReady}})
   assert.equal(canSend(false,false,'',{available:false}),true)
   assert.equal(canSend(true,false,'',{available:true}),false)
+  assert.equal(canSend(false,true,'',{available:true}),false)
+  assert.equal(canSend(false,false,'图片尚未读到',{available:true}),false)
+  assert.equal(canSend(false,false,'',{available:true,status:'running'}),false)
+  assert.equal(canSend(false,false,'',{available:true,loading:true},true),false)
 })
 
 

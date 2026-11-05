@@ -75,6 +75,7 @@ class FamilyArchive(Base):
     owner_uid = Column(String, ForeignKey("users.uid"), nullable=False, unique=True)
     name = Column(String(80), nullable=False)
     settings = Column(JSON_VALUE, nullable=False, default=dict)
+    invitation_version = Column(Integer, nullable=False, default=0, server_default="0")
     version = Column(Integer, nullable=False, default=1)
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
@@ -109,6 +110,8 @@ class FamilyMember(Base):
     grant_expires_at = Column(DateTime, nullable=True)
     invite_hash = Column(String(64), nullable=True, unique=True)
     invite_expires_at = Column(DateTime, nullable=True)
+    invitation_review_pending = Column(Boolean, nullable=False, default=False, server_default="false")
+    invitation_analysis_pending = Column(Boolean, nullable=False, default=False, server_default="false")
     updated_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 

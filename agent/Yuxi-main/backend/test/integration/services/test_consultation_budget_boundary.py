@@ -34,7 +34,7 @@ from yuxi.storage.postgres.models_health_budget import HealthAiMonth, HealthAiCa
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
-@pytest.mark.parametrize("state", ["last_reservation", "exhausted", "price_removed"])
+@pytest.mark.parametrize("state", ["last_reservation", "ledger_frozen", "price_removed"])
 async def test_budget_does_not_reauthorize_reserved_call_or_hide_saved_answer(budget_db, monkeypatch, state):
     """真实预算表、真实配置及授权流程证明最后一份预留可外呼，终态仍可回读。"""
     info = ModelInfo(
@@ -71,6 +71,8 @@ async def test_budget_does_not_reauthorize_reserved_call_or_hide_saved_answer(bu
     monkeypatch.setattr(consultation.HealthConsultationRepository, "authorize", AsyncMock(return_value=binding))
     monkeypatch.setattr(consultation.HealthConsultationRepository, "require_attempt", AsyncMock(return_value=run))
     monkeypatch.setattr(consultation.HealthVisionRepository, "require_consent", AsyncMock())
+    # 本夹具只拥有预算表；本例没有记餐，饮食收据由独立记餐和权限用例验证。
+    monkeypatch.setattr("yuxi.services.health_chat_meal_service.chat_meal_receipts", AsyncMock(return_value=[]))
     monkeypatch.setattr(
         consultation.SkillRepository,
         "get_by_slug",
@@ -109,6 +111,7 @@ async def test_budget_does_not_reauthorize_reserved_call_or_hide_saved_answer(bu
     async with original_context() as db:
         account = (await db.scalars(select(HealthAiMonth))).one()
         account.occupied_cny = Decimal("30") if state == "last_reservation" else Decimal("40")
+        account.blocked = state == "ledger_frozen"
 
     if state == "last_reservation":
 

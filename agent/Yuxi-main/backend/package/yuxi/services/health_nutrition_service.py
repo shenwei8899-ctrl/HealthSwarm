@@ -1,4 +1,4 @@
-"""食品版本驱动的确定性营养计算，不接受模型营养值。"""
+"""按服务端验证的资料或照片估计确定性换算营养。"""
 
 import hashlib
 import json
@@ -6,7 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from yuxi.services.health_vision_types import NUTRIENTS, HealthVisionError, MealPayload
 
-CALCULATION_VERSION = "recipe-portions-v2"
+CALCULATION_VERSION = "meal-sources-v4"
 
 
 def input_fingerprint(value: dict) -> str:
@@ -48,7 +48,12 @@ def _round(value: Decimal) -> str:
 
 
 def calculate_nutrition(
-    payload: MealPayload, foods: dict, recipes: dict | None = None, portions: dict | None = None
+    payload: MealPayload,
+    foods: dict,
+    recipes: dict | None = None,
+    portions: dict | None = None,
+    *,
+    references: dict | None = None,
 ) -> dict:
     """按最终可食净重和个人比例计算，油糖只在明确配方中替换。"""
     recipes, portions = recipes or {}, portions or {}
@@ -59,6 +64,25 @@ def calculate_nutrition(
     if not active_items:
         missing.append({"reason": "no_items"})
     for item in active_items:
+        if item.nutrition_source or item.photo_estimate:
+            reference = (
+                item.nutrition_source.reference
+                if item.nutrition_source
+                else f"photo://{item.photo_estimate.draft_id}/{item.item_id}"
+            )
+            source = (references or {}).get(reference)
+            if source is None:
+                raise HealthVisionError("meal_source_unavailable", "请重新匹配营养资料", 409)
+            row, item_missing, raw_totals = calculate_reference_item(item, source)
+            missing.extend(item_missing)
+            sources.append(source)
+            estimated = True
+            if row:
+                items.append(row)
+                for code, amount in raw_totals.items():
+                    if amount is not None:
+                        totals[code] += amount
+            continue
         food, recipe = foods.get(str(item.food_id)), recipes.get(str(item.recipe_version_id))
         grams = item.grams
         portion = portions.get(str(item.portion_reference_id))
@@ -168,3 +192,32 @@ def calculate_nutrition(
         },
         "calculation_version": CALCULATION_VERSION,
     }
+
+
+def calculate_reference_item(item, source):
+    """按原文每百克或每份计算，不从体积、照片或原料推算克重。"""
+    per100 = source["basis"] == "per100g"
+    if (per100 and item.servings is not None) or (not per100 and item.grams is not None):
+        raise HealthVisionError("meal_basis_mismatch", "份量须使用所选资料的克数或原文份数", 422)
+    quantity = item.grams if per100 else item.servings
+    if quantity is None or item.share_ratio is None or item.portion_source == "unknown":
+        return None, [{"item_id": str(item.item_id), "reason": "food_or_portion_missing"}], {}
+    factor = quantity * item.share_ratio / (Decimal(100) if per100 else Decimal(1))
+    values, missing, raw_totals = {}, [], {}
+    for code in NUTRIENTS:
+        amount = source["nutrients"].get(code)
+        raw_totals[code] = Decimal(amount) * factor if amount is not None else None
+        values[code] = _round(raw_totals[code]) if amount is not None else None
+        if amount is None:
+            missing.append({"item_id": str(item.item_id), "nutrient": code, "reason": "nutrient_missing"})
+    return (
+        {
+            "item_id": str(item.item_id),
+            "nutrients": values,
+            "eaten_grams": str(quantity * item.share_ratio) if per100 else None,
+            "eaten_servings": None if per100 else str(quantity * item.share_ratio),
+            "basis_label": source["basis_label"],
+        },
+        missing,
+        raw_totals,
+    )

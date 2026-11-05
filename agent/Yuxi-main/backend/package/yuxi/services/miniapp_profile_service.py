@@ -26,6 +26,7 @@ from yuxi.storage.postgres.models_health import (
     HealthGrant,
 )
 from yuxi.utils.datetime_utils import utc_now_naive
+from yuxi.services.health_vision_types import FAMILY_REPORT_SCOPES
 
 
 async def read_miniapp_profile(uid, fid):
@@ -56,6 +57,10 @@ async def start_miniapp_analysis(uid, fid, data):
                 "请由成员本人或已验证的监护人确认分析同意",
                 403,
             )
+        if member.invitation_review_pending:
+            raise HealthVisionError("invitation_review_required", "请先核对并保存本人资料", 409)
+        if data.action == "open_consultation" and member.invitation_analysis_pending:
+            return await profile_result(service, family)
         receipt = await db.get(HealthMiniappProfileReceipt, (uid, str(data.client_request_id)))
         if receipt:
             if receipt.family_id != fid or receipt.fingerprint != digest:
@@ -120,9 +125,24 @@ async def start_miniapp_analysis(uid, fid, data):
             existing = None
             if health_id:
                 grant = await db.get(HealthGrant, (health_id, uid), populate_existing=True)
-                if grant is not None and (grant.revoked_at is not None or "ai_use" not in grant.scopes):
+                if grant is not None and (
+                    grant.revoked_at is not None
+                    or ("ai_use" not in grant.scopes and set(grant.scopes) != FAMILY_REPORT_SCOPES)
+                ):
                     return await profile_result(service, family)
-                if grant is not None:
+                if grant is not None and "ai_use" not in grant.scopes:
+                    previous_ai = await db.scalar(
+                        select(HealthProcessingConsent.member_id)
+                        .where(
+                            HealthProcessingConsent.member_id == health_id,
+                            HealthProcessingConsent.actor_uid == uid,
+                            HealthProcessingConsent.purpose != "report",
+                        )
+                        .limit(1)
+                    )
+                    if previous_ai is not None:
+                        return await profile_result(service, family)
+                if grant is not None and "ai_use" in grant.scopes:
                     # 与主动停用的写入按同一用途行排序，不反向获取健康成员锁。
                     await db.execute(
                         insert(HealthProcessingConsent)
@@ -152,6 +172,8 @@ async def start_miniapp_analysis(uid, fid, data):
                 existing is not None
                 and existing.processor == processing["processor"]
                 and existing.policy_version == processing["policy_version"]
+                and grant is not None
+                and "ai_use" in grant.scopes
             ):
                 return await profile_result(service, family)
         else:
@@ -161,6 +183,7 @@ async def start_miniapp_analysis(uid, fid, data):
                 "policy_version": data.policy_version,
             }
         await bind_submitted_profile(db, uid, family, [member], processing)
+        member.invitation_analysis_pending = False
         member.confirmed_version, member.confirmed_at = member.version, utc_now_naive()
         db.add(
             HealthMiniappProfileReceipt(
@@ -293,14 +316,21 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
         refs[draft.client_ref] = member.id
         submitted.append(member)
         if member.subject_uid == uid:
+            member.invitation_review_pending = False
             member.confirmed_version = member.version
             member.confirmed_at = utc_now_naive()
+    from yuxi.services.miniapp_report_service import ensure_member_reports
+
+    for member in submitted:
+        await ensure_member_reports(service, family, member)
     if data.analysis_consent is not None:
         from yuxi.services.miniapp_planning_source import bind_submitted_profile
 
         # 建档页的用途复选框只确认本人；监护人分析须从具体儿童档案明确确认。
         analysis_members = [member for member in submitted if member.subject_uid == uid]
         await bind_submitted_profile(db, uid, family, analysis_members, data.analysis_consent)
+        for member in analysis_members:
+            member.invitation_analysis_pending = False
     if not member_only:
         family.settings = {
             **(family.settings or {}),
@@ -382,6 +412,8 @@ async def profile_result(service, family):
         "defaultDiners": settings.get("default_diners", []),
         "onboarded": miniapp_onboarding_ready(actor, family),
         "completeProfile": miniapp_profile_complete(actor),
+        "invitationReviewPending": bool(actor and actor.invitation_review_pending),
+        "invitationAnalysisPending": bool(actor and actor.invitation_analysis_pending),
         "selfMemberId": actor.id if actor else None,
         "isOwner": family.owner_uid == service.uid,
         "members": members,

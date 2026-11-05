@@ -222,12 +222,12 @@ async def run_complete_lifecycle(role, limit, oracles):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ROLES)
 async def test_owner_limit_completes_full_production_lifecycle(role, lifecycle_oracles):
-    """无商品权限的普通咨询及三指标均能完成29超级步，不改全局默认。"""
+    """准备校验在wrap内执行，四轮模型在25步完成且全部业务边界仍参与。"""
     limit = owner_step_limit(role)
     assert limit == 40
     result = await run_complete_lifecycle(role, limit, lifecycle_oracles)
     assert result.failure is None and result.state.next == ()
-    assert result.state.metadata["step"] == 29
+    assert result.state.metadata["step"] == 25
     assert len(result.model.calls) == len(result.observed["reserve"]) == len(result.observed["settle"]) == 4
     assert result.state.values["health_answer_phase"] == "final"
     assert result.state.values["messages"][-1].text == "合成首句。合成次句。"
@@ -246,18 +246,21 @@ async def test_owner_limit_completes_full_production_lifecycle(role, lifecycle_o
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ROLES)
-async def test_legacy_twenty_steps_stops_before_finalize_and_any_custom(role, lifecycle_oracles):
-    """旧上限在第三次模型后失败，负控不能被简化生命周期或默认高limit掩盖。"""
+async def test_legacy_twenty_steps_stops_before_final_model_and_any_custom(role, lifecycle_oracles):
+    """旧上限虽已结束资料准备，仍不得生成最终正文或公开流。"""
     result = await run_complete_lifecycle(role, 20, lifecycle_oracles)
     assert isinstance(result.failure, GraphRecursionError)
     assert result.state.metadata["step"] == 20
-    assert result.state.next == ("HealthCitationMiddleware.after_model",)
-    assert result.state.values["health_answer_phase"] == "tools"
+    assert result.state.next == ("SteerMiddleware.before_model",)
+    assert result.state.values["health_answer_phase"] == "final"
     assert len(result.model.calls) == len(result.observed["reserve"]) == 3
     assert not result.custom and not result.observed["citations"]
-    assert not any(
-        isinstance(message, ToolMessage) and message.name == production.finalize_health_answer.name
-        for message in result.state.values["messages"]
+    assert (
+        sum(
+            isinstance(message, ToolMessage) and message.name == production.finalize_health_answer.name
+            for message in result.state.values["messages"]
+        )
+        == 1
     )
 
 

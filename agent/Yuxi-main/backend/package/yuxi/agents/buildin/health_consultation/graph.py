@@ -14,6 +14,7 @@ from yuxi.agents.middlewares.health_catalog_context import HealthCatalogContextM
 from yuxi.agents.middlewares.health_final_answer import HealthFinalAnswerMiddleware, finalize_health_answer
 from yuxi.agents.toolkits.health import (
     find_food_packages,
+    get_food_categories,
     select_food_products,
     get_confirmed_diet,
     get_confirmed_profile,
@@ -27,6 +28,7 @@ from yuxi.agents.toolkits.health import (
     get_member_memories,
     remember_member_fact,
     get_meal_feedback,
+    record_actual_meal,
 )
 from yuxi.models.chat import load_chat_model
 from yuxi.models.providers.cache import model_cache
@@ -80,6 +82,7 @@ class HealthConsultationAgent(BaseAgent):
     description = "按当前授权读取成员记录和通用科普，核对资料与证据引用，不生成治疗或个人配餐方案。"
     prompt_name = "CONSULTATION_PROMPT"
     consultation_tools = (
+        get_food_categories,
         find_food_packages,
         select_food_products,
         get_confirmed_profile,
@@ -94,6 +97,7 @@ class HealthConsultationAgent(BaseAgent):
         get_member_memories,
         remember_member_fact,
         get_meal_feedback,
+        record_actual_meal,
     )
 
     async def get_graph(self, *, context, **kwargs):

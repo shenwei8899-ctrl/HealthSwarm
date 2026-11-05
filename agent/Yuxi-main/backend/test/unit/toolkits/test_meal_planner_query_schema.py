@@ -73,6 +73,9 @@ def search_services(monkeypatch):
     sources = AsyncMock()
     kb_guard = AsyncMock()
     retrieve = AsyncMock(return_value={"results": []})
+    product_reads = AsyncMock(return_value=[{"catalog": [{"sku_id": "synthetic-sku"}]}])
+    recipe_matches = AsyncMock(return_value=[])
+    monkeypatch.setattr("yuxi.services.reference_recipe_index.purchasable_reference_recipes", recipe_matches)
     knowledge = load_functions(
         "health_family_kb_service.py",
         ["retrieve_family_nutrition_knowledge", "_retrieve_nutrition_knowledge", "_nutrition_knowledge_agent"],
@@ -96,6 +99,7 @@ def search_services(monkeypatch):
             "pg_manager": manager,
             "require_planner_run": authorize,
             "bound_reference_context": sources,
+            "tool_payloads": product_reads,
             "configured_health_kb_ids": lambda role: ("synthetic-kb",),
             "search_family_nutrition_knowledge": AsyncMock(
                 return_value={"status": "insufficient_material", "sources": []}
@@ -137,6 +141,10 @@ def search_services(monkeypatch):
         authorize=authorize,
         sources=sources,
         kb_guard=kb_guard,
+        session=session,
+        product_reads=product_reads,
+        recipe_matches=recipe_matches,
+        binding=binding,
         calls={search_reference_recipes.name: reference_call, query_initial_nutrition_knowledge.name: initial_call},
     )
 
@@ -210,10 +218,21 @@ async def test_real_agent_corrects_invalid_keyword_before_the_only_service_call(
     ]
     assert "query" in receipts[0].content
     payload = json.loads(receipts[1].content)
-    assert payload["status"] == "insufficient_material"
+    if search.name == search_reference_recipes.name:
+        assert payload == {"scope": "reference_recipe_search", "status": "ok", "items": []}
+        search_services.product_reads.assert_awaited_once_with(search_services.session, None, "find_reference_products")
+        search_services.recipe_matches.assert_awaited_once_with(
+            search_services.session, [{"sku_id": "synthetic-sku"}], "蒸蛋"
+        )
+        search_services.authorize.assert_awaited_once_with(search_services.session, SearchContext())
+        search_services.sources.assert_awaited_once_with(
+            search_services.session, SearchContext().uid, search_services.binding
+        )
+    else:
+        assert payload["status"] == "insufficient_material"
+        assert search_services.authorize.await_count == 2
     assert not payload.get("sources") and not payload.get("items")
     search_services.calls[search.name].assert_awaited_once_with(SearchContext(), "蒸蛋")
-    assert search_services.authorize.await_count == 2
     assert result["messages"][-1].text == "合成回放：受控资料不足，未保存餐单。"
 
 
@@ -310,10 +329,12 @@ async def test_reference_save_only_exposes_first_current_quote_failure(monkeypat
         "non_reference",
     }:
         with pytest.raises(HealthVisionError) as caught:
-            await save_reference_meal_plan.coroutine([], [], [], operation)
+            await save_reference_meal_plan.coroutine(runtime=operation, meals=[], purchase_items=[], purchase_gaps=[])
         assert caught.value is failure
+        service.assert_awaited_once_with(context, {"meals": [], "purchase_items": [], "purchase_gaps": []})
         return
-    result = await save_reference_meal_plan.coroutine([], [], [], operation)
+    result = await save_reference_meal_plan.coroutine(runtime=operation, meals=[], purchase_items=[], purchase_gaps=[])
+    service.assert_awaited_once_with(context, {"meals": [], "purchase_items": [], "purchase_gaps": []})
     assert isinstance(result, ToolMessage) and result.status == "error"
     assert result.name == "save_reference_meal_plan" and result.tool_call_id == "save-quote"
     assert json.loads(result.content)["error_code"] == code
@@ -321,6 +342,6 @@ async def test_reference_save_only_exposes_first_current_quote_failure(monkeypat
     current.append(AIMessage(content="", tool_calls=[{"id": "save-retry", "name": result.name, "args": {}}]))
     operation.tool_call_id = "save-retry"
     with pytest.raises(HealthVisionError) as caught:
-        await save_reference_meal_plan.coroutine([], [], [], operation)
+        await save_reference_meal_plan.coroutine(runtime=operation, meals=[], purchase_items=[], purchase_gaps=[])
     assert caught.value is failure
     assert service.await_count == 2

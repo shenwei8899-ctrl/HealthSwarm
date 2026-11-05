@@ -12,6 +12,8 @@ import { HEALTH_TEXT_TASKS } from '../src/services/health-task-flow.js'
 import { chatPresentation } from '../src/services/chat-presentation.js'
 import { referenceSelection as chooseReference, isReferencePlan } from '../src/services/reference-meal-plan.js'
 import { parseChatMealIntent,isMealPlanningCancelled } from '../src/utils/chat-meal-intent.js'
+import {mealCandidates} from './fixtures/meal-candidates.mjs'
+import {createTodayMealPlan,todayMealPlanState} from '../src/services/today-meal-plan.js'
 
 const member = '11111111-1111-4111-8111-111111111111'
 const relative = '11111111-1111-4111-8111-111111111112'
@@ -136,9 +138,11 @@ function workflow(options = {}) {
     uni: { showModal(value){calls.push({action:'modal',...value})}, showToast(value) { calls.push({ action: 'toast', ...value }) }, hideKeyboard() {}, navigateTo(value) { calls.push({ action: 'navigate', ...value }) },
       reLaunch(value) { calls.push({ action: 'reLaunch', ...value }) }, redirectTo(value) { calls.push({ action: 'redirect', ...value }) } },
   }
-  const code = readFileSync(new URL('../src/components/CloudNutritionChat.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
+  const source=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
+  const readOnlyBinding=source.match(/<TodayMealPlanSheet\b[^>]*?:read-only="([^"]+)"/)?.[1]||'false'
+  const code = source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
+  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {todayMenuReadOnly:()=>{const value=(${readOnlyBinding});return value&&typeof value==='object'&&'value' in value?value.value:value},latestReference,shortcut,inlineTodayOpen,messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
   const historyRow = threadId => { const row = threads.get(threadId); return { thread_id: threadId, member_id: row.memberId, agent_slug: row.agent, business_date: row.businessDate } }
   return { ...page, calls, writes, identity, clock, hooks, scopedStorage, threads, addThread, historyRow,
     get flow(){return flow},
@@ -146,6 +150,72 @@ function workflow(options = {}) {
     dispose() { hooks.unmount?.(); scope.stop() },
   }
 }
+
+test('a completed tomorrow-breakfast candidate ends chat loading without becoming a saved meal, purchase or lock on today',async()=>{
+ const p=workflow()
+ try{
+  await p.load();p.question.value='请给我安排明天早餐';await p.sendQuestion('reference_meal_preview')
+  const original=p.calls.filter(call=>call.action==='submit').at(-1),data=mealCandidates('2026-10-29')
+  p.publish({status:'completed',busy:false,loading:false,recordedMeals:[{id:'not-a-candidate-receipt'}],
+   result:{type:'business',kind:'meal_plan_candidates',data,purchaseOffers:[{id:'not-an-offer'}],recordedMeals:[{id:'not-a-saved-meal'}]}})
+  await flush();await nextTick()
+  const message=p.messages.value.at(-1)
+  assert.equal(p.chatBusy.value,false);assert.equal(p.replyPending.value,false)
+  assert.equal(message.business.kind,'meal_plan_candidates');assert.deepEqual(message.business.data,data)
+  assert.equal(message.planDate,'');assert.equal(message.planMeals,undefined);assert.equal(message.purchaseRequestId,'')
+  assert.deepEqual(message.purchaseOffers,[]);assert.deepEqual(message.recordedMeals,[]);assert.equal(p.latestReference.value,null)
+  assert.equal(p.todayMenuReadOnly(),false);assert.ok(Object.values(p.dailyPlans.value).every(plan=>plan.status!=='ready'))
+  const before=p.calls.filter(call=>call.action==='submit'||call.action==='startPlan').length
+  p.shortcut('today');await flush()
+  assert.equal(p.inlineTodayOpen.value,true);assert.equal(p.calls.filter(call=>call.action==='submit'||call.action==='startPlan').length,before)
+  assert.equal(original.selection.plan_date,'2026-10-29');assert.deepEqual(original.selection.meal_types,['breakfast'])
+ }finally{p.dispose()}
+})
+
+async function openTodayFromChat(page,plan){
+ const state=todayMealPlanState(),calls=[],timers=new Map();let taskState={available:true},sequence=0
+ const client=createTodayMealPlan({state,day:()=>page.clock.day,context:()=>page.identity.scope,
+  read:(family,date)=>readDailyMealPlan(family,date,async()=>({data:plan})),storage:page.scopedStorage,
+  schedule:fn=>{timers.set(++sequence,fn);return sequence},cancel:id=>timers.delete(id),
+  createFlow:()=>{calls.push('flow');return{getState:()=>taskState,pause(){},async open(){},
+   async createEntry(){taskState.entry={thread_id:uuid(910)}},async submit(){calls.push('submit');taskState={...taskState,requestId:uuid(911),status:'queued'};return true}}}})
+ page.shortcut('today');await client.open(page.profile.value,{readOnly:page.todayMenuReadOnly()})
+ return {state,calls,timers,dispose:()=>client.dispose()}
+}
+
+for(const scenario of ['yesterday','tomorrow','other_family','other_participants','new_task','later_saved_plan']){
+ test(`an old ${scenario} candidate cannot lock a new authoritative today arrangement`,async()=>{
+  const page=workflow();let menu
+  try{
+   await page.load()
+   const data=mealCandidates(scenario==='yesterday'?'2026-10-27':scenario==='tomorrow'?'2026-10-29':page.clock.day,
+    scenario==='other_participants'?'father':'self')
+   data.selection.family_id=scenario==='other_family'?'another-family':page.identity.householdId
+   page.messages.value.push({id:'old-candidate',role:'assistant',business:{type:'business',kind:'meal_plan_candidates',data}})
+   const plan=scenario==='later_saved_plan'?{status:'ready',date:page.clock.day,version:2,needs_regeneration:['dinner'],
+    meals:['breakfast','lunch'].map(meal_type=>({meal_type,source:{kind:'reference',id:'new-saved-plan'},meal:{dishes:[{name:'已保存餐次'}]}}))}:
+    {status:'absent',date:page.clock.day,version:1,meals:[],...(scenario==='new_task'?{pending:{status:'completed',request_id:uuid(920)}}:{})}
+   page.dailyPlans.value={[page.clock.day]:plan}
+   menu=await openTodayFromChat(page,plan)
+   assert.equal(page.inlineTodayOpen.value,true);assert.equal(page.todayMenuReadOnly(),false)
+   assert.equal(menu.calls.filter(call=>call==='submit').length,1)
+   if(scenario==='later_saved_plan'){assert.equal(menu.state.plan.version,2);assert.equal(menu.state.plan.meals.length,2)}
+  }finally{menu?.dispose();page.dispose()}
+ })
+}
+
+test('a current authoritative unresolved candidate prevents another POST even without a historical candidate gate',async()=>{
+ const page=workflow();let menu
+ try{
+  await page.load()
+  const pending={status:'reference_candidates',request_id:uuid(930),thread_id:uuid(931),member_id:member,
+   selection:{mode:'reference',family_id:page.identity.householdId,participant_ids:['self'],plan_date:page.clock.day,meal_types:['breakfast']}}
+  const plan={status:'absent',date:page.clock.day,version:0,meals:[],pending}
+  page.dailyPlans.value={[page.clock.day]:plan};menu=await openTodayFromChat(page,plan)
+  assert.equal(menu.state.action,'candidates');assert.deepEqual(menu.state.pending,pending)
+  assert.equal(menu.calls.length,0);assert.equal(menu.timers.size,0);assert.equal(menu.state.plan,null)
+ }finally{menu?.dispose();page.dispose()}
+})
 
 test('a question appears immediately during entry checks and submits only once after readiness',async()=>{
  const gate=deferred(),p=workflow({beforeProfile:()=>gate.promise,route:{}})

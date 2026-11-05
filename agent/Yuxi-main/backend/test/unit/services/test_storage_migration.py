@@ -27,12 +27,15 @@ def family_schema_upgrade(monkeypatch):
 
 
 class _Session:
-    def __init__(self, calls: list[object] | None = None):
+    def __init__(self, calls: list[object] | None = None, failure: Exception | None = None):
         self.calls = calls
+        self.failure = failure
 
     async def execute(self, statement):
         if self.calls is not None:
             self.calls.append(("execute", str(statement)))
+        if self.failure is not None:
+            raise self.failure
 
     async def commit(self):
         return None
@@ -57,10 +60,12 @@ async def test_storage_migration_reads_legacy_schema_before_cutover(monkeypatch)
         create_business_tables=lambda: _record(calls, "create_business_tables"),
         create_knowledge_tables=lambda: _record(calls, "create_knowledge_tables"),
         create_health_tables=lambda: _record(calls, "create_health"),
+        remove_health_ai_monthly_limit=lambda: _record(calls, "remove_health_ai_monthly_limit"),
         ensure_business_schema=lambda: _record(calls, "ensure_business_schema"),
         ensure_knowledge_schema=lambda: _record(calls, "ensure_knowledge_schema"),
         setup_langgraph_checkpointer=lambda: _record(calls, "setup_langgraph_checkpointer"),
         get_async_session_context=session_context,
+        async_engine=SimpleNamespace(begin=lambda: _family_invitation_connection(calls)),
         close=lambda: _record(calls, "close"),
     )
     workdirs = (V071WorkdirBinding("workdir-1", "user-1"),)
@@ -108,6 +113,13 @@ async def test_storage_migration_reads_legacy_schema_before_cutover(monkeypatch)
     assert calls.index(("import", workdirs, conversations)) < calls.index("ensure_business_schema")
     assert calls.index("verify") < calls.index(("cleanup", conversations))
     assert calls.index("mark_skills") < calls.index("runtime_identity")
+    assert calls.index("create_health") < calls.index("remove_health_ai_monthly_limit")
+    assert calls.index("remove_health_ai_monthly_limit") < calls.index(
+        f"version:health:{storage_migration.HEALTH_SCHEMA_VERSION}"
+    )
+    assert calls.index("family_invitations_committed") < calls.index(
+        f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}"
+    )
     assert calls[-1] == "close"
 
 
@@ -129,10 +141,12 @@ async def test_storage_migration_rejects_v071_schema_without_quiescence_proof(mo
         create_business_tables=lambda: _record(calls, "create"),
         create_knowledge_tables=lambda: _record(calls, "create_knowledge"),
         create_health_tables=lambda: _record(calls, "create_health"),
+        remove_health_ai_monthly_limit=lambda: _record(calls, "remove_health_ai_monthly_limit"),
         ensure_business_schema=lambda: _record(calls, "schema"),
         ensure_knowledge_schema=lambda: _record(calls, "knowledge_schema"),
         setup_langgraph_checkpointer=lambda: _record(calls, "checkpoint"),
         get_async_session_context=session_context,
+        async_engine=SimpleNamespace(begin=lambda: _family_invitation_connection(calls)),
         close=lambda: _record(calls, "close"),
     )
     monkeypatch.setattr(storage_migration, "pg_manager", manager)
@@ -189,11 +203,13 @@ async def test_storage_migration_rejects_v071_schema_without_quiescence_proof(mo
         30,
         31,
         32,
+        33,
+        34,
         storage_migration.HEALTH_SCHEMA_VERSION,
     ],
 )
 async def test_current_schema_skips_unrelated_ddl_and_upgrades_health(monkeypatch, health_version):
-    calls: list[str] = []
+    calls: list[object] = []
     sessions = [_Session(), _Session(), _Session()]
 
     @asynccontextmanager
@@ -216,10 +232,12 @@ async def test_current_schema_skips_unrelated_ddl_and_upgrades_health(monkeypatc
         create_business_tables=lambda: _record(calls, "create_business"),
         create_knowledge_tables=lambda: _record(calls, "create_knowledge"),
         create_health_tables=lambda: _record(calls, "create_health"),
+        remove_health_ai_monthly_limit=lambda: _record(calls, "remove_health_ai_monthly_limit"),
         ensure_business_schema=lambda: _record(calls, "business_schema"),
         ensure_knowledge_schema=lambda: _record(calls, "knowledge_schema"),
         setup_langgraph_checkpointer=lambda: _record(calls, "checkpoint"),
         get_async_session_context=session_context,
+        async_engine=SimpleNamespace(begin=lambda: _family_invitation_connection(calls)),
         close=lambda: _record(calls, "close"),
     )
     monkeypatch.setattr(storage_migration, "pg_manager", manager)
@@ -248,13 +266,20 @@ async def test_current_schema_skips_unrelated_ddl_and_upgrades_health(monkeypatc
         "business_schema",
         "knowledge_schema",
         "checkpoint",
+        "family_invitations",
         f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}",
         f"version:knowledge:{storage_migration.KNOWLEDGE_SCHEMA_VERSION}",
     }.isdisjoint(calls)
     assert ("create_health" in calls) == (health_version != storage_migration.HEALTH_SCHEMA_VERSION)
+    assert ("remove_health_ai_monthly_limit" in calls) == (health_version != storage_migration.HEALTH_SCHEMA_VERSION)
     assert (f"version:health:{storage_migration.HEALTH_SCHEMA_VERSION}" in calls) == (
         health_version != storage_migration.HEALTH_SCHEMA_VERSION
     )
+    if health_version != storage_migration.HEALTH_SCHEMA_VERSION:
+        assert calls.index("create_health") < calls.index("remove_health_ai_monthly_limit")
+        assert calls.index("remove_health_ai_monthly_limit") < calls.index(
+            f"version:health:{storage_migration.HEALTH_SCHEMA_VERSION}"
+        )
     assert "converge:False" in calls
 
 
@@ -296,7 +321,7 @@ async def test_main_rejects_unsupported_business_schema_before_ddl(monkeypatch, 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("business_version", [2, 7, 8, 9, 13])
 async def test_supported_legacy_business_schema_is_converged_and_versioned_as_current(monkeypatch, business_version):
-    calls: list[str] = []
+    calls: list[object] = []
     sessions = [_Session(), _Session(), _Session()]
 
     @asynccontextmanager
@@ -315,10 +340,12 @@ async def test_supported_legacy_business_schema_is_converged_and_versioned_as_cu
         create_business_tables=lambda: _record(calls, "create_business"),
         create_knowledge_tables=lambda: _record(calls, "create_knowledge"),
         create_health_tables=lambda: _record(calls, "create_health"),
+        remove_health_ai_monthly_limit=lambda: _record(calls, "remove_health_ai_monthly_limit"),
         ensure_business_schema=lambda: _record(calls, "business_schema"),
         ensure_knowledge_schema=lambda: _record(calls, "knowledge_schema"),
         setup_langgraph_checkpointer=lambda: _record(calls, "checkpoint"),
         get_async_session_context=session_context,
+        async_engine=SimpleNamespace(begin=lambda: _family_invitation_connection(calls)),
         close=lambda: _record(calls, "close"),
     )
     monkeypatch.setattr(storage_migration, "pg_manager", manager)
@@ -344,6 +371,10 @@ async def test_supported_legacy_business_schema_is_converged_and_versioned_as_cu
     )
     await storage_migration.main()
     assert calls.index("feedback_schema") < calls.index(f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}")
+    assert calls.index("feedback_schema") < calls.index("family_invitations")
+    assert calls.index("family_invitations_committed") < calls.index(
+        f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}"
+    )
 
     assert ("business_schema" in calls) is (business_version in {2, 7, 8})
     assert f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}" in calls
@@ -352,16 +383,18 @@ async def test_supported_legacy_business_schema_is_converged_and_versioned_as_cu
 
 
 @pytest.mark.asyncio
-async def test_failed_business_migration_does_not_record_version(monkeypatch):
-    calls: list[str] = []
+@pytest.mark.parametrize("failure", ["checkpoint", "family_invitations", "monthly_limit"])
+async def test_failed_business_migration_does_not_record_version(monkeypatch, failure):
+    calls: list[object] = []
 
     @asynccontextmanager
     async def session_context():
         yield _Session()
 
-    async def fail_checkpoint_setup():
-        calls.append("checkpoint")
-        raise RuntimeError("broken checkpoint migration")
+    async def fail_migration():
+        """在指定迁移边界失败，验证主流程不会记录成功版本。"""
+        calls.append(failure)
+        raise RuntimeError(f"broken {failure} migration")
 
     manager = SimpleNamespace(
         initialize=lambda: calls.append("initialize"),
@@ -373,10 +406,23 @@ async def test_failed_business_migration_does_not_record_version(monkeypatch):
         create_business_tables=lambda: _record(calls, "create_business"),
         create_knowledge_tables=lambda: _record(calls, "create_knowledge"),
         create_health_tables=lambda: _record(calls, "create_health"),
+        remove_health_ai_monthly_limit=(
+            fail_migration if failure == "monthly_limit" else lambda: _record(calls, "remove_health_ai_monthly_limit")
+        ),
         ensure_business_schema=lambda: _record(calls, "business_schema"),
         ensure_knowledge_schema=lambda: _record(calls, "knowledge_schema"),
-        setup_langgraph_checkpointer=fail_checkpoint_setup,
+        setup_langgraph_checkpointer=(
+            fail_migration if failure == "checkpoint" else lambda: _record(calls, "checkpoint")
+        ),
         get_async_session_context=session_context,
+        async_engine=SimpleNamespace(
+            begin=lambda: _family_invitation_connection(
+                calls,
+                failure=(
+                    RuntimeError("broken family_invitations migration") if failure == "family_invitations" else None
+                ),
+            )
+        ),
         close=lambda: _record(calls, "close"),
     )
     monkeypatch.setattr(storage_migration, "pg_manager", manager)
@@ -389,18 +435,21 @@ async def test_failed_business_migration_does_not_record_version(monkeypatch):
     monkeypatch.setattr(storage_migration, "_legacy_system_config_exists", lambda: False)
     monkeypatch.setattr(storage_migration, "runtime_storage_requires_quiescence", lambda: False)
 
-    with pytest.raises(RuntimeError, match="broken checkpoint migration"):
+    with pytest.raises(RuntimeError, match=f"broken {failure} migration"):
         await storage_migration.main()
 
     assert "business_schema" in calls
     assert f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}" not in calls
-    assert "create_knowledge" not in calls
+    if failure != "monthly_limit":
+        assert "create_knowledge" not in calls
+    assert f"version:health:{storage_migration.HEALTH_SCHEMA_VERSION}" not in calls
+    assert "family_invitations_committed" not in calls or failure == "monthly_limit"
     assert calls[-1] == "close"
 
 
 @pytest.mark.asyncio
 async def test_current_schema_does_not_rewrite_workdir_data(monkeypatch):
-    calls: list[str] = []
+    calls: list[object] = []
     sessions = [_Session(), _Session(), _Session()]
 
     @asynccontextmanager
@@ -417,10 +466,12 @@ async def test_current_schema_does_not_rewrite_workdir_data(monkeypatch):
         create_business_tables=lambda: _record(calls, "create"),
         create_knowledge_tables=lambda: _record(calls, "create_knowledge"),
         create_health_tables=lambda: _record(calls, "create_health"),
+        remove_health_ai_monthly_limit=lambda: _record(calls, "remove_health_ai_monthly_limit"),
         ensure_business_schema=lambda: _record(calls, "schema"),
         ensure_knowledge_schema=lambda: _record(calls, "knowledge_schema"),
         setup_langgraph_checkpointer=lambda: _record(calls, "checkpoint"),
         get_async_session_context=session_context,
+        async_engine=SimpleNamespace(begin=lambda: _family_invitation_connection(calls)),
         close=lambda: _record(calls, "close"),
     )
     monkeypatch.setattr(storage_migration, "pg_manager", manager)
@@ -467,6 +518,36 @@ def test_personal_workspace_skills_never_trigger_shared_skill_migration(monkeypa
     assert storage_migration._legacy_skill_roots_exist() is False
 
 
+@pytest.mark.asyncio
+async def test_family_invitation_upgrade_repeats_only_additive_ddl():
+    """重复调用真实 v015 仍只添加缺失列，不重置已有邀请和核对状态。"""
+    calls: list[object] = []
+    manager = SimpleNamespace(async_engine=SimpleNamespace(begin=lambda: _family_invitation_connection(calls)))
+
+    await storage_migration.upgrade_family_invitations(manager)
+    await storage_migration.upgrade_family_invitations(manager)
+
+    expected = [
+        "family_invitations",
+        (
+            "execute",
+            "ALTER TABLE family_archives ADD COLUMN IF NOT EXISTS invitation_version INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "execute",
+            "ALTER TABLE family_members ADD COLUMN IF NOT EXISTS "
+            "invitation_review_pending BOOLEAN NOT NULL DEFAULT false",
+        ),
+        (
+            "execute",
+            "ALTER TABLE family_members ADD COLUMN IF NOT EXISTS "
+            "invitation_analysis_pending BOOLEAN NOT NULL DEFAULT false",
+        ),
+        "family_invitations_committed",
+    ]
+    assert calls == expected * 2
+
+
 @asynccontextmanager
 async def _async_context(calls: list[object], value: str):
     calls.append(value)
@@ -479,3 +560,11 @@ async def _record(calls: list[object], value: str) -> None:
 
 async def _async_value(value):
     return value
+
+
+@asynccontextmanager
+async def _family_invitation_connection(calls: list[object], *, failure: Exception | None = None):
+    """真实 v015 仅替换 SQL 执行边界，按事务顺序记录迁移。"""
+    calls.append("family_invitations")
+    yield _Session(calls, failure=failure)
+    calls.append("family_invitations_committed")

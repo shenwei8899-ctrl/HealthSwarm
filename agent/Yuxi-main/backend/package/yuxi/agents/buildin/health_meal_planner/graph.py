@@ -21,6 +21,7 @@ from yuxi.agents.toolkits.meal_planner import (
     preview_initial_meal_plan,
     query_initial_nutrition_knowledge,
     get_reference_plan_context,
+    find_reference_products,
     search_reference_recipes,
     read_reference_recipe,
     save_reference_meal_plan,
@@ -39,6 +40,32 @@ from yuxi.agents.toolkits.safe_meal_planner import (
 )
 from yuxi.models.chat import ChatCompletionsAdapter, load_chat_model
 from yuxi.models.providers.cache import model_cache
+
+
+class ReferenceContextMiddleware(AgentMiddleware):
+    """每轮配餐先读取当前授权档案和商城分类，续改也不沿用旧轮回执。"""
+
+    async def awrap_model_call(self, request, handler):
+        """前置工具成功后才开放后续配餐工具，服务端仍重新校验来源。"""
+        tools = tuple(name for name in request.runtime.context.tools if name != "query_family_nutrition_knowledge")
+        if tools == REFERENCE_TOOLS:
+            current = request.state.get("messages", [])
+            start = next((i for i in range(len(current) - 1, -1, -1) if isinstance(current[i], HumanMessage)), None)
+            if start is None or current[start].additional_kwargs.get("health_request_id") != request.runtime.context.request_id:
+                raise HealthVisionError("reference_request_mismatch", "当前配餐轮次无法核对", 409)
+            receipts = [m for m in current[start + 1:] if isinstance(m, ToolMessage) and m.name == "get_reference_plan_context"]
+            if not any(m.status == "success" for m in receipts):
+                if receipts:
+                    raise HealthVisionError("reference_context_unavailable", "当前档案和商城分类读取失败，请重试", 409)
+                context_tools = [tool for tool in request.tools if getattr(tool, "name", None) == "get_reference_plan_context"]
+                if not context_tools:
+                    raise HealthVisionError("reference_context_unavailable", "配餐资料读取工具暂不可用", 503)
+                return await handler(request.override(
+                    tools=context_tools,
+                    tool_choice={"type": "function", "function": {"name": "get_reference_plan_context"}},
+                    model_settings={**request.model_settings, "parallel_tool_calls": False},
+                ))
+        return await handler(request)
 
 
 class MealPlanResultMiddleware(AgentMiddleware):
@@ -100,9 +127,10 @@ class MealPlanResultMiddleware(AgentMiddleware):
                             else ""
                         )
                         + (
-                            "餐单保存校验失败，本轮只允许一次保存修正。按真实工具反馈纠正餐次、规格或食材采购对应，"
+                            "餐单保存校验失败，按最新真实工具反馈修正；原文、采购对应、中文译文各仅有一次修正机会。按反馈纠正餐次、规格或食材采购对应，"
                             "每种食材原文必须且只能对应一个采购商品或一条真实未选原因；不编造商品或原因。"
                             "菜名、食材、步骤及可选引句仍只从本 Run 已读取原文逐字复制，不翻译、改写或规范化；"
+                            "若反馈中文译文错误，只修正display_zh中的对应中文，保留原文、数量、单位及逐项顺序；"
                             "只调用一次保存工具，不执行其他工具。"
                             if save_failure is not None
                             else ""
@@ -202,7 +230,9 @@ class MealPlanResultMiddleware(AgentMiddleware):
         else:
             return None
 
-        required_tools = {"search_reference_recipes", "read_reference_recipe", "save_reference_meal_plan"}
+        required_tools = {
+            "find_reference_products", "search_reference_recipes", "read_reference_recipe", "save_reference_meal_plan"
+        }
         allowed = {getattr(tool, "name", None) for tool in request.tools} & required_tools
         if not calls or any(call["name"] not in allowed or call["args"] != {} for call in calls):
             return None
@@ -284,6 +314,7 @@ class HealthMealPlannerAgent(BaseAgent):
         if tuple(planner_tools) == REFERENCE_TOOLS:
             tools = [
                 get_reference_plan_context,
+                find_reference_products,
                 search_reference_recipes,
                 read_reference_recipe,
                 save_reference_meal_plan,
@@ -312,6 +343,7 @@ class HealthMealPlannerAgent(BaseAgent):
             middleware=[
                 SteerMiddleware(),
                 HealthAuthorizationMiddleware(model_cache.get_model_info(context.model)),
+                ReferenceContextMiddleware(),
                 MealPlanResultMiddleware(),
                 TokenUsageMiddleware(),
             ],

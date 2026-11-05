@@ -211,6 +211,10 @@ async def validate_source_proof(proof):
 
             async with pg_manager.get_async_session_context() as session:
                 return await validate_conversation_source(session, source)
+        if source.get("kind") == "meal_selection":
+            from yuxi.services.meal_dish_service import validate_selection_purchase
+
+            return await validate_selection_purchase(source)
         if source.get("kind") == "reference_plan":
             from yuxi.services.reference_meal_plan_service import validate_reference_purchase_source
 

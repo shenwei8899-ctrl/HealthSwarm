@@ -114,6 +114,25 @@ class DailyReferencePurchaseInput(BaseModel):
         return self
 
 
+class MealDishInput(BaseModel):
+    """用户只提交来源菜品标识，内容从已保存餐单读取。"""
+
+    model_config = ConfigDict(extra="forbid")
+    version: int = Field(ge=0, strict=True)
+    source_meal: Literal["breakfast", "lunch", "dinner"]
+    meal_type: Literal["breakfast", "lunch", "dinner"]
+    dish_key: str = Field(min_length=1, max_length=400)
+    client_request_id: UUID
+
+
+class MealScopePurchaseInput(BaseModel):
+    """空菜品列表表示整餐；非空时仅采购指定菜品。"""
+
+    model_config = ConfigDict(extra="forbid")
+    version: int = Field(ge=0, strict=True)
+    dish_keys: list[str] = Field(default_factory=list, max_length=10)
+
+
 class DailySummaryInput(DailyPurchaseInput):
     """汇总仅接受已保存餐次，不能上传采购数量或价格。"""
 
@@ -403,6 +422,45 @@ async def current_daily_meal_plan(family_id: UUID, plan_date: date, user=Depends
     from yuxi.services.daily_meal_plan_service import read_current_plan
 
     return await read_current_plan(str(user.uid), str(family_id), plan_date)
+
+
+@daily_arrangement.post("/family/{family_id}/daily-meal-plans/{plan_date}/dishes")
+async def add_daily_dish(family_id: UUID, plan_date: date, data: MealDishInput, user=Depends(get_required_user)):
+    """只保存今日餐单选择，不写入饮食记录。"""
+    from yuxi.services.meal_dish_service import add_saved_dish
+
+    return await add_saved_dish(str(user.uid), str(family_id), plan_date, data)
+
+
+@daily_arrangement.get("/family/{family_id}/daily-meal-plans/{plan_date}/meals/{meal_type}/purchase")
+async def read_scoped_meal_purchase(
+    family_id: UUID,
+    plan_date: date,
+    meal_type: Literal["breakfast", "lunch", "dinner"],
+    version: int = Query(ge=0),
+    dish_keys: list[str] = Query(default=[]),
+    user=Depends(get_required_user),
+):
+    """读取选定菜品采购，不发布推荐包或创建订单。"""
+    from yuxi.services.meal_dish_service import scoped_purchase
+
+    return await scoped_purchase(str(user.uid), str(family_id), plan_date, meal_type, version, dish_keys)
+
+
+@daily_arrangement.post("/family/{family_id}/daily-meal-plans/{plan_date}/meals/{meal_type}/purchase")
+async def publish_scoped_meal_purchase(
+    family_id: UUID,
+    plan_date: date,
+    meal_type: Literal["breakfast", "lunch", "dinner"],
+    data: MealScopePurchaseInput,
+    user=Depends(get_required_user),
+):
+    """显式购买才发布指定菜品范围的采购。"""
+    from yuxi.services.meal_dish_service import scoped_purchase
+
+    return await scoped_purchase(
+        str(user.uid), str(family_id), plan_date, meal_type, data.version, data.dish_keys, publish=True
+    )
 
 
 @daily_arrangement.post("/family/{family_id}/daily-meal-plans/{plan_date}/purchase")

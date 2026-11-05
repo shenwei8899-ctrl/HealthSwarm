@@ -13,6 +13,7 @@ from server.utils.auth_middleware import get_admin_user, get_required_user
 from yuxi.services.conversation_purchase_types import ConversationPurchaseInput
 from yuxi.services.conversation_purchase_service import read_conversation_purchase, publish_conversation_purchase
 from yuxi.services.health_vision_service import health_vision_service as service
+from yuxi.services.health_vision_types import MealPayload
 from yuxi.services.health_handoff_service import HandoffConfirmation, preview_handoff, confirm_handoff
 from yuxi.services.health_vision_types import DietLogPage, VisionListPage
 from yuxi.services.health_diet_correction_types import DietLogCorrection
@@ -30,6 +31,8 @@ from yuxi.services.health_safe_planner_types import SafePlannerInput
 from yuxi.services.health_daily_service import daily_history, daily_summary
 from yuxi.services.health_memory_service import list_member_memory, memory_history, change_member_memory
 from yuxi.services.health_memory_types import MemoryPatch, MemoryRevoke
+from yuxi.services.health_chat_meal_types import ChatMealWithdrawal
+from yuxi.services.health_chat_meal_service import read_chat_meal, withdraw_chat_meal
 from yuxi.services.health_agent_roles import health_agent_roles
 from yuxi.services.health_source_service import read_nutrition_source
 from yuxi.services.health_readiness_service import read_nutrition_readiness
@@ -161,6 +164,7 @@ from yuxi.services.health_vision_types import (
     ConsentInput,
     ConsultationInput,
     ConsultationListResult,
+    ConsultationDirectoryInput,
     ConsultationResult,
     DraftInput,
     DraftPatch,
@@ -1020,6 +1024,30 @@ async def grant(member_id: UUID, data: GrantInput, user: User = Depends(get_requ
     return await service.grant(user.uid, str(member_id), data)
 
 
+@health_vision.get("/members/{member_id}/processing-consents")
+async def processing_consent_status(
+    member_id: UUID,
+    response: Response,
+    purpose: Literal["meal", "report"],
+    user: User = Depends(get_required_user),
+):
+    """读取当前账号的有效识图授权，不把照片变化当作授权变化。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await service.consent_status(user.uid, str(member_id), purpose)
+
+
+@health_vision.post("/members/{member_id}/meal-nutrition-preview")
+async def meal_nutrition_preview(
+    member_id: UUID,
+    data: MealPayload,
+    response: Response,
+    user: User = Depends(get_required_user),
+):
+    """保存前预览已选食品和实际份量；不创建正式记录或模型调用。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await service.preview_nutrition(user.uid, str(member_id), data)
+
+
 @health_vision.post("/members/{member_id}/processing-consents", response_model=HealthProcessingConsentResult)
 async def consent(member_id: UUID, data: ConsentInput, user: User = Depends(get_required_user)):
     """按用途和政策记录处理同意或撤回。"""
@@ -1047,6 +1075,14 @@ async def consultation(
     """只创建固定成员会话；实际咨询另行校验用途与模型审批。"""
     require_request_key(data.client_request_id, request_key)
     return await create_consultation(user.uid, str(member_id), data)
+
+
+@health_vision.post("/members/{member_id}/consultations/directory", response_model=ConsultationListResult)
+async def consultation_directory(
+    member_id: UUID, data: ConsultationDirectoryInput, user: User = Depends(get_required_user)
+):
+    """只读校验旧本机映射，批量返回短标题，不创建任何会话或消息。"""
+    return await list_consultations(user.uid, str(member_id), offset=data.offset, legacy_links=data.links)
 
 
 @health_vision.post("/uploads", status_code=201)
@@ -1335,6 +1371,18 @@ async def diet_log_page(
     return await service.diet_log_page(user.uid, str(member_id), limit=limit, offset=offset)
 
 
+@health_vision.get("/members/{member_id}/meal-nutrition-sources")
+async def meal_nutrition_sources(
+    member_id: UUID,
+    response: Response,
+    q: str = Query(min_length=1, max_length=120),
+    user: User = Depends(get_required_user),
+):
+    """成员授权后的营养来源检索不公开无权读取的私有资料。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await service.meal_sources(user.uid, str(member_id), q.strip())
+
+
 @health_vision.get("/foods")
 async def foods(q: str = Query(default="", max_length=120), user: User = Depends(get_required_user)):
     """搜索带来源和版本的已发布食品。"""
@@ -1393,6 +1441,29 @@ async def portions(
 async def publish_portion(data: PortionInput, user: User = Depends(get_admin_user)):
     """审核发布实测参考及适用范围。"""
     return await service.publish_portion(user.uid, data)
+
+
+@health_vision.get("/chat-meals/{record_id}")
+async def chat_meal_receipt(record_id: UUID, response: Response, user: User = Depends(get_required_user)):
+    """当前对话记餐收据可在撤销后继续核对。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await read_chat_meal(user.uid, str(record_id))
+
+
+@health_vision.post("/chat-meals/{record_id}/withdraw")
+async def withdraw_chat_meal_record(
+    record_id: UUID,
+    data: ChatMealWithdrawal,
+    response: Response,
+    request_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    match: str | None = Header(default=None, alias="If-Match"),
+    user: User = Depends(get_required_user),
+):
+    """按实际版本撤销对话记餐，重复请求不重复撤销。"""
+    require_request_key(data.client_request_id, request_key)
+    require_match(data.expected_version, match)
+    response.headers["Cache-Control"] = "no-store"
+    return await withdraw_chat_meal(user.uid, str(record_id), data)
 
 
 @health_vision.patch("/diet-logs/{record_id}")

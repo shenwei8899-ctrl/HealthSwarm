@@ -1,14 +1,16 @@
 """健康领域查询及成员授权边界；事务由 service 拥有。"""
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import aliased
 
-from yuxi.services.health_vision_types import HEALTH_SCOPES, HealthVisionError
+from yuxi.services.health_vision_types import FAMILY_REPORT_SCOPES, HEALTH_SCOPES, HealthVisionError
 from yuxi.services.health_family_meal_plan_types import plan_member_ids
-from yuxi.storage.postgres.models_business import TaskRecord, User
+from yuxi.storage.postgres.models_business import TaskRecord, User, FamilyArchive, FamilyMember as SourceMember
 from yuxi.storage.postgres.models_health import (
     DietLog,
     FamilyMember,
     FoodRecord,
+    HealthFamilyProfileLink,
     HealthGrant,
     HealthObservation,
     HealthProcessingConsent,
@@ -20,58 +22,95 @@ from yuxi.storage.postgres.models_health import (
     VisionJob,
 )
 from yuxi.utils.datetime_utils import utc_now_naive
+from yuxi.storage.postgres.models_health_budget import HealthAiCall
 
 
 class HealthVisionRepository:
-    """所有私有资源从成员 grant 查询，不授予管理员旁路。"""
+    """家庭报告随有效家庭关系共享，独立健康用途仍读取原有授权。"""
 
     def __init__(self, session):
         self.session = session
 
     async def authorize(self, member_id: str, uid: str, scope: str, *, lock: bool = False):
         """写用例先锁成员，使撤回和写入按同一边界排序。"""
+        shared = False
+        if scope in FAMILY_REPORT_SCOPES:
+            shared = await self._authorize_report_link(member_id, uid, lock=lock)
+        elif lock:
+            link = await self.session.get(HealthFamilyProfileLink, member_id, populate_existing=True)
+            if link is not None:
+                await self.session.scalar(
+                    select(FamilyArchive).where(FamilyArchive.id == link.family_id).with_for_update()
+                )
         stmt = select(FamilyMember).where(FamilyMember.id == member_id)
         if lock:
             stmt = stmt.with_for_update()
         member = await self.session.scalar(stmt)
         grant = await self.session.get(HealthGrant, (member_id, uid), populate_existing=True)
         user = await self.session.scalar(select(User).where(User.uid == uid, User.is_deleted == 0))
-        if member is None or user is None or grant is None or grant.revoked_at is not None or scope not in grant.scopes:
+        if member is None or user is None:
+            raise HealthVisionError("not_found", "资源不存在或无权访问", 404)
+        if scope not in FAMILY_REPORT_SCOPES:
+            await self._require_processing_owner(member)
+        if not shared and (grant is None or grant.revoked_at is not None or scope not in grant.scopes):
             raise HealthVisionError("not_found", "资源不存在或无权访问", 404)
         return member
 
     async def list_members(self, uid: str):
-        """只展示有当前有效授权的成员。"""
-        return list(
-            (
-                await self.session.scalars(
-                    select(FamilyMember)
-                    .join(HealthGrant, HealthGrant.member_id == FamilyMember.id)
-                    .where(HealthGrant.actor_uid == uid, HealthGrant.revoked_at.is_(None))
-                    .order_by(FamilyMember.created_at)
-                )
-            ).all()
+        """供既有健康业务读取同一可见成员集合。"""
+        return [member for member, _ in await self.list_member_access(uid)]
+
+    async def list_member_access(self, uid: str):
+        """家庭报告与独立授权合并列出，退出家庭后不返回残留关联。"""
+        actor = aliased(SourceMember)
+        shared = (
+            select(HealthFamilyProfileLink.member_id)
+            .join(SourceMember, SourceMember.id == HealthFamilyProfileLink.source_member_id)
+            .join(FamilyArchive, FamilyArchive.id == HealthFamilyProfileLink.family_id)
+            .join(actor, actor.family_id == FamilyArchive.id)
+            .where(
+                SourceMember.family_id == FamilyArchive.id,
+                SourceMember.is_active.is_(True),
+                actor.subject_uid == uid,
+                actor.is_active.is_(True),
+            )
         )
+        linked = select(HealthFamilyProfileLink.member_id)
+        records = await self.session.execute(
+            select(FamilyMember, HealthGrant, FamilyMember.id.in_(shared))
+            .outerjoin(HealthGrant, and_(HealthGrant.member_id == FamilyMember.id, HealthGrant.actor_uid == uid))
+            .where(
+                or_(
+                    FamilyMember.id.in_(shared),
+                    and_(
+                        FamilyMember.id.not_in(linked), HealthGrant.actor_uid == uid, HealthGrant.revoked_at.is_(None)
+                    ),
+                )
+            )
+            .where(select(User.uid).where(User.uid == uid, User.is_deleted == 0).exists())
+            .order_by(FamilyMember.created_at)
+        )
+        result = []
+        for member, grant, shared_access in records:
+            scopes = set(FAMILY_REPORT_SCOPES) if shared_access else set()
+            if grant is not None and grant.revoked_at is None:
+                scopes.update(scope for scope in grant.scopes if scope in HEALTH_SCOPES)
+            result.append((member, scopes))
+        return result
 
     async def visible_member_scopes(self, member_id: str, uid: str):
         """能力读取先证明有效账号与非空合法授权，不设管理员旁路。"""
-        row = (
-            await self.session.execute(
-                select(User, HealthGrant.scopes)
-                .join(HealthGrant, HealthGrant.actor_uid == User.uid)
-                .join(FamilyMember, FamilyMember.id == HealthGrant.member_id)
-                .where(
-                    User.uid == uid,
-                    User.is_deleted == 0,
-                    FamilyMember.id == member_id,
-                    HealthGrant.revoked_at.is_(None),
-                )
-            )
-        ).one_or_none()
-        if row is not None:
-            user, scopes = row
-            if isinstance(scopes, list) and scopes and all(isinstance(s, str) and s in HEALTH_SCOPES for s in scopes):
-                return user, set(scopes)
+        user = await self.session.scalar(select(User).where(User.uid == uid, User.is_deleted == 0))
+        member = await self.session.get(FamilyMember, member_id)
+        if user is None or member is None:
+            raise HealthVisionError("not_found", "资源不存在或无权访问", 404)
+        shared = await self._authorize_report_link(member_id, uid, lock=False)
+        grant = await self.session.get(HealthGrant, (member_id, uid), populate_existing=True)
+        scopes = set(FAMILY_REPORT_SCOPES) if shared else set()
+        if grant is not None and grant.revoked_at is None:
+            scopes.update(scope for scope in grant.scopes if scope in HEALTH_SCOPES)
+        if scopes:
+            return user, scopes
         raise HealthVisionError("not_found", "资源不存在或无权访问", 404)
 
     async def authorize_plan_members(self, anchor_id, uid, spec, scopes, *, lock=False):
@@ -87,6 +126,7 @@ class HealthVisionRepository:
         member = await self.authorize(member_id, uid, "profile_edit", lock=True)
         if member.owner_uid != uid or not set(scopes) <= HEALTH_SCOPES:
             raise HealthVisionError("not_found", "资源不存在或无权访问", 404)
+        await self._require_processing_owner(member)
         if not await self.session.scalar(select(User.uid).where(User.uid == target_uid, User.is_deleted == 0)):
             raise HealthVisionError("not_found", "资源不存在或无权访问", 404)
         grant = await self.session.get(HealthGrant, (member_id, target_uid))
@@ -97,7 +137,7 @@ class HealthVisionRepository:
         grant.revoked_at = None if scopes else utc_now_naive()
 
     async def require_consent(self, member_id: str, uid: str, purpose: str, snapshot: dict):
-        """处理方或政策变化必须重新同意。"""
+        """逐用途重读有效同意，并核对当前处理方及政策。"""
         consent = await self.session.get(HealthProcessingConsent, (member_id, uid, purpose), populate_existing=True)
         if (
             consent is None
@@ -106,6 +146,25 @@ class HealthVisionRepository:
             or consent.policy_version != snapshot["policy_version"]
         ):
             raise HealthVisionError("consent_required", "请先同意当前用途、处理方及政策", 403)
+
+    async def processing_consent(self, member_id: str, uid: str, purpose: str):
+        """读取当前账号的用途授权，不代替成员访问校验。"""
+        return await self.session.get(HealthProcessingConsent, (member_id, uid, purpose), populate_existing=True)
+
+    async def nutrition_inputs(self, meal):
+        """只读取本人明确选择的已发布食品、菜谱与份量版本。"""
+        food_ids = {str(item.food_id) for item in meal.items if item.food_id}
+        food_ids.update(str(entry.food_id) for item in meal.items for entry in item.adjustments)
+        inputs = []
+        for model, ids in (
+            (FoodRecord, food_ids),
+            (RecipeVersion, {str(item.recipe_version_id) for item in meal.items if item.recipe_version_id}),
+            (PortionReference, {str(item.portion_reference_id) for item in meal.items if item.portion_reference_id}),
+        ):
+            inputs.append(
+                {row.id: row for row in (await self.session.scalars(select(model).where(model.id.in_(ids)))).all()}
+            )
+        return inputs
 
     async def upload(self, upload_id: str, uid: str, scope: str):
         """预览和删除从有效源对象授权。"""
@@ -290,18 +349,35 @@ class HealthVisionRepository:
     async def task_counts(self, uid: str, member_id: str):
         """额度从数据库事实计算，并由创建事务的锁串行校验。"""
         today = utc_now_naive().replace(hour=0, minute=0, second=0, microsecond=0)
+        rejected = aliased(VisionJob)
+        unused_report_failures = (
+            select(rejected.id)
+            .join(TaskRecord, TaskRecord.id == rejected.task_id)
+            .where(
+                rejected.kind == "report",
+                rejected.error_code == "budget_price_unavailable",
+                TaskRecord.status == "failed",
+                or_(
+                    rejected.input_snapshot["provider_jobs"].as_string().is_(None),
+                    rejected.input_snapshot["provider_jobs"].as_string() == "[]",
+                ),
+                ~select(HealthAiCall.id).where(HealthAiCall.owner_id == rejected.task_id).exists(),
+            )
+        )
+        # 配置在外呼前拒绝的报告不消耗识别次数；任何 OCR 受理或模型预留仍计数。
+        counted = (
+            select(func.count())
+            .select_from(VisionJob)
+            .where(VisionJob.created_at >= today, VisionJob.id.not_in(unused_report_failures))
+        )
         active = await self.session.scalar(
             select(func.count())
             .select_from(VisionJob)
             .join(TaskRecord, TaskRecord.id == VisionJob.task_id)
             .where(VisionJob.member_id == member_id, TaskRecord.status.in_(["pending", "running"]))
         )
-        daily = await self.session.scalar(
-            select(func.count()).select_from(VisionJob).where(VisionJob.actor_uid == uid, VisionJob.created_at >= today)
-        )
-        total = await self.session.scalar(
-            select(func.count()).select_from(VisionJob).where(VisionJob.created_at >= today)
-        )
+        daily = await self.session.scalar(counted.where(VisionJob.actor_uid == uid))
+        total = await self.session.scalar(counted)
         return int(active or 0), int(daily or 0), int(total or 0)
 
     async def statistics_sources(self, member_id: str, kind: str, start, end):
@@ -377,3 +453,48 @@ class HealthVisionRepository:
             [row for row in tasks if source_visible(row["upload_ids"])],
             [row for row in reviews if row["job_id"] is None or source_visible(row["upload_ids"])],
         )
+
+    async def _require_processing_owner(self, member):
+        """代建报告不授予他人的处理权，旧关联同样核对当前本人或监护身份。"""
+        from yuxi.services.family_service import guardian_active
+
+        link = await self.session.get(HealthFamilyProfileLink, member.id, populate_existing=True)
+        if link is None:
+            return
+        source = await self.session.get(SourceMember, link.source_member_id, populate_existing=True)
+        if (
+            source is None
+            or not source.is_active
+            or member.owner_uid != link.actor_uid
+            or source.subject_uid != link.actor_uid and not guardian_active(source, link.actor_uid)
+        ):
+            raise HealthVisionError("not_found", "资源不存在或无权访问", 404)
+
+    async def _authorize_report_link(self, member_id: str, uid: str, *, lock: bool):
+        """报告沿用有效家庭成员关系；家庭锁先于健康成员锁。"""
+        link = await self.session.get(HealthFamilyProfileLink, member_id, populate_existing=True)
+        if link is None:
+            return False
+        family_query = select(FamilyArchive).where(FamilyArchive.id == link.family_id)
+        if lock:
+            family_query = family_query.with_for_update()
+        family = await self.session.scalar(family_query)
+        source = await self.session.get(SourceMember, link.source_member_id, populate_existing=True)
+        actor = await self.session.scalar(
+            select(SourceMember.id)
+            .where(
+                SourceMember.family_id == link.family_id,
+                SourceMember.subject_uid == uid,
+                SourceMember.is_active.is_(True),
+            )
+            .limit(1)
+        )
+        if (
+            family is None
+            or source is None
+            or source.family_id != link.family_id
+            or not source.is_active
+            or actor is None
+        ):
+            raise HealthVisionError("not_found", "报告档案当前不存在或无权访问", 404)
+        return True

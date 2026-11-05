@@ -1,11 +1,14 @@
 import { readDailyMealPlan } from './daily-meal-plan.js'
 import { createHealthTaskFlow } from './health-task-flow.js'
-import { referenceSelection } from './reference-meal-plan.js'
+import { referenceSelection, isMealPlanCandidates } from './reference-meal-plan.js'
 import { storageContext, scopedStorage } from './storage.js'
 import { localDate } from '../utils/meal-state.js'
 
 const active = status => ['queued','dispatched','pending','running','cancel_requested'].includes(status)
 const stopped = status => ['failed','rejected','interrupted','cancelled','needs_input'].includes(status)
+const mealTypes = ['breakfast','lunch','dinner']
+const requiredMeals = plan => [...new Set([...(plan.needs_regeneration || []),
+  ...mealTypes.filter(type => !plan.meals.some(meal => meal.meal_type === type))])]
 export function todayMealPlanState() {
   return { phase:'idle',date:'',plan:null,verified:false,checking:false,issue:false,label:'正在读取今日餐单',notice:'',action:'',pending:null }
 }
@@ -14,7 +17,7 @@ export function todayMealPlanState() {
 // active conversation, or the chat's task-storage namespace.
 export function createTodayMealPlan({ state, onPlan = () => {}, read = readDailyMealPlan,
   createFlow = createHealthTaskFlow, context = storageContext, storage = scopedStorage,
-  day = localDate, schedule = setTimeout, cancel = clearTimeout, pollLimit = 45 } = {}) {
+  day = localDate, schedule = setTimeout, cancel = clearTimeout, pollLimit = 150 } = {}) {
   let generation = 0, timer = null, flow = null, disposed = false, verifiedScope = ''
   const taskStorage = {
     getStorageSync: key => storage.getStorageSync('today-menu:' + key),
@@ -48,10 +51,19 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       timer = null
       const previous = flow; flow = null; previous?.pause()
     }
-    let polls = 0, readFailures = 0
+    let polls = 0, readFailures = 0, ownSelection = null, ownMemberId = ''
     const updating = () => {
+      state.label = polls >= 45 && (active(state.pending?.status) || active(flow?.getState()?.status))
+        ? '三餐仍在生成，请稍候' : '正在搭配今天的三餐'
       state.notice = state.plan ? '正在更新餐单，已有餐次可继续查看。' : ''
       state.action = ''
+    }
+    const showCandidatePending = pending => {
+      state.pending = pending
+      state.checking = false; state.issue = true; state.phase = state.plan ? 'ready' : 'error'
+      state.notice = '已生成待核对候选，个人适用性尚未确认；请到对话查看完整做法和来源。'
+      state.action = 'candidates'; flow?.pause()
+      return true
     }
     const adopt = plan => {
       if (!current()) return
@@ -60,16 +72,41 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       state.checking = false
       verifiedScope = state.plan ? planScope : ''
       state.pending = plan.pending || null
-      const needsInput = plan.pending?.status === 'needs_input'
-      state.issue = needsInput || !!plan.needs_regeneration?.length
-      state.notice = needsInput ? '还有配餐问题需要确认。' : plan.needs_regeneration?.length ? '部分餐次还需重新安排，已有餐次可继续查看。' : ''
-      state.action = needsInput ? 'answer' : plan.needs_regeneration?.length ? 'regenerate' : ''
+      const needsInput = plan.pending?.status === 'needs_input', incomplete = requiredMeals(plan).length > 0
+      state.issue = needsInput || incomplete
+      state.notice = needsInput ? '还有配餐问题需要确认。' : incomplete && state.plan ? '三餐尚未配齐，已有餐次可继续查看。' : ''
+      state.action = needsInput ? 'answer' : incomplete && state.plan ? 'regenerate' : ''
       if (active(plan.pending?.status)) updating()
+      if (plan.pending?.status === 'reference_candidates') showCandidatePending(plan.pending)
       if (state.plan) { state.phase = 'ready'; onPlan(plan) }
+    }
+    const taskNotice = task => task?.error || task?.notice || ({
+      budget_price_unavailable:'营养咨询计费配置尚未就绪，请联系管理员。',
+      budget_exceeded:'本月健康 AI 可用额度不足或待核账，请稍后再试。',
+      planner_output_invalid:'本次餐单结果无法核对，请刷新状态或重新安排。',
+      planner_receipt_invalid:'本次餐单回执无法核对，请刷新状态。',
+    })[task?.result?.code] || ''
+    const followUp = task => {
+      if (!ownSelection || task?.result?.type !== 'needs_input') return false
+      state.pending = {status:'needs_input',questions:task.result.questions,selection:ownSelection,
+        request_id:task.requestId,thread_id:task.entry?.thread_id,member_id:ownMemberId}
+      state.checking = false; state.issue = true; state.notice = '还有配餐问题需要确认。'
+      state.action = 'answer'; state.phase = state.plan ? 'ready' : 'error'
+      flow?.pause()
+      return true
+    }
+    const showCandidates = task => {
+      if (!ownSelection || task?.result?.kind !== 'meal_plan_candidates' || !isMealPlanCandidates(task.result.data)) return false
+      return showCandidatePending({status:'reference_candidates',selection:ownSelection,request_id:task.requestId,
+        thread_id:task.entry?.thread_id,member_id:ownMemberId})
     }
     const poll = () => {
       if (!current() || timer !== null) return
-      if (polls++ >= pollLimit) { fail(); return }
+      if (polls++ >= pollLimit) {
+        fail(false,active(state.pending?.status) || active(flow?.getState()?.status)
+          ? '餐单仍在处理中，可刷新状态继续查看原任务。' : '')
+        return
+      }
       timer = schedule(async () => {
         timer = null
         if (!current()) { if (ticket === generation) clear(); return }
@@ -78,17 +115,31 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
           if (!current()) { if (ticket === generation) clear(); return }
           readFailures = 0
           adopt(plan)
-          const task = flow?.getState()
-          if (active(plan.pending?.status)) { poll(); return }
-          if (plan.needs_regeneration?.length && active(task?.status)) { updating(); poll(); return }
+          if (plan.pending?.status === 'reference_candidates') return
+          const ownedTask = flow?.getState()
+          // Another device may have replaced our task. Only apply owned terminal
+          // results to its matching pending task, or when no pending task exists.
+          const task = !plan.pending || plan.pending.request_id === ownedTask?.requestId ? ownedTask : null
+          if (ownedTask && !task) { const previous = flow; flow = null; previous.pause() }
           if (plan.pending?.status === 'needs_input') { state.phase = state.plan?'ready':'error'; flow?.pause(); return }
-          if (state.plan) {
-            if (stopped(plan.pending?.status)) fail(false,'本次更新已停止，已有餐单仍可查看。')
-            else flow?.pause()
+          if (followUp(task) || showCandidates(task)) return
+          if (stopped(plan.pending?.status) || stopped(task?.status) || task?.invalidated || task?.result?.type === 'error') {
+            fail(!!task?.invalidated,taskNotice(task) || (state.plan ? '本次更新已停止，已有餐单仍可查看。' : ''))
             return
           }
-          if (stopped(plan.pending?.status) || stopped(task?.status) || task?.result?.type === 'needs_input' || task?.invalidated) {
-            fail(!!task?.invalidated); return
+          if (active(plan.pending?.status)) { poll(); return }
+          if (requiredMeals(plan).length && (task?.submitUnknown || active(task?.status))) { updating(); poll(); return }
+          if (state.plan) {
+            if (requiredMeals(plan).length && task?.status === 'completed') {
+              // Wait until the saved read model confirms this exact group before
+              // moving to another group's missing meals. Never repeat its POST.
+              if (!readOnly && plan.version > ownSelection?.daily_base_version && ownSelection.meal_types.every(type=>!requiredMeals(plan).includes(type))) {
+                await open(profile)
+              } else poll()
+            }
+            else if (requiredMeals(plan).length && !readOnly) await open(profile)
+            else flow?.pause()
+            return
           }
           // The read model can lag task completion or an uncertain submission.
           // Wait for its authoritative plan; never repeat the generation POST.
@@ -107,10 +158,11 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       let plan = await read(family,date)
       if (!current()) { if (ticket === generation) clear(); return }
       adopt(plan)
+      if (plan.pending?.status === 'reference_candidates') return
       if (active(plan.pending?.status)) { if (!state.plan) state.phase = 'generating'; poll(); return }
       // A task awaiting required input is not permission to invent an answer.
       if (plan.pending?.status === 'needs_input') { state.phase = state.plan?'ready':'error'; return }
-      if (state.plan && !plan.needs_regeneration?.length) return
+      if (state.plan && !requiredMeals(plan).length) return
       // Refresh only reads the original task; it must never repeat a generation POST.
       if (readOnly) {
         if (!state.plan) {
@@ -122,49 +174,47 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       state.phase = state.plan?'ready':'generating'; state.label = '正在安排今天的三餐'
       updating()
       const selection = referenceSelection(profile,'安排今天的三餐',{today:date})
-      if (plan.needs_regeneration?.length) {
-        const first=plan.needs_regeneration[0],diners=plan.regeneration_participants?.[first]
-        selection.meal_types = plan.needs_regeneration.filter(type=>!diners?.length||JSON.stringify([...(plan.regeneration_participants?.[type]||[])].sort())===JSON.stringify([...diners].sort()))
-        if(diners?.length)selection.participant_ids=[...diners].sort()
-      }
+      const needed = requiredMeals(plan), firstDiners = plan.regeneration_participants?.[needed[0]] || selection.participant_ids
+      selection.meal_types = needed.filter(type=>JSON.stringify([...(plan.regeneration_participants?.[type]||selection.participant_ids)].sort())===JSON.stringify([...firstDiners].sort()))
+      selection.participant_ids = [...firstDiners].sort()
       selection.daily_base_version = plan.version
       const anchor = profile.members.find(member => selection.participant_ids.includes(member.id) && member.healthMemberId)
       if (!anchor) { fail(true); return }
+      ownSelection = selection; ownMemberId = anchor.healthMemberId
       const owned = createFlow({storage:taskStorage,onChange: next => {
-        if (current() && next.invalidated) fail(true)
+        if (current() && flow === owned && next.invalidated) fail(true)
       }})
       flow = owned
       await owned.open(anchor.healthMemberId,'reference_meal_preview',selection)
       if (!current()) return
       let task = owned.getState()
-      if (task.invalidated || !task.available || task.consentOption) { fail(!!task.invalidated); return }
-      if (task.result?.type === 'needs_input') {
-        state.pending = { status:'needs_input',questions:task.result.questions,selection,request_id:task.requestId,thread_id:task.entry?.thread_id,member_id:anchor.healthMemberId }
-        state.issue = true; state.notice = '还有配餐问题需要确认。'; state.action = 'answer'; state.phase = state.plan?'ready':'error'
-        return
-      }
+      if (task.invalidated || !task.available || task.consentOption) { fail(!!task.invalidated,taskNotice(task)); return }
+      if (followUp(task) || showCandidates(task)) return
       if (task.submitUnknown || active(task.status)) { poll(); return }
       if (stopped(task.status)) {
         await owned.open(anchor.healthMemberId,'reference_meal_preview',selection,{fresh:true})
         if (!current()) return
         task = owned.getState()
-        if (task.invalidated || !task.available || task.consentOption) { fail(!!task.invalidated); return }
+        if (task.invalidated || !task.available || task.consentOption) { fail(!!task.invalidated,taskNotice(task)); return }
       }
       if (task.requestId) { poll(); return }
       if (!task.entry?.thread_id) await owned.createEntry()
       if (!current()) return
       task = owned.getState()
       if (!task.entry?.thread_id || task.error || task.invalidated) { fail(!!task.invalidated); return }
-      const accepted = await owned.submit(plan.needs_regeneration?.length?'重新安排未配齐的餐次，保留其他餐次。':'生成今日早餐、午餐和晚餐的参考餐单。')
+      const requestedMeals = selection.meal_types.map(type=>({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'})[type]).join('、')
+      const accepted = await owned.submit(`生成今日${requestedMeals}的参考餐单${selection.meal_types.length<3?'，保留其他已保存餐次。':'。'}`)
       if (!current()) return
       task = owned.getState()
+      if (followUp(task) || showCandidates(task)) return
+      if (stopped(task.status) || task.result?.type === 'error') { fail(!!task.invalidated,taskNotice(task)); return }
       if (!accepted && !task.submitUnknown && !active(task.status)) {
         // Another device may have won the version/dispatch race.
         plan = await read(family,date)
         if (!current()) return
         adopt(plan)
         if (state.plan) return
-        if (!active(plan.pending?.status)) { fail(!!task.invalidated); return }
+        if (!active(plan.pending?.status)) { fail(!!task.invalidated,taskNotice(task)); return }
       }
       poll()
     } catch (error) { fail([401,403,404,409,410].includes(Number(error.code))) }

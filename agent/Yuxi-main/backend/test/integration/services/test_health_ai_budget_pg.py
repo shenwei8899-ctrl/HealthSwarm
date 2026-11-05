@@ -105,10 +105,10 @@ async def seed_price(manager, target="synthetic", price=None):
     return row.id
 
 
-async def test_concurrent_five_purposes_share_exactly_forty_and_commit_before_call(budget_db):
-    """并发争抢允许四次十元外呼，拒绝者没有供应商副作用。"""
+async def test_concurrent_five_purposes_preserve_ledger_without_monthly_cap_and_commit_before_call(budget_db):
+    """五类并发费用全部入账，冻结后拒绝者没有供应商副作用。"""
     await seed_price(budget_db)
-    external = []
+    external, rejected = [], []
 
     async def attempt(index):
         try:
@@ -119,6 +119,7 @@ async def test_concurrent_five_purposes_share_exactly_forty_and_commit_before_ca
             )
         except HealthVisionError as exc:
             assert exc.code == "budget_exceeded"
+            rejected.append(index)
             return
         async with budget_db.get_async_session_context() as independent:
             row = await independent.get(HealthAiCall, reservation.call_id)
@@ -126,11 +127,18 @@ async def test_concurrent_five_purposes_share_exactly_forty_and_commit_before_ca
         external.append(reservation.call_id)
 
     await asyncio.gather(*(attempt(i) for i in range(40)))
-    assert len(external) == 4
+    assert len(external) == 40 and not rejected
     async with budget_db.get_async_session_context() as session:
         account = (await session.scalars(select(HealthAiMonth))).one()
         calls = (await session.scalars(select(HealthAiCall))).all()
-        assert account.occupied_cny == sum(c.reserved_cny for c in calls) == Decimal("40")
+        assert len(calls) == 40 and {call.id for call in calls} == set(external)
+        assert account.occupied_cny == sum(c.reserved_cny for c in calls) == Decimal("400")
+        account.blocked = True
+    await asyncio.gather(*(attempt(i) for i in range(40, 45)))
+    assert len(external) == 40 and set(rejected) == set(range(40, 45))
+    async with budget_db.get_async_session_context() as session:
+        assert (await session.scalars(select(HealthAiMonth))).one().occupied_cny == Decimal("400")
+        assert len((await session.scalars(select(HealthAiCall))).all()) == 40
 
 
 async def test_duplicate_call_and_concurrent_settlement_cannot_double_refund(budget_db):
@@ -162,14 +170,13 @@ async def test_unknown_receipt_keeps_full_reservation_on_retry(budget_db, usage)
     await seed_price(budget_db)
     first = await budget.reserve("report", "task", "synthetic")
     await budget.settle(first, usage)
-    for _ in range(3):
-        await budget.reserve("report", "task", "synthetic")
-    with pytest.raises(HealthVisionError, match="budget_exceeded"):
+    for _ in range(4):
         await budget.reserve("report", "task", "synthetic")
     async with budget_db.get_async_session_context() as session:
         call = await session.get(HealthAiCall, first.call_id)
         assert call.status == "unknown" and call.charged_cny is None
-        assert (await session.get(HealthAiMonth, call.month)).occupied_cny == Decimal("40")
+        assert (await session.get(HealthAiMonth, call.month)).occupied_cny == Decimal("50")
+        assert len((await session.scalars(select(HealthAiCall))).all()) == 5
 
 
 async def test_missing_price_expiry_and_changed_credentials_fail_closed(budget_db, monkeypatch):
@@ -210,6 +217,12 @@ async def test_out_of_contract_usage_freezes_month_and_price(budget_db):
         assert month.blocked and month.occupied_cny == Decimal("10")
         assert call.charged_cny is None and call.status == "unknown"
         assert not (await session.get(HealthAiPrice, price_id)).enabled
+    await seed_price(budget_db)
+    with pytest.raises(HealthVisionError, match="budget_exceeded"):
+        await budget.reserve("consultation", "run-after-freeze", "synthetic")
+    async with budget_db.get_async_session_context() as session:
+        assert len((await session.scalars(select(HealthAiCall))).all()) == 1
+        assert (await session.scalars(select(HealthAiMonth))).one().occupied_cny == Decimal("10")
 
 
 async def test_late_settlement_stays_in_original_month_and_migration_is_repeatable(budget_db, monkeypatch):
@@ -488,7 +501,7 @@ async def test_opening_is_immutable_and_schema_upgrade_preserves_ledger(budget_d
 
 
 async def test_missing_opening_denies_and_prior_spend_is_never_reset(budget_db):
-    """启用前拒绝外呼，已有三十五元占用只允许五元以下的调用。"""
+    """启用前拒绝预留，超四十元的既有占用仍保留并累加新调用。"""
     from sqlalchemy import delete
     from yuxi.storage.postgres.models_health_budget import HealthAiOpening
 
@@ -498,14 +511,17 @@ async def test_missing_opening_denies_and_prior_spend_is_never_reset(budget_db):
     await seed_price(budget_db)
     with pytest.raises(HealthVisionError, match="budget_price_unavailable"):
         await budget.reserve("meal", "task", "synthetic")
-    data = HealthAiOpeningInput(occupied_cny=35, evidence="合成当月已有费用与未决费用共三十五元", verified=True)
-    await budget.initialize_budget("synthetic-admin", data)
-    await budget.initialize_budget("synthetic-admin", data)
-    with pytest.raises(HealthVisionError, match="budget_exceeded"):
-        await budget.reserve("meal", "task", "synthetic")
     async with budget_db.get_async_session_context() as session:
-        assert (await session.scalars(select(HealthAiMonth))).one().occupied_cny == Decimal("35")
         assert (await session.scalars(select(HealthAiCall))).all() == []
+    data = HealthAiOpeningInput(occupied_cny=45, evidence="合成当月已有费用与未决费用共四十五元", verified=True)
+    await budget.initialize_budget("synthetic-admin", data)
+    await budget.initialize_budget("synthetic-admin", data)
+    reservation = await budget.reserve("meal", "task", "synthetic")
+    async with budget_db.get_async_session_context() as session:
+        assert (await session.get(HealthAiOpening, 1)).occupied_cny == Decimal("45")
+        assert (await session.scalars(select(HealthAiMonth))).one().occupied_cny == Decimal("55")
+        call = (await session.scalars(select(HealthAiCall))).one()
+        assert call.id == reservation.call_id and call.reserved_cny == Decimal("10")
 
 
 async def test_budget_http_admin_boundary_and_persistent_status(budget_db, monkeypatch):
@@ -561,7 +577,7 @@ async def test_budget_http_admin_boundary_and_persistent_status(budget_db, monke
         assert response.status_code == 200
         result = response.json()
         assert Decimal(result["occupied_cny"]) == Decimal("10")
-        assert Decimal(result["remaining_cny"]) == Decimal("30")
+        assert result["remaining_cny"] is result["limit_cny"] is result["reference_budget_cny"] is None
         assert result["calls"][0]["id"] == reservation.call_id
         reset = await client.post(
             "/api/health/v1/budget/opening",
@@ -633,28 +649,48 @@ async def test_advisory_keeps_vision_price_reservation_and_usage(budget_db, monk
 async def test_budget_readiness_is_read_only_and_detects_price_and_frozen_month(budget_db):
     """真实数据库证明就绪检查不预留费用，缺价格与冻结月份不会冒充可用。"""
     from sqlalchemy import func
-    info=ModelInfo(provider_id="synthetic",model_id="fixed",model_type="chat",display_name="合成",api_key="synthetic",base_url="https://synthetic.invalid/v1",provider_type="openai")
+
+    info = ModelInfo(
+        provider_id="synthetic",
+        model_id="fixed",
+        model_type="chat",
+        display_name="合成",
+        api_key="synthetic",
+        base_url="https://synthetic.invalid/v1",
+        provider_type="openai",
+    )
     async with budget_db.get_async_session_context() as db:
-        assert (await budget.model_budget_readiness(db,info))["reason_code"]=="budget_price_unavailable"
-        assert await db.scalar(select(func.count()).select_from(HealthAiCall))==0
-        assert await db.scalar(select(func.count()).select_from(HealthAiMonth))==1
-    await seed_price(budget_db,budget.model_target(info))
+        readiness = await budget.model_budget_readiness(db, info, purpose="meal")
+        assert readiness["reason_code"] == "budget_price_unavailable"
+        assert await db.scalar(select(func.count()).select_from(HealthAiCall)) == 0
+        assert await db.scalar(select(func.count()).select_from(HealthAiMonth)) == 1
+    await seed_price(budget_db, budget.model_target(info))
     async with budget_db.get_async_session_context() as db:
-        assert (await budget.model_budget_readiness(db,info))["available"]
-        account=(await db.scalars(select(HealthAiMonth))).one();account.blocked=True
+        assert (await budget.model_budget_readiness(db, info, purpose="meal"))["available"]
+        account = (await db.scalars(select(HealthAiMonth))).one()
+        account.blocked = True
     async with budget_db.get_async_session_context() as db:
-        assert (await budget.model_budget_readiness(db,info))["reason_code"]=="budget_exceeded"
-        assert await db.scalar(select(func.count()).select_from(HealthAiCall))==0
+        assert (await budget.model_budget_readiness(db, info, purpose="meal"))["reason_code"] == "budget_exceeded"
+        assert await db.scalar(select(func.count()).select_from(HealthAiCall)) == 0
 
 
 async def test_budget_readiness_detects_missing_opening_without_initializing(budget_db):
     """价格存在而期初缺失时只报告，不擅自填零或新建月份。"""
     from yuxi.storage.postgres.models_health_budget import HealthAiOpening
-    info=ModelInfo(provider_id="synthetic",model_id="fixed",model_type="chat",display_name="合成",api_key="synthetic",base_url="https://synthetic.invalid/v1",provider_type="openai")
-    await seed_price(budget_db,budget.model_target(info))
+
+    info = ModelInfo(
+        provider_id="synthetic",
+        model_id="fixed",
+        model_type="chat",
+        display_name="合成",
+        api_key="synthetic",
+        base_url="https://synthetic.invalid/v1",
+        provider_type="openai",
+    )
+    await seed_price(budget_db, budget.model_target(info))
     async with budget_db.get_async_session_context() as db:
-        await db.delete(await db.get(HealthAiOpening,1))
+        await db.delete(await db.get(HealthAiOpening, 1))
     async with budget_db.get_async_session_context() as db:
-        result=await budget.model_budget_readiness(db,info)
-        assert result["reason_code"]=="budget_price_unavailable" and "期初" in result["reason"]
-        assert await db.get(HealthAiOpening,1) is None
+        result = await budget.model_budget_readiness(db, info, purpose="meal")
+        assert result["reason_code"] == "budget_price_unavailable" and "期初" in result["reason"]
+        assert await db.get(HealthAiOpening, 1) is None

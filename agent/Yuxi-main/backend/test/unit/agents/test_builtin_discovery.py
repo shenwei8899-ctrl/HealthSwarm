@@ -244,7 +244,7 @@ def test_shipping_skills_keep_required_dependencies():
         "family-blood-lipids",
         "family-blood-pressure",
     }
-    assert found["family-meal-planner"]["version"] == "2026.10.26.1"
+    assert found["family-meal-planner"]["version"] == "2026.11.06.2"
     assert found["family-quality-review"]["tool_dependencies"] == [
         "get_quality_review_context",
         "check_selected_plan_quality",
@@ -260,6 +260,7 @@ def test_shipping_skills_keep_required_dependencies():
     assert found["family-purchase"]["mcp_dependencies"] == []
     assert found["family-meal-planner"]["tool_dependencies"] == [
         "get_reference_plan_context",
+        "find_reference_products",
         "search_reference_recipes",
         "read_reference_recipe",
         "save_reference_meal_plan",
@@ -278,8 +279,9 @@ def test_shipping_skills_keep_required_dependencies():
         "query_family_nutrition_knowledge",
     ]
     assert found["family-nutritionist"]["name"] == "家庭营养师"
-    assert found["family-nutritionist"]["version"] == "2026.10.28.1"
+    assert found["family-nutritionist"]["version"] == "2026.11.06.1"
     assert found["family-nutritionist"]["tool_dependencies"] == [
+        "get_food_categories",
         "find_food_packages",
         "select_food_products",
         "get_confirmed_profile",

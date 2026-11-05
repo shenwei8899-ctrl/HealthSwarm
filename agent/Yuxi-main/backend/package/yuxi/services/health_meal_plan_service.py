@@ -428,6 +428,8 @@ async def planner_final_result(context, text):
 
         if reference_binding(binding):
             return await reference_answer_in_session(session, run, binding, answer)
+        if answer.candidate_meals:
+            raise HealthVisionError("planner_output_invalid", "当前模式不接受待核对的日常做法选择", 422)
         if getattr(binding, "safe_planner_selection", None) is not None:
             from yuxi.services.health_safe_planner_service import safe_answer_in_session
 

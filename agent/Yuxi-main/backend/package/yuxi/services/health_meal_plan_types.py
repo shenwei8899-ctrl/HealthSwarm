@@ -74,6 +74,13 @@ class MealPlanSwap(HealthDTO):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class CookingCandidateMealChoice(HealthDTO):
+    """模型只能选择当前回执中待核对的做法编号，不覆盖来源内容。"""
+
+    meal_type: Literal["breakfast", "lunch", "dinner"]
+    candidate_ids: list[str] = Field(min_length=1, max_length=4)
+
+
 class PlannerAnswer(HealthDTO):
     """模型最终输出只能引用运行回执或提出补充问题。"""
 
@@ -81,12 +88,13 @@ class PlannerAnswer(HealthDTO):
     explanation: str = Field(default="", max_length=3000)
     knowledge_source_ids: list[UUID] = Field(default_factory=list, max_length=4)
     questions: list[str] = Field(default_factory=list, max_length=3)
+    candidate_meals: list[CookingCandidateMealChoice] = Field(default_factory=list, max_length=3)
 
     @model_validator(mode="after")
     def one_result(self):
-        """回执与澄清问题只选一种，拒绝自由编造餐单字段。"""
-        if bool(self.preview_id) == bool(self.questions):
-            raise ValueError("选择一个预览回执或补充问题")
+        """回执、待核对做法选择和澄清问题互斥，不接受自由餐单。"""
+        if sum(map(bool, (self.preview_id, self.questions, self.candidate_meals))) != 1:
+            raise ValueError("选择预览回执、待核对做法或补充问题之一")
         if any(not q.strip() or len(q) > 200 for q in self.questions):
             raise ValueError("补充问题长度无效")
         return self

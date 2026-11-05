@@ -297,6 +297,13 @@ class JoinInput(BaseModel):
     code: str = Field(min_length=20, max_length=100)
 
 
+class FamilyInviteRevoke(BaseModel):
+    """按准备时的邀请版本撤销，重复请求不撤销后续新版本。"""
+
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=0)
+
+
 class MeasurementInput(BaseModel):
     """独立且可幂等保存的实测记录。"""
 

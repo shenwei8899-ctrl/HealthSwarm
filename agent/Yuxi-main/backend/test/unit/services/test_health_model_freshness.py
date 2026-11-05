@@ -143,7 +143,7 @@ async def test_worker_rejects_model_change_despite_warm_projection(monkeypatch, 
             "model": info.spec,
             "processor": fingerprint,
             "policy_version": "synthetic",
-            "prompt_version": "health-vision-v1" if change == "prompt_changed" else "health-meal-v2",
+            "prompt_version": "health-vision-v1" if change == "prompt_changed" else "health-meal-v3",
         },
     )
     if change == "unchanged":

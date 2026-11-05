@@ -38,7 +38,8 @@ class ConversationPurchaseRepository:
         return await self.session.scalar(stmt)
 
     async def catalog_profile_payloads(
-        self, binding, *, run_id=None, tool_names=("find_food_packages", "select_food_products")
+        self, binding, *, run_id=None,
+        tool_names=("get_food_categories", "find_food_packages", "select_food_products")
     ):
         """只取同本人咨询中的已完成真实商品工具审计。"""
         stmt = (

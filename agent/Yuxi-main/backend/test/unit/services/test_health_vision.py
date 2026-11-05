@@ -15,6 +15,7 @@ from yuxi.services.health_nutrition_service import calculate_nutrition
 from yuxi.services.health_vision_provider import normalize_report_blocks, redact_report_blocks, verify_report_fields
 from yuxi.services.health_vision_service import require_editable
 from yuxi.services import health_vision_service as service_module
+from yuxi.services import health_ai_budget_service as budget
 from yuxi.services.health_vision_types import (
     Evidence,
     FoodInput,
@@ -66,7 +67,7 @@ async def test_health_approval_boundaries_refresh_before_reading_model_view(monk
         ("ready", "consultation", None),
         ("policy", "consultation", "policy_not_approved"),
         ("model", "consultation", "model_unavailable"),
-        ("meal_version", "meal", "meal_model_version_required"),
+        ("meal_budget", "meal", "budget_price_unavailable"),
         ("ocr_credentials", "report", "ocr_credentials_missing"),
         ("ocr_config", "report", "ocr_not_configured"),
         ("processor", "consultation", "processor_approval_changed"),
@@ -76,7 +77,7 @@ async def test_configuration_exposes_stable_reason_without_changing_availability
     """用途Owner的每个原有失败分支都产生稳定机器原因，保留中文提示。"""
     info = SimpleNamespace(
         api_key="synthetic",
-        model_id=service_module.MEAL_MODEL_ID,
+        model_id="synthetic-fixed-v1",
     )
     kinds = ("report", "meal", "consultation", "meal_plan", "diet_analysis", "quality_review", "purchase")
     values = {
@@ -88,8 +89,6 @@ async def test_configuration_exposes_stable_reason_without_changing_availability
         values["policy_version"] = ""
     if case == "processor":
         values["approved_consultation_processor"] = "old-approval"
-    if case == "meal_version":
-        info.model_id = "floating-alias"
     monkeypatch.setattr(
         service_module, "model_cache", SimpleNamespace(refresh=Mock(), get_all_specs=Mock(return_value=[]))
     )
@@ -98,6 +97,19 @@ async def test_configuration_exposes_stable_reason_without_changing_availability
         service_module, "current_health_model_info", AsyncMock(return_value=None if case == "model" else info)
     )
     monkeypatch.setattr(service_module, "processor_identity", Mock(return_value="approved-synthetic"))
+    readiness = AsyncMock(
+        return_value={
+            "available": case != "meal_budget",
+            "reason_code": "budget_price_unavailable" if case == "meal_budget" else None,
+            "reason": "模型价格或费用上界尚未配置，请联系管理员" if case == "meal_budget" else None,
+        }
+    )
+    monkeypatch.setattr(budget, "model_budget_readiness", readiness)
+    monkeypatch.setattr(
+        budget,
+        "report_budget_readiness",
+        AsyncMock(return_value={"available": True, "reason_code": None, "reason": None}),
+    )
     monkeypatch.setattr(
         service_module,
         "resolve_ocr_task_params",
@@ -106,7 +118,8 @@ async def test_configuration_exposes_stable_reason_without_changing_availability
             side_effect=ValueError("synthetic") if case == "ocr_config" else None,
         ),
     )
-    result = await service_module.HealthVisionService().configuration(SimpleNamespace(scalar=AsyncMock(return_value=0)))
+    session = SimpleNamespace(scalar=AsyncMock(return_value=0))
+    result = await service_module.HealthVisionService().configuration(session)
     assert result[kind]["reason_code"] == expected
     assert result[kind]["available"] is (expected is None)
     assert (
@@ -115,7 +128,7 @@ async def test_configuration_exposes_stable_reason_without_changing_availability
             None: None,
             "policy_not_approved": "尚未审批云处理政策",
             "model_unavailable": "请先配置并启用模型供应商及识别模型",
-            "meal_model_version_required": f"饮食模型须使用已冻结版本 {service_module.MEAL_MODEL_ID}",
+            "budget_price_unavailable": "模型价格或费用上界尚未配置，请联系管理员",
             "ocr_credentials_missing": "请在 OCR 配置中填写 PaddleOCR 凭据",
             "ocr_not_configured": "PaddleOCR 未配置",
             "processor_approval_changed": "供应商端点或请求配置已变化，请重新审批服务配置并取得用途同意",
@@ -123,6 +136,36 @@ async def test_configuration_exposes_stable_reason_without_changing_availability
     )
     assert result[kind]["model"] == "synthetic:fixed"
     assert result[kind]["processor"] == "approved-synthetic"
+    if case == "meal_budget":
+        readiness.assert_awaited_once_with(session, info, purpose="meal")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_id", ["synthetic-latest", "synthetic-preview"])
+async def test_configuration_write_rejects_floating_model_aliases_before_approval(monkeypatch, model_id):
+    """取消单一饮食模型ID不取消固定版本要求，浮动别名仍不能审批。"""
+    info = SimpleNamespace(api_key="synthetic", model_id=model_id, model_type="chat", provider_type="openai")
+    session = object()
+
+    @asynccontextmanager
+    async def session_context():
+        """只隔离模型配置读取，不允许进入审批写入。"""
+        yield session
+
+    monkeypatch.setattr(service_module, "model_cache", SimpleNamespace(refresh=Mock()))
+    monkeypatch.setattr(service_module.pg_manager, "get_async_session_context", session_context)
+    read_model = AsyncMock(return_value=info)
+    monkeypatch.setattr(service_module, "current_health_model_info", read_model)
+    processor = Mock(side_effect=AssertionError("浮动别名不得进入审批签名"))
+    monkeypatch.setattr(service_module, "processor_identity", processor)
+    data = VisionConfigurationInput(
+        meal_model="synthetic:fixed", policy_version="synthetic-policy", cloud_processing_reviewed=True
+    )
+    with pytest.raises(HealthVisionError) as rejected:
+        await service_module.HealthVisionService().configure("synthetic-actor", data)
+    assert (rejected.value.code, rejected.value.status) == ("model_version_required", 422)
+    read_model.assert_awaited_once_with(session, "synthetic:fixed")
+    processor.assert_not_called()
 
 
 def meal(food_id=None, **kwargs):

@@ -25,7 +25,12 @@ TARGET = {"rule_code": "synthetic.target.v1", "rule_version": 1, "profile_versio
 @pytest.fixture(autouse=True)
 def healthy_task_runtime(monkeypatch):
     """本文件隔离已另验的运行依赖，保留任务分派和结果Owner验证。"""
+    from yuxi.services import health_chat_meal_service
+
     monkeypatch.setattr(service, "health_task_runtime_blockers", AsyncMock(return_value=[]))
+    receipts = AsyncMock(return_value=[])
+    monkeypatch.setattr(health_chat_meal_service, "chat_meal_receipts", receipts)
+    return receipts
 
 
 def purchase_choice(*, confirmed=False):
@@ -334,7 +339,7 @@ async def test_final_requires_authoritative_complete_regular_message(monkeypatch
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["pending", "running", "failed", "cancelled", "interrupted"])
-async def test_uncompleted_query_never_reads_partial_answer_or_error_text(monkeypatch, status):
+async def test_uncompleted_query_never_reads_partial_answer_or_error_text(monkeypatch, status, healthy_task_runtime):
     """状态查询不公开部分模型结果及上游错误正文。"""
     request = SimpleNamespace(
         request_id="request", agent_slug="health-consultation", conversation_thread_id=THREAD, status="dispatched"
@@ -354,6 +359,8 @@ async def test_uncompleted_query_never_reads_partial_answer_or_error_text(monkey
         lambda _: SimpleNamespace(request_context=AsyncMock(return_value=(request, binding, run)), final_message=final),
     )
     result = await service.read_health_task("actor", "request")
+    healthy_task_runtime.assert_awaited_once_with("session", "actor", {"request_id": "request"})
+    assert result.recorded_meals == []
     assert result.execution_status == status and result.final_message_id is None
     assert "private health text" not in result.model_dump_json()
     assert result.result is None if status in {"pending", "running"} else result.result.result_type == "error"
@@ -361,8 +368,9 @@ async def test_uncompleted_query_never_reads_partial_answer_or_error_text(monkey
 
 
 @pytest.mark.asyncio
-async def test_completed_needs_input_is_not_interrupted_or_validated_result(monkeypatch):
-    """业务追问保持completed，不标正式营养或专业结果。"""
+@pytest.mark.parametrize("candidates", [False, True])
+async def test_completed_questions_and_candidates_keep_distinct_result_types(monkeypatch, candidates):
+    """业务追问和待核对做法均完成，候选不能投影成已安排餐单。"""
     request = SimpleNamespace(
         request_id="request", agent_slug="health-meal-planner", conversation_thread_id=THREAD, status="dispatched"
     )
@@ -381,7 +389,18 @@ async def test_completed_needs_input_is_not_interrupted_or_validated_result(monk
         conversation_id=7,
         input_payload={"health_processing": {"policy": "selected"}},
     )
-    message = SimpleNamespace(id=12, content='{"status":"needs_input","questions":["请明确份量。"]}')
+    payload = (
+        {
+            "status": "reference_candidates",
+            "scope": "cooking_reference",
+            "purchase_allowed": False,
+            "purchase_items": [],
+            "restriction_verification": {"status": "unresolved"},
+        }
+        if candidates
+        else {"status": "needs_input", "questions": ["请明确份量。"]}
+    )
+    message = SimpleNamespace(id=12, content=json.dumps(payload, ensure_ascii=False))
 
     @asynccontextmanager
     async def context():
@@ -400,8 +419,12 @@ async def test_completed_needs_input_is_not_interrupted_or_validated_result(monk
     verified = AsyncMock()
     monkeypatch.setattr(service, "validate_task_business_result", verified)
     result = await service.read_health_task("actor", "request")
-    assert result.execution_status == "completed" and result.result.result_type == "needs_input"
-    assert result.result.questions == ["请明确份量。"] and result.final_message_id == 12
+    assert result.execution_status == "completed" and result.final_message_id == 12
+    if candidates:
+        assert result.result.result_type == "meal_plan_candidates" and result.result.data == payload
+        assert "preview_id" not in result.result.data
+    else:
+        assert result.result.result_type == "needs_input" and result.result.questions == ["请明确份量。"]
     verified.assert_awaited_once()
     with pytest.raises(ValidationError):
         HealthTaskResult.model_validate({**result.model_dump(), "model_audit": "private"})
@@ -462,17 +485,27 @@ async def test_ordinary_preview_requires_current_same_run_receipt_and_full_proje
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("code",["budget_price_unavailable","budget_exceeded"])
-async def test_terminal_budget_error_keeps_safe_type_not_private_upstream_text(monkeypatch,code):
+@pytest.mark.parametrize("code", ["budget_price_unavailable", "budget_exceeded"])
+async def test_terminal_budget_error_keeps_safe_type_not_private_upstream_text(monkeypatch, code, healthy_task_runtime):
     """真实任务投影保留预算失败类型，同时禁止回传上游原始错误。"""
-    request=SimpleNamespace(request_id="request",agent_slug="health-consultation",conversation_thread_id=THREAD,status="dispatched")
-    binding=SimpleNamespace(member_id=MEMBER)
-    run=SimpleNamespace(id="run",status="failed",error_type=code,error_message="private-provider-detail")
+    request = SimpleNamespace(
+        request_id="request", agent_slug="health-consultation", conversation_thread_id=THREAD, status="dispatched"
+    )
+    binding = SimpleNamespace(member_id=MEMBER)
+    run = SimpleNamespace(id="run", status="failed", error_type=code, error_message="private-provider-detail")
+
     @asynccontextmanager
     async def context():
         yield "session"
-    monkeypatch.setattr(service.pg_manager,"get_async_session_context",context)
-    monkeypatch.setattr(service,"HealthTaskRepository",lambda _:SimpleNamespace(request_context=AsyncMock(return_value=(request,binding,run))))
-    result=await service.read_health_task("actor","request")
-    assert result.result.code==code and result.result.retryable is False
+
+    monkeypatch.setattr(service.pg_manager, "get_async_session_context", context)
+    monkeypatch.setattr(
+        service,
+        "HealthTaskRepository",
+        lambda _: SimpleNamespace(request_context=AsyncMock(return_value=(request, binding, run))),
+    )
+    result = await service.read_health_task("actor", "request")
+    healthy_task_runtime.assert_awaited_once_with("session", "actor", {"request_id": "request"})
+    assert result.recorded_meals == []
+    assert result.result.code == code and result.result.retryable is False
     assert "private-provider-detail" not in result.model_dump_json()

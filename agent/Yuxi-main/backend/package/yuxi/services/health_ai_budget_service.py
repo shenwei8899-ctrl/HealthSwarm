@@ -12,7 +12,6 @@ from yuxi.models.providers.cache import model_cache
 from yuxi.repositories.health_ai_budget_repository import HealthAiBudgetRepository
 from yuxi.services.health_ai_budget_types import (
     HEALTH_BUDGET_PURPOSES,
-    MONTHLY_LIMIT_CNY,
     HealthAiPriceInput,
     round_charge,
 )
@@ -20,6 +19,8 @@ from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.health_vision_usage import normalize_token_usage
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_health_budget import HealthAiCall, HealthAiMonth, HealthAiOpening, HealthAiPrice
+
+ADVISORY_PURPOSES = frozenset({"consultation", "indicator_review", "diet_analysis"})
 
 
 @dataclass(frozen=True)
@@ -67,14 +68,20 @@ async def approve_price(uid: str, data: HealthAiPriceInput):
             valid_until=until,
         )
         session.add(record)
-    return {"id": record.id, "currency": "CNY", "ceiling_cny": str(data.ceiling_cny), "valid_until": data.valid_until}
+    return {
+        "id": record.id,
+        "currency": "CNY",
+        "ceiling_cny": str(data.ceiling_cny),
+        "billing_mode": data.billing_mode,
+        "valid_until": data.valid_until,
+    }
 
 
 async def reserve(purpose: str, owner_id: str, target: str, *, call_id: str | None = None) -> BudgetReservation:
     """提交全项目预留后才允许外呼，数据库不可用时不降级。"""
     if purpose not in HEALTH_BUDGET_PURPOSES or not owner_id or len(owner_id) > 64:
         raise HealthVisionError("budget_context_invalid", "健康预算调用归属无效", 422)
-    advisory = budget_mode() == "advisory" and purpose in {"consultation", "indicator_review", "diet_analysis"}
+    advisory = budget_mode() == "advisory" and purpose in ADVISORY_PURPOSES
     call_id = call_id or str(uuid4())
     async with pg_manager.get_async_session_context() as session:
         repo = HealthAiBudgetRepository(session)
@@ -95,6 +102,11 @@ async def reserve(purpose: str, owner_id: str, target: str, *, call_id: str | No
         if row is None:
             raise HealthVisionError("budget_price_unavailable", "计费依据或费用上界未就绪，可使用人工录入", 503)
         price = HealthAiPriceInput.model_validate(row.specification)
+        if price.billing_mode == "free_quota":
+            if purpose != "report":
+                raise HealthVisionError("budget_context_invalid", "免费 OCR 仅用于报告识别", 422)
+            # 已受理页沿用 VisionJob 的 provider_jobs checkpoint；不伪造人民币预留或配额余量。
+            return BudgetReservation(None, price)
         month = budget_month(now)
         opening = await repo.opening()
         if opening is None or month < opening.month:
@@ -104,8 +116,8 @@ async def reserve(purpose: str, owner_id: str, target: str, *, call_id: str | No
             account = HealthAiMonth(month=month, occupied_cny=Decimal(0), blocked=False)
             session.add(account)
             await session.flush()
-        if account.blocked or account.occupied_cny + price.ceiling_cny > MONTHLY_LIMIT_CNY:
-            raise HealthVisionError("budget_exceeded", "健康 AI 本月剩余额度不足或待核账，可使用人工录入", 429)
+        if account.blocked:
+            raise HealthVisionError("budget_exceeded", "健康 AI 费用账本已冻结，可使用人工录入", 429)
         account.occupied_cny += price.ceiling_cny
         session.add(
             HealthAiCall(
@@ -124,7 +136,7 @@ async def reserve(purpose: str, owner_id: str, target: str, *, call_id: str | No
 async def settle(reservation: BudgetReservation, usage=None, *, fixed_charge: bool = False):
     """完整回执按原批准价格结算；未知与超界保留全部占用。"""
     if reservation.call_id is None:
-        # 参考模式的用量由Run模型审计及识图任务回执持久化，人民币金额保持未知。
+        # 免费 OCR 用量沿用页级 checkpoint；参考模型用量沿用 Run 审计，不写虚构金额。
         return
     async with pg_manager.get_async_session_context() as session:
         repo = HealthAiBudgetRepository(session)
@@ -178,10 +190,10 @@ async def budget_status():
             "currency": "CNY",
             "mode": mode,
             "advisory_purposes": ["consultation", "indicator_review", "diet_analysis"] if mode == "advisory" else [],
-            "reference_budget_cny": str(MONTHLY_LIMIT_CNY),
-            "limit_cny": str(MONTHLY_LIMIT_CNY) if mode == "strict" else None,
+            "reference_budget_cny": None,
+            "limit_cny": None,
             "occupied_cny": str(occupied) if amounts_known else None,
-            "remaining_cny": str(MONTHLY_LIMIT_CNY - occupied) if amounts_known else None,
+            "remaining_cny": None,
             "blocked": mode == "strict" and bool(account and account.blocked),
             "usage_source": "agent_run_model_audit_and_vision_task_receipts",
             "initialized": opening is not None,
@@ -231,7 +243,7 @@ def model_target(info) -> str:
             info.request_body_overrides
             and not (
                 info.provider_type == "openai"
-                and info.model_id == "deepseek-flash"
+                and info.model_id in {"deepseek-flash", "deepseek-v4-pro"}
                 and info.base_url.rstrip("/") in {"https://api.deepseek.com", "https://api.deepseek.com/v1"}
                 and info.request_body_overrides == {"thinking": {"type": "disabled"}}
             )
@@ -251,8 +263,10 @@ def budget_month(utc_time):
     return utc_time.replace(tzinfo=UTC).astimezone(ZoneInfo("Asia/Shanghai")).date().replace(day=1)
 
 
-async def model_budget_readiness(session, info):
+async def model_budget_readiness(session, info, *, purpose: str):
     """只读核对模型目标、有效价格、期初与当前月余量，不创建预留。"""
+    if purpose not in HEALTH_BUDGET_PURPOSES:
+        raise HealthVisionError("budget_context_invalid", "健康预算用途无效", 422)
     try:
         target = model_target(info)
     except HealthVisionError:
@@ -261,7 +275,7 @@ async def model_budget_readiness(session, info):
             "reason_code": "budget_price_unavailable",
             "reason": "模型计费参数尚未就绪，请联系管理员",
         }
-    if budget_mode() == "advisory":
+    if budget_mode() == "advisory" and purpose in ADVISORY_PURPOSES:
         return {"available": True, "reason_code": None, "reason": None}
     repo = HealthAiBudgetRepository(session)
     now = await repo.now()
@@ -279,15 +293,43 @@ async def model_budget_readiness(session, info):
             "reason_code": "budget_price_unavailable",
             "reason": "本月预算期初尚未核对，请联系管理员",
         }
-    price = HealthAiPriceInput.model_validate(record.specification)
+    HealthAiPriceInput.model_validate(record.specification)
     account = await repo.month(budget_month(now))
-    occupied = account.occupied_cny if account else Decimal(0)
-    if (account and account.blocked) or occupied + price.ceiling_cny > MONTHLY_LIMIT_CNY:
+    if account and account.blocked:
         return {
             "available": False,
             "reason_code": "budget_exceeded",
-            "reason": "本月健康 AI 可用额度不足或待核账，请稍后再试",
+            "reason": "健康 AI 费用账本已冻结，请联系管理员",
         }
+    return {"available": True, "reason_code": None, "reason": None}
+
+
+async def report_budget_readiness(session, info, ocr_kwargs):
+    """提交前同时核对字段模型和当前 OCR 账户，不消耗额度。"""
+    from yuxi.knowledge.parser.paddleocr_api import DEFAULT_PADDLEOCR_API_URL
+
+    readiness = await model_budget_readiness(session, info, purpose="report")
+    if not readiness["available"]:
+        return readiness
+    repo = HealthAiBudgetRepository(session)
+    endpoint = ocr_kwargs.get("api_url") or DEFAULT_PADDLEOCR_API_URL
+    target = ocr_target(endpoint, ocr_kwargs.get("api_token") or "")
+    record = await repo.price(target, await repo.now())
+    if record is None:
+        return {
+            "available": False,
+            "reason_code": "budget_price_unavailable",
+            "reason": "报告 OCR 免费额度或计费配置尚未登记，请联系管理员",
+        }
+    price = HealthAiPriceInput.model_validate(record.specification)
+    if price.billing_mode != "free_quota":
+        account = await repo.month(budget_month(await repo.now()))
+        if account and account.blocked:
+            return {
+                "available": False,
+                "reason_code": "budget_exceeded",
+                "reason": "健康 AI 费用账本已冻结，请联系管理员",
+            }
     return {"available": True, "reason_code": None, "reason": None}
 
 

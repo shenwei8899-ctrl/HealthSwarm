@@ -100,10 +100,9 @@ async def test_real_sdk_corrects_duplicate_coverage_only_once(scenario, services
     assert len(wires) == (3 if scenario == "recover" else 2)
     if scenario == "recover":
         services.saved.assert_awaited_once()
-        assert (
-            original.ReferencePlanDraft.model_validate(services.saved.await_args.args[1]).model_dump(exclude_none=True)
-            == original.DRAFT
-        )
+        assert original.ReferencePlanDraft.model_validate(
+            services.saved.await_args.args[1]
+        ) == original.ReferencePlanDraft.model_validate(original.DRAFT)
         assert json.loads(state.values["messages"][-1].text) == original.snapshot()
     else:
         services.saved.assert_not_awaited()
