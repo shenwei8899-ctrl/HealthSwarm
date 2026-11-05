@@ -31,6 +31,38 @@ function fixture(overrides = {}) {
   return { flow, calls, saved, scheduled, storage, setAccount: value => { account = value; revision = String(Number(revision === 'one' ? 1 : revision) + 1) } }
 }
 
+for(const code of ['NETWORK_ERROR',503])test(`an idle conversation recovers from ${code} without reopening or submitting a request`,async()=>{
+ let fail=false
+ const h=fixture({send:async options=>{
+  if(fail&&options.path.endsWith('/readiness'))throw Object.assign(new Error('合成状态读取失败'),{code})
+  return fixtureBase(options)
+ }})
+ try{
+  await h.flow.open(memberId,taskType)
+  fail=true;h.flow.pause();assert.equal(await h.flow.resume(),false)
+  assert.equal(h.flow.getState().error,'合成状态读取失败')
+  fail=false;assert.equal(await h.flow.resume(),true)
+  assert.equal(h.flow.getState().error,'')
+  assert.equal(h.flow.getState().loading,false)
+  assert.equal(h.flow.getState().available,true)
+  assert.equal(h.flow.getState().requestId,'')
+  assert.equal(h.calls.some(call=>call.method==='POST'),false)
+ }finally{h.flow.hide()}
+})
+
+for(const code of [401,403,410])test(`task invalidation retains status ${code} and its business reason for page recovery`,async()=>{
+ const h=fixture({send:async options=>{
+  if(options.path.endsWith('/readiness'))throw Object.assign(new Error('合成权限错误'),{code,businessCode:'synthetic_permission_reason'})
+  return fixtureBase(options)
+ }})
+ try{
+  await h.flow.open(memberId,taskType)
+  const state=h.flow.getState()
+  assert.equal(state.invalidated,true);assert.equal(state.failureStatus,code);assert.equal(state.failureCode,'synthetic_permission_reason')
+  assert.equal(h.calls.some(call=>call.path==='/api/agent/runs'),false)
+ }finally{h.flow.hide()}
+})
+
 test('indicator task uses separate entry and run IDs, and displays only the authorized Task result', async () => {
   let completed = false
   const h = fixture({ send: async options => {
@@ -411,6 +443,7 @@ function recoveringTask({pollLimit=2,loseSubmit=false}={}) {
         if(failure)throw Object.assign(new Error('synthetic read failure'),{code:failure})
         return {data:taskData()}
       }
+      if(options.path.endsWith('/history')&&failure===404)throw Object.assign(new Error('synthetic access revoked'),{code:404})
       if(loseSubmit&&options.path==='/api/agent/runs')throw Object.assign(new Error('synthetic lost response'),{code:'NETWORK_ERROR'})
       return fixtureBase(options)
     }})
@@ -433,6 +466,38 @@ test('long tasks continue at a capped lower frequency and clear waiting notices 
   assert.equal(h.timers.size,0);assert.equal(h.listeners.size,0)
   assert.equal(h.calls.filter(c=>c.path==='/api/agent/runs').length,1)
   assert.equal(h.emitted.at(-1).notice,'');h.flow.hide()
+})
+
+test('successful long tasks publish a persistent notice and read completed results within five seconds',async()=>{
+  const h=recoveringTask();await h.start()
+  for(let i=0;i<3;i++)await h.tick()
+  assert.match(h.emitted.at(-1).notice,/用时较长/)
+  const start=h.emitted.length
+  for(let i=0;i<55;i++)await h.tick()
+  assert.ok(h.delays.every(ms=>ms<=5000),'成功读取的处理中任务不应退避到30秒')
+  assert.ok(h.emitted.slice(start).every(state=>/用时较长/.test(state.notice)),'后续成功回读不能清掉等待提示')
+  h.complete();await h.tick()
+  assert.equal(h.emitted.at(-1).result.text,'合成回复')
+  assert.equal(h.emitted.at(-1).notice,'')
+  assert.equal(h.calls.filter(c=>c.path==='/api/agent/runs').length,1)
+  h.flow.hide()
+})
+
+test('catalog progress survives successful task reads and ignores another request',async()=>{
+  let stream
+  const h=fixture({flow:{subscribe:options=>{stream=options;return ()=>{}}}})
+  await h.flow.open(memberId,taskType);await h.flow.createEntry();await h.flow.submit('合成问题')
+  stream.onEvent({phase:'reading_products',requestId:'another-request'})
+  assert.notEqual(h.flow.getState().streamPhase,'reading_products')
+  stream.onEvent({phase:'reading_products',requestId})
+  assert.equal(h.flow.getState().streamStatus,'正在读取所选分类的商品')
+  await h.flow.refresh()
+  assert.equal(h.flow.getState().streamPhase,'reading_products')
+  stream.onEvent({phase:'running',requestId})
+  assert.equal(h.flow.getState().streamPhase,'reading_products')
+  stream.onEvent({phase:'preparing_answer',requestId})
+  assert.equal(h.flow.getState().streamStatus,'正在整理食材推荐说明')
+  h.flow.hide()
 })
 
 for(const code of ['NETWORK_ERROR',503])test(`temporary ${code} read failures back off and recover the original task without resubmitting`,async()=>{

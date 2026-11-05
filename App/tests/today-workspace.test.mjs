@@ -11,3 +11,13 @@ test('single reference meal filters by authoritative ingredient references, pres
 test('missing ingredient mapping keeps scope known while deferring product matching',()=>{const target=mealTarget(plan.meals[1],plan);target.purchaseOption={...option,items:[{sku_id:1,quantity:1}]};const ref=referencePurchaseFor(target);assert.equal(ref.needsMatching,true);assert.deepEqual(ref.items,[]);assert.deepEqual(ref.mealTypes,['lunch'])})
 test('full reference group preserves shared SKU package recommendation once',()=>{const ref=referencePurchaseFor(purchaseGroups(plan)[1]);assert.equal(ref.needsMatching,false);assert.deepEqual(ref.items,option.items)})
 test('navigation carries data through its own event channel and discards a switched session',()=>{const received=[];uni.navigateTo=o=>{o.success({eventChannel:{emit:(name,value)=>received.push({name,value})}})};openMealPage(mealTarget(plan.meals[0],plan));assert.equal(received[0].name,'mealWorkspace');assert.deepEqual(received[0].value.target.purchaseMeals,['breakfast']);received.length=0;uni.navigateTo=o=>{scope='B';o.success({eventChannel:{emit:()=>received.push('leaked')}})};openMealPage({date:plan.date},{all:true});assert.deepEqual(received,[])})
+
+test('navigation failure is visible only to the account that opened the meal',()=>{
+ const notices=[];uni.showToast=value=>notices.push(value)
+ uni.navigateTo=options=>options.fail({errMsg:'navigateTo:fail synthetic'})
+ openMealPage(mealTarget(plan.meals[2],plan))
+ assert.equal(notices.length,1);assert.match(notices[0].title,/未能打开/)
+ uni.navigateTo=options=>{scope='C';options.fail({errMsg:'navigateTo:fail synthetic'})}
+ openMealPage(mealTarget(plan.meals[2],plan))
+ assert.equal(notices.length,1)
+})

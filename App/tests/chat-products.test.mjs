@@ -9,11 +9,28 @@ import {referenceSelection} from '../src/services/reference-meal-plan.js'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {ref,computed,reactive,nextTick} from 'vue'
+import {packageSpec} from '../src/utils/package-presentation.js'
+
+test('商品规格保留数值含义并去掉无意义的小数零',()=>{
+ assert.equal(packageSpec('950.000ml'),'950ml')
+ assert.equal(packageSpec('1.250kg'),'1.25kg')
+ assert.equal(packageSpec('2包'),'2包')
+})
+
+test('对话商品卡和详情不展示商城长篇说明，购买使用今日餐单采购面板',()=>{
+ const card=readFileSync(new URL('../src/components/ConversationFoodPackages.vue',import.meta.url),'utf8').split('<template>')[1].split('</template>')[0]
+ const detail=readFileSync(new URL('../src/components/ConversationPackagePurchase.vue',import.meta.url),'utf8').split('<template>')[1].split('</template>')[0]
+ assert.match(card,/FoodImageSlot[\s\S]*offer\.name/)
+ assert.doesNotMatch(card,/offer\.(?:note|product_description|recommendation_reason)/)
+ assert.doesNotMatch(detail,/offer\.(?:note|product_description|recommendation_reason)/)
+ assert.match(detail,/<MealPurchaseSheet[\s\S]*<MealPurchasePanel fixed/)
+ assert.match(detail,/@confirm="submit\(\)"/)
+})
 
 function setup(route={}){
  const submitted=[],opened=[],selections=[]
  const stored=new Map(),thread='22222222-2222-4222-8222-222222222222',referenceThread='33333333-3333-4333-8333-333333333333'
- const deps={chatPresentation,watch,createChatEntryTransition,createChatKeyboardLayout,mealQuestionAction,readDailyMealPlan:async(_family,date)=>({date,status:'absent',version:0,meals:[]}),parseChatMealIntent,isMealPlanningCancelled,ref,computed,reactive,nextTick,onShow(){},onHide(){},onMounted(){},onUnmounted(){},defineProps:()=>({route}),
+ const deps={chatPresentation,watch,createChatEntryTransition,createChatKeyboardLayout,mealQuestionAction,readDailyMealPlan:async(_family,date)=>({date,status:'absent',version:0,meals:[]}),parseChatMealIntent,isMealPlanningCancelled,ref,computed,reactive,nextTick,onShow(){},onHide(){},onMounted(){},onUnmounted(){},defineOptions(){},defineProps:()=>({route}),
  storageContext:()=> 'scope',getSession:()=>({token:'unit'}),
  dailyArrangementState:()=>({phase:'ready'}),createDailyArrangementClient:()=>({dispose(){}}),
  scopedStorage:{getStorageSync:key=>stored.get(key),setStorageSync:(key,value)=>stored.set(key,value)},localDate:date=>date?'2026-10-28':'2026-10-27',

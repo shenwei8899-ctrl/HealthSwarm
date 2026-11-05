@@ -11,14 +11,14 @@ export const resolveAppEntry = createEntryCoordinator({ resolve, session: getSes
   pendingPreparation: () => !!scopedStorage.getStorageSync('onboarding-preparation-pending'),
   profileState: () => {
     const profile = scopedStorage.getStorageSync('family-profile-v2')
-    return profile ? [profile.source, profile.householdId, profile.completeProfile === true, profile.onboarded === true] : null
+    return profile ? [profile.source, profile.householdId, profile.completeProfile === true, profile.onboarded === true, profile.invitationReviewPending === true] : null
   },
 })
 
 export function rememberChatEntry(profile) {
   const session=getSession()
   if (!session?.token || !session.householdId || session.householdId!==profile?.householdId ||
-      !(profile.completeProfile || profile.onboarded) || pendingInvitation() ||
+      !(profile.completeProfile || profile.onboarded) || profile.invitationReviewPending || pendingInvitation() ||
       scopedStorage.getStorageSync('onboarding-preparation-pending')) return
   resolveAppEntry.remember('/pages/chat/index')
 }
@@ -33,6 +33,7 @@ export function immediateShellEntry() {
   if (!family) return null
   const invitation = pendingInvitation()
   if (invitation) return invitationRoute(invitation)
+  if (family.invitationReviewPending) return '/pages/onboarding/index'
   if (scopedStorage.getStorageSync('onboarding-preparation-pending')) return '/pages/onboarding/preparing'
   if (family.onboardingRequired === false) return '/pages/chat/index'
   return null

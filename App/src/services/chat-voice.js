@@ -56,6 +56,7 @@ export async function transcribeVoice(audio) {
     const result = await callApiAdapter('transcribeVoice', {
       filePath: audio.filePath, format: 'PCM', sampleRate: 16000, numberOfChannels: 1,
       duration: audio.duration, clientRequestId: audio.id,
+      onCancelReady: audio.onCancelReady,
     })
     if (typeof result?.text !== 'string' || !result.text.trim()) throw new Error('没有识别到内容，请重新录音')
     return result.text.trim()
@@ -63,6 +64,11 @@ export async function transcribeVoice(audio) {
     if (error.code === 'ADAPTER_NOT_READY') throw Object.assign(new Error('语音识别服务暂不可用，录音已保留，可重试'), { code: 'VOICE_NOT_READY' })
     throw error
   }
+}
+
+export function discardVoiceFile(audio) {
+  if (!audio?.filePath) return
+  uni.removeSavedFile?.({ filePath: audio.filePath, fail: () => {} })
 }
 
 // WeChat exposes a singleton recorder. Attach its listeners once and route events
@@ -80,11 +86,16 @@ function recorderSlot(manager) {
 }
 
 export function createVoiceCapture({ getRecorder = () => uni.getRecorderManager(), authorize = authorizeVoice,
-  save = saveVoiceFile, transcribe = transcribeVoice, getScope = storageContext,
+  save = saveVoiceFile, transcribe = transcribeVoice, discard = discardVoiceFile, getScope = storageContext,
   onState = () => {}, onLevel = () => {}, onText = () => {}, now = Date.now } = {}) {
   let phase = 'idle', error = '', permissionDenied = false, holding = false, canceling = false
   let alive = true, version = 0, scope, startY = 0, startedAt = 0, started = false, stopping = false
   let audio = null, manager, slot, owner
+  let abortUpload = null, expiryTimer = null
+  function clearAudio() {
+    clearTimeout(expiryTimer); expiryTimer = null
+    discard(audio); audio = null
+  }
   const emit = () => { if (alive) onState({ phase, error, permissionDenied, canceling, hasAudio: Boolean(audio) }) }
   const valid = ticket => alive && ticket === version && scope === getScope()
   const releaseSlot = () => { if (slot?.owner === owner) slot.owner = null; started = false; stopping = false }
@@ -98,19 +109,27 @@ export function createVoiceCapture({ getRecorder = () => uni.getRecorderManager(
     try {
       if (!audio.filePath) {
         const saved = await save(audio)
-        if (!valid(ticket)) return
+        if (!valid(ticket)) { discard(saved); return }
         audio = saved
       }
-      const text = await transcribe(audio)
+      const text = await transcribe({ ...audio, onCancelReady: abort => {
+        if (!valid(ticket)) abort()
+        else abortUpload = abort
+      } })
       if (!valid(ticket)) return
-      audio = null; phase = 'idle'; emit(); onText(text)
-    } catch (e) { if (valid(ticket)) fail(e.message || '语音识别失败，录音已保留，可重试') }
+      abortUpload = null; clearAudio(); phase = 'idle'; emit(); onText(text)
+    } catch (e) { if (valid(ticket)) { abortUpload = null; fail(e.message || '语音识别失败，录音已保留，可重试') } }
+    finally {
+      if (alive && ticket === version && scope !== getScope()) {
+        cancel(); fail('登录状态已变更，请重新登录后录音')
+      }
+    }
   }
   async function begin(y = 0) {
     if (!alive || holding || (owner && slot?.owner === owner) || ['authorizing', 'starting', 'recording', 'stopping', 'transcribing'].includes(phase)) return
     const ticket = ++version; scope = getScope(); holding = true; canceling = false; startY = y
     let claimed = false
-    audio = null; error = ''; permissionDenied = false; phase = 'authorizing'; emit()
+    clearAudio(); error = ''; permissionDenied = false; phase = 'authorizing'; emit()
     try {
       manager = getRecorder()
       if (!manager) throw new Error('请在微信小程序中使用语音输入')
@@ -136,6 +155,8 @@ export function createVoiceCapture({ getRecorder = () => uni.getRecorderManager(
           const duration = Number(result.duration) || Math.max(0, now() - startedAt)
           if (duration < 500 || !result.tempFilePath) { fail('说话时间太短，请按住再说一次'); return }
           audio = { id: 'voice-' + now() + '-' + Math.random().toString(36).slice(2), tempFilePath: result.tempFilePath, duration }
+          expiryTimer = setTimeout(() => { cancel(); fail('录音已过期，请重新按住说话') }, 300000)
+          expiryTimer?.unref?.()
           recognize(ticket)
         },
         Error() {
@@ -168,9 +189,10 @@ export function createVoiceCapture({ getRecorder = () => uni.getRecorderManager(
   function cancel() {
     if (!alive) return
     holding = false; canceling = true; version++
+    abortUpload?.(); abortUpload = null
     if (owner && slot?.owner === owner) { stopNative(); phase = 'stopping' }
     else { phase = 'idle'; canceling = false }
-    audio = null; error = ''; emit()
+    clearAudio(); error = ''; emit()
   }
   function retry() { if (phase === 'error' && audio && scope === getScope()) return recognize(version) }
   function dispose() { cancel(); alive = false }

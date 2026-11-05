@@ -74,7 +74,7 @@ function overview() {
  const hooks = {}, pending = [], options = [], navigations = []
  let context = 'account-a/family-a/revision-1'
  const code = readFileSync(new URL('../src/components/CloudFamilyOverview.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
- const dependencies = { ref, computed, onMounted: fn => { hooks.mounted = fn }, onUnmounted: fn => { hooks.unmounted = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn }, onBackPress(){}, storageContext: () => context, getSession: () => ({ householdId: 'family-a' }), uni: { navigateTo: value => navigations.push(value) }, loadCloudProfile: value => { options.push(value); return new Promise((resolve, reject) => pending.push({ resolve, reject })) } }
+ const dependencies = { defineProps:()=>({}),defineEmits:()=>()=>{}, ref, computed, onMounted: fn => { hooks.mounted = fn }, onUnmounted: fn => { hooks.unmounted = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn }, onBackPress(){}, storageContext: () => context, getSession: () => ({ householdId: 'family-a' }), uni: { navigateTo: value => navigations.push(value) }, loadCloudProfile: value => { options.push(value); return new Promise((resolve, reject) => pending.push({ resolve, reject })) } }
  const exposed = new Function('deps', `const {${Object.keys(dependencies)}}=deps;${code};return {load,select,detail,profile,profileContext,selectedId,error,sheetId,sheetSection,updateSaved}`)(dependencies)
  const data = () => ({ householdId: 'family-a', selfMemberId: 'self', isOwner: true, members: people() })
  return { ...exposed, hooks, pending, options, navigations, data, changeContext: value => { context = value } }

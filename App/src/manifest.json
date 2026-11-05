@@ -86,6 +86,7 @@
           "value": "static/chat/today-menu-plate.svg"
         }
       ]
-    }
+    },
+    "lazyCodeLoading": "requiredComponents"
   }
 }

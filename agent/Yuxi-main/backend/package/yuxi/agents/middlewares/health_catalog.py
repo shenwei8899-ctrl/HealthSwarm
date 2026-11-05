@@ -70,8 +70,15 @@ class HealthCatalogMiddleware(AgentMiddleware):
 
 
 def food_product_intent(text):
-    """仅为明确商品或购买请求强制查询，普通用餐建议不依赖商城。"""
+    """明确商品请求和下午加餐选品查询真实目录。"""
     purchase_action = r"(?:买|购买|选购|采购|下单|加购|购物)"
+    reject_catalog = bool(
+        re.search(
+            r"(?:不要|不用|不需要|不想|别)(?:再|给我|为我|向我|帮我|去)*"
+            r"(?:推荐|查询|查|展示|显示|购买|选购)?(?:商品|商城|食材包)",
+            text,
+        )
+    )
     for clause in re.split(r"[，,。！？!?；;\n]|但是|不过|但", text):
         if re.search(r"(?:不想|不需要|不用|不要|别|不)(?:再|给我|为我|向我|帮我|去)*" + purchase_action, clause):
             continue
@@ -89,6 +96,11 @@ def food_product_intent(text):
             rf"^(?:请)?{purchase_action}(?![了过的])|{purchase_action}(?:什么|哪些|几|点|些|一|这|那)",
             clause,
             re.IGNORECASE,
+        ):
+            return True
+        if not reject_catalog and re.search(
+            r"(?:下午|午后)(?:的)?(?:加餐|茶|点心).{0,12}(?:吃|喝|选|推荐|买|有什么|啥|什么)",
+            clause,
         ):
             return True
     return False

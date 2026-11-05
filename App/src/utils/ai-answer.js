@@ -100,9 +100,12 @@ export function parseAiAnswer(value, { citations = [], streaming = false } = {})
       continue
     }
     if (line.includes('|') && tableRule(lines[i + 1] || '')) {
-      const headers = cells(line).map(answerSegments), rows = []; i += 2
-      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) rows.push(cells(lines[i++]).map(answerSegments))
-      blocks.push({ type: 'table', headers, rows }); continue
+      const headers = cells(line).map(answerSegments), rows = [], rowComplete = []; i += 2
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
+        rowComplete.push(!streaming || i < lines.length - 1)
+        rows.push(cells(lines[i++]).map(answerSegments))
+      }
+      blocks.push({ type: 'table', headers, rows, rowComplete }); continue
     }
     if (/^\s*>/.test(line)) {
       const content = []

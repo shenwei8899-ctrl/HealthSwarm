@@ -9,6 +9,13 @@ class IntegrationAiCatalog extends IntegrationBase
 {
     protected $expectedClientType = 'agent';
 
+    public function categories()
+    {
+        return $this->execute(function () {
+            return (new CatalogService())->listCategories();
+        }, $this->integrationLog('ai_catalog_categories', 'catalog'));
+    }
+
     public function ingredients()
     {
         return $this->execute(function () {
@@ -25,6 +32,7 @@ class IntegrationAiCatalog extends IntegrationBase
 
     public function sku($sku_id = null)
     {
+        $sku_id = $this->request->route('sku_id', $this->request->param('sku_id', $sku_id));
         return $this->execute(function () use ($sku_id) {
             return (new CatalogService())->getSku($sku_id, true);
         }, $this->integrationLog('ai_catalog_sku', 'sku', $sku_id));
@@ -32,6 +40,7 @@ class IntegrationAiCatalog extends IntegrationBase
 
     public function alternatives($sku_id = null)
     {
+        $sku_id = $this->request->route('sku_id', $this->request->param('sku_id', $sku_id));
         return $this->execute(function () use ($sku_id) {
             return (new CatalogService())->alternatives($sku_id, $this->request->get());
         }, $this->integrationLog('ai_catalog_alternatives', 'sku', $sku_id));

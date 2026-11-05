@@ -4,7 +4,9 @@ export function packagePrice(value) {
   return Number.isSafeInteger(cents) && cents >= 0 ? (cents / 100).toFixed(2) : null
 }
 
-export function packageTone(offer) {
-  const identity = String(offer.sku_id || offer.name || '')
-  return Array.from(identity).reduce((sum, letter) => sum + letter.codePointAt(0), 0) % 3
+export function packageSpec(value) {
+  return String(value || '').trim().replace(/^(\d+)\.(\d+)([^\d.]*)$/, (_, whole, fraction, unit) => {
+    const decimals = fraction.replace(/0+$/, '')
+    return whole + (decimals ? '.' + decimals : '') + unit
+  })
 }

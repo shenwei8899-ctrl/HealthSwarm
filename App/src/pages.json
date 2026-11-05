@@ -8,31 +8,10 @@
       }
     },
     {
-      "path": "pages/meal-photo/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "拍照记餐"
-      }
-    },
-    {
       "path": "pages/indicators/index",
       "style": {
         "navigationStyle": "custom",
         "navigationBarTitleText": "实测记录回顾"
-      }
-    },
-    {
-      "path": "pages/health/vision",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "上传与核对"
-      }
-    },
-    {
-      "path": "pages/health/plans",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "餐单与正式采用"
       }
     },
     {
@@ -116,27 +95,6 @@
       }
     },
     {
-      "path": "pages/exclusive-plans/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "AI专属计划"
-      }
-    },
-    {
-      "path": "pages/exclusive-plans/detail",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "计划详情"
-      }
-    },
-    {
-      "path": "pages/exclusive-plans/schedule",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "配送计划"
-      }
-    },
-    {
       "path": "pages/plan/index",
       "style": {
         "navigationStyle": "custom",
@@ -144,59 +102,10 @@
       }
     },
     {
-      "path": "pages/scan/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "拍照记一餐"
-      }
-    },
-    {
-      "path": "pages/cook/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "制作烹饪"
-      }
-    },
-    {
-      "path": "pages/recipe/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "单道菜做法"
-      }
-    },
-    {
-      "path": "pages/shop/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "食材包"
-      }
-    },
-    {
-      "path": "pages/orders/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "我的订单"
-      }
-    },
-    {
-      "path": "pages/orders/detail",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "订单详情"
-      }
-    },
-    {
       "path": "pages/my/index",
       "style": {
         "navigationStyle": "custom",
         "navigationBarTitleText": "我的"
-      }
-    },
-    {
-      "path": "pages/records/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "饮食记录"
       }
     },
     {
@@ -211,13 +120,6 @@
       "style": {
         "navigationStyle": "custom",
         "navigationBarTitleText": "AI 记住的事"
-      }
-    },
-    {
-      "path": "pages/shop/detail",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "食材包详情"
       }
     },
     {
@@ -256,27 +158,6 @@
       }
     },
     {
-      "path": "pages/records/detail",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "饮食记录详情"
-      }
-    },
-    {
-      "path": "pages/settings/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "设置"
-      }
-    },
-    {
-      "path": "pages/settings/privacy",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "隐私与账号"
-      }
-    },
-    {
       "path": "pages/family-select/index",
       "style": {
         "navigationStyle": "custom",
@@ -303,13 +184,6 @@
         "navigationStyle": "custom",
         "navigationBarTitleText": "全天食材"
       }
-    },
-    {
-      "path": "pages/settings/feedback",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "反馈"
-      }
     }
   ],
   "globalStyle": {
@@ -330,6 +204,182 @@
           "style": {
             "navigationStyle": "custom",
             "navigationBarTitleText": "合作申请"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/shop",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "食材包"
+          }
+        },
+        {
+          "path": "detail",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "食材包详情"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/orders",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "我的订单"
+          }
+        },
+        {
+          "path": "detail",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "订单详情"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/health",
+      "pages": [
+        {
+          "path": "vision",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "上传与核对"
+          }
+        },
+        {
+          "path": "plans",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "餐单与正式采用"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/scan",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "拍照记一餐"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/exclusive-plans",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "AI专属计划"
+          }
+        },
+        {
+          "path": "detail",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "计划详情"
+          }
+        },
+        {
+          "path": "schedule",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "配送计划"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/meal-photo",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "拍照记餐"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/settings",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "设置"
+          }
+        },
+        {
+          "path": "privacy",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "隐私与账号"
+          }
+        },
+        {
+          "path": "feedback",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "反馈"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/cook",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "制作烹饪"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/records",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "饮食记录"
+          }
+        },
+        {
+          "path": "detail",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "饮食记录详情"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/recipe",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "单道菜做法"
           }
         }
       ]

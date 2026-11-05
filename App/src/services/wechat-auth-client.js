@@ -79,7 +79,8 @@ export function projectContext(data) {
   if (!data?.account || !Number.isSafeInteger(data.account.id) || data.account.id <= 0 || !Array.isArray(data.families)) throw new Error('登录服务返回的数据不完整')
   const families = data.families.map(f => {
     if (typeof f.id !== 'string' || !f.id || typeof f.name !== 'string' || typeof f.onboarding_required !== 'boolean') throw new Error('家庭状态不完整')
-    return { id: f.id, name: f.name, isOwner: f.is_owner === true, onboardingRequired: f.onboarding_required }
+    return { id: f.id, name: f.name, isOwner: f.is_owner === true, onboardingRequired: f.onboarding_required,
+      ...(f.invitation_review_pending === true ? {invitationReviewPending:true} : {}) }
   })
   return { accountId: String(data.account.id), accountName: typeof data.account.name === 'string' ? data.account.name : '', families }
 }

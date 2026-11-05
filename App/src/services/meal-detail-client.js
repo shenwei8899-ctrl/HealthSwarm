@@ -20,10 +20,11 @@ export function createMealDetailClient({ state, send, context }) {
   const cache = new Map()
   async function open(target) {
     if (!target?.familyId || !/^\d{4}-\d{2}-\d{2}$/.test(target.date || '') || !mealNames[target.mealType] || !target.sourceId) throw new Error('餐单来源不完整，请重新读取餐单。')
-    if (!['formal', 'reference'].includes(target.kind) || target.kind === 'formal' && (!Number.isInteger(target.version) || target.version < 1)) throw new Error('餐单版本不完整，请重新读取。')
+    if (!['formal', 'reference', 'selection'].includes(target.kind) || target.kind === 'formal' && (!Number.isInteger(target.version) || target.version < 1)) throw new Error('餐单版本不完整，请重新读取。')
     const ticket = ++generation, scope = context(), selected = { ...target }, key = detailKey(selected, scope)
     const current = () => !disposed && ticket === generation && scope === context() && state.open
-    Object.assign(state, detailState(), { open: true, phase: 'loading', target: selected, meal: cache.get(key) || target.seed || null, view: target.initialView || 'meal' })
+    // 已有菜品先展示；操作仍须等待本次来源和版本核对完成。
+    Object.assign(state, detailState(), { open: true, phase: 'loading', target: selected, meal: cache.get(key) || target.seed || null, view: target.initialView || 'meal', dishIndex:Number.isInteger(target.dishIndex)?target.dishIndex:0 })
     try {
       let meal
       if (target.kind === 'formal') {
@@ -35,24 +36,33 @@ export function createMealDetailClient({ state, send, context }) {
       } else if (target.dailyPlanVersion != null) {
         const { data } = await send({ path: `/api/family/${encodeURIComponent(target.familyId)}/daily-meal-plans/${target.date}` })
         if (!current()) return
-        const item = data?.meals?.find(item => item.meal_type === target.mealType && item.source?.kind === 'reference' && item.source.id === target.sourceId)
-        if (data.status !== 'ready' || data.date !== target.date || data.version !== target.dailyPlanVersion || !item) throw new Error('这份参考餐单已有更新，请重新读取。')
+        const item = data?.meals?.find(item => item.meal_type === target.mealType && item.source?.kind === target.kind && item.source.id === target.sourceId)
+        if (data.status !== 'ready' || data.date !== target.date || data.version !== target.dailyPlanVersion || !item) throw new Error(data.needs_regeneration?.includes(target.mealType)?'本餐需要重新安排，请返回今日餐单。':'这份参考餐单已有更新，请重新读取。')
+        selected.purchaseReady = item.purchase_ready !== false
         meal = { ...item.meal, members: item.members || [] }
         // Keep the purchase option belonging to this version and source.
         selected.purchaseOption = data.purchase_options?.find(o => o.kind === 'reference' && o.id === target.sourceId && o.meal_types?.includes(target.mealType)) || null
       } else {
-        // Historical preview cards already contain the authoritative recipe snapshot.
-        meal = target.seed
+        if (target.kind === 'reference') {
+          const { data } = await send({ path: `/api/health/v1/reference-meal-plans/${encodeURIComponent(target.sourceId)}` })
+          if (!current()) return
+          if (data.preview_id !== target.sourceId || data.plan_date !== target.date) throw new Error('参考餐单来源已变化，请重新读取。')
+          if(data.status==='needs_regeneration'||data.purchase_ready===false)throw new Error('本餐需要重新安排，请返回今日餐单。')
+          meal = data.meals?.find(item => item.meal_type === target.mealType)
+          if (meal) meal = { ...meal, members: data.members || [] }
+        } else meal = target.seed
       }
       if (!current()) return
       if (!meal || !Array.isArray(meal.dishes) || !meal.dishes.length) throw new Error('本餐暂无可读取的菜品。')
+      if(state.dishIndex<0||state.dishIndex>=meal.dishes.length)throw new Error('本餐已没有这道菜，请返回重新读取。')
+      selected.seed = meal
       cache.set(key, meal)
       if (cache.size > 12) cache.delete(cache.keys().next().value)
       state.meal = meal; state.phase = 'ready'
     } catch (error) {
       if (!current()) return
       state.phase = 'error'; state.error = error.message || '暂时无法读取详情，请重试。'
-      if ([401, 403, 404, 409, 410].includes(Number(error.code))) { state.meal = null; cache.delete(key) }
+      state.meal = null; cache.delete(key); delete selected.seed
     }
   }
   return { open, retry: () => state.target && open(state.target),

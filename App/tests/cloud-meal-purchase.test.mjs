@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs'
 import {ref,computed,reactive,effectScope,watch} from 'vue'
 import {newMealCommerceState,createMealCommerceController,commerceMealView} from '../src/services/meal-commerce-state.js'
 
-function mount({daily=false,reference=false}={}){
+function mount({daily=false,reference=false,selection,unified=false}={}){
   const calls=[],hooks={},route={date:'2026-10-21',meal:'dinner',arrangement:'saved-1',version:'2'}
   if(daily){route.meal='daily';route.meals=['breakfast','lunch']}
   let scope='A',linked=false,publicationVersion=2,denied=false,referenceVersion=4
@@ -21,7 +21,7 @@ function mount({daily=false,reference=false}={}){
     mealPackage:async()=>structuredClone(menu),cart:async()=>({items:[line]}),addresses:async()=>[{id:1,name:'测试地址',isDefault:true}],
     slots:async()=>({supported:true,items:[{id:10,available:true},{id:20,available:true}]}),pendingOrder:()=>null,
     addMeal:async()=>{calls.push('cart');return {items:[line]}},
-    quote:async (lines,address,slot)=>{calls.push(['quote',lines.map(item=>item.cart_item_id),slot]);return {checkout_token:'synthetic-quote',expires_at:new Date(Date.now()+60000).toISOString(),items:[]}},
+    quote:async (lines,address,slot)=>{calls.push(['quote',lines.map(item=>item.cart_item_id),slot]);return {checkout_token:'synthetic-quote',expires_at:new Date(Date.now()+60000).toISOString(),items:[],goods_amount_cent:800,shipping_fee_cent:500,payable_amount_cent:1300}},
   }
   const send=async input=>{
     calls.push(input)
@@ -30,8 +30,9 @@ function mount({daily=false,reference=false}={}){
     return {data:{arrangement_id:route.arrangement,version:input.method==='POST'?publicationVersion:2,
       purchase:input.method==='POST'?{...purchase,package_sn:'pack-1',package_version:1}:structuredClone(purchase)}}
   }
-  const deps={ref,computed,watch,defineEmits:()=>()=>{},defineExpose:()=>{},onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onUnmounted:fn=>hooks.unmount=fn,
-    defineProps:()=>({route,meal:{members:[{id:'member-1'}]},...(reference?{reference:{previewId:'preview',dailyPlanVersion:4,mealTypes:['lunch'],items:[{sku_id:'tomato',product_name:'合成番茄',quantity:1}]}}:{})}),commerce:api,request:send,
+  const uiProps=reactive({unified,visible:true,route,meal:{members:[{id:'member-1'}]},selection,...(reference?{reference:{previewId:'preview',dailyPlanVersion:4,mealTypes:['lunch'],items:[{sku_id:'tomato',product_name:'合成番茄',quantity:1}]}}:{})})
+  const deps={ref,computed,watch,defineEmits:()=>()=>{},defineExpose:()=>{},onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
+    defineOptions:()=>{},defineProps:()=>uiProps,commerce:api,request:send,
     commerceMealView,getSession:()=>({householdId:'family-1'}),storageContext:()=>scope,
     scopedStorage:{getStorageSync:key=>saved.get(scope+key),setStorageSync:(key,value)=>saved.set(scope+key,structuredClone(value))},
     useMealCommercePage:context=>({...createMealCommerceController({state,api,scope:()=>scope,context}),state,
@@ -39,10 +40,44 @@ function mount({daily=false,reference=false}={}){
   const source=readFileSync(new URL('../src/components/CloudMealPurchase.vue',import.meta.url),'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const vueScope=effectScope()
-  const component=vueScope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {refresh,checkout,toggle,selected,preview,products,picked,total,state,loginOpen,error,purchaseReady}`)(deps))
-  return {...component,calls,deny(){denied=true},pending(){purchase.available=false;purchase.confirmation_pending=true;items[0].sku.available_quantity=0},unavailable(){purchase.available=false;purchase.confirmation_pending=false},link(){linked=true},wrongVersion(){publicationVersion=3},switch(){scope='B'},
+  const component=vueScope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {refresh,refreshUnified,checkout,toggle,selected,preview,products,picked,total,totalKnown,state,loginOpen,error,purchaseReady,returnKey,quoteWaiting,canSubmit,selectSlot}`)(deps))
+  return {...component,calls,uiProps,deny(){denied=true},pending(){purchase.available=false;purchase.confirmation_pending=true;items[0].sku.available_quantity=0},unavailable(){purchase.available=false;purchase.confirmation_pending=false},link(){linked=true},wrongVersion(){publicationVersion=3},switch(){scope='B'},
     changeReferenceVersion(){referenceVersion++},dispose(){hooks.unmount();vueScope.stop()}}
 }
+
+test('opening unified procurement initializes address, time and quote in one step',async()=>{
+ const f=mount({unified:true});try{
+  f.link();await f.refreshUnified()
+  assert.equal(f.state.address.id,1);assert.equal(f.state.slotId,10)
+  assert.ok(f.state.quote);assert.equal(f.canSubmit.value,true)
+  assert.equal(f.calls.filter(c=>c?.method==='POST').length,1)
+ }finally{f.dispose()}
+})
+
+test('unified submit remains disabled when the server has not returned complete fees',async()=>{
+ const f=mount({unified:true});try{
+  f.link();await f.refreshUnified();assert.equal(f.canSubmit.value,true)
+  f.state.quote.shipping_fee_cent=undefined;assert.equal(f.canSubmit.value,false)
+  f.state.quote.shipping_fee_cent=500;f.state.slots=[];assert.equal(f.canSubmit.value,false)
+ }finally{f.dispose()}
+})
+
+test('unified selection immediately invalidates price and debounces a fresh quote',async()=>{
+ const f=mount({unified:true});try{
+  f.link();await f.refreshUnified();const before=f.calls.filter(Array.isArray).length
+  f.toggle('tomato');assert.equal(f.state.quote,null);assert.equal(f.canSubmit.value,false)
+  f.toggle('tomato');assert.equal(f.quoteWaiting.value,true)
+  await new Promise(resolve=>setTimeout(resolve,300))
+  assert.equal(f.calls.filter(Array.isArray).length,before+1)
+  assert.ok(f.state.quote);assert.equal(f.calls.filter(c=>c?.method==='POST').length,1)
+ }finally{f.dispose()}
+})
+
+test('address return cannot resume checkout belonging to another dish, meal or daily version',()=>{
+ const scope={familyId:'family',date:'2026-11-02',mealType:'dinner',version:4,dishKeys:['fish']}
+ const fixtures=[scope,{...scope,dishKeys:[]},{...scope,dishKeys:['rice']},{...scope,version:5},{...scope,mealType:'lunch'}].map(selection=>mount({selection}))
+ try{assert.equal(new Set(fixtures.map(f=>f.returnKey())).size,fixtures.length)}finally{fixtures.forEach(f=>f.dispose())}
+})
 
 test('opening a saved meal reads current products without commerce login or a purchase write',async()=>{
   const f=mount();try{await f.refresh()
@@ -155,4 +190,14 @@ test('changed reference plan prevents publication and discards a prior quote',as
 })
 test('revoked reference purchase does not leave prior products visible',async()=>{
  const f=mount({reference:true});try{await f.refresh();f.deny();await f.refresh();assert.equal(f.products.value.length,0);assert.equal(f.state.quote,null)}finally{f.dispose()}
+})
+
+test('unread, rejected or unavailable procurement never displays a known zero amount',async()=>{
+ const f=mount()
+ try{
+  assert.equal(f.totalKnown.value,false)
+  await f.refresh();assert.equal(f.totalKnown.value,true)
+  f.unavailable();await f.refresh();assert.equal(f.totalKnown.value,false)
+  f.deny();await f.refresh();assert.equal(f.totalKnown.value,false)
+ }finally{f.dispose()}
 })

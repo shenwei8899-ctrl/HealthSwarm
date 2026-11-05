@@ -2,15 +2,16 @@ import { request } from './request.js'
 
 export async function readDailyMealPlan(familyId, date, send = request) {
   const { data } = await send({ path: `/api/family/${encodeURIComponent(familyId)}/daily-meal-plans/${encodeURIComponent(date)}` })
-  if (!data || data.date !== date || !['ready', 'absent'].includes(data.status) ||
+  if (!data || data.date !== date || !['ready', 'absent', 'needs_regeneration'].includes(data.status) ||
       !Number.isInteger(data.version) || data.version < 0 || !Array.isArray(data.meals) ||
-      (data.status === 'ready' && !data.meals.length) || (data.status === 'absent' && data.meals.length)) {
-    throw new Error('今日饮食计划返回不完整，请重新读取。')
+      (data.status === 'ready' && !data.meals.length) || (data.status !== 'ready' && data.meals.length) ||
+      (data.needs_regeneration != null && (!Array.isArray(data.needs_regeneration) || data.needs_regeneration.some(t=>!['breakfast','lunch','dinner'].includes(t))))) {
+    throw new Error('今日餐单返回不完整，请重新读取。')
   }
   const types = data.meals.map(item => item.meal_type)
   if (types.some(type => !['breakfast', 'lunch', 'dinner'].includes(type)) || new Set(types).size !== types.length ||
       data.meals.some(item => !item.source?.id || !item.meal || !Array.isArray(item.meal.dishes))) {
-    throw new Error('今日饮食计划的餐次来源无法核对。')
+    throw new Error('今日餐单的餐次来源无法核对。')
   }
   return data
 }

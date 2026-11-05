@@ -4,15 +4,10 @@ import { scopedStorage } from './storage.js'
 import { saveProfile, normalizeProfile } from '../utils/profile.js'
 import { newHealthRequestId } from './health-task-flow.js'
 import { pendingInvitation } from './family-invitations.js'
+import { readCloudReportStatus as readReportStatus } from './report-entry.js'
 
-export async function readCloudReportStatus(memberId) {
-  const [observations,vision]=await Promise.all([
-    request({path:`/api/health/v1/members/${memberId}/observations`}),
-    request({path:`/api/health/v1/members/${memberId}/vision/page?kind=report&jobs_limit=1&drafts_limit=20`}),
-  ])
-  if(!Array.isArray(observations.data)||!Array.isArray(vision.data.drafts))throw new Error('报告状态返回不完整，请重新读取')
-  return observations.data.length?'done':vision.data.drafts.some(d=>d.review_status==='pending_confirmation')?'review':'empty'
-}
+// Keep the existing onboarding import compatible with the report entry service.
+export async function readCloudReportStatus(memberId, send) { return readReportStatus(memberId, send) }
 
 let profileRead = null
 export async function loadCloudProfile(options = {}) {
@@ -68,7 +63,7 @@ async function fetchCloudProfile({openConsultation=true, readConfiguration=true}
   if (ticket !== sessionRevision()) throw new Error('账号已变化，请重新进入。')
   profile.analysisPolicy = config.consultation?.available === true && config.consultation.processor && config.policy_version
     ? {processor:config.consultation.processor,policy_version:config.policy_version} : null
-  if(openConsultation&&(profile.completeProfile||profile.onboarded)&&profile.selfMemberId&&profile.analysisPolicy){
+  if(openConsultation&&!profile.invitationReviewPending&&(profile.completeProfile||profile.onboarded)&&profile.selfMemberId&&profile.analysisPolicy){
     const member=profile.members.find(m=>m.id===profile.selfMemberId)
     if(member){
       const id=newHealthRequestId()
@@ -106,7 +101,7 @@ export function cloudProfileInput(profile, id = newHealthRequestId(), consent = 
     })) }
 }
 
-export async function saveCloudProfile(profile, { analysisConsent = null } = {}) {
+export async function saveCloudProfile(profile, { analysisConsent = null, reviewOnly = false } = {}) {
   const session = getSession()
   if (!session?.token) throw Object.assign(new Error('登录状态已失效，填写内容已保留，请重新登录后继续。'), { code: 401 })
   if (!session.householdId) throw Object.assign(new Error('请先选择当前家庭。'), { code: 'FAMILY_SELECTION_REQUIRED' })
@@ -132,7 +127,7 @@ export async function saveCloudProfile(profile, { analysisConsent = null } = {})
     await request({ path, method: 'POST', data: pending.data, headers: { 'Idempotency-Key': pending.data.client_request_id }, timeout: 30000 })
   }
   current()
-  const result = await loadCloudProfile()
+  const result = await loadCloudProfile(reviewOnly?{openConsultation:false,readConfiguration:false}:undefined)
   if (!result.completeProfile && !result.onboarded) throw new Error('云端保存尚未确认，请重试原请求。')
   scopedStorage.setStorageSync('cloud-onboarding-pending', null)
   if (changed) throw Object.assign(new Error('上次提交已确认，本次修改尚未提交。请重新读取当前档案，核对本次修改后再次保存。'), {code:409,businessCode:'previous_profile_submission_settled'})

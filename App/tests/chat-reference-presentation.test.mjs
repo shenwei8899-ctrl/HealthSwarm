@@ -25,7 +25,7 @@ test('welcome is visible during first initialization and hidden while restoring 
 function layout(){
  const emitted=[],props=reactive({followBottom:true});let dispose=()=>{}
  const source=readFileSync(new URL('../src/components/NutritionistLayout.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
- const deps={getCurrentInstance:()=>({proxy:{}}),onMounted(){},onUnmounted:f=>dispose=f,ref,watch,nextTick,defineProps:()=>props,defineEmits:()=>(...args)=>emitted.push(args)}
+ const deps={defineOptions(){},getCurrentInstance:()=>({proxy:{}}),onMounted(){},onUnmounted:f=>dispose=f,ref,watch,nextTick,defineProps:()=>props,defineEmits:()=>(...args)=>emitted.push(args)}
  const value=new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {shortcuts,choose,openProfile,beginRead}`)(deps)
  return {...value,emitted,props,dispose:()=>dispose()}
 }

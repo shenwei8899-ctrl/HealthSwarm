@@ -6,6 +6,29 @@ use think\Db;
 
 class CatalogService
 {
+    public function listCategories()
+    {
+        // 仅暴露当前可由 Agent 读取且有可售 SKU 的真实业务分类。
+        $rows = Db::name('shop_category')->alias('c')
+            ->join('shop_goods g', 'g.business_category_code=c.business_category_code')
+            ->join('shop_goods_sku s', 's.goods_id=g.id')
+            ->where('c.status', 'normal')->where('c.agent_visible', 1)
+            ->where('c.business_category_code', '<>', '')
+            ->where('g.agent_visible', 1)->where('g.catalog_status', 'published')
+            ->where('g.status', 'normal')
+            ->whereRaw('s.stocks - s.reserved_stock - s.safety_stock > 0')
+            ->field('c.business_category_code as category_code,c.name as name,COUNT(DISTINCT g.id) as product_count')
+            ->group('c.business_category_code,c.name')
+            ->order('c.name', 'asc')->select();
+        return ['items' => array_map(function ($row) {
+            return [
+                'category_code' => (string)$row['category_code'],
+                'name' => (string)$row['name'],
+                'product_count' => (int)$row['product_count'],
+            ];
+        }, $rows), 'catalog_version' => $this->currentVersion()];
+    }
+
     public function listProducts(array $filters = [])
     {
         $limit = isset($filters['limit']) ? (int)$filters['limit'] : 100;
@@ -42,7 +65,7 @@ class CatalogService
             's.id' => 'sku_pk', 's.goods_id', 's.sku_id', 's.sku_code', 's.image' => 'sku_image',
             's.price' => 'sku_price', 's.stocks', 's.reserved_stock', 's.safety_stock',
             's.net_content_value', 's.net_content_unit', 's.updatetime' => 'sku_updated_at',
-            'g.title', 'g.image', 'g.business_category_code', 'g.data_completeness',
+            'g.title', 'g.content', 'g.image', 'g.business_category_code', 'g.data_completeness',
             'g.catalog_version', 'g.updatetime' => 'goods_updated_at',
         ])->order('s.id', 'asc')->limit($limit + 1)->select();
 
@@ -78,7 +101,7 @@ class CatalogService
                 's.id' => 'sku_pk', 's.goods_id', 's.sku_id', 's.sku_code', 's.image' => 'sku_image',
                 's.price' => 'sku_price', 's.stocks', 's.reserved_stock', 's.safety_stock',
                 's.net_content_value', 's.net_content_unit', 's.updatetime' => 'sku_updated_at',
-                'g.title', 'g.image', 'g.business_category_code', 'g.data_completeness',
+                'g.title', 'g.content', 'g.image', 'g.business_category_code', 'g.data_completeness',
                 'g.catalog_version', 'g.agent_visible', 'g.catalog_status', 'g.status' => 'goods_status',
                 'g.updatetime' => 'goods_updated_at',
             ])->find();
@@ -190,6 +213,8 @@ class CatalogService
             'product_id'           => (string)$row['goods_id'],
             'sku_id'               => (string)$skuId,
             'product_name'         => $row['title'],
+            'product_description'  => (string)($row['content'] ?? ''),
+            'product_description_hash' => hash('sha256', (string)($row['content'] ?? '')),
             'sku_name'             => $row['sku_id'] !== '' ? $row['sku_id'] : $row['title'],
             'sku_code'             => $row['sku_code'],
             'category_code'        => $row['business_category_code'],

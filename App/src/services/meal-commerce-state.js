@@ -56,10 +56,10 @@ export function newMealCommerceState() {
 }
 
 export function createMealCommerceController({ state, api, scope, context }) {
-  let epoch = 0, disposed = false, currentScope = scope()
-  function reset() { epoch++; Object.assign(state, newMealCommerceState()); currentScope = scope() }
+  let epoch = 0, disposed = false, currentScope = scope(), quoteRevision = 0, preparedSource = ''
+  function reset() { epoch++; quoteRevision++; preparedSource=''; Object.assign(state, newMealCommerceState()); currentScope = scope() }
   function sync() { if (currentScope !== scope()) reset() }
-  function invalidateQuote() { state.quote = null; state.checkoutError = '' }
+  function invalidateQuote() { quoteRevision++; state.quote = null; state.checkoutError = '' }
   function membersChanged(invalidate = true) {
     if (invalidate) invalidateQuote()
     const input = context()
@@ -146,17 +146,26 @@ export function createMealCommerceController({ state, api, scope, context }) {
     if (!item || !Number.isInteger(value) || value < 1 || value > Number(item.sku.available_quantity)) return
     invalidateQuote(); state.quantities = { ...state.quantities, [String(id)]: value }
   }
-  async function prepare() {
+  async function prepare({reuseCart=false,requireSlot=false}={}) {
     return run(async active => {
       guard()
+      const revision = quoteRevision
       state.pending = api.pendingOrder()
       if (state.pending) throw new Error('上次下单结果尚未确认，请先重试并确认原订单。')
       if (!state.address) throw new Error('请选择配送地址，再核对订单金额。')
       if (state.deliverySupported !== true) throw new Error(state.deliveryMessage || '请先确认配送状态。')
+      if (requireSlot && !state.slots.some(slot => same(slot.id,state.slotId))) throw new Error('请选择可用的配送时段。')
       // Entering the page is read-only. Only an explicit checkout synchronizes its own meal cart lines.
-      let basket = await api.addMeal(state.menu)
+      const source = JSON.stringify([state.menu.package_sn,state.menu.package_version])
+      let basket = reuseCart && preparedSource === source ? await api.cart() : null
       if (!active()) return null
-      basket = await api.cart()
+      if (!basket || state.menu.items.some(item => !basket.items.some(line => ownsLine(line) && same(line.sku_id,item.sku.sku_id)))) {
+        await api.addMeal(state.menu)
+        if (!active()) return null
+        basket = await api.cart()
+        if (!active()) return null
+        preparedSource = source
+      }
       if (!active()) return null
       for (const item of state.menu.items) {
         let line = basket.items.find(line => ownsLine(line) && same(line.sku_id, item.sku.sku_id))
@@ -173,7 +182,7 @@ export function createMealCommerceController({ state, api, scope, context }) {
       state.cart = basket.items
       if (!state.address) throw new Error('请选择配送地址，再核对订单金额。')
       const result = await api.quote(basket.items.filter(ownsLine), state.address.id, state.slotId, state.menu)
-      if (active()) { state.quote = result; state.orderSn = ''; return result }
+      if (active() && revision === quoteRevision) { state.quote = result; state.orderSn = ''; return result }
       return null
     }, true)
   }

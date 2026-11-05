@@ -2,12 +2,12 @@
 import { reactive, ref, computed, watch } from 'vue'
 import { onLoad, onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import AppNavBar from '../../components/AppNavBar.vue'
-import { createMealPhotoClient, photoState } from '../../services/meal-photo-client.js'
+import { createMealPhotoClient, photoState, mealPhotoFailure } from '../../services/meal-photo-client.js'
 import { newHealthRequestId } from '../../services/health-task-flow.js'
 import { previewMealPhoto } from '../../services/health-upload.js'
 import { sessionRevision } from '../../services/session.js'
 const state = reactive(photoState()), client = createMealPhotoClient({ state })
-const selectedMember = ref(''), consent = ref(false), acceptMissing = ref(false), reason = ref('核对照片中的实际摄入')
+const selectedMember = ref(''), acceptMissing = ref(false), reason = ref('核对照片中的实际摄入')
 const query = ref(''), mappingItem = ref(null), mealType = ref('lunch')
 const previewPath = ref('')
 const now = new Date(Date.now() + 8 * 3600000).toISOString()
@@ -23,11 +23,11 @@ watch(() => state.calculation, () => {acceptMissing.value=false}, {flush:'sync'}
 onLoad(options => { selectedMember.value = options.memberId || '' })
 onShow(() => {
   if(state.memberId && openedRevision===sessionRevision())return
-  openedRevision=sessionRevision(); consent.value=false; acceptMissing.value=false; mappingItem.value=null; void client.open(selectedMember.value)
+  openedRevision=sessionRevision(); client.setConsent(false); acceptMissing.value=false; mappingItem.value=null; void client.open(selectedMember.value)
 })
-function hide() { pageGeneration++; client.discard(); consent.value=false; acceptMissing.value=false; mappingItem.value=null; previewPath.value='' }
+function hide() { pageGeneration++; client.discard(); client.setConsent(false); acceptMissing.value=false; mappingItem.value=null; previewPath.value='' }
 onHide(() => { if(!mediaOverlay)hide() }); onUnload(hide)
-function selectMember(id) { if(locked.value)return; selectedMember.value=id; consent.value=false; acceptMissing.value=false; mappingItem.value=null; void client.open(id) }
+function selectMember(id) { if(locked.value)return; selectedMember.value=id; client.setConsent(false); acceptMissing.value=false; mappingItem.value=null; void client.open(id) }
 function pickPhoto() {
   if(locked.value || state.uploads.length>=3)return
   const member = state.memberId
@@ -49,7 +49,7 @@ function mapSource(source) {
   item.portion_reference_id=null;item.portion_count=null;item.adjustments=[];item.portion_source=item.grams?'manual':'unknown'
   mappingItem.value=null;changed()
 }
-async function start() { await client.start(mealType.value,`${mealDate.value}T${mealTime.value}:00+08:00`,consent.value); if(state.error)consent.value=false }
+async function start() { await client.start(mealType.value,`${mealDate.value}T${mealTime.value}:00+08:00`); if(state.error)client.setConsent(false) }
 function records() { uni.navigateTo({url:'/pages/records/index'}) }
 async function preview(id) { previewPath.value='';const epoch=pageGeneration,member=state.memberId;try{const path=await previewMealPhoto(id);if(epoch===pageGeneration&&member===state.memberId)previewPath.value=path}catch(e){if(epoch===pageGeneration)state.error=e.message} }
 </script>
@@ -71,8 +71,9 @@ async function preview(id) { previewPath.value='';const epoch=pageGeneration,mem
     <view v-for="(photo,index) in state.uploads" :key="photo.upload_id" class="choices"><button :disabled="locked" @click="preview(photo.upload_id)">查看照片 {{index+1}}</button><button :disabled="locked" @click="client.removePhoto(photo.upload_id)">从本次识别移除</button></view>
     <button class="secondary-button" :disabled="locked||state.uploads.length>=3" @click="pickPhoto">拍照或选择照片（{{state.uploads.length}}/3）</button>
     <text v-if="!canRecognize" class="safe-note">{{state.config?.meal?.reason||'需要成员 AI 使用授权'}}。可以查看已有任务和候选，或前往饮食记录人工记餐。</text>
-    <template v-else><text class="safe-note">处理方 {{state.config.meal.processor}} · 政策 {{state.config.policy_version}}</text><label><switch :checked="consent" :disabled="locked" @change="consent=$event.detail.value"/>同意将本成员本餐照片交给上述服务识别</label></template>
-    <button class="primary-button" :disabled="locked||!canRecognize||!consent||!state.uploads.length" @click="start">提交识别任务</button>
+    <template v-else><text class="safe-note">处理方 {{state.config.meal.processor}} · 政策 {{state.config.policy_version}}</text><label><switch :checked="!!state.consent" :disabled="locked" @change="client.setConsent($event.detail.value)"/>同意将本成员本餐照片交给上述服务识别</label></template>
+    <button class="primary-button" :disabled="locked||!canRecognize||!state.consent||!state.uploads.length" @click="start">提交识别任务</button>
+    <button class="secondary-button" :disabled="locked" @click="client.refreshConfiguration()">重新检查识别服务</button>
     <button class="secondary-button" @click="records">人工记餐 / 查看已确认记录</button>
   </view>
   <view v-if="state.pending" class="card section"><text>上次{{state.pending.operation==='confirm'?'确认记餐':state.pending.operation==='patch'?'保存候选':'任务提交'}}结果尚未确认，请恢复原请求。</text><button class="primary-button" :disabled="state.busy" @click="client.retryPending()">恢复原请求</button></view>
@@ -80,7 +81,7 @@ async function preview(id) { previewPath.value='';const epoch=pageGeneration,mem
     <text class="section-title">2. 查看识别任务和候选</text>
     <button v-for="job in state.jobs" :key="job.task_id" :disabled="locked||state.dirty" class="secondary-button" @click="client.job(job.task_id)">{{statusNames[job.execution_status]||job.execution_status}} · {{job.created_at}}</button>
     <view class="choices"><button :disabled="locked||state.jobsOffset===0" @click="client.page('jobs',Math.max(0,state.jobsOffset-20))">上一页任务</button><button :disabled="locked||state.jobsNext===null" @click="client.page('jobs',state.jobsNext)">下一页任务</button><button :disabled="locked" @click="client.page('jobs',0)">刷新任务</button></view>
-    <view v-if="state.job" class="section"><text>当前任务：{{statusNames[state.job.execution_status]||state.job.execution_status}} {{state.job.progress}}%</text><text v-if="state.job.error_code">失败原因：{{state.job.error_code}}</text><text v-if="state.job.cancel_requested">已请求取消，最终状态以服务端为准。</text>
+    <view v-if="state.job" class="section"><text>当前任务：{{statusNames[state.job.execution_status]||state.job.execution_status}} {{state.job.progress}}%</text><text v-if="state.job.error_code">失败原因：{{mealPhotoFailure(state.job.error_code)}}</text><text v-if="state.job.cancel_requested">已请求取消，最终状态以服务端为准。</text>
       <button :disabled="locked||state.dirty" @click="client.job(state.job.task_id)">刷新当前任务</button><button v-if="['pending','running'].includes(state.job.execution_status)" :disabled="locked" @click="client.cancel()">取消识别</button><button v-if="['failed','cancelled'].includes(state.job.execution_status)" :disabled="locked||!canRecognize" @click="client.retryJob()">重新尝试识别</button>
     </view>
     <button v-for="draft in state.drafts" :key="draft.id" class="secondary-button" :disabled="locked||state.dirty" @click="client.draft(draft.id)">{{draft.review_status==='confirmed'?'已确认':'待核对'}} · v{{draft.version}} · {{draft.created_at}}</button>

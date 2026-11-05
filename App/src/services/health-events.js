@@ -1,6 +1,14 @@
 import { apiBaseUrl, allowLocalHealthApi } from './config.js'
 import { getSession, sessionRevision } from './session.js'
 
+export const HEALTH_PROGRESS_LABELS = Object.freeze({
+  running: '正在结合资料整理建议', validating: '正在核对内容与资料来源',
+  reading_profile: '正在读取已确认的健康资料', reading_categories: '正在读取商城商品分类',
+  choosing_categories: '正在结合健康资料选择商品分类', reading_products: '正在读取所选分类的商品',
+  choosing_products: '正在根据商品资料挑选食材', selecting_products: '正在核对所选食材',
+  preparing_answer: '正在整理食材推荐说明',
+})
+
 /** 只接收公开健康增量契约；原始 messages、工具、推理与任意模型字段不可作为答复。 */
 export function createHealthEventParser(onEvent) {
   let buffer = '', bytes = []
@@ -40,7 +48,7 @@ export function createHealthEventParser(onEvent) {
         runId: value.run_id, requestId: value.request_id, threadId: value.thread_id }
       if (type === 'queued' && Number.isInteger(value.position) && value.position >= 0) event.queuePosition = value.position
       if (type === 'custom' && payload.name === 'yuxi.health_progress') {
-        event.phase = chunk.phase === 'validating' ? 'validating' : 'running'
+        event.phase = Object.hasOwn(HEALTH_PROGRESS_LABELS, chunk.phase) ? chunk.phase : 'running'
       }
       if (type === 'custom' && payload.name === 'yuxi.health_answer_delta' &&
         typeof chunk.content === 'string' && chunk.content.length <= 65536 &&

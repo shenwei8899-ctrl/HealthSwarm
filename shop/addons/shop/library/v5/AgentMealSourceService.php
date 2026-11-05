@@ -10,13 +10,14 @@ class AgentMealSourceService
     public static function referenceSource(array $proof)
     {
         $source = Json::decode($proof['payload'] ?? '{}', []);
-        return ($source['kind'] ?? '') === 'reference_plan' ||
+        return in_array(($source['kind'] ?? ''), ['reference_plan', 'meal_selection'], true) ||
             (($source['kind'] ?? '') === 'conversation_catalog' && ($source['trade_policy'] ?? '') === 'catalog_v1') ? $source : null;
     }
 
     /** 采购版本由签名来源绑定，客户端不能借用另一段对话。 */
     private static function referenceVersion(array $source)
     {
+        if (($source['kind'] ?? '') === 'meal_selection') return $source['menu_version_ref'] ?? '';
         return ($source['kind'] ?? '') === 'conversation_catalog'
             ? 'conversation:' . ($source['request_id'] ?? '')
             : 'reference:' . ($source['preview_id'] ?? '');
@@ -42,6 +43,9 @@ class AgentMealSourceService
             (($source['kind'] ?? '') === 'conversation_catalog' &&
                 (($payload['family_ref'] ?? '') !== self::referenceVersion($source) || !empty($payload['ingredient_requirements'])))) {
             throw new DomainException('日常参考来源或状态不一致', 40301, 403);
+        }
+        if (($source['kind'] ?? '') === 'meal_selection' && (($payload['family_ref'] ?? '') !== 'meal-selection:' . ($source['family_id'] ?? '') || !empty($payload['ingredient_requirements']))) {
+            throw new DomainException('菜品采购范围或家庭来源不一致', 40301, 403);
         }
         $this->assertReferenceItems($payload['items'] ?? [], $verified['items'] ?? []);
         return true;
@@ -77,6 +81,9 @@ class AgentMealSourceService
             ($row['menu_version_ref'] ?? '') !== self::referenceVersion($source) ||
             (($source['kind'] ?? '') === 'conversation_catalog' && ($row['family_ref'] ?? '') !== self::referenceVersion($source))) {
             throw new DomainException('参考商品账号来源不一致', 40301, 403);
+        }
+        if (($source['kind'] ?? '') === 'meal_selection' && ($row['family_ref'] ?? '') !== 'meal-selection:' . ($source['family_id'] ?? '')) {
+            throw new DomainException('菜品采购家庭来源不一致', 40301, 403);
         }
         (new IdentityService())->assertOwner($row['user_id'],
             (new IdentityService())->resolveUserId($row['agent_client_id'], $row['user_ref']));

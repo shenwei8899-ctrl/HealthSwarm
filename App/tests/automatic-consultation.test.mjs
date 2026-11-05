@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {createEntryResolver} from '../src/services/entry-routing.js'
 
-function client({complete=true,enabled=true,switchDuringOpen=false}={}){
+function client({complete=true,enabled=true,switchDuringOpen=false,invitationAnalysisPending=false}={}){
  const calls=[],saved=[];let revision=1
- const source={source:'api',householdId:'family',selfMemberId:'self',onboarded:complete,completeProfile:complete,members:[{id:'self',version:3,relation:'爸爸'}]}
+ const source={source:'api',householdId:'family',selfMemberId:'self',onboarded:complete,completeProfile:complete,invitationAnalysisPending,members:[{id:'self',version:3,relation:'爸爸'}]}
  const deps={getSession:()=>({token:'synthetic',householdId:'family'}),sessionRevision:()=>revision,pendingInvitation:()=>null,
  normalizeProfile:p=>structuredClone(p),saveProfile:p=>saved.push(p),newHealthRequestId:()=> 'request',
  scopedStorage:{getStorageSync:()=>null,setStorageSync(){}},
@@ -38,12 +38,16 @@ test('entry-only profile read does not wait for model configuration or start con
 test('account switch during automatic opening cannot cache the prior private profile',async()=>{
  const c=client({switchDuringOpen:true});await assert.rejects(c.load(),/账号已变化/);assert.equal(c.saved.length,0)
 })
-test('onboarding and member details no longer ask for manual consultation approval',()=>{
+test('completed invited profile also opens consultation without another consent step',async()=>{
+ const c=client({invitationAnalysisPending:true});await c.load()
+ assert.equal(c.calls.filter(o=>o.method==='POST').length,1)
+})
+test('onboarding and profile detail have no separate consultation consent or revocation step',()=>{
  const onboarding=readFileSync(new URL('../src/pages/onboarding/index.vue',import.meta.url),'utf8')
  const detail=readFileSync(new URL('../src/components/CloudMemberDetail.vue',import.meta.url),'utf8')
- assert.doesNotMatch(onboarding,/analysisAccepted|同意上述数据处理|保存并开启本人咨询/)
+ assert.doesNotMatch(onboarding,/同意并开启本人 AI 咨询|AI 咨询由你另行选择|analysisAccepted/)
  assert.match(onboarding,/完成建档，开始对话/)
- assert.doesNotMatch(detail,/我已核对资料并同意|同意并开始分析|@click="confirmProfile"/)
+ assert.doesNotMatch(detail,/我已核对资料并同意|同意并开始分析|@click="confirmProfile"|撤回 AI 咨询授权|revokeAnalysis/)
 })
 
 

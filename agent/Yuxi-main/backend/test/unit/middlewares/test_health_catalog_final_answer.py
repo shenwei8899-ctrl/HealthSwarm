@@ -101,7 +101,8 @@ async def catalog_graph(model, messages, *, final=False, on_custom=None, system_
 
 
 @pytest.mark.asyncio
-async def test_catalog_forced_tools_and_final_generation_keep_budget_order_and_one_public_stream():
+@pytest.mark.parametrize("question", ["推荐可以买的食材", "下午加餐吃啥"])
+async def test_catalog_forced_tools_and_final_generation_keep_budget_order_and_one_public_stream(question):
     gate = asyncio.Event()
     model = ControlledStreamModel(
         plan=[
@@ -120,7 +121,7 @@ async def test_catalog_forced_tools_and_final_generation_keep_budget_order_and_o
             assert len(model.calls) == 5 and len(model.finished) == 4
             gate.set()
 
-    graph, custom, budget = await catalog_graph(model, [human()], on_custom=consume)
+    graph, custom, budget = await catalog_graph(model, [human(question)], on_custom=consume)
     assert [call["tool_choice"] for call in model.calls] == [
         catalog.tool_choice(find_food_packages.name),
         "any",
@@ -160,6 +161,7 @@ async def test_final_phase_without_successful_selection_rejects_before_model_or_
     "messages,code",
     [
         ([human()], "catalog_tool_required"),
+        ([human("下午加餐吃啥")], "catalog_tool_required"),
         ([human(), receipt(find_food_packages.name, status="error")], "catalog_tool_required"),
         (
             [human(), receipt(find_food_packages.name), receipt(select_food_products.name, status="error")],

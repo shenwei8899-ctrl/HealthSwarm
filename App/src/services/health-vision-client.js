@@ -10,9 +10,18 @@ const copy = value => JSON.parse(JSON.stringify(value))
 const uncertain = error => error.code === 'NETWORK_ERROR' || Number(error.code) >= 500
 export function visionState() {
   return { members: [], memberId: '', kind: 'report', busy: false, error: '', notice: '', jobs: [], drafts: [],
+    memberStatus: 'idle', configurationStatus: 'idle', configurationError: '', listStatus: 'idle', listError: '',
     jobsOffset: 0, draftsOffset: 0, jobsNext: null, draftsNext: null, job: null, draft: null, calculation: null,
     recipes: [], pending: null, blocked: false, policy: null, consent: false, progress: 0, uploading: false, confirmation: null,
     records: [], limits: {image_mb:10,pdf_mb:20,report_pages:20,meal_images:3} }
+}
+
+export function visionPermissions(state) {
+  const scopes = state.members.find(member => member.id === state.memberId)?.scopes || []
+  if (state.kind !== 'report') return { view: !!state.memberId, upload: !!state.memberId, edit: !!state.memberId, recognize: !!state.memberId }
+  return { view: scopes.includes('report_view'), upload: scopes.includes('report_upload'),
+    edit: scopes.includes('report_view') && scopes.includes('profile_edit'),
+    recognize: scopes.includes('report_upload') }
 }
 
 /** 文件、任务、草稿与确认分别回读，页面切换和失权后不接收旧响应。 */
@@ -32,7 +41,9 @@ export function createHealthVisionClient({ state, send = request, upload = uploa
     catch (error) {
       if (mine !== ticket()) return
       if ([401, 403, 404, 410].includes(Number(error.code)) || error.code === 'SESSION_CHANGED') {
-        saveIntentClear(); discard(); state.error = '当前资料或授权已变化，请重新读取成员。'
+        const kind = state.kind
+        saveIntentClear(); discard(); state.kind = kind; state.memberStatus = 'revoked'
+        state.error = '当前资料或授权已变化，请重新读取成员。'
       } else {
         state.error = Number(error.code) === 409 ? '版本或来源已变化，请重新读取候选并核对。' : error.message
         if (!uncertain(error) && state.pending) { state.pending = null; saveIntent() }
@@ -44,11 +55,34 @@ export function createHealthVisionClient({ state, send = request, upload = uploa
   }
   function saveIntentClear() { if (state.memberId) storage.setStorageSync(key(), null) }
   async function page(current, jobsOffset = state.jobsOffset, draftsOffset = state.draftsOffset) {
+    if (!state.memberId || !visionPermissions(state).view) return
+    state.listStatus = 'loading'; state.listError = ''
     const { data } = await send({ path: `${root}/members/${state.memberId}/vision/page?kind=${state.kind}&jobs_limit=20&jobs_offset=${jobsOffset}&drafts_limit=20&drafts_offset=${draftsOffset}` })
     if (!current()) return
     if (!Array.isArray(data.jobs) || !Array.isArray(data.drafts)) throw new Error('任务列表格式异常，请重试')
     state.jobs = data.jobs; state.drafts = data.drafts; state.jobsNext = data.jobs_next_offset; state.draftsNext = data.drafts_next_offset
     state.jobsOffset = jobsOffset; state.draftsOffset = draftsOffset
+    state.listStatus = 'ready'
+  }
+  async function configuration(current) {
+    state.configurationStatus = 'loading'; state.configurationError = ''; state.policy = null; state.consent = false
+    const { data: config } = await send({ path: root + '/configuration' })
+    if (!current()) return
+    const policy = config?.[state.kind]
+    state.limits = { ...state.limits, ...config?.limits }
+    state.policy = policy?.available === true && policy.processor && config.policy_version
+      ? { processor: policy.processor, policy_version: config.policy_version } : null
+    state.configurationStatus = state.policy ? 'ready' : 'unavailable'
+    state.configurationError = state.policy ? '' : (policy?.reason || '识别服务暂未就绪，可先手动录入或核对已有报告。')
+  }
+  async function optionalRead(current, action, status, errorField) {
+    try { await action() }
+    catch (error) {
+      if (!current()) return
+      // Authorization loss must still clear private data through run().
+      if ([401, 403, 404, 410].includes(Number(error.code)) || error.code === 'SESSION_CHANGED') throw error
+      state[status] = 'failed'; state[errorField] = error.message || '读取失败，请重试。'
+    }
   }
   async function loadDraft(current, id) {
     state.draft = null; state.calculation = null; state.blocked = true
@@ -103,26 +137,35 @@ export function createHealthVisionClient({ state, send = request, upload = uploa
     cancelUpload() { abortUpload?.() },
     open(memberId, kind = 'report') {
       discard(); state.kind = kind === 'meal' ? 'meal' : 'report'
+      state.memberStatus = 'loading'
       return run(async current => {
-        const { data } = await send({ path: root + '/members' })
+        let data
+        try {
+          data = (await send({ path: root + '/members' })).data
+          if (!Array.isArray(data)) throw new Error('成员列表返回异常，请重新加载。')
+        } catch (error) { if (current()) state.memberStatus = 'failed'; throw error }
         if (!current()) return
-        state.members = data.filter(row => row.scopes?.includes(state.kind === 'report' ? 'report_view' : 'diet_edit'))
+        state.members = data.filter(row => state.kind === 'report'
+          ? ['report_view', 'report_upload', 'profile_edit'].some(scope => row.scopes?.includes(scope))
+          : row.scopes?.includes('diet_edit'))
         state.memberId = memberId ? state.members.find(row => row.id === memberId)?.id || '' : state.members[0]?.id || ''
-        if (!state.memberId) { state.notice = '选定成员当前不可读取，请选择当前用途已授权成员。'; return }
+        state.memberStatus = state.memberId ? 'ready' : state.members.length ? 'selection-required' : 'empty'
+        if (!state.memberId) { state.notice = '请选择有权限的成员后继续。'; return }
         const pending = storage.getStorageSync(key())
         if (pending?.operation==='read'&&pending.receipt?.confirmation_id || pending?.request?.data?.client_request_id && pending.request.path.startsWith(root + '/')) state.pending = pending
-        const config = (await send({ path: root + '/configuration' })).data
-        if (!current()) return
-        const policy = config?.[state.kind]
-        state.limits={...state.limits,...config.limits}
-        state.policy = policy?.available === true && policy.processor && config.policy_version
-          ? { processor: policy.processor, policy_version: config.policy_version } : null
-        await page(current, 0, 0)
+        const reads = await Promise.allSettled([
+          optionalRead(current, () => configuration(current), 'configurationStatus', 'configurationError'),
+          optionalRead(current, () => page(current, 0, 0), 'listStatus', 'listError'),
+        ])
+        const rejected = reads.find(result => result.status === 'rejected')
+        if (rejected) throw rejected.reason
       })
     },
-    page(jobsOffset, draftsOffset) { return run(current => page(current, jobsOffset, draftsOffset)) },
+    page(jobsOffset, draftsOffset) { return run(current => optionalRead(current, () => page(current, jobsOffset, draftsOffset), 'listStatus', 'listError')) },
+    refreshConfiguration() { return run(current => optionalRead(current, () => configuration(current), 'configurationStatus', 'configurationError')) },
     acceptConsent() {
       if (!state.policy || !state.memberId || state.pending) return
+      if (!visionPermissions(state).recognize) { state.error = '当前成员的报告访问不可用，请重新读取家庭成员。'; return }
       return run(async current => {
         const { data } = await send({ path: `${root}/members/${state.memberId}/processing-consents`, method: 'POST',
           data: { purpose: state.kind, accepted: true, ...state.policy } })
@@ -131,6 +174,7 @@ export function createHealthVisionClient({ state, send = request, upload = uploa
     },
     recognize(files, meal = {}) {
       if (state.pending || !state.consent || !files.length) return
+      if (!visionPermissions(state).recognize) { state.error = '当前成员尚未授权报告上传或 AI 识别。'; return }
       if(files.length>(state.kind==='meal'?state.limits.meal_images:state.limits.report_pages)){state.error='文件数量超过当前识别限制。';return}
       return run(async current => {
         for(const file of files) {
@@ -170,6 +214,7 @@ export function createHealthVisionClient({ state, send = request, upload = uploa
       })
     },
     cancel(job) {
+      if (!visionPermissions(state).edit) return
       return run(async current => {
         await send({ path: `${root}/vision-tasks/${job.task_id}/cancel`, method: 'POST' })
         if (current()) { state.notice = '已请求取消，请重新读取最终状态。'; await page(current) }
@@ -177,12 +222,14 @@ export function createHealthVisionClient({ state, send = request, upload = uploa
     },
     retry(job) {
       if (state.pending || !['failed','cancelled'].includes(job.execution_status)) return
+      if (!visionPermissions(state).edit || !visionPermissions(state).recognize) return
       return run(async current => {
         prepare('task', `${root}/vision-tasks/${job.task_id}/retry`, { client_request_id: newId() })
         await perform(current)
       })
     },
     reprocessPages(indices) {
+      if (!visionPermissions(state).recognize) return
       if(state.kind!=='report'||!state.draft||state.draft.review_status!=='pending_confirmation'||state.pending||state.blocked||!indices.length)return
       const selected=[...new Set(indices)].sort((a,b)=>a-b)
       if(selected.some(index=>!state.draft.payload.pages?.some(page=>page.page_index===index&&page.status==='failed')))return
@@ -200,6 +247,7 @@ export function createHealthVisionClient({ state, send = request, upload = uploa
     },
     manual() {
       if (state.pending || !state.memberId || state.blocked) return
+      if (!visionPermissions(state).edit) { state.error = '当前成员尚未授权修改报告指标。'; return }
       return run(async current => {
         const data = { member_id: state.memberId, kind: state.kind, [state.kind]: state.kind === 'report'
           ? { fields: [] } : { meal_type: 'lunch', eaten_at: new Date().toISOString(), items: [] } }
@@ -211,6 +259,7 @@ export function createHealthVisionClient({ state, send = request, upload = uploa
     },
     saveDraft(payload, reason) {
       if (!state.draft || state.blocked || state.pending || !reason.trim()) return
+      if (!visionPermissions(state).edit) return
       return run(async current => {
         state.calculation = null; state.blocked = true
         const data = { version: state.draft.version, reason, [state.kind]: state.kind === 'meal' ? mealInput(payload) : copy(payload) }
@@ -228,6 +277,7 @@ export function createHealthVisionClient({ state, send = request, upload = uploa
     },
     confirm(acceptIncomplete) {
       if (!state.draft || state.blocked || state.pending || (state.kind === 'meal' && !state.calculation)) return
+      if (!visionPermissions(state).edit) return
       return run(async current => {
         const data = { version: state.draft.version, client_request_id: newId(), accept_incomplete: acceptIncomplete,
           ...(state.kind === 'meal' ? { calculation_id: state.calculation.calculation_id } : {}) }

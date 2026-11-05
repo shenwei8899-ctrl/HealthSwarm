@@ -6,6 +6,7 @@ import { newMember, normalizeMember, normalizeProfile } from '../src/utils/profi
 import { dataWarnings } from '../src/utils/health.js'
 import * as health from '../src/utils/health.js'
 import { onboardingIssue } from '../src/utils/onboarding-validation.js'
+import { canRestoreOnboardingDraft } from '../src/services/onboarding-draft.js'
 
 function completeMember(id = 'self') {
   return { ...newMember(0), id, name: id, relation: id === 'self' ? '本人' : '家人', birthDate: '1995-01-01',
@@ -17,7 +18,7 @@ function page(members = [completeMember()], extras = {}) {
   const storage = new Map([['family-profile-v2', true]]), calls = { saves: [], redirects: [], toasts: [] }
   const profile = normalizeProfile({ householdId: 'synthetic-family', familyVersion: 1, usageMode: '家庭使用', members,
     defaultDiners: [members[0].id], goals: [], tastes: [] })
-  const deps = { ref, computed, nextTick, watch, newMember, normalizeMember, normalizeProfile, dataWarnings, onboardingIssue,
+  const deps = { ref, computed, nextTick, watch, newMember, normalizeMember, normalizeProfile, dataWarnings, onboardingIssue, canRestoreOnboardingDraft,
     isMockMode: false, getProfile: () => structuredClone(profile), saveProfile() {}, backHome() {}, sessionRevision: () => 1, storageScope: () => '',
     scopedStorage: { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, value) },
     onLoad() {}, onShow() {}, onUnload() {}, onPageScroll() {}, loadCloudProfile: async () => profile, readCloudReportStatus: async () => 'empty',
@@ -334,4 +335,21 @@ test('per-step completion uses required answers and permits height and weight to
 
 test('an individual draft cannot resume on a hidden relative',async()=>{
  const p=page([completeMember('self'),completeMember('relative')]);p.mode('个人使用');p.preserveProgress();const saved=p.storage.get('frontend-onboarding-progress-v1');saved.memberId='relative';saved.memberIndex=1;p.storage.set('frontend-onboarding-progress-v1',saved);await p.readCloud();assert.equal(p.current.value.id,'self');p.dispose()
+})
+
+
+test('invited edits persist separately, restore only the same saved version and leave household settings intact',async()=>{
+ const server=normalizeProfile({householdId:'synthetic-family',selfMemberId:'relative',isOwner:false,familyVersion:1,
+  invitationReviewPending:true,members:[{...completeMember('relative'),version:4}],defaultDiners:['relative']})
+ const p=page(server.members,{loadCloudProfile:async()=>structuredClone(server)})
+ p.storage.set('frontend-onboarding-progress-v1',{householdDraft:'preserve'})
+ await p.readCloud();assert.equal(p.cloudError.value,'')
+ p.profile.value.members[0].name='尚未提交的妈妈';p.step.value=1;await nextTick()
+ assert.equal(p.storage.get('frontend-invited-onboarding-progress-v1:relative').profile.members[0].name,'尚未提交的妈妈')
+ assert.deepEqual(p.storage.get('frontend-onboarding-progress-v1'),{householdDraft:'preserve'})
+ await p.readCloud();assert.equal(p.current.value.name,'尚未提交的妈妈');assert.equal(p.step.value,1)
+ server.members[0].version=5;server.members[0].name='云端新资料'
+ await p.readCloud();assert.equal(p.current.value.name,'云端新资料')
+ assert.ok(p.storage.get('frontend-invited-onboarding-progress-v1:relative:conflict'))
+ p.dispose()
 })

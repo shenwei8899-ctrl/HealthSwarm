@@ -101,6 +101,8 @@ def test_meal_ideas_do_not_require_catalog(text):
         "不想买食材，但请查询鸡蛋商品营养",
         "不需要买东西，请查询鸡蛋商品营养",
         "请帮我下单一份鸡肉",
+        "下午加餐吃啥",
+        "下午加餐可以选啥？",
     ],
 )
 def test_explicit_product_requests_keep_catalog_obligation(text):
@@ -118,6 +120,8 @@ def test_explicit_product_requests_keep_catalog_obligation(text):
         "我不想买食材，只想聊今晚吃什么",
         "不需要买东西，帮我安排晚餐",
         "不用帮我下单，聊聊晚餐",
+        "不要推荐商品，下午加餐吃啥",
+        "不需要购买商品，下午加餐吃什么",
     ],
 )
 def test_explicit_product_refusal_does_not_force_a_catalog_request(text):
@@ -211,7 +215,7 @@ def test_consultation_skill_does_not_turn_ordinary_advice_into_a_saved_plan():
     prompt = consultation_prompt()
     assert "直接配餐" in prompt and "不保存" in prompt
     assert "无需用户提供食谱材料或来源" in prompt
-    assert "仅当用户明确查询商品、选购或商品营养时" in prompt
+    assert "询问“下午加餐吃啥”等下午加餐选品时" in prompt
     assert "- 个人餐单或换菜：引导用户明确选择配餐任务" not in prompt
     assert "先用自然语言回答，再原样附上工具返回的" not in prompt
 

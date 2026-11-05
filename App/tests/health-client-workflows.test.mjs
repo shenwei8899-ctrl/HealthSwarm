@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createHealthVisionClient, visionState } from '../src/services/health-vision-client.js'
+import { createHealthVisionClient, visionState, visionPermissions } from '../src/services/health-vision-client.js'
 import { createHealthPlanClient, healthPlanState } from '../src/services/health-plan-client.js'
 import { createHealthEventParser } from '../src/services/health-events.js'
 import { mealInput } from '../src/services/health-meal-input.js'
@@ -17,7 +17,7 @@ function setupVision(override = () => {}) {
     upload: async options => { uploads++; return { upload_id: 'uploaded-photo', purpose: options.purpose, status: 'ready' } },
     send: async options => {
       calls.push(structuredClone(options)); const result = await override(options); if (result) return result
-      if (options.path.endsWith('/members')) return { data: [{ id: member, scopes: ['diet_edit', 'report_view'] }] }
+      if (options.path.endsWith('/members')) return { data: [{ id: member, scopes: ['diet_edit', 'report_view', 'report_upload', 'profile_edit', 'ai_use'] }] }
       if (options.path.endsWith('/configuration')) return { data: { meal: { available: true, processor: 'approved-processor' }, policy_version: 'approved-policy' } }
       if (options.path.endsWith('/processing-consents')) return { data: { accepted: true } }
       if (options.path.includes('/vision/page')) return { data: { jobs: [], drafts: [], jobs_next_offset: null, drafts_next_offset: null } }
@@ -195,6 +195,86 @@ test('an explicitly selected unavailable member never falls back to another memb
   assert.equal(v.state.memberId, ''); assert.equal(v.calls.some(row => row.path.includes('/vision/page')), false)
   const p = setupPlan(); await p.client.open(other)
   assert.equal(p.state.memberId, ''); assert.equal(p.calls.some(row => row.path.includes('/meal-plans?')), false)
+})
+
+test('report member loading distinguishes no grants, missing selection, transport failure and revoked access', async () => {
+  const empty = setupVision(o => o.path.endsWith('/members') ? { data: [] } : null)
+  await empty.client.open(member, 'report'); assert.equal(empty.state.memberStatus, 'empty')
+  const missing = setupVision(); await missing.client.open(other, 'report')
+  assert.equal(missing.state.memberStatus, 'selection-required'); assert.equal(missing.state.memberId, '')
+  const failed = setupVision(o => { if (o.path.endsWith('/members')) throw Object.assign(new Error('offline'), { code: 'NETWORK_ERROR' }) })
+  await failed.client.open(member, 'report'); assert.equal(failed.state.memberStatus, 'failed')
+  const revoked = setupVision(o => { if (o.path.endsWith('/members')) throw Object.assign(new Error('revoked'), { code: 403 }) })
+  await revoked.client.open(member, 'report'); assert.equal(revoked.state.memberStatus, 'revoked'); assert.equal(revoked.state.members.length, 0)
+  await revoked.client.open(member, 'meal'); assert.equal(revoked.state.kind, 'meal')
+})
+
+test('read-only report members can load history but cannot consent, upload or create and edit indicators', async () => {
+  const h = setupVision(o => {
+    if (o.path.endsWith('/members')) return { data: [{ id: member, scopes: ['report_view'] }] }
+    if (o.path.endsWith('/configuration')) return { data: { report: { available: true, processor: 'processor' }, policy_version: 'policy' } }
+    if (o.path.endsWith('/report-extractions/' + record)) return { data: { id: record, member_id: member, kind: 'report', version: 1, payload: { fields: [] } } }
+  })
+  await h.client.open(member, 'report'); assert.equal(h.state.memberStatus, 'ready')
+  assert.deepEqual(visionPermissions(h.state), { view: true, upload: false, edit: false, recognize: false })
+  await h.client.acceptConsent(); await h.client.manual(); await h.client.draft({ id: record })
+  await h.client.saveDraft({ fields: [] }, 'test'); await h.client.confirm(false)
+  h.state.consent = true; await h.client.recognize([{ path: 'photo', size: 1 }])
+  assert.equal(h.uploads(), 0); assert.equal(h.calls.some(o => o.method && o.method !== 'GET'), false)
+})
+
+test('report recognition does not require consultation AI grants and still needs processing consent', async () => {
+  const h = setupVision(o => o.path.endsWith('/members') ? { data: [{ id: member, scopes: ['report_upload'] }] } : null)
+  await h.client.open(member, 'report')
+  assert.equal(h.state.memberId, member); assert.equal(h.calls.some(o => o.path.includes('/vision/page')), false)
+  assert.deepEqual(visionPermissions(h.state), { view: false, upload: true, edit: false, recognize: true })
+  await h.client.recognize([{ path: 'photo', size: 1 }])
+  assert.equal(h.uploads(), 0)
+  assert.equal(visionPermissions(h.state).recognize, true); assert.equal(visionPermissions(h.state).edit, false)
+})
+
+test('failed recognition configuration still loads report history and can be retried independently', async () => {
+  let offline = true
+  const h = setupVision(o => {
+    if (o.path.endsWith('/configuration')) {
+      if (offline) throw Object.assign(new Error('configuration offline'), { code: 503 })
+      return { data: { report: { available: true, processor: 'processor' }, policy_version: 'policy' } }
+    }
+  })
+  await h.client.open(member, 'report')
+  assert.equal(h.state.configurationStatus, 'failed'); assert.equal(h.state.listStatus, 'ready')
+  assert.equal(h.state.memberId, member); assert.equal(h.state.error, '')
+  const reads = h.calls.filter(o => o.path.endsWith('/members')).length
+  offline = false; await h.client.refreshConfiguration()
+  assert.equal(h.state.configurationStatus, 'ready'); assert.equal(h.calls.filter(o => o.path.endsWith('/members')).length, reads)
+})
+
+test('report history failure leaves recognition configuration ready and can be retried', async () => {
+  let offline = true
+  const h = setupVision(o => {
+    if (o.path.endsWith('/configuration')) return { data: { report: { available: true, processor: 'processor' }, policy_version: 'policy' } }
+    if (o.path.includes('/vision/page') && offline) throw Object.assign(new Error('history offline'), { code: 503 })
+  })
+  await h.client.open(member, 'report')
+  assert.equal(h.state.configurationStatus, 'ready'); assert.equal(h.state.listStatus, 'failed')
+  offline = false; await h.client.page(0, 0)
+  assert.equal(h.state.listStatus, 'ready'); assert.equal(h.state.listError, '')
+})
+
+test('configuration authorization errors still clear private report data', async () => {
+  const h = setupVision(o => { if (o.path.endsWith('/configuration')) throw Object.assign(new Error('revoked'), { code: 403 }) })
+  await h.client.open(member, 'report')
+  assert.equal(h.state.memberStatus, 'revoked'); assert.equal(h.state.memberId, '')
+  assert.equal(h.state.policy, null); assert.deepEqual(h.state.drafts, [])
+})
+
+test('late report configuration and history cannot repopulate a different member or account', async () => {
+  let release
+  const h = setupVision(o => o.path.endsWith('/configuration') ? new Promise(resolve => { release = resolve }) : null)
+  const opening = h.client.open(member, 'report')
+  await new Promise(resolve => setImmediate(resolve)); h.switchAccount()
+  release({ data: { report: { available: true, processor: 'old-account' }, policy_version: 'old' } }); await opening
+  assert.equal(h.state.memberId, ''); assert.equal(h.state.policy, null); assert.deepEqual(h.state.jobs, [])
 })
 
 test('upload rejects oversize content before transport and authenticates only the current session', async () => {

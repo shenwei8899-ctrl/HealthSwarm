@@ -9,7 +9,7 @@ const apiPages = new Set(['pages/index/index', 'pages/invite/index', 'pages/acco
   'pages/onboarding/index', 'pages/onboarding/preparing', 'pages/chat/index', 'pages/shop/index', 'pages/recipe/index', 'pages/supplier/index',
   'pages/orders/index', 'pages/orders/detail', 'pages/address/index', 'pages/address/edit', 'pages/meals/detail', 'pages/meals/purchase'])
 const commercePages = new Set(['pages/purchase/index'])
-const shellPages = new Set(['/pages/exclusive-plans/index', '/pages/profile/index', '/pages/scan/index', '/pages/chat/history', '/pages/my/index', '/pages/supplier/index'])
+const shellPages = new Set(['/pages/exclusive-plans/index', '/pages/profile/index', '/pages/scan/index', '/pages/chat/history', '/pages/my/index', '/pages/supplier/index', '/pages/meals/detail'])
 export function launchRoute(options) {
   const query = Object.entries(options?.query || {}).map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(String(value))).join('&')
   return (options?.path || '') + (query ? '?' + query : '')
