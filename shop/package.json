@@ -4,7 +4,7 @@
   "description": "FastAdmin是一款基于ThinkPHP+Bootstrap的极速后台开发框架。",
   "scripts": {
     "build": "grunt",
-    "test:partner": "php tests/unit/PartnerApplicationPolicyTest.php && node --test tests/unit/partner-detail-token.test.cjs"
+    "test:partner": "php tests/unit/PartnerApplicationPolicyTest.php && node --test tests/unit/partner-detail-token.test.cjs && php tests/unit/MigrationLineEndingsTest.php"
   },
   "repository": {
     "type": "git",
