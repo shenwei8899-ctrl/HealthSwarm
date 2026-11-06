@@ -18,9 +18,11 @@ async def purchasable_reference_recipes(session, products: list[dict], query: st
 
 
 async def purchasable_reference_recipes_batch(session, products: list[dict], queries: list[str]) -> list[list[dict]]:
-    """批量关键词共用一次已授权菜谱行读取，逐词独立排序。"""
-    rows = await reference_recipe_rows(session)
-    return [rank_reference_recipes(rows, products, query, limit=3) for query in queries]
+    """批量关键词共用菜谱正文和商品匹配，逐词独立排序。"""
+    documents = prepare_reference_documents(await reference_recipe_rows(session))
+    available = available_reference_foods(products)
+    analyzed = {}
+    return [rank_prepared_reference_recipes(documents, products, available, query, 3, analyzed) for query in queries]
 
 
 async def reference_recipe_rows(session):
@@ -50,38 +52,71 @@ async def reference_recipe_rows(session):
 
 def rank_reference_recipes(rows, products: list[dict], query: str, limit: int = 9) -> list[dict]:
     """先满足食材相关性，再优先可解析、采购覆盖较高的简单做法。"""
+    return rank_prepared_reference_recipes(
+        prepare_reference_documents(rows), products, available_reference_foods(products), query, limit, {}
+    )
+
+
+def prepare_reference_documents(rows):
+    """同批查询只拼接一次原谱分片并提取查询无关的召回信息。"""
     documents = {}
     for file_id, kb_id, filename, file_hash, chunk_id, content in rows:
         document = documents.setdefault(file_id, {
-            "file_id": file_id, "kb_id": kb_id, "filename": filename,
-            "file_hash": file_hash, "chunk_id": chunk_id, "chunks": [],
+            "source": {
+                "file_id": file_id, "kb_id": kb_id, "filename": filename,
+                "file_hash": file_hash, "chunk_id": chunk_id,
+            },
+            "chunks": [],
         })
         document["chunks"].append((chunk_id, content))
+    prepared = []
+    for document in documents.values():
+        content = "\n".join(value for _, value in document["chunks"])
+        title = re.sub(r"__[0-9a-f]+\.md$", "", document["source"]["filename"], flags=re.I)
+        title = title.removesuffix(".md").replace("_", " ").casefold()
+        prepared.append({
+            **document, "content": content, "body": content.casefold(), "title": title,
+            "title_foods": reference_food_mentions(title), "foods": reference_food_mentions(content),
+        })
+    return prepared
+
+
+def available_reference_foods(products):
+    """只把当前已读且有库存的商品作为召回加分项。"""
+    available = {product_food(p.get("product_name", "")) for p in products
+                 if p.get("sale_status", "available") == "available" and int(p.get("available_quantity", 0)) > 0}
+    available.discard(None)
+    return available
+
+
+def rank_prepared_reference_recipes(documents, products, available, query, limit, analyzed):
+    """每个关键词独立评分，复用本次调用已解析的候选原谱。"""
     terms = [term.casefold() for term in re.findall(r"[\w\u4e00-\u9fff]+", query) if len(term) > 1]
     query_foods = reference_food_mentions(query) - {"水", "盐", "糖"}
     methods = [pattern for word, pattern in (
         ("煮", r"\b(?:boil\w*|poach\w*)\b|煮"), ("蒸", r"\bsteam\w*\b|蒸"),
         ("烤", r"\b(?:bak\w*|roast\w*)\b|烤"), ("粥", r"\bporridge\b|粥"),
     ) if word in query]
-    available = {product_food(p.get("product_name", "")) for p in products
-                 if p.get("sale_status", "available") == "available" and int(p.get("available_quantity", 0)) > 0}
-    available.discard(None)
     candidates = []
-    for document in documents.values():
-        chunks = document.pop("chunks")
-        content = "\n".join(value for _, value in chunks)
-        title = re.sub(r"__[0-9a-f]+\.md$", "", document["filename"], flags=re.I)
-        title = title.removesuffix(".md").replace("_", " ").casefold()
-        foods = reference_food_mentions(content)
+    for document in documents:
+        title, content = document["title"], document["content"]
+        foods = document["foods"]
         title_hits = sum(term in title for term in terms)
-        body_hits = sum(term in content.casefold() for term in terms)
-        title_food_hits = len(reference_food_mentions(title) & query_foods)
+        body_hits = sum(term in document["body"] for term in terms)
+        title_food_hits = len(document["title_foods"] & query_foods)
         query_hits = len(foods & query_foods)
         stock_hits = len(foods & available)
         if not (title_hits or body_hits or title_food_hits or query_hits):
             continue
-        parsed = parse_reference_recipe(content)
-        matches = reference_ingredient_matches(parsed.ingredients, products) if parsed else []
+        file_id = document["source"]["file_id"]
+        if file_id not in analyzed:
+            parsed = parse_reference_recipe(content)
+            analyzed[file_id] = (
+                parsed,
+                reference_ingredient_matches(parsed.ingredients, products) if parsed else [],
+                input_fingerprint(document["chunks"]),
+            )
+        parsed, matches, chunks_hash = analyzed[file_id]
         gaps = sum(item["status"] in {"needs_confirmation", "missing_product"} for item in matches)
         usable = parsed is not None and not parsed.review_sections
         covered = sum(item["status"] == "matched" for item in matches)
@@ -92,8 +127,8 @@ def rank_reference_recipes(rows, products: list[dict], query: str, limit: int = 
         score = (exact_name, bool(relevant_title), usable, method_hits, covered / max(required, 1),
                  -gaps, relevant_title, query_hits, body_hits, stock_hits)
         candidates.append((score, {
-            **document, "chunks_hash": input_fingerprint(chunks),
-            "name": parsed.name if parsed else document["filename"],
+            **document["source"], "chunks_hash": chunks_hash,
+            "name": parsed.name if parsed else document["source"]["filename"],
             "excerpt": content[:1000],
             "parse_status": "parsed" if parsed else "needs_review",
             "ingredient_matches": matches,

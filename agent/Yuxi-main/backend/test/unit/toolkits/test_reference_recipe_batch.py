@@ -1,6 +1,7 @@
 """参考菜谱批量工具保持当前 Run 的单份来源校验。"""
 
 from dataclasses import dataclass
+from collections import Counter
 from unittest.mock import AsyncMock
 import json
 from types import SimpleNamespace
@@ -79,6 +80,57 @@ async def test_batch_rankings_share_one_recipe_row_query(monkeypatch):
     ranked = await reference_recipe_index.purchasable_reference_recipes_batch(session, [], ["大米", "鸡蛋"])
     assert session.execute.await_count == 1
     assert [matches[0]["file_id"] for matches in ranked] == ["rice", "egg"]
+
+
+@pytest.mark.asyncio
+async def test_batch_reuses_recipe_analysis_without_reusing_later_call(monkeypatch):
+    """同批重叠候选只解析一次，新调用重新按当前原谱和商品分析。"""
+    rows = [
+        (
+            "both", "kb", "家常菜谱_鸡蛋大米粥.md", "hash-1", "chunk-1",
+            "# 鸡蛋大米粥\n## 食材\n- 大米 100克\n- 鸡蛋 1个\n## 做法\n- 加水煮熟",
+        ),
+        (
+            "rice", "kb", "家常菜谱_大米饭.md", "hash-2", "chunk-2",
+            "# 大米饭\n## 食材\n- 大米 100克\n## 做法\n- 加水煮熟",
+        ),
+    ]
+    session = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(all=lambda: rows)))
+    monkeypatch.setattr(reference_recipe_index, "configured_health_kb_ids", lambda _: ("kb",))
+    parsed = Counter()
+    matched = Counter()
+    original_parse = reference_recipe_index.parse_reference_recipe
+    original_match = reference_recipe_index.reference_ingredient_matches
+
+    def parse(content):
+        parsed[content] += 1
+        return original_parse(content)
+
+    def match(ingredients, products):
+        matched[ingredients] += 1
+        return original_match(ingredients, products)
+
+    monkeypatch.setattr(reference_recipe_index, "parse_reference_recipe", parse)
+    monkeypatch.setattr(reference_recipe_index, "reference_ingredient_matches", match)
+    products = [{"sku_id": "rice-sku", "product_name": "大米", "available_quantity": 5, "price_cent": 100}]
+
+    ranked = await reference_recipe_index.purchasable_reference_recipes_batch(session, products, ["大米", "鸡蛋"])
+
+    assert [[item["file_id"] for item in matches] for matches in ranked] == [["rice", "both"], ["both"]]
+    assert sum(parsed.values()) == 2
+    assert sum(matched.values()) == 2
+    assert all(item["chunks_hash"] for matches in ranked for item in matches)
+    assert ranked[0][0]["ingredient_matches"][0]["status"] == "matched"
+
+    changed = [("both", "kb", "家常菜谱_鸡蛋大米粥.md", "hash-new", "chunk-new", rows[0][-1])]
+    session.execute.return_value = SimpleNamespace(all=lambda: changed)
+    later = await reference_recipe_index.purchasable_reference_recipes_batch(session, [], ["鸡蛋"])
+
+    assert later[0][0]["file_hash"] == "hash-new"
+    assert later[0][0]["chunk_id"] == "chunk-new"
+    assert later[0][0]["ingredient_matches"][0]["status"] == "missing_product"
+    assert sum(parsed.values()) == 3
+    assert sum(matched.values()) == 3
 
 
 @pytest.mark.asyncio

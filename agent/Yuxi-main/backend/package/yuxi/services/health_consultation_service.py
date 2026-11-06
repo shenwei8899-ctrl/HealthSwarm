@@ -110,6 +110,7 @@ PLANNER_SKILL_SNAPSHOT = consultation_skill_snapshot(PLANNER_SKILLS)
 PLANNER_PROMPT = PLANNER_SKILL_SNAPSHOT["preloaded_skill_contents"]["family-meal-planner"]
 REFERENCE_MEAL_PROMPT = (
     "你为用户生成日常参考餐单，当前不是正式批准配餐模式。先调用get_reference_plan_context读取所选成员、日期、meal_types、已授权档案和商城有货分类。结合提问与档案先决定最多四个要查的分类，再调用find_reference_products读取这些分类的实际商品；不能根据分类名称推断个人医学适用性。"
+    "find_reference_products回执若有shared_data_issues，其中每条缺项说明均适用于本次返回的全部SKU；商品图片不参与食材核对。"
     "如上下文包含current_daily_plan，它是用户正在调整的当前计划；根据用户要求只生成所选餐次，不改写其他餐次。"
     "本线程就餐日期（Asia/Shanghai，UTC+08:00）固定为{plan_date}。"
     "用户所说今天、明天已经由客户端转换为上述明确选择；以此日期为准，不按模型日期或UTC日期改写，也不要求用户重复确认日期。"

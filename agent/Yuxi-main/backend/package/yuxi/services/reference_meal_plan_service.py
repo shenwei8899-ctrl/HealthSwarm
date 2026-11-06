@@ -227,12 +227,22 @@ async def find_reference_products(context, category_codes):
         ):
             raise HealthVisionError("catalog_category_invalid", "只能查询本轮商城实际有货的分类", 422)
     catalog = await current_catalog(category_codes=category_codes)
+    items = [
+        reference_product(s, description_limit=320) for s in catalog["items"] if s.get("sale_status") == "available"
+    ]
+    for item in items:
+        item.pop("image_url", None)
+    shared_issues = items[0]["data_issues"] if len(items) > 1 else None
+    if shared_issues and all(item["data_issues"] == shared_issues for item in items):
+        for item in items:
+            del item["data_issues"]
+    else:
+        shared_issues = None
     return {
         "category_codes": category_codes,
         "catalog_version": catalog["version"],
-        "catalog": [
-            reference_product(s, description_limit=320) for s in catalog["items"] if s.get("sale_status") == "available"
-        ],
+        "catalog": items,
+        **({"shared_data_issues": shared_issues} if shared_issues else {}),
     }
 
 

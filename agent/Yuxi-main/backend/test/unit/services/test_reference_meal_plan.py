@@ -414,6 +414,22 @@ async def test_reference_context_limits_categories_then_preserves_selected_produ
         "available_quantity",
     ):
         assert product[field] == sku[field]
+    assert "image_url" not in product
+
+    second = {**sku, "sku_id": "57", "product_id": "57"}
+    monkeypatch.setattr(service, "current_catalog", AsyncMock(return_value={"version": "v1", "items": [sku, second]}))
+    shared = await service.find_reference_products(context, ["grain"])
+    assert shared["shared_data_issues"] == sku["data_issues"]
+    assert all("data_issues" not in item and "image_url" not in item for item in shared["catalog"])
+    assert [item["facts_hash"] for item in shared["catalog"]] == [
+        service.reference_product(item)["facts_hash"] for item in (sku, second)
+    ]
+
+    second["data_issues"] = ["另一种待核对项"]
+    mixed = await service.find_reference_products(context, ["grain"])
+    assert "shared_data_issues" not in mixed
+    assert [item["data_issues"] for item in mixed["catalog"]] == [sku["data_issues"], second["data_issues"]]
+
     monkeypatch.setattr(service, "recipe_document", AsyncMock(return_value=document()[("recipe", "chunk")]))
     value = draft()
     value.update(

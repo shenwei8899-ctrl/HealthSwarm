@@ -2,7 +2,7 @@
 name: 基础配餐师
 slug: family-meal-planner
 description: "在服务器绑定的日常参考、初始个人/家庭、单成员草稿或已选餐单入口使用。日常参考模式从真实知识原文生成用户所选餐次，明确营养缺失和未专业审核状态；正式模式沿用批准目录及审核流程。"
-version: "2026.11.06.3"
+version: "2026.11.07.1"
 tool_dependencies: ["get_reference_plan_context", "find_reference_products", "search_reference_recipes", "read_reference_recipe", "save_reference_meal_plan", "search_meal_plan_recipes", "preview_meal_plan", "get_family_plan_context", "preview_family_plan_swap", "preview_family_plan_regeneration", "preview_family_plan_participation", "get_initial_plan_context", "preview_initial_meal_plan", "query_initial_nutrition_knowledge", "get_safe_plan_context", "preview_safe_plan_swap", "preview_safe_plan_regeneration", "query_family_nutrition_knowledge"]
 mcp_dependencies: []
 skill_dependencies: []
@@ -12,7 +12,7 @@ skill_dependencies: []
 
 reference 模式中，先读取上下文。restriction_verification.status 为 needs_verification 时保留全部限制，停止商品检索和保存。若上下文明确提供非空 cooking_reference_candidates.items，只选择其中完整做法的编号，按 selection.meal_types 逐餐输出 {"candidate_meals":[{"meal_type":"所选餐次","candidate_ids":["本 Run 上下文编号"]}]}，每个编号只用一次；不改写内容或填入个人份量、营养、审核或采购信息。服务器装配来源整理稿及全部待核对项，结果是资料候选，不能当作已安排餐单或个人适用性确认。目录未覆盖全部所选餐次，或未提供候选目录时，用 questions 说明真实缺口，不索要用户已明确提供的事实，也不要求放宽限制。
 
-服务器指定 reference 模式时，只生成 selection.meal_types 所选餐次。先调用 get_reference_plan_context 读取授权档案与商城有货分类，根据用户消息和档案选择最多四类，再调用 find_reference_products 读取本 Run 的实际在售 SKU。首次调用 search_reference_recipes 优先一次传 queries 列出二至四个不同食材关键词；候选足够时一次调用 read_reference_recipe 的 recipes 打开最多三份原谱，仍缺合适做法时再补查。候选可能包含格式或采购待核对项，不能把候选当作已通过完整核对。根据档案限制、餐次和偏好选择候选，查看 recipe_check 中逐项食材状态。missing_product 表示本轮已读商品未匹配，按具体缺项补查有货分类后重新打开核对；needs_confirmation 表示身份尚未识别，应核对原文或改选可核对菜谱；needs_review 表示解析边界不明，不能据此声称知识库无资料。存在缺项时继续查找或换菜，不要直接结束为泛泛的资料不足，也不能把未购买的盐等调味料默认成用户家中已有。
+服务器指定 reference 模式时，只生成 selection.meal_types 所选餐次。先调用 get_reference_plan_context 读取授权档案与商城有货分类，根据用户消息和档案选择最多四类，再调用 find_reference_products 读取本 Run 的实际在售 SKU。回执若有 shared_data_issues，其中每条资料缺项都适用于本次返回的全部 SKU；商品图片不参与食材核对。首次调用 search_reference_recipes 优先一次传 queries 列出二至四个不同食材关键词；候选足够时一次调用 read_reference_recipe 的 recipes 打开最多三份原谱，仍缺合适做法时再补查。候选可能包含格式或采购待核对项，不能把候选当作已通过完整核对。根据档案限制、餐次和偏好选择候选，查看 recipe_check 中逐项食材状态。missing_product 表示本轮已读商品未匹配，按具体缺项补查有货分类后重新打开核对；needs_confirmation 表示身份尚未识别，应核对原文或改选可核对菜谱；needs_review 表示解析边界不明，不能据此声称知识库无资料。存在缺项时继续查找或换菜，不要直接结束为泛泛的资料不足，也不能把未购买的盐等调味料默认成用户家中已有。
 
 保存时首选 save_reference_meal_plan 的 read_selection 契约：明确传入 use_read_recipes=true、auto_purchase_matches=true；meals 逐餐提供 meal_type 和 dishes，每道菜只选择本 Run 已打开原谱的 file_id、chunk_id；purchase_items 只提供本 Run 已读 SKU 的 sku_id 和明确的整数包装 quantity。同一 SKU 合并包装数量，可对应多道菜；每个已匹配的必需食材都要选择对应 SKU。数量是采购包装数，不是个人食用量或配比，不能用营养目标倒推或编造。程序从本 Run 原始读取回执装配完整菜名、食材、步骤及精确采购对应，模型不要重抄或手填原文；不得同时提交顶层 meals、purchase_items、purchase_gaps，不提供食材配比、个人份量或营养值。
 
