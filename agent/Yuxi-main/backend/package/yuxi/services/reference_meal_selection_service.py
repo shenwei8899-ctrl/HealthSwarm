@@ -1,5 +1,6 @@
 """按本 Run 已打开的原谱装配参考稿，不让模型重写来源事实。"""
 
+from copy import deepcopy
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -58,6 +59,41 @@ class ReferenceReadSelection(HealthDTO):
         if len({item.sku_id for item in self.purchase_items}) != len(self.purchase_items):
             raise ValueError("相同规格须合并数量")
         return self
+
+
+class ReferenceTranslationCorrection(HealthDTO):
+    """只修正本 Run 已选择原谱的中文展示，不重新选择餐次或商品。"""
+
+    file_id: str = Field(min_length=1, max_length=64)
+    chunk_id: str = Field(min_length=1, max_length=128)
+    display_zh: RecipeChineseDisplay
+
+
+def apply_reference_translation_correction(original, corrections) -> dict:
+    """沿用首次保存的全部选择，只覆盖明确指定原谱的译文。"""
+    from yuxi.services.reference_meal_plan_types import ReferencePlanDraft
+
+    model = ReferenceReadSelection if "use_read_recipes" in original else ReferencePlanDraft
+    selected = deepcopy(original)
+    baseline = deepcopy(original)
+    for meal in baseline.get("meals", []):
+        if isinstance(meal, dict) and isinstance(meal.get("dishes"), list):
+            for dish in meal["dishes"]:
+                if isinstance(dish, dict):
+                    dish.pop("display_zh", None)
+    model.model_validate(baseline)
+    patches = [ReferenceTranslationCorrection.model_validate(item) for item in corrections]
+    if not patches or len({(item.file_id, item.chunk_id) for item in patches}) != len(patches):
+        raise HealthVisionError("reference_translation_correction_invalid", "译文修正须指定不重复的已选菜谱", 422)
+    dishes = {(dish["file_id"], dish["chunk_id"]) for meal in selected["meals"] for dish in meal["dishes"]}
+    if any((item.file_id, item.chunk_id) not in dishes for item in patches):
+        raise HealthVisionError("reference_translation_correction_invalid", "译文修正只能引用首次已选菜谱", 422)
+    displays = {(item.file_id, item.chunk_id): item.display_zh.model_dump(mode="json") for item in patches}
+    for meal in selected["meals"]:
+        for dish in meal["dishes"]:
+            if display := displays.get((dish["file_id"], dish["chunk_id"])):
+                dish["display_zh"] = display
+    return model.model_validate(selected).model_dump(mode="json")
 
 
 async def assemble_reference_selection(context, payload) -> "ReferencePlanDraft":

@@ -209,7 +209,14 @@ async def read_health_task_in_session(session, uid: str, request_id: str) -> Hea
     if terminal in error_codes:
         code = (
             run.error_type
-            if run is not None and run.error_type in {"budget_price_unavailable", "budget_exceeded"}
+            if run is not None
+            and run.error_type
+            in {
+                "budget_price_unavailable",
+                "budget_exceeded",
+                "reference_translation_correction_invalid",
+                "reference_save_correction_exhausted",
+            }
             else error_codes[terminal]
         )
         response.result = HealthTaskError(code=code)

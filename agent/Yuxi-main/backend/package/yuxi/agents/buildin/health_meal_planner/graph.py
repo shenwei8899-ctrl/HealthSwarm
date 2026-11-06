@@ -51,20 +51,29 @@ class ReferenceContextMiddleware(AgentMiddleware):
         if tools == REFERENCE_TOOLS:
             current = request.state.get("messages", [])
             start = next((i for i in range(len(current) - 1, -1, -1) if isinstance(current[i], HumanMessage)), None)
-            if start is None or current[start].additional_kwargs.get("health_request_id") != request.runtime.context.request_id:
+            if (
+                start is None
+                or current[start].additional_kwargs.get("health_request_id") != request.runtime.context.request_id
+            ):
                 raise HealthVisionError("reference_request_mismatch", "当前配餐轮次无法核对", 409)
-            receipts = [m for m in current[start + 1:] if isinstance(m, ToolMessage) and m.name == "get_reference_plan_context"]
+            receipts = [
+                m for m in current[start + 1 :] if isinstance(m, ToolMessage) and m.name == "get_reference_plan_context"
+            ]
             if not any(m.status == "success" for m in receipts):
                 if receipts:
                     raise HealthVisionError("reference_context_unavailable", "当前档案和商城分类读取失败，请重试", 409)
-                context_tools = [tool for tool in request.tools if getattr(tool, "name", None) == "get_reference_plan_context"]
+                context_tools = [
+                    tool for tool in request.tools if getattr(tool, "name", None) == "get_reference_plan_context"
+                ]
                 if not context_tools:
                     raise HealthVisionError("reference_context_unavailable", "配餐资料读取工具暂不可用", 503)
-                return await handler(request.override(
-                    tools=context_tools,
-                    tool_choice={"type": "function", "function": {"name": "get_reference_plan_context"}},
-                    model_settings={**request.model_settings, "parallel_tool_calls": False},
-                ))
+                return await handler(
+                    request.override(
+                        tools=context_tools,
+                        tool_choice={"type": "function", "function": {"name": "get_reference_plan_context"}},
+                        model_settings={**request.model_settings, "parallel_tool_calls": False},
+                    )
+                )
         return await handler(request)
 
 
@@ -88,16 +97,23 @@ class MealPlanResultMiddleware(AgentMiddleware):
             if tools == REFERENCE_TOOLS:
                 messages = request.state.get("messages", [])
                 save_failure = reference_save_failure_index(messages, request.runtime.context.request_id)
+                save_error_code = (
+                    json.loads(messages[save_failure].content).get("error_code") if save_failure is not None else None
+                )
                 if save_failure is not None:
-                    if json.loads(messages[save_failure].content).get("error_code") == "reference_quote_invalid":
+                    if save_error_code == "reference_quote_invalid":
                         correction_kind = "quote"
+                    elif save_error_code in {"recipe_translation_missing", "recipe_translation_invalid"}:
+                        correction_kind = "translation"
                     if "save_reference_meal_plan" not in {getattr(tool, "name", None) for tool in request.tools}:
                         raise HealthVisionError(
                             f"reference_{correction_kind}_correction_invalid", "餐单保存修正工具当前不可用", 422
                         )
                     if any(isinstance(message, AIMessage) for message in messages[save_failure + 1 :]):
                         raise HealthVisionError(
-                            f"reference_{correction_kind}_correction_exhausted",
+                            "reference_translation_correction_invalid"
+                            if correction_kind == "translation"
+                            else f"reference_{correction_kind}_correction_exhausted",
                             "餐单保存修正未完成，本轮已停止，请重新生成",
                             422,
                         )
@@ -127,11 +143,14 @@ class MealPlanResultMiddleware(AgentMiddleware):
                             else ""
                         )
                         + (
-                            "餐单保存校验失败，按最新真实工具反馈修正；原文、采购对应、中文译文各仅有一次修正机会。按反馈纠正餐次、规格或食材采购对应，"
-                            "每种食材原文必须且只能对应一个采购商品或一条真实未选原因；不编造商品或原因。"
-                            "菜名、食材、步骤及可选引句仍只从本 Run 已读取原文逐字复制，不翻译、改写或规范化；"
-                            "若反馈中文译文错误，只修正display_zh中的对应中文，保留原文、数量、单位及逐项顺序；"
-                            "只调用一次保存工具，不执行其他工具。"
+                            "餐单中文译文校验失败。本次只调用一次save_reference_meal_plan，且只提交translation_correction："
+                            "列出需修正的首次已选菜谱file_id、chunk_id和完整display_zh。"
+                            "首次保存的餐次、菜谱、商品及数量由服务端保留；不得重新提交read_selection、meals或purchase_items。"
+                            "按真实错误定位译文，保持原文数量、时间、单位和步骤顺序。"
+                            if save_error_code in {"recipe_translation_missing", "recipe_translation_invalid"}
+                            else "餐单保存校验失败，按最新真实工具反馈修正；"
+                            "原文、采购对应、中文译文各仅有一次修正机会。"
+                            "按反馈纠正餐次、规格或食材采购对应，不编造商品或原因；只调用一次保存工具。"
                             if save_failure is not None
                             else ""
                         )
@@ -178,9 +197,12 @@ class MealPlanResultMiddleware(AgentMiddleware):
                 or message.tool_calls[0]["name"] != "save_reference_meal_plan"
             )
         ):
+            error_code = json.loads(state["messages"][save_failure].content).get("error_code")
             kind = (
                 "quote"
-                if json.loads(state["messages"][save_failure].content).get("error_code") == "reference_quote_invalid"
+                if error_code == "reference_quote_invalid"
+                else "translation"
+                if error_code in {"recipe_translation_missing", "recipe_translation_invalid"}
                 else "save"
             )
             raise HealthVisionError(
@@ -231,7 +253,10 @@ class MealPlanResultMiddleware(AgentMiddleware):
             return None
 
         required_tools = {
-            "find_reference_products", "search_reference_recipes", "read_reference_recipe", "save_reference_meal_plan"
+            "find_reference_products",
+            "search_reference_recipes",
+            "read_reference_recipe",
+            "save_reference_meal_plan",
         }
         allowed = {getattr(tool, "name", None) for tool in request.tools} & required_tools
         if not calls or any(call["name"] not in allowed or call["args"] != {} for call in calls):

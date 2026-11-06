@@ -342,7 +342,10 @@ async def test_final_requires_authoritative_complete_regular_message(monkeypatch
 async def test_uncompleted_query_never_reads_partial_answer_or_error_text(monkeypatch, status, healthy_task_runtime):
     """状态查询不公开部分模型结果及上游错误正文。"""
     request = SimpleNamespace(
-        request_id="request", agent_slug="health-consultation", conversation_thread_id=THREAD, status="dispatched"
+        request_id="request",
+        agent_slug="health-consultation",
+        conversation_thread_id=THREAD,
+        status="dispatched",
     )
     binding = SimpleNamespace(member_id=MEMBER)
     run = SimpleNamespace(id="run", status=status, error_type=None, error_message="private health text")
@@ -485,11 +488,22 @@ async def test_ordinary_preview_requires_current_same_run_receipt_and_full_proje
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("code", ["budget_price_unavailable", "budget_exceeded"])
-async def test_terminal_budget_error_keeps_safe_type_not_private_upstream_text(monkeypatch, code, healthy_task_runtime):
-    """真实任务投影保留预算失败类型，同时禁止回传上游原始错误。"""
+@pytest.mark.parametrize(
+    "code",
+    [
+        "budget_price_unavailable",
+        "budget_exceeded",
+        "reference_translation_correction_invalid",
+        "reference_save_correction_exhausted",
+    ],
+)
+async def test_terminal_error_keeps_safe_type_not_private_upstream_text(monkeypatch, code, healthy_task_runtime):
+    """真实任务投影保留固定失败类型，同时禁止回传上游原始错误。"""
     request = SimpleNamespace(
-        request_id="request", agent_slug="health-consultation", conversation_thread_id=THREAD, status="dispatched"
+        request_id="request",
+        agent_slug="health-meal-planner" if code.startswith("reference_") else "health-consultation",
+        conversation_thread_id=THREAD,
+        status="dispatched",
     )
     binding = SimpleNamespace(member_id=MEMBER)
     run = SimpleNamespace(id="run", status="failed", error_type=code, error_message="private-provider-detail")
@@ -505,7 +519,10 @@ async def test_terminal_budget_error_keeps_safe_type_not_private_upstream_text(m
         lambda _: SimpleNamespace(request_context=AsyncMock(return_value=(request, binding, run))),
     )
     result = await service.read_health_task("actor", "request")
-    healthy_task_runtime.assert_awaited_once_with("session", "actor", {"request_id": "request"})
+    if code.startswith("reference_"):
+        healthy_task_runtime.assert_not_awaited()
+    else:
+        healthy_task_runtime.assert_awaited_once_with("session", "actor", {"request_id": "request"})
     assert result.recorded_meals == []
     assert result.result.code == code and result.result.retryable is False
     assert "private-provider-detail" not in result.model_dump_json()

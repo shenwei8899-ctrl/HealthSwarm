@@ -1276,7 +1276,9 @@ async def stream_agent_chat(
                         and _is_root_tool_audit_event(event_payload, thread_id)
                     ):
                         await tool_audit.consume(event_payload)
-                        if withhold_health_output and (phase := health_catalog_tool_phase(event_payload)):
+                        if (withhold_health_output or agent_item.slug == PLANNER_SLUG) and (
+                            phase := health_catalog_tool_phase(event_payload)
+                        ):
                             yield make_chunk(status="health_progress", phase=phase, meta=meta)
                     if withhold_health_output:
                         continue
@@ -1413,7 +1415,14 @@ async def stream_agent_chat(
 
         error_type = (
             e.code
-            if isinstance(e, HealthVisionError) and e.code in {"budget_exceeded", "budget_price_unavailable"}
+            if isinstance(e, HealthVisionError)
+            and e.code
+            in {
+                "budget_exceeded",
+                "budget_price_unavailable",
+                "reference_translation_correction_invalid",
+                "reference_save_correction_exhausted",
+            }
             else "unexpected_error"
         )
 
@@ -1575,7 +1584,9 @@ async def stream_agent_resume(
                         and _is_root_tool_audit_event(event_payload, thread_id)
                     ):
                         await tool_audit.consume(event_payload)
-                        if withhold_health_output and (phase := health_catalog_tool_phase(event_payload)):
+                        if (withhold_health_output or agent_item.slug == PLANNER_SLUG) and (
+                            phase := health_catalog_tool_phase(event_payload)
+                        ):
                             yield make_resume_chunk(status="health_progress", phase=phase, meta=meta)
                     if withhold_health_output:
                         continue
@@ -1725,7 +1736,14 @@ async def stream_agent_resume(
 
         error_type = (
             e.code
-            if isinstance(e, HealthVisionError) and e.code in {"budget_exceeded", "budget_price_unavailable"}
+            if isinstance(e, HealthVisionError)
+            and e.code
+            in {
+                "budget_exceeded",
+                "budget_price_unavailable",
+                "reference_translation_correction_invalid",
+                "reference_save_correction_exhausted",
+            }
             else "resume_error"
         )
 

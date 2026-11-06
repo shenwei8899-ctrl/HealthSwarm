@@ -237,9 +237,15 @@ async def find_reference_products(context, category_codes):
 
 async def search_reference_recipes(context, query):
     """用本 Run 已读商品检索相关菜谱，保留格式和采购待核对项。"""
-    if not isinstance(query, str) or not 1 <= len(query.strip()) <= 80:
+    batch = isinstance(query, list)
+    queries = query if batch else [query]
+    if (
+        not 1 <= len(queries) <= 4
+        or any(not isinstance(value, str) or not 1 <= len(value.strip()) <= 80 for value in queries)
+        or len({value.strip() for value in queries}) != len(queries)
+    ):
         raise HealthVisionError("knowledge_query_invalid", "请使用简短菜名或食材关键词", 422)
-    from yuxi.services.reference_recipe_index import purchasable_reference_recipes
+    from yuxi.services.reference_recipe_index import purchasable_reference_recipes, purchasable_reference_recipes_batch
 
     async with pg_manager.get_async_session_context() as session:
         run, binding = await require_planner_run(session, context)
@@ -248,8 +254,28 @@ async def search_reference_recipes(context, query):
         if not reads:
             raise HealthVisionError("reference_product_required", "请先按商城分类读取在售商品", 409)
         products = {str(sku["sku_id"]): sku for read in reads for sku in read.get("catalog", [])}
-        items = await purchasable_reference_recipes(session, list(products.values()), query)
-    return {"scope": "reference_recipe_search", "status": "ok", "items": items}
+        items, seen = [], set()
+        ranked = (
+            await purchasable_reference_recipes_batch(session, list(products.values()), queries)
+            if batch
+            else [await purchasable_reference_recipes(session, list(products.values()), queries[0])]
+        )
+        for matches in ranked:
+            for item in matches:
+                key = (item["file_id"], item["chunk_id"])
+                if key not in seen:
+                    items.append(item)
+                    seen.add(key)
+                    if len(items) == 9:
+                        break
+            if len(items) == 9:
+                break
+    return {
+        "scope": "reference_recipe_search",
+        "status": "ok",
+        "items": items,
+        **({"queries": queries} if batch else {}),
+    }
 
 
 async def recipe_document(session, file_id, chunk_id):
@@ -311,7 +337,13 @@ async def tool_payloads(session, run, tool_name):
             continue
         if audit.request_id != run.request_id or audit.conversation_id != run.conversation_id:
             raise HealthVisionError("reference_receipt_invalid", "参考资料回执归属不一致", 409)
-        values.append(json.loads(audit.content))
+        payload = json.loads(audit.content)
+        if tool_name == "read_reference_recipe" and isinstance(payload, dict) and "items" in payload:
+            if not isinstance(payload["items"], list) or any(not isinstance(item, dict) for item in payload["items"]):
+                raise HealthVisionError("reference_receipt_invalid", "菜谱原文批量回执格式不正确", 409)
+            values.extend(payload["items"])
+        else:
+            values.append(payload)
     return values
 
 
@@ -875,9 +907,17 @@ async def validate_reference_tool_payload(session, context, binding, message):
                 if any(doc[k] != item[k] for k in ("filename", "file_hash", "chunks_hash")):
                     raise HealthVisionError("source_invalidated", "参考检索来源已变化", 410)
         elif name == "read_reference_recipe":
-            fresh = await recipe_document(session, payload["file_id"], payload["chunk_id"])
-            if not same_reference_document(fresh, payload):
-                raise HealthVisionError("source_invalidated", "恢复时菜谱原文已变化", 410)
+            reads = payload.get("items") if isinstance(payload, dict) and "items" in payload else [payload]
+            if (
+                not isinstance(reads, list)
+                or not 1 <= len(reads) <= 3
+                or any(not isinstance(read, dict) for read in reads)
+            ):
+                raise HealthVisionError("source_invalidated", "菜谱原文回执无法解析", 410)
+            for read in reads:
+                fresh = await recipe_document(session, read["file_id"], read["chunk_id"])
+                if not same_reference_document(fresh, read):
+                    raise HealthVisionError("source_invalidated", "恢复时菜谱原文已变化", 410)
         elif payload != await reference_result_in_session(session, original, binding, payload["preview_id"]):
             raise HealthVisionError("source_invalidated", "参考餐单保存回执已变化", 410)
     except (KeyError, TypeError, ValueError):

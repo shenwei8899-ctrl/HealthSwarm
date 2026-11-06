@@ -14,6 +14,17 @@ from yuxi.storage.postgres.models_knowledge import KnowledgeChunk, KnowledgeFile
 
 async def purchasable_reference_recipes(session, products: list[dict], query: str, limit: int = 9) -> list[dict]:
     """相关菜谱允许有待核对项；原文读取与保存仍需独立验证。"""
+    return rank_reference_recipes(await reference_recipe_rows(session), products, query, limit)
+
+
+async def purchasable_reference_recipes_batch(session, products: list[dict], queries: list[str]) -> list[list[dict]]:
+    """批量关键词共用一次已授权菜谱行读取，逐词独立排序。"""
+    rows = await reference_recipe_rows(session)
+    return [rank_reference_recipes(rows, products, query, limit=3) for query in queries]
+
+
+async def reference_recipe_rows(session):
+    """读取固定知识库中可用于参考餐单的真实菜谱分片。"""
     rows = (
         await session.execute(
             select(
@@ -34,7 +45,7 @@ async def purchasable_reference_recipes(session, products: list[dict], query: st
             .order_by(KnowledgeFile.file_id, KnowledgeChunk.chunk_index, KnowledgeChunk.id)
         )
     ).all()
-    return rank_reference_recipes(rows, products, query, limit)
+    return rows
 
 
 def rank_reference_recipes(rows, products: list[dict], query: str, limit: int = 9) -> list[dict]:

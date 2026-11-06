@@ -40,7 +40,7 @@ from yuxi.services.reference_meal_plan_types import (
     ReferencePurchaseGap,
     ReferencePurchaseItem,
 )
-from yuxi.services.reference_meal_selection_service import ReferenceReadSelection
+from yuxi.services.reference_meal_selection_service import ReferenceReadSelection, ReferenceTranslationCorrection
 from yuxi.services.reference_recipe_matching import ingredient_food, parse_reference_recipe, product_food
 
 BACKEND = Path(__file__).resolve().parents[3]
@@ -86,6 +86,7 @@ def selected_tool():
         "ReferencePurchaseGap": ReferencePurchaseGap,
         "ReferencePlanDraft": ReferencePlanDraft,
         "ReferenceReadSelection": ReferenceReadSelection,
+        "ReferenceTranslationCorrection": ReferenceTranslationCorrection,
         "REFERENCE_TOOLS": REFERENCE_TOOLS,
         "AIMessage": AIMessage,
         "HumanMessage": HumanMessage,
@@ -113,7 +114,11 @@ def selected_tool():
         for node in tree.body
         if isinstance(node, ast.Assign)
         and any(
-            isinstance(target, ast.Attribute) and target.attr == "handle_validation_error" for target in node.targets
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "save_reference_meal_plan"
+            and target.attr == "handle_validation_error"
+            for target in node.targets
         )
     )
     exec(compile(ast.Module(body=[assignment], type_ignores=[]), "<production-validation-handler>", "exec"), namespace)

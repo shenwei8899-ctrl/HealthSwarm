@@ -1,7 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { createHealthEventParser, subscribeHealthEvents } from '../src/services/health-events.js'
+import { createHealthEventParser, subscribeHealthEvents, HEALTH_PROGRESS_LABELS } from '../src/services/health-events.js'
+
+test('reference meal phases use fixed public labels', () => {
+  assert.equal(HEALTH_PROGRESS_LABELS.searching_recipes, '正在查找合适的菜谱')
+  assert.equal(HEALTH_PROGRESS_LABELS.reading_recipes, '正在核对菜谱原文和食材')
+  assert.equal(HEALTH_PROGRESS_LABELS.saving_meal_plan, '正在核对并保存餐单')
+})
 import { createHealthTaskFlow } from '../src/services/health-task-flow.js'
 
 test('分类选品进度只接收固定阶段，不把工具正文或任意提示显示给用户',()=>{

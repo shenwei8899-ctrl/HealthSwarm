@@ -174,7 +174,11 @@ def test_keyword_search_matches_its_service_trim_and_length_boundary(search, max
     with pytest.raises(ValidationError):
         search.args_schema.model_validate({"runtime": runtime(), "query": "粥" * (maximum + 1)})
     public = search.tool_call_schema.model_json_schema()
-    assert "query" in public["required"] and "runtime" not in public["properties"]
+    assert "runtime" not in public["properties"]
+    if search.name == search_reference_recipes.name:
+        assert {"query", "queries"} <= set(public["properties"])
+    else:
+        assert "query" in public["required"]
 
 
 @pytest.mark.parametrize("search", [query_family_nutrition_knowledge, query_reviewed_nutrition_knowledge])

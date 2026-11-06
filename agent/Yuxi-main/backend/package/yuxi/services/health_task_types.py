@@ -214,6 +214,8 @@ class HealthTaskError(HealthDTO):
         "execution_interrupted",
         "budget_price_unavailable",
         "budget_exceeded",
+        "reference_translation_correction_invalid",
+        "reference_save_correction_exhausted",
     ]
     retryable: Literal[False] = False
 

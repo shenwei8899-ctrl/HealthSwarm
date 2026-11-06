@@ -14,7 +14,11 @@ subagent presentation details.
 
 from __future__ import annotations
 
-from yuxi.repositories.health_consultation_repository import EDUCATION_HEALTH_AGENTS, HEALTH_AGENT_BACKENDS
+from yuxi.repositories.health_consultation_repository import (
+    EDUCATION_HEALTH_AGENTS,
+    HEALTH_AGENT_BACKENDS,
+    PLANNER_SLUG,
+)
 import asyncio
 import json
 import uuid
@@ -945,6 +949,8 @@ def _public_health_error(error_type: str | None) -> dict[str, str]:
         "worker_lease_expired": "咨询执行已停止，请重新咨询",
         "budget_exceeded": "健康 AI 费用账本已冻结，可使用人工录入",
         "budget_price_unavailable": "健康 AI 计费依据未就绪，可使用人工录入",
+        "reference_translation_correction_invalid": "餐单译文修正未通过，请重新生成餐单",
+        "reference_save_correction_exhausted": "餐单修正未通过，请重新生成餐单",
     }
     code = error_type if error_type in errors else "health_execution_failed"
     return {"type": code, "message": errors.get(code, "健康解释执行失败，请重新咨询")}
@@ -1133,6 +1139,7 @@ async def stream_agent_run_events(
                 last_seq = seq
                 event_type = event.get("event_type") or "message"
                 envelope = event.get("payload") or {}
+                planner_progress = False
                 if run.agent_slug in EDUCATION_HEALTH_AGENTS:
                     original_envelope = envelope
                     envelope = _public_health_run_event(run, event_type, envelope)
@@ -1152,7 +1159,23 @@ async def stream_agent_run_events(
                                 event="error",
                             )
                             return
-                if not verbose and run.agent_slug not in EDUCATION_HEALTH_AGENTS and isinstance(envelope, dict):
+                elif (
+                    run.agent_slug == PLANNER_SLUG
+                    and event_type == "custom"
+                    and isinstance(envelope, dict)
+                    and isinstance(envelope.get("payload"), dict)
+                    and envelope["payload"].get("name") == "yuxi.health_progress"
+                ):
+                    envelope = _public_health_run_event(run, event_type, envelope)
+                    if envelope is None:
+                        continue
+                    planner_progress = True
+                if (
+                    not verbose
+                    and run.agent_slug not in EDUCATION_HEALTH_AGENTS
+                    and not planner_progress
+                    and isinstance(envelope, dict)
+                ):
                     envelope = _compact_run_event_envelope(envelope)
                     if envelope is None:
                         continue

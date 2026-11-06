@@ -7,6 +7,8 @@ export const HEALTH_PROGRESS_LABELS = Object.freeze({
   choosing_categories: '正在结合健康资料选择商品分类', reading_products: '正在读取所选分类的商品',
   choosing_products: '正在根据商品资料挑选食材', selecting_products: '正在核对所选食材',
   preparing_answer: '正在整理食材推荐说明',
+  searching_recipes: '正在查找合适的菜谱', reading_recipes: '正在核对菜谱原文和食材',
+  saving_meal_plan: '正在核对并保存餐单',
 })
 
 /** 只接收公开健康增量契约；原始 messages、工具、推理与任意模型字段不可作为答复。 */

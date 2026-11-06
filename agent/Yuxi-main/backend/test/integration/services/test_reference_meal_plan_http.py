@@ -1185,6 +1185,30 @@ async def test_exact_cooking_title_is_not_displaced_by_clinical_semantic_hits(fa
     assert hits["items"][0]["parse_status"] == "parsed"
 
 
+async def test_batch_recipe_search_and_read_keep_current_run_receipts(family_profile_http, monkeypatch):
+    """多关键词去重后仅能打开实际命中原谱，批量读取回执供保存复核。"""
+    current = await setup_reference(family_profile_http, monkeypatch)
+    await add_recipe(current, "batch-second", "家常菜谱_大米粥.md", TEXT.replace("清粥", "大米粥"))
+    bound = await bind_reference(current, meal_types=["breakfast"])
+    context = await running_context(current, bound.json()["thread_id"])
+    hits = await service.search_reference_recipes(context, ["清粥", "大米"])
+    assert hits["queries"] == ["清粥", "大米"]
+    assert len({(item["file_id"], item["chunk_id"]) for item in hits["items"]}) == len(hits["items"])
+    await receipt(current[1], context, "search_reference_recipes", hits)
+    chosen = hits["items"][:2]
+    assert {item["file_id"] for item in chosen} == {"reference-file", "batch-second"}
+    opened = [await service.read_reference_recipe(context, item["file_id"], item["chunk_id"]) for item in chosen]
+    batch_receipt = await receipt(current[1], context, "read_reference_recipe", {"items": opened})
+    async with current[1]() as db:
+        run = await db.get(AgentRun, context.run_id)
+        stored = await service.tool_payloads(db, run, "read_reference_recipe")
+        _, binding = await service.require_planner_run(db, context)
+        await service.validate_reference_tool_payload(db, context, binding, batch_receipt)
+    assert [(item["file_id"], item["chunk_id"]) for item in stored] == [
+        (item["file_id"], item["chunk_id"]) for item in chosen
+    ]
+
+
 async def test_home_recipe_title_precedes_other_cooking_matches(family_profile_http, monkeypatch):
     """完整家常原谱不能被同食材但无法解析的烹饪摘要挤走。"""
     current = await setup_reference(family_profile_http, monkeypatch)

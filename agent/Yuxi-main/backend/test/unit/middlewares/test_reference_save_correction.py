@@ -111,7 +111,13 @@ async def test_real_sdk_corrects_duplicate_coverage_only_once(scenario, services
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "code", ["reference_duplicate_meals", "reference_duplicate_sku", "reference_purchase_coverage_invalid"]
+    "code",
+    [
+        "reference_duplicate_meals",
+        "reference_duplicate_sku",
+        "reference_purchase_coverage_invalid",
+        "recipe_translation_invalid",
+    ],
 )
 async def test_current_validation_failure_cannot_be_ignored_or_retried_twice(code, services):
     """各供应商均受同一次预算约束；已知失败后不能直接输出正文完成。"""
@@ -129,10 +135,20 @@ async def test_current_validation_failure_cannot_be_ignored_or_retried_twice(cod
     handler = AsyncMock(return_value=ModelResponse(result=[AIMessage("未经保存的完成声明")]))
     middleware = MealPlanResultMiddleware()
     request = original.request_for(messages)
-    with pytest.raises(HealthVisionError, match="reference_save_correction_invalid"):
+    invalid = (
+        "reference_translation_correction_invalid"
+        if code == "recipe_translation_invalid"
+        else "reference_save_correction_invalid"
+    )
+    exhausted = (
+        "reference_translation_correction_invalid"
+        if code == "recipe_translation_invalid"
+        else "reference_save_correction_exhausted"
+    )
+    with pytest.raises(HealthVisionError, match=invalid):
         await middleware.aafter_model({"messages": [*messages, AIMessage("未经保存的完成声明")]}, request.runtime)
     request = original.request_for([*messages, AIMessage("", tool_calls=[{**call, "id": "second-save"}])])
-    with pytest.raises(HealthVisionError, match="reference_save_correction_exhausted"):
+    with pytest.raises(HealthVisionError, match=exhausted):
         await middleware.awrap_model_call(request, handler)
     handler.assert_not_awaited()
 

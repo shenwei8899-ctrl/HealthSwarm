@@ -17,6 +17,9 @@ HEALTH_PROGRESS_MESSAGES = {
     "choosing_products": "正在根据商品资料挑选食材",
     "selecting_products": "正在核对所选食材",
     "preparing_answer": "正在整理食材推荐说明",
+    "searching_recipes": "正在查找合适的菜谱",
+    "reading_recipes": "正在核对菜谱原文和食材",
+    "saving_meal_plan": "正在核对并保存餐单",
 }
 
 
@@ -34,6 +37,11 @@ def health_catalog_tool_phase(event):
         "get_food_categories": ("reading_categories", "choosing_categories"),
         "find_food_packages": ("reading_products", "choosing_products"),
         "select_food_products": ("selecting_products", "preparing_answer"),
+        "get_reference_plan_context": ("reading_profile", "choosing_categories"),
+        "find_reference_products": ("reading_products", "searching_recipes"),
+        "search_reference_recipes": ("searching_recipes", "reading_recipes"),
+        "read_reference_recipe": ("reading_recipes", "saving_meal_plan"),
+        "save_reference_meal_plan": ("saving_meal_plan", "validating"),
     }
     if not isinstance(name, str) or name not in stages:
         return None

@@ -833,7 +833,7 @@ async def test_reference_serial_tool_setting_reaches_real_openai_wire_only_durin
         assert "parallel_tool_calls" not in wire.get("extra_body", {})
         functions = {tool["function"]["name"]: tool["function"] for tool in wire["tools"]}
         assert list(functions) == list(REFERENCE_TOOLS)
-        assert "query" in functions["search_reference_recipes"]["parameters"]["required"]
+        assert {"query", "queries"} <= set(functions["search_reference_recipes"]["parameters"]["properties"])
         assert result.result[0].tool_calls == [
             {
                 "id": "synthetic-search",

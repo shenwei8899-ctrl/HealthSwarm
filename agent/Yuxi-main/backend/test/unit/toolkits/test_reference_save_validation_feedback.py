@@ -15,14 +15,16 @@ from pydantic import Field, ValidationError
 
 from yuxi.agents.buildin.health_meal_planner.graph import MealPlanResultMiddleware
 from yuxi.agents.toolkits.meal_planner import (
+    ReferencePlanToolInput,
     read_reference_recipe,
     reference_quote_failure_index,
     reference_save_failure_index,
     save_reference_meal_plan,
 )
-from yuxi.services import health_meal_plan_service, reference_meal_plan_service
+from yuxi.services import health_meal_plan_service, reference_meal_plan_service, reference_meal_selection_service
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.reference_meal_plan_types import REFERENCE_TOOLS, ReferencePlanDraft
+from yuxi.services.reference_meal_selection_service import apply_reference_translation_correction
 
 
 @dataclass
@@ -111,6 +113,177 @@ def failure(call_id="invalid", *, quote=False, **updates):
     return ToolMessage(
         name=save_reference_meal_plan.name, tool_call_id=call_id, status="error", content=json.dumps(payload)
     )
+
+
+def read_selection():
+    """三餐首次选择与译文修正测试仅使用合成来源。"""
+    return {
+        "use_read_recipes": True,
+        "auto_purchase_matches": True,
+        "meals": [
+            {
+                "meal_type": meal,
+                "dishes": [{"file_id": f"file-{meal}", "chunk_id": "chunk", "cooking_minutes": 15}],
+            }
+            for meal in ("breakfast", "lunch", "dinner")
+        ],
+        "purchase_items": [{"sku_id": "synthetic-sku", "quantity": 1}],
+    }
+
+
+def translation_patch(meal="lunch"):
+    """只提交一份既有菜谱的展示译文。"""
+    return {
+        "file_id": f"file-{meal}",
+        "chunk_id": "chunk",
+        "display_zh": {
+            "name": "合成菜谱",
+            "ingredients": ["合成食材 1 份"],
+            "steps": ["合成制作 15 分钟"],
+        },
+    }
+
+
+def test_translation_patch_keeps_first_meals_and_purchase():
+    """修正只改变指定译文，遗漏早餐或改 SKU 都不能重写首次选择。"""
+    original = read_selection()
+    corrected = apply_reference_translation_correction(original, [translation_patch()])
+    assert [meal["meal_type"] for meal in corrected["meals"]] == ["breakfast", "lunch", "dinner"]
+    assert corrected["purchase_items"] == original["purchase_items"]
+    assert corrected["meals"][1]["dishes"][0]["display_zh"]["name"] == "合成菜谱"
+    assert "display_zh" not in original["meals"][1]["dishes"][0]
+    with pytest.raises(HealthVisionError, match="reference_translation_correction_invalid"):
+        apply_reference_translation_correction(original, [translation_patch("snack")])
+    with pytest.raises(HealthVisionError, match="reference_translation_correction_invalid"):
+        apply_reference_translation_correction(original, [translation_patch(), translation_patch()])
+    runtime = ToolRuntime({}, SaveContext(), {}, lambda _: None, "synthetic", None)
+    ReferencePlanToolInput.model_validate({"runtime": runtime, "translation_correction": [translation_patch()]})
+    with pytest.raises(ValidationError):
+        ReferencePlanToolInput.model_validate(
+            {"runtime": runtime, "read_selection": original, "translation_correction": [translation_patch()]}
+        )
+
+
+@pytest.mark.asyncio
+async def test_real_tool_node_repairs_malformed_first_translation_without_changing_meals(monkeypatch):
+    """首次译文缺步骤时工具回执可修正，原三餐与采购保持首次选择。"""
+    original = read_selection()
+    original["meals"][1]["dishes"][0]["display_zh"] = {
+        "name": "合成菜谱",
+        "ingredients": ["合成食材 1 份"],
+        "steps": [],
+    }
+    context = SaveContext()
+    graph = StateGraph(MessagesState, context_schema=SaveContext)
+    graph.add_node("tools", ToolNode([save_reference_meal_plan]))
+    graph.add_edge(START, "tools")
+    graph.add_edge("tools", END)
+    compiled = graph.compile()
+    assemble = AsyncMock(return_value={"synthetic": "draft"})
+    save = AsyncMock(return_value={"preview_id": "synthetic-preview"})
+    monkeypatch.setattr(reference_meal_selection_service, "assemble_reference_selection", assemble)
+    monkeypatch.setattr(reference_meal_plan_service, "save_reference_plan", save)
+
+    first = await compiled.ainvoke(
+        {
+            "messages": [
+                HumanMessage("合成三餐", additional_kwargs={"health_request_id": context.request_id}),
+                declared("first", {"read_selection": original}),
+            ]
+        },
+        context=context,
+    )
+    failed = first["messages"][-1]
+    assert failed.status == "error"
+    assert json.loads(failed.content)["error_code"] == "recipe_translation_invalid"
+    save.assert_not_awaited()
+
+    second = await compiled.ainvoke(
+        {"messages": [*first["messages"], declared("retry", {"translation_correction": [translation_patch()]})]},
+        context=context,
+    )
+    assert json.loads(second["messages"][-1].content) == {"preview_id": "synthetic-preview"}
+    corrected = assemble.await_args.args[1]
+    assert [meal["meal_type"] for meal in corrected["meals"]] == ["breakfast", "lunch", "dinner"]
+    assert corrected["purchase_items"] == original["purchase_items"]
+    assert corrected["meals"][1]["dishes"][0]["display_zh"]["steps"] == ["合成制作 15 分钟"]
+    save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_translation_retry_uses_first_selection_only(monkeypatch):
+    """实际 ToolRuntime 修正路径从同一请求失败声明取回首次三餐。"""
+    context = SaveContext()
+    patch = translation_patch()
+    messages = [
+        HumanMessage("合成三餐", additional_kwargs={"health_request_id": context.request_id}),
+        declared("first", {"read_selection": read_selection()}),
+        failure("first", error_code="recipe_translation_invalid", request_id=context.request_id, retryable=True),
+        declared("retry", {"translation_correction": [patch]}),
+    ]
+    assemble = AsyncMock(return_value={"synthetic": "draft"})
+    save = AsyncMock(return_value={"preview_id": "synthetic-preview"})
+    monkeypatch.setattr(reference_meal_selection_service, "assemble_reference_selection", assemble)
+    monkeypatch.setattr(reference_meal_plan_service, "save_reference_plan", save)
+    runtime = ToolRuntime({"messages": messages}, context, {}, lambda _: None, "retry", None)
+    result = await save_reference_meal_plan.coroutine(runtime=runtime, translation_correction=[patch])
+    assert result == {"preview_id": "synthetic-preview"}
+    assert [meal["meal_type"] for meal in assemble.call_args.args[1]["meals"]] == ["breakfast", "lunch", "dinner"]
+    assert assemble.call_args.args[1]["purchase_items"] == read_selection()["purchase_items"]
+    save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_legacy_translation_retry_preserves_original_quotes_and_purchase(monkeypatch):
+    """旧版完整稿也只修译文，原文和采购不交回模型重写。"""
+    original = draft()
+    original["meals"][0]["dishes"][0]["display_zh"] = {
+        "name": "合成清粥",
+        "ingredients": ["合成大米"],
+        "steps": [],
+    }
+    patch = {
+        "file_id": "synthetic-file",
+        "chunk_id": "synthetic-chunk",
+        "display_zh": {"name": "合成清粥", "ingredients": ["合成大米"], "steps": ["合成煮粥"]},
+    }
+    context = SaveContext()
+    messages = [
+        HumanMessage("合成早餐", additional_kwargs={"health_request_id": context.request_id}),
+        declared("first", {**original, "read_selection": None, "translation_correction": None}),
+        failure("first", error_code="recipe_translation_invalid", request_id=context.request_id, retryable=True),
+        declared("retry", {"translation_correction": [patch]}),
+    ]
+    save = AsyncMock(return_value={"preview_id": "synthetic-preview"})
+    monkeypatch.setattr(reference_meal_plan_service, "save_reference_plan", save)
+    runtime = ToolRuntime({"messages": messages}, context, {}, lambda _: None, "retry", None)
+    await save_reference_meal_plan.coroutine(runtime=runtime, translation_correction=[patch])
+    corrected = save.await_args.args[1]
+    assert corrected["meals"][0]["dishes"][0]["steps"] == original["meals"][0]["dishes"][0]["steps"]
+    assert corrected["purchase_items"] == original["purchase_items"]
+    assert corrected["meals"][0]["dishes"][0]["display_zh"]["steps"] == ["合成煮粥"]
+
+
+@pytest.mark.asyncio
+async def test_second_semantic_translation_failure_is_typed_terminal_error(monkeypatch):
+    """修正后仍不符原文时返回固定终态，不退回模糊执行失败。"""
+    context = SaveContext()
+    patch = translation_patch()
+    messages = [
+        HumanMessage("合成三餐", additional_kwargs={"health_request_id": context.request_id}),
+        declared("first", {"read_selection": read_selection()}),
+        failure("first", error_code="recipe_translation_invalid", request_id=context.request_id, retryable=True),
+        declared("retry", {"translation_correction": [patch]}),
+    ]
+    monkeypatch.setattr(reference_meal_selection_service, "assemble_reference_selection", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        reference_meal_plan_service,
+        "save_reference_plan",
+        AsyncMock(side_effect=HealthVisionError("recipe_translation_invalid", "synthetic private detail", 422)),
+    )
+    runtime = ToolRuntime({"messages": messages}, context, {}, lambda _: None, "retry", None)
+    with pytest.raises(HealthVisionError, match="reference_translation_correction_invalid"):
+        await save_reference_meal_plan.coroutine(runtime=runtime, translation_correction=[patch])
 
 
 @pytest.mark.asyncio

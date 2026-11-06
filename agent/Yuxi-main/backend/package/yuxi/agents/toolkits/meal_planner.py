@@ -17,8 +17,11 @@ from yuxi.services.reference_meal_plan_types import (
     ReferencePurchaseGap,
     ReferencePurchaseItem,
 )
-from yuxi.services.reference_meal_selection_service import ReferenceReadSelection
-from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.reference_meal_selection_service import (
+    ReferenceReadSelection,
+    ReferenceTranslationCorrection,
+)
+from yuxi.services.health_vision_types import HealthDTO, HealthVisionError
 
 
 class RecipeSearch(HealthReadInput):
@@ -28,20 +31,55 @@ class RecipeSearch(HealthReadInput):
 
 
 class ReferenceRecipeSearch(HealthReadInput):
-    """参考食谱要求 trim 后非空关键词，与受控检索服务保持相同边界。"""
+    """一次最多检索四个简短关键词，旧单词调用保持兼容。"""
 
-    query: str = Field(min_length=1, max_length=80, description="简短菜名或食材关键词，不传身份或病历正文")
+    query: str | None = Field(default=None, min_length=1, max_length=80)
+    queries: list[str] | None = Field(default=None, min_length=1, max_length=4)
+
+    @model_validator(mode="after")
+    def one_search_mode(self):
+        """同一调用只使用单词或批量模式。"""
+        if (self.query is None) == (self.queries is None):
+            raise ValueError("须提供单个query或一组queries")
+        if self.queries is not None and (
+            any(not isinstance(value, str) or not 1 <= len(value.strip()) <= 80 for value in self.queries)
+            or len({value.strip() for value in self.queries}) != len(self.queries)
+        ):
+            raise ValueError("菜谱关键词须非空、不重复且每项不超过80字")
+        return self
 
 
 class MealPlanToolInput(MealPlanSpec, HealthReadInput):
     """ToolNode注入身份；HTTP和模型JSON均不能提供运行对象。"""
 
 
-class ReferenceRecipeInput(HealthReadInput):
-    """文件必须来自当前固定资料库。"""
+class ReferenceRecipeRef(HealthDTO):
+    """一次批量原谱读取中的稳定文件与片段身份。"""
 
     file_id: str = Field(min_length=1, max_length=64)
     chunk_id: str = Field(min_length=1, max_length=128)
+
+
+class ReferenceRecipeInput(HealthReadInput):
+    """单份或批量打开本 Run 已检索的原谱。"""
+
+    file_id: str | None = Field(default=None, min_length=1, max_length=64)
+    chunk_id: str | None = Field(default=None, min_length=1, max_length=128)
+    recipes: list[ReferenceRecipeRef] | None = Field(default=None, min_length=1, max_length=3)
+
+    @model_validator(mode="after")
+    def one_read_mode(self):
+        """避免混合参数或重复原谱绕过本 Run 来源检查。"""
+        if self.recipes is None:
+            if self.file_id is None or self.chunk_id is None:
+                raise ValueError("单份原谱必须同时提供文件和片段标识")
+        elif (
+            self.file_id is not None
+            or self.chunk_id is not None
+            or len({(item.file_id, item.chunk_id) for item in self.recipes}) != len(self.recipes)
+        ):
+            raise ValueError("批量原谱不能混用单份参数或重复来源")
+        return self
 
 
 class ReferencePlanToolInput(HealthReadInput):
@@ -51,12 +89,18 @@ class ReferencePlanToolInput(HealthReadInput):
     purchase_items: list[ReferencePurchaseItem] | None = Field(default=None, max_length=30)
     purchase_gaps: list[ReferencePurchaseGap] | None = Field(default=None, max_length=450)
     read_selection: ReferenceReadSelection | None = None
+    translation_correction: list[ReferenceTranslationCorrection] | None = Field(
+        default=None, min_length=1, max_length=15
+    )
 
     @model_validator(mode="after")
     def explicit_mode(self):
         """两种输入都沿用原参考稿校验，不接受不完整的混合请求。"""
         values = (self.meals, self.purchase_items, self.purchase_gaps)
-        if self.read_selection is not None:
+        if self.translation_correction is not None:
+            if self.read_selection is not None or any(value is not None for value in values):
+                raise ValueError("译文修正不能改变餐次、菜谱或采购选择")
+        elif self.read_selection is not None:
             if any(value is not None for value in values):
                 raise ValueError("已读原谱选择不能同时提供原文副本或采购对应")
         elif any(value is None for value in values):
@@ -95,19 +139,36 @@ async def find_reference_products(category_codes: list[str], runtime: ToolRuntim
 
 
 @tool(category="health", display_name="检索参考菜谱", args_schema=ReferenceRecipeSearch)
-async def search_reference_recipes(query: str, runtime: ToolRuntime) -> dict:
+async def search_reference_recipes(
+    runtime: ToolRuntime, query: str | None = None, queries: list[str] | None = None
+) -> dict:
     """用已读商品检索相关食谱；候选允许有缺项，需打开完整原文核对。"""
     from yuxi.services.reference_meal_plan_service import search_reference_recipes as search
 
-    return await search(runtime.context, query)
+    return await search(runtime.context, queries if queries is not None else query)
+
+
+def reference_recipe_search_validation_error(_: ValidationError) -> str:
+    """给模型固定的单次或批量关键词纠错提示。"""
+    return "请提供非空query，或提供1至4个不重复的queries关键词。"
+
+
+search_reference_recipes.handle_validation_error = reference_recipe_search_validation_error
 
 
 @tool(category="health", display_name="读取参考菜谱原文", args_schema=ReferenceRecipeInput)
-async def read_reference_recipe(file_id: str, chunk_id: str, runtime: ToolRuntime) -> dict:
+async def read_reference_recipe(
+    runtime: ToolRuntime,
+    file_id: str | None = None,
+    chunk_id: str | None = None,
+    recipes: list[ReferenceRecipeRef] | None = None,
+) -> dict:
     """打开完整原文并逐项返回匹配、缺商品或待确认状态；缺项可补查分类。"""
     from yuxi.services.reference_meal_plan_service import read_reference_recipe as read
 
-    return await read(runtime.context, file_id, chunk_id)
+    if recipes is None:
+        return await read(runtime.context, file_id, chunk_id)
+    return {"items": [await read(runtime.context, item.file_id, item.chunk_id) for item in recipes]}
 
 
 @tool(category="health", display_name="保存日常参考餐单", args_schema=ReferencePlanToolInput)
@@ -117,19 +178,50 @@ async def save_reference_meal_plan(
     purchase_items: list | None = None,
     purchase_gaps: list | None = None,
     read_selection: dict | None = None,
+    translation_correction: list | None = None,
 ) -> dict | ToolMessage:
     """优先用read_selection选择本轮已打开原谱，程序装配完整原文后严格保存。"""
     from yuxi.services.reference_meal_plan_service import save_reference_plan
+    from yuxi.services.reference_meal_selection_service import (
+        apply_reference_translation_correction,
+        assemble_reference_selection,
+    )
 
+    translation_failure = None
     try:
-        if read_selection is not None:
-            from yuxi.services.reference_meal_selection_service import assemble_reference_selection
-
+        messages = runtime.state.get("messages", [])
+        translation_failure = reference_save_failure_index(
+            messages, runtime.context.request_id, error_code="recipe_translation_invalid"
+        )
+        if translation_correction is not None:
+            original = reference_translation_source(messages, translation_failure)
+            try:
+                selection = original.get("read_selection")
+                corrected = apply_reference_translation_correction(
+                    selection if selection is not None else original, translation_correction
+                )
+            except ValidationError as error:
+                raise HealthVisionError(
+                    "reference_translation_correction_invalid", "中文译文修正结构未通过校验", 422
+                ) from error
+            draft = (
+                await assemble_reference_selection(runtime.context, corrected) if selection is not None else corrected
+            )
+        elif translation_failure is not None:
+            raise HealthVisionError("reference_translation_correction_invalid", "译文修正只能提交原菜谱的中文译文", 422)
+        elif read_selection is not None:
             draft = await assemble_reference_selection(runtime.context, read_selection)
         else:
             draft = {"meals": meals, "purchase_items": purchase_items, "purchase_gaps": purchase_gaps}
         return await save_reference_plan(runtime.context, draft)
     except HealthVisionError as error:
+        if translation_failure is not None and error.code in {
+            "recipe_translation_missing",
+            "recipe_translation_invalid",
+        }:
+            raise HealthVisionError(
+                "reference_translation_correction_invalid", "中文译文修正后仍未通过原文校验", 422
+            ) from error
         tools = tuple(
             name for name in getattr(runtime.context, "tools", ()) if name != "query_family_nutrition_knowledge"
         )
@@ -171,6 +263,33 @@ async def save_reference_meal_plan(
                 ensure_ascii=False,
             ),
         )
+
+
+def reference_translation_source(messages, failure_index):
+    """从当前请求已校验的失败调用取回首次完整选择。"""
+    if failure_index is None:
+        raise HealthVisionError("reference_translation_correction_invalid", "本轮没有可修正的译文保存调用", 422)
+    failed = messages[failure_index]
+    for message in reversed(messages[:failure_index]):
+        if not isinstance(message, AIMessage):
+            continue
+        calls = [
+            call
+            for call in message.tool_calls
+            if call["id"] == failed.tool_call_id and call["name"] == "save_reference_meal_plan"
+        ]
+        if len(calls) == 1:
+            args = calls[0]["args"]
+            if isinstance(args.get("read_selection"), dict):
+                return {"read_selection": args["read_selection"]}
+            fields = ("meals", "purchase_items", "purchase_gaps")
+            if (
+                all(key in args for key in fields)
+                and args.get("read_selection") is None
+                and args.get("translation_correction") is None
+            ):
+                return {key: args[key] for key in fields}
+    raise HealthVisionError("reference_translation_correction_invalid", "首次餐单选择无法核对", 422)
 
 
 def reference_quote_failure_index(messages, request_id):
