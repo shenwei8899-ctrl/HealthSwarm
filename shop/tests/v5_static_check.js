@@ -68,7 +68,6 @@ const workspace = fs.readFileSync(path.join(addonRoot, 'application', 'admin', '
 const virtualFields = new Set([
   'shop_supplier.secret_configured', 'shop_supplier.secret_plaintext',
   'shop_integration_client.secret_configured', 'shop_integration_client.secret_plaintext',
-  'shop_supplier_application.location',
 ]);
 for (const line of workspace.split(/\r?\n/)) {
   const resource = line.match(/^\s*'[^']+'\s*=>\s*\$this->r\('([^']+)',\s*\[([^\]]*)\],\s*\[([^\]]*)\]/);
