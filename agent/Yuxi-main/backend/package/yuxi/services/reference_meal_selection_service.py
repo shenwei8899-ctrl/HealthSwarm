@@ -166,8 +166,8 @@ async def assemble_reference_selection(context, payload) -> "ReferencePlanDraft"
 
 
 def _purchase_choices(meals, selections, seen):
-    """按已读匹配生成准确原文对应，缺少包装数量和多余规格均拒绝。"""
-    from yuxi.services.reference_recipe_matching import reference_ingredient_matches
+    """按已读匹配生成原文对应；只剔除与原谱无关的模型附带规格。"""
+    from yuxi.services.reference_recipe_matching import ingredient_food, product_food, reference_ingredient_matches
 
     ingredients = tuple(
         dict.fromkeys(ingredient for meal in meals for dish in meal["dishes"] for ingredient in dish["ingredients"])
@@ -203,8 +203,19 @@ def _purchase_choices(meals, selections, seen):
             gaps.append({"ingredient": ingredient, "reason": reason, "detail": detail})
         else:
             raise HealthVisionError("reference_purchase_reason_invalid", "食材匹配状态无法核对", 422)
-    if any(not references for references in refs.values()):
-        raise HealthVisionError("reference_ingredient_mismatch", "所选规格未对应任何本次原谱食材", 422)
-    return [
-        {"sku_id": item.sku_id, "quantity": item.quantity, "ingredient_refs": refs[item.sku_id]} for item in selections
-    ], gaps
+    ingredient_foods = {ingredient_food(ingredient) for ingredient in ingredients}
+    ingredient_foods.discard(None)
+    for item in selections:
+        if refs[item.sku_id]:
+            continue
+        food = product_food(str(seen[item.sku_id].get("product_name") or ""))
+        if food is None or food in ingredient_foods:
+            raise HealthVisionError("reference_ingredient_mismatch", "所选规格无法核对，请检查食材或库存", 422)
+    items = [
+        {"sku_id": item.sku_id, "quantity": item.quantity, "ingredient_refs": refs[item.sku_id]}
+        for item in selections
+        if refs[item.sku_id]
+    ]
+    if not items:
+        raise HealthVisionError("reference_product_required", "菜品缺少已核对的商城食材，不能保存餐单", 422)
+    return items, gaps

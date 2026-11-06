@@ -12,7 +12,7 @@ Owner：backend/package/yuxi/services/reference_meal_selection_service.py
 
 ### 实现方案
 
-在既有保存工具增加明确选择 `use_read_recipes=true`、`auto_purchase_matches=true` 的输入。模型只选择餐次、本 Run 已打开的文件与分片、可选中文译文、估时及明确 SKU 包装数量。新 service 在当前授权 Run 内重读已完成的工具回执、完整原文和版本，以既有 parser 装配标准原文，以已读商品匹配结果装配采购对应和真实缺口。没有明确包装数量不猜测数量，未使用或未读取商品拒绝。
+在既有保存工具增加明确选择 `use_read_recipes=true`、`auto_purchase_matches=true` 的输入。模型只选择餐次、本 Run 已打开的文件与分片、可选中文译文、估时及明确 SKU 包装数量。新 service 在当前授权 Run 内重读已完成的工具回执、完整原文和版本，以既有 parser 装配标准原文，以已读商品匹配结果装配采购对应和真实缺口。没有明确包装数量不猜测数量，未读取商品拒绝；同一食材选择多个有效规格仍拒绝。与原谱食材无关的模型附带商品不进入采购建议，见[后续决策](2026-11-07-reference-unused-purchase-selection.md)。
 
 返回现有 `ReferencePlanDraft` 后仍调用原保存 service。原文版本、未核实章节、限制、译文、商品、库存与最终发布由既有 Owner 再次核验。缓存译文仅在来源及引句键一致并通过原译文校验时复用。新入口不接受显式原文，旧原文入口继续严格校验，不覆盖其错误输入。
 
@@ -28,7 +28,7 @@ Owner：backend/package/yuxi/services/reference_meal_selection_service.py
 |---|---|---|---|---|---|
 | 新入口只接收明确选菜及包装数量 | 混入模型原文或默认启用 | 新 service 的 HealthDTO | `pytest test/unit/services/test_reference_meal_selection.py` | 缺少两个明确开关、原文字段、重复餐次及 SKU 拒绝 | Passed |
 | 仅装配本 Run 已打开且未变的完整原文 | 跨 Run、未打开、源变化及附注失效仍通过 | 新 service 与原文 service | 同上；生产真实 Worker 三餐保存并回读 ready v1，单换晚餐 v2 且早午餐保留 | 未打开文件、变源、待核实章节拒绝 | Passed |
-| 采购对应和缺口来自真实匹配 | 漏填包装数、额外 SKU、忽略食材 | 新 service 与匹配及保存 Owner | 同上 | 缺少明确已匹配 SKU 数量、未读和未使用 SKU 拒绝 | Passed |
+| 采购对应和缺口来自真实匹配 | 漏填包装数、额外 SKU、忽略食材 | 新 service 与匹配及保存 Owner | 同上及后续决策 | 缺少明确已匹配 SKU 数量、未读和同食材多规格拒绝；无关 SKU 被剔除 | Passed |
 | 原保存及译文边界保留 | 新分支跳过旧校验或复用过期译文 | 原保存 service、translation service | unit；生产真实保存/回读；HTTP 当前 63 项分轮修复合并通过 | 英文无合法译文仍拒绝、错误缓存不作为有效译文 | Passed |
 
 当前后端 5609 个单元 case 经分轮修复和逐项收据合并全部通过，运行源码一致，并非单次全量全绿。生产最终结果及测试收据保存在 `agent/.tmp/miniapp-three-meals-20261106/` 的 `live-status-latest.json`、`units-current-combined-receipt.json` 与 `http-current-combined-receipt.json`。API/Worker `94220a0ad8ee` 和正式 H5 r2 `a42f03401889` 已部署健康，App 最终 1379/1379 通过，H5/MP 正式 r2 构建通过。
