@@ -1,3 +1,4 @@
+import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
 import {watch} from 'vue'
 import {createChatEntryTransition} from '../src/services/chat-entry-transition.js'
 import {createChatKeyboardLayout} from '../src/services/chat-keyboard-layout.js'
@@ -13,7 +14,7 @@ import { chatPresentation } from '../src/services/chat-presentation.js'
 import { referenceSelection as chooseReference, isReferencePlan } from '../src/services/reference-meal-plan.js'
 import { parseChatMealIntent,isMealPlanningCancelled } from '../src/utils/chat-meal-intent.js'
 import {mealCandidates} from './fixtures/meal-candidates.mjs'
-import {createTodayMealPlan,todayMealPlanState} from '../src/services/today-meal-plan.js'
+import { mealPairingText } from '../src/utils/dish-commerce-presentation.js'
 
 const member = '11111111-1111-4111-8111-111111111111'
 const relative = '11111111-1111-4111-8111-111111111112'
@@ -68,7 +69,7 @@ function workflow(options = {}) {
         if(options.beforeOpen)await options.beforeOpen(fourth)
         if(mine!==generation)return
         selection = clone(selectedValues); flowOptions = clone(fourth) || {}
-        state = { ...fresh(), memberId, taskType, available: true }
+        state = { ...fresh(), memberId, taskType, available: options.available!==false }
         selected = flowOptions.threadId || (flowOptions.conversationId ? bindings.get(bindingKey()) : taskType === 'consultation' ? identity.dailyThread : null)
         const row = selected && threads.get(selected)
         if (mine !== generation) return
@@ -90,6 +91,11 @@ function workflow(options = {}) {
         assert.ok(row, 'the component must create or restore a thread before submitting')
         assert.equal(state.readOnly, false, 'the component must never submit an archived daily conversation')
         const requestId = id(), answer = `合成回复 ${calls.filter(call => call.action === 'submit').length}`
+        if(options.submitFailure){
+          const failure=options.submitFailure()
+          publish({requestId,status:'failed',submitRejected:true,submitUnknown:false,failureStatus:failure.status,failureCode:failure.code,result:{type:'error',code:failure.code||'request_rejected'}})
+          return false
+        }
         row.messages.push({ id: requestId + '-user', requestId, role: 'user', text, createdAt: `${clock.day}T09:00:00+08:00` },
           { id: requestId + '-answer', requestId, role: 'assistant', text: answer, createdAt: `${clock.day}T09:00:01+08:00` })
         publish({ requestId, status: 'completed', submitUnknown: false, canRetry: false, result: { type: 'answer', text: answer, citations: [] } })
@@ -112,9 +118,9 @@ function workflow(options = {}) {
     }
     return flow
   }
-  const deps = { defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
+  const deps = {setTimeout:options.schedule||setTimeout,clearTimeout:options.cancel||clearTimeout,todayMealPlanState,createTodayMealPlan:config=>options.todayMenu?createTodayMealPlan({...config,...options.todayMenu}):({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}), defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
     onMounted: fn => { hooks.mount = fn }, onUnmounted: fn => { hooks.unmount = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn },
-    chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, parseChatMealIntent,isMealPlanningCancelled,
+    mealPairingText,chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, parseChatMealIntent,isMealPlanningCancelled,
     newHealthRequestId: id, storageContext: () => identity.scope, getSession: () => ({ ...identity }), scopedStorage,
     loadCloudProfile: async () => {if(options.beforeProfile)await options.beforeProfile();return profile()}, localDate: value => value ? nextDay(clock.day) : clock.day,
     dailyArrangementState: () => ({ phase: 'idle', busy: false, date: clock.day, arrangement: null }),
@@ -132,6 +138,7 @@ function workflow(options = {}) {
       if (!row || row.owner !== identity.scope) throw Object.assign(new Error('不可访问'), { code: 403 })
       return { messages: clone(row.messages), runs: clone(row.runs), thread: { id: threadId, title: '', agentId: row.agent } }
     },
+    mealTarget:(item,plan)=>({item,plan}),openMealPage:(target,options)=>calls.push({action:'mealPage',target,options}),
     createHealthTaskFlow, chatImageContent: async image => image.localPath,
     persistChatImage: async image => ({ localPath: image.path }),
     loadChatMealPlan: async () => { calls.push({ action: 'loadChatMealPlan' }); throw new Error('normal chat must not create a saved plan') },
@@ -142,7 +149,7 @@ function workflow(options = {}) {
   const readOnlyBinding=source.match(/<TodayMealPlanSheet\b[^>]*?:read-only="([^"]+)"/)?.[1]||'false'
   const code = source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {todayMenuReadOnly:()=>{const value=(${readOnlyBinding});return value&&typeof value==='object'&&'value' in value?value.value:value},latestReference,shortcut,inlineTodayOpen,messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
+  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {loadDailyPlan,currentEpoch:()=>epoch,history,visibleMessages,todayMenu,actTodayMenu,reloadToday,openDailyMeal,openDailyDish,todayMenuReadOnly:()=>{const value=(${readOnlyBinding});return value&&typeof value==='object'&&'value' in value?value.value:value},latestReference,shortcut,inlineTodayOpen,messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
   const historyRow = threadId => { const row = threads.get(threadId); return { thread_id: threadId, member_id: row.memberId, agent_slug: row.agent, business_date: row.businessDate } }
   return { ...page, calls, writes, identity, clock, hooks, scopedStorage, threads, addThread, historyRow,
     get flow(){return flow},
@@ -621,6 +628,31 @@ test('returning to an untouched home preserves the home and its unsubmitted draf
   }finally{p.dispose()}
 })
 
+test('opening the history drawer preserves the home immediately and after reactive updates',async()=>{
+  const p=workflow({route:{}})
+  try{
+    await p.load();await flush()
+    const conversation=p.conversationId.value,calls=p.calls.length,writes=p.writes.length
+    assert.equal(p.welcomeMounted.value,true)
+    for(let attempt=0;attempt<2;attempt++){
+      p.history()
+      assert.equal(p.historyOpen.value,true)
+      assert.equal(p.welcomeMounted.value,true,'opening the drawer must retain the welcome layer immediately')
+      await nextTick();await flush()
+      assert.equal(p.entryView.value.phase,'home')
+      assert.equal(p.welcomeMounted.value,true)
+      assert.equal(p.conversationId.value,conversation)
+      assert.equal(p.conversationThreadId.value,'')
+      assert.deepEqual(p.messages.value,[])
+      assert.equal(p.calls.length,calls)
+      assert.equal(p.writes.length,writes)
+      p.historyOpen.value=false;await nextTick()
+      assert.equal(p.welcomeMounted.value,true)
+      assert.equal(p.entryView.value.phase,'home')
+    }
+  }finally{p.dispose()}
+})
+
 test('choosing history from home opens that thread and later rereads do not reset it to home',async()=>{
   const p=workflow({route:{}})
   try{
@@ -721,6 +753,55 @@ test('typed meal intent uses the current profile and a dinner revision preserves
     assert.deepEqual(p.calls.filter(call=>call.action==='submit').at(-1).selection.participant_ids,['father'])
     assert.equal(p.conversationThreadId.value,initialThread,'meal tasks remain attached to the visible conversation')
     assert.equal(p.calls.some(call=>['startPlan','loadChatMealPlan'].includes(call.action)),false)
+  } finally { p.dispose() }
+})
+
+for(const reopen of [false,true])test(`连续换菜沿用上一份午餐且不扩大成员和餐次，重新读取=${reopen}`,async()=>{
+  let saved=null
+  const p=workflow({readDailyMealPlan:async(_family,date)=>saved||{date,status:'absent',version:0,meals:[]}})
+  try{
+    await p.load();p.question.value='给我安排明天午餐';await p.sendQuestion()
+    const first=p.calls.filter(call=>call.action==='submit').at(-1)
+    const data={preview_id:uuid(900),scope:'daily_reference',status:'reference_ready',professional_status:'not_reviewed',nutrition_status:'not_calculated',plan_date:first.selection.plan_date,sources:{family_id:'family-a'},members:[{id:'self'}],meals:[{meal_type:'lunch',dishes:[{name:'第一份菜谱'}]}]}
+    saved={date:data.plan_date,status:'ready',version:1,meals:[{meal_type:'lunch',members:[{id:'self'}],meal:data.meals[0],source:{id:data.preview_id}}]}
+    p.publish({status:'completed',result:{type:'business',kind:'meal_plan_preview',data}})
+    if(reopen)await p.load()
+    for(const text of ['再换一批菜','再换一批','还有别的吗']){
+      p.question.value=text;await p.sendQuestion()
+      const last=p.calls.filter(call=>call.action==='submit').at(-1)
+      assert.equal(last.text,text,p.chatError.value)
+      assert.equal(last.taskType,'reference_meal_preview')
+      assert.deepEqual(last.selection.meal_types,['lunch'])
+      assert.deepEqual(last.selection.participant_ids,['self'])
+      assert.equal(last.selection.plan_date,first.selection.plan_date)
+    }
+  }finally{p.dispose()}
+})
+
+test('今日菜谱请求进入菜品餐单任务而不是商城商品咨询', async () => {
+  const p = workflow()
+  try {
+    await p.load()
+    p.question.value = '给我推荐今日菜谱'
+    await p.sendQuestion()
+    const submitted = p.calls.filter(call => call.action === 'submit').at(-1)
+    assert.ok(submitted, JSON.stringify({ error: p.chatError.value, calls: p.calls.slice(-8) }))
+    assert.equal(submitted.taskType, 'reference_meal_preview')
+    assert.deepEqual(submitted.selection.meal_types, ['breakfast', 'lunch', 'dinner'])
+    assert.deepEqual(submitted.selection.participant_ids, ['self'])
+  } finally { p.dispose() }
+})
+
+test('家庭成员咨询入口的荐菜请求也进入菜品餐单任务', async () => {
+  const p = workflow({ route: { taskType: 'consultation' } })
+  try {
+    await p.load()
+    p.question.value = '推荐适合我的菜'
+    await p.sendQuestion()
+    const submitted = p.calls.filter(call => call.action === 'submit').at(-1)
+    assert.ok(submitted, JSON.stringify({ error: p.chatError.value, calls: p.calls.slice(-8) }))
+    assert.equal(submitted.taskType, 'reference_meal_preview')
+    assert.deepEqual(submitted.selection.meal_types, ['breakfast', 'lunch', 'dinner'])
   } finally { p.dispose() }
 })
 
@@ -1200,5 +1281,366 @@ test('an empty anchor with revoked related history shows its notice instead of t
   await p.load();p.setSnapshot(async id=>{if(id===child)throw Object.assign(new Error('denied'),{code:403});return {messages:[],runs:[],relatedThreads:[{thread_id:child,memberId:relative,task_type:'reference_meal_preview'}]}})
   await p.selectConversation(p.historyRow(root));await flush()
   assert.equal(p.messages.value.length,0);assert.equal(p.welcomeMounted.value,false);assert.equal(p.task.value.available,true)
+ }finally{p.dispose()}
+})
+
+
+function automaticMenu({read:customRead,beforeOpen}={}){
+ const date='2026-10-28',calls=[],timers=new Map(),storage=new Map()
+ let plan={date,status:'absent',version:0,meals:[]},serial=0
+ const config={day:()=>date,context:()=> 'account-a',
+  read:async(family,day)=>{calls.push(['read',family,day]);return customRead?customRead():plan},
+  storage:{getStorageSync:key=>storage.get(key),setStorageSync:(key,value)=>storage.set(key,value)},
+  schedule:callback=>{timers.set(++serial,callback);return serial},cancel:id=>timers.delete(id),
+  createFlow:()=>{
+   let task={available:true,entry:{thread_id:'menu-only'}}
+   return {getState:()=>task,
+    async open(member,type,selection){calls.push(['open',member,type,selection]);if(beforeOpen)await beforeOpen()},
+    async createEntry(){throw new Error('the existing menu entry must be reused')},
+    async submit(){calls.push(['submit']);task={...task,requestId:'menu-task',status:'queued'};plan={...plan,pending:{status:'queued',request_id:'menu-task'}};return true},
+    pause(){calls.push(['pause'])}}
+  }}
+ return {config,calls,timers,setPlan:value=>plan=value,
+  ready:()=>({date,status:'ready',version:3,meals:['breakfast','lunch','dinner'].map(meal_type=>({meal_type,source:{kind:'reference',id:'menu-source'},meal:{dishes:[{name:meal_type}]}}))}),
+  async tick(){const [id,callback]=timers.entries().next().value;timers.delete(id);await callback()}}
+}
+
+test('page entry generates the three meals before chat restoration finishes and keeps the task independent',async()=>{
+ const menu=automaticMenu(),gate=deferred(),p=workflow({route:{},todayMenu:menu.config,beforeOpen:()=>gate.promise})
+ try{
+  const loading=p.load();await flush()
+  assert.equal(p.entryReady.value,false)
+  assert.equal(p.todayMenu.phase,'generating')
+  assert.equal(menu.calls.filter(call=>call[0]==='submit').length,1)
+  assert.deepEqual(menu.calls.find(call=>call[0]==='open')[3].meal_types,['breakfast','lunch','dinner'])
+  assert.equal(p.calls.some(call=>call.action==='submit'),false)
+  assert.equal(p.messages.value.length,0)
+  gate.resolve();await loading;await flush()
+  assert.equal(p.entryReady.value,true)
+  assert.equal(menu.calls.filter(call=>call[0]==='submit').length,1)
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('opening and closing the today sheet does not restart automatic generation or stop its polling',async()=>{
+ const menu=automaticMenu(),p=workflow({route:{},todayMenu:menu.config})
+ try{
+  await p.load();await flush()
+  const reads=menu.calls.filter(call=>call[0]==='read').length
+  p.shortcut('today');p.shortcut('today');p.shortcut('today')
+  assert.equal(menu.calls.filter(call=>call[0]==='read').length,reads)
+  assert.equal(menu.calls.filter(call=>call[0]==='submit').length,1)
+  assert.equal(menu.timers.size,1)
+  menu.setPlan(menu.ready());await menu.tick()
+  assert.equal(p.todayMenu.phase,'ready');assert.equal(p.todayMenu.verified,true)
+  assert.equal(p.todayMenu.plan.version,3)
+  assert.strictEqual(p.dailyPlans.value['2026-10-28'],p.todayMenu.plan)
+  assert.equal(menu.timers.size,0)
+ }finally{p.dispose()}
+})
+
+test('entry reuses an existing menu and a returning page follows its existing task without resubmitting',async()=>{
+ for(const existing of [false,true]){
+  const menu=automaticMenu();if(existing)menu.setPlan(menu.ready())
+  const p=workflow({route:{},todayMenu:menu.config})
+  try{
+   await p.load();await flush()
+   assert.equal(menu.calls.filter(call=>call[0]==='submit').length,existing?0:1)
+   p.hooks.hide();assert.equal(menu.timers.size,0);assert.equal(p.todayMenu.verified,false)
+   p.hooks.show();await flush();await flush()
+   assert.equal(menu.calls.filter(call=>call[0]==='submit').length,existing?0:1)
+   assert.equal(p.todayMenu.phase,existing?'ready':'generating')
+  }finally{p.dispose()}
+ }
+})
+
+test('a hidden or disposed page discards a late menu read before generation or publication',async()=>{
+ for(const action of ['hide','dispose']){
+  const gate=deferred(),menu=automaticMenu({read:()=>gate.promise}),p=workflow({route:{},todayMenu:menu.config})
+  try{
+   await p.load();if(action==='hide')p.hooks.hide();else p.dispose()
+   gate.resolve(menu.ready());await flush()
+   assert.equal(p.todayMenu.plan,null)
+   assert.equal(menu.calls.some(call=>call[0]==='submit'),false)
+   assert.equal(menu.timers.size,0)
+  }finally{gate.resolve(menu.ready());if(action!=='dispose')p.dispose()}
+ }
+})
+
+test('menu details use the displayed plan version even when the chat cache differs',async()=>{
+ const menu=automaticMenu();menu.setPlan(menu.ready())
+ const p=workflow({route:{},todayMenu:menu.config})
+ try{
+  await p.load();await flush()
+  const shown=p.todayMenu.plan,item=shown.meals[0]
+  p.dailyPlans.value[shown.date]={...shown,version:99}
+  p.openDailyMeal(item,shown.date,shown)
+  p.openDailyDish({item,dishIndex:0},shown.date,shown)
+  const pages=p.calls.filter(call=>call.action==='mealPage')
+  assert.equal(pages.length,2)
+  assert.equal(pages[0].target.plan.version,3);assert.equal(pages[1].target.plan.version,3)
+  assert.equal(pages[1].options.dishIndex,0)
+ }finally{p.dispose()}
+})
+
+
+test('a same-version optional chat read cannot interrupt regeneration of an incomplete saved menu',async()=>{
+ const gate=deferred(),menu=automaticMenu({beforeOpen:()=>gate.promise})
+ const partial={...menu.ready(),needs_regeneration:['dinner']};partial.meals=partial.meals.slice(0,2)
+ menu.setPlan(partial)
+ const p=workflow({route:{},todayMenu:menu.config,readDailyMealPlan:async()=>partial})
+ try{
+  await p.load();await flush()
+  assert.equal(p.todayMenu.phase,'ready')
+  assert.equal(menu.calls.filter(call=>call[0]==='open').length,1)
+  gate.resolve();await flush()
+  assert.equal(menu.calls.filter(call=>call[0]==='submit').length,1)
+  assert.deepEqual(menu.calls.find(call=>call[0]==='open')[3].meal_types,['dinner'])
+  assert.equal(menu.timers.size,1)
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('same-version source invalidation updates the verified menu without another generation',async()=>{
+ const menu=automaticMenu();menu.setPlan(menu.ready())
+ let current=menu.ready()
+ const p=workflow({route:{},todayMenu:menu.config,readDailyMealPlan:async()=>current})
+ try{
+  await p.load();await flush()
+  current={...current,meals:current.meals.slice(0,1),needs_regeneration:['lunch','dinner']}
+  menu.setPlan(current)
+  await p.loadDailyPlan(p.profile.value.householdId,'2026-10-28',p.currentEpoch(),'account-a');await flush()
+  assert.equal(p.todayMenu.plan.meals.length,1)
+  assert.deepEqual(p.todayMenu.plan.needs_regeneration,['lunch','dinner'])
+  assert.equal(menu.calls.filter(call=>call[0]==='submit').length,0)
+ }finally{p.dispose()}
+})
+
+for(const code of [403,404,409,410])test(`an authoritative meal access failure clears the shared menu and stops its owner: ${code}`,async()=>{
+ const menu=automaticMenu();menu.setPlan(menu.ready())
+ let denied=false
+ const p=workflow({route:{},todayMenu:menu.config,readDailyMealPlan:async()=>{if(denied)throw Object.assign(new Error('访问已失效'),{code});return menu.ready()}})
+ try{
+  await p.load();await flush()
+  assert.ok(p.todayMenu.plan);assert.equal(p.todayMenu.verified,true)
+  denied=true
+  await assert.rejects(p.loadDailyPlan(p.profile.value.householdId,'2026-10-28',p.currentEpoch(),'account-a',{verifyAccess:false}))
+  assert.equal(p.dailyPlans.value['2026-10-28'],undefined)
+  assert.equal(p.todayMenu.plan,null);assert.equal(p.todayMenu.verified,false)
+  assert.equal(p.todayMenu.phase,'error');assert.equal(p.todayMenu.action,'refresh')
+  assert.equal(menu.timers.size,0)
+ }finally{p.dispose()}
+})
+
+test('an optional newer plan read does not replace the owner while missing meals are being submitted',async()=>{
+ const gate=deferred(),menu=automaticMenu({beforeOpen:()=>gate.promise})
+ let current={...menu.ready(),needs_regeneration:['dinner']};current.meals=current.meals.slice(0,2)
+ menu.setPlan(current)
+ const p=workflow({route:{},todayMenu:menu.config,readDailyMealPlan:async()=>current})
+ try{
+  await p.load();await flush()
+  current={...current,version:4};menu.setPlan(current)
+  await p.loadDailyPlan(p.profile.value.householdId,'2026-10-28',p.currentEpoch(),'account-a');await flush()
+  assert.equal(menu.calls.filter(call=>call[0]==='open').length,1)
+  gate.resolve();await flush()
+  assert.equal(menu.calls.filter(call=>call[0]==='submit').length,1)
+  assert.equal(menu.timers.size,1)
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('the initial optional read cannot interrupt sequential lunch and dinner generation for different diners',async()=>{
+ const date='2026-10-28',timers=new Map(),calls=[]
+ let serial=0
+ const meal=type=>({meal_type:type,source:{id:'saved-'+type},members:[{id:type==='dinner'?'father':'self'}],meal:{dishes:[{name:type}]}})
+ let plan={date,status:'ready',version:1,meals:[meal('breakfast')],needs_regeneration:['lunch','dinner'],regeneration_participants:{lunch:['self'],dinner:['father']}}
+ const config={day:()=>date,context:()=> 'account-a',read:async()=>plan,
+  schedule:fn=>{timers.set(++serial,fn);return serial},cancel:key=>timers.delete(key),
+  createFlow:()=>{
+   let selection,task={available:true,entry:{thread_id:uuid(920)}}
+   return {getState:()=>task,pause(){},async open(member,type,value){selection=value;calls.push(value.meal_types)},
+    async submit(){
+     task={...task,requestId:uuid(921+calls.length),status:'completed'}
+     plan={...plan,version:plan.version+1,meals:[...plan.meals,meal(selection.meal_types[0])],needs_regeneration:plan.needs_regeneration.filter(type=>!selection.meal_types.includes(type))}
+     return true
+    }}
+  }}
+ const p=workflow({route:{},todayMenu:config,readDailyMealPlan:async()=>plan})
+ const tick=async()=>{const [key,callback]=timers.entries().next().value;timers.delete(key);await callback();await flush()}
+ try{
+  await p.load();await flush()
+  assert.deepEqual(calls,[['lunch']]);assert.equal(timers.size,1)
+  await tick();assert.deepEqual(calls,[['lunch'],['dinner']]);assert.equal(timers.size,1)
+  await tick()
+  assert.equal(p.todayMenu.plan.version,3);assert.deepEqual(p.todayMenu.plan.meals.map(item=>item.meal_type),['breakfast','lunch','dinner'])
+  assert.equal(timers.size,0)
+ }finally{p.dispose()}
+})
+
+
+test('rapid menu refresh clicks stay read-only and hidden pages cannot retry menu generation',async()=>{
+ let failing=true,reads=0
+ const gate=deferred(),menu=automaticMenu({read:()=>{reads++;if(failing)throw Object.assign(new Error('offline'),{code:503});return gate.promise}})
+ const p=workflow({route:{},todayMenu:menu.config})
+ try{
+  await p.load();await flush();assert.equal(p.todayMenu.phase,'error')
+  failing=false
+  const before=reads;p.actTodayMenu();p.actTodayMenu()
+  assert.equal(reads,before+1)
+  gate.resolve({date:'2026-10-28',status:'absent',version:0,meals:[]});await flush()
+  assert.equal(menu.calls.some(call=>call[0]==='submit'),false)
+  assert.equal(p.todayMenu.action,'regenerate')
+  p.hooks.hide();p.actTodayMenu();await flush()
+  assert.equal(menu.calls.some(call=>call[0]==='submit'),false)
+ }finally{gate.resolve(menu.ready());p.dispose()}
+})
+
+
+test('same-version task changes from chat refresh the shared menu while preserving the saved meals',async()=>{
+ const menu=automaticMenu();let remote=menu.ready();menu.setPlan(remote)
+ const p=workflow({route:{},todayMenu:menu.config,readDailyMealPlan:async()=>remote})
+ try{
+  await p.load();await flush();assert.equal(p.todayMenu.notice,'')
+  remote={...remote,pending:{status:'running',request_id:'chat-task'}};menu.setPlan(remote)
+  await p.reloadToday();await flush()
+  assert.equal(p.todayMenu.pending.status,'running')
+  assert.equal(p.todayMenu.plan.meals.length,3)
+  assert.equal(menu.timers.size,1)
+  remote={...remote,pending:null};menu.setPlan(remote)
+  await p.reloadToday();await flush()
+  assert.equal(p.todayMenu.pending,null);assert.equal(p.todayMenu.notice,'');assert.equal(menu.timers.size,0)
+  assert.equal(menu.calls.some(call=>call[0]==='submit'),false)
+ }finally{p.dispose()}
+})
+
+test('an available lunch is returned in the same conversation while another menu task runs',async()=>{
+ const date='2026-10-28'
+ const plan={date,status:'ready',version:1,meals:[{meal_type:'lunch',members:[{id:'self'}],meal:{dishes:[{name:'西兰花炒虾仁'}]}}],pending:{status:'running',request_id:uuid(9901)}}
+ const p=workflow({route:{},readDailyMealPlan:async()=>plan})
+ try{
+  await p.load();const conversation=p.conversationId.value
+  p.question.value='今天午餐吃什么？';await p.sendQuestion()
+  assert.equal(p.conversationId.value,conversation)
+  assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
+  assert.equal(p.visibleMessages.value[0].status,'sent')
+  assert.equal(p.visibleMessages.value[1].text,'这是已安排的餐单。')
+  assert.deepEqual(p.visibleMessages.value[1].planMeals,['lunch'])
+  assert.equal(p.chatError.value,'')
+  assert.equal(p.question.value,'')
+ }finally{p.dispose()}
+})
+
+test('a pending menu is followed in the current conversation and its completed plan updates the reply',async()=>{
+ const date='2026-10-28'
+ let plan={date,status:'absent',version:0,meals:[],pending:{status:'running',request_id:uuid(9902)}}
+ const p=workflow({route:{},readDailyMealPlan:async()=>plan})
+ try{
+  await p.load();const conversation=p.conversationId.value
+  p.question.value='今天午餐吃什么？';await p.sendQuestion()
+  assert.equal(p.visibleMessages.value[0].status,'sent')
+  assert.match(p.visibleMessages.value[1].text,/正在生成/)
+  assert.equal(p.visibleMessages.value[1].planDate,date)
+  assert.deepEqual(p.visibleMessages.value[1].planMeals,['lunch'])
+  plan={date,status:'ready',version:1,meals:[{meal_type:'lunch',members:[{id:'self'}],meal:{dishes:[{name:'新午餐'}]}}],pending:null}
+  await p.reloadToday()
+  assert.equal(p.dailyPlans.value[date].meals[0].meal.dishes[0].name,'新午餐')
+  assert.equal(p.visibleMessages.value[1].text,'这是目前已安排的餐单。')
+  assert.equal(p.conversationId.value,conversation)
+  assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
+  assert.equal(p.chatError.value,'')
+  plan={...plan,pending:{status:'running',request_id:uuid(9907)}}
+  await p.reloadToday()
+  assert.equal(p.visibleMessages.value[1].text,'这是目前已安排的餐单。')
+ }finally{p.dispose()}
+})
+
+test('a revision blocked by an active menu retains its instructions as a draft',async()=>{
+ const date='2026-10-28'
+ const plan={date,status:'ready',version:1,meals:[{meal_type:'lunch',members:[{id:'self'}],meal:{dishes:[{name:'原午餐'}]}}],pending:{status:'running',request_id:uuid(9904)}}
+ const p=workflow({route:{},readDailyMealPlan:async()=>plan})
+ try{
+  await p.load();const conversation=p.conversationId.value
+  p.question.value='请替换今天的午餐，清淡一点';await p.sendQuestion()
+  assert.equal(p.conversationId.value,conversation)
+  assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
+  assert.equal(p.question.value,'请替换今天的午餐，清淡一点')
+  assert.match(p.chatError.value,/完成后再调整/)
+ }finally{p.dispose()}
+})
+
+for(const status of [409,423])test(`a plan submit race ${status} follows the existing task without changing conversations`,async()=>{
+ const date='2026-10-28'
+ let plan={date,status:'absent',version:0,meals:[]}
+ const p=workflow({route:{},readDailyMealPlan:async()=>plan,submitFailure:()=>{
+  plan={...plan,pending:{status:'running',request_id:uuid(9903)}}
+  return {status,code:status===409?'daily_plan_version_changed':'daily_plan_busy'}
+ }})
+ try{
+  await p.load();const conversation=p.conversationId.value
+  p.question.value='今天午餐吃什么？';await p.sendQuestion()
+  assert.equal(p.conversationId.value,conversation)
+  assert.equal(p.calls.filter(c=>c.action==='submit').length,1)
+  assert.equal(p.visibleMessages.value.filter(m=>m.role==='user').length,1)
+  assert.equal(p.visibleMessages.value[0].status,'sent')
+  assert.match(p.visibleMessages.value[1].text,/正在生成/)
+  assert.equal(p.task.value.taskType,'consultation')
+  assert.equal(p.chatError.value,'')
+  assert.equal(p.question.value,'')
+ }finally{p.dispose()}
+})
+
+test('a followed menu keeps polling beyond ninety seconds and finishes its original reply',async()=>{
+ const date='2026-10-28',timers=new Map()
+ let serial=0,plan={date,status:'absent',version:0,meals:[],pending:{status:'running',request_id:uuid(9905)}}
+ const p=workflow({route:{},readDailyMealPlan:async()=>plan,
+  schedule:(fn,ms)=>{timers.set(++serial,{fn,ms});return serial},cancel:id=>timers.delete(id)})
+ const tick=async()=>{
+  const item=[...timers].find(([,timer])=>[2000,10000].includes(timer.ms))
+  assert.ok(item,'a pending reply must retain a plan poll')
+  timers.delete(item[0]);item[1].fn();await flush()
+ }
+ try{
+  await p.load();await flush()
+  p.question.value='今天午餐吃什么？';await p.sendQuestion()
+  const conversation=p.conversationId.value
+  for(let i=0;i<46;i++)await tick()
+  assert.ok([...timers.values()].some(timer=>timer.ms===10000))
+  plan={date,status:'ready',version:1,meals:[{meal_type:'lunch',members:[{id:'self'}],meal:{dishes:[{name:'长任务午餐'}]}}],pending:null}
+  await tick()
+  assert.equal(p.visibleMessages.value[1].text,'这是目前已安排的餐单。')
+  assert.equal(p.conversationId.value,conversation)
+  assert.equal([...timers.values()].some(timer=>[2000,10000].includes(timer.ms)),false)
+  assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
+ }finally{p.dispose()}
+})
+
+test('a plan submit race stops its reply when the consultation becomes unavailable',async()=>{
+ const date='2026-10-28'
+ let plan={date,status:'absent',version:0,meals:[]}
+ const options={route:{},readDailyMealPlan:async()=>plan,submitFailure:()=>{
+  plan={...plan,pending:{status:'running',request_id:uuid(9906)}}
+  options.available=false
+  return {status:409,code:'daily_plan_version_changed'}
+ }}
+ const p=workflow(options)
+ try{
+  await p.load();p.question.value='今天午餐吃什么？';await p.sendQuestion()
+  assert.equal(p.visibleMessages.value.some(message=>message.role==='assistant'),false)
+  assert.equal(p.question.value,'今天午餐吃什么？')
+ }finally{p.dispose()}
+})
+
+test('a menu completed during conflict recovery immediately resolves its pending reply',async()=>{
+ const date='2026-10-28'
+ let recovering=false,plan={date,status:'absent',version:0,meals:[]}
+ const p=workflow({route:{},readDailyMealPlan:async()=>plan,
+  beforeOpen:async()=>{
+   if(recovering)p.dailyPlans.value[date]={date,status:'ready',version:1,meals:[{meal_type:'lunch',members:[{id:'self'}],meal:{dishes:[{name:'已完成午餐'}]}}],pending:null}
+  },submitFailure:()=>{
+   recovering=true;plan={...plan,pending:{status:'running',request_id:uuid(9908)}}
+   return {status:409,code:'daily_plan_version_changed'}
+  }})
+ try{
+  await p.load();p.question.value='今天午餐吃什么？';await p.sendQuestion()
+  assert.equal(p.visibleMessages.value[1].text,'这是目前已安排的餐单。')
+  assert.equal(p.messages.value[1].planPending,false)
+  assert.equal(p.visibleMessages.value[0].status,'sent')
  }finally{p.dispose()}
 })

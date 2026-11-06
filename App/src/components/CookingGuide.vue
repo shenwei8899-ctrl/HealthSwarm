@@ -1,4 +1,5 @@
 <script setup>
+import { recipeTime, recipeIngredients, recipeNutrition } from '../utils/dish-commerce-presentation.js'
 import { computed, ref, watch } from 'vue'
 import FoodImageSlot from './FoodImageSlot.vue'
 import DishNutritionCard from './DishNutritionCard.vue'
@@ -12,6 +13,8 @@ const key=d=>d.id||d.recipe_ref
 const name=d=>dishTitle(d)
 const dish=computed(()=>props.dishes.find(d=>key(d)===props.selected)||props.dishes[0])
 const display=computed(()=>recipeDisplay(dish.value))
+const commerceIngredients=computed(()=>recipeIngredients(dish.value))
+const commerceNutrition=computed(()=>recipeNutrition(dish.value))
 const cover=computed(()=>recipeCover(dish.value))
 const summary=computed(()=>{const n=normalizeDishNutrition(dish.value?.nutrition);return [['energyKcal','能量','千卡'],['proteinG','蛋白质','克']].filter(([k])=>n[k]!==null).map(([k,label,unit])=>({label,unit,value:n[k]}))})
 const notes=computed(()=>Array.isArray(dish.value?.notes)?dish.value.notes.filter(n=>typeof n==='string'&&n.trim()):[])
@@ -28,12 +31,15 @@ function stepCopy(step,index){
   <scroll-view v-if="dishes.length>1" class="dish-tabs" scroll-x><view class="dish-tabs-inner"><button role="button" tabindex="0" v-for="item in dishes" :key="key(item)" :class="{active:key(item)===key(dish)}" :aria-pressed="key(item)===key(dish)" @click="$emit('select',key(item))">{{name(item)}}</button></view></scroll-view>
   <text v-else class="single-dish">{{name(dish)}}</text>
   <FoodImageSlot :src="cover?.image_url" :label="name(dish)" width="100%" :height="continuous?'190px':'310rpx'" :radius="continuous?'20px':'24rpx'" class="cooking-hero"/>
+  <text class="cooking-duration">{{recipeTime(dish)}}</text>
+  <text v-if="dish.image_source?.image_role==='ai_generated'" class="image-credit">AI 生成示意图</text>
   <text v-if="continuous&&cover?.image_source?.publisher" class="image-credit">图片来源：{{cover.image_source.publisher}} · {{cover.image_source.publication}}</text>
   <view v-if="continuous&&summary.length" class="dish-nutrition-summary"><text>每100克成品可食部分</text><view><text v-for="item in summary" :key="item.label">{{item.label}} {{item.value}} {{item.unit}}</text></view></view><view v-if="!continuous" class="content-tabs"><button role="button" tabindex="0" :class="{active:tab==='ingredients'}" :aria-pressed="tab==='ingredients'" @click="tab='ingredients'">食材<view v-if="tab==='ingredients'" class="active-line"/></button><button role="button" tabindex="0" :class="{active:tab==='steps'}" :aria-pressed="tab==='steps'" @click="tab='steps'">步骤<view v-if="tab==='steps'" class="active-line"/></button><button role="button" tabindex="0" v-if="notes.length" :class="{active:tab==='notes'}" :aria-pressed="tab==='notes'" @click="tab='notes'">注意事项<view v-if="tab==='notes'" class="active-line"/></button></view>
   <text v-if="dish.translation_status==='missing'" class="unavailable">菜谱中文译文暂未就绪，请稍后重新读取。</text>
-  <text v-if="continuous" class="guide-section-title">食材清单</text><view v-if="continuous||tab==='ingredients'" class="ingredient-list"><view v-for="(item,n) in display.ingredients||[]" :key="n"><text>{{ingredient(item)}}</text></view></view>
+  <text v-if="continuous" class="guide-section-title">食材清单</text><view v-if="continuous||tab==='ingredients'" class="ingredient-list"><view v-for="item in commerceIngredients" :key="item.key" class="ingredient-row"><FoodImageSlot v-if="item.image" :src="item.image" :label="item.name" :width="44" :height="44" :radius="12"/><view><text v-if="item.skuId" class="ingredient-product-name">{{item.name}}</text><text>{{item.amount}}</text></view></view></view>
   <text v-if="continuous" class="guide-section-title">制作步骤</text><view v-if="continuous||tab==='steps'" class="steps-list"><view v-for="(step,n) in display.steps||[]" :key="n" class="recipe-step"><text class="step-number">{{String(n+1).padStart(2,'0')}}</text><image v-if="(typeof step!=='string'&&step.image_url)||dish.step_images?.[n]" :src="(typeof step!=='string'&&step.image_url)||dish.step_images[n]" mode="widthFix" class="step-image"/><view class="step-copy"><text class="step-title">{{stepCopy(step,n).title}}</text><text class="step-description">{{stepCopy(step,n).text}}</text></view></view><text v-if="!display.steps?.length" class="unavailable">暂无可用制作步骤</text></view>
   <view v-if="!continuous&&tab==='notes'" class="notes-list"><text v-for="(note,n) in notes" :key="n">{{note}}</text></view>
+  <view v-if="commerceNutrition.length" class="commerce-nutrition"><text class="guide-section-title">商城食材营养说明</text><view v-for="(item,index) in commerceNutrition" :key="index" class="commerce-nutrition-item"><text class="ingredient-product-name">{{item.name}}</text><text>{{item.quote}}</text></view><text class="image-credit">摘自本菜关联的商城食材资料，不代表整道菜或个人摄入量的实测结果。</text></view>
   <view v-if="dish.nutrition&&(!continuous||summary.length)" class="nutrition"><button role="button" tabindex="0" @click="nutritionOpen=!nutritionOpen"><text>营养信息</text><text>{{nutritionOpen?'收起':'查看'}} ›</text></button><DishNutritionCard v-if="nutritionOpen" :nutrition="dish.nutrition"/></view>
   <view v-if="continuous&&display.nutrition_quote" class="recipe-nutrition-quote"><text class="guide-section-title">原食谱营养说明</text><text>{{display.nutrition_quote}}</text><text v-if="dish.display_zh" class="image-credit">原食谱中文助译；数值及计量范围沿用原文，个人营养量尚未核算。</text></view><button role="button" tabindex="0" v-if="action" class="guide-action" @click="$emit('action')">{{action}}</button>
  </view>
@@ -43,5 +49,6 @@ function stepCopy(step,index){
 </style>
 
 <style scoped>
+.cooking-duration{display:block;margin:10px 0;font-size:13px;line-height:1.6;color:var(--ui-muted)}.ingredient-row{display:flex;align-items:center;gap:12px}.ingredient-row>view{min-width:0;overflow-wrap:anywhere}.ingredient-product-name{display:block;font-weight:500;color:var(--ui-text);margin-bottom:4px}.commerce-nutrition-item{font-size:14px;line-height:1.8;margin:12px 0;white-space:pre-wrap;overflow-wrap:anywhere}
 .image-credit{display:block;margin-top:8px;font-size:11px;line-height:1.6;color:var(--ui-muted)}.recipe-nutrition-quote{font-size:13px;line-height:1.8;color:var(--ui-muted);padding-bottom:12px}.dish-nutrition-summary{padding:12px 2px;color:var(--ui-muted);font-size:12px}.dish-nutrition-summary>view{display:flex;gap:14px;flex-wrap:wrap;margin-top:5px;color:var(--ui-text);font-size:14px}.is-continuous .single-dish{font-size:20px;line-height:1.5;color:var(--ui-text)}.is-continuous .cooking-hero{height:190px;border-radius:20px}.guide-section-title{display:block;font-size:16px;font-weight:500;margin:22px 0 10px;color:var(--ui-text)}.is-continuous .ingredient-list,.is-continuous .steps-list{border-color:var(--ui-line);border-radius:18px;background:var(--ui-bubble)}.is-continuous .recipe-step{position:relative;display:flex;flex-direction:column;gap:12px;padding:18px 0}.is-continuous .step-number{width:30px;height:30px;font-size:14px;background:var(--ui-accent-soft);color:var(--ui-text)}.is-continuous .step-image{width:100%;height:auto;border-radius:14px;order:3}.is-continuous .step-copy{width:100%}.is-continuous .step-title{font-size:15px;color:var(--ui-text)}.is-continuous .step-description{font-size:14px;line-height:1.8;color:var(--ui-muted)}.is-continuous .ingredient-list>view{font-size:14px;line-height:1.7;border-color:var(--ui-line)}
 </style>

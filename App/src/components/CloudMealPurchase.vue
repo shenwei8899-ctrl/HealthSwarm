@@ -32,6 +32,9 @@ const page = useMealCommercePage(() => ({
 }))
 const state = page.state
 const purchaseReady = computed(() => Boolean(preview.value?.available || preview.value?.confirmation_pending))
+const purchaseGaps = computed(() => (props.selection ? preview.value?.gaps || [] : props.reference?.gaps || preview.value?.gaps || []).map(gap => ({
+  ...gap, label: gap.ingredient_label || referenceIngredientLabel(props.reference?.ingredientLabels, gap.ingredient), detail: referenceGapDetail(gap),
+})))
 const referenceProducts = computed(() => (props.reference?.items || []).map(item => ({id:String(item.sku_id),name:item.product_name,packLabel:item.sku_name||'规格待核对',quantity:draftQuantities.value[String(item.sku_id)]??item.quantity,imageUrl:item.image_url||'',needLabel:'参考用量未核算',priceCents:null,availableQuantity:null})))
 const products = computed(() => props.reference && !state.ready ? (preview.value?referenceProducts.value:[]) : state.ready ? page.plan.value.products : commerceMealView({
   items: (preview.value?.items || []).filter(item => item.sku?.sku_id),
@@ -201,7 +204,7 @@ onUnmounted(() => { alive = false; clearTimeout(quoteTimer); page.dispose() })
 
 <template>
  <view class="meal-purchase" :class="{'is-embedded':embedded}">
-  <MealPurchasePanel v-if="unified" :products="products" :picked="picked" :address="state.address" :slots="state.slots" :slot-id="state.slotId" :quote="state.quote" :busy="busy||state.busy||submitting" :pricing="quoteWaiting" :ready="unifiedReady" :pending="!!(state.pending||state.orderSn)" :error="error||state.error||state.checkoutError||state.deliveryMessage" :access-required="loginOpen" :can-submit="!!canSubmit" @address="chooseAddress" @slot="selectSlot" @toggle="toggle" @quantity="changeQuantity" @confirm="submit" @recover="recover" @retry="refreshUnified" @scroll="emit('scroll',$event)"><template #access><CommerceAccess entry @ready="refreshUnified"/></template></MealPurchasePanel>
+  <MealPurchasePanel v-if="unified" :gaps="purchaseGaps" :products="products" :picked="picked" :address="state.address" :slots="state.slots" :slot-id="state.slotId" :quote="state.quote" :busy="busy||state.busy||submitting" :pricing="quoteWaiting" :ready="unifiedReady" :pending="!!(state.pending||state.orderSn)" :error="error||state.error||state.checkoutError||state.deliveryMessage" :access-required="loginOpen" :can-submit="!!canSubmit" @address="chooseAddress" @slot="selectSlot" @toggle="toggle" @quantity="changeQuantity" @confirm="submit" @recover="recover" @retry="refreshUnified" @scroll="emit('scroll',$event)"><template #access><CommerceAccess entry @ready="refreshUnified"/></template></MealPurchasePanel>
   <template v-else>
   <scroll-view v-show="!embedded||!checkoutOpen" :scroll-y="embedded" :show-scrollbar="false" class="purchase-scroll">
   <view class="section-head"><text class="section-title">{{route.meal==='daily'&&route.meals?.length>1?'所选餐次食材汇总':'本餐所需食材'}}</text><text>家中已有可取消</text></view>

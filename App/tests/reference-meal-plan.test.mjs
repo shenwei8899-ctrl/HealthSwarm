@@ -130,9 +130,11 @@ test('explicit reference purchase uses returned package version and actual cart 
  const h=card();await h.page.purchase()
  assert.deepEqual(h.calls,['publish',['read','package',2],['cart',2],['route','/pages/shop/index?commerce=1&cart=1']])
  const pages=JSON.parse(readFileSync(new URL('../src/pages.json',import.meta.url)))
- const routes=[...pages.pages.map(page=>page.path),...(pages.subPackages||[]).flatMap(pack=>pack.pages.map(page=>pack.root+'/'+page.path))]
- assert.ok(routes.includes('pages/shop/index'))
- assert.ok(readFileSync(new URL('../src/pages/shop/index.vue',import.meta.url),'utf8').includes('<template>'))
+ const routes=[...pages.pages.map(p=>p.path),...(pages.subPackages||pages.subpackages||[]).flatMap(group=>group.pages.map(p=>group.root.replace(/\/$/,'')+'/'+p.path))]
+ const destination=h.calls.at(-1)[1],path=destination.slice(1).split('?')[0]
+ assert.equal(routes.filter(route=>route===path).length,1,'the actual purchase destination must be registered exactly once, including subpackages')
+ assert.ok(readFileSync(new URL('../src/'+path+'.vue',import.meta.url),'utf8').includes('CommerceShop'))
+ assert.equal(new URLSearchParams(destination.split('?')[1]).get('cart'),'1')
 })
 for(const options of [{scopeChange:true},{planChange:true}])test('changed account or preview cancels purchase before writing a package',async()=>{
  const h=card(options);await h.page.purchase();assert.deepEqual(h.calls,[])

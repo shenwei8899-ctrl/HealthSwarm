@@ -1,3 +1,4 @@
+import { mealPairingText } from '../utils/dish-commerce-presentation.js'
 import { request } from './request.js'
 import { sessionRevision } from './session.js'
 import { scopedStorage } from './storage.js'
@@ -106,7 +107,7 @@ export function chatMessages(value) {
           if(isMealPlanCandidates(data)){business={type:'business',kind:'meal_plan_candidates',data};text='待核对候选已返回，个人适用性尚未确认。'}
           else text='候选内容暂时无法核对，请刷新原任务。'
         }
-        else if((!data.result_type||data.result_type==='meal_plan_preview')&&data.preview_id&&Array.isArray(data.meals)){business={type:'business',kind:'meal_plan_preview',data};text='餐单预览已返回，请核对菜品与份量。'}
+        else if((!data.result_type||data.result_type==='meal_plan_preview')&&data.preview_id&&Array.isArray(data.meals)){business={type:'business',kind:'meal_plan_preview',data};text=mealPairingText(data,'餐单预览已返回，请核对菜品与份量。')}
         else if(data.result_type==='diet_analysis'&&Array.isArray(data.findings)){business={type:'business',kind:'diet_analysis',data};text='已保存饮食的回顾。'}
       }catch{}
     }

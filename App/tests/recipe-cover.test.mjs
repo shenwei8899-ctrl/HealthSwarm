@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {readFileSync} from 'node:fs'
+import {readFileSync,mkdtempSync,mkdirSync,writeFileSync,renameSync,rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
 import {spawnSync} from 'node:child_process'
 import {recipeCover} from '../src/utils/recipe-cover.js'
 import {recipeCovers} from '../src/data/recipe-covers.js'
@@ -25,6 +27,25 @@ test('client media projection comes from the backend reviewed catalog',()=>{
  assert.equal(result.status,0,result.stderr)
  const owner=JSON.parse(readFileSync(new URL('../../agent/Yuxi-main/backend/package/yuxi/services/data/recipe_covers.json',import.meta.url),'utf8'))
  assert.deepEqual(recipeCovers,owner.covers)
+})
+
+test('catalog check accepts Windows line endings but rejects changed image or missing owner data',()=>{
+ const root=mkdtempSync(join(tmpdir(),'recipe-cover-contract-')),app=join(root,'App')
+ const script=join(app,'scripts/sync-recipe-covers.mjs'),projection=join(app,'src/data/recipe-covers.js')
+ const owner=join(root,'agent/Yuxi-main/backend/package/yuxi/services/data/recipe_covers.json')
+ try{
+  for(const dir of [join(app,'scripts'),join(app,'src/data'),join(root,'agent/Yuxi-main/backend/package/yuxi/services/data')])mkdirSync(dir,{recursive:true})
+  writeFileSync(script,readFileSync(new URL('../scripts/sync-recipe-covers.mjs',import.meta.url)))
+  writeFileSync(owner,readFileSync(new URL('../../agent/Yuxi-main/backend/package/yuxi/services/data/recipe_covers.json',import.meta.url)))
+  const source=readFileSync(new URL('../src/data/recipe-covers.js',import.meta.url),'utf8').replace(/\r\n/g,'\n')
+  const check=()=>spawnSync(process.execPath,[script,'--check'],{encoding:'utf8',windowsHide:true})
+  writeFileSync(projection,source.replace(/\n/g,'\r\n'))
+  assert.equal(check().status,0)
+  writeFileSync(projection,source.replace(recipeCovers[0].image_url,'/minio/public/wrong.jpg'))
+  const changed=check();assert.notEqual(changed.status,0);assert.match(changed.stderr,/Regenerate the recipe cover projection/)
+  writeFileSync(projection,source);renameSync(owner,owner+'.backup')
+  const missing=check();assert.notEqual(missing.status,0);assert.match(missing.stderr,/ENOENT/)
+ }finally{rmSync(root,{recursive:true,force:true})}
 })
 
 test('public media uses the configured mini-program service or complete H5 origin',()=>{

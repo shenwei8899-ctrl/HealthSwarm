@@ -25,7 +25,12 @@ test('explicit dinner changes route to planning even after the previous generati
 })
 
 test('explicit requests in the reported conversation enter real meal planning', () => {
-  for (const text of ['为我配餐，必须为我进行配餐今天怎么吃', '一个人，直接为我进行这顿配餐', '今天怎么吃', '帮我搭配今天的三餐', '配餐']) {
+  for (const text of ['为我配餐，必须为我进行配餐今天怎么吃', '一个人，直接为我进行这顿配餐', '今天怎么吃', '帮我搭配今天的三餐', '配餐', '给我推荐今日菜谱']) {
+    assert.ok(parse(text), text)
+  }
+  assert.equal(parse('给我推荐今日菜谱').audience, 'self')
+  assert.equal(mealQuestionAction('给我推荐今日菜谱'), 'generate')
+  for (const text of ['推荐适合我的菜', '我适合吃什么菜', '帮我挑一道菜', '今天有哪些菜适合我吃']) {
     assert.ok(parse(text), text)
   }
   assert.equal(parse('为我配餐，必须为我进行配餐今天怎么吃').audience, 'self')

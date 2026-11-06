@@ -2,15 +2,16 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {ref,computed,reactive,effectScope,watch} from 'vue'
+import {referenceIngredientLabel,referenceGapDetail} from '../src/utils/meal-presentation.js'
 import {newMealCommerceState,createMealCommerceController,commerceMealView} from '../src/services/meal-commerce-state.js'
 
-function mount({daily=false,reference=false,selection,unified=false}={}){
+function mount({daily=false,reference=false,selection,unified=false,gaps=[]}={}){
   const calls=[],hooks={},route={date:'2026-10-21',meal:'dinner',arrangement:'saved-1',version:'2'}
   if(daily){route.meal='daily';route.meals=['breakfast','lunch']}
   let scope='A',linked=false,publicationVersion=2,denied=false,referenceVersion=4
   const saved=new Map()
   const items=[{sku_id:'tomato',quantity:1,sku:{sku_id:'tomato',product_name:'合成番茄',price_cent:800,available_quantity:5,net_content:{value:500,unit:'g'},ingredients:[{ingredient_code:'tomato'}]}}]
-  const purchase={status:'matched',available:true,catalog_version:'catalog-1',items,
+  const purchase={status:'matched',available:true,catalog_version:'catalog-1',items,gaps,
     ingredient_requirements:[{ingredient_id:'tomato',ingredient_code:'tomato',required_value:'300',required_unit:'g'}]}
   const menu={...purchase,...(reference?{scope:'daily_reference'}:{}),package_sn:'pack-1',package_version:1,dishes:[]}
   const line={cart_item_id:'line-1',sku_id:'tomato',quantity:1,version:1,selected:true,
@@ -31,7 +32,7 @@ function mount({daily=false,reference=false,selection,unified=false}={}){
       purchase:input.method==='POST'?{...purchase,package_sn:'pack-1',package_version:1}:structuredClone(purchase)}}
   }
   const uiProps=reactive({unified,visible:true,route,meal:{members:[{id:'member-1'}]},selection,...(reference?{reference:{previewId:'preview',dailyPlanVersion:4,mealTypes:['lunch'],items:[{sku_id:'tomato',product_name:'合成番茄',quantity:1}]}}:{})})
-  const deps={ref,computed,watch,defineEmits:()=>()=>{},defineExpose:()=>{},onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
+  const deps={ref,computed,watch,referenceIngredientLabel,referenceGapDetail,defineEmits:()=>()=>{},defineExpose:()=>{},onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
     defineOptions:()=>{},defineProps:()=>uiProps,commerce:api,request:send,
     commerceMealView,getSession:()=>({householdId:'family-1'}),storageContext:()=>scope,
     scopedStorage:{getStorageSync:key=>saved.get(scope+key),setStorageSync:(key,value)=>saved.set(scope+key,structuredClone(value))},
@@ -40,7 +41,7 @@ function mount({daily=false,reference=false,selection,unified=false}={}){
   const source=readFileSync(new URL('../src/components/CloudMealPurchase.vue',import.meta.url),'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const vueScope=effectScope()
-  const component=vueScope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {refresh,refreshUnified,checkout,toggle,selected,preview,products,picked,total,totalKnown,state,loginOpen,error,purchaseReady,returnKey,quoteWaiting,canSubmit,selectSlot}`)(deps))
+  const component=vueScope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {refresh,refreshUnified,checkout,toggle,selected,preview,products,picked,total,totalKnown,state,loginOpen,error,purchaseReady,purchaseGaps,returnKey,quoteWaiting,canSubmit,selectSlot}`)(deps))
   return {...component,calls,uiProps,deny(){denied=true},pending(){purchase.available=false;purchase.confirmation_pending=true;items[0].sku.available_quantity=0},unavailable(){purchase.available=false;purchase.confirmation_pending=false},link(){linked=true},wrongVersion(){publicationVersion=3},switch(){scope='B'},
     changeReferenceVersion(){referenceVersion++},dispose(){hooks.unmount();vueScope.stop()}}
 }
@@ -138,7 +139,7 @@ test('daily purchase preview and explicit publication reference the chosen meals
 test('daily summary clears former account dishes before awaiting a new read',async()=>{
   const route={arrangement:'saved-1',version:'2',date:'2026-10-21'},hooks={}
   let scope='A',answer={status:'ready',id:'saved-1',version:2,meals:[{members:[],dishes:[{name:'前账号菜品'}]}]},release
-  const deps={ref,computed,watch,defineEmits:()=>()=>{},defineExpose:()=>{},onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onUnmounted:fn=>hooks.unmount=fn,
+  const deps={ref,computed,watch,referenceIngredientLabel,referenceGapDetail,defineEmits:()=>()=>{},defineExpose:()=>{},onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onUnmounted:fn=>hooks.unmount=fn,
     defineProps:()=>({route}),storageContext:()=>scope,getSession:()=>({householdId:scope}),
     request:async()=>answer?{data:answer}:new Promise(resolve=>{release=resolve})}
   const source=readFileSync(new URL('../src/components/CloudDailyPurchase.vue',import.meta.url),'utf8')
@@ -200,4 +201,35 @@ test('unread, rejected or unavailable procurement never displays a known zero am
   f.unavailable();await f.refresh();assert.equal(f.totalKnown.value,false)
   f.deny();await f.refresh();assert.equal(f.totalKnown.value,false)
  }finally{f.dispose()}
+})
+
+
+test('saved meal gaps stay visible while only purchasable products reach quote',async()=>{
+ const gaps=[{ingredient:'Oil',ingredient_label:'油',reason:'needs_confirmation',detail:'需自行准备并核对原谱用量。'},
+   {ingredient:'Scallion (optional), sliced',ingredient_label:'葱（可选），切片',reason:'optional_not_selected',detail:'原谱可选，本次未采用。'}]
+ const f=mount({unified:true,selection:{familyId:'family-1',date:'2026-10-21',mealType:'dinner',version:2,dishKeys:['dish-1']},gaps})
+ try{
+  f.link();await f.refreshUnified()
+  assert.equal(f.error.value,'');assert.equal(f.canSubmit.value,true)
+  assert.deepEqual(f.purchaseGaps.value.map(g=>[g.label,g.reason]),[['油','needs_confirmation'],['葱（可选），切片','optional_not_selected']])
+  assert.deepEqual(f.products.value.map(p=>p.id),['tomato'])
+  assert.deepEqual(f.calls.find(call=>Array.isArray(call)&&call[0]==='quote')[1],['line-1'])
+  f.deny();await f.refreshUnified()
+  assert.deepEqual(f.purchaseGaps.value,[]);assert.equal(f.canSubmit.value,false)
+ }finally{f.dispose()}
+})
+
+test('purchase panel distinguishes failure from loading and separates optional items',()=>{
+ const props=reactive({gaps:[{ingredient:'Oil',reason:'needs_confirmation'},{ingredient:'Scallion',reason:'optional_not_selected'}],slots:[],ready:false,busy:false,error:'食材核对失败',picked:[]})
+ const source=readFileSync(new URL('../src/components/MealPurchasePanel.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
+ const panel=new Function('computed','ref','defineProps','defineEmits',source+';return {deliveryText,preparationGaps,optionalGaps}')(computed,ref,()=>props,()=>()=>{})
+ assert.equal(panel.deliveryText.value,'暂不可用')
+ props.error='';props.busy=true;assert.equal(panel.deliveryText.value,'正在读取…')
+ props.busy=false;assert.equal(panel.deliveryText.value,'待核对')
+ props.ready=true;assert.equal(panel.deliveryText.value,'添加地址后选择')
+ assert.deepEqual(panel.preparationGaps.value.map(g=>g.ingredient),['Oil'])
+ assert.deepEqual(panel.optionalGaps.value.map(g=>g.ingredient),['Scallion'])
+ const template=readFileSync(new URL('../src/components/MealPurchasePanel.vue',import.meta.url),'utf8')
+ assert.ok(template.includes('{{deliveryText}}'))
+ assert.ok(template.includes('不计入订单金额'))
 })

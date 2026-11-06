@@ -76,6 +76,31 @@ test('capture can reuse freshly authorized member list while still reading polic
   assert.ok(h.calls.some(c=>c.path.includes('/vision/page')))
   assert.ok(!h.calls.some(c=>c.path.endsWith('/members')))
 })
+
+test('capture preparation skips history and rejects a previous days photo checkpoint',async()=>{
+ const memory=new Map([['meal-photo-flow:member',{day:'2026-11-04',draftId:'draft',taskId:'task',uploads:[{upload_id:'old'}]}]])
+ const h=setup({},memory)
+ await h.client.open('member',null,{day:'2026-11-06',history:false})
+ assert.equal(h.state.draft,null);assert.equal(h.state.job,null);assert.deepEqual(h.state.uploads,[])
+ assert(!h.calls.some(c=>c.path.includes('/vision/page')||c.path.includes('/meal-drafts/')||c.path.includes('/vision-tasks/')))
+ assert.equal(memory.get('meal-photo-flow:member').day,'2026-11-06')
+})
+
+test('starting a fresh meal clears the completed checkpoint across subsequent opens',async()=>{
+ const h=setup({},new Map([['meal-photo-flow:member',{day:'2026-11-06',draftId:'draft',taskId:'task'}]]))
+ await h.client.open('member',null,{restore:false,history:false,day:'2026-11-06'})
+ await h.client.open('member',null,{history:false,day:'2026-11-06'})
+ assert.equal(h.state.draft,null);assert.equal(h.state.job,null)
+})
+
+test('cross-day fresh entry preserves an uncertain writes exact recovery request',async()=>{
+ const pending={operation:'task',request:{path:'/api/health/v1/meal-photo-tasks',method:'POST',headers:{'Idempotency-Key':'original'},data:{eaten_at:meal.eaten_at}}}
+ const h=setup({},new Map([['meal-photo-flow:member',{day:'2026-11-04',pending,uploads:[{upload_id:'old'}]}]]))
+ await h.client.open('member',null,{restore:false,history:false,day:'2026-11-06'})
+ assert.deepEqual(h.state.pending,pending);assert.deepEqual(h.state.uploads,[{upload_id:'old'}])
+ await h.client.retryPending()
+ assert.deepEqual(h.calls.find(c=>c.path.endsWith('/meal-photo-tasks')),pending.request)
+})
 test('unconfigured service permits private upload but never sends consent or recognition',async()=>{
   const h=setup();h.config.meal.available=false;h.config.meal.reason='模型未配置'
   await h.client.open();await h.client.addPhoto('local');h.client.setConsent(true);await h.client.start('lunch',meal.eaten_at)

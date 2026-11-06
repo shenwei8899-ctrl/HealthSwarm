@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
+import {createRequire} from 'node:module'
 import {computed,effectScope,nextTick,reactive,ref,watch} from 'vue'
 import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
 import {detailGesture} from '../src/services/meal-detail-client.js'
@@ -221,6 +222,7 @@ test('an incomplete historical dinner regenerates only dinner and keeps verified
  assert.equal(h.state.plan.meals.length,2)
  const opened=h.calls.find(c=>c[0]==='open')
  assert.deepEqual(opened[3].meal_types,['dinner']);assert.equal(opened[3].daily_base_version,8)
+ assert.equal(opened[4].fresh,true)
  assert.equal(h.calls.filter(c=>c[0]==='submit').length,1)
  await h.tick();assert.equal(h.timers.size,1,'continue following the missing dinner while the task is active')
 })
@@ -432,17 +434,28 @@ test('an authoritative absent menu replaces its preview without restoring it or 
  assert.equal(h.calls.some(c=>c[0]==='flow'),false)
 })
 
+function contentFixture(state=reactive(todayMealPlanState())){
+ const source=readFileSync(new URL('../src/components/TodayMealPlanContent.vue',import.meta.url),'utf8').split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm,'')
+ const props=reactive({state,busy:false,interactive:true}),events=[]
+ const deps={computed,defineProps:()=>props,defineEmits:()=> (...args)=>events.push(args),localDate:()=>date}
+ const view=new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {displayDate,loadingLabel,detail,dish,act}`)(deps)
+ return {view,props,events}
+}
+
 function sheetFixture({clientOptions,readOnly=false}={}){
  const source=readFileSync(new URL('../src/components/TodayMealPlanSheet.vue',import.meta.url),'utf8').split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm,'')
- const scope=effectScope(),props=reactive({open:true,profile,busy:false,unavailable:false,readOnly}),events=[],calls=[],hooks={}
- let clientFixture
- const deps={computed,reactive,ref,watch,defineProps:()=>props,defineEmits:()=> (...args)=>events.push(args),
-  onUnmounted:fn=>{hooks.unmount=fn},onHide:fn=>{hooks.hide=fn},onShow:fn=>{hooks.show=fn},
-  todayMealPlanState,localDate:()=>date,
-  detailGesture,
-  createTodayMealPlan:options=>clientOptions?(clientFixture=fixture({...clientOptions,initialState:options.state,onPlan:options.onPlan})).client:({open:()=>calls.push('open'),pause:()=>calls.push('pause'),clear:()=>calls.push('clear'),dispose:()=>calls.push('dispose')})}
- const view=scope.run(()=>new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {state,expanded,displayDate,loadingLabel,start,cancelTouch,end,detail,dish,act}`)(deps))
- return {view,props,events,calls,hooks,get clientFixture(){return clientFixture},dispose(){hooks.unmount();scope.stop()}}
+ const scope=effectScope(),state=reactive(todayMealPlanState()),props=reactive({open:true,state,profile,busy:false,interactive:true,unavailable:false,readOnly}),events=[],calls=[],hooks={}
+ const clientFixture=clientOptions?fixture({...clientOptions,initialState:state}):null
+ const client=clientFixture?.client||{open:()=>calls.push('open'),pause:()=>calls.push('pause'),clear:()=>calls.push('clear'),dispose:()=>calls.push('dispose')}
+ const load=()=>{if(!props.profile||props.unavailable){client.clear();return}if(!props.open){client.pause();return}void client.open(props.profile,{readOnly:props.readOnly})}
+ const handle=(...args)=>{if(args[0]!=='action'){events.push(args);return}if(['answer','candidates'].includes(state.action))events.push(['continue',state.pending]);else void client.open(props.profile,{readOnly:props.readOnly||state.action==='refresh'})}
+ const deps={computed,ref,watch,defineProps:()=>props,defineEmits:()=>handle,localDate:()=>date,detailGesture}
+ const view=scope.run(()=>{
+  watch(()=>[props.open,props.profile,props.unavailable,props.readOnly],load,{immediate:true})
+  return new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {expanded,displayDate,start,cancelTouch,end,detail,dish,act}`)(deps)
+ })
+ hooks.unmount=()=>client.dispose()
+ return {view:{...view,state,loadingLabel:computed(()=>state.label)},props,events,calls,hooks,clientFixture,dispose(){hooks.unmount();scope.stop()}}
 }
 
 test('actual sheet consumes the saved three-meal plan and opens the selected real meal',async()=>{
@@ -507,9 +520,9 @@ test('actual sheet ends timed-out skeletons and refreshes the existing task with
 
 test('closing the actual sheet pauses instead of discarding its menu; removing the profile clears it',async()=>{
  const h=sheetFixture();try{
-  h.view.state.plan=ready();h.props.open=false;await nextTick()
-  assert.equal(h.calls.at(-1),'pause');assert.equal(h.view.state.plan.version,1)
-  h.props.profile=null;await nextTick();assert.equal(h.calls.at(-1),'clear')
+  h.view.state.plan=ready();h.view.state.phase='generating';h.props.open=false;await nextTick()
+  assert.equal(h.view.state.plan.version,1);assert.equal(h.view.state.phase,'generating')
+  h.props.open=true;await nextTick();assert.equal(h.view.state.phase,'generating')
  }finally{h.dispose()}
 })
 
@@ -522,13 +535,22 @@ test('the actual sheet exposes separate reading and generating copy with a compa
  }finally{h.dispose()}
 })
 
-test('sheet actions cannot navigate an unverified preview, hidden sheet or closed sheet',async()=>{
+test('sheet actions cannot navigate an unverified preview, inactive page or closed sheet',async()=>{
  const h=sheetFixture(),item=ready().meals[0];try{
   h.view.detail(item);h.view.dish({item,dishIndex:0});assert.equal(h.events.length,0)
   h.view.state.verified=true;h.view.detail(item);h.view.dish({item,dishIndex:0});assert.equal(h.events.length,2)
-  h.hooks.hide();h.view.detail(item);assert.equal(h.events.length,2)
-  h.hooks.show();h.props.open=false;await nextTick();h.view.detail(item);assert.equal(h.events.length,2)
+  h.props.interactive=false;h.view.detail(item);h.view.act();assert.equal(h.events.length,2)
+  h.props.interactive=true;h.props.open=false;await nextTick();h.view.detail(item);h.view.act();assert.equal(h.events.length,2)
  }finally{h.dispose()}
+})
+
+test('shared content gates preview interactions and busy recovery actions',()=>{
+ const h=contentFixture(),item=ready().meals[0]
+ h.view.detail(item);h.view.dish({item,dishIndex:0});assert.equal(h.events.length,0)
+ h.props.state.verified=true;h.view.detail(item);h.view.dish({item,dishIndex:0});assert.equal(h.events.length,2)
+ h.props.busy=true;h.view.act();assert.equal(h.events.length,2)
+ h.props.busy=false;h.view.act();assert.deepEqual(h.events.at(-1),['action'])
+ h.props.interactive=false;h.view.detail(item);h.view.act();assert.equal(h.events.length,3)
 })
 
 test('header gestures expand, collapse and close while horizontal gestures are ignored',async()=>{
@@ -542,6 +564,29 @@ test('header gestures expand, collapse and close while horizontal gestures are i
   h.props.open=false;await nextTick();h.view.expanded.value=true;h.props.open=true;await nextTick()
   assert.equal(h.view.expanded.value,false)
  }finally{h.dispose()}
+})
+
+test('WeChat sheet controls receive taps independently from the header drag regions',()=>{
+ const require=createRequire(import.meta.url)
+ const weixinRequire=createRequire(require.resolve('@dcloudio/uni-mp-weixin/package.json'))
+ const {compile}=weixinRequire('@dcloudio/uni-mp-compiler')
+ const source=readFileSync(new URL('../src/components/TodayMealPlanSheet.vue',import.meta.url),'utf8')
+ const assets=[]
+ compile(source.match(/<template>([\s\S]*?)<\/template>/)[1],{
+  filename:'components/TodayMealPlanSheet.wxml',
+  miniProgram:{directive:'wx:',event:{key:true},class:{array:true},
+   slot:{fallbackContent:false,dynamicSlotNames:true},emitFile:asset=>assets.push(asset)},
+ })
+ const wxml=String(assets[0].source)
+ const tag=name=>wxml.match(new RegExp(`<[^>]+class="${name}"[^>]*>`))?.[0]||''
+ for(const name of ['tm-header','tm-controls']){
+  assert.ok(tag(name),`${name} must exist`)
+  assert.doesNotMatch(tag(name),/\b(?:bind|catch)touch/)
+ }
+ for(const name of ['tm-handle','tm-heading']){
+  for(const event of ['touchstart','touchend','touchcancel'])assert.match(tag(name),new RegExp(`\\bbind${event}=`))
+ }
+ for(const name of ['tm-expand','tm-close'])assert.match(tag(name),/\bbindtap=/)
 })
 
 test('card handlers enforce the preview interaction gate even when invoked directly',()=>{

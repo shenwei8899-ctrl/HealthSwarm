@@ -1,3 +1,5 @@
+import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
+import { mealPairingText } from '../src/utils/dish-commerce-presentation.js'
 import {supplementCandidates,appendMealCandidates,preserveMealEvidence,mealDishKey} from '../src/services/meal-supplement.js'
 import {createChatEntryTransition} from '../src/services/chat-entry-transition.js'
 import {mealNutritionState,recognizedMealDish} from '../src/services/meal-nutrition.js'
@@ -24,7 +26,7 @@ import {readDailyMealPlan,mealQuestionAction} from '../src/services/daily-meal-p
 const jsonClone=v=>v===undefined?undefined:JSON.parse(JSON.stringify(v))
 const member='11111111-1111-4111-8111-111111111111',thread='22222222-2222-4222-8222-222222222222',requestId='33333333-3333-4333-8333-333333333333'
 function mount(file,fields,extras={}){
- const hooks={},deps={defineOptions(){},supplementCandidates,appendMealCandidates,preserveMealEvidence,mealDishKey,createMealSupplementSaver:()=>({read:()=>null,hide(){}}),readDietRecord,mealNutritionState,recognizedMealDish,createMealNutritionClient:({state})=>({invalidate(){Object.assign(state,mealNutritionState())},preview:async()=>{},search:async()=>{},portions:async()=>{}}),defineEmits:()=>()=>{},defineExpose:()=>{},createChatEntryTransition,createChatKeyboardLayout,parseChatMealIntent,isMealPlanningCancelled,loadChatMealPlan,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,watch,chatTimestamp,chatBusinessDate,chatPresentation,defineProps:()=>({route:{}}),onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnload:fn=>hooks.unload=fn,onUnmounted:fn=>hooks.unmount=fn,...extras}
+ const hooks={},deps={defineOptions:()=>{},mealPairingText,supplementCandidates,appendMealCandidates,preserveMealEvidence,mealDishKey,createMealSupplementSaver:()=>({read:()=>null,hide(){}}),readDietRecord,mealNutritionState,recognizedMealDish,createMealNutritionClient:({state})=>({invalidate(){Object.assign(state,mealNutritionState())},preview:async()=>{},search:async()=>{},portions:async()=>{}}),defineEmits:()=>()=>{},defineExpose:()=>{},createChatEntryTransition,createChatKeyboardLayout,parseChatMealIntent,isMealPlanningCancelled,loadChatMealPlan,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,watch,chatTimestamp,chatBusinessDate,chatPresentation,defineProps:()=>({route:{}}),onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnload:fn=>hooks.unload=fn,onUnmounted:fn=>hooks.unmount=fn,...extras}
  if(file==='CloudMealPurchase.vue') Object.assign(deps,{defineOptions:()=>{}},addressNavigation(deps.storageContext,deps.uni))
  const source=readFileSync(new URL('../src/components/'+file,import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
  const scope=effectScope();const page=scope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {${fields}}`)(deps))
@@ -32,10 +34,10 @@ function mount(file,fields,extras={}){
 }
 function storage(){const m=new Map();return {getStorageSync:k=>jsonClone(m.get(k)),setStorageSync:(k,v)=>m.set(k,jsonClone(v)),getStorageInfoSync:()=>({keys:[...m.keys()]})}}
 
-function captureEditor(){
+function captureEditor(extras={}){
  let account='A',menuFailure=null,saves=0,pending=null
  const cache=new Map(),scoped={getStorageSync:k=>jsonClone(cache.get(account+':'+k)),setStorageSync:(k,v)=>cache.set(account+':'+k,jsonClone(v))}
- const page=mount('CloudMealCapture.vue','load,hide,manual,manualOpen,manualText,manualError,applyManual,cancelManual,dishes,people,editing,canSave,save,fromMenu,menuNotice,error,chooseImage,newMeal,saved',{
+ const page=mount('CloudMealCapture.vue','load,hide,manual,manualOpen,manualText,manualError,applyManual,cancelManual,dishes,people,editing,canSave,save,fromMenu,menuNotice,error,chooseImage,newMeal,saved,date,time,mealType,membersLoading,photoPreparing,captureLocked,photo,vision',{
   photoState,createMealPhotoClient:({state})=>({open:async id=>{state.memberId=id},discard(){}}),
   createCloudMealSaver:()=>({read:()=>pending,hide(){},finish(){pending=null},save:async()=>{saves++;return null}}),
   personalMeal,mealLabels,mealDay,scopedStorage:scoped,storageContext:()=>account,getSession:()=>({householdId:account}),commerce:{},uni:{chooseImage:()=>{throw Error('must not replace an open editor')}},
@@ -43,10 +45,89 @@ function captureEditor(){
    if(options.path.endsWith('/members'))return {data:[{id:member,display_name:'我',scopes:['diet_edit']}]}
    if(menuFailure)throw menuFailure
    return {data:{meals:[]}}
-  },
+  },...extras,
  })
  return {...page,cache,changeAccount(value){account=value},failMenu(value){menuFailure=value},freeze(){pending={editable:false,rows:[]}},get saves(){return saves}}
 }
+
+test('capture drops yesterday dishes and date while preserving todays unfinished meal',async()=>{
+ const p=captureEditor(),today=mealDay(new Date().toISOString())
+ try{
+  p.cache.set('A:cloud-capture-ui',{date:'2020-01-01',dishes:[{name:'旧菜'}],people:[{memberId:member,selected:true,dishes:['旧菜']}]})
+  await p.load();assert.equal(p.date.value,today);assert.deepEqual(p.dishes.value,[])
+  p.manual();p.manualText.value='今天的菜';p.applyManual();await nextTick();p.hide();await p.load()
+  assert.equal(p.date.value,today);assert.deepEqual(p.dishes.value.map(d=>d.name),['今天的菜'])
+ }finally{p.dispose()}
+})
+
+test('capture starts todays meal when returning across midnight without a hide hook',async()=>{
+ let clock=Date.parse('2026-11-06T23:50:00+08:00')
+ class CaptureDate extends Date { static now(){return clock} }
+ const p=captureEditor({Date:CaptureDate})
+ try{
+  await p.load();p.manual();p.manualText.value='昨天的菜';p.applyManual();await nextTick()
+  clock=Date.parse('2026-11-07T08:05:00+08:00');await p.load()
+  assert.equal(p.date.value,'2026-11-07');assert.equal(p.time.value,'08:05');assert.equal(p.mealType.value,'breakfast')
+  assert.deepEqual(p.dishes.value,[]);assert.equal(p.manualOpen.value,false)
+ }finally{p.dispose()}
+})
+
+test('capture opens local editing immediately while members are still loading',async()=>{
+ let release
+ const p=captureEditor({request:()=>new Promise(resolve=>release=resolve)})
+ try{
+  const flight=p.load();assert.equal(p.membersLoading.value,true);assert.equal(p.captureLocked.value,false)
+  p.manual();p.manualText.value='正在输入的新菜';p.applyManual()
+  release({data:[{id:member,scopes:['diet_edit']}]});await flight
+  assert.deepEqual(p.dishes.value.map(d=>d.name),['正在输入的新菜'])
+  assert.deepEqual(p.people.value[0].dishes,['正在输入的新菜'])
+ }finally{p.dispose()}
+})
+
+test('capture immediately previews a local photo and uploads it after background preparation',async()=>{
+ let release,picker;const uploads=[]
+ const p=captureEditor({
+  request:()=>new Promise(resolve=>release=resolve),uni:{chooseImage:options=>picker=options},
+  createMealPhotoClient:({state})=>({open:async id=>{state.memberId=id},discard(){},resetSelection:()=>true,addPhoto:async path=>{uploads.push(path);state.uploads=[{upload_id:path}]}}),
+ })
+ try{
+  const flight=p.load();p.chooseImage('camera');const selection=picker.success({tempFilePaths:['local-photo']});picker.complete()
+  assert.equal(p.photo.value,'local-photo');assert.deepEqual(uploads,[])
+  release({data:[{id:member,scopes:['diet_edit']}]});await flight;await selection
+  assert.deepEqual(uploads,['local-photo']);assert.equal(p.photo.value,'local-photo')
+ }finally{p.dispose()}
+})
+
+test('member load failure retains the chosen local photo and releases the local controls',async()=>{
+ let rejectMembers,picker
+ const p=captureEditor({request:()=>new Promise((_,reject)=>rejectMembers=reject),uni:{chooseImage:options=>picker=options}})
+ try{
+  const flight=p.load();p.chooseImage('camera');const selection=picker.success({tempFilePaths:['retained-photo']});picker.complete()
+  rejectMembers(Error('成员请求超时'));await flight;await selection
+  assert.equal(p.photo.value,'retained-photo');assert.equal(p.captureLocked.value,false)
+  assert.match(p.error.value,/超时/)
+ }finally{p.dispose()}
+})
+
+test('capture policy preparation does not lock manual editing and late data cannot replace it',async()=>{
+ let release
+ const p=captureEditor({createMealPhotoClient:({state})=>({open:async id=>{state.memberId=id;state.busy=true;await new Promise(resolve=>release=resolve);state.busy=false},discard(){}})})
+ try{
+  const flight=p.load();await nextTick();assert.equal(p.photoPreparing.value,true);assert.equal(p.captureLocked.value,false)
+  p.manual();p.manualText.value='手动输入';p.applyManual();release();await flight
+  assert.deepEqual(p.dishes.value.map(d=>d.name),['手动输入'])
+ }finally{p.dispose()}
+})
+
+test('leaving during local photo preparation ignores late responses and uploads',async()=>{
+ let release,picker;const uploads=[]
+ const p=captureEditor({request:()=>new Promise(resolve=>release=resolve),uni:{chooseImage:options=>picker=options},createMealPhotoClient:({state})=>({open:async id=>state.memberId=id,discard(){},resetSelection:()=>true,addPhoto:async path=>uploads.push(path)})})
+ try{
+  const flight=p.load();p.chooseImage('album');const selection=picker.success({tempFilePaths:['private']});picker.complete();p.hide()
+  release({data:[{id:member,scopes:['diet_edit']}]});await flight;await selection
+  assert.deepEqual(uploads,[]);assert.equal(p.photo.value,'');assert.deepEqual(p.people.value,[])
+ }finally{p.dispose()}
+})
 
 test('restoring a meal never displays a revoked members cached nutrition under the current member',async()=>{
  const p=captureEditor();try{
@@ -58,7 +139,7 @@ test('restoring a meal never displays a revoked members cached nutrition under t
 
 test('restoring an authorized saved meal rereads the record instead of trusting cached nutrition',async()=>{
  const cache=storage(),calls=[],record={id:'saved',snapshot:{meal:{items:[]},nutrition:{complete:true,totals:{energy_kcal:'100'}}}}
- cache.setStorageSync('cloud-capture-ui',{people:[{memberId:member,selected:true,dishes:['米饭']}],dishes:[{name:'米饭'}],captureScope:'单人餐盘',mealType:'dinner',date:'2026-11-04',time:'18:00',oil:'不确定',source:'手动填写',saved:{rows:[{memberId:member,recordId:'saved',record:{snapshot:{nutrition:{totals:{energy_kcal:777}}}}}]}})
+ cache.setStorageSync('cloud-capture-ui',{people:[{memberId:member,selected:true,dishes:['米饭']}],dishes:[{name:'米饭'}],captureScope:'单人餐盘',mealType:'dinner',date:mealDay(new Date().toISOString()),time:'18:00',oil:'不确定',source:'手动填写',saved:{rows:[{memberId:member,recordId:'saved',record:{snapshot:{nutrition:{totals:{energy_kcal:777}}}}}]}})
  const send=async o=>{calls.push(o);return {data:o.path.endsWith('/members')?[{id:member,scopes:['diet_edit']}]:{records:[record],next_offset:null}}}
  const p=mount('CloudMealCapture.vue','load,saved,nutritionRows',{
   photoState,createMealPhotoClient:({state})=>({open:async id=>state.memberId=id,discard(){}}),createCloudMealSaver:()=>({read:()=>null,hide(){},finish(){}}),
@@ -293,7 +374,7 @@ test('feedback pagination reports a stalled cursor instead of claiming no saved 
 
 function chat(){let submits=0,exists=false,invalid=false;const saved=storage(),calls=[]
  const send=async o=>{calls.push(jsonClone(o));if(o.path.includes('/daily-meal-plans/'))return {data:{status:'absent',date:o.path.split('/').at(-1),version:0,meals:[]}};if(o.path.includes('/reference-meal-plans/'))return {data:{status:'absent'}};if(o.path.includes('/daily-arrangements/'))return {data:readyPreparation('2026-10-20').arrangement};if(o.path.includes('/consultations?'))return {data:{items:[{thread_id:thread,member_id:member,agent_slug:'health-consultation',business_date:'2026-10-20'}],has_more:false,next_offset:null}};if(o.path.includes('/requests?agent_slug='))return {data:{requests:[]}};if(o.path.endsWith('/members'))return {data:[{id:member,is_owner:true}]};if(o.path.endsWith('/readiness'))return {data:{capabilities:{member_id:member},entries:[{entry_type:'consultation',status:'available'}]}};if(o.path.endsWith('/daily-conversations'))return {data:{days:[{date:'2026-10-20',thread_id:thread}]}};if(o.path==='/api/agent/runs'){if(++submits===1)throw Object.assign(new Error('timeout'),{code:503});exists=true;return {data:{request_id:requestId,thread_id:thread}}}if(o.path.includes('/tasks/')){if(invalid)throw Object.assign(new Error('withdrawn'),{code:410});if(!exists)throw Object.assign(new Error('not yet'),{code:404});return {data:{member_id:member,thread_id:thread,request_id:requestId,task_type:'consultation',agent_slug:'health-consultation',request_status:'dispatched',execution_status:'completed',result:{result_type:'general_education_answer',scope:'general_education',answer:'private previous answer',citations:[]}}}};throw new Error(o.path)}
- const deps={createChatEntryTransition,createChatKeyboardLayout,watch,chooseReference,isReferencePlan,preparationReady:value=>checkPreparation(value,'2026-10-20'),readCurrentPreparation:async()=>readyPreparation('2026-10-20'),preparationRoute:()=>'/pages/onboarding/preparing',HEALTH_TEXT_TASKS,loadCloudProfile:async()=>({onboarded:true,selfMemberId:'self',householdId:'family',defaultDiners:['self'],members:[{id:'self',relation:'本人',healthMemberId:member}]}),dailyArrangementState:()=>({phase:'idle',busy:false}),createDailyArrangementClient:({state})=>({adopt:arrangement=>{state.phase='ready';state.arrangement=arrangement},load:async()=>{state.phase='ready';state.arrangement={}},pause(){},reset(){},dispose(){}}),storageContext:()=> 'scope',scopedStorage:saved,getSession:()=>({accountId:'self',householdId:'family',token:'synthetic'}),commerce:{connect:async()=>{}},request:send,newHealthRequestId:()=>requestId,localDate:()=> '2026-10-20',readChatSnapshot:async()=>({messages:[],runs:[]}),chatImageContent:async image=>image.localPath,persistChatImage:async image=>({localPath:image.path}),createHealthTaskFlow:options=>createHealthTaskFlow({...options,send,session:()=>({accountId:'self',token:'synthetic'}),revision:()=>1,storage:saved,newId:()=>requestId,day:()=> '2026-10-20',subscribe:()=>()=>{}}),uni:{redirectTo(){},reLaunch(){},showToast(){}}}
+ const deps={todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),createChatEntryTransition,createChatKeyboardLayout,watch,chooseReference,isReferencePlan,preparationReady:value=>checkPreparation(value,'2026-10-20'),readCurrentPreparation:async()=>readyPreparation('2026-10-20'),preparationRoute:()=>'/pages/onboarding/preparing',HEALTH_TEXT_TASKS,loadCloudProfile:async()=>({onboarded:true,selfMemberId:'self',householdId:'family',defaultDiners:['self'],members:[{id:'self',relation:'本人',healthMemberId:member}]}),dailyArrangementState:()=>({phase:'idle',busy:false}),createDailyArrangementClient:({state})=>({adopt:arrangement=>{state.phase='ready';state.arrangement=arrangement},load:async()=>{state.phase='ready';state.arrangement={}},pause(){},reset(){},dispose(){}}),storageContext:()=> 'scope',scopedStorage:saved,getSession:()=>({accountId:'self',householdId:'family',token:'synthetic'}),commerce:{connect:async()=>{}},request:send,newHealthRequestId:()=>requestId,localDate:()=> '2026-10-20',readChatSnapshot:async()=>({messages:[],runs:[]}),chatImageContent:async image=>image.localPath,persistChatImage:async image=>({localPath:image.path}),createHealthTaskFlow:options=>createHealthTaskFlow({...options,send,session:()=>({accountId:'self',token:'synthetic'}),revision:()=>1,storage:saved,newId:()=>requestId,day:()=> '2026-10-20',subscribe:()=>()=>{}}),uni:{redirectTo(){},reLaunch(){},showToast(){}}}
  // Recovery fixtures explicitly reopen a conversation; plain entry is tested
  // separately and must never pick up this fixture's pre-existing daily thread.
  deps.defineProps=()=>({route:{entry:'conversation'}})

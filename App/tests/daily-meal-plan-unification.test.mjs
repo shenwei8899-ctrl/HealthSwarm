@@ -1,3 +1,5 @@
+import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
+import { mealPairingText } from '../src/utils/dish-commerce-presentation.js'
 import {parseChatMealIntent,isMealPlanningCancelled} from '../src/utils/chat-meal-intent.js'
 import {watch} from 'vue'
 import {createChatEntryTransition} from '../src/services/chat-entry-transition.js'
@@ -37,9 +39,9 @@ test('new plans use the current profile; explicit family requests include the fa
 
 function mount({read=async()=>plan()}={}){
   const hooks={},cache=new Map(),calls=[];let notify
-  const flow={hide(){},async open(memberId,taskType,selection){calls.push({action:'open',memberId,taskType,selection});notify({memberId,taskType,available:true,entry:{thread_id:'thread'}})},async submit(text){calls.push({action:'submit',text});return true},async refresh(){calls.push({action:'refresh'});notify({taskType:'reference_meal_preview',requestId:'req',status:'completed',available:true})}}
+  const flow={hide(){},async open(memberId,taskType,selection,options){calls.push({action:'open',memberId,taskType,selection,options});notify({memberId,taskType,available:true,entry:{thread_id:'thread'}})},async submit(text){calls.push({action:'submit',text});return true},async refresh(){calls.push({action:'refresh'});notify({taskType:'reference_meal_preview',requestId:'req',status:'completed',available:true})}}
   const state=()=>({phase:'idle',busy:false})
-  const deps={defineOptions(){},createChatEntryTransition,createChatKeyboardLayout,watch,ref,reactive,computed,nextTick,defineProps:()=>({route:{entry:'conversation'}}),onMounted:fn=>hooks.mounted=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
+  const deps={todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),defineOptions:()=>{},mealPairingText,createChatEntryTransition,createChatKeyboardLayout,watch,ref,reactive,computed,nextTick,defineProps:()=>({route:{entry:'conversation'}}),onMounted:fn=>hooks.mounted=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
     parseChatMealIntent,isMealPlanningCancelled,chatPresentation,chooseReference:referenceSelection,isReferencePlan,readDailyMealPlan:read,mealQuestionAction,canPurchaseAllMeals,
     openMealPage:(target,options)=>calls.push({action:'navigate',target,options}),
     dailyArrangementState:state,createDailyArrangementClient:()=>({reset(){},dispose(){}}),
@@ -55,6 +57,17 @@ function mount({read=async()=>plan()}={}){
   page.conversationThreadId.value='existing-consultation-anchor';page.profile.value={householdId:'family',selfMemberId:'self',members:[{id:'self',healthMemberId:member}]};page.entryReady.value=true
   return {page,calls,notify,dispose(){hooks.unmount?.();scope.stop()}}
 }
+
+test('completed live chat displays the returned pairing explanation before retaining its meal card',()=>{
+ const h=mount()
+ try{
+  const data={scope:'daily_reference',status:'reference_ready',professional_status:'not_reviewed',nutrition_status:'not_calculated',preview_id:'saved',plan_date:today,meals:[{meal_type:'lunch',dishes:[]}],pairing_summary:'本次搭配说明与营养原文'}
+  h.notify({memberId:member,taskType:'reference_meal_preview',requestId:'request-summary',status:'completed',result:{type:'business',kind:'meal_plan_preview',data}})
+  const answer=h.page.messages.value.at(-1)
+  assert.equal(answer.text,data.pairing_summary)
+  assert.deepEqual(answer.business.data,data)
+ }finally{h.dispose()}
+})
 
 test('all-meal purchase opens the clicked plan date and version rather than today',()=>{
  const h=mount(),tomorrow=plan(7,undefined,'2026-10-28')
@@ -88,6 +101,48 @@ test('changing dinner binds the current version and only requests dinner',async(
   const opened=h.calls.find(call=>call.action==='open')
   assert.equal(opened.taskType,'reference_meal_preview');assert.equal(opened.selection.daily_base_version,1)
   assert.deepEqual(opened.selection.meal_types,['dinner']);assert.ok(h.calls.some(call=>call.action==='submit'));h.dispose()
+})
+
+test('an invalidated lunch is regenerated in a fresh thread at the current daily version',async()=>{
+  const current={...plan(8,[]),status:'needs_regeneration',needs_regeneration:['lunch'],regeneration_participants:{lunch:['self']}}
+  const h=mount({read:async()=>current})
+  try{
+    h.page.question.value='把今天午餐换成蒸鱼'
+    await h.page.sendQuestion('reference_meal_preview')
+    const opened=h.calls.find(call=>call.action==='open')
+    assert.ok(opened,'an expired lunch must permit a replacement task')
+    assert.equal(opened.options.fresh,true)
+    assert.equal(opened.selection.daily_base_version,8)
+    assert.deepEqual(opened.selection.meal_types,['lunch'])
+    assert.equal(h.calls.filter(call=>call.action==='submit').length,1)
+  }finally{h.dispose()}
+})
+
+test('rebuilding a family lunch preserves its diners unless the user explicitly changes them',async()=>{
+  for(const explicit of [false,true]){
+    const current={...plan(8,[]),status:'needs_regeneration',needs_regeneration:['lunch'],regeneration_participants:{lunch:['other','self']}}
+    const h=mount({read:async()=>current})
+    try{
+      h.page.profile.value.members.push({id:'other',healthMemberId:'other-health'})
+      h.page.question.value=explicit?'只给我重新安排今天午餐':'把今天午餐换成蒸鱼'
+      await h.page.sendQuestion('reference_meal_preview')
+      const opened=h.calls.find(call=>call.action==='open')
+      assert.deepEqual(opened.selection.participant_ids,explicit?['self']:['other','self'])
+      assert.equal(opened.options.fresh,true)
+    }finally{h.dispose()}
+  }
+})
+
+test('rebuilding meals with different diners retains the question for separate requests',async()=>{
+  const current={...plan(8,[]),status:'needs_regeneration',needs_regeneration:['lunch','dinner'],regeneration_participants:{lunch:['self'],dinner:['other','self']}}
+  const h=mount({read:async()=>current})
+  try{
+    h.page.profile.value.members.push({id:'other',healthMemberId:'other-health'})
+    h.page.question.value='重新安排今天午餐和晚餐'
+    await h.page.sendQuestion('reference_meal_preview')
+    assert.equal(h.calls.some(call=>call.action==='submit'),false)
+    assert.equal(h.page.question.value,'重新安排今天午餐和晚餐')
+  }finally{h.dispose()}
 })
 
 test('revising a completed plan reopens its reference thread with the current daily version',async()=>{

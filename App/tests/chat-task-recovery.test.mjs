@@ -92,6 +92,31 @@ test('submit 404 with revoked conversation access still clears private state',as
  assert.equal(h.flow.getState().invalidated,true);assert.equal(h.flow.getState().entry,null);h.flow.hide()
 })
 
+for(const businessCode of [undefined,'daily_plan_version_changed'])test(`submit conflict preserves a verified conversation, code=${businessCode}`,async()=>{
+ const h=fixture();h.failPost(failure(409,businessCode))
+ try{
+  assert.equal(await h.start(),false)
+  const state=h.flow.getState()
+  assert.notEqual(state.invalidated,true)
+  assert.equal(state.entry.thread_id,thread)
+  assert.equal(state.submitRejected,true)
+  assert.equal(state.submitUnknown,false)
+  assert.equal(state.failureStatus,409)
+  assert.equal(h.calls.filter(c=>c.path.endsWith('/history')).length,1)
+  assert.equal(h.calls.filter(c=>c.path==='/api/agent/runs').length,1)
+ }finally{h.flow.hide()}
+})
+
+test('submit conflict still invalidates a conversation whose access recheck fails',async()=>{
+ const h=fixture();h.failPost(failure(409));h.failHistory(failure(403))
+ try{await h.start();assert.equal(h.flow.getState().invalidated,true);assert.equal(h.flow.getState().entry,null)}finally{h.flow.hide()}
+})
+
+test('a known processing-policy conflict on submit remains invalidated',async()=>{
+ const h=fixture();h.failPost(failure(409,'policy_changed'))
+ try{await h.start();assert.equal(h.flow.getState().invalidated,true);assert.equal(h.flow.getState().entry,null)}finally{h.flow.hide()}
+})
+
 test('event endpoint 404 falls back to the authoritative task read instead of invalidating chat',async()=>{
   const h=fixture();await h.start();h.complete();h.streams.at(-1).onError(failure(404))
   await new Promise(r=>setImmediate(r))

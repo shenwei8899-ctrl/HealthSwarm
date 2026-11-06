@@ -2,7 +2,7 @@
 import FoodImageSlot from './FoodImageSlot.vue'
 import MealPurchaseSheet from './MealPurchaseSheet.vue'
 import MealPurchasePanel from './MealPurchasePanel.vue'
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import AppNavBar from './AppNavBar.vue'
 import { request } from '../services/request.js'
@@ -14,46 +14,61 @@ import { packagePrice, packageSpec } from '../utils/package-presentation.js'
 const props=defineProps({route:Object})
 const offer=ref(null),publication=ref(null),address=ref(null),slots=ref([]),slotId=ref(0)
 const busy=ref(false),error=ref(''),checkoutOpen=ref(false),quote=ref(null),orderSn=ref(''),pending=ref(false)
+const phase=ref('prepare'),quotedProducts=ref([])
+const sourceUnavailable=ref(false)
+const retryLabel=computed(()=>phase.value==='delivery'?'重新获取配送信息':phase.value==='quote'?'重新核价':'重新准备商品')
+const products=computed(()=>quotedProducts.value.length?quotedProducts.value:publication.value?.items?.length?publication.value.items.map(item=>({
+  id:String(item.sku_id),name:item.product_snapshot?.product_name||offer.value?.name,
+  imageUrl:item.product_snapshot?.image_url||offer.value?.image_url,packLabel:item.product_snapshot?.sku_name||offer.value?.spec,
+  quantity:Number(item.quantity),priceCents:packagePrice(item.unit_price_cent)===null?null:Number(item.unit_price_cent),
+})):offer.value?[{
+  id:String(offer.value.sku_id||props.route.offer),name:offer.value.name,imageUrl:offer.value.image_url,
+  packLabel:offer.value.spec,quantity:1,priceCents:phase.value==='quote'?NaN:packagePrice(offer.value.price_cent)===null?null:Number(offer.value.price_cent),
+}]:[])
+const picked=computed(()=>products.value.map(item=>item.id))
+const canSubmit=computed(()=>!!(offer.value?.available&&address.value&&slots.value.some(item=>String(item.id)===String(slotId.value))
+  &&quote.value?.checkout_token&&Number.isFinite(Date.parse(quote.value.expires_at))&&Date.parse(quote.value.expires_at)>Date.now()
+  &&['goods_amount_cent','shipping_fee_cent','payable_amount_cent'].every(key=>Number.isSafeInteger(quote.value[key])&&quote.value[key]>=0)
+  &&!busy.value&&!error.value&&!pending.value&&!orderSn.value))
 const money=value=>packagePrice(value)??'待核对'
-const quoteAmountsValid=computed(()=>['goods_amount_cent','shipping_fee_cent','payable_amount_cent'].every(key=>Number.isSafeInteger(quote.value?.[key])&&quote.value[key]>=0))
-const products=computed(()=>offer.value?[{id:offer.value.sku_id,name:offer.value.name,imageUrl:offer.value.image_url,packLabel:packageSpec(offer.value.spec),priceCents:quoteAmountsValid.value?quote.value.goods_amount_cent:NaN,quantity:1}]:[])
-const canSubmit=computed(()=>Boolean(offer.value?.available&&address.value&&slots.value.some(item=>String(item.id)===String(slotId.value))&&quote.value?.checkout_token&&quoteAmountsValid.value&&Number.isFinite(Date.parse(quote.value.expires_at))&&Date.parse(quote.value.expires_at)>Date.now()&&!busy.value&&!error.value&&!pending.value&&!orderSn.value))
 let alive=true,owner=storageContext(),preferredAddressId=''
 function current(scope){return alive&&scope===storageContext()}
-function reset(){preferredAddressId='';offer.value=null;publication.value=null;address.value=null;slots.value=[];slotId.value=0;quote.value=null;orderSn.value='';pending.value=false;checkoutOpen.value=false}
+function reset(){preferredAddressId='';offer.value=null;publication.value=null;address.value=null;slots.value=[];slotId.value=0;quote.value=null;quotedProducts.value=[];orderSn.value='';pending.value=false;checkoutOpen.value=false;sourceUnavailable.value=false}
+function returnToChat(){if(!busy.value)uni.navigateBack({fail:()=>uni.reLaunch({url:'/pages/index/index'})})}
 async function load(){
   if(owner!==storageContext()){owner=storageContext();reset();busy.value=false}
   if(busy.value)return
-  const scope=storageContext();busy.value=true;error.value='';quote.value=null
+  const scope=storageContext();busy.value=true;error.value='';quote.value=null;sourceUnavailable.value=false
   try{
     const {data}=await request({path:'/api/health/v1/conversation-purchases/'+encodeURIComponent(props.route.conversation)})
     if(!current(scope))return
+    if(data?.request_id&&data.request_id!==props.route.conversation)throw Object.assign(new Error('食材包来源无法核对，请返回对话重新咨询。'),{code:'OFFER_UNAVAILABLE'})
+    if(!Array.isArray(data?.offers))throw new Error('食材包读取失败，请重试。')
     offer.value=data.offers.find(item=>item.offer_token===props.route.offer)||null
-    if(!offer.value)throw new Error('这份食材包不属于当前对话，请重新询问。')
-    if(!offer.value.available){error.value='商品已变化或暂不可购买，请重新询问。';return}
+    if(!offer.value)throw Object.assign(new Error('这份推荐已失效，商品或健康档案可能已变化，请返回对话重新咨询。'),{code:'OFFER_UNAVAILABLE'})
     pending.value=!!commerce.pendingOrder()
-    if(checkoutOpen.value&&!pending.value&&publication.value)await reprice(scope)
-  }catch(e){if(current(scope)){if(!checkoutOpen.value)offer.value=null;error.value=e.message}}
+  }catch(e){if(current(scope)){
+    if([401,403,404,409,410,'SESSION_CHANGED','OFFER_UNAVAILABLE'].includes(e.code)){reset();sourceUnavailable.value=true}
+    error.value=e.message
+  }}
   finally{if(current(scope))busy.value=false}
+  if(current(scope)&&checkoutOpen.value&&offer.value&&!error.value)await checkout()
 }
 async function delivery(scope){
+  phase.value='delivery';slots.value=[]
   const addresses=await commerce.addresses();if(!current(scope))return
   const selected=resolveCheckoutAddress(addresses,preferredAddressId||address.value?.id)
   address.value=selected;quote.value=null
-  if(!selected){slots.value=[];error.value='请选择配送地址，再核对价格。';return}
+  if(!selected){slotId.value=0;return}
   const result=await commerce.slots(selected.id);if(!current(scope))return
   slots.value=result.supported===false?[]:(result.items||[]).filter(item=>item.available)
   if(!slots.value.some(item=>String(item.id)===String(slotId.value)))slotId.value=slots.value[0]?.id||0
-  if(result.supported===false||!slots.value.length)error.value=result.message||'当前地址暂不能配送。'
-}
-async function reprice(scope){
-  await delivery(scope);if(!current(scope)||!address.value||!slots.value.length||error.value)return
-  const result=await commerce.quoteRecommendation(publication.value.package_sn,publication.value.package_version,address.value.id,slotId.value)
-  if(current(scope))quote.value=result
+  if(result.supported===false)error.value=result.message||'当前地址暂不支持配送，请更换地址。'
+  else if(!slots.value.length)error.value='当前地址暂无可用配送时段，请更换地址或稍后重试。'
 }
 async function checkout(){
   if(busy.value||!offer.value?.available||orderSn.value)return
-  const scope=storageContext();busy.value=true;error.value='';quote.value=null;checkoutOpen.value=true
+  const scope=storageContext();busy.value=true;error.value='';quote.value=null;checkoutOpen.value=true;phase.value='prepare'
   try{
     await commerce.connect();if(!current(scope))return
     pending.value=!!commerce.pendingOrder();if(pending.value)return
@@ -65,15 +80,29 @@ async function checkout(){
     }
     await commerce.confirmRecommendation(publication.value.package_sn,publication.value.package_version)
     if(!current(scope))return
-    await reprice(scope)
-  }catch(e){if(current(scope))error.value=e.message}
+    await delivery(scope);if(!current(scope)||!address.value||!slots.value.length||error.value)return
+    phase.value='quote'
+    const result=await commerce.quoteRecommendation(publication.value.package_sn,publication.value.package_version,address.value.id,slotId.value)
+    if(!current(scope))return
+    if(!result?.checkout_token||!Number.isFinite(Date.parse(result.expires_at))||Date.parse(result.expires_at)<=Date.now()
+      ||!['goods_amount_cent','shipping_fee_cent','payable_amount_cent'].every(key=>Number.isSafeInteger(result[key])&&result[key]>=0)
+      ||!Array.isArray(result.items)||!result.items.length)throw new Error('报价信息不完整，请重新核价。')
+    quotedProducts.value=result.items.map(item=>({id:String(item.sku_id),name:item.snapshot?.product_name||offer.value.name,
+      imageUrl:item.snapshot?.image_url||offer.value.image_url,packLabel:item.snapshot?.sku_name||offer.value.spec,
+      quantity:item.quantity,priceCents:Number.isSafeInteger(item.line_amount_cent)&&item.quantity>0?item.line_amount_cent/item.quantity:null}))
+    quote.value=result
+  }catch(e){if(current(scope)){
+    error.value=e.code==='INVALID_RESPONSE'?(phase.value==='delivery'?'配送信息读取失败，请重试或更换地址。':phase.value==='quote'?'商品价格与配送费读取失败，请重新核价。':'商品准备失败，请重新读取。'):e.message
+    if([401,403,404,409,410,'SESSION_CHANGED'].includes(e.code)){reset();sourceUnavailable.value=true}
+  }}
   finally{if(current(scope))busy.value=false}
 }
 async function submit(recover=false){
   if(busy.value||orderSn.value)return
+  if(!recover&&!canSubmit.value){quote.value=null;phase.value='quote';error.value='报价已失效或尚未就绪，请重新核价。';return}
   const scope=storageContext();busy.value=true;error.value=''
   try{
-    if(!recover&&(!quote.value?.checkout_token||!quoteAmountsValid.value||!Number.isFinite(Date.parse(quote.value.expires_at))||Date.parse(quote.value.expires_at)<=Date.now())){quote.value=null;throw new Error('报价已失效，请重新核对。')}
+    if(!recover&&(!quote.value?.checkout_token||!Number.isFinite(Date.parse(quote.value.expires_at))||Date.parse(quote.value.expires_at)<=Date.now())){quote.value=null;throw new Error('报价已失效，请重新核对。')}
     const result=recover?await commerce.retryOrder():await commerce.createOrder(quote.value.checkout_token)
     if(!current(scope))return
     orderSn.value=result.order_sn;quote.value=null;pending.value=false;checkoutOpen.value=false
@@ -81,16 +110,17 @@ async function submit(recover=false){
   }catch(e){if(current(scope)){pending.value=!!commerce.pendingOrder();error.value=e.message}}
   finally{if(current(scope))busy.value=false}
 }
+async function selectSlot(id){if(busy.value||String(slotId.value)===String(id))return;slotId.value=id;quote.value=null;await checkout()}
 function chooseAddress(){ if(busy.value)return; quote.value=null;openAddressPicker({selectedId:address.value?.id,onSelected:id=>{preferredAddressId=id;quote.value=null}}) }
-function selectSlot(id){if(busy.value)return;slotId.value=id;quote.value=null;void checkout()}
+function closeCheckout(){if(!busy.value){checkoutOpen.value=false;quote.value=null}}
 onMounted(load);onShow(load);onUnmounted(()=>alive=false)
 
 </script>
 <template>
  <view class="screen package-purchase"><AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button><text class="nav-title">商品详情</text><view class="nav-spacer"/></view></AppNavBar>
-  <text v-if="busy&&!offer" class="package-status">正在核对商品…</text><view v-if="error&&!checkoutOpen" class="package-status" role="alert"><text>{{error}}</text><button :disabled="busy" @click="load">重新读取</button></view>
+  <text v-if="busy&&!offer" class="package-status">正在核对商品…</text><view v-if="error&&!checkoutOpen" class="package-status" role="alert"><text>{{error}}</text><button v-if="sourceUnavailable" :disabled="busy" @click="returnToChat">返回对话重新咨询</button><button v-else :disabled="busy" @click="load">重新读取</button></view>
   <view v-if="offer" class="package-content"><FoodImageSlot :src="offer.image_url" :label="offer.name" :width="'100%'" :height="210" :radius="22" fallback-icon class="package-hero"/><view class="package-heading"><text class="package-kicker">本次咨询的商品候选</text><text class="display-title">{{offer.name}}</text><text class="package-meta">{{packageSpec(offer.spec)}} · 1 包</text><text class="package-intro">这款{{offer.name}}可供查看和选购。购买前请核对配料及个人饮食限制。</text></view><view class="ingredients"><text class="section-title">商品信息</text><view class="info-row"><text>规格</text><text>{{packageSpec(offer.spec)||'待核对'}}</text></view><view class="info-row"><text>包含食材</text><text>{{offer.ingredients?.length?offer.ingredients.join(' · '):'商城尚未提供完整配料信息'}}</text></view><text class="package-caution">商品资料不代表个人适用性；实际价格和库存以结算时核对结果为准。</text></view><view class="package-bottom"><view><text>参考价</text><text>{{packagePrice(offer.price_cent)===null?'待核对':'¥'+money(offer.price_cent)}}</text></view><button :disabled="busy||!offer.available||!!orderSn" @click="checkout">购买 <text>→</text></button></view></view>
-  <MealPurchaseSheet :open="checkoutOpen" :busy="busy" page title="购买商品" @close="checkoutOpen=false"><MealPurchasePanel fixed title="所选商品" :products="products" :picked="products.map(item=>item.id)" :address="address" :slots="slots" :slot-id="slotId" :quote="quote" :busy="busy" :ready="!!publication" :pending="pending" :error="error" :can-submit="canSubmit" @address="chooseAddress" @slot="selectSlot" @confirm="submit()" @recover="submit(true)" @retry="checkout"/></MealPurchaseSheet>
+  <MealPurchaseSheet :open="checkoutOpen" :busy="busy" page title="购买商品" @close="closeCheckout"><MealPurchasePanel fixed title="所选商品" :products="products" :picked="products.map(item=>item.id)" :address="address" :slots="slots" :slot-id="slotId" :quote="quote" :busy="busy" :ready="!!offer" :pending="pending" :error="error" :retry-label="retryLabel" :can-submit="canSubmit" @address="chooseAddress" @slot="selectSlot" @confirm="submit()" @recover="submit(true)" @retry="load"/></MealPurchaseSheet>
  </view>
 </template>
 <style scoped>

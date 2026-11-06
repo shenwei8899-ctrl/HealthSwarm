@@ -28,23 +28,23 @@ test('rendered reference cards wire their detail event to the corresponding sele
  }
  const menu=elements.find(n=>n.tag==='TodayMealPlanSheet')
  assert.ok(menu)
- assert.equal(directive(menu,'on','detail'),'openDailyMeal($event,todayPlan.date)')
- assert.equal(directive(menu,'on','plan'),'acceptTodayPlan')
- assert.equal(directive(menu,'bind','read-only'),undefined)
+ assert.equal(directive(menu,'on','detail'),'openDailyMeal($event,todayMenu.date,todayMenu.plan)')
+ assert.equal(directive(menu,'bind','state'),'todayMenu')
 })
 
-test('chat and today menu send their own plan to the shared all-meal purchase handler',()=>{
+test('chat retains its all-meal handler while the today menu preserves the selected meal scope',()=>{
  const card=elements.find(n=>n.tag==='DailyMealPlanCard')
  const menu=elements.find(n=>n.tag==='TodayMealPlanSheet')
  assert.equal(directive(card,'on','all'),'buyAllMeals')
- assert.equal(directive(menu,'on','all'),'buyAllMeals')
+ assert.equal(directive(menu,'on','dish'),'openDailyDish($event,todayMenu.date,todayMenu.plan)')
  assert.equal(directive(card,'on','purchase'),undefined)
  assert.equal(directive(menu,'on','purchase'),undefined)
 })
 
 test('the today menu passes its actual pending task into the continuation handler',()=>{
  const menu=elements.find(n=>n.tag==='TodayMealPlanSheet')
- assert.equal(directive(menu,'on','continue'),'resumePlanQuestion($event)')
+ assert.equal(directive(menu,'on','action'),'actTodayMenu')
+ assert.match(source,/resumePlanQuestion\(todayMenu.pending\)/)
 })
 test('the generating composer exposes an explicit stop control connected to task cancellation',()=>{
  const stop=elements.find(n=>n.tag==='button'&&attribute(n,'aria-label')==='停止生成')
@@ -77,4 +77,40 @@ test('submission and reconciliation always render a visible non-error control',(
  assert.match(source,/\.message-issue\.is-unconfirmed\{[^}]*background:#eef0f2/)
  const stopped=elements.find(n=>attribute(n,'class')==='message-status-note')
  assert.equal(directive(stopped,'if'),"message.role==='user'&&message.status==='cancelled'")
+})
+
+
+test('the welcome excludes the menu while the conversation shares its state and actions with the sheet',()=>{
+ const welcome=elements.find(n=>n.tag==='template'&&n.props.some(p=>p.type===7&&p.name==='slot'&&p.arg?.content==='welcome'))
+ assert.ok(welcome)
+ assert.equal(welcome.children.some(n=>n.tag==='TodayMealPlanContent'),false)
+ assert.ok(welcome.children.some(n=>n.tag==='ChatWelcome'))
+ const views=elements.filter(n=>n.tag==='TodayMealPlanContent')
+ assert.equal(views.length,1)
+ for(const view of views){
+  assert.equal(directive(view,'bind','state'),'todayMenu')
+  assert.equal(directive(view,'on','detail'),'openDailyMeal($event,todayMenu.date,todayMenu.plan)')
+  assert.equal(directive(view,'on','dish'),'openDailyDish($event,todayMenu.date,todayMenu.plan)')
+  assert.equal(directive(view,'on','action'),'actTodayMenu')
+ }
+ const sheet=readFileSync(new URL('../src/components/TodayMealPlanSheet.vue',import.meta.url),'utf8')
+ assert.doesNotMatch(sheet,/createTodayMealPlan|todayMealPlanState/)
+ assert.match(sheet,/<TodayMealPlanContent :state="state"/)
+})
+
+test('the inline menu appears after entering chat and stays hidden during welcome loading and transitions',()=>{
+ const menu=elements.find(n=>n.tag==='TodayMealPlanContent')
+ const show=new Function('welcomeMounted','entryView','presentation','props',`return Boolean(${directive(menu,'if')})`)
+ const cases=[
+  {name:'initial loading',mounted:false,engaged:false,welcome:true,expected:false},
+  {name:'welcome page',mounted:true,engaged:false,welcome:true,expected:false},
+  {name:'welcome leaving',mounted:true,engaged:true,welcome:true,expected:false},
+  {name:'focused composer without a sent message',mounted:false,engaged:true,welcome:true,expected:true},
+  {name:'existing conversation',mounted:false,engaged:false,welcome:false,expected:true},
+  {name:'empty composer restored to welcome',mounted:true,engaged:false,welcome:true,expected:false},
+  {name:'explicit task entry',mounted:false,engaged:false,welcome:true,taskType:'consultation',expected:true},
+ ]
+ for(const item of cases){
+  assert.equal(show(item.mounted,{engaged:item.engaged},{welcome:item.welcome},{route:{taskType:item.taskType}}),item.expected,item.name)
+ }
 })

@@ -218,13 +218,13 @@ function packagePage() {
   const offer={offer_token:'signed-offer',available:true,name:'青椒肉丝',sku_id:'sku',price_cent:1350}
   const commerce={pendingOrder:()=>pending,connect:async()=>{},addresses:async()=>[{id:'address',isDefault:true}],slots:async()=>({supported:true,items:[{id:1,available:true},{id:2,available:false}]}),
     confirmRecommendation:async()=>{calls.push('confirm');if(failConfirm)throw new Error('confirm offline')},
-    quoteRecommendation:async()=>{calls.push('quote');return {checkout_token:'quote',expires_at:expires,...amounts}},
+    quoteRecommendation:async()=>{calls.push('quote');return {checkout_token:'quote',expires_at:expires,...amounts,items:[{sku_id:'sku',quantity:1,line_amount_cent:amounts.goods_amount_cent,snapshot:{product_name:offer.name}}]}},
     createOrder:async()=>{calls.push('create');pending={intent:'original'};throw new Error('unknown order')},retryOrder:async()=>{calls.push('recover');pending=null;return {order_sn:'original-order'}}}
   const deps={computed,ref,packageSpec,resolveCheckoutAddress,defineProps:()=>({route:{conversation:'request',offer:'signed-offer'}}),onMounted(){},onShow(){},onUnmounted(){},storageContext:()=>scope,commerce,
     request:async options=>{calls.push(options.method||'GET');if(release)await release;return {data:options.method==='POST'?{package:{package_sn:'package',package_version:1,status:'available'}}:{offers:[offer]}}}}
   const code=readFileSync(new URL('../src/components/ConversationPackagePurchase.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const page=new Function('deps',`const {${Object.keys(deps)}}=deps;${code};return {load,checkout,submit,slots,quote,pending,error,offer,busy,canSubmit,products}`)(deps)
-  return {page,calls,redirects,confirm:()=>failConfirm=false,invalidExpiry:()=>expires='invalid',invalidAmounts:()=>amounts={...amounts,goods_amount_cent:null},switch:()=>scope='other',delay:p=>release=p}
+  return {page,calls,redirects,confirm:()=>failConfirm=false,invalidExpiry:()=>expires='invalid',validExpiry:()=>expires=new Date(Date.now()+60000).toISOString(),invalidAmounts:()=>amounts={...amounts,goods_amount_cent:null},switch:()=>scope='other',delay:p=>release=p}
 }
 test('viewing food package does not publish; checkout retries confirmation and uses actual available delivery slots',async()=>{
   const h=packagePage();await h.page.load();assert.deepEqual(h.calls,['GET'])
@@ -255,7 +255,7 @@ test('returning from address selection refreshes the original package quote with
 test('malformed quote expiry cannot create an order; unknown order retries the original intent',async()=>{
   const h=packagePage();h.confirm();h.invalidExpiry();await h.page.load();await h.page.checkout();await h.page.submit()
   assert.equal(h.calls.includes('create'),false);assert.equal(h.page.quote.value,null)
-  h.page.quote.value={checkout_token:'quote',expires_at:new Date(Date.now()+60000).toISOString(),goods_amount_cent:1500,shipping_fee_cent:300,payable_amount_cent:1800}
+  h.validExpiry();await h.page.checkout()
   await h.page.submit();assert.equal(h.page.pending.value,true)
   await h.page.submit(true);assert.equal(h.calls.filter(call=>call==='create').length,1)
   assert.equal(h.redirects.at(-1),'/pages/orders/detail?id=original-order')

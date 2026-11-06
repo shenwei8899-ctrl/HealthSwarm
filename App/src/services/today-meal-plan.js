@@ -185,7 +185,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
         if (current() && flow === owned && next.invalidated) fail(true)
       }})
       flow = owned
-      await owned.open(anchor.healthMemberId,'reference_meal_preview',selection)
+      await owned.open(anchor.healthMemberId,'reference_meal_preview',selection,{fresh:!!plan.needs_regeneration?.length})
       if (!current()) return
       let task = owned.getState()
       if (task.invalidated || !task.available || task.consentOption) { fail(!!task.invalidated,taskNotice(task)); return }
@@ -219,5 +219,9 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       poll()
     } catch (error) { fail([401,403,404,409,410].includes(Number(error.code))) }
   }
-  return {open,pause:stop,clear,dispose(){stop();disposed=true;Object.assign(state,todayMealPlanState())}}
+  function isGenerating() {
+    return !!flow && !state.action &&
+      (state.phase==='generating' || !!state.plan && requiredMeals(state.plan).length>0)
+  }
+  return {open,isGenerating,pause:stop,clear,dispose(){stop();disposed=true;Object.assign(state,todayMealPlanState())}}
 }
