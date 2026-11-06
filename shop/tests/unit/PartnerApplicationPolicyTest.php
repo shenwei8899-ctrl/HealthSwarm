@@ -47,6 +47,12 @@ namespace {
     }
 
     $service = new PartnerApplicationService();
+    foreach (['0', 'synthetic-key'] as $key) {
+        policyAssert(PartnerApplicationService::isContactIntake(['submission_key' => $key]), 'Every nonempty submission key is a contact intake');
+    }
+    foreach ([[], ['submission_key' => null], ['submission_key' => '']] as $application) {
+        policyAssert(!PartnerApplicationService::isContactIntake($application), 'Legacy applications retain their review flow');
+    }
     foreach (['mysql', 'sqlite', ''] as $databaseType) {
         Config::$databaseType = $databaseType;
         Db::$queries = 0;

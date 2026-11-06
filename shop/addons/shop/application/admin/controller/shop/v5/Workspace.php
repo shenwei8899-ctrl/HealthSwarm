@@ -249,7 +249,7 @@ class Workspace extends Backend
         $rows = $query->field(implode(',', array_unique($queryColumns)))->order($sort, $order)->limit($offset, $limit)->select();
         foreach ($rows as &$row) {
             if ($resource === 'supplier_applications') {
-                $row['intent_only'] = !empty($row['submission_key']);
+                $row['intent_only'] = \addons\shop\library\v5\PartnerApplicationService::isContactIntake($row);
                 $row['location'] = implode(' ', array_column(\addons\shop\library\v5\Json::decode($row['location_json'] ?? '', []), 'name'));
                 unset($row['submission_key'], $row['location_json']);
             }
@@ -903,7 +903,7 @@ class Workspace extends Backend
             try {
                 $application=Db::name('shop_supplier_application')->where('id',$id)->lock(true)->find();
                 if (!$application || $application['review_status']!=='pending') throw new DomainException('申请不存在或已处理',40910,409);
-                if (!empty($application['submission_key'])) throw new DomainException('该记录为合作意向，请先完成沟通与资质核验，再维护正式合作档案',40910,409);
+                if (\addons\shop\library\v5\PartnerApplicationService::isContactIntake($application)) throw new DomainException('该记录为合作意向，请先完成沟通与资质核验，再维护正式合作档案',40910,409);
                 $supplierId=0;
                 if ($decision==='approved' && ($application['partner_type']??'supplier')==='supplier') {
                     $supplierId=Db::name('shop_supplier')->insertGetId([

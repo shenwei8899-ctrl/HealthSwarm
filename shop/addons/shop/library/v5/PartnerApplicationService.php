@@ -9,6 +9,12 @@ class PartnerApplicationService
 {
     const POLICY = 'partner-contact-20261101';
 
+    /** 非空提交编号属于合作意向，包括合法编号 0。 */
+    public static function isContactIntake(array $application)
+    {
+        return isset($application['submission_key']) && $application['submission_key'] !== '';
+    }
+
     /** 提交能力仅在对应迁移完成后开放。 */
     public function policy()
     {
