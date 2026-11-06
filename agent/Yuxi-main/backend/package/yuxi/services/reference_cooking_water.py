@@ -5,15 +5,21 @@ import re
 
 def cooking_water(text):
     """允许原食谱中的水量和等值单位括注，其余成分必须另行采购。"""
-    number = r"(?:\d+\s+\d+/\d+|\d+/\d+|\d+(?:\.\d+)?[¼½¾⅓⅔⅛⅜⅝⅞]?|[¼½¾⅓⅔⅛⅜⅝⅞])"
-    unit = r"(?:cups?|ml|millilit(?:er|re)s?|l|lit(?:er|re)s?|g|grams?|tablespoons?|teaspoons?)"
-    amount = rf"{number}\s*{unit}"
+    fraction = r"[¼½¾⅓⅔⅛⅜⅝⅞]"
+    single = rf"(?:\d+\s+(?:\d+/\d+|{fraction})|\d+/\d+|\d+(?:\.\d+)?{fraction}?|{fraction})"
+    number = rf"{single}(?:\s*-\s*{single})?"
+    unit = r"(?:c|cups?|ml|millilit(?:er|re)s?|l|lit(?:er|re)s?|g|grams?|tablespoons?|teaspoons?)"
+    amount = rf"{number}\s*-?\s*{unit}"
+    quantity = rf"(?:{amount}|{number}|{unit})"
+    chinese_unit = r"(?:毫升|升|ml|l|克|g|杯|碗)"
     english = (
-        rf"(?:{amount}\s*(?:\(\s*{amount}\s*\)\s*)?)?"
-        r"(?:(?:cold|hot|warm|boiling|drinking)\s+)?water(?:,?\s+as needed)?"
+        rf"(?:{quantity}\s*(?:\(\s*{amount}\s*\)\s*)?)?"
+        r"(?:(?:cold|hot|warm|boiling|drinking)\s+)?water(?:,?\s+as needed|适量)?"
     )
     chinese = (
-        r"(?:水|清水|饮用水|温水|开水|凉开水|冷开水)\s*"
-        rf"(?:适量|少许|{number}\s*(?:毫升|升|ml|l|克|g|杯))?"
+        rf"(?:{number}\s*{chinese_unit}\s*)?"
+        r"(?:水|(?:清|饮用|温|热|凉|冷|沸|开|凉开|冷开)\s*水)\s*"
+        rf"(?:适量|少许|{number}\s*{chinese_unit})?"
     )
-    return isinstance(text, str) and bool(re.fullmatch(rf"\s*(?:{chinese}|{english})\s*", text, re.I))
+    water_first = rf"water\s*[,，]\s*{amount}"
+    return isinstance(text, str) and bool(re.fullmatch(rf"\s*(?:{chinese}|{english}|{water_first})\s*", text, re.I))

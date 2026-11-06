@@ -3,6 +3,8 @@
 import re
 from dataclasses import dataclass
 
+from yuxi.services.reference_cooking_water import cooking_water as cooking_water_ingredient
+
 
 @dataclass(frozen=True)
 class ParsedReferenceRecipe:
@@ -317,22 +319,10 @@ def optional_reference_ingredient(ingredient: str) -> bool:
     return re.search(r"\b(?:and|or|with|plus)\b|[、及和，,;；/／&＆+＋]", value, re.I) is None
 
 
-def cooking_water_ingredient(ingredient: str) -> bool:
-    """只识别独立烹饪用水及其用量，不豁免含其他食材的条目。"""
-    value = ingredient.strip()
-    amount = r"[\d\s.,/()\-¼½¾⅓⅔⅛⅜⅝⅞]*"
-    unit = r"(?:(?:c|cup|cups|ml|l|克|毫升|杯|碗)\s+)?"
-    temperature = r"(?:(?:cold|warm|hot|boiling|drinking|清|凉|冷|温|热|饮用|开|沸)\s*)?"
-    water = r"(?:water|水)"
-    after = r"[\d\s./()\-¼½¾⅓⅔⅛⅜⅝⅞]+(?:\s*(?:c|cup|cups|ml|l|克|毫升|杯|碗))?"
-    return bool(
-        re.fullmatch(amount + unit + temperature + water + r"(?:\s*适量)?", value, re.I)
-        or re.fullmatch(temperature + water + r"\s*[,，]\s*" + after, value, re.I)
-    )
-
-
 def ingredient_food(ingredient: str) -> str | None:
     """不把多种食材、加工形态或不确定替代品硬配到单个商品。"""
+    if cooking_water_ingredient(ingredient):
+        return "水"
     if _UNSUPPORTED_FORMS.search(ingredient):
         return None
     ingredient = _OPTIONAL_MARKER.sub("", _without_preparation_suffix(ingredient)).strip()

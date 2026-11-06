@@ -18,6 +18,7 @@ from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.health_vision_service import health_vision_service
 from yuxi.services.health_vision_types import HealthVisionError, NUTRIENTS
 from yuxi.services.miniapp_profile_types import miniapp_onboarding_ready
+from yuxi.services.reference_cooking_water import cooking_water
 from yuxi.services.reference_recipe_matching import (
     ingredient_food,
     optional_reference_ingredient,
@@ -685,7 +686,7 @@ def checked_reference_gaps(gaps, products):
     result = []
     for gap in gaps:
         status = reference_ingredient_matches((gap.ingredient,), products)[0]["status"]
-        if gap.reason == "not_sold" and cooking_water_ingredient(gap.ingredient):
+        if gap.reason == "not_sold" and cooking_water(gap.ingredient):
             result.append(gap.model_dump())
         elif gap.reason == "optional_not_selected" and optional_reference_ingredient(gap.ingredient):
             result.append(gap.model_dump())
@@ -701,20 +702,6 @@ def checked_reference_gaps(gaps, products):
         else:
             raise HealthVisionError("reference_purchase_reason_invalid", "食材缺口原因与本轮商品核对结果不一致", 422)
     return result
-
-
-def cooking_water_ingredient(ingredient):
-    """只豁免明确写作烹饪用水的原文，不把其他未售食材当作无需采购。"""
-    return (
-        re.fullmatch(
-            r"[\d\s.,/()\-¼½¾⅓⅔⅛⅜⅝⅞]*(?:(?:c|cup|cups|ml|l|克|毫升|杯|碗)\s+)?"
-            r"(?:(?:cold|warm|hot|boiling|drinking|清|凉|冷|温|热|饮用|开|沸)\s*)?"
-            r"(?:water|水)(?:\s*适量)?",
-            ingredient.strip(),
-            flags=re.IGNORECASE,
-        )
-        is not None
-    )
 
 
 async def reference_result_in_session(session, run, binding, preview_id):

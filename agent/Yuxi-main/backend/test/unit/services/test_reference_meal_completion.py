@@ -31,6 +31,7 @@ from test.unit.services.test_reference_meal_selection import CHINESE, assembly, 
 from yuxi.services import reference_meal_selection_service as selection
 from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.health_vision_types import HealthDTO, HealthVisionError, NUTRIENTS
+from yuxi.services.reference_cooking_water import cooking_water
 from yuxi.services.recipe_translation_service import checked_chinese_display
 from yuxi.services.reference_meal_plan_types import (
     REFERENCE_CATALOG_CHAIN_VERSION,
@@ -482,6 +483,7 @@ def save_owner(monkeypatch):
         "ingredient_food": ingredient_food,
         "product_food": product_food,
         "input_fingerprint": input_fingerprint,
+        "cooking_water": cooking_water,
         "pg_manager": SimpleNamespace(get_async_session_context=transaction),
         "HealthInitialPlanPreview": SimpleNamespace,
         "require_planner_run": AsyncMock(
@@ -515,7 +517,6 @@ def save_owner(monkeypatch):
         "reference_recipe_media",
         "products_cover_reference_dishes",
         "checked_reference_gaps",
-        "cooking_water_ingredient",
         "reference_member_restrictions",
         "unverified_reference_restrictions",
         "reference_product_composition",
