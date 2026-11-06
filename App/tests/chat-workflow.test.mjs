@@ -1,3 +1,4 @@
+import {dishTitle,mealLabels} from '../src/utils/meal-presentation.js'
 import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
 import {watch} from 'vue'
 import {createChatEntryTransition} from '../src/services/chat-entry-transition.js'
@@ -120,7 +121,7 @@ function workflow(options = {}) {
   }
   const deps = {setTimeout:options.schedule||setTimeout,clearTimeout:options.cancel||clearTimeout,todayMealPlanState,createTodayMealPlan:config=>options.todayMenu?createTodayMealPlan({...config,...options.todayMenu}):({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}), defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
     onMounted: fn => { hooks.mount = fn }, onUnmounted: fn => { hooks.unmount = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn },
-    mealPairingText,chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, parseChatMealIntent,isMealPlanningCancelled,
+    dishTitle,mealLabels,mealPairingText,chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, parseChatMealIntent,isMealPlanningCancelled,
     newHealthRequestId: id, storageContext: () => identity.scope, getSession: () => ({ ...identity }), scopedStorage,
     loadCloudProfile: async () => {if(options.beforeProfile)await options.beforeProfile();return profile()}, localDate: value => value ? nextDay(clock.day) : clock.day,
     dailyArrangementState: () => ({ phase: 'idle', busy: false, date: clock.day, arrangement: null }),
@@ -149,7 +150,7 @@ function workflow(options = {}) {
   const readOnlyBinding=source.match(/<TodayMealPlanSheet\b[^>]*?:read-only="([^"]+)"/)?.[1]||'false'
   const code = source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {loadDailyPlan,currentEpoch:()=>epoch,history,visibleMessages,todayMenu,actTodayMenu,reloadToday,openDailyMeal,openDailyDish,todayMenuReadOnly:()=>{const value=(${readOnlyBinding});return value&&typeof value==='object'&&'value' in value?value.value:value},latestReference,shortcut,inlineTodayOpen,messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
+  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {showTodayMeal,verifiedMealView,mealViewText,restoreChat,scrollTarget,loadDailyPlan,currentEpoch:()=>epoch,history,visibleMessages,todayMenu,actTodayMenu,reloadToday,openDailyMeal,openDailyDish,todayMenuReadOnly:()=>{const value=(${readOnlyBinding});return value&&typeof value==='object'&&'value' in value?value.value:value},latestReference,shortcut,inlineTodayOpen,messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
   const historyRow = threadId => { const row = threads.get(threadId); return { thread_id: threadId, member_id: row.memberId, agent_slug: row.agent, business_date: row.businessDate } }
   return { ...page, calls, writes, identity, clock, hooks, scopedStorage, threads, addThread, historyRow,
     get flow(){return flow},
@@ -1642,5 +1643,93 @@ test('a menu completed during conflict recovery immediately resolves its pending
   assert.equal(p.visibleMessages.value[1].text,'这是目前已安排的餐单。')
   assert.equal(p.messages.value[1].planPending,false)
   assert.equal(p.visibleMessages.value[0].status,'sent')
+ }finally{p.dispose()}
+})
+
+function menuPlan(date='2026-10-28') {
+ return {date,status:'ready',version:1,meals:['breakfast','lunch','dinner'].map((type,index)=>({
+  meal_type:type,source:{kind:'reference',id:'menu-source',version:1},members:[{id:'self'}],
+  meal:{dishes:[{dish_key:type,name:['鸡蛋羹','烤土豆','西兰花炒虾仁'][index]}]},
+ })),purchase_options:[]}
+}
+function verifyMenu(p,plan=menuPlan()) {
+ Object.assign(p.todayMenu,{date:plan.date,plan,verified:true,phase:'ready'})
+ p.dailyPlans.value[plan.date]=plan
+ return plan
+}
+
+test('meal entry displays only the selected meal and retains text and image drafts without submitting',async()=>{
+ const p=workflow({route:{}})
+ try{
+  await p.load();const plan=verifyMenu(p)
+  p.question.value='稍后再问的问题';p.draftImage.value={localPath:'synthetic-draft'}
+  p.inlineTodayOpen.value=true
+  const calls=p.calls.length
+  await p.showTodayMeal(plan.meals[2])
+  const view=p.messages.value.find(message=>message.menuView)
+  assert.deepEqual(view.planMeals,['dinner'])
+  assert.equal(p.mealViewText(view),'今天的晚餐安排了西兰花炒虾仁。')
+  assert.equal(p.question.value,'稍后再问的问题')
+  assert.equal(p.draftImage.value.localPath,'synthetic-draft')
+  assert.equal(p.inlineTodayOpen.value,false)
+  assert.equal(p.scrollTarget.value,'message-'+view.id)
+  assert.equal(p.calls.length,calls)
+  await p.showTodayMeal(plan.meals[2])
+  assert.equal(p.messages.value.filter(message=>message.menuView).length,1)
+  await p.showTodayMeal(plan.meals[0])
+  assert.equal(p.messages.value.filter(message=>message.menuView).length,2)
+ }finally{p.dispose()}
+})
+
+test('a viewed meal survives history reconciliation and follows the currently verified version',async()=>{
+ const p=workflow({route:{entry:'conversation'}})
+ try{
+  await p.load();const plan=verifyMenu(p)
+  await p.showTodayMeal(plan.meals[1])
+  await p.restoreChat('consultation')
+  const view=p.messages.value.find(message=>message.menuView)
+  assert.ok(view)
+  assert.equal(p.verifiedMealView(view).version,1)
+  const updated=menuPlan();updated.version=2;updated.meals[1].meal.dishes=[{name:'番茄炒蛋'}]
+  verifyMenu(p,updated)
+  assert.equal(p.mealViewText(view),'今天的午餐安排了番茄炒蛋。')
+  p.openDailyMeal(updated.meals[1],updated.date,p.verifiedMealView(view))
+  assert.equal(p.calls.at(-1).action,'mealPage')
+  assert.equal(p.calls.at(-1).target.plan.version,2)
+  assert.equal(p.calls.at(-1).target.item.meal_type,'lunch')
+  p.todayMenu.verified=false
+  assert.equal(p.verifiedMealView(view),null)
+  assert.match(p.mealViewText(view),/核对/)
+ }finally{p.dispose()}
+})
+
+test('meal entry rejects stale or inactive selections and isolates views across dates and identities',async()=>{
+ const p=workflow({route:{}})
+ try{
+  await p.load();const plan=verifyMenu(p)
+  p.todayMenu.verified=false;await p.showTodayMeal(plan.meals[0])
+  assert.equal(p.messages.value.some(message=>message.menuView),false)
+  p.todayMenu.verified=true
+  await p.showTodayMeal({...plan.meals[0],source:{id:'obsolete',version:1}})
+  assert.equal(p.messages.value.some(message=>message.menuView),false)
+  p.voiceBusy.value=true;await p.showTodayMeal(plan.meals[0]);p.voiceBusy.value=false
+  assert.equal(p.messages.value.some(message=>message.menuView),false)
+  await p.showTodayMeal(plan.meals[0]);const view=p.messages.value.find(message=>message.menuView)
+  p.clock.day='2026-10-29';assert.equal(p.verifiedMealView(view),null)
+  p.clock.day='2026-10-28';p.identity.scope='other-account';assert.equal(p.verifiedMealView(view),null)
+  p.identity.scope='account-a';p.conversationId.value='other-conversation';assert.equal(p.verifiedMealView(view),null)
+ }finally{p.dispose()}
+})
+
+test('viewing a verified meal remains available while an unrelated AI reply is running',async()=>{
+ const p=workflow({route:{}})
+ try{
+  await p.load();const plan=verifyMenu(p)
+  p.publish({busy:true,status:'running',requestId:uuid(9990)})
+  assert.equal(p.chatBusy.value,true)
+  const submits=p.calls.filter(call=>call.action==='submit').length
+  await p.showTodayMeal(plan.meals[2])
+  assert.equal(p.messages.value.filter(message=>message.menuView).length,1)
+  assert.equal(p.calls.filter(call=>call.action==='submit').length,submits)
  }finally{p.dispose()}
 })

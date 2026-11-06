@@ -9,7 +9,7 @@ import ChatConversationDrawer from './ChatConversationDrawer.vue'
 import MealDetailSheet from './MealDetailSheet.vue'
 import ChatMealRecordCard from './ChatMealRecordCard.vue'
 import {mealTarget,openMealPage} from '../services/meal-workspace.js'
-import {canPurchaseAllMeals} from '../utils/meal-presentation.js'
+import {canPurchaseAllMeals,dishTitle,mealLabels} from '../utils/meal-presentation.js'
 import ChatWelcome from './ChatWelcome.vue'
 import { chatPresentation } from '../services/chat-presentation.js'
 import { createChatEntryTransition } from '../services/chat-entry-transition.js'
@@ -143,11 +143,13 @@ const historyOpen=ref(false),conversationId=ref(''),conversationThreadId=ref('')
 const historyLoading=ref(false),historyError=ref(''),historyNotice=ref(''),continuationChecking=ref(false),continuationError=ref('')
 let selectionGeneration=0,historyDenied=false
 const conversationReadOnly=computed(()=>!!task.value.readOnly||!!conversationBusinessDate.value&&conversationBusinessDate.value<localDate())
+const mealViewBlocked = computed(() => historyLoading.value || switchingConversation.value ||
+ continuationChecking.value || historyDenied || !!historyError.value || voiceBusy.value || conversationReadOnly.value)
 const conversationDrafts=new Map()
 const historyMemberId=computed(()=>profile.value?.members.find(m=>m.id===profile.value.selfMemberId)?.healthMemberId||'')
 const mealReplyActions=computed(()=>{
   const last=messages.value.at(-1),user=messages.value.filter(m=>m.role==='user').at(-1)
-  return !props.route.taskType&&last?.role==='assistant'&&!last.error&&!last.business&&!!user?.text&&!!parseChatMealIntent(user.text,localDate())
+  return !props.route.taskType&&last?.role==='assistant'&&!last.error&&!last.business&&!last.menuView&&!!user?.text&&!!parseChatMealIntent(user.text,localDate())
 })
 const mealsLoading=ref(false),mealReadError=ref('')
 const planPurchaseBusy=ref(false)
@@ -796,8 +798,64 @@ async function openFormalDetail(meal,arrangement,date,extra={}){
  }catch(e){if(scope===storageContext())chatError.value=e.message}
 }
 function openMeal(meal){return openFormalDetail(meal,state.arrangement,state.date)}
-function openDailyMeal(item,date,plan=dailyPlans.value[date]){if(voiceBusy.value)return;openMealPage(mealTarget(item,plan))}
-function openDailyDish(value,date,plan=dailyPlans.value[date]){if(voiceBusy.value)return;openMealPage(mealTarget(value.item,plan),{dishIndex:value.dishIndex})}
+function verifiedMealView(message) {
+ if (message.menuOwner !== storageContext() ||
+     message.menuFamily !== profile.value?.householdId ||
+     message.menuConversation !== conversationId.value ||
+     message.planDate !== localDate() || message.planDate !== todayMenu.date ||
+     !todayMenu.verified) return null
+ return todayMenu.plan
+}
+function mealViewText(message) {
+ const plan = verifiedMealView(message)
+ const item = plan?.meals.find(item => item.meal_type === message.planMeals[0])
+ if (!item?.meal?.dishes?.length) {
+  return message.planDate !== localDate()
+   ? '这份餐单已过期，请打开今日餐单查看今天的安排。'
+   : '本餐安排正在核对，请从今日餐单查看最新状态。'
+ }
+ return `今天的${mealLabels[item.meal_type]}安排了${item.meal.dishes.map(dishTitle).join('、')}。`
+}
+async function showTodayMeal(item) {
+ if (disposed || !visible || mealViewBlocked.value || !todayMenu.verified ||
+     todayMenu.date !== localDate() || !item?.source) return
+ const current = todayMenu.plan?.meals.find(meal =>
+  meal.meal_type === item.meal_type && meal.source.kind === item.source.kind &&
+  meal.source.id === item.source.id && meal.source.version === item.source.version)
+ if (!current?.meal?.dishes?.length) return
+ const owner = storageContext(), conversation = conversationId.value, mine = epoch
+ let message = messages.value.find(message => message.menuView &&
+  message.menuOwner === owner && message.menuFamily === profile.value.householdId &&
+  message.menuConversation === conversation && message.planDate === todayMenu.date &&
+  message.planMeals[0] === current.meal_type)
+ if (!message) {
+  // History reconciliation retains local views without treating them as submitted requests.
+  message = {
+   id: newHealthRequestId(), role: 'assistant', createdAt: new Date().toISOString(),
+   localOnly: true, menuView: true, menuOwner: owner,
+   menuFamily: profile.value.householdId, menuConversation: conversation,
+   threadId: conversationThreadId.value, planDate: todayMenu.date,
+   planMeals: [current.meal_type],
+  }
+  messages.value.push(message)
+ }
+ inlineTodayOpen.value = false
+ entryMotion.enter()
+ reading.value = {...reading.value, following: false}
+ if (scrollTimer !== null) { clearTimeout(scrollTimer); scrollTimer = null }
+ const revision = ++scrollRevision
+ const valid = () => !disposed && visible && mine === epoch &&
+  revision === scrollRevision && owner === storageContext() && conversation === conversationId.value
+ await nextTick()
+ if (!valid()) return
+ scrollTarget.value = ''
+ await nextTick()
+ if (!valid()) return
+ scrollTarget.value = 'message-' + message.id
+ latestAvailable.value = false
+}
+function openDailyMeal(item,date,plan=dailyPlans.value[date]){if(voiceBusy.value||!item||!plan)return;openMealPage(mealTarget(item,plan))}
+function openDailyDish(value,date,plan=dailyPlans.value[date]){if(voiceBusy.value||!value?.item||!plan)return;openMealPage(mealTarget(value.item,plan),{dishIndex:value.dishIndex})}
 function buyAllMeals(plan){if(voiceBusy.value||planPurchaseBusy.value||!canPurchaseAllMeals(plan))return;openMealPage({date:plan.date,version:plan.version},{all:true})}
 
 async function openReferencePlan(value){
@@ -1230,7 +1288,7 @@ function messageTime(message,index){
   <ChatWelcome :density="welcomeDensity" :prompts="prompts" :disabled="chatBusy||entryView.phase==='leaving'" @ask="askPrompt" @shuffle="shufflePrompts"/>
  </template>
  <template #default>
-  <TodayMealPlanContent v-if="!welcomeMounted && (entryView.engaged || !presentation.welcome || props.route.taskType)" heading :state="todayMenu" :busy="planPurchaseBusy||state.busy" :interactive="!inlineTodayOpen&&!voiceBusy" @action="actTodayMenu" @detail="openDailyMeal($event,todayMenu.date,todayMenu.plan)" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
+  <TodayMealPlanContent v-if="!welcomeMounted && (entryView.engaged || !presentation.welcome || props.route.taskType)" heading :state="todayMenu" :busy="planPurchaseBusy||state.busy" :interactive="!inlineTodayOpen&&!mealViewBlocked" @action="actTodayMenu" @detail="showTodayMeal" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
   <view v-if="historyLoading||historyError" class="entry-status" :role="historyError?'alert':'status'" aria-live="polite"><text>{{historyError||'正在加载历史对话…'}}</text><button v-if="historyError&&!historyLoading" @click="retryHistory">重新读取历史</button></view>
   <text v-if="historyNotice" class="entry-status" role="status">{{historyNotice}}</text>
   <view v-if="continuationChecking||continuationError" class="entry-status" role="status"><text>{{continuationChecking?'正在核对续聊状态，历史记录可先阅读。':continuationError}}</text><button v-if="continuationError&&!continuationChecking" @click="retrySelectedConversation">重新核对</button></view>
@@ -1241,8 +1299,8 @@ function messageTime(message,index){
    <ChatWelcome v-if="presentation.welcome&&(failedTask||!entryReady)&&(!entryView.engaged||!entryReady)" :compact="failedTask" :prompts="prompts" :disabled="chatBusy" @ask="askPrompt" @shuffle="shufflePrompts"/>
   <view v-for="(message,messageIndex) in visibleMessages" :id="'message-'+message.id" :key="message.id" class="message-turn">
    <view v-if="messageTime(message,messageIndex)" class="message-time"><text>{{messageTime(message,messageIndex)}}</text></view>
-   <view class="message-row" :class="message.role"><text v-if="hasMessageIssue(message)||message.role==='user'&&message.status==='unknown'" class="message-issue" :class="{'is-unconfirmed':message.status==='unknown'}" role="button" tabindex="0" :aria-label="message.status==='unknown'?'消息状态待确认':'查看消息失败原因'" @click="messageStatus(message)" @keydown.enter="messageStatus(message)">{{message.status==='unknown'?'?':'!'}}</text><view class="message-content"><view class="bubble"><view v-if="message.role==='assistant'" class="reply-card-head"><AppIcon name="assistant" :size="46" :state="message.business&&isReferencePlan(message.business.data)?'success':'idle'"/><text>家庭营养师</text></view><view class="bubble-body"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><AiAnswer v-if="message.role==='assistant'&&message.text" :text="message.text" :citations="message.citations||[]" :message-key="message.requestId" :shown-meals="mealAppearances[message.requestId]||[]" :animate-meals="!!message.mealEnter" @meal-shown="rememberMealAppearance" compact/><text v-else-if="message.text" selectable>{{message.text}}</text>
-   </view></view><text v-if="message.role==='user'&&message.status==='cancelled'" class="message-status-note">已停止</text><DailyMealPlanCard :meal-types="message.planMeals" @dish="openDailyDish($event,message.planDate)" @all="buyAllMeals" @detail="openDailyMeal($event,message.planDate)" detail-mode v-if="message.planDate&&dailyPlans[message.planDate]?.status==='ready'" :plan="dailyPlans[message.planDate]" :busy="planPurchaseBusy" @open="openDailyMeal($event,message.planDate)" @members="selectDailyMembers($event,message.planDate)" @shop="purchaseDaily($event,dailyPlans[message.planDate])"/><HealthChatBusinessCard detail-mode @detail="openReferencePlan" v-else-if="message.business&&!message.planDate" :result="message.business" :member-id="message.memberId||task.memberId"/><ConversationFoodPackages v-if="message.purchaseRequestId" :offers="message.purchaseOffers" :request-id="message.purchaseRequestId" :animate="message.purchaseEnter" @ready="queueScroll"/><ChatMealRecordCard v-for="receipt in message.recordedMeals||[]" :key="receipt.id" :receipt="receipt" @changed="updateMealReceipt"/><ChatReplyActions v-if="message.role==='assistant'&&message.text&&!message.error" :text="message.text" :message-id="message.serverMessageId||message.id" :can-quote="!chatBusy&&!conversationReadOnly" @quote="quoteReply"/></view></view>
+   <view class="message-row" :class="message.role"><text v-if="hasMessageIssue(message)||message.role==='user'&&message.status==='unknown'" class="message-issue" :class="{'is-unconfirmed':message.status==='unknown'}" role="button" tabindex="0" :aria-label="message.status==='unknown'?'消息状态待确认':'查看消息失败原因'" @click="messageStatus(message)" @keydown.enter="messageStatus(message)">{{message.status==='unknown'?'?':'!'}}</text><view class="message-content"><view class="bubble"><view v-if="message.role==='assistant'" class="reply-card-head"><AppIcon name="assistant" :size="46" :state="message.business&&isReferencePlan(message.business.data)?'success':'idle'"/><text>家庭营养师</text></view><view class="bubble-body"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><text v-if="message.menuView" selectable>{{mealViewText(message)}}</text><AiAnswer v-else-if="message.role==='assistant'&&message.text" :text="message.text" :citations="message.citations||[]" :message-key="message.requestId" :shown-meals="mealAppearances[message.requestId]||[]" :animate-meals="!!message.mealEnter" @meal-shown="rememberMealAppearance" compact/><text v-else-if="message.text" selectable>{{message.text}}</text>
+   </view></view><text v-if="message.role==='user'&&message.status==='cancelled'" class="message-status-note">已停止</text><DailyMealPlanCard :meal-types="message.planMeals" @dish="openDailyDish($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" @all="buyAllMeals" @detail="openDailyMeal($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" detail-mode v-if="message.planDate&&(message.menuView?verifiedMealView(message):dailyPlans[message.planDate])?.status==='ready'" :plan="message.menuView?verifiedMealView(message):dailyPlans[message.planDate]" :dish-grid="!!message.menuView" :busy="planPurchaseBusy" @open="openDailyMeal($event,message.planDate)" @members="selectDailyMembers($event,message.planDate)" @shop="purchaseDaily($event,dailyPlans[message.planDate])"/><HealthChatBusinessCard detail-mode @detail="openReferencePlan" v-else-if="message.business&&!message.planDate" :result="message.business" :member-id="message.memberId||task.memberId"/><ConversationFoodPackages v-if="message.purchaseRequestId" :offers="message.purchaseOffers" :request-id="message.purchaseRequestId" :animate="message.purchaseEnter" @ready="queueScroll"/><ChatMealRecordCard v-for="receipt in message.recordedMeals||[]" :key="receipt.id" :receipt="receipt" @changed="updateMealReceipt"/><ChatReplyActions v-if="message.role==='assistant'&&message.text&&!message.error" :text="message.text" :message-id="message.serverMessageId||message.id" :can-quote="!chatBusy&&!conversationReadOnly" @quote="quoteReply"/></view></view>
   </view>
   <view v-if="mealReplyActions&&!chatBusy&&!conversationReadOnly" class="reply-actions" aria-label="继续安排饮食">
    <button @click="question='请换几道菜，继续沿用已确认的饮食限制。'"><text>换几道菜</text><AppIcon name="arrow" :size="23"/></button>
@@ -1279,7 +1337,7 @@ function messageTime(message,index){
  <template #overlays>
   <MealDetailSheet ref="detailRef" :members="profile?.members||[]" :reload="reloadDetailPlan" @open-change="detailOpen=$event"/>
   <ChatConversationDrawer :open="historyOpen" :member-id="historyMemberId" :active-thread-id="conversationThreadId" :new-busy="switchingConversation" :busy="conversationChangeBusy||voiceBusy||draftSaving" :display-name="profile?.members.find(m=>m.id===profile.selfMemberId)?.name||'我的'" @close="historyOpen=false" @new="newConversation" @select="selectConversation" @profile="historyOpen=false;uni.navigateTo({url:'/pages/my/index'})"/>
-  <TodayMealPlanSheet :open="inlineTodayOpen" :state="todayMenu" :busy="planPurchaseBusy||state.busy" :interactive="!voiceBusy" @close="inlineTodayOpen=false" @action="actTodayMenu" @detail="openDailyMeal($event,todayMenu.date,todayMenu.plan)" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
+  <TodayMealPlanSheet :open="inlineTodayOpen" :state="todayMenu" :busy="planPurchaseBusy||state.busy" :interactive="!mealViewBlocked" @close="inlineTodayOpen=false" @action="actTodayMenu" @detail="showTodayMeal" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
   <DinerPicker :open="!!familySelection" :members="profile?.members||[]" :selected="familySelection?.ids||[]" :meal="({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'})[familySelection?.type]" @close="familySelection=null" @confirm="familyMembers"/>
   <DinerPicker :open="!!selectedMeal" :members="profile?.members||[]" :selected="selectedMeal?.members.map(m=>m.id)||[]" :meal="({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'})[selectedMeal?.type]" @close="selectedMeal=null" @confirm="members"/>
   <view v-if="communityOpen" class="sheet-mask" @click.self="communityOpen=false"><view class="sheet"><text class="section-title">加入社群</text><text class="composer-note">暂无可用社群二维码，请稍后再试。</text><button class="secondary-button" @click="communityOpen=false">关闭</button></view></view>

@@ -19,4 +19,12 @@ defineProps({ name: { type: String, default: 'grid' }, size: { type: Number, def
 .i-camera-solid .a{inset:20% 3% 8%;background:currentColor;border-radius:4px}.i-camera-solid .b{inset:35% 29% 21%;border:2px solid #fff;border-radius:50%}.i-camera-solid .c{top:8%;left:29%;width:42%;height:20%;background:currentColor;border-radius:3px 3px 0 0}
 .i-voice-waves .a,.i-voice-waves .b{border-left:3.5px solid currentColor;border-radius:50%}.i-voice-waves .a{left:10%;top:5%;width:76%;height:90%}.i-voice-waves .b{left:35%;top:24%;width:44%;height:52%}.i-voice-waves .c{left:66%;top:41%;width:18%;height:18%;border-radius:50%;background:currentColor}
 .i-moon .a{inset:5%;border:1.5px solid currentColor;border-radius:50%}.i-moon .b{width:72%;height:78%;left:36%;top:-5%;border-radius:50%;background:var(--ui-surface)}.i-sun .a{inset:20%;border:1.5px solid currentColor;border-radius:50%}.i-sun .b{left:46%;top:0;width:8%;height:100%;border-top:2px solid currentColor;border-bottom:2px solid currentColor}.i-sun .c{top:46%;left:0;height:8%;width:100%;border-left:2px solid currentColor;border-right:2px solid currentColor}
+
+.i-sunrise .a{width:58%;height:35%;left:21%;top:33%;border:1.6px solid currentColor;border-bottom:0;border-radius:30px 30px 0 0}
+.i-sunrise .b{left:5%;right:5%;height:1.6px;top:69%;border-radius:2px;background:currentColor;box-shadow:0 4px 0 -0.3px currentColor}
+.i-sunrise .c{width:1.6px;height:15%;left:47%;top:5%;border-radius:2px;background:currentColor}
+.i-sunrise .c:before,.i-sunrise .c:after{position:absolute;width:1.6px;height:100%;border-radius:2px;background:currentColor;content:''}
+.i-sunrise .c:before{left:-7px;top:4px;transform:rotate(-40deg)}.i-sunrise .c:after{left:7px;top:4px;transform:rotate(40deg)}
+.i-moon-stars .a{width:64%;height:64%;left:34%;top:0;border-radius:50%;box-shadow:-4px 4px 0 0 currentColor}
+.i-moon-stars .b{width:3px;height:3px;right:3%;top:10%;border-radius:50%;background:currentColor;box-shadow:0 9px 0 -0.5px currentColor}
 </style>

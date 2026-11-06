@@ -438,7 +438,7 @@ function contentFixture(state=reactive(todayMealPlanState())){
  const source=readFileSync(new URL('../src/components/TodayMealPlanContent.vue',import.meta.url),'utf8').split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm,'')
  const props=reactive({state,busy:false,interactive:true}),events=[]
  const deps={computed,defineProps:()=>props,defineEmits:()=> (...args)=>events.push(args),localDate:()=>date}
- const view=new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {displayDate,loadingLabel,detail,dish,act}`)(deps)
+ const view=new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {mealEntries,missingMeals,displayDate,loadingLabel,detail,dish,act}`)(deps)
  return {view,props,events}
 }
 
@@ -596,4 +596,19 @@ test('card handlers enforce the preview interaction gate even when invoked direc
  card.openDetail(item);card.openDish(item,0);assert.equal(events.length,0)
  props.interactive=true;card.openDetail(item);card.openDish(item,0)
  assert.deepEqual(events,[['detail',item],['dish',{item,dishIndex:0}]])
+})
+
+test('compact meal entries always keep three labels and disable missing or empty meals',()=>{
+ const h=contentFixture()
+ assert.deepEqual(h.view.mealEntries.value.map(meal=>meal.name),['早餐','午餐','晚餐'])
+ assert.deepEqual(h.view.mealEntries.value.map(meal=>meal.icon),['sunrise','sun','moon-stars'])
+ assert.ok(h.view.mealEntries.value.every(meal=>!meal.item))
+ const plan=ready();plan.meals=[plan.meals[0]]
+ h.props.state.plan=plan
+ assert.ok(h.view.mealEntries.value[0].item)
+ assert.equal(h.view.missingMeals.value,'午餐、晚餐')
+ h.props.state.plan.meals[0].meal.dishes=[]
+ assert.equal(h.view.mealEntries.value[0].item,undefined)
+ h.props.state.verified=true;h.view.detail(undefined)
+ assert.equal(h.events.length,0)
 })

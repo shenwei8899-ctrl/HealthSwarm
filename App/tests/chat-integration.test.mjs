@@ -24,11 +24,11 @@ test('rendered reference cards wire their detail event to the corresponding sele
  assert.equal(cards.length,1)
  for(const card of cards){
   const date=directive(card,'bind','plan').includes('message.planDate')?'message.planDate':'todayPlan.date'
-  assert.equal(directive(card,'on','detail'),`openDailyMeal($event,${date})`)
+  assert.equal(directive(card,'on','detail'),`openDailyMeal($event,${date},message.menuView?verifiedMealView(message):dailyPlans[message.planDate])`)
  }
  const menu=elements.find(n=>n.tag==='TodayMealPlanSheet')
  assert.ok(menu)
- assert.equal(directive(menu,'on','detail'),'openDailyMeal($event,todayMenu.date,todayMenu.plan)')
+ assert.equal(directive(menu,'on','detail'),'showTodayMeal')
  assert.equal(directive(menu,'bind','state'),'todayMenu')
 })
 
@@ -89,7 +89,7 @@ test('the welcome excludes the menu while the conversation shares its state and 
  assert.equal(views.length,1)
  for(const view of views){
   assert.equal(directive(view,'bind','state'),'todayMenu')
-  assert.equal(directive(view,'on','detail'),'openDailyMeal($event,todayMenu.date,todayMenu.plan)')
+  assert.equal(directive(view,'on','detail'),'showTodayMeal')
   assert.equal(directive(view,'on','dish'),'openDailyDish($event,todayMenu.date,todayMenu.plan)')
   assert.equal(directive(view,'on','action'),'actTodayMenu')
  }
@@ -113,4 +113,12 @@ test('the inline menu appears after entering chat and stays hidden during welcom
  for(const item of cases){
   assert.equal(show(item.mounted,{engaged:item.engaged},{welcome:item.welcome},{route:{taskType:item.taskType}}),item.expected,item.name)
  }
+})
+
+test('selected menu replies use the dish grid and its verified plan for rendering and navigation',()=>{
+ const card=elements.find(node=>node.tag==='DailyMealPlanCard')
+ assert.equal(directive(card,'bind','dish-grid'),'!!message.menuView')
+ assert.equal(directive(card,'bind','plan'),'message.menuView?verifiedMealView(message):dailyPlans[message.planDate]')
+ assert.match(directive(card,'on','detail'),/verifiedMealView\(message\)/)
+ assert.match(directive(card,'on','dish'),/verifiedMealView\(message\)/)
 })
