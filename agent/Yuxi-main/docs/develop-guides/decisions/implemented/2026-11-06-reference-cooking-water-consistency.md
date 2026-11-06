@@ -26,4 +26,10 @@ Owner：backend/package/yuxi/services/reference_cooking_water.py
 
 `Passed`：`test_reference_cooking_water.py` 的正向及负向用例，连同参考餐单保存、选择定向测试共 80 项通过；合成 `1 ½ cups water`、旧中文温度写法、`1/2-cup water`、`1-2 cups water`、`water适量` 及 `water, as needed` 同时经过保存、食材匹配和单菜采购的真实函数。恢复旧正则会使该正向用例失败。
 
-`Not run`：真实 PostgreSQL/HTTP 中已保存餐单的采购预览、商城发布及小程序页面；本地 Docker 不可用，服务器部署依用户要求等待明确指令。Windows 环境额外运行的 144 项相关测试有 142 项通过，2 项因缺少 `os.O_DIRECTORY` 无法导入，与本次用水规则无关。
+Windows 环境额外运行的 144 项相关测试有 142 项通过，2 项因缺少 `os.O_DIRECTORY` 无法导入，与本次用水规则无关。
+
+## 线上部署与验证（2026-11-07）
+
+用户授权后，修复提交 `47ae867` 快进至远端 `main`。生产保留原运行镜像的其他补丁，仅叠加三个相关服务文件；API 和 Worker 切换到同一镜像 `sha256:4d8266ad1152b0bfa10e0429e8ee975b2330391abe2f7141adcc234ba591765c`，均为 healthy，API `/api/system/ready` 返回 ready。候选镜像及两个运行容器中的 5 种纯用水写法通过保存、匹配、单菜采购函数，3 种复合食材被拒绝。线上 PostgreSQL 只读检查命中 3 份已保存参考餐单快照、3 道相关菜品，`1 ½ cups water` 均正确投影为 `not_sold`。发布记录与回滚配置在服务器 `/opt/healthswarm-agent/releases/reference-water-gap-47ae867-20261107/`。
+
+尚未以授权用户身份执行真实 HTTP 采购预览、商城下单或小程序真机验收。Worker 的日终摘要定时任务另有 PostgreSQL 错误日志，其影响未在本次用水修复范围内核实。
