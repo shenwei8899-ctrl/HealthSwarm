@@ -1,0 +1,14 @@
+services:
+  api:
+    networks:
+      app-network:
+      catalog-network:
+  worker:
+    networks:
+      app-network:
+      catalog-network:
+
+networks:
+  catalog-network:
+    external: true
+    name: ${HEALTH_COMMERCE_NETWORK:-healthswarm-commerce-catalog}

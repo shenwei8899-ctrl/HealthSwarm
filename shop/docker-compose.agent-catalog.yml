@@ -1,0 +1,12 @@
+services:
+  db:
+    networks:
+      default:
+      catalog-network:
+        aliases:
+          - shop-catalog-db
+
+networks:
+  catalog-network:
+    external: true
+    name: ${HEALTH_COMMERCE_NETWORK:-healthswarm-commerce-catalog}

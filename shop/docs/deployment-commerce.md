@@ -23,6 +23,8 @@ docker compose --env-file .env.production -f docker-compose.production.yml up -d
 
 此命令必须在目标服务器环境执行，源码推送不代表已经部署。生产 entrypoint 执行幂等结构升级；新增 004_supplier_catalog_import_fields.sql 仅补导入字段，005_wechat_payment_lifecycle.sql 仅补支付映射/流水表。数据库卷和上传卷须保留。额外运行 prepare-miniapp.php 可在空地区字典时导入原行政区划；它不创建会员或商品。
 
+咨询 Agent 若启用 Shop PostgreSQL 直读 SKU 条件搜索，商城数据库的最小授权、可选索引及私有网络配置见[Agent 商品目录只读连接](agent-catalog-readonly.md)。该配置独立于商城交易接口，生产启用前须验证真实目录与购买回源。
+
 ## 商品导入与配送
 
 后台“商品与食材库”导入并确认供应商 Excel。发布正常、可见且有可售库存的 SKU 才会进入小程序商品目录；图片需要在正式 SHOP_MEDIA_BASE_URL 对应域名可访问。导入与上传需要 GD、fileinfo、mbstring、zip 等运行扩展，生产镜像及 12 MiB 上传限制已配置。

@@ -1,14 +1,18 @@
 """AI 查询真实商城商品及营养原文，展示与购买资格分别核对。"""
 
+import asyncio
 import base64
 import hashlib
 import hmac
 import json
+import os
 import re
 import time
 from decimal import Decimal, InvalidOperation
+from urllib.parse import quote
 from uuid import NAMESPACE_URL, uuid5
 
+from yuxi.repositories.shop_catalog_repository import lookup_restriction_codes, search_shop_catalog
 from yuxi.repositories.conversation_purchase_repository import (
     ConversationPurchaseRepository,
 )
@@ -100,14 +104,24 @@ async def find_conversation_packages(context, query, offset=0, category_codes=No
             raise HealthVisionError("catalog_query_invalid", "商品分页位置无效", 422)
         if not isinstance(query, str) or len(query) > 80:
             raise HealthVisionError("catalog_query_invalid", "商品查询词无效", 422)
-        catalog = await current_catalog(category_codes=category_codes)
-        matches = [
-            item
-            for item in catalog["items"]
-            if catalog_visible(item) and normalized(query) in normalized(item.get("product_name", ""))
-        ]
+        catalog = (
+            await direct_shop_catalog(query, offset, category_codes)
+            if os.environ.get("HEALTH_COMMERCE_SEARCH_DSN")
+            else await current_catalog(category_codes=category_codes)
+        )
+        if catalog.get("direct_search"):
+            catalog["restriction_codes"] = await current_restriction_codes(member.profile)
+        matches = (
+            catalog["items"]
+            if catalog.get("direct_search")
+            else [
+                item
+                for item in catalog["items"]
+                if catalog_visible(item) and normalized(query) in normalized(item.get("product_name", ""))
+            ]
+        )
         offers = []
-        for item in matches[offset : offset + 3]:
+        for item in matches if catalog.get("direct_search") else matches[offset : offset + 3]:
             purchasable = catalog_purchase_available(member.profile, item, catalog)
             source = {
                 "kind": "conversation_catalog",
@@ -119,6 +133,7 @@ async def find_conversation_packages(context, query, offset=0, category_codes=No
                 "query": query,
                 "category_code": item["category_code"],
                 "catalog_version": catalog["version"],
+                **({"catalog_lookup": "shop_db_v1"} if catalog.get("direct_search") else {}),
                 "sku_id": str(item["sku_id"]),
                 "composition_hash": composition_hash(item),
                 "description_hash": description_hash(item),
@@ -136,7 +151,9 @@ async def find_conversation_packages(context, query, offset=0, category_codes=No
             )
         return {
             "offers": offers,
-            "catalog_index": [
+            "catalog_index": catalog["index"]
+            if catalog.get("direct_search")
+            else [
                 {key: public_offer(item)[key] for key in ("sku_id", "name", "spec", "price_cent")}
                 for item in catalog["items"]
                 if catalog_visible(item)
@@ -144,13 +161,19 @@ async def find_conversation_packages(context, query, offset=0, category_codes=No
             "catalog_context_version": 1,
             "category_codes": category_codes,
             "profile_context": dietary_profile_context(member),
-            "total": len(matches),
+            "total": None if catalog.get("direct_search") else len(matches),
             "offset": offset,
-            "next_offset": offset + 3 if offset + 3 < len(matches) else None,
+            "next_offset": catalog["next_offset"]
+            if catalog.get("direct_search")
+            else (offset + 3 if offset + 3 < len(matches) else None),
             "catalog_version": catalog["version"],
             "message": (
-                "catalog_index仅含已选分类的实际在售商品，不能从名称猜营养。"
-                "offers才是本次查到完整营养原文的候选；"
+                (
+                    "catalog_index仅含已选分类的当前页在售商品，有next_offset时可按需翻页；不能从名称猜营养。"
+                    if catalog.get("direct_search")
+                    else "catalog_index仅含已选分类的实际在售商品，不能从名称猜营养。"
+                )
+                + "offers才是本次查到完整营养原文的候选；"
                 "结合profile_context中的已确认饮食事实及本轮需求，"
                 "按目录里的实际名称继续查询需要的商品。"
                 "最终调用select_food_products选最多3个已查询SKU并说明理由，"
@@ -163,6 +186,57 @@ async def find_conversation_packages(context, query, offset=0, category_codes=No
             if offers
             else "所选分类中没有匹配的在售商品；可在已读分类中换类别或食材关键词，不要编造商品。",
         }
+
+
+async def direct_shop_catalog(query, offset, category_codes):
+    """数据库只查选定分类的候选身份，商品详情仍由商城接口解释。"""
+    page = await search_shop_catalog(query, offset, category_codes)
+    ids = [str(row["sku_id"]) for row in page["items"]]
+    details = await asyncio.gather(
+        *(commerce_request("GET", "/api/v1/integration/ai/catalog/skus/" + quote(sid, safe="")) for sid in ids)
+    )
+    if any(
+        not isinstance(item, dict)
+        or str(item.get("sku_id")) != sid
+        or not catalog_visible(item)
+        or item.get("category_code") not in category_codes
+        for sid, item in zip(ids, details)
+    ):
+        raise HealthVisionError("catalog_changed", "商城候选已变化，请重新查询", 409)
+    index = []
+    for item in details:
+        offer = public_offer(item)
+        index.append(
+            {
+                "sku_id": str(item["sku_id"]),
+                "name": offer["name"],
+                "category_code": item["category_code"],
+                "spec": offer["spec"],
+            }
+        )
+    return {
+        "direct_search": True,
+        "items": details,
+        "index": index,
+        "version": page["version"],
+        "next_offset": page["next_offset"],
+    }
+
+
+async def current_restriction_codes(profile):
+    """解析本人已确认的硬限制名称，未知或歧义仍拒绝交易。"""
+    dietary = profile.get("dietary_details") or {}
+    names = {
+        normalized(name)
+        for status, field in (
+            ("allergyStatus", "allergies"),
+            ("intoleranceStatus", "intolerances"),
+            ("avoidanceStatus", "avoidances"),
+        )
+        if dietary.get(status) == "set"
+        for name in dietary.get(field, [])
+    }
+    return await lookup_restriction_codes(sorted(names)) if names else {}
 
 
 async def select_conversation_products(context, items, empty_reason="", *, ready_to_answer=False):
@@ -240,18 +314,35 @@ async def offers_for_answer(session, run, binding, content, *, publication=False
                 if isinstance(original, str):
                     short_receipts[hashlib.sha256(original.encode()).hexdigest()[:32]] = original
     member = await require_shopping_member(session, binding)
-    sources = [decode_offer(short_receipts.get(token, "") if len(token) == 32 else token) for token in tokens]
-    categories = sorted({source["category_code"] for source in sources if source.get("category_code")})
-    catalog = await current_catalog(category_codes=categories if all(s.get("category_code") for s in sources) else None)
-    offers = []
-    for token, source in zip(tokens, sources):
-        if len(token) == 32:
-            token = short_receipts.get(token, "")
-        verify_offer_owner(source, run, binding)
-        item = next(
-            (item for item in catalog["items"] if str(item["sku_id"]) == source["sku_id"]),
-            None,
+    resolved_tokens = [short_receipts.get(token, "") if len(token) == 32 else token for token in tokens]
+    sources = [decode_offer(token) for token in resolved_tokens]
+    legacy_sources = [source for source in sources if source.get("catalog_lookup") != "shop_db_v1"]
+    categories = sorted({source["category_code"] for source in legacy_sources if source.get("category_code")})
+    catalog = (
+        await current_catalog(
+            category_codes=categories if all(s.get("category_code") for s in legacy_sources) else None
         )
+        if legacy_sources
+        else {"items": []}
+    )
+    restriction_codes = (
+        await current_restriction_codes(member.profile)
+        if any(source.get("catalog_lookup") == "shop_db_v1" for source in sources)
+        else {}
+    )
+    offers = []
+    for token, source in zip(resolved_tokens, sources):
+        verify_offer_owner(source, run, binding)
+        if source.get("catalog_lookup") == "shop_db_v1":
+            item = await commerce_request(
+                "GET", "/api/v1/integration/ai/catalog/skus/" + quote(source["sku_id"], safe="")
+            )
+            if not isinstance(item, dict) or str(item.get("sku_id")) != source["sku_id"]:
+                raise HealthVisionError("catalog_invalid", "商城商品身份无法核对", 503)
+            item_catalog = {"items": [item], "restriction_codes": restriction_codes}
+        else:
+            item = next((row for row in catalog["items"] if str(row["sku_id"]) == source["sku_id"]), None)
+            item_catalog = catalog
         display_valid = bool(
             item
             # 已完成消息中的回执是历史引用；每次展示、核价和下单仍重验当前来源。
@@ -267,10 +358,10 @@ async def offers_for_answer(session, run, binding, content, *, publication=False
             display_valid
             and (
                 source["kind"] == "conversation_package"
-                and package_available(member.profile, item, catalog)
+                and package_available(member.profile, item, item_catalog)
                 or source["kind"] == "conversation_catalog"
                 and source.get("trade_policy") == "catalog_v1"
-                and catalog_purchase_available(member.profile, item, catalog)
+                and catalog_purchase_available(member.profile, item, item_catalog)
             )
         )
         if publication and not (display_valid if source["kind"] == "conversation_catalog" else available):
@@ -322,14 +413,19 @@ async def publish_conversation_purchase(uid, request_id, token):
     if not offer or not offer["available"]:
         raise HealthVisionError("purchase_source_changed", "食材包已变化或不可购买，请重新查询", 409)
     source = decode_offer(token)
-    catalog = await current_catalog()
-    item = next(
-        (item for item in catalog["items"] if str(item["sku_id"]) == source["sku_id"]),
-        None,
-    )
+    if source.get("catalog_lookup") == "shop_db_v1":
+        item = await commerce_request("GET", "/api/v1/integration/ai/catalog/skus/" + quote(source["sku_id"], safe=""))
+        if not isinstance(item, dict) or str(item.get("sku_id")) != source["sku_id"]:
+            raise HealthVisionError("catalog_invalid", "商城商品身份无法核对", 503)
+    else:
+        catalog = await current_catalog(
+            category_codes=[source["category_code"]] if source.get("category_code") else None
+        )
+        item = next((row for row in catalog["items"] if str(row["sku_id"]) == source["sku_id"]), None)
     if (
         not item
         or not catalog_visible(item)
+        or (source.get("category_code") and item.get("category_code") != source["category_code"])
         or composition_hash(item) != source["composition_hash"]
         or description_hash(item) != source.get("description_hash", description_hash(item))
     ):
@@ -506,6 +602,7 @@ def package_available(profile, item, catalog):
         for row in sku.get("ingredients", [])
         if row.get("name") and row.get("ingredient_code")
     }
+    names.update(catalog.get("restriction_codes", {}))
     codes = {row.get("ingredient_code") for row in ingredients} | set(item.get("allergen_codes") or [])
     for state, field in [
         ("allergyStatus", "allergies"),
