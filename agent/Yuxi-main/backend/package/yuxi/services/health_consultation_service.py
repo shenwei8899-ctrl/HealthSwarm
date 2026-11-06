@@ -192,7 +192,6 @@ async def list_consultations(uid, member_id, *, limit=20, offset=0, legacy_links
         health = HealthVisionRepository(session)
         await health.authorize(member_id, uid, "ai_use")
         consultations = HealthConsultationRepository(session)
-        await consultations.require_active_consultation_consent(member_id, uid)
         rows = await consultations.list_member_consultations(uid, member_id, limit=limit, offset=offset)
         has_more = len(rows) > limit
         summaries = await _directory_summaries(session, uid, [row[0] for row in rows[:limit]], legacy_links)

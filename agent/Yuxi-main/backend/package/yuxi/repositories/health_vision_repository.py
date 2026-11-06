@@ -137,7 +137,9 @@ class HealthVisionRepository:
         grant.revoked_at = None if scopes else utc_now_naive()
 
     async def require_consent(self, member_id: str, uid: str, purpose: str, snapshot: dict):
-        """逐用途重读有效同意，并核对当前处理方及政策。"""
+        """咨询沿用成员访问权限，其他处理用途仍核对当前同意。"""
+        if purpose == "consultation":
+            return
         consent = await self.session.get(HealthProcessingConsent, (member_id, uid, purpose), populate_existing=True)
         if (
             consent is None
@@ -466,7 +468,8 @@ class HealthVisionRepository:
             source is None
             or not source.is_active
             or member.owner_uid != link.actor_uid
-            or source.subject_uid != link.actor_uid and not guardian_active(source, link.actor_uid)
+            or source.subject_uid != link.actor_uid
+            and not guardian_active(source, link.actor_uid)
         ):
             raise HealthVisionError("not_found", "资源不存在或无权访问", 404)
 

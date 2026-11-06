@@ -28,7 +28,9 @@ def list_dependencies(monkeypatch):
     first_questions = AsyncMock(return_value=[])
     monkeypatch.setattr(service.pg_manager, "get_async_session_context", session_context)
     monkeypatch.setattr(service.HealthVisionRepository, "authorize", authorize)
-    monkeypatch.setattr(service.HealthConsultationRepository, "require_active_consultation_consent", active_consent)
+    monkeypatch.setattr(
+        service.HealthConsultationRepository, "require_active_consultation_consent", active_consent, raising=False
+    )
     monkeypatch.setattr(service.HealthConsultationRepository, "list_member_consultations", query)
     monkeypatch.setattr(service.HealthConsultationRepository, "authorize", history_validation)
     monkeypatch.setattr(service.HealthConsultationRepository, "conversation_threads", threads)
@@ -80,7 +82,7 @@ async def test_list_projects_only_metadata_and_uses_extra_row(list_dependencies,
         ("member", "actor", "ai_use"),
     ]
     dependencies.query.assert_awaited_once_with("actor", "member", limit=2, offset=3)
-    dependencies.active_consent.assert_awaited_once_with("member", "actor")
+    dependencies.active_consent.assert_not_awaited()
     dependencies.cloud_configuration.assert_not_awaited()
     if rows:
         dependencies.threads.assert_awaited_once_with("actor", [row[0] for row in rows[:2]])
@@ -116,23 +118,22 @@ async def test_missing_member_scope_rejects_before_list_query(list_dependencies)
 
 
 @pytest.mark.asyncio
-async def test_revoked_processing_consent_rejects_before_directory_reads(list_dependencies):
-    """成员 grant 保留时，撤回咨询用途同意仍拒绝线程目录与标题。"""
+async def test_legacy_processing_consent_does_not_block_directory_reads(list_dependencies):
+    """目录按成员访问与逐线程来源校验，旧咨询同意记录不阻断读取。"""
     dependencies = list_dependencies
     dependencies.active_consent.side_effect = HealthVisionError("consent_required", "请先同意当前咨询用途", 403)
     dependencies.query.return_value = [("thread", None, datetime(2026, 10, 10, tzinfo=UTC))]
     dependencies.threads.return_value = [(SimpleNamespace(id=7, thread_id="thread", extra_metadata={}), object())]
 
-    with pytest.raises(HealthVisionError, match="consent_required") as denied:
-        await service.list_consultations("actor", "member")
+    result = await service.list_consultations("actor", "member")
 
-    assert denied.value.status == 403
+    assert result["items"][0]["unavailable"] is False
     dependencies.authorize.assert_awaited_once_with("member", "actor", "ai_use")
-    dependencies.active_consent.assert_awaited_once_with("member", "actor")
-    dependencies.query.assert_not_awaited()
-    dependencies.threads.assert_not_awaited()
-    dependencies.first_questions.assert_not_awaited()
-    dependencies.history_validation.assert_not_awaited()
+    dependencies.active_consent.assert_not_awaited()
+    dependencies.query.assert_awaited_once_with("actor", "member", limit=20, offset=0)
+    dependencies.threads.assert_awaited_once_with("actor", ["thread"])
+    dependencies.first_questions.assert_awaited_once_with([7])
+    dependencies.history_validation.assert_awaited_once_with("actor", "thread", preview_history=True)
     dependencies.cloud_configuration.assert_not_awaited()
 
 

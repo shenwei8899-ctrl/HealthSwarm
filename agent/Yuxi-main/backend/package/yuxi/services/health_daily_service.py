@@ -34,7 +34,6 @@ async def daily_history(uid, member_id, before=None):
     async with pg_manager.get_async_session_context() as session:
         health = HealthVisionRepository(session)
         await health.authorize(member_id, uid, "ai_use")
-        await HealthConsultationRepository(session).require_active_consultation_consent(member_id, uid)
         rows = await HealthDailyRepository(session).history(uid, member_id, before)
         return {
             "days": [

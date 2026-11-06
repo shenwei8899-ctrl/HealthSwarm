@@ -1,4 +1,4 @@
-"""咨询用途同意撤回后，已存在会话也不能公开历史。"""
+"""咨询历史由成员访问权限控制，不依赖独立处理同意。"""
 
 from uuid import uuid4
 
@@ -6,7 +6,13 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from test.integration.services.test_schema_migration_version import _create_isolated_manager, _drop_isolated_schema
+from test.integration.services.test_schema_migration_version import (  # noqa: F401
+    _create_isolated_manager,
+    _drop_isolated_schema,
+    ensure_live_api_schema,
+    cleanup_test_sandboxes,
+    cleanup_test_knowledge_resources,
+)
 from yuxi.repositories.conversation_repository import ConversationRepository
 from yuxi.repositories.health_consultation_repository import EDUCATION_HEALTH_AGENTS, HealthConsultationRepository
 from yuxi.services.conversation_service import require_user_conversation
@@ -18,25 +24,9 @@ from yuxi.utils.datetime_utils import utc_now_naive
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
-@pytest.fixture(scope="session", autouse=True)
-def cleanup_test_sandboxes():
-    """本文件只创建自有 PG schema，不创建或清理外部沙盒。"""
-    yield
-
-
-@pytest.fixture(scope="session", autouse=True)
-def cleanup_test_knowledge_resources():
-    """合成会话不创建知识库资源，清理由自有 schema 的 finally 完成。"""
-    yield
-
-
-@pytest.fixture(scope="session", autouse=True)
-def ensure_live_api_schema():
-    """真实 PG 使用本文件的独立 schema，不依赖运行中的 API。"""
-
-
-async def test_revoked_consultation_consent_hides_existing_threads():
-    """真实 PG 中保留成员 grant 时，撤回用途同意仍拒绝四类科普会话历史。"""
+@pytest.mark.parametrize("consent_state", ["missing", "revoked", "processor_changed"])
+async def test_consultation_history_uses_member_access_without_processing_consent(consent_state):
+    """旧处理记录不影响读取，撤回成员访问后仍拒绝历史。"""
     schema, admin_engine, engine, manager = await _create_isolated_manager("pytest_consultation_consent_history")
     try:
         await manager.create_business_tables()
@@ -70,15 +60,17 @@ async def test_revoked_consultation_consent_hides_existing_threads():
                         request_id=str(uuid4()),
                     )
                 )
-            session.add(
-                HealthProcessingConsent(
-                    member_id=member_id,
-                    actor_uid=uid,
-                    purpose="consultation",
-                    processor="synthetic-processor",
-                    policy_version="synthetic-policy",
+            if consent_state != "missing":
+                session.add(
+                    HealthProcessingConsent(
+                        member_id=member_id,
+                        actor_uid=uid,
+                        purpose="consultation",
+                        processor="old-processor" if consent_state == "processor_changed" else "synthetic-processor",
+                        policy_version="synthetic-policy",
+                        revoked_at=utc_now_naive() if consent_state == "revoked" else None,
+                    )
                 )
-            )
 
         async with sessions.begin() as session:
             for thread_id in thread_ids.values():
@@ -88,12 +80,12 @@ async def test_revoked_consultation_consent_hides_existing_threads():
                 assert visible.id == binding.conversation_id
 
         async with sessions.begin() as session:
-            consent = await session.get(HealthProcessingConsent, (member_id, uid, "consultation"))
-            consent.revoked_at = utc_now_naive()
+            grant = await session.get(HealthGrant, (member_id, uid))
+            grant.revoked_at = utc_now_naive()
 
         async with sessions.begin() as session:
             for thread_id in thread_ids.values():
-                with pytest.raises(HealthVisionError, match="consent_required"):
+                with pytest.raises(HealthVisionError, match="not_found"):
                     await HealthConsultationRepository(session).authorize(uid, thread_id, lock=True)
                 with pytest.raises(HTTPException, match="对话线程不存在或无权访问"):
                     await require_user_conversation(ConversationRepository(session), thread_id, uid)

@@ -8,7 +8,6 @@ from yuxi.storage.postgres.models_business import AgentRun, Conversation, Messag
 from yuxi.storage.postgres.models_health import (
     HealthConsultation,
     HealthDailyConversation,
-    HealthProcessingConsent,
     HealthSafePlannerPreview,
 )
 from yuxi.utils.datetime_utils import utc_now_naive
@@ -171,15 +170,6 @@ class HealthConsultationRepository:
         if member.owner_uid != uid or member.relationship_label != "本人":
             raise HealthVisionError("not_found", "指标记录助手仅支持自己的本人记录", 404)
         return member
-
-    async def require_active_consultation_consent(self, member_id, uid):
-        """在当前事务内重读成员的咨询用途同意。"""
-        consent = await self.session.get(
-            HealthProcessingConsent, (member_id, uid, "consultation"), populate_existing=True
-        )
-        if consent is None or consent.revoked_at is not None:
-            raise HealthVisionError("consent_required", "请先同意当前咨询用途", 403)
-        return consent
 
     async def authorize(
         self, uid, thread_id, *, lock=False, preview_history=False, allow_stale_reference_results=False
@@ -363,7 +353,6 @@ class HealthConsultationRepository:
         for scope in dict.fromkeys(scopes):
             await health_repo.authorize(binding.member_id, uid, scope)
         if conversation.agent_id in EDUCATION_HEALTH_AGENTS:
-            await self.require_active_consultation_consent(binding.member_id, uid)
             from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
             from yuxi.repositories.health_weight_repository import HealthWeightRepository
             from yuxi.repositories.health_blood_pressure_repository import HealthBloodPressureRepository

@@ -288,6 +288,52 @@ test('a late task response after account switch cannot reveal a health answer', 
   assert.equal(h.flow.getState().result, null)
 })
 
+test('ordinary consultation reports an unexpected consent gate and recovers through a fresh readiness read', async () => {
+  let available = false
+  const h = fixture({ send: async options => {
+    if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [
+      { entry_type: 'consultation', status: available ? 'available' : 'unavailable', reason_code: available ? null : 'consent_required' },
+    ] } }
+    return fixtureBase(options)
+  } })
+  try {
+    await h.flow.open(memberId, 'consultation')
+    assert.equal(h.flow.getState().available, false)
+    assert.equal(h.flow.getState().consentOption, null)
+    assert.equal(h.flow.getState().notice, '咨询服务状态异常，请重新连接后再试。')
+    await h.flow.acceptConsent(true)
+    assert.equal(h.calls.some(call => call.method === 'POST' || call.path === '/api/health/v1/configuration'), false)
+    available = true
+    await h.flow.open(memberId, 'consultation')
+    assert.equal(h.flow.getState().available, true)
+    assert.equal(h.flow.getState().notice, '')
+  } finally { h.flow.hide() }
+})
+
+test('meal planning retains explicit consent using the current processor and policy', async () => {
+  let accepted = false
+  const h = fixture({ send: async options => {
+    if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [
+      { entry_type: 'reference_meal_preview', status: accepted ? 'available' : 'needs_input', reason_code: accepted ? null : 'consent_required' },
+    ] } }
+    if (options.path === '/api/health/v1/configuration') return { data: { policy_version: 'approved-v2',
+      meal_plan: { available: true, processor: 'approved-provider' } } }
+    if (options.path.endsWith('/processing-consents')) { accepted = true; return { data: { accepted: true } } }
+    return fixtureBase(options)
+  } })
+  try {
+    await h.flow.open(memberId, 'reference_meal_preview')
+    assert.ok(!h.flow.getState().available)
+    assert.deepEqual(h.flow.getState().consentOption, { processor: 'approved-provider', policyVersion: 'approved-v2', purpose: 'meal_plan' })
+    await h.flow.acceptConsent(false)
+    assert.equal(h.calls.some(call => call.path.endsWith('/processing-consents')), false)
+    await h.flow.acceptConsent(true)
+    assert.equal(h.flow.getState().available, true)
+    assert.deepEqual(h.calls.find(call => call.path.endsWith('/processing-consents')).data,
+      { purpose: 'meal_plan', accepted: true, processor: 'approved-provider', policy_version: 'approved-v2' })
+  } finally { h.flow.hide() }
+})
+
 test('consent is explicit, uses current server policy, and rechecks readiness', async () => {
   let accepted = false
   const h = fixture({ send: async options => {

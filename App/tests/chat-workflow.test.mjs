@@ -225,6 +225,39 @@ test('a current authoritative unresolved candidate prevents another POST even wi
  }finally{menu?.dispose();page.dispose()}
 })
 
+test('reconnecting after entry failure keeps the question and image without submitting them', async () => {
+  let blocked = true
+  const p = workflow({ route: {}, beforeProfile: async () => {
+    if (blocked) throw new Error('咨询服务状态异常，请重新连接后再试。')
+  } })
+  try {
+    await p.load()
+    assert.equal(p.entryReady.value, false)
+    assert.equal(p.chatBusy.value, true)
+    const source = readFileSync(new URL('../src/components/CloudNutritionChat.vue', import.meta.url), 'utf8')
+    const disabled = source.match(/:disabled="([^"]+)" @click="load">重新连接营养师/)[1]
+    const evaluate = new Function('conversationChangeBusy', 'returning', 'pendingEntrySend', 'voiceBusy', 'draftSaving', `return !!(${disabled})`)
+    assert.equal(evaluate(false, false, null, p.voiceBusy.value, p.draftSaving.value), false)
+    assert.equal(evaluate(true, false, null, false, false), true)
+    assert.equal(evaluate(false, false, null, true, false), true)
+    p.question.value = '给我明天饮食规划'
+    p.draftImage.value = { localPath: 'synthetic-draft.jpg' }
+    blocked = false
+    await p.load()
+    assert.equal(p.entryReady.value, true)
+    assert.equal(p.question.value, '给我明天饮食规划')
+    assert.equal(p.draftImage.value.localPath, 'synthetic-draft.jpg')
+    assert.equal(p.calls.some(call => call.action === 'submit' || call.action === 'create'), false)
+  } finally { p.dispose() }
+})
+
+test('entry failure offers reconnection next to the draft while consent retains its own controls', () => {
+  const source = readFileSync(new URL('../src/components/CloudNutritionChat.vue', import.meta.url), 'utf8')
+  const composer = source.split('<template #composer>')[1].split('<template #overlays>')[0]
+  assert.match(composer, /v-if="!entryReady&&entryError&&!profileLoading&&!task\.consentOption"/)
+  assert.match(composer, /@click="load">重新连接营养师/)
+})
+
 test('a question appears immediately during entry checks and submits only once after readiness',async()=>{
  const gate=deferred(),p=workflow({beforeProfile:()=>gate.promise,route:{}})
  try{

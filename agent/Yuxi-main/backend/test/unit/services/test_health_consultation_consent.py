@@ -1,4 +1,4 @@
-"""用途同意必须约束真实处理、每次模型调用和四类咨询历史。"""
+"""咨询使用成员权限，并在每次模型调用时核对当前处理配置。"""
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -17,8 +17,8 @@ from yuxi.utils.datetime_utils import utc_now_naive
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["current", "missing", "revoked", "processor", "policy"])
-async def test_consultation_processing_rechecks_real_consent_row(case):
-    """用途、处理方、政策和撤回状态均由持久化同意行决定。"""
+async def test_consultation_processing_uses_member_access_without_extra_consent_row(case):
+    """旧咨询同意行的缺失、撤回和版本变化均不增加独立门槛。"""
     snapshot = {"processor": "synthetic", "policy_version": "policy"}
     consent = SimpleNamespace(processor="synthetic", policy_version="policy", revoked_at=None)
     if case == "revoked":
@@ -30,21 +30,14 @@ async def test_consultation_processing_rechecks_real_consent_row(case):
     session = SimpleNamespace(get=AsyncMock(return_value=None if case == "missing" else consent))
     repo = HealthVisionRepository(session)
 
-    if case == "current":
-        await repo.require_consent("member", "actor", "consultation", snapshot)
-    else:
-        with pytest.raises(HealthVisionError, match="consent_required") as denied:
-            await repo.require_consent("member", "actor", "consultation", snapshot)
-        assert denied.value.status == 403
-    session.get.assert_awaited_once_with(
-        HealthProcessingConsent, ("member", "actor", "consultation"), populate_existing=True
-    )
+    await repo.require_consent("member", "actor", "consultation", snapshot)
+    session.get.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["current", "missing", "revoked", "processor", "policy"])
-async def test_model_attempt_uses_current_processing_consent(monkeypatch, case):
-    """真实模型前置服务保留冻结配置，当前同意失效即停止该次模型调用。"""
+@pytest.mark.parametrize("case", ["current", "missing", "revoked", "processor", "policy", "configuration_changed"])
+async def test_model_attempt_rechecks_configuration_without_extra_processing_consent(monkeypatch, case):
+    """调用时继续核对冻结配置，旧咨询同意行由成员访问权限替代。"""
     snapshot = {"model": "synthetic/fixed", "processor": "synthetic", "policy_version": "policy"}
     consent = SimpleNamespace(processor="synthetic", policy_version="policy", revoked_at=None)
     if case == "revoked":
@@ -77,7 +70,7 @@ async def test_model_attempt_uses_current_processing_consent(monkeypatch, case):
         "configuration",
         AsyncMock(
             return_value={
-                "policy_version": "policy",
+                "policy_version": "new-policy" if case == "configuration_changed" else "policy",
                 "consultation": {"available": True, **snapshot},
             }
         ),
@@ -86,21 +79,21 @@ async def test_model_attempt_uses_current_processing_consent(monkeypatch, case):
     monkeypatch.setattr(service.SkillRepository, "get_by_slug", skill)
     context = SimpleNamespace(uid="actor", thread_id="thread", model=snapshot["model"])
 
-    if case == "current":
+    if case == "configuration_changed":
+        with pytest.raises(HealthVisionError, match="policy_changed") as denied:
+            await service.require_consultation_attempt(context)
+        assert denied.value.status == 409
+        skill.assert_not_awaited()
+    else:
         await service.require_consultation_attempt(context)
         skill.assert_awaited()
-    else:
-        with pytest.raises(HealthVisionError, match="consent_required") as denied:
-            await service.require_consultation_attempt(context)
-        assert denied.value.status == 403
-        skill.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("agent_slug", sorted(EDUCATION_HEALTH_AGENTS))
 @pytest.mark.parametrize("revoked", [False, True])
-async def test_education_history_rechecks_active_consent(monkeypatch, agent_slug, revoked):
-    """保留成员 grant 的真实历史授权仍拒绝四种 Agent 的已撤回用途同意。"""
+async def test_education_history_uses_current_member_access(monkeypatch, agent_slug, revoked):
+    """具有成员权限的历史读取继续核对来源，旧处理同意记录不阻断。"""
     from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
     from yuxi.repositories.health_weight_repository import HealthWeightRepository
     from yuxi.repositories.health_blood_pressure_repository import HealthBloodPressureRepository
@@ -142,9 +135,4 @@ async def test_education_history_rechecks_active_consent(monkeypatch, agent_slug
     monkeypatch.setattr(HealthDietCorrectionRepository, "validate_consultation_history", AsyncMock())
     monkeypatch.setattr(conversation_purchase_service, "validate_catalog_profile_history", AsyncMock())
 
-    if revoked:
-        with pytest.raises(HealthVisionError, match="consent_required") as denied:
-            await HealthConsultationRepository(session).authorize("actor", "thread", preview_history=True)
-        assert denied.value.status == 403
-    else:
-        assert await HealthConsultationRepository(session).authorize("actor", "thread", preview_history=True) is binding
+    assert await HealthConsultationRepository(session).authorize("actor", "thread", preview_history=True) is binding
