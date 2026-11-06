@@ -62,13 +62,14 @@ class Migrator
         foreach ($paths as $path) {
             if (!is_file($path)) throw new \RuntimeException('Shop migration file missing: ' . basename($path));
             $version = pathinfo($path, PATHINFO_FILENAME);
-            $checksum = hash_file('sha256', $path);
+            $checksums = self::migrationChecksums(file_get_contents($path));
+            $checksum = $checksums[0];
             Db::startTrans();
             try {
                 Db::query('SELECT pg_advisory_xact_lock(hashtext(?))', ['shop_migration:' . $prefix . ':' . $version]);
                 $applied = Db::name('shop_schema_migration')->where('version', $version)->find();
                 if ($applied) {
-                    if (!empty($applied['checksum']) && !hash_equals($applied['checksum'], $checksum)) {
+                    if (!empty($applied['checksum']) && !in_array($applied['checksum'], $checksums, true)) {
                         throw new \RuntimeException('Applied shop migration changed: ' . $version);
                     }
                     Db::commit();
@@ -89,6 +90,17 @@ class Migrator
                 throw $error;
             }
         }
+    }
+
+    /** 接纳历史发布的换行形式，新迁移登记规范 LF 摘要。 */
+    protected static function migrationChecksums($sql)
+    {
+        $canonical = str_replace(["\r\r\n", "\r\n"], "\n", $sql);
+        return [
+            hash('sha256', $canonical),
+            hash('sha256', str_replace("\n", "\r\n", $canonical)),
+            hash('sha256', str_replace("\n", "\r\r\n", $canonical)),
+        ];
     }
 
     protected static function splitStatements($sql)

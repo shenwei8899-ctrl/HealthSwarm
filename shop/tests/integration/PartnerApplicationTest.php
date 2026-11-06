@@ -45,6 +45,10 @@ partnerReject(function()use($service,$users,$invalid){$service->submit($users['o
 $invalid=$payload;$invalid['location_area_id']=2147483647;
 partnerReject(function()use($service,$users,$invalid){$service->submit($users['owner'],'area-'.uniqid(),$invalid);},40001);
 $before=Db::name('shop_supplier')->count();
+$zeroReceipt=$service->submit($users['owner'],'0',$payload);
+$zeroApplication=Db::name('shop_supplier_application')->where('application_sn',$zeroReceipt['application_sn'])->find();
+partnerCheck(PartnerApplicationService::isContactIntake($zeroApplication),'The valid key 0 must remain a contact intake');
+partnerCheck((int)$zeroApplication['supplier_id']===0,'A contact intake must not create a formal supplier');
 $detail=$service->detail($rows[0]['id']);partnerCheck($detail['contact_mobile']==='13800000000','Authorized detail must recover the contact phone');
 $service->followUp($rows[0]['id'],999,['version'=>1,'follow_up_status'=>'contacted','follow_up_note'=>'已联系，等待后续资料']);
 partnerCheck($service->detail($rows[0]['id'])['follow_up_status']==='contacted','Follow-up did not persist');

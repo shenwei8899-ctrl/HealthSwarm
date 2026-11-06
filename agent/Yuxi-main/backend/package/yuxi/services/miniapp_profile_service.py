@@ -242,6 +242,7 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
     if member_only and (len(data.members) != 1 or str(data.members[0].member_id) != actor.id):
         raise HTTPException(403, "受邀建档只能填写和确认本人档案")
     refs, used, submitted = {}, set(), []
+    family_changed = False
     for draft in data.members:
         if draft.member_id:
             _, member = await service.context(fid, str(draft.member_id))
@@ -258,6 +259,7 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
                 version=1,
             )
             db.add(member)
+            family_changed = True
             await db.flush()
         if member.id in used or draft.relation == "本人" and member.subject_uid != uid:
             raise HTTPException(422, "成员身份引用不一致")
@@ -281,6 +283,7 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
             if member.subject_uid and member.subject_uid != uid:
                 raise HTTPException(403, "其他已认领成员的身份不能由此建档修改")
             member.name, member.relationship = draft.name, relationship
+            family_changed = True
             member.relationship_version = (member.relationship_version or 1) + 1
         if any((member.profile or {}).get(key) != value for key, value in changes.items()):
             birth_changed = (member.profile or {}).get("birth_date") != changes["birth_date"]
@@ -332,13 +335,15 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
         for member in analysis_members:
             member.invitation_analysis_pending = False
     if not member_only:
-        family.settings = {
+        settings = {
             **(family.settings or {}),
             "default_diners": [refs[ref] for ref in data.default_diners],
             "usage_mode": data.usage_mode,
             "miniapp_onboarded": True,
         }
-        family.version += 1
+        if family_changed or family.settings != settings:
+            family.settings = settings
+            family.version += 1
     db.add(
         HealthMiniappProfileReceipt(
             actor_uid=uid,

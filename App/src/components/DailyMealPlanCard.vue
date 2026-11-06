@@ -1,4 +1,5 @@
 <script setup>
+import { recipeTime } from '../utils/dish-commerce-presentation.js'
 import FoodImageSlot from './FoodImageSlot.vue'
 import AppIcon from './AppIcon.vue'
 import { computed } from 'vue'
@@ -20,7 +21,7 @@ function openDish(item,dishIndex){if(props.interactive)emit('dish',{item,dishInd
     <view class="meal-head"><AppIcon :name="type==='dinner'?'moon':'sun'" :size="compact?24:32"/><text class="meal-name">{{names[type]}}</text><button role="button" tabindex="0" class="meal-detail" :disabled="!interactive" @click="openDetail(item)" :aria-label="'查看'+names[type]+'详情'">查看详情 <text>›</text></button></view>
     <button role="button" tabindex="0" v-for="(dish,index) in item.meal.dishes" :key="dishKey(dish)" class="meal-dish" :disabled="!interactive" @click="openDish(item,index)" :aria-label="'查看'+dishTitle(dish)">
      <view class="meal-image"><FoodImageSlot :src="recipeCover(dish)?.image_url" :label="dishTitle(dish)" :width="compact?56:72" :height="compact?56:72" :radius="compact?14:18"/></view>
-     <text class="dish-name">{{dishTitle(dish)}}</text>
+     <view class="dish-copy"><text class="dish-name">{{dishTitle(dish)}}</text><text class="dish-time">{{recipeTime(dish)}}</text></view>
     </button>
    </view>
    <view v-if="workspace&&!plan.meals.some(i=>i.meal_type===type)" class="meal-card"><view class="meal-head"><text class="meal-name">{{names[type]}}</text><text class="meal-empty">尚未安排</text></view></view>
@@ -52,4 +53,5 @@ function openDish(item,dishIndex){if(props.interactive)emit('dish',{item,dishInd
 .is-compact .meal-dish{min-height:64px;padding:4px 0}.is-compact .meal-dish+.meal-dish{margin-top:4px}.is-compact .meal-image{width:56px;height:56px;flex-basis:56px;border-radius:14px}
 .is-compact .dish-name{margin-left:12px;font-size:15px;line-height:1.6}.is-compact .meal-dish[disabled]{opacity:1;background:transparent}.is-compact .meal-detail[disabled]{opacity:.45;background:transparent}
 @media(max-width:350px){.menu-cards{padding-left:16px;padding-right:16px}.in-chat.menu-cards{padding:0}.meal-card{padding-left:15px;padding-right:15px}.meal-detail{padding:8px 10px}}
+.dish-copy{flex:1;min-width:0;margin-left:18px}.dish-copy .dish-name{margin-left:0}.dish-time{display:block;margin-top:4px;font-size:12px;line-height:1.6;color:var(--ui-muted)}.is-compact .dish-copy{margin-left:12px}.is-compact .dish-copy .dish-name{margin-left:0}
 </style>

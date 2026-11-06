@@ -167,7 +167,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
     state.error = ''; state.requests = state.requests.map(row => row.request_id === state.requestId ? { ...row, status: 'failed' } : row)
     save(); emit()
   }
-  /** 独立复核原会话访问权，避免把单个接口的 404 当作授权撤销。 */
+  /** 独立复核原会话访问权，区分请求拒绝与会话失效。 */
   async function verifyThreadAccess(entry) {
     const { data } = await send({ path: `/api/chat/thread/${entry.thread_id}/history` })
     if (data?.thread?.id !== entry.thread_id || data.thread.agent_id !== entry.agent_slug || !Array.isArray(data.history)) throw mismatch()
@@ -411,7 +411,10 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       return true
     } catch (error) {
       if (current(ticket)) {
-        if (Number(error?.code) === 404) {
+        // 旧版提交接口只返回冲突文案，先独立确认原会话再处理本条拒绝。
+        const verifyConflict = Number(error?.code) === 409 &&
+          (!error.businessCode || error.businessCode === 'daily_plan_version_changed')
+        if (Number(error?.code) === 404 || verifyConflict) {
           try {
             await verifyThreadAccess(state.entry)
             if (!current(ticket)) return false

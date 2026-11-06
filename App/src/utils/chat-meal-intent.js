@@ -5,13 +5,17 @@ export function isMealPlanningCancelled(value) {
 }
 
 /** 只识别明确的用餐安排请求；疾病科普不会成为本人诊断。 */
-export function parseChatMealIntent(value, today) {
+export function parseChatMealIntent(value, today, hasMealContext = false) {
   const text = String(value || '').trim()
   if (!text || isMealPlanningCancelled(text)) return null
   const education = /(?:什么是|介绍|解释|科普|原则|注意事项|怎么理解|如何理解|有何区别|有什么区别)/.test(text)
+  const revision = !education && !/换(?:个|一个)?话题|换个问题/.test(text) &&
+    (/(?:再|重新)?(?:换|更换|替换)(?:一|几|两|三|些|点|批|道|个|下|别|其他|其它|这|那|菜|餐).*(?:菜|餐|食谱|菜单)/.test(text) ||
+      hasMealContext && /^(?:请|帮我|给我|再|能不能|可以|麻烦|那|就|都|全部|重新)*(?:换(?:一批|一组|几个|几道|一下|一些|掉|成其他的)|还有(?:别的|其他的|其它的)(?:吗|么)?)[。？！!？\s]*$/.test(text))
   const changeMeal = /(?:^|[：:，。！？；,;\s])(?:请)?(?:只)?(?:更换|替换|换|调整)(?:一下)?(?:今天|今日|明天|明日|今晚|明晚)?(?:的)?(?:早餐|午餐|晚餐|早饭|午饭|晚饭)/.test(text)
-  const request = /配餐|配菜|推荐(?:几|两|三|一|些|点|道).*(?:菜|吃)|(?:安排|生成|制定|规划|推荐|设计|提供|给我|帮我|为我).*(?:餐|早饭|午饭|晚饭|食谱|菜单|吃)|(?:今天|今日|明天|明日|今晚|今早|明早|早饭|午饭|晚饭|早餐|午餐|晚餐|一日三餐).*(?:怎么吃|吃什么|吃啥|如何吃|吃点什么|推荐|安排|搭配)|(?:今天|明天|今晚|明晚|今早|明早).*(?:早餐|午餐|晚餐|早饭|午饭|晚饭).*(?:不要|避免|不能吃|不吃|过敏)/.test(text)
-  if ((!request && !changeMeal) || education) return null
+  const request = /配餐|配菜|推荐(?:几|两|三|一|些|点|道).*(?:菜|吃)|(?:安排|生成|制定|规划|推荐|设计|提供|给我|帮我|为我).*(?:餐|早饭|午饭|晚饭|食谱|菜谱|菜单|吃)|(?:今天|今日|明天|明日|今晚|今早|明早|早饭|午饭|晚饭|早餐|午餐|晚餐|一日三餐).*(?:怎么吃|吃什么|吃啥|如何吃|吃点什么|推荐|安排|搭配)|(?:今天|明天|今晚|明晚|今早|明早).*(?:早餐|午餐|晚餐|早饭|午饭|晚饭).*(?:不要|避免|不能吃|不吃|过敏)/.test(text)
+  const dishRequest = /(?:推荐|搭配|挑|选|安排|做|来).*(?:菜|食谱|菜单)|(?:什么菜|哪些菜|哪道菜|菜品|菜谱|菜肴).*(?:适合|推荐|搭配)|(?:适合|想|可以).*(?:吃|做).*(?:什么菜|哪些菜|哪道菜)/.test(text)
+  if ((!request && !dishRequest && !changeMeal && !revision) || education) return null
   const condition = /糖尿病|高血压|高血脂|肾病|肾脏|妊娠|孕期|哺乳|婴儿/.test(text)
   if (condition && !/(?:为我|给我|帮我|给我们|为我们|帮我们|全家|一家人).*(?:安排|生成|制定|配餐)/.test(text)) return null
 
@@ -25,6 +29,7 @@ export function parseChatMealIntent(value, today) {
   if (tomorrow) date.setUTCDate(date.getUTCDate() + 1)
   const unsupportedDate = /后天|大后天|昨天|昨日|上周|下周|下星期|本周|这周|一周|(?:[2-9]\d*|1\d+|[二两三四五六七八九十百][一二两三四五六七八九十百]*)[天日]|未来|\d{4}[-年/.]\d|\d{1,2}月\d/.test(text)
   return {
+    ...(revision ? {revision:true} : {}),
     date: Number.isNaN(date.getTime()) ? today : date.toISOString().slice(0, 10),
     meals: matchedMeals.length ? matchedMeals : [...allMeals],
     audience: /全家|一家人|一家|家人|我们|家庭(?:三餐|配餐|餐单|菜单|用餐|饮食计划)/.test(text) ? 'family' : /为我|给我|帮我|本人|自己|一个人|一人|只(?:有|给)?我/.test(text) ? 'self' : 'default',

@@ -12,11 +12,14 @@ import { createCloudMealSaver,personalMeal,mealLabels,mealDay,feedbackUrl,readDi
 import { commerce } from '../services/commerce.js'
 import { getSession } from '../services/session.js'
 const props=defineProps({route:{type:Object,default:()=>({})}})
-const members=ref([]),people=ref([]),dishes=ref([]),captureScope=ref('单人餐盘'),mealType=ref('dinner'),date=ref(mealDay(new Date().toISOString())),time=ref('18:00'),oil=ref('不确定'),photo=ref(''),error=ref(''),notice=ref(''),busy=ref(false),editing=ref(false),source=ref('手动填写'),saved=ref(null),pendingGroup=ref(null)
+function currentMealContext(){const local=new Date(Date.now()+8*3600000).toISOString(),hour=Number(local.slice(11,13));return {date:local.slice(0,10),time:local.slice(11,16),meal:hour<10?'breakfast':hour<15?'lunch':hour<21?'dinner':'snack'}}
+const initialContext=currentMealContext()
+const members=ref([]),people=ref([]),dishes=ref([]),captureScope=ref('单人餐盘'),mealType=ref(Object.hasOwn(mealLabels,props.route.meal)?props.route.meal:initialContext.meal),date=ref(initialContext.date),time=ref(initialContext.time),oil=ref('不确定'),photo=ref(''),error=ref(''),notice=ref(''),busy=ref(false),editing=ref(false),source=ref('手动填写'),saved=ref(null),pendingGroup=ref(null)
+const membersLoading=ref(false),photoPreparing=ref(false),localPhotoPending=ref(false)
 const supplement=ref(null),editingRecord=ref(null),extraPhotos=ref([]),supplementSaver=createMealSupplementSaver()
 const vision=reactive(photoState()),photoClient=createMealPhotoClient({state:vision}),saver=createCloudMealSaver()
 const nutrition=reactive(mealNutritionState()),nutritionClient=createMealNutritionClient({state:nutrition})
-const adjusting=ref(''),mapping=ref(''),sourceQuery=ref(''),gramInput=ref(''),portionCount=ref('1'),acceptMissing=ref(false),familyOpen=ref(false),photoOpen=ref(false),navHeight=ref(80)
+const adjusting=ref(''),mapping=ref(''),sourceQuery=ref(''),gramInput=ref(''),portionCount=ref('1'),acceptMissing=ref(false),familyOpen=ref(false),photoOpen=ref(false)
 const nutritionRows=computed(()=>saved.value?saved.value.rows.map(r=>({member_id:r.memberId,...r.record?.snapshot?.nutrition,meal:r.record?.snapshot?.meal})):nutrition.results)
 const preview=computed(()=>nutritionRows.value.length===1?nutritionRows.value[0]:null)
 const previewReady=computed(()=>!!preview.value&&!nutrition.busy&&!nutrition.error)
@@ -27,10 +30,10 @@ const origin=ref(null)
 const portionDraft=ref([]),portionError=ref('');
 const manualOpen=ref(false),manualText=ref(''),manualError=ref(''),menuNotice=ref('')
 const mealKeys=Object.keys(mealLabels),portions=['少量','一般','较多','不确定'],oils=['少油','一般','偏多','不确定']
-const locked=computed(()=>busy.value||vision.busy||!!vision.pending||!!supplementSaver.read()||(!!pendingGroup.value&&!pendingGroup.value.editable&&!saved.value)),selected=computed(()=>people.value.filter(p=>p.selected)),hasDishes=computed(()=>dishes.value.length>0)
+const locked=computed(()=>busy.value||(vision.busy&&!photoPreparing.value)||localPhotoPending.value||!!vision.pending||!!supplementSaver.read()||(!!pendingGroup.value&&!pendingGroup.value.editable&&!saved.value)),selected=computed(()=>people.value.filter(p=>p.selected)),hasDishes=computed(()=>dishes.value.length>0)
 const captureLocked=computed(()=>locked.value||!!saved.value||manualOpen.value||!!supplement.value)
 const canSave=computed(()=>!manualOpen.value&&!supplement.value&&selected.value.length&&selected.value.every(p=>p.noneConfirmed||p.dishes.length)&&selected.value.some(p=>!p.noneConfirmed&&p.dishes.length))
-let epoch=0,opening=false,scope='',loading=false,pollTimer=null,nutritionTimer=null
+let epoch=0,opening=false,scope='',loading=false,preparation=null,photoPreparation=null,entryDay=initialContext.date,photoVersion=0,pollTimer=null,nutritionTimer=null
 function queueNutrition(){clearTimeout(nutritionTimer);nutritionClient.invalidate();acceptMissing.value=false;if(!hasDishes.value||manualOpen.value||saved.value)return;const mine=epoch;nutritionTimer=setTimeout(()=>{if(mine===epoch)void refreshNutrition()},350)}
 async function refreshNutrition(){if(saved.value||manualOpen.value)return;const meals=selected.value.filter(p=>!p.noneConfirmed&&p.dishes.length).map(savedMeal);if(meals.length)await nutritionClient.preview(meals)}
 function amount(code){const value=previewReady.value?preview.value.totals?.[code]:null;return value==null?'—':String(code==='energy_kcal'?Math.round(Number(value)):Math.round(Number(value)*10)/10)}
@@ -48,20 +51,69 @@ async function openAdjustment(dish){adjusting.value=adjusting.value===mealDishKe
 function applyWeight(dish){const value=Number(gramInput.value);if(!Number.isFinite(value)||value<=0||value>10000){error.value='请填写大于 0 且不超过 10000 克的实际份量';return}Object.assign(dish,{grams:value,portion_reference_id:null,portion_count:null,portion_source:'manual',portion_confirmed:true});error.value='';adjusting.value='';queueNutrition()}
 function applyReference(dish,row){const count=Number(portionCount.value);if(!Number.isFinite(count)||count<=0||count>1000||count*Number(row.grams_per_unit)>10000){error.value='请填写有效份数，换算后总重量不能超过 10000 克';return}Object.assign(dish,{grams:null,portion_reference_id:row.id,portion_count:count,portion_label:row.unit_label,portion_source:'estimated',portion_confirmed:true});adjusting.value='';error.value='';queueNutrition()}
 watch([dishes,people,captureScope,mealType,date,time,manualOpen],queueNutrition,{deep:true})
-function store(){if(scope!==storageContext()||!members.value.length)return;scopedStorage.setStorageSync('cloud-capture-ui',{people:people.value,dishes:dishes.value,captureScope:captureScope.value,mealType:mealType.value,date:date.value,time:time.value,oil:oil.value,photo:photo.value,source:source.value,saved:saved.value,origin:origin.value,manualDraft:manualOpen.value?manualText.value:null,supplement:supplement.value,editingRecord:editingRecord.value,extraPhotos:extraPhotos.value})}
+function store(){if(loading||scope!==storageContext()||!members.value.length)return;scopedStorage.setStorageSync('cloud-capture-ui',{entryDay,people:people.value,dishes:dishes.value,captureScope:captureScope.value,mealType:mealType.value,date:date.value,time:time.value,oil:oil.value,photo:photo.value,source:source.value,saved:saved.value,origin:origin.value,manualDraft:manualOpen.value?manualText.value:null,supplement:supplement.value,editingRecord:editingRecord.value,extraPhotos:extraPhotos.value})}
 watch([people,dishes,captureScope,mealType,date,time,oil,photo,source,saved,manualOpen,manualText,supplement,editingRecord,extraPhotos],store,{deep:true})
-async function load(){if(scope&&scope!==storageContext())hide();if(loading)return;if(scope===storageContext()&&members.value.length)return;const mine=++epoch;scope=storageContext();const context=scope;loading=true;busy.value=true;error.value='';try{const {data}=await request({path:'/api/health/v1/members'});if(mine!==epoch||context!==storageContext())return;members.value=data.filter(m=>m.scopes?.includes('diet_edit'));people.value=members.value.map((m,i)=>({memberId:m.id,name:m.display_name||m.name||m.relationship_label,selected:i===0,dishes:[],portion:'不确定',grams:'',noneConfirmed:false}));let ui=scopedStorage.getStorageSync('cloud-capture-ui');const allowed=new Set(members.value.map(m=>m.id));if(ui&&((ui.people||[]).some(p=>p.selected&&!allowed.has(p.memberId))||(ui.origin&&!allowed.has(ui.origin.memberId))||(ui.editingRecord&&!allowed.has(ui.editingRecord.row.memberId))||(ui.saved?.rows||[]).some(r=>!allowed.has(r.memberId)))){ui=null;scopedStorage.setStorageSync('cloud-capture-ui',null);saver.finish();notice.value='部分成员授权已变化，已清除本地餐次，请重新核对。'}if(ui){people.value=people.value.map(p=>({...p,...ui.people?.find(x=>x.memberId===p.memberId)}));dishes.value=ui.dishes||[];captureScope.value=ui.captureScope;mealType.value=ui.mealType;date.value=ui.date;time.value=ui.time;oil.value=ui.oil;photo.value=ui.photo||'';source.value=ui.source;saved.value=null;origin.value=ui.origin||null;supplement.value=ui.supplement||null;editingRecord.value=ui.editingRecord||null;extraPhotos.value=ui.extraPhotos||[]}
- if(ui?.saved){const rows=[];for(const row of ui.saved.rows){const record=await readDietRecord(row.memberId,row.recordId||row.record?.id,request);if(mine!==epoch||context!==storageContext())return;rows.push({...row,record})}saved.value={...ui.saved,rows}}
- pendingGroup.value=saver.read();
- if(typeof ui?.manualDraft==='string'&&!saved.value&&(!pendingGroup.value||pendingGroup.value.editable)){manualText.value=ui.manualDraft;manualOpen.value=true}
- if(!ui&&mealKeys.includes(props.route.meal))mealType.value=props.route.meal
- if(props.route.commerce==='1'&&props.route.id&&!saver.read()&&!ui){const order=await commerce.cooking(props.route.id);if(mine!==epoch||context!==storageContext())return;dishes.value=order.meal_snapshot.dishes.map(d=>({name:d.recipe_name}));source.value='订单菜谱选菜';notice.value='订单菜谱仅供选菜，请逐人确认实际吃过的菜，未自动记为已吃。'}
- const first=people.value.find(p=>p.selected)||people.value[0];if(first)await photoClient.open(first.memberId,data)
- if(mine!==epoch||context!==storageContext())return;if(vision.meal&&(!hasDishes.value||supplement.value?.phase==='upload'))useCandidates();if(hasDishes.value&&captureScope.value==='单人餐盘'&&!saved.value&&(!pendingGroup.value||pendingGroup.value.editable))selected.value.forEach(p=>{p.dishes=dishes.value.map(d=>d.name);p.noneConfirmed=false});pollResult();queueNutrition();store()
- }catch(e){if(mine===epoch)error.value=e.message}finally{if(mine===epoch){busy.value=false;loading=false}}}
-function hide(){if(opening)return;clearTimeout(pollTimer);clearTimeout(nutritionTimer);nutritionClient.invalidate();adjusting.value='';mapping.value='';familyOpen.value=false;photoOpen.value=false;epoch++;loading=false;store();saver.hide();supplementSaver.hide();photoClient.discard();supplement.value=null;editingRecord.value=null;extraPhotos.value=[];scope='';members.value=[];people.value=[];dishes.value=[];photo.value='';saved.value=null;pendingGroup.value=null;captureScope.value='单人餐盘';mealType.value='dinner';date.value=mealDay(new Date().toISOString());time.value='18:00';oil.value='不确定';source.value='手动填写';origin.value=null;notice.value='';error.value='';busy.value=false;vision.consent=null;editing.value=false;portionDraft.value=[];portionError.value='';cancelManual();menuNotice.value=''}
-onMounted(()=>{void load();const query=uni.createSelectorQuery?.();query?.select('.capture-fixed-header').boundingClientRect(rect=>{if(rect?.height)navHeight.value=rect.height+12}).exec()});onShow(()=>{void load()});onHide(hide);onUnload(()=>{opening=false;hide()})
-function togglePerson(p){if(captureLocked.value||editingRecord.value)return;if(captureScope.value==='单人餐盘')people.value.forEach(x=>x.selected=x===p);else p.selected=!p.selected;const first=people.value.find(p=>p.selected);if(first&&first.memberId!==vision.memberId){if(captureScope.value==='单人餐盘'){photo.value='';dishes.value=[];origin.value=null}void photoClient.open(first.memberId)}}
+async function openPhotoClient(memberId,restore=false){
+ const mine=epoch;photoPreparing.value=true
+ try{photoPreparation=photoClient.open(memberId,members.value,{restore,history:false,day:entryDay});await photoPreparation}
+ finally{if(mine===epoch)photoPreparing.value=false}
+}
+function load(){
+ const today=currentMealContext().date
+ if(scope&&(scope!==storageContext()||entryDay!==today))hide()
+ if(loading)return preparation
+ if(scope===storageContext()&&members.value.length&&vision.memberId)return Promise.resolve()
+ const mine=++epoch,selection=photoVersion;scope=storageContext();const context=scope;entryDay=today
+ loading=true;membersLoading.value=true;error.value=''
+ preparation=(async()=>{try{
+  const previous=saver.read()
+  if(previous?.rows?.length&&previous.rows.every(row=>row.phase==='saved'))saver.finish()
+  pendingGroup.value=saver.read()
+  const cached=scopedStorage.getStorageSync('cloud-capture-ui')
+  // An uncertain save must be resolved with its original meal and request.
+  let ui=cached&&((cached.entryDay||cached.date)===today||pendingGroup.value||supplementSaver.read())?cached:null
+  if(ui){busy.value=!!ui.saved;people.value=ui.people||[];dishes.value=ui.dishes||[];captureScope.value=ui.captureScope;mealType.value=ui.mealType;date.value=ui.date;time.value=ui.time;oil.value=ui.oil;photo.value=ui.photo||'';source.value=ui.source;origin.value=ui.origin||null;supplement.value=ui.supplement||null;editingRecord.value=ui.editingRecord||null;extraPhotos.value=ui.extraPhotos||[]
+   if(typeof ui.manualDraft==='string'&&!ui.saved&&(!pendingGroup.value||pendingGroup.value.editable)){manualText.value=ui.manualDraft;manualOpen.value=true}
+   if((ui.entryDay||ui.date)!==today)notice.value='正在核对之前一餐的保存结果。'
+  }
+  const {data}=await request({path:'/api/health/v1/members'})
+  if(mine!==epoch||context!==storageContext())return
+  members.value=data.filter(m=>m.scopes?.includes('diet_edit'));membersLoading.value=false
+  const allowed=new Set(members.value.map(m=>m.id))
+  if(ui&&((ui.people||[]).some(p=>p.selected&&!allowed.has(p.memberId))||(ui.origin&&!allowed.has(ui.origin.memberId))||(ui.editingRecord&&!allowed.has(ui.editingRecord.row.memberId))||(ui.saved?.rows||[]).some(r=>!allowed.has(r.memberId)))){
+   scopedStorage.setStorageSync('cloud-capture-ui',null);hide();notice.value='部分成员授权已变化，请重新核对。';return
+  }
+  people.value=members.value.map((m,i)=>({selected:i===0,dishes:[],portion:'不确定',grams:'',noneConfirmed:false,...people.value.find(p=>p.memberId===m.id),memberId:m.id,name:m.display_name||m.name||m.relationship_label}))
+  if(!members.value.length){error.value='暂无可记餐成员，请检查成员授权。';return}
+  if(ui?.saved){busy.value=true;const rows=await Promise.all(ui.saved.rows.map(async row=>({...row,record:await readDietRecord(row.memberId,row.recordId||row.record?.id,request)})));if(mine!==epoch||context!==storageContext())return;saved.value={...ui.saved,rows};busy.value=false}
+  if(props.route.commerce==='1'&&props.route.id&&!pendingGroup.value&&!ui){const order=await commerce.cooking(props.route.id);if(mine!==epoch||context!==storageContext())return;if(selection===photoVersion&&!manualOpen.value&&!hasDishes.value){dishes.value=order.meal_snapshot.dishes.map(d=>({name:d.recipe_name}));source.value='订单菜谱选菜';notice.value='订单菜谱仅供选菜，请逐人确认实际吃过的菜，未自动记为已吃。'}}
+  const first=selected.value[0]||people.value[0]
+  const resumePhotos=!!(ui?.origin||ui?.photo||ui?.supplement?.phase==='upload')
+  await openPhotoClient(first.memberId,resumePhotos&&selection===photoVersion)
+  if(mine!==epoch||context!==storageContext())return
+  const pendingMeal=vision.pending&&(vision.meal||vision.pending.request?.data)
+  if(pendingMeal?.eaten_at){date.value=mealDay(pendingMeal.eaten_at);time.value=new Date(Date.parse(pendingMeal.eaten_at)+8*3600000).toISOString().slice(11,16);mealType.value=pendingMeal.meal_type;notice.value='之前的照片请求尚待确认，请先核对原任务。'}
+  if(selection===photoVersion&&vision.meal&&(!hasDishes.value||supplement.value?.phase==='upload'))useCandidates()
+  if(hasDishes.value&&captureScope.value==='单人餐盘'&&!saved.value&&(!pendingGroup.value||pendingGroup.value.editable))selected.value.forEach(p=>{p.dishes=dishes.value.map(d=>d.name);p.noneConfirmed=false})
+  pollResult();queueNutrition()
+ }catch(e){if(mine===epoch){error.value=e.message;busy.value=false}}finally{if(mine===epoch){loading=false;membersLoading.value=false;photoPreparing.value=false;store()}}})()
+ return preparation
+}
+function hide(){
+ if(opening)return
+ clearTimeout(pollTimer);clearTimeout(nutritionTimer);nutritionClient.invalidate()
+ epoch++;loading=false;store();saver.hide();supplementSaver.hide();photoClient.discard()
+ scope='';members.value=[];people.value=[];dishes.value=[];photo.value='';saved.value=null;pendingGroup.value=null
+ supplement.value=null;editingRecord.value=null;extraPhotos.value=[];origin.value=null
+ adjusting.value='';mapping.value='';familyOpen.value=false;photoOpen.value=false
+ captureScope.value='单人餐盘';oil.value='不确定';source.value='手动填写';notice.value='';error.value=''
+ busy.value=false;membersLoading.value=false;photoPreparing.value=false;localPhotoPending.value=false;photoVersion++
+ const current=currentMealContext();entryDay=current.date;date.value=current.date;time.value=current.time
+ mealType.value=mealKeys.includes(props.route.meal)?props.route.meal:current.meal
+ vision.consent=null;editing.value=false;portionDraft.value=[];portionError.value='';cancelManual();menuNotice.value=''
+}
+onMounted(()=>{void load()});onShow(()=>{void load()});onHide(hide);onUnload(()=>{opening=false;hide()})
+function togglePerson(p){if(captureLocked.value||photoPreparing.value||editingRecord.value)return;if(captureScope.value==='单人餐盘')people.value.forEach(x=>x.selected=x===p);else p.selected=!p.selected;const first=people.value.find(p=>p.selected);if(first&&first.memberId!==vision.memberId){if(captureScope.value==='单人餐盘'){photo.value='';dishes.value=[];origin.value=null}void openPhotoClient(first.memberId)}}
 function setScope(value){if(captureLocked.value||editingRecord.value)return;captureScope.value=value;if(value==='单人餐盘'){const first=selected.value[0]||people.value[0];people.value.forEach(p=>p.selected=p===first)}}
 function toggleDish(p,name){p.dishes=p.dishes.includes(name)?p.dishes.filter(n=>n!==name):[...p.dishes,name];p.noneConfirmed=false}
 function openPortions(){if(manualOpen.value||saved.value||(pendingGroup.value&&!pendingGroup.value.editable))return;portionDraft.value=JSON.parse(JSON.stringify(selected.value));portionError.value='';editing.value=true}
@@ -91,16 +143,26 @@ function applyManual(){
 }
 async function fromMenu(){if(captureLocked.value)return;const mine=epoch,context=storageContext();busy.value=true;error.value='';menuNotice.value='';try{const {data}=await request({path:'/api/family/'+encodeURIComponent(getSession()?.householdId)+'/daily-arrangements/'+date.value});if(mine!==epoch||context!==storageContext())return;const arrangement=data.arrangement||data;const m=arrangement.meals?.find(m=>(m.type||m.meal_type)===mealType.value);if(!m?.dishes?.length){menuNotice.value='还没有本餐食谱，可以直接填写吃过的菜。';return}dishes.value=m.dishes.map(d=>({name:d.name}));source.value='当天食谱选菜';if(captureScope.value==='单人餐盘')selected.value.forEach(p=>{p.dishes=dishes.value.map(d=>d.name);p.noneConfirmed=false});else openPortions()}catch(e){if(mine===epoch)error.value=e.message}finally{if(mine===epoch)busy.value=false}}
 function chooseImage(which){
- if(locked.value||saved.value||manualOpen.value||!vision.memberId)return
+ if(locked.value||saved.value||manualOpen.value)return
+ if(!loading&&(!members.value.length||!vision.memberId))void load()
  opening=true;const context=storageContext(),mine=epoch,adding=!!supplement.value
  uni.chooseImage({count:1,sizeType:['compressed'],sourceType:[which],success:async r=>{
   if(mine!==epoch||context!==storageContext()||!r.tempFilePaths?.[0])return
-  if(!photoClient.resetSelection())return
+  const version=++photoVersion
+  localPhotoPending.value=true
   menuNotice.value=''
   if(adding){supplement.value={phase:'upload',photo:r.tempFilePaths[0],candidates:[],text:''}}
   else {photo.value=r.tempFilePaths[0];origin.value=null;dishes.value=[];saved.value=null;source.value='照片待识别';notice.value='';people.value.forEach(p=>{p.dishes=[];p.grams='';p.noneConfirmed=false;p.portion='不确定'})}
-  await photoClient.addPhoto(r.tempFilePaths[0])
-  if(mine===epoch&&context===storageContext()&&vision.consent&&!vision.error)await analyze()
+  try{
+   await preparation;await photoPreparation
+   if(mine!==epoch||context!==storageContext()||version!==photoVersion)return
+   if(!vision.memberId){error.value=error.value||'成员信息尚未就绪，照片已保留，可稍后重试。';return}
+   if(!photoClient.resetSelection()){error.value='上一张照片任务尚未完成，请先处理当前任务。';return}
+   await photoClient.addPhoto(r.tempFilePaths[0])
+   if(mine!==epoch||context!==storageContext()||version!==photoVersion)return
+   localPhotoPending.value=false
+   if(vision.consent&&!vision.error)await analyze()
+  }finally{if(mine===epoch&&version===photoVersion)localPhotoPending.value=false}
  },fail:e=>{if(!/cancel/i.test(e.errMsg||''))error.value='照片选择失败，请检查权限后重试'},complete:()=>opening=false})
 }
 async function beginSupplement(row=null){
@@ -118,7 +180,7 @@ async function beginSupplement(row=null){
    const original=record.snapshot.meal;mealType.value=original.meal_type;date.value=mealDay(original.eaten_at);time.value=new Date(Date.parse(original.eaten_at)+8*3600000).toISOString().slice(11,16)
    dishes.value=original.items.filter(i=>!i.excluded).map(recognizedMealDish)
    selected.value.forEach(p=>{p.dishes=dishes.value.map(d=>d.name);p.noneConfirmed=false})
-   await photoClient.open(row.memberId,members.value)
+   await openPhotoClient(row.memberId)
    if(mine!==epoch||context!==storageContext())return
   }catch(e){if(mine===epoch)error.value=e.message;return}finally{if(mine===epoch)busy.value=false}
  }
@@ -194,19 +256,31 @@ async function saveSupplementedMeal(){
 async function recheckRejected(){
  const mine=epoch,context=storageContext(),group=saver.releaseRejected();if(!group)return
  pendingGroup.value=group;error.value='';notice.value='请重新核对未保存成员；已保存成员不会重复记录。'
- if(origin.value){const owner=origin.value.memberId,id=origin.value.draft.id;await photoClient.open(owner);if(mine!==epoch||context!==storageContext())return;await photoClient.draft(id);if(mine!==epoch||context!==storageContext())return;if(vision.draft?.id===id&&vision.draft.review_status==='pending_confirmation')useCandidates();else{origin.value=null;source.value='手动填写';notice.value='原照片候选已不可继续，请核对当前菜品后人工保存未保存成员。'}}
+ if(origin.value){const owner=origin.value.memberId,id=origin.value.draft.id;await openPhotoClient(owner);if(mine!==epoch||context!==storageContext())return;await photoClient.draft(id);if(mine!==epoch||context!==storageContext())return;if(vision.draft?.id===id&&vision.draft.review_status==='pending_confirmation')useCandidates();else{origin.value=null;source.value='手动填写';notice.value='原照片候选已不可继续，请核对当前菜品后人工保存未保存成员。'}}
  openPortions()
 }
 function chatWithSaved(){const rows=saved.value?.rows||[];if(!rows.length)return;const go=row=>uni.navigateTo({url:feedbackUrl(row.memberId,row.record)});if(rows.length===1)go(rows[0]);else uni.showActionSheet({itemList:rows.map(r=>(people.value.find(p=>p.memberId===r.memberId)?.name||'成员')+'的这一餐'),success:r=>go(rows[r.tapIndex])})}
-function newMeal(){if(!saved.value||busy.value)return;supplement.value=null;editingRecord.value=null;extraPhotos.value=[];nutritionClient.invalidate();adjusting.value='';mapping.value='';acceptMissing.value=false;photoOpen.value=false;cancelManual();menuNotice.value='';saver.finish();photoClient.discard();const first=people.value.find(p=>p.selected);if(first)void photoClient.open(first.memberId);pendingGroup.value=null;saved.value=null;origin.value=null;source.value='手动填写';dishes.value=[];photo.value='';people.value.forEach(p=>{p.dishes=[];p.portion='不确定';p.grams='';p.noneConfirmed=false});store()}
+function newMeal(){
+ if(!saved.value||busy.value)return
+ supplement.value=null;editingRecord.value=null;extraPhotos.value=[];nutritionClient.invalidate()
+ adjusting.value='';mapping.value='';acceptMissing.value=false;photoOpen.value=false;cancelManual();menuNotice.value=''
+ saver.finish();photoClient.discard();photoVersion++
+ const current=currentMealContext();entryDay=current.date;date.value=current.date;time.value=current.time
+ mealType.value=mealKeys.includes(props.route.meal)?props.route.meal:current.meal
+ pendingGroup.value=null;saved.value=null;origin.value=null;source.value='手动填写';dishes.value=[];photo.value=''
+ people.value.forEach(p=>{p.dishes=[];p.portion='不确定';p.grams='';p.noneConfirmed=false})
+ const first=selected.value[0];if(first)void openPhotoClient(first.memberId)
+ store()
+}
 </script>
 <template>
- <view class="screen scan-screen" :style="{paddingTop:navHeight+'px'}">
+ <view class="screen scan-screen">
   <view class="capture-fixed-header"><AppNavBar centered><view class="nav-row"><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button><text class="nav-title">拍照记餐</text><view class="nav-spacer"/></view></AppNavBar></view>
   <view class="capture-page-wash" aria-hidden="true"/>
   <view class="meal-context"><text>{{selected.map(p=>p.name).join('、')||'选择记录成员'}}</text><view class="context-time"><picker :range="mealKeys.map(k=>mealLabels[k])" :disabled="captureLocked||!!editingRecord" @change="mealType=mealKeys[$event.detail.value]"><view>{{mealLabels[mealType]}}⌄</view></picker><picker mode="date" :value="date" :disabled="captureLocked||!!editingRecord" @change="date=$event.detail.value"><view>{{date.slice(5).replace('-','月')}}日</view></picker><picker mode="time" :value="time" :disabled="captureLocked||!!editingRecord" @change="time=$event.detail.value"><view>{{time}}⌄</view></picker></view></view>
   <view v-if="people.length>1" class="member-picks"><button v-for="p in people" :key="p.memberId" :class="{active:p.selected}" :disabled="captureLocked" @click="togglePerson(p)">{{p.name}}</button></view>
-  <text v-if="error||vision.error" class="inline-error" role="alert">{{error||vision.error}}</text><text v-if="notice" class="capture-notice" role="status">{{notice}}</text><button v-if="!members.length" class="secondary-button" :disabled="busy" @click="load">重新读取成员</button>
+  <text v-if="membersLoading||photoPreparing||localPhotoPending" class="capture-loading" role="status">{{localPhotoPending?'照片已选择，正在准备识别…':membersLoading?'正在准备成员信息…':'正在准备照片识别…'}}</text>
+  <text v-if="error||vision.error" class="inline-error" role="alert">{{error||vision.error}}</text><text v-if="notice" class="capture-notice" role="status">{{notice}}</text><button v-if="!members.length&&!membersLoading&&error" class="secondary-button" :disabled="busy" @click="load">重新读取成员</button>
   <view v-if="saved" class="saved-receipt"><text class="saved-check">✓</text><view><text class="saved-title">这一餐已记录</text><text class="saved-caption">{{selected.map(p=>p.name).join('、')}} · {{mealLabels[mealType]}}，已保存到饮食记录</text></view></view>
   <view v-if="hasDishes&&!manualOpen" class="nutrition-card">
    <view class="section-heading"><text class="summary-label">本餐热量</text><text class="recognition-badge">{{source==='照片识别后核对'?'已识别':'已填写'}} {{dishes.length}} 道食物</text></view>
@@ -226,7 +300,19 @@ function newMeal(){if(!saved.value||busy.value)return;supplement.value=null;edit
   <text v-if="menuNotice" class="menu-notice" role="status">{{menuNotice}}</text>
   <view v-if="manualOpen" class="manual-card"><view class="section-heading"><text>这一餐吃了什么</text><text class="manual-caption">手动填写</text></view><text class="manual-help">多道菜可换行或用顿号分隔。</text><textarea v-model="manualText" class="manual-input" aria-label="本餐菜品" placeholder="例如：杂粮饭、清蒸鱼、炒西兰花" :maxlength="4000" auto-height :focus="manualOpen" :cursor-spacing="100" :adjust-position="true" :disabled="locked" @input="manualError=''"/><text v-if="manualError" class="manual-error" role="alert">{{manualError}}</text><view class="manual-actions"><button class="manual-cancel" :disabled="locked" @click="cancelManual">取消</button><button class="manual-confirm" :disabled="locked||!manualText.trim()" @click="applyManual">确认菜品</button></view></view>
   <view v-else-if="hasDishes" class="dish-list-card"><view class="section-heading"><text class="dish-list-title">这一餐吃了什么</text><button v-if="!saved" :disabled="captureLocked" @click="manual">修改菜品 ›</button></view>
-   <view v-for="d in dishes" :key="d.item_id||d.name" class="nutrition-dish"><view class="dish-topline"><text class="dish-name">{{d.name}}</text><view v-if="captureScope==='单人餐盘'"><text class="dish-kcal">{{dishEnergy(d)}}</text><text class="dish-unit">千卡</text></view></view><view class="dish-detail"><button v-if="!saved" class="source-link" :disabled="captureLocked" @click="openMapping(d)">{{d.food_id||d.recipe_version_id||d.nutrition_source?'已匹配 · '+(d.source_name||d.name):d.photo_estimate?'营养参考 · 可调整':'匹配营养数据'}} ›</button><text v-else class="source-link">{{d.food_id||d.recipe_version_id||d.nutrition_source?'已匹配营养来源':d.photo_estimate?'营养参考':'营养数据待补齐'}}</text><button v-if="!saved&&captureScope==='单人餐盘'" class="portion-button" :disabled="captureLocked" @click="openAdjustment(d)">{{d.portion_confirmed?portionLabel(d):'核对份量'}} ⌄</button><text v-else-if="captureScope==='单人餐盘'" class="portion-button">{{d.portion_confirmed?portionLabel(d):'份量待补齐'}}</text></view>
+   <view v-for="d in dishes" :key="d.item_id||d.name" class="nutrition-dish">
+    <view class="dish-overview">
+     <view class="dish-identity">
+      <text class="dish-name">{{d.name}}</text>
+      <button v-if="!saved" class="source-link" :disabled="captureLocked" @click="openMapping(d)"><text>{{d.food_id||d.recipe_version_id||d.nutrition_source?'已匹配 · '+(d.source_name||d.name):d.photo_estimate?'营养参考 · 可调整':'匹配营养数据'}}</text><text class="dish-chevron" aria-hidden="true">›</text></button>
+      <text v-else class="source-link source-receipt">{{d.food_id||d.recipe_version_id||d.nutrition_source?'已匹配营养来源':d.photo_estimate?'营养参考':'营养数据待补齐'}}</text>
+     </view>
+     <view v-if="captureScope==='单人餐盘'" class="dish-metrics">
+      <view class="dish-energy"><text class="dish-kcal">{{dishEnergy(d)}}</text><text class="dish-unit">千卡</text></view>
+      <button v-if="!saved" class="portion-button" :disabled="captureLocked" :aria-label="d.name+'，'+(d.portion_confirmed?portionLabel(d):'核对份量')" @click="openAdjustment(d)"><text>{{d.portion_confirmed?portionLabel(d):'核对份量'}}</text><view class="portion-chevron" aria-hidden="true"/></button>
+      <text v-else class="portion-receipt">{{d.portion_confirmed?portionLabel(d):'份量待补齐'}}</text>
+     </view>
+    </view>
     <view v-if="mapping===mealDishKey(d)" class="dish-editor"><view class="source-search"><input v-model="sourceQuery" class="field-input" aria-label="搜索营养数据" maxlength="120" placeholder="搜索食品或菜谱"/><button :disabled="nutrition.sourceBusy" @click="searchSources">搜索</button></view><text v-if="nutrition.sourceBusy" class="small">正在检索…</text><button v-for="row in nutrition.sources" :key="row.type+row.id" class="source-choice" :disabled="nutrition.sourceBusy" @click="chooseSource(row)"><text>{{row.name}} · {{row.cooking_state}}</text><text>{{row.type==='food'?'食品':row.type==='recipe'?'菜谱':'现有资料'}} · {{row.basis_label||'每100克'}}</text></button><text v-if="!nutrition.sourceBusy&&!nutrition.sourceError&&!nutrition.sources.length" class="editor-note">暂无计量基准明确的匹配营养资料。可以先保留菜品记录，数据补齐后再计算。</text><text v-if="nutrition.sourceError" class="inline-error">{{nutrition.sourceError}}</text><button class="text-link" @click="mapping=''">收起</button></view>
     <view v-if="adjusting===mealDishKey(d)" class="dish-editor"><template v-if="d.source_basis==='per_serving'"><text class="editor-note">原文每份：{{d.basis_label||'按所选资料'}}。请按这个基准填写本人吃下的份数。</text><view class="weight-input"><input v-model="portionCount" type="digit" aria-label="原文份数" placeholder="实际份数"/><text>份</text><button :disabled="captureLocked" @click="applyServings(d)">更新份量</button></view></template><template v-else><text class="editor-note">填写本人实际吃下的可食重量。</text><view class="weight-input"><input v-model="gramInput" type="digit" aria-label="实际可食重量" placeholder="实际克数"/><text>克</text><button :disabled="captureLocked" @click="applyWeight(d)">更新份量</button></view><text v-if="nutrition.portionError" class="inline-error">{{nutrition.portionError}}</text><template v-if="nutrition.portions.length"><text class="editor-note">也可采用已发布参考份量，结果标为估算。</text><input v-model="portionCount" type="digit" class="field-input" aria-label="参考份数" placeholder="份数"/><button v-for="row in nutrition.portions" :key="row.id" class="source-choice" @click="applyReference(d,row)">{{row.unit_label}} · 每份 {{row.grams_per_unit}} 克</button></template></template><button class="text-link" @click="adjusting=''">收起</button></view>
    </view>
@@ -259,7 +345,7 @@ function newMeal(){if(!saved.value||busy.value)return;supplement.value=null;edit
   <view v-if="hasDishes&&!saved&&!manualOpen&&incomplete" class="incomplete-consent"><button class="incomplete-toggle" role="checkbox" :aria-checked="acceptMissing" :disabled="busy||nutrition.busy" @click="acceptMissing=!acceptMissing"><view class="missing-check" :class="{checked:acceptMissing}" aria-hidden="true">{{acceptMissing?'✓':''}}</view><text>仅保存已知内容，缺失营养保持未知</text></button></view>
   <view v-if="pendingGroup&&!saved" class="card recognition-card"><text v-for="r in pendingGroup.rows.filter(r=>r.phase==='saved')" :key="r.memberId">{{people.find(p=>p.memberId===r.memberId)?.name}}已保存</text><button v-if="pendingGroup.rows.some(r=>r.phase==='rejected')&&!pendingGroup.editable" :disabled="busy" @click="recheckRejected">重新核对未保存成员</button></view>
   <view v-if="saved" class="secondary-actions"><button @click="uni.navigateTo({url:'/pages/records/index'})">查看饮食记录 ›</button><button :disabled="busy" @click="newMeal">记录新的一餐</button></view>
-  <view v-if="hasDishes&&!manualOpen" class="save-actions"><text class="save-hint">{{supplement?'还有食物待核对，加入后再保存':saved?'已保存，咨询由你主动发起':incomplete?'缺失营养不计入热量合计':'请按实际吃下的份量核对'}}</text><button v-if="!saved" class="save-primary" :disabled="!!supplement||busy||vision.busy||nutrition.busy||(!supplementSaver.read()&&((!saver.read()||saver.read().editable)&&!canSave||incomplete&&!acceptMissing))" @click="save()">{{busy?'正在保存…':editingRecord?(supplementSaver.read()?'恢复原保存请求':'保存本餐修改'):saver.read()&&!saver.read().editable?'恢复原保存请求':incomplete?'保存已知内容':'确认并记录这一餐'}}</button><button v-else class="save-primary" @click="chatWithSaved">问问营养师</button></view>
+  <view v-if="hasDishes&&!manualOpen" class="save-actions"><text class="save-hint">{{supplement?'还有食物待核对，加入后再保存':saved?'已保存，咨询由你主动发起':incomplete?'缺失营养不计入热量合计':'请按实际吃下的份量核对'}}</text><button v-if="!saved" class="save-primary" :disabled="!!supplement||busy||(vision.busy&&!photoPreparing)||nutrition.busy||(!supplementSaver.read()&&((!saver.read()||saver.read().editable)&&!canSave||incomplete&&!acceptMissing))" @click="save()">{{busy?'正在保存…':editingRecord?(supplementSaver.read()?'恢复原保存请求':'保存本餐修改'):saver.read()&&!saver.read().editable?'恢复原保存请求':incomplete?'保存已知内容':'确认并记录这一餐'}}</button><button v-else class="save-primary" @click="chatWithSaved">问问营养师</button></view>
   <view class="privacy-actions"><button v-if="consent&&!vision.pending" :disabled="captureLocked" @click="photoClient.revokeConsent()">撤回照片云识别授权</button><button v-if="!hasDishes" :disabled="captureLocked" @click="photoClient.refreshConfiguration()">检查识别服务</button></view>
   <view v-if="editing" class="portion-mask" @touchmove.stop.prevent @click="editing=false"><view class="portion-dialog" @click.stop><view class="dialog-header"><text>核对本人吃过的菜和份量</text><button aria-label="关闭份量调整" @click="editing=false">×</button></view><scroll-view class="dialog-body" scroll-y :style="{height:Math.min(680,180+portionDraft.length*360)+'rpx'}" @touchmove.stop><view v-for="p in portionDraft" :key="p.memberId" class="person-adjustment"><view class="adjustment-heading"><text>{{p.name}}</text><button class="not-eaten" :class="{active:p.noneConfirmed}" :disabled="busy" @click="p.noneConfirmed=true;p.dishes=[]">本餐未吃</button></view><view class="dish-picks"><button v-for="d in dishes" :key="d.item_id||d.name" :class="{active:p.dishes.includes(d.name)}" :disabled="busy" @click="toggleDish(p,d.name)">{{d.name}}</button></view><template v-if="!p.noneConfirmed"><view class="portion-choices dialog-portions"><button v-for="n in portions" :key="n" :class="{active:p.portion===n}" :disabled="busy" @click="p.portion=n">{{n}}</button></view><input v-model="p.grams" type="digit" class="field-input" :disabled="busy" placeholder="本人所选菜品合计克数（选填）"/></template></view></scroll-view><view class="dialog-footer"><text v-if="portionError" class="inline-error">{{portionError}}</text><view class="dialog-actions"><button class="secondary-button" @click="editing=false">取消</button><button class="primary-button" @click="applyPortions">确认</button></view></view></view></view>
  </view>
@@ -267,7 +353,7 @@ function newMeal(){if(!saved.value||busy.value)return;supplement.value=null;edit
 
 
 <style scoped>
-.supplement-entry{display:flex;align-items:center;justify-content:center;gap:7px;width:100%;margin-top:14px;padding:12px;border:1px dashed #d9d1e4;border-radius:12px;background:#faf8fd;color:#7a688e;font-size:14px}.supplement-plus{font-size:19px;line-height:20px}.supplement-card{margin-top:0}.supplement-manual{display:block;margin:8px auto 0}.supplement-photo{width:100%;height:145px;border-radius:12px}.supplement-review-note{display:block;font-size:11px;color:#95869f;margin:8px 0}.supplement-item{padding:12px 0;border-bottom:1px solid #eae4ef}.supplement-weight{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12px;color:#8d8198}.supplement-weight input{width:80px;height:36px;background:white;border:1px solid #e2dce9;border-radius:8px;padding:0 8px;text-align:right;color:#383340}.duplicate-note{display:block;font-size:12px;color:#9b7959;margin:10px 0}.duplicate-choices{display:flex;gap:7px}.duplicate-choices button{flex:1;padding:9px 4px;border:1px solid #ded5e6;border-radius:9px;font-size:11px;background:white;color:#8e7e9c}.duplicate-choices button.active{background:#eee6f5;border-color:#c6b4d8;color:#75558d}.supplement-confirm{margin-top:15px;font-size:14px}.cancel-meal-edit{margin:0 auto 12px}
+.supplement-entry{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;min-height:46px;margin:16px 0 2px;padding:10px 16px;border:0;border-radius:16px;background:var(--ui-soft);color:var(--ui-text);font-size:13px;font-weight:500}.supplement-plus{font-size:19px;font-weight:400;line-height:20px;color:var(--ui-muted)}.supplement-card{margin-top:0}.supplement-manual{display:block;margin:8px auto 0}.supplement-photo{width:100%;height:145px;border-radius:12px}.supplement-review-note{display:block;font-size:11px;color:#95869f;margin:8px 0}.supplement-item{padding:12px 0;border-bottom:1px solid #eae4ef}.supplement-weight{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12px;color:#8d8198}.supplement-weight input{width:80px;height:36px;background:white;border:1px solid #e2dce9;border-radius:8px;padding:0 8px;text-align:right;color:#383340}.duplicate-note{display:block;font-size:12px;color:#9b7959;margin:10px 0}.duplicate-choices{display:flex;gap:7px}.duplicate-choices button{flex:1;padding:9px 4px;border:1px solid #ded5e6;border-radius:9px;font-size:11px;background:white;color:#8e7e9c}.duplicate-choices button.active{background:#eee6f5;border-color:#c6b4d8;color:#75558d}.supplement-confirm{margin-top:15px;font-size:14px}.cancel-meal-edit{margin:0 auto 12px}
 
 .nav-spacer{width:80rpx}.scan-screen{position:relative;z-index:0;padding-left:18px;padding-right:18px;background:var(--ui-canvas);color:var(--ui-text)}
 .capture-page-wash{position:fixed;z-index:-1;top:0;left:0;right:0;height:360px;pointer-events:none;background-image:radial-gradient(ellipse at 0% 0%,rgba(125,174,255,.65),rgba(125,174,255,0) 72%),radial-gradient(ellipse at 100% 0%,rgba(206,178,245,.55),rgba(206,178,245,0) 75%)}
@@ -285,18 +371,27 @@ function newMeal(){if(!saved.value||busy.value)return;supplement.value=null;edit
 /* #endif */
 
 /* The capture page owns its safe header; other AppNavBar consumers are unchanged. */
-.scan-screen{min-height:100vh;padding-bottom:calc(env(safe-area-inset-bottom) + 150px)}
-.capture-fixed-header{position:fixed;z-index:30;left:0;right:0;top:0;padding:0 18px;background:linear-gradient(110deg,#d5e5fc,#e7dcf5)}
+.scan-screen{min-height:100vh;overflow:visible;padding-top:0;padding-bottom:calc(env(safe-area-inset-bottom) + 150px)}
+.capture-fixed-header{position:sticky;z-index:30;top:0;margin:0 -18px 12px;padding:0 18px;background:linear-gradient(110deg,#d5e5fc,#e7dcf5)}
+.capture-loading{display:block;margin:0 3px 12px;font-size:11px;line-height:1.7;color:var(--ui-muted)}
 .meal-context,.context-time{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px;color:#77788e}.meal-context{margin:0 3px 18px}.context-time picker{min-height:36px;display:flex;align-items:center}.member-picks{margin-bottom:14px}
+.meal-context>text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.context-time{flex-shrink:0}
 .nutrition-card,.dish-list-card,.consent-card,.family-settings{padding:21px 20px;border:1px solid rgba(255,255,255,.95);border-radius:24px;background:#fff;margin-bottom:14px;box-shadow:0 5px 22px rgba(70,62,95,.025)}
 .summary-label{font-size:13px;font-weight:600}.recognition-badge{font-size:10px;color:#50816f;background:#f0f8f3;border-radius:20px;padding:4px 8px;font-weight:400}.energy-line{display:flex;align-items:baseline;gap:7px;margin:16px 0 5px}.energy-value{font-size:60px;line-height:1.1;font-weight:700;letter-spacing:-2px;color:#30313e}.energy-value.unavailable{font-size:33px;letter-spacing:0;line-height:1.5}.energy-unit{font-size:12px;color:#9192a0}.estimate-tag{align-self:center;margin-left:4px;padding:3px 5px;border-radius:5px;background:#f3eff9;color:#9987af;font-size:10px}.nutrition-caption{display:block;font-size:11px;line-height:1.8;color:#9694a4;margin:8px 0 17px}.macro-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;border-top:1px solid #efedf5;padding-top:16px}.macro-label{display:block;font-size:11px;color:#9290a0;margin-bottom:8px}.macro-label:before{content:'';display:inline-block;width:5px;height:5px;border-radius:50%;background:#ac92cc;margin-right:5px}.macro-grid>view:nth-child(2) .macro-label:before{background:#83a4c3}.macro-grid>view:nth-child(3) .macro-label:before{background:#caa47a}.macro-number{font-size:21px;font-weight:600;color:#353440}.macro-unit{font-size:10px;color:#9894a6;margin-left:4px}.member-nutrition>view{display:flex;justify-content:space-between;padding:14px 0;font-size:13px}
-.dish-list-card{padding:16px 19px 2px}.dish-list-title{font-size:15px;font-weight:600}.dish-list-card .section-heading button{color:#8f80a5;font-size:11px}.nutrition-dish{padding:17px 0;border-bottom:1px solid #efedf4}.nutrition-dish:last-child{border-bottom:0}.dish-topline,.dish-detail{display:flex;align-items:center;justify-content:space-between;gap:9px}.dish-name{min-width:0;overflow-wrap:anywhere;font-size:14px;font-weight:600}.dish-kcal{font-size:17px;font-weight:500}.dish-unit{margin-left:4px;font-size:10px;color:#9995a5}.dish-detail{margin-top:8px;flex-wrap:wrap}.source-link{min-width:0;max-width:65%;text-align:left;font-size:11px;line-height:1.7;color:#9690a2;padding:8px 0;overflow-wrap:anywhere}.portion-button{flex:none;border:1px solid #e8e1f2;border-radius:10px;padding:9px 11px;background:#fcfaff;font-size:11px;line-height:1.7;color:#88729f}.dish-editor{margin-top:12px;background:#f8f6fc;border-radius:13px;padding:14px}.editor-note{display:block;font-size:11px;line-height:1.8;color:#92889f;margin-bottom:10px}.weight-input,.source-search{display:flex;align-items:center;gap:8px;font-size:12px}.weight-input input,.source-search input{min-width:0;flex:1;border:1px solid #e8e2ef;background:#fff;border-radius:9px;padding:10px;height:40px;box-sizing:border-box;font-size:12px}.weight-input button,.source-search button{flex:none;background:#7b698f;color:#fff;border-radius:10px;padding:10px 11px;font-size:11px;line-height:1.7}.source-choice{display:flex;flex-direction:column;gap:5px;width:100%;text-align:left;background:white;border:1px solid #e6e0ef;border-radius:10px;padding:12px;margin-top:9px;font-size:12px;line-height:1.7}.source-choice>text:last-child{font-size:10px;color:#9b93a6}.dish-editor .text-link{min-height:36px;padding:8px 0;font-size:11px;color:#92839e}.nutrition-footnote{display:block;margin:10px 4px;font-size:10px;line-height:1.9;color:#9993a5}.secondary-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 2px}.secondary-actions button{font-size:11px;min-height:42px;padding:8px 0;color:#8b7b9d;line-height:1.8}.original-photo{margin:10px 0 16px;overflow:hidden;border-radius:18px}.original-photo image{display:block;width:100%}
+.dish-list-card{padding:12px 20px 18px;border-radius:20px;box-shadow:none}
+.dish-list-card .section-heading{min-height:44px;margin-bottom:2px}.dish-list-title{font-size:16px;font-weight:600;line-height:1.5;color:var(--ui-text)}.dish-list-card .section-heading button{min-height:44px;padding:8px 0 8px 12px;color:var(--ui-muted);font-size:12px}
+.nutrition-dish{padding:18px 0 14px;border-bottom:1px solid var(--ui-line)}
+.dish-overview{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.dish-identity{flex:1;min-width:0}.dish-list-card .dish-name{display:block;min-width:0;overflow-wrap:anywhere;font-size:15px;font-weight:500;line-height:28px;color:var(--ui-text)}
+.dish-topline{display:flex;align-items:center;justify-content:space-between;gap:9px}.dish-metrics{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0;max-width:50%}.dish-energy{display:flex;align-items:baseline;justify-content:flex-end;gap:4px;min-height:28px}.dish-kcal{font-size:20px;font-weight:500;line-height:28px;font-variant-numeric:tabular-nums;color:var(--ui-text)}.dish-unit{font-size:11px;color:var(--ui-muted)}
+.dish-list-card .source-link{display:flex;align-items:center;justify-content:flex-start;gap:5px;width:100%;min-width:0;min-height:44px;margin:6px 0 0;padding:6px 0;text-align:left;font-size:12px;line-height:1.7;color:var(--ui-muted);overflow-wrap:anywhere}.source-link>text:first-child{min-width:0}.dish-chevron{flex-shrink:0;font-size:16px;color:#aaa6b4}.dish-list-card .source-receipt{padding-top:10px}
+.portion-button{display:flex;align-items:center;justify-content:center;gap:9px;min-height:44px;max-width:100%;padding:8px 12px;border:0;border-radius:14px;background:var(--ui-soft);font-size:12px;line-height:1.6;color:var(--ui-text)}.portion-button>text{min-width:0;overflow-wrap:anywhere}.portion-chevron{flex-shrink:0;width:6px;height:6px;margin-top:-3px;border-right:1px solid #8e899b;border-bottom:1px solid #8e899b;transform:rotate(45deg)}.portion-receipt{display:block;min-height:44px;padding:10px 0;font-size:12px;line-height:1.7;color:var(--ui-muted)}
+.dish-editor{margin-top:12px;background:#f8f6fc;border-radius:13px;padding:14px}.editor-note{display:block;font-size:11px;line-height:1.8;color:#92889f;margin-bottom:10px}.weight-input,.source-search{display:flex;align-items:center;gap:8px;font-size:12px}.weight-input input,.source-search input{min-width:0;flex:1;border:1px solid #e8e2ef;background:#fff;border-radius:9px;padding:10px;height:40px;box-sizing:border-box;font-size:12px}.weight-input button,.source-search button{flex:none;background:#7b698f;color:#fff;border-radius:10px;padding:10px 11px;font-size:11px;line-height:1.7}.source-choice{display:flex;flex-direction:column;gap:5px;width:100%;text-align:left;background:white;border:1px solid #e6e0ef;border-radius:10px;padding:12px;margin-top:9px;font-size:12px;line-height:1.7}.source-choice>text:last-child{font-size:10px;color:#9b93a6}.dish-editor .text-link{min-height:36px;padding:8px 0;font-size:11px;color:#92839e}.nutrition-footnote{display:block;margin:10px 4px;font-size:10px;line-height:1.9;color:#9993a5}.secondary-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 2px}.secondary-actions button{font-size:11px;min-height:42px;padding:8px 0;color:#8b7b9d;line-height:1.8}.original-photo{margin:10px 0 16px;overflow:hidden;border-radius:18px}.original-photo image{display:block;width:100%}
 .upload-card{text-align:center;margin-top:0;padding:27px 20px 20px}.upload-title{display:block;font-size:20px;font-weight:600;line-height:1.7}.photo-placeholder{min-height:190px;gap:14px}.capture-photo-caption{font-size:12px}.capture-camera-tile{width:72px;height:72px;border-radius:24px;background:#f1ebfa;color:#9d83ba;margin-bottom:5px}.upload-card .photo-preview{height:190px;margin-bottom:15px}.upload-card .photo-preview image{height:100%;width:100%}.photo-actions{margin-top:14px;gap:9px}.photo-actions button{min-width:0;font-size:13px}.consent-kicker{display:block;font-size:10px;color:#aaa0b5;margin-bottom:10px}.consent-title{display:block;font-size:17px;font-weight:600;margin-bottom:13px}.consent-copy{display:block;font-size:12px;line-height:1.9;color:#8a8097;margin-bottom:14px}.consent-copy.muted{font-size:11px;color:#a095ab}.consent-card .primary-button{border-radius:24px;font-size:14px}.consent-card .text-link{font-size:11px;color:#9886a8;margin-top:6px}.recognition-spinner{width:46px;height:46px;margin:30px auto 25px;border:3px solid #ede4f5;border-top-color:#a68ac5;border-radius:50%;animation:capture-spin 1s linear infinite}.upload-card .capture-card-caption{display:block;line-height:1.9;margin:12px 0 23px}.recognition-card{font-size:12px}.saved-receipt{display:flex;align-items:center;gap:12px;padding:15px 16px;border-radius:18px;background:#ecf6ef;color:#4e7e65;margin-bottom:15px}.saved-check{display:flex;align-items:center;justify-content:center;width:29px;height:29px;border:1px solid #a8c5b3;border-radius:50%;font-size:15px}.saved-title{display:block;font-size:14px;font-weight:600}.saved-caption{display:block;font-size:10px;line-height:1.8;margin-top:5px}.incomplete-consent{margin:14px 2px}.incomplete-consent label{display:flex;align-items:center;gap:5px;font-size:11px;line-height:1.9;color:#9b8c79}.incomplete-consent checkbox{transform:scale(.72);flex:none}.save-actions{flex-direction:column;gap:8px;padding:10px 20px calc(env(safe-area-inset-bottom) + 16px);background:#fff}.save-actions .save-primary{width:100%;min-height:49px;flex:none;border-radius:30px;background:#333440;font-size:14px;font-weight:600;color:white;letter-spacing:.5px}.save-hint{text-align:center;font-size:10px;color:#9d94a9;line-height:1.6}.privacy-actions{display:flex;justify-content:center;gap:18px;margin:18px 0 0}.privacy-actions button{font-size:10px;color:#a69caf;min-height:38px;padding:5px}.portion-mask{z-index:60}.portion-dialog{box-shadow:0 -8px 40px rgba(44,34,61,.08)}.dialog-header{padding:15px 18px 10px;font-size:16px;font-weight:600}.person-adjustment{padding:14px 0}.family-settings{margin-top:10px}.family-settings .scope-grid{margin-top:12px}.people-card{background:#fff;border-radius:22px;padding:18px;margin-top:12px}.capture-notice{display:block;font-size:12px;line-height:1.8;margin:10px 0}.field-input{box-sizing:border-box}
 @keyframes capture-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.recognition-spinner{animation:none}}
-@media(max-width:350px){.scan-screen{padding-left:14px;padding-right:14px}.nutrition-card{padding-left:18px;padding-right:18px}.meal-context,.context-time{gap:7px;font-size:11px}.macro-number{font-size:19px}.dish-list-card{padding-left:16px;padding-right:16px}.source-link{max-width:57%}}
+@media(max-width:350px){.scan-screen{padding-left:14px;padding-right:14px}.capture-fixed-header{margin-left:-14px;margin-right:-14px;padding-left:14px;padding-right:14px}.nutrition-card{padding-left:18px;padding-right:18px}.meal-context,.context-time{gap:7px;font-size:11px}.macro-number{font-size:19px}.dish-list-card{padding-left:16px;padding-right:16px}.dish-overview{gap:10px}.dish-list-card .source-link,.portion-button{font-size:11px}.portion-button{padding-left:10px;padding-right:10px}}
 /* #ifdef H5 */
-.capture-fixed-header{max-width:480px;margin:0 auto}
+.capture-fixed-header{max-width:480px}
 /* #endif */
 
 .incomplete-toggle{display:flex;align-items:center;gap:8px;text-align:left;font-size:11px;line-height:1.9;color:#9b8c79;min-height:44px}.missing-check{flex:none;display:flex;align-items:center;justify-content:center;width:17px;height:17px;border:1px solid #cec3d8;border-radius:5px;font-size:12px;color:white}.missing-check.checked{background:#8b76a3;border-color:#8b76a3}

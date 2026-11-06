@@ -1,3 +1,4 @@
+import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
 import {chatPresentation} from '../src/services/chat-presentation.js'
 import {watch} from 'vue'
 import {createChatEntryTransition} from '../src/services/chat-entry-transition.js'
@@ -13,7 +14,7 @@ import {isReferencePlan} from '../src/services/reference-meal-plan.js'
 
 function setup({linked=true,available=true,entry=true,notice='',error='',prepared=true,initialized=true,initializationError='',tickOverride}={}){
   const toasts=[],submits=[],modals=[],submitCalls=[],refreshCalls=[],hooks={},identity={scope:'account:family'}
-  const deps={defineOptions(){},selectChatPrompts:()=>[],loadCloudProfile:async()=>{throw new Error('咨询资料读取失败，请重试。')},isReferencePlan,chatPresentation,createChatEntryTransition,createChatKeyboardLayout,watch,ref,computed,reactive,nextTick:tickOverride||nextTick,mealQuestionAction,parseChatMealIntent,onShow:fn=>{hooks.show=fn},onHide:fn=>{hooks.hide=fn},onMounted(){},onUnmounted:fn=>{hooks.unmount=fn},defineProps:()=>({route:{}}),
+  const deps={todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),defineOptions(){},selectChatPrompts:()=>[],loadCloudProfile:async()=>{throw new Error('咨询资料读取失败，请重试。')},isReferencePlan,chatPresentation,createChatEntryTransition,createChatKeyboardLayout,watch,ref,computed,reactive,nextTick:tickOverride||nextTick,mealQuestionAction,parseChatMealIntent,onShow:fn=>{hooks.show=fn},onHide:fn=>{hooks.hide=fn},onMounted(){},onUnmounted:fn=>{hooks.unmount=fn},defineProps:()=>({route:{}}),
     storageContext:()=>identity.scope,getSession:()=>({token:'synthetic',householdId:'family'}),
     dailyArrangementState:()=>({phase:prepared?'ready':'error',error:'配餐数据未就绪',busy:false}),
     createDailyArrangementClient:()=>({reset(){},dispose(){},pause(){}}),

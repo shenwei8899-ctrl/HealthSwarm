@@ -1,5 +1,5 @@
 import { request } from './request.js'
-import { readDietRecord } from './cloud-meals.js'
+import { readDietRecord, mealDay } from './cloud-meals.js'
 import { uploadMealPhoto } from './health-upload.js'
 import { sessionRevision } from './session.js'
 import { scopedStorage } from './storage.js'
@@ -34,8 +34,9 @@ export function createMealPhotoClient({ state, send = request, upload = uploadMe
   storage = scopedStorage, newId = newHealthRequestId } = {}) {
   let generation = 0
   let declined = false
+  let checkpointDay = ''
   const key = () => 'meal-photo-flow:' + state.memberId
-  const checkpoint = () => storage.setStorageSync(key(), { taskId: state.job?.task_id || null,
+  const checkpoint = () => storage.setStorageSync(key(), { day: checkpointDay, taskId: state.job?.task_id || null,
     draftId: state.draft?.id || null, pending: state.pending && state.pending.operation !== 'patch' ? state.pending : null,
     uploads: state.uploads.map(row => ({ upload_id: row.upload_id })) })
   const discard = () => { generation++; declined = false; Object.assign(state, photoState()) }
@@ -128,8 +129,9 @@ export function createMealPhotoClient({ state, send = request, upload = uploadMe
       if (current()) { declined = true; state.consent = null }
     }) },
     refreshConfiguration() { return run(readConfiguration) },
-    open(memberId = '', initialMembers = null) {
+    open(memberId = '', initialMembers = null, { restore = true, history = true, day = '' } = {}) {
       discard()
+      checkpointDay = day || mealDay(new Date().toISOString())
       return run(async current => {
         const [members, config] = await Promise.all([initialMembers ? Promise.resolve({data:initialMembers}) : send({ path: root + '/members' }), send({ path: root + '/configuration' })])
         if (!current()) return
@@ -137,11 +139,14 @@ export function createMealPhotoClient({ state, send = request, upload = uploadMe
         state.memberId = state.members.find(row => row.id === memberId)?.id || state.members[0]?.id || ''
         if (!state.memberId) return
         const stored = storage.getStorageSync(key()) || {}
-        state.pending = stored.pending || null; state.uploads = stored.uploads || []
+        const resume = restore && (!day || !stored.day || stored.day === day)
+        // Uncertain writes keep their original idempotency key across day changes.
+        state.pending = stored.pending || null; state.uploads = resume || state.pending ? stored.uploads || [] : []
+        if (!resume && !state.pending) checkpoint()
         await readConsent(current); if (!current()) return
-        await list(current); if (!current()) return
-        if (stored.draftId) await readDraft(stored.draftId, current)
-        if (current() && stored.taskId) await readJob(stored.taskId, current)
+        if (history) await list(current); if (!current()) return
+        if ((resume || state.pending) && stored.draftId) await readDraft(stored.draftId, current)
+        if (current() && (resume || state.pending) && stored.taskId) await readJob(stored.taskId, current)
       })
     },
     page(kind, offset) { if (state.busy || !state.memberId || state.pending) return; state[kind + 'Offset'] = offset; return run(list) },

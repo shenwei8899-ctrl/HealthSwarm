@@ -36,6 +36,14 @@ from yuxi.storage.postgres.models_health import HealthInitialPlanPreview
 from yuxi.storage.postgres.models_knowledge import KnowledgeChunk, KnowledgeFile
 
 
+class ReferencePlanSourceChanged(HealthVisionError):
+    """当前授权已核对，仅旧资料或菜谱版本需要重新生成。"""
+
+    def __init__(self, message, selection):
+        super().__init__("source_invalidated", message, 410)
+        self.selection = selection
+
+
 def reference_binding(binding):
     """模式只来自服务端绑定，不从模型输出推断。"""
     fixed = getattr(binding, "initial_planner_selection", None)
@@ -102,7 +110,7 @@ async def bound_reference_context(session, uid, binding):
     fixed = binding.initial_planner_selection
     result = await reference_context_in_session(session, uid, binding.member_id, fixed["selection"])
     if input_fingerprint(result["sources"]) != fixed["source_hash"]:
-        raise HealthVisionError("source_invalidated", "成员资料或知识库绑定已更新，请重新生成参考餐单", 410)
+        raise ReferencePlanSourceChanged("成员资料或知识库绑定已更新，请重新生成参考餐单", result["selection"])
     return result
 
 
@@ -702,13 +710,18 @@ async def reference_result_in_session(session, run, binding, preview_id):
     if row.snapshot.get("catalog_chain_version") != REFERENCE_CATALOG_CHAIN_VERSION:
         raise HealthVisionError("reference_chain_unverified", "旧餐单缺少商城分类和商品核对回执，请重新安排", 410)
     if row.snapshot["sources"] != current["sources"]:
-        raise HealthVisionError("source_invalidated", "参考餐单的成员资料已变化", 410)
+        raise ReferencePlanSourceChanged("参考餐单的成员资料已变化", current["selection"])
     documents = []
     for meal in row.snapshot["meals"]:
         for dish in meal["dishes"]:
-            fresh = await recipe_document(session, dish["file_id"], dish["chunk_id"])
+            try:
+                fresh = await recipe_document(session, dish["file_id"], dish["chunk_id"])
+            except HealthVisionError as error:
+                if error.code != "reference_source_unavailable":
+                    raise
+                raise ReferencePlanSourceChanged(error.message, current["selection"]) from error
             if any(fresh[k] != dish["source"][k] for k in ("kb_id", "file_hash", "chunks_hash")):
-                raise HealthVisionError("source_invalidated", "参考餐单的菜谱来源已变化", 410)
+                raise ReferencePlanSourceChanged("参考餐单的菜谱来源已变化", current["selection"])
             documents.append(fresh)
     restrictions = reference_member_restrictions(current["members"])
     for material in [

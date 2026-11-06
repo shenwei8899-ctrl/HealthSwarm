@@ -217,7 +217,9 @@ define(['jquery', 'bootstrap', 'backend', 'table', 'form'], function ($, undefin
             var self=this;
             $.getJSON('shop/v5/workspace/partnerApplicationDetail',{id:id}).done(function(res){
                 if(!res || Number(res.code)!==1){Toastr.error(res&&res.msg||'申请详情读取失败');return;}
-                var data=res.data||{}, rows=[['合作类型',self.textValue('partner_type',data.partner_type,{})],['主体名称',data.company_name],['联系人',data.contact_name],['联系电话',data.contact_mobile],['微信号',data.contact_wechat||'未填写'],['所在地区',(data.location||[]).map(function(item){return item.name;}).join(' ')||'旧申请未填写'],['合作介绍',data.capacity_summary||'未填写']], html='<div class="partner-application-detail" style="padding:24px;line-height:1.8">';
+                var data=res.data||{};
+                if(data.__token__)self.config.csrfToken=data.__token__;
+                var rows=[['合作类型',self.textValue('partner_type',data.partner_type,{})],['主体名称',data.company_name],['联系人',data.contact_name],['联系电话',data.contact_mobile],['微信号',data.contact_wechat||'未填写'],['所在地区',(data.location||[]).map(function(item){return item.name;}).join(' ')||'旧申请未填写'],['合作介绍',data.capacity_summary||'未填写']], html='<div class="partner-application-detail" style="padding:24px;line-height:1.8">';
                 rows.forEach(function(row){html+='<div style="margin-bottom:14px"><strong>'+self.escape(row[0])+'</strong><div style="white-space:pre-wrap;overflow-wrap:anywhere">'+self.escape(row[1])+'</div></div>';});
                 html+='<p class="text-muted">此处记录联系进展。正式合作需在核对资料后另行维护。</p><label>联系状态</label><select class="form-control partner-follow-status" '+(data.can_follow?'':'disabled')+'>';
                 ['pending','contacted','closed'].forEach(function(value){html+='<option value="'+value+'" '+(data.follow_up_status===value?'selected':'')+'>'+self.escape(self.textValue('follow_up_status',value,{}))+'</option>';});
@@ -229,7 +231,7 @@ define(['jquery', 'bootstrap', 'backend', 'table', 'form'], function ($, undefin
                     Fast.api.ajax({url:'shop/v5/workspace/followPartnerApplication',type:'POST',data:{id:id,version:data.version,follow_up_status:$(layer).find('.partner-follow-status').val(),follow_up_note:$(layer).find('.partner-follow-note').val(),__token__:data.__token__}},function(result){
                         if(result&&result.__token__)self.config.csrfToken=result.__token__;
                         Layer.close(index);self.load($pane,1);Toastr.success('跟进已保存');return false;
-                    },function(result){busy=false;if(result&&result.__token__)data.__token__=result.__token__;return true;});
+                    },function(result){busy=false;if(result&&result.__token__){data.__token__=result.__token__;self.config.csrfToken=result.__token__;}return true;});
                 }});
             }).fail(function(){Toastr.error('申请详情读取失败，请重试');});
         },

@@ -1,4 +1,5 @@
 <script setup>
+import { mealPairingText } from '../utils/dish-commerce-presentation.js'
 // WeChat must share this component's scoped styles with the NutritionistLayout slots.
 defineOptions({options:{styleIsolation:'shared'}})
 import { computed, reactive, ref, nextTick, watch, onMounted, onUnmounted } from 'vue'
@@ -18,10 +19,12 @@ import DinerPicker from './DinerPicker.vue'
 import HealthChatBusinessCard from './HealthChatBusinessCard.vue'
 import DailyArrangementCard from './DailyArrangementCard.vue'
 import DailyMealPlanCard from './DailyMealPlanCard.vue'
+import ConversationFoodPackages from './ConversationFoodPackages.vue'
 import TodayMealPlanSheet from './TodayMealPlanSheet.vue'
+import TodayMealPlanContent from './TodayMealPlanContent.vue'
+import { todayMealPlanState, createTodayMealPlan } from '../services/today-meal-plan.js'
 import {readDailyMealPlan,mealQuestionAction} from '../services/daily-meal-plan.js'
 import {referenceSelection as chooseReference,isReferencePlan} from '../services/reference-meal-plan.js'
-import ConversationFoodPackages from './ConversationFoodPackages.vue'
 import VoiceInput from './VoiceInput.vue'
 import AiAnswer from './AiAnswer.vue'
 import ChatReplyActions from './ChatReplyActions.vue'
@@ -131,6 +134,8 @@ function shufflePrompts(){
   refreshPrompts()
 }
 const newConversationWelcome=ref(false),preparedThreadId=ref(''),latestReference=ref(null)
+const todayMenu=reactive(todayMealPlanState())
+const todayMenuClient=createTodayMealPlan({state:todayMenu,onPlan:acceptTodayPlan})
 const dailyPlans=ref({}),todayPlan=computed(()=>dailyPlans.value[localDate()]||null)
 const activePlanStatus=status=>['queued','dispatched','pending','running','recovering','cancel_requested'].includes(status)
 const planRunning=computed(()=>activePlanStatus(todayPlan.value?.pending?.status)||task.value.taskType==='reference_meal_preview'&&referenceSelection?.plan_date===localDate()&&activePlanStatus(task.value.status))
@@ -243,7 +248,8 @@ const textFocusRequested=ref(false),inputFocused=ref(false),composerIntent=ref(f
 const keyboardView=ref({height:0,offsetTop:0,keyboardOpen:false,homeHeight:0})
 watch(()=>keyboardView.value.height,()=>{if(reading.value.following)queueScroll()})
 let intentTimer,blurTimer,intentGeneration=0
-const entryBlocked=computed(()=>!!(historyLoading.value||historyError.value||historyNotice.value||continuationChecking.value||continuationError.value||detailOpen.value||historyOpen.value||props.route.taskType||presentation.value.initialResults||failedTask.value||onboardingPending.value||entryError.value||chatError.value||familyPanel.value||inlineTodayOpen.value||communityOpen.value||task.value.error||task.value.notice||task.value.canRetry||task.value.invalidated||task.value.consentOption||task.value.result?.type==='needs_input'||needsProfileLink.value))
+// Opening the history drawer preserves the underlying welcome view.
+const entryBlocked=computed(()=>!!(historyLoading.value||historyError.value||historyNotice.value||continuationChecking.value||continuationError.value||detailOpen.value||props.route.taskType||presentation.value.initialResults||failedTask.value||onboardingPending.value||entryError.value||chatError.value||familyPanel.value||inlineTodayOpen.value||communityOpen.value||task.value.error||task.value.notice||task.value.canRetry||task.value.invalidated||task.value.consentOption||task.value.result?.type==='needs_input'||needsProfileLink.value))
 const entryContext=computed(()=>({
   eligible:entryReady.value&&presentation.value.welcome&&!entryBlocked.value,
   hasMessages:messages.value.length>0,hasDraft:hasDraftContent.value||!!draftError.value,
@@ -338,7 +344,7 @@ const flow=createHealthTaskFlow({daily:true,onChange:next=>{
       latestReference.value=result.data
     }
     const message={threadId:next.entry?.thread_id||conversationThreadId.value,id:messages.value[index]?.id||id,serverMessageId:next.finalMessageId,requestId:next.requestId,role:'assistant',createdAt:messages.value[index]?.createdAt||new Date().toISOString(),citations:result.citations||[],
-      text:result.type==='answer'?result.text:result.type==='needs_input'?result.questions.join('\n'):result.type==='error'?(failureText[result.code]||'这次处理未能完成，请重新读取或编辑问题后再试。'):candidates?'待核对候选已返回，个人适用性尚未确认。':isReferencePlan(result.data)?'餐单已更新。':'餐单结果已返回，请核对后决定是否使用。',
+      text:result.type==='answer'?result.text:result.type==='needs_input'?result.questions.join('\n'):result.type==='error'?(failureText[result.code]||'这次处理未能完成，请重新读取或编辑问题后再试。'):candidates?'待核对候选已返回，个人适用性尚未确认。':isReferencePlan(result.data)?mealPairingText(result.data):'餐单结果已返回，请核对后决定是否使用。',
       memberId:next.memberId,recordedMeals:candidates?[]:continuationChecking.value&&!result.recordedMeals?.length?(messages.value[index]?.recordedMeals||[]):result.recordedMeals||messages.value[index]?.recordedMeals||[],mealEnter:messages.value[index]?.mealEnter??(index<0&&!restoring&&!returning.value&&visible),purchaseEnter:!candidates&&index<0&&!restoring&&!returning.value,purchaseOffers:candidates?[]:result.purchaseOffers,purchaseRequestId:!candidates&&result.purchaseOffers?.length?next.requestId:'',error:result.type==='error',errorCode:result.code,retryable:result.retryable===true,business:result.type==='business'?result:null,planDate:!candidates&&isReferencePlan(result.data)?result.data.plan_date:'',planMeals:!candidates&&isReferencePlan(result.data)?(result.data.meals||[]).map(meal=>meal.meal_type):undefined}
     if(index<0)messages.value.push(message);else messages.value[index]={...messages.value[index],...message}
     if(!restoring&&!returning.value&&visible)void scrollLatest()
@@ -406,9 +412,9 @@ function queueScroll(){
 }
 
 function stopPlanTimers(){Object.values(planTimers).forEach(timer=>clearTimeout(timer));planTimers={};planPolls={}}
-function clearPrivate(){clearEntryRetry(false);selectionGeneration++;historyDenied=false;historyLoading.value=false;historyError.value='';historyNotice.value='';continuationChecking.value=false;continuationError.value='';pendingEntrySend.value=null;for(const key of Object.keys(mealAppearances))delete mealAppearances[key];clearReturnRetry();localSend.value=null;sendPhase.value='';scrollRevision++;latestAvailable.value=false;detailRef.value?.clear();resetEntryUI();onboardingPending.value=false;inlineTodayOpen.value=false;historyOpen.value=false;conversationId.value='';conversationThreadId.value='';conversationBusinessDate.value='';conversationDrafts.clear();entryReady.value=false;returnVerified.value=false;returning.value=false;returnError.value='';prompts.value=[];promptDate.value='';mealsLoading.value=false;mealReadError.value='';latestReference.value=null;dailyPlans.value={};stopPlanTimers();referenceSelection=null;refreshedTerminal='';newConversationWelcome.value=false;preparedThreadId.value='';epoch++;sendGeneration++;sending.value=false;loading=null;profileLoading.value=false;flow.hide();client.reset();familyClient.reset();familyPanel.value=false;familySelection.value=null;messages.value=[];question.value='';chatError.value='';profile.value=null;task.value={};selectedMeal.value=null;removeDraft();pendingUser=null;submittedDraft=null;voiceRef.value?.cancel();voiceBusy.value=false;voiceMode.value=false;cardVisible.value=false}
+function clearPrivate(){todayMenuClient.clear();clearEntryRetry(false);selectionGeneration++;historyDenied=false;historyLoading.value=false;historyError.value='';historyNotice.value='';continuationChecking.value=false;continuationError.value='';pendingEntrySend.value=null;for(const key of Object.keys(mealAppearances))delete mealAppearances[key];clearReturnRetry();localSend.value=null;sendPhase.value='';scrollRevision++;latestAvailable.value=false;detailRef.value?.clear();resetEntryUI();onboardingPending.value=false;inlineTodayOpen.value=false;historyOpen.value=false;conversationId.value='';conversationThreadId.value='';conversationBusinessDate.value='';conversationDrafts.clear();entryReady.value=false;returnVerified.value=false;returning.value=false;returnError.value='';prompts.value=[];promptDate.value='';mealsLoading.value=false;mealReadError.value='';latestReference.value=null;dailyPlans.value={};stopPlanTimers();referenceSelection=null;refreshedTerminal='';newConversationWelcome.value=false;preparedThreadId.value='';epoch++;sendGeneration++;sending.value=false;loading=null;profileLoading.value=false;flow.hide();client.reset();familyClient.reset();familyPanel.value=false;familySelection.value=null;messages.value=[];question.value='';chatError.value='';profile.value=null;task.value={};selectedMeal.value=null;removeDraft();pendingUser=null;submittedDraft=null;voiceRef.value?.cancel();voiceBusy.value=false;voiceMode.value=false;cardVisible.value=false}
 function rememberThread({migrateLegacy=false}={}){
-  if(flowScope!==storageContext()||props.route.taskType||!task.value.entry?.thread_id||!task.value.memberId)return
+  if(flowScope!==storageContext()||props.route.taskType&&props.route.taskType!=='consultation'||!task.value.entry?.thread_id||!task.value.memberId)return
   const key=`homepage-chat-threads:${task.value.memberId}:${localDate()}`,old=scopedStorage.getStorageSync(key)||[]
   const row={thread_id:task.value.entry.thread_id,task_type:task.value.taskType}
   scopedStorage.setStorageSync(key,[...old.filter(t=>t.thread_id!==row.thread_id),row].slice(-20))
@@ -435,9 +441,9 @@ function saveConversation(){
   if(value.threadId)scopedStorage.setStorageSync('conversation-index:'+value.threadId,value)
 }
 function rememberSpecialTask(next){
-  if(props.route.taskType||!conversationId.value||next.taskType!=='reference_meal_preview')return
+  if(props.route.taskType&&props.route.taskType!=='consultation'||!conversationId.value||next.taskType!=='reference_meal_preview')return
   const key='conversation-task:'+conversationId.value
-  if(next.invalidated||['cancelled','rejected'].includes(next.status)||next.status==='completed'&&next.result&&next.result.type!=='needs_input'){
+  if(next.invalidated||['cancelled','rejected'].includes(next.status)||next.status==='completed'&&next.result&&next.result.type!=='needs_input'&&!isReferencePlan(next.result.data)){
     scopedStorage.setStorageSync(key,null);return
   }
   if(!referenceSelection||!next.entry?.thread_id||!next.requestId)return
@@ -445,7 +451,7 @@ function rememberSpecialTask(next){
     selection:referenceSelection,threadId:next.entry.thread_id,requestId:next.requestId,scope:storageContext()})
 }
 async function restoreSpecialTask(legacy,{readHistory=true}={}){
-  if(props.route.taskType||!conversationId.value||conversationReadOnly.value||task.value.invalidated||task.value.submitUnknown||
+  if(props.route.taskType&&props.route.taskType!=='consultation'||!conversationId.value||conversationReadOnly.value||task.value.invalidated||task.value.submitUnknown||
     ['queued','dispatched','pending','running','recovering','cancel_requested'].includes(task.value.status))return
   const scope=storageContext(),mine=epoch,id=conversationId.value,key='conversation-task:'+id
   const saved=scopedStorage.getStorageSync(key)||legacy
@@ -464,7 +470,7 @@ async function restoreSpecialTask(legacy,{readHistory=true}={}){
   if(disposed||!visible||scope!==storageContext()||mine!==epoch||id!==conversationId.value||task.value.invalidated)return
   if(task.value.memberId===(saved.taskMemberId||saved.memberId)&&pointers.some(row=>row.thread_id===task.value.entry?.thread_id)&&
     (!saved.requestId||task.value.requestId===saved.requestId)&&
-    (task.value.result?.type==='needs_input'||task.value.submitUnknown||['queued','dispatched','pending','running','recovering','cancel_requested'].includes(task.value.status))){
+    (task.value.result?.type==='needs_input'||isReferencePlan(task.value.result?.data)||task.value.submitUnknown||['queued','dispatched','pending','running','recovering','cancel_requested'].includes(task.value.status))){
     desiredType=saved.type;return
   }
   scopedStorage.setStorageSync(key,null);referenceSelection=null
@@ -495,7 +501,7 @@ async function restoreChat(type=desiredType,{fresh=false,pending=null,preserveVi
   const selection=type==='reference_meal_preview'?referenceSelection:type==='diet_analysis'?{record_id:props.route.recordId,source_version:Number(props.route.version)}:props.route.indicatorChoice==='1'?scopedStorage.getStorageSync(`indicator-choice:${id}:${type}`):null
   flowScope=scope;restoring=true
   try{
-    const options=!props.route.taskType&&conversationId.value?{conversationId:conversationId.value,...(type==='consultation'&&conversationThreadId.value?{threadId:conversationThreadId.value}:type==='reference_meal_preview'&&conversationThreadId.value?{rootThreadId:conversationThreadId.value}:{})}:undefined
+    const options=(!props.route.taskType||props.route.taskType==='consultation')&&conversationId.value?{conversationId:conversationId.value,...(type==='consultation'&&conversationThreadId.value?{threadId:conversationThreadId.value}:type==='reference_meal_preview'&&conversationThreadId.value?{rootThreadId:conversationThreadId.value}:{})}:undefined
     await flow.open(id,type,selection,{...options,fresh})
     if(verifyEntry&&!task.value.available&&!task.value.invalidated&&!task.value.consentOption){
       throw Object.assign(new Error('咨询连接暂不可用'),{code:'CONSULTATION_UNAVAILABLE'})
@@ -579,6 +585,7 @@ async function loadEntry(recoveries,{skipOptional=false}={}){
     if(props.route.question&&!question.value)question.value=String(props.route.question).slice(0,4000)
     if(props.route.indicatorChoice==='1'&&!question.value)question.value='请回顾我选择的实测记录，说明还需要补充哪些测量信息。'
     if(!next.completeProfile&&!next.onboarded){uni.redirectTo({url:'/pages/onboarding/index'});return}
+    void todayMenuClient.open(next)
     // A plain entry is the product home. Only an explicitly selected existing
     // conversation may recover the previous pointer or legacy daily task.
     const resumePrevious=props.route.entry==='conversation'||props.route.from==='onboarding'||!!props.route.preparation
@@ -598,7 +605,7 @@ async function loadEntry(recoveries,{skipOptional=false}={}){
     if(legacyReference){referenceSelection=resume.selection;desiredType=resume.type}
     newConversationWelcome.value=!!conversationId.value&&!conversationThreadId.value
     await restoreChat(desiredType,{fresh:newConversationWelcome.value&&resume?.fresh===true,preserveView,verifyEntry:true})
-    if(!disposed&&visible&&mine===epoch&&scope===storageContext()&&!props.route.taskType)await restoreSpecialTask(resume)
+    if(!disposed&&visible&&mine===epoch&&scope===storageContext()&&(!props.route.taskType||props.route.taskType==='consultation'))await restoreSpecialTask(resume)
     if(disposed||!visible||mine!==epoch)return
     if(scope!==storageContext())return await recoverSession()
     if(task.value.invalidated){entryError.value='连接暂不可用';retryEntryInBackground();return}
@@ -622,6 +629,10 @@ async function loadEntry(recoveries,{skipOptional=false}={}){
   return loading
 }
 function clearMealAccess(date){
+  if(todayMenu.date===date){
+    todayMenuClient.clear()
+    Object.assign(todayMenu,{date,phase:'error',issue:true,notice:'餐单访问已失效，请刷新后重新核对。',action:'refresh'})
+  }
   const plans={...dailyPlans.value};delete plans[date];dailyPlans.value=plans
   if(planTimers[date])clearTimeout(planTimers[date])
   delete planTimers[date];delete planPolls[date]
@@ -643,12 +654,25 @@ async function loadDailyPlan(familyId,date,mine,scope,{verifyAccess=true}={}){
     throw error
   }
   if(disposed||!visible||mine!==epoch||scope!==storageContext()||planReads[date]!==ticket)return null
-  dailyPlans.value={...dailyPlans.value,[date]:plan}
+  acceptTodayPlan(plan)
+  const pendingChanged=plan.pending?.status!==todayMenu.pending?.status||plan.pending?.request_id!==todayMenu.pending?.request_id
+  // A same-version read must not interrupt preparation of missing meals.
+  const sourcesChanged=JSON.stringify(plan.meals.map(item=>[item.meal_type,item.source]))!==
+    JSON.stringify(todayMenu.plan?.meals?.map(item=>[item.meal_type,item.source]))
+  const regenerationChanged=JSON.stringify(plan.needs_regeneration||[])!==JSON.stringify(todayMenu.plan?.needs_regeneration||[])||
+    JSON.stringify(plan.regeneration_participants||{})!==JSON.stringify(todayMenu.plan?.regeneration_participants||{})
+  const menuChanged=plan.version!==todayMenu.plan?.version||sourcesChanged||regenerationChanged||!todayMenu.plan?.needs_regeneration?.length&&pendingChanged
+  const menuWorking=todayMenuClient.isGenerating()
+  if(date===localDate()&&!todayMenu.checking&&!menuWorking&&['ready','error'].includes(todayMenu.phase)&&menuChanged){
+    void todayMenuClient.open(profile.value,{readOnly:true})
+  }
   if(!activePlanStatus(plan.pending?.status)&&task.value.requestId&&task.value.taskType==='reference_meal_preview'&&referenceSelection?.plan_date===date&&activePlanStatus(task.value.status))void flow.refresh()
   if(planTimers[date])clearTimeout(planTimers[date])
   delete planTimers[date]
-  if(activePlanStatus(plan.pending?.status)&&(planPolls[date]||0)<45){
-    planTimers[date]=setTimeout(()=>{delete planTimers[date];planPolls[date]=(planPolls[date]||0)+1;void loadDailyPlan(familyId,date,mine,scope).catch(error=>{if(!disposed&&visible&&mine===epoch&&scope===storageContext())mealReadError.value=error.message})},2000)
+  const polls=planPolls[date]||0
+  const awaitingReply=messages.value.some(message=>message.planPending&&message.planDate===date)
+  if(activePlanStatus(plan.pending?.status)&&(polls<45||awaitingReply)){
+    planTimers[date]=setTimeout(()=>{delete planTimers[date];planPolls[date]=polls+1;void loadDailyPlan(familyId,date,mine,scope).catch(error=>{if(!disposed&&visible&&mine===epoch&&scope===storageContext())mealReadError.value=error.message})},polls<45?2000:10000)
   }else if(!activePlanStatus(plan.pending?.status))delete planPolls[date]
   return plan
 }
@@ -701,6 +725,7 @@ async function refreshReturn({skipOptional=false}={}){
     if(!current())return
     if(!next.completeProfile&&!next.onboarded){clearPrivate();uni.redirectTo({url:'/pages/onboarding/index'});return}
     profile.value=next
+    void todayMenuClient.open(next)
     const ok=await flow.resume()
     if(!current())return
     if(task.value.invalidated){return await recoverEntry({resetConversation:true})}
@@ -758,8 +783,8 @@ onMounted(()=>{keyboardLayout.start();uni.onNetworkStatusChange?.(reconnectEntry
   resumeEntryUI()
   if(entryReady.value)void refreshReturn();else void load()
 })
-onHide(()=>{clearEntryRetry();entryRecovery=null;if(historyLoading.value||continuationChecking.value)entryReady.value=false;selectionGeneration++;historyLoading.value=false;continuationChecking.value=false;switchingConversation.value=false;clearReturnRetry();if(pendingEntrySend.value){messages.value=messages.value.filter(message=>message!==pendingEntrySend.value.message);pendingEntrySend.value=null}if(localSend.value?.message.localOnly)failLocalSend();localSend.value=null;sendPhase.value='';scrollRevision++;pauseEntryUI();historyOpen.value=false;if(scrollTimer!==null)clearTimeout(scrollTimer);scrollTimer=null;visible=false;suspended=true;epoch++;sendGeneration++;loading=null;profileLoading.value=false;returning.value=false;restoring=false;returnVerified.value=false;mealsLoading.value=false;stopPlanTimers();voiceRef.value?.cancel();flow.pause();pendingUser=null;sending.value=false;client.pause();familyClient.pause();familyPanel.value=false;familySelection.value=null})
-onUnmounted(()=>{uni.offNetworkStatusChange?.(reconnectEntry);clearEntryRetry();entryRecovery=null;selectionGeneration++;clearReturnRetry();scrollRevision++;pauseEntryUI();entryMotion.dispose();if(scrollTimer!==null)clearTimeout(scrollTimer);disposed=true;epoch++;draftVersion++;stopPlanTimers();client.dispose();familyClient.dispose();flow.hide()})
+onHide(()=>{todayMenuClient.pause();todayMenu.verified=false;clearEntryRetry();entryRecovery=null;if(historyLoading.value||continuationChecking.value)entryReady.value=false;selectionGeneration++;historyLoading.value=false;continuationChecking.value=false;switchingConversation.value=false;clearReturnRetry();if(pendingEntrySend.value){messages.value=messages.value.filter(message=>message!==pendingEntrySend.value.message);pendingEntrySend.value=null}if(localSend.value?.message.localOnly)failLocalSend();localSend.value=null;sendPhase.value='';scrollRevision++;pauseEntryUI();historyOpen.value=false;if(scrollTimer!==null)clearTimeout(scrollTimer);scrollTimer=null;visible=false;suspended=true;epoch++;sendGeneration++;loading=null;profileLoading.value=false;returning.value=false;restoring=false;returnVerified.value=false;mealsLoading.value=false;stopPlanTimers();voiceRef.value?.cancel();flow.pause();pendingUser=null;sending.value=false;client.pause();familyClient.pause();familyPanel.value=false;familySelection.value=null})
+onUnmounted(()=>{todayMenuClient.dispose();uni.offNetworkStatusChange?.(reconnectEntry);clearEntryRetry();entryRecovery=null;selectionGeneration++;clearReturnRetry();scrollRevision++;pauseEntryUI();entryMotion.dispose();if(scrollTimer!==null)clearTimeout(scrollTimer);disposed=true;epoch++;draftVersion++;stopPlanTimers();client.dispose();familyClient.dispose();flow.hide()})
 async function openFormalDetail(meal,arrangement,date,extra={}){
  if(voiceBusy.value||!arrangement||!profile.value)return
  const scope=storageContext(),mine=epoch
@@ -771,8 +796,8 @@ async function openFormalDetail(meal,arrangement,date,extra={}){
  }catch(e){if(scope===storageContext())chatError.value=e.message}
 }
 function openMeal(meal){return openFormalDetail(meal,state.arrangement,state.date)}
-function openDailyMeal(item,date){if(voiceBusy.value)return;openMealPage(mealTarget(item,dailyPlans.value[date]))}
-function openDailyDish(value,date){if(voiceBusy.value)return;openMealPage(mealTarget(value.item,dailyPlans.value[date]),{dishIndex:value.dishIndex})}
+function openDailyMeal(item,date,plan=dailyPlans.value[date]){if(voiceBusy.value)return;openMealPage(mealTarget(item,plan))}
+function openDailyDish(value,date,plan=dailyPlans.value[date]){if(voiceBusy.value)return;openMealPage(mealTarget(value.item,plan),{dishIndex:value.dishIndex})}
 function buyAllMeals(plan){if(voiceBusy.value||planPurchaseBusy.value||!canPurchaseAllMeals(plan))return;openMealPage({date:plan.date,version:plan.version},{all:true})}
 
 async function openReferencePlan(value){
@@ -795,6 +820,14 @@ function purchaseDaily(option,plan){
 function shop(arrangement){if(arrangement?.meals?.length)return openFormalDetail(arrangement.meals[0],arrangement,arrangement.date,{initialView:'purchase',purchaseMeals:arrangement.meals.map(m=>m.type),purchaseMembers:[...new Map(arrangement.meals.flatMap(m=>m.members||[]).map(m=>[m.id,m])).values()]})}
 function archives(){uni.navigateTo({url:'/pages/profile/index'})}
 async function members(ids){const type=selectedMeal.value.type,dailyPlanVersion=selectedMeal.value.dailyPlanVersion;selectedMeal.value=null;await client.changeMembers(type,ids,{dailyPlanVersion});cardVisible.value=state.phase==='ready';if(profile.value)await loadDailyPlan(profile.value.householdId,state.date,epoch,storageContext());if(familyPanel.value&&familyState.date===state.date)await familyClient.load(state.date)}
+/** 在当前对话展示已保存餐单或等待中的餐单投影。 */
+async function replyWithDailyPlan(user,plan,mealTypes,snapshot,text,pending=false){
+  user.localOnly=false;user.status='sent'
+  messages.value.push({id:newHealthRequestId(),role:'assistant',text,planDate:plan.date,planMeals:[...mealTypes],...(pending?{planPending:true}:{})})
+  if(pending)acceptTodayPlan(dailyPlans.value[plan.date]||plan)
+  settleDraft(snapshot)
+  await scrollLatest({force:true})
+}
 async function sendQuestion(promptAction=''){
   if(conversationReadOnly.value){chatError.value='这段每日对话已归档，请新建对话继续。';return}
   if(!hasDraftContent.value||draftSaving.value||draftError.value||pendingEntrySend.value||inputBusy.value)return
@@ -826,18 +859,26 @@ async function sendQuestion(promptAction=''){
   sending.value=true;chatError.value=''
   let stage='select-task',user=null,localOperation=null
   try{
-    const mealIntent=!props.route.taskType&&!image?parseChatMealIntent(text,localDate()):null
+    const flexibleConsultation=!props.route.taskType||props.route.taskType==='consultation'
+    if(flexibleConsultation&&!referenceSelection){
+      const previous=[...messages.value].reverse().find(message=>message.role==='assistant'&&isReferencePlan(message.business?.data))?.business.data
+      if(previous?.sources?.family_id===profile.value.householdId){
+        try{referenceSelection=chooseReference(profile.value,'',{today:localDate(),tomorrow:localDate(new Date(Date.now()+86400000)),previous:{mode:'reference',family_id:previous.sources.family_id,plan_date:previous.plan_date,participant_ids:previous.members.map(member=>member.id),meal_types:previous.meals.map(meal=>meal.meal_type)}})}catch{referenceSelection=null}
+      }
+    }
+    const mealIntent=flexibleConsultation&&!image?parseChatMealIntent(text,localDate(),!!referenceSelection):null
     // A revision stays in the selected plan's thread, preserving its date and
     // participants. A fresh arrangement still creates its own explicit choice.
-    const referenceAdjustment=!props.route.taskType&&!image&&task.value.taskType==='reference_meal_preview'&&!!referenceSelection&&
+    const referenceAdjustment=flexibleConsultation&&!image&&!!referenceSelection&&
       !(promptAction==='consultation'&&!mealIntent)&&
       !isMealPlanningCancelled(text)&&
       !/(?:什么是|介绍|解释|科普|原则|注意事项|怎么理解|如何理解|有什么区别|有何区别)/.test(text)&&
       !(!mealIntent&&/(?:怎么|怎样|如何|为什么).*(?:选|做|换|替换|调整|搭配|准备|保存|作用|摄入)|(?:有什么|有何)(?:好处|作用)/.test(text))&&
       !/(?:换(?:个|一个)?话题|换个问题|^(?:取消|停止|不用了|不需要了)(?:[，。！？\s]|$)|(?:取消|停止|不用|不需要|不想|不要)(?:再|继续)?(?:配餐|安排|生成|制定))/.test(text)&&
-      (task.value.result?.type==='needs_input'||!/(?:^|[，。！？；、\s])(?:请)?(?:为我|给我|帮我|给全家|为全家|帮全家)?(?:安排|生成|制定|配一)/.test(text)&&
-      /换(?:(?:今天|明天|今日|明日)?的?(?:早餐|午餐|晚餐|早饭|午饭|晚饭)|菜|成|掉|一|个)|替换|改(?:成|为|一下|早餐|午餐|晚餐|早饭|午饭|晚饭)|调整|重新(?:生成|安排|做)|再(?:生成|安排|做)|去掉|不放|不吃|不含|不要|加(?:一|点|些)|少(?:一|点|些)|多(?:一|点|些)/.test(text))
+      (task.value.taskType==='reference_meal_preview'&&task.value.result?.type==='needs_input'||!/(?:^|[，。！？；、\s])(?:请)?(?:为我|给我|帮我|给全家|为全家|帮全家)?(?:安排|生成|制定|配一)/.test(text)&&
+      (mealIntent?.revision||/换(?:(?:今天|明天|今日|明日)?的?(?:早餐|午餐|晚餐|早饭|午饭|晚饭)|菜|成|掉|一|个|几)|替换|改(?:成|为|一下|早餐|午餐|晚餐|早饭|午饭|晚饭)|调整|重新(?:生成|安排|做)|再(?:生成|安排|做)|去掉|不放|不吃|不含|不要|加(?:一|点|些)|少(?:一|点|些)|多(?:一|点|些)/.test(text)))
     if(mealIntent?.unsupportedDate)throw new Error('请明确选择今天或明天的一日餐单，原问题已保留。')
+    if(mealIntent?.revision&&!referenceSelection)throw new Error('请先打开要更换的餐单，或说明要重新安排哪一天、哪一餐。')
     const displayQuestion=text.split(/[，。！？；,;]/).filter(part=>!/不变|保持原样|照旧|不用改|不要改/.test(part)).join('，')
     const requestedMealTypes=[['breakfast',/早餐|早饭|早上|今早|明早/],['lunch',/午餐|午饭|中午/],['dinner',/晚餐|晚饭|晚上|今晚|明晚/]].filter(([,pattern])=>pattern.test(displayQuestion)).map(([type])=>type)
     if(/三餐|全天|一天/.test(displayQuestion)||!requestedMealTypes.length)requestedMealTypes.splice(0,requestedMealTypes.length,'breakfast','lunch','dinner')
@@ -852,22 +893,20 @@ async function sendQuestion(promptAction=''){
     question.value='';localOperation.clearedVersion=textVersion;uni.hideKeyboard?.()
     sendPhase.value='正在准备对话';void scrollLatest({force:true})
     stage='prepare-conversation'
-    if(!props.route.taskType&&action==='view'){
+    if(flexibleConsultation&&action==='view'){
       const date=/明天|明日/.test(text)?localDate(new Date(Date.now()+86400000)):localDate()
       const plan=await loadDailyPlan(profile.value.householdId,date,epoch,scope)
       if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration||!plan)return
-      user.localOnly=false;user.status='sent'
-      messages.value.push({id:newHealthRequestId(),role:'assistant',text:plan.status==='ready'?'这是已安排的餐单。':'这一天还没有餐单。',planDate:date,planMeals:requestedMealTypes})
-      settleDraft(snapshot);await scrollLatest({force:true});return
+      await replyWithDailyPlan(user,plan,requestedMealTypes,snapshot,plan.status==='ready'?'这是已安排的餐单。':'这一天还没有餐单。');return
     }
-    let continuing=!props.route.taskType&&!image&&task.value.taskType==='reference_meal_preview'&&task.value.result?.type==='needs_input'&&referenceAdjustment
+    let continuing=flexibleConsultation&&!image&&task.value.taskType==='reference_meal_preview'&&task.value.result?.type==='needs_input'&&referenceAdjustment
     let referenceFollowUp=false
-    const type=Object.hasOwn(HEALTH_TEXT_TASKS,props.route.taskType)?props.route.taskType
-      :!image&&(mealIntent||continuing||referenceAdjustment||promptAction==='reference_meal_preview')?'reference_meal_preview':'consultation'
+    const type=!image&&flexibleConsultation&&(mealIntent||continuing||referenceAdjustment||promptAction==='reference_meal_preview')?'reference_meal_preview'
+      :Object.hasOwn(HEALTH_TEXT_TASKS,props.route.taskType)?props.route.taskType:'consultation'
     if(!props.route.taskType&&type==='consultation'&&conversationId.value)scopedStorage.setStorageSync('conversation-task:'+conversationId.value,null)
     // A plan-first conversation still needs a real consultation anchor so it
     // remains discoverable in the server-backed conversation drawer.
-    if(type!=='consultation'&&!props.route.taskType&&!conversationThreadId.value){
+    if(type!=='consultation'&&flexibleConsultation&&!conversationThreadId.value){
       if(!conversationId.value)conversationId.value=newHealthRequestId()
       stage='create-conversation-anchor';await restoreChat('consultation')
       if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration)return
@@ -877,6 +916,7 @@ async function sendQuestion(promptAction=''){
       rememberThread()
       if(!conversationThreadId.value)throw new Error(task.value.error||'对话尚未建立，原问题已保留，请重试。')
     }
+    let rebuildReference=false
     if(type==='reference_meal_preview'){
       const previousVersion=referenceSelection?.daily_base_version
       const candidate=chooseReference(profile.value,text,{today:localDate(),tomorrow:localDate(new Date(Date.now()+86400000)),memberId:props.route.memberId,...(referenceAdjustment?{previous:referenceSelection}:{})})
@@ -885,29 +925,38 @@ async function sendQuestion(promptAction=''){
       const selection=continuing?referenceSelection:candidate
       referenceFollowUp=referenceAdjustment&&['family_id','plan_date','participant_ids','meal_types'].every(key=>JSON.stringify(selection[key])===JSON.stringify(referenceSelection[key]))
       if(!continuing)referenceSelection=selection
-      if(action==='change'&&!referenceFollowUp&&referenceSelection.meal_types.length===3&&!/三餐|全天|一天/.test(text))throw new Error('请说明要调整早餐、午餐还是晚餐。')
+      if(action==='change'&&!referenceAdjustment&&!referenceFollowUp&&referenceSelection.meal_types.length===3&&!/三餐|全天|一天/.test(text))throw new Error('请说明要调整早餐、午餐还是晚餐。')
       const plan=await loadDailyPlan(profile.value.householdId,referenceSelection.plan_date,epoch,scope)
       if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration)return
       if(!plan)throw new Error('计划状态已变化，请重新读取。')
+      const explicitMembers=/全家|一家|家人|我们|家庭(?:三餐|配餐|餐单|菜单|用餐|饮食计划)|为我|给我|帮我|本人|自己|一个人|一人|只(?:有|给)?我/.test(text)||profile.value.members.some(member=>[member.name,member.relation].some(label=>typeof label==='string'&&label.length>1&&['给','为','帮'].some(prefix=>['','我','我的'].some(owner=>text.includes(prefix+owner+label)))))
+      rebuildReference=referenceSelection.meal_types.some(meal=>plan.needs_regeneration?.includes(meal))&&!activePlanStatus(plan.pending?.status)
+      if(rebuildReference&&!explicitMembers){
+        const groups=referenceSelection.meal_types.map(meal=>plan.regeneration_participants?.[meal]||plan.meals.find(item=>item.meal_type===meal)?.members?.map(member=>member.id)).filter(ids=>ids?.length)
+        const diners=groups[0]&&[...groups[0]].sort()
+        if(groups.some(ids=>JSON.stringify([...ids].sort())!==JSON.stringify(diners)))throw new Error('这些餐次的就餐成员不同，请分别重新安排。')
+        if(diners)referenceSelection.participant_ids=diners
+      }
+      if(rebuildReference){continuing=false;referenceFollowUp=false;action='generate'}
       if(continuing&&referenceSelection.daily_base_version!==plan.version)throw new Error('饮食计划已有更新，请重新核对后继续。')
       if(referenceFollowUp&&previousVersion!==plan.version)referenceFollowUp=false
-      if(activePlanStatus(plan.pending?.status)){inlineTodayOpen.value=plan.date===localDate();throw new Error('该日饮食计划正在生成，请等待已有任务完成。')}
       const covered=type=>plan.meals.some(item=>item.meal_type===type&&JSON.stringify((item.members||[]).map(m=>m.id).sort())===JSON.stringify(referenceSelection.participant_ids))
       if(action==='generate'&&plan.status==='ready'&&referenceSelection.meal_types.every(covered)){
-        user.localOnly=false;user.status='sent'
-        messages.value.push({id:newHealthRequestId(),role:'assistant',text:'这是已安排的餐单。',planDate:plan.date,planMeals:[...referenceSelection.meal_types]})
-        settleDraft(snapshot);await scrollLatest({force:true});return
+        await replyWithDailyPlan(user,plan,referenceSelection.meal_types,snapshot,'这是已安排的餐单。');return
+      }
+      if(activePlanStatus(plan.pending?.status)){
+        if(action==='change')throw new Error('餐单正在生成，完成后再调整。原问题已保留。')
+        await replyWithDailyPlan(user,plan,referenceSelection.meal_types,snapshot,'餐单正在生成，完成后会在这里更新。',true);return
       }
       if(action==='generate'&&plan.status==='ready')referenceSelection.meal_types=referenceSelection.meal_types.filter(type=>!covered(type))
       if(action==='change'&&!continuing&&plan.status!=='ready')throw new Error('这一天还没有饮食计划，请先生成餐单。')
-      const explicitMembers=/全家|一家|家人|我们|家庭(?:三餐|配餐|餐单|菜单|用餐|饮食计划)|为我|给我|帮我|本人|自己|一个人|一人|只(?:有|给)?我/.test(text)||profile.value.members.some(member=>[member.name,member.relation].some(label=>typeof label==='string'&&label.length>1&&['给','为','帮'].some(prefix=>['','我','我的'].some(owner=>text.includes(prefix+owner+label)))))
       if(action==='change'&&!continuing&&!referenceAdjustment&&!explicitMembers){
         const existing=plan.meals.find(item=>item.meal_type===referenceSelection.meal_types[0])
         if(existing?.members?.length)referenceSelection.participant_ids=[...new Set(existing.members.map(member=>member.id))].sort()
       }
       referenceSelection.daily_base_version=plan.version
     }
-    if(type==='reference_meal_preview'&&!referenceFollowUp||!task.value.memberId||task.value.taskType!==type)await restoreChat(type,{fresh:newConversationWelcome.value&&(task.value.taskType!==type||!task.value.entry?.thread_id)})
+    if(type==='reference_meal_preview'&&!referenceFollowUp||!task.value.memberId||task.value.taskType!==type)await restoreChat(type,{fresh:rebuildReference||newConversationWelcome.value&&(task.value.taskType!==type||!task.value.entry?.thread_id)})
     if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration)return
     if(task.value.canRetry)return
     if(!task.value.available){chatError.value=task.value.error||task.value.notice||chatError.value||'请先在该成员的家庭档案中完成资料和咨询同意。';return}
@@ -935,12 +984,17 @@ async function sendQuestion(promptAction=''){
     pendingUser=user;localOperation.submitting=true;sendPhase.value='正在提交问题'
     const accepted=await flow.submit(text,false,images)
     if(disposed||!visible||mine!==epoch||scope!==storageContext())return
-    if(!accepted&&type==='reference_meal_preview'&&task.value.error?.includes('该日饮食计划正在生成')){
-      failLocalSend(localOperation)
-      messages.value=messages.value.filter(message=>message!==user)
-      await loadDailyPlan(profile.value.householdId,referenceSelection.plan_date,epoch,scope)
-      inlineTodayOpen.value=referenceSelection.plan_date===localDate()
-      chatError.value=task.value.error;return
+    if(!accepted&&action==='generate'&&type==='reference_meal_preview'&&task.value.submitRejected&&[409,423].includes(Number(task.value.failureStatus))){
+      const plan=await loadDailyPlan(profile.value.householdId,referenceSelection.plan_date,epoch,scope)
+      if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration)return
+      const covered=plan?.status==='ready'&&referenceSelection.meal_types.every(type=>plan.meals.some(item=>item.meal_type===type&&JSON.stringify((item.members||[]).map(m=>m.id).sort())===JSON.stringify(referenceSelection.participant_ids)))
+      if(covered||activePlanStatus(plan?.pending?.status)){
+        pendingUser=null;submittedDraft=null
+        await restoreChat('consultation',{readHistory:false})
+        if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration||task.value.invalidated||!task.value.available)return
+        user.requestId='';delete user.errorCode;snapshot.requestId=''
+        await replyWithDailyPlan(user,plan,referenceSelection.meal_types,snapshot,covered?'这是已安排的餐单。':'餐单正在生成，完成后会在这里更新。',!covered);return
+      }
     }
     user.status=messageDeliveryStatus(task.value,!!accepted)
     if(accepted)user.localOnly=false
@@ -1027,7 +1081,21 @@ function history(){uni.hideKeyboard?.();historyOpen.value=true}
 function stashConversationDraft(){if(conversationId.value)conversationDrafts.set(conversationId.value,{text:question.value,image:draftImage.value,error:draftError.value})}
 function resetConversationView(){selectionGeneration++;historyDenied=false;historyLoading.value=false;historyError.value='';historyNotice.value='';continuationChecking.value=false;continuationError.value='';for(const key of Object.keys(mealAppearances))delete mealAppearances[key];localSend.value=null;sendPhase.value='';scrollRevision++;reading.value={following:true};latestAvailable.value=false;detailRef.value?.clear();resetEntryUI();flow.hide();messages.value=[];question.value='';removeDraft();submittedDraft=null;pendingUser=null;referenceSelection=null;latestReference.value=null;familyPanel.value=false;inlineTodayOpen.value=false;chatError.value='';desiredType='consultation';scrollTarget.value=''}
 function generateReference(){if(!voiceBusy.value)inlineTodayOpen.value=true}
-function acceptTodayPlan(plan){dailyPlans.value={...dailyPlans.value,[plan.date]:plan}}
+function actTodayMenu(){
+  if(disposed||!visible||voiceBusy.value||planPurchaseBusy.value||state.busy||!profile.value)return
+  if(['answer','candidates'].includes(todayMenu.action))void resumePlanQuestion(todayMenu.pending)
+  else if(todayMenu.action==='refresh')void todayMenuClient.open(profile.value,{readOnly:true})
+  else if(todayMenu.action==='regenerate'||todayMenu.phase==='error')void todayMenuClient.open(profile.value)
+}
+function acceptTodayPlan(plan){
+  dailyPlans.value={...dailyPlans.value,[plan.date]:plan}
+  if(activePlanStatus(plan.pending?.status))return
+  for(const message of messages.value){
+    if(!message.planPending||message.planDate!==plan.date)continue
+    message.planPending=false
+    message.text=plan.status==='ready'?'这是目前已安排的餐单。':'餐单状态已更新，请打开今日餐单继续核对。'
+  }
+}
 async function newConversation(){
   if(conversationChangeBusy.value||switchingConversation.value||!entryReady.value||voiceBusy.value||draftSaving.value)return
   if(props.route.taskType){uni.reLaunch({url:'/pages/chat/index?newConversation=1'});return}
@@ -1162,6 +1230,7 @@ function messageTime(message,index){
   <ChatWelcome :density="welcomeDensity" :prompts="prompts" :disabled="chatBusy||entryView.phase==='leaving'" @ask="askPrompt" @shuffle="shufflePrompts"/>
  </template>
  <template #default>
+  <TodayMealPlanContent v-if="!welcomeMounted && (entryView.engaged || !presentation.welcome || props.route.taskType)" heading :state="todayMenu" :busy="planPurchaseBusy||state.busy" :interactive="!inlineTodayOpen&&!voiceBusy" @action="actTodayMenu" @detail="openDailyMeal($event,todayMenu.date,todayMenu.plan)" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
   <view v-if="historyLoading||historyError" class="entry-status" :role="historyError?'alert':'status'" aria-live="polite"><text>{{historyError||'正在加载历史对话…'}}</text><button v-if="historyError&&!historyLoading" @click="retryHistory">重新读取历史</button></view>
   <text v-if="historyNotice" class="entry-status" role="status">{{historyNotice}}</text>
   <view v-if="continuationChecking||continuationError" class="entry-status" role="status"><text>{{continuationChecking?'正在核对续聊状态，历史记录可先阅读。':continuationError}}</text><button v-if="continuationError&&!continuationChecking" @click="retrySelectedConversation">重新核对</button></view>
@@ -1210,7 +1279,7 @@ function messageTime(message,index){
  <template #overlays>
   <MealDetailSheet ref="detailRef" :members="profile?.members||[]" :reload="reloadDetailPlan" @open-change="detailOpen=$event"/>
   <ChatConversationDrawer :open="historyOpen" :member-id="historyMemberId" :active-thread-id="conversationThreadId" :new-busy="switchingConversation" :busy="conversationChangeBusy||voiceBusy||draftSaving" :display-name="profile?.members.find(m=>m.id===profile.selfMemberId)?.name||'我的'" @close="historyOpen=false" @new="newConversation" @select="selectConversation" @profile="historyOpen=false;uni.navigateTo({url:'/pages/my/index'})"/>
-  <TodayMealPlanSheet :open="inlineTodayOpen" :profile="profile" :unavailable="!!entryError" :busy="planPurchaseBusy||state.busy" @close="inlineTodayOpen=false" @plan="acceptTodayPlan" @continue="resumePlanQuestion($event)" @detail="openDailyMeal($event,todayPlan.date)" @dish="openDailyDish($event,todayPlan.date)" @all="buyAllMeals"/>
+  <TodayMealPlanSheet :open="inlineTodayOpen" :state="todayMenu" :busy="planPurchaseBusy||state.busy" :interactive="!voiceBusy" @close="inlineTodayOpen=false" @action="actTodayMenu" @detail="openDailyMeal($event,todayMenu.date,todayMenu.plan)" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
   <DinerPicker :open="!!familySelection" :members="profile?.members||[]" :selected="familySelection?.ids||[]" :meal="({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'})[familySelection?.type]" @close="familySelection=null" @confirm="familyMembers"/>
   <DinerPicker :open="!!selectedMeal" :members="profile?.members||[]" :selected="selectedMeal?.members.map(m=>m.id)||[]" :meal="({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'})[selectedMeal?.type]" @close="selectedMeal=null" @confirm="members"/>
   <view v-if="communityOpen" class="sheet-mask" @click.self="communityOpen=false"><view class="sheet"><text class="section-title">加入社群</text><text class="composer-note">暂无可用社群二维码，请稍后再试。</text><button class="secondary-button" @click="communityOpen=false">关闭</button></view></view>

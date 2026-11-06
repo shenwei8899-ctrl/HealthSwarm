@@ -7,6 +7,7 @@ import { dishTitle, dishKey, recipeDisplay, ingredientLabels, referenceIngredien
 import { detailState, createMealDetailClient } from '../src/services/meal-detail-client.js'
 import { normalizeDishNutrition } from '../src/utils/dish-nutrition.js'
 import { recipeCover } from '../src/utils/recipe-cover.js'
+import { recipeTime, recipeIngredients, recipeNutrition } from '../src/utils/dish-commerce-presentation.js'
 import { purchaseGroups, referencePurchaseFor } from '../src/services/meal-workspace.js'
 
 const original = () => ({file_id:'file',chunk_id:'chunk',name:'Chicken Pasta',ingredients:['1 Tbsp olive oil','¼ tsp salt'],steps:['Cook about 2 minutes. Drain.'],nutrition_quote:'Calories: 452',step_images:['https://example.org/step1.jpg']})
@@ -41,9 +42,9 @@ async function guide(dish){
  const script=source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
  const template=source.match(/<template>([\s\S]*?)<\/template>/)[1]
  const props={dishes:[dish],continuous:true,action:''}
- const deps={computed,ref,watch,normalizeDishNutrition,dishTitle,recipeDisplay,recipeCover,defineProps:()=>props,defineEmits:()=>()=>{}}
- return renderToString(createSSRApp({render:compile(template,{isCustomElement:tag=>tag==='scroll-view'}),components:{FoodImageSlot:{template:'<view />'},DishNutritionCard:{template:'<view />'}},setup(){
-  const setup=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${script};return {dish,display,cover,summary,notes,tab,nutritionOpen,key,name,ingredient,stepCopy}`)(deps)
+ const deps={recipeTime,recipeIngredients,recipeNutrition,computed,ref,watch,normalizeDishNutrition,dishTitle,recipeDisplay,recipeCover,defineProps:()=>props,defineEmits:()=>()=>{}}
+ return renderToString(createSSRApp({render:compile(template,{isCustomElement:tag=>tag==='scroll-view'}),components:{FoodImageSlot:{props:['src'],template:'<img :src="src" />'},DishNutritionCard:{template:'<view />'}},setup(){
+  const setup=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${script};return {dish,display,cover,summary,notes,tab,nutritionOpen,key,name,ingredient,stepCopy,recipeTime,commerceIngredients,commerceNutrition}`)(deps)
   return {...props,...setup}
  }}))
 }
@@ -56,6 +57,19 @@ test('actual cooking template renders Chinese recipe and original matching step 
  assert.match(html,/热量：452/)
  assert.match(html,/https:\/\/example.org\/step1.jpg/)
  assert.doesNotMatch(html,/olive oil|Cook about|Calories:/)
+})
+
+test('merged detail renders exact merchant images and nutrition without replacing existing recipe steps',async()=>{
+ const html=await guide({...translated(),cooking_minutes:15,
+  ingredient_products:[{sku_id:12,product_name:'商城橄榄油',ingredient_refs:['1 Tbsp olive oil'],image_url:'https://example.org/oil.jpg'}],
+  nutrition_highlights:[{sku_id:12,quote:'原商品营养摘录'}]})
+ assert.match(html,/约 15 分钟/)
+ assert.match(html,/https:\/\/example.org\/oil.jpg/)
+ assert.match(html,/商城橄榄油/)
+ assert.match(html,/原商品营养摘录/)
+ assert.match(html,/橄榄油 1 汤匙/)
+ assert.match(html,/煮约 2 分钟/)
+ assert.match(html,/热量：452/)
 })
 
 test('historical recipe reads supplemental Chinese using the same saved receipt and makes no writes',async()=>{
