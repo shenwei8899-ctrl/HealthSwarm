@@ -110,12 +110,95 @@ async def test_real_sdk_corrects_duplicate_coverage_only_once(scenario, services
 
 
 @pytest.mark.asyncio
+async def test_real_sdk_corrects_unmatched_product_once(services):
+    """规格不对应原谱时，模型只可按工具回执重选一次。"""
+    invalid = copy.deepcopy(original.DRAFT)
+    invalid["purchase_items"] = [{"sku_id": "unmatched-sku", "quantity": 1, "ingredient_refs": ["合成食材"]}]
+    invalid["purchase_gaps"] = []
+    services.saved.side_effect = [
+        HealthVisionError("reference_ingredient_mismatch", "所选规格未对应任何本次原谱食材", 422),
+        original.snapshot(),
+    ]
+    wires = []
+
+    def respond(request):
+        wire = json.loads(request.content)
+        wires.append(wire)
+        index = len(wires)
+        message = {"role": "assistant", "content": ""}
+        if index == 1:
+            args = invalid
+        elif index == 2:
+            assert wire["tool_choice"] == {"type": "function", "function": {"name": "save_reference_meal_plan"}}
+            feedback = next(item for item in wire["messages"] if item["role"] == "tool")
+            payload = json.loads(feedback["content"])
+            assert payload["error_code"] == "reference_ingredient_mismatch"
+            assert payload["retryable"] is True
+            assert any(
+                "ingredient_matches" in str(item.get("content"))
+                for item in wire["messages"]
+                if item["role"] == "system"
+            )
+            args = original.DRAFT
+        else:
+            assert index == 3 and "tools" not in wire
+            message["content"] = json.dumps({"preview_id": original.PREVIEW})
+            args = None
+        if args is not None:
+            message["tool_calls"] = [
+                {
+                    "id": f"save-{index}",
+                    "type": "function",
+                    "function": {
+                        "name": "save_reference_meal_plan",
+                        "arguments": json.dumps(args),
+                    },
+                }
+            ]
+        return original.sdk_response(message, f"mismatch-{index}", 2, 3, stream=wire.get("stream") is True)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        model = ChatCompletionsAdapter(
+            model="synthetic",
+            api_key="synthetic-test-key",
+            base_url="https://example.invalid/v1",
+            http_async_client=client,
+            use_responses_api=False,
+            max_retries=0,
+        )
+        graph = create_agent(
+            model,
+            tools=original.TOOLS,
+            middleware=[MealPlanResultMiddleware()],
+            context_schema=original.Context,
+            checkpointer=InMemorySaver(),
+        )
+        context = original.Context()
+        state = await graph.ainvoke(
+            {"messages": [original.human()]},
+            context=context,
+            config={"configurable": {"thread_id": context.thread_id}},
+        )
+
+    assert len(wires) == 3
+    saved_items = [
+        [item.model_dump() for item in call.args[1]["purchase_items"]] for call in services.saved.await_args_list
+    ]
+    assert saved_items == [
+        invalid["purchase_items"],
+        original.DRAFT["purchase_items"],
+    ]
+    assert json.loads(state["messages"][-1].text) == original.snapshot()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "code",
     [
         "reference_duplicate_meals",
         "reference_duplicate_sku",
         "reference_purchase_coverage_invalid",
+        "reference_ingredient_mismatch",
         "recipe_translation_invalid",
     ],
 )

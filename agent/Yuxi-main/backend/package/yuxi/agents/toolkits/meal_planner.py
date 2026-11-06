@@ -226,7 +226,13 @@ async def save_reference_meal_plan(
             name for name in getattr(runtime.context, "tools", ()) if name != "query_family_nutrition_knowledge"
         )
         if (
-            error.code not in {"reference_quote_invalid", "recipe_translation_missing", "recipe_translation_invalid"}
+            error.code
+            not in {
+                "reference_quote_invalid",
+                "reference_ingredient_mismatch",
+                "recipe_translation_missing",
+                "recipe_translation_invalid",
+            }
             or tools != REFERENCE_TOOLS
         ):
             raise
@@ -355,6 +361,7 @@ def _reference_save_failure_index(messages, request_id, *, include_validation, e
                     "reference_duplicate_meals",
                     "reference_duplicate_sku",
                     "reference_purchase_coverage_invalid",
+                    "reference_ingredient_mismatch",
                     "recipe_translation_missing",
                     "recipe_translation_invalid",
                 }

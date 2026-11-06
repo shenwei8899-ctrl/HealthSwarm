@@ -2,16 +2,21 @@
 
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from dataclasses import dataclass
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock
 import sys
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode
 from pydantic import ValidationError
 
+from yuxi.agents.toolkits.meal_planner import save_reference_meal_plan
 from yuxi.services import recipe_translation_service as translations, reference_meal_selection_service as selection
 from yuxi.services.health_vision_types import HealthVisionError
-from yuxi.services.reference_meal_plan_types import ReferencePlanDraft
+from yuxi.services.reference_meal_plan_types import REFERENCE_TOOLS, ReferencePlanDraft
 
 RAW = "# Rice\n\n## Ingredients\n- 100 g rice\n- 1 cup water\n\n## Directions\n1. Boil rice and water.\n"
 SOURCE = {
@@ -203,6 +208,96 @@ def assembly(monkeypatch):
     monkeypatch.setitem(sys.modules, fake_manager.__name__, fake_manager)
     monkeypatch.setattr(translations, "cached_chinese_display", AsyncMock(side_effect=lambda *args: state.cached))
     return state
+
+
+@dataclass
+class SaveContext:
+    """合成保存请求的身份与工具配置。"""
+
+    uid: str = "synthetic-user"
+    request_id: str = "synthetic-request"
+    tools: tuple = REFERENCE_TOOLS
+
+
+@pytest.mark.asyncio
+async def test_read_selection_unconfirmed_chicken_sku_retries_with_real_gap(assembly):
+    """原谱加工状态未证实的 SKU 被拒绝，纠正后只能作为待确认缺口。"""
+    assembly.document["content"] = (
+        "# Pan-Seared Chicken Breast\n\n## Ingredients\n"
+        "- 2 boneless skinless chicken breasts\n- 1 clove garlic\n\n"
+        "## Directions\n1. Cook chicken and garlic.\n"
+    )
+    assembly.opened = [deepcopy(assembly.document)]
+    assembly.products = [product("garlic-sku", "大蒜"), product("chicken-sku", "鸡胸肉")]
+    context = SaveContext()
+    saved = AsyncMock(return_value={"preview_id": "synthetic-preview"})
+    sys.modules["yuxi.services.reference_meal_plan_service"].save_reference_plan = saved
+    graph = StateGraph(MessagesState, context_schema=SaveContext)
+    graph.add_node("tools", ToolNode([save_reference_meal_plan]))
+    graph.add_edge(START, "tools")
+    graph.add_edge("tools", END)
+    compiled = graph.compile()
+    chosen = payload()
+    chosen["purchase_items"] = [
+        {"sku_id": "garlic-sku", "quantity": 1},
+        {"sku_id": "chicken-sku", "quantity": 1},
+    ]
+    first = await compiled.ainvoke(
+        {
+            "messages": [
+                HumanMessage("合成晚餐", additional_kwargs={"health_request_id": context.request_id}),
+                AIMessage(
+                    "",
+                    tool_calls=[
+                        {
+                            "id": "first-save",
+                            "name": "save_reference_meal_plan",
+                            "args": {"read_selection": chosen},
+                        }
+                    ],
+                ),
+            ]
+        },
+        context=context,
+    )
+    failure = first["messages"][-1]
+    assert failure.status == "error"
+    assert failure.name == "save_reference_meal_plan"
+    assert "reference_ingredient_mismatch" in failure.content
+    saved.assert_not_awaited()
+
+    corrected = deepcopy(chosen)
+    corrected["purchase_items"] = [{"sku_id": "garlic-sku", "quantity": 1}]
+    second = await compiled.ainvoke(
+        {
+            "messages": [
+                *first["messages"],
+                AIMessage(
+                    "",
+                    tool_calls=[
+                        {
+                            "id": "retry-save",
+                            "name": "save_reference_meal_plan",
+                            "args": {"read_selection": corrected},
+                        }
+                    ],
+                ),
+            ]
+        },
+        context=context,
+    )
+    assert second["messages"][-1].content == '{"preview_id": "synthetic-preview"}'
+    draft = saved.await_args.args[1]
+    assert [item.model_dump() for item in draft.purchase_items] == [
+        {
+            "sku_id": "garlic-sku",
+            "quantity": 1,
+            "ingredient_refs": ["1 clove garlic"],
+        }
+    ]
+    assert [(gap.ingredient, gap.reason) for gap in draft.purchase_gaps] == [
+        ("2 boneless skinless chicken breasts", "needs_confirmation"),
+    ]
 
 
 @pytest.mark.asyncio
