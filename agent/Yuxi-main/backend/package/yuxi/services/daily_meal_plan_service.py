@@ -76,17 +76,14 @@ async def legacy_sources(session, uid, family_id, day):
                     for meal in preview.snapshot.get("meals", [])
                     if meal.get("meal_type") in MEALS
                 }
-            return {
-                meal["meal_type"]: {"kind": "reference", "id": preview_id}
-                for meal in preview.snapshot["meals"]
-            }
+            return {meal["meal_type"]: {"kind": "reference", "id": preview_id} for meal in preview.snapshot["meals"]}
     return {}
 
 
 async def read_current_plan(uid, family_id, day, session=None):
     """回读每个来源并重验权限，结果不会触发模型或写入。"""
     from yuxi.services.daily_arrangement_service import authorize_sources
-    from yuxi.services.reference_meal_plan_service import read_reference_plan_in_session
+    from yuxi.services.reference_meal_plan_service import ReferencePlanSourceChanged, read_reference_plan_in_session
 
     if session is None:
         async with pg_manager.get_async_session_context() as owned:
@@ -107,8 +104,10 @@ async def read_current_plan(uid, family_id, day, session=None):
             regeneration_participants[kind] = ids
 
     stale_codes = {
-        "reference_product_changed", "reference_source_unavailable", "source_invalidated",
-        "reference_restriction_conflict", "reference_restriction_unverified",
+        "reference_product_changed",
+        "reference_source_unavailable",
+        "reference_restriction_conflict",
+        "reference_restriction_unverified",
     }
     for kind in MEALS:
         ref = refs.get(kind)
@@ -129,7 +128,9 @@ async def read_current_plan(uid, family_id, day, session=None):
                 try:
                     _, source = await read_reference_plan_in_session(session, uid, ref["id"])
                 except HealthVisionError as error:
-                    if error.code not in stale_codes or preview is None:
+                    if preview is None or (
+                        not isinstance(error, ReferencePlanSourceChanged) and error.code not in stale_codes
+                    ):
                         raise
                     mark_reference_regeneration(kind, preview)
                     continue
@@ -167,10 +168,15 @@ async def read_current_plan(uid, family_id, day, session=None):
                 from yuxi.services.reference_meal_plan_service import current_reference_items
 
                 current_products = await current_reference_items(source.get("purchase_items", []))
-                products = [{**p, "image_url": current_products[str(p["sku_id"])].get("image_url", "")} for p in source.get("purchase_items", [])]
+                products = [
+                    {**p, "image_url": current_products[str(p["sku_id"])].get("image_url", "")}
+                    for p in source.get("purchase_items", [])
+                ]
                 meal = attach_recipe_products(meal, products)
             except HealthVisionError as error:
-                if error.code not in stale_codes or preview is None:
+                if preview is None or (
+                    not isinstance(error, ReferencePlanSourceChanged) and error.code not in stale_codes
+                ):
                     raise
                 mark_reference_regeneration(kind, preview)
                 continue
@@ -235,6 +241,16 @@ async def read_current_plan(uid, family_id, day, session=None):
         if key[0] == "formal":
             formal = source
     pending = await pending_request(session, row) if row else None
+    if pending and pending["status"] == "expired":
+        selection = pending["selection"]
+        if selection["family_id"] != family_id or selection["plan_date"] != day.isoformat():
+            raise HealthVisionError("daily_plan_request_invalid", "过期任务的家庭或日期不符", 409)
+        available = {meal["meal_type"] for meal in meals}
+        for kind in selection["meal_types"]:
+            if kind not in available and kind not in needs_regeneration:
+                needs_regeneration.append(kind)
+                regeneration_participants[kind] = selection["participant_ids"]
+        pending = None
     return {
         "status": "ready" if meals else "needs_regeneration" if needs_regeneration else "absent",
         "id": row.id if row else None,
@@ -265,7 +281,12 @@ async def pending_request(session, row):
     if status == "completed":
         from yuxi.services.health_task_service import read_health_task_in_session
 
-        task = await read_health_task_in_session(session, row.actor_uid, request.request_id)
+        from yuxi.services.reference_meal_plan_service import ReferencePlanSourceChanged
+
+        try:
+            task = await read_health_task_in_session(session, row.actor_uid, request.request_id)
+        except ReferencePlanSourceChanged as error:
+            return {**result, "status": "expired", "selection": error.selection}
         if task.result and task.result.result_type == "needs_input":
             result.update(
                 status="needs_input",
