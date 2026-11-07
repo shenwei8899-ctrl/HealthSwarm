@@ -85,6 +85,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       budget_exceeded:'本月健康 AI 可用额度不足或待核账，请稍后再试。',
       reference_translation_correction_invalid:'餐单译文修正未通过，请重新生成餐单。',
       reference_save_correction_exhausted:'餐单修正未通过，请重新生成餐单。',
+      health_execution_timeout:'本次餐单生成超时，没有保存任何餐单。请重新生成。',
       planner_output_invalid:'本次餐单结果无法核对，请重新安排。',
       planner_receipt_invalid:'本次餐单回执无法核对，请刷新状态。',
     })[task?.result?.code] || ''

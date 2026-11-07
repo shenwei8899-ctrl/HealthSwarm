@@ -289,6 +289,14 @@ for(const status of ['failed','completed'])test(`an accepted task with ${status}
  assert.equal(h.timers.size,0);assert.equal(h.calls.filter(c=>c[0]==='submit').length,1)
 })
 
+test('a timed-out meal task explains that no menu was saved',async()=>{
+ const h=fixture({submittedState:{status:'failed',result:{type:'error',code:'health_execution_timeout'}}})
+ await h.client.open(profile)
+ assert.equal(h.state.phase,'error')
+ assert.match(h.state.notice,/超时.*没有保存/)
+ assert.equal(h.state.action,'regenerate')
+})
+
 test('regenerating an old meal retains its authorized diners instead of changing to the default self',async()=>{
  const plan=ready();plan.meals=plan.meals.slice(0,1);plan.needs_regeneration=['dinner'];plan.regeneration_participants={dinner:['partner']}
  const h=fixture({read:async()=>plan})
