@@ -83,7 +83,11 @@ async def legacy_sources(session, uid, family_id, day):
 async def read_current_plan(uid, family_id, day, session=None):
     """回读每个来源并重验权限，结果不会触发模型或写入。"""
     from yuxi.services.daily_arrangement_service import authorize_sources
-    from yuxi.services.reference_meal_plan_service import ReferencePlanSourceChanged, read_reference_plan_in_session
+    from yuxi.services.reference_meal_plan_service import (
+        ReferencePlanSourceChanged,
+        current_reference_display_item,
+        read_reference_plan_in_session,
+    )
 
     if session is None:
         async with pg_manager.get_async_session_context() as owned:
@@ -93,6 +97,7 @@ async def read_current_plan(uid, family_id, day, session=None):
     row = await current_row(session, uid, family_id, day)
     refs = dict(row.meal_sources) if row else await legacy_sources(session, uid, family_id, day)
     sources, meals, needs_regeneration, regeneration_participants = {}, [], [], {}
+    display_reference_items = {}
 
     def mark_reference_regeneration(kind, preview):
         """来源失效时仅提示重排，并保留已存餐单供审计。"""
@@ -167,12 +172,14 @@ async def read_current_plan(uid, family_id, day, session=None):
                 from yuxi.services.reference_recipe_presentation import attach_recipe_products
                 from yuxi.services.reference_meal_plan_service import current_reference_items
 
-                current_products = await current_reference_items(source.get("purchase_items", []))
-                products = [
-                    {**p, "image_url": current_products[str(p["sku_id"])].get("image_url", "")}
-                    for p in source.get("purchase_items", [])
-                ]
-                meal = attach_recipe_products(meal, products)
+                if key not in display_reference_items:
+                    current_products = await current_reference_items(source.get("purchase_items", []))
+                    display_items = [
+                        current_reference_display_item(p, current_products[str(p["sku_id"])])
+                        for p in source.get("purchase_items", [])
+                    ]
+                    display_reference_items[key] = display_items
+                meal = attach_recipe_products(meal, display_reference_items[key])
             except HealthVisionError as error:
                 if preview is None or (
                     not isinstance(error, ReferencePlanSourceChanged) and error.code not in stale_codes
@@ -201,7 +208,10 @@ async def read_current_plan(uid, family_id, day, session=None):
         if key[0] == "reference" and source.get("purchase_items"):
             from yuxi.services.reference_meal_plan_service import select_reference_purchase_items
 
-            items = select_reference_purchase_items(source, sorted(selected))
+            items = select_reference_purchase_items(
+                {**source, "purchase_items": display_reference_items[key]},
+                sorted(selected),
+            )
             ingredients = {
                 ingredient
                 for meal in source["meals"]

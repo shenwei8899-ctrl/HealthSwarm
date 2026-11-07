@@ -434,6 +434,66 @@ async def test_read_selection_three_meals_and_dinner_replacement_preserve_other_
         assert await db.scalar(select(func.count()).select_from(HealthProfessionalReview)) == 0
 
 
+async def test_daily_plan_keeps_saved_meal_after_verified_demo_copy_edit(family_profile_http, monkeypatch):
+    """真实每日接口回读旧参考餐单；展示采用当前文案，旧回执仍保持原样。"""
+    current = await setup_reference(family_profile_http, monkeypatch)
+    old_description = "示例·大米\n\n【商品资料】完整配料及过敏原以包装为准。"
+    old_sku = {
+        **SKU,
+        "product_name": "示例·大米",
+        "product_description": old_description,
+        "image_url": "https://example.test/old.png",
+    }
+
+    async def previous_catalog(category_codes=None):
+        return {"version": "before-copy-edit", "items": [old_sku]}
+
+    monkeypatch.setattr(service, "current_catalog", previous_catalog)
+    bound = await bind_reference(current, daily_base_version=0)
+    context = await running_context(current, bound.json()["thread_id"])
+    plan, _, _ = await grounded_plan(current, context)
+    await complete(current, context, plan)
+
+    new_description = "【供货说明】演示商品，非真实供货；图片仅供食材示意。\n\n" + old_description.removeprefix("示例·")
+    new_sku = {
+        **old_sku,
+        "product_name": "大米",
+        "product_description": new_description,
+        "image_url": "https://example.test/current.png",
+    }
+
+    async def current_catalog(category_codes=None):
+        return {"version": "after-copy-edit", "items": [new_sku]}
+
+    monkeypatch.setattr(service, "current_catalog", current_catalog)
+    choice = current[-1]
+    daily_path = f"/api/family/{choice['family_id']}/daily-meal-plans/{choice['plan_date']}"
+    response = await current[0].get(daily_path, headers=current[2]["self"])
+    assert response.status_code == 200, response.text
+    daily = response.json()
+    assert daily["status"] == "ready" and [meal["meal_type"] for meal in daily["meals"]] == ["breakfast"]
+    assert daily["needs_regeneration"] == []
+    assert daily["purchase_options"][0]["items"][0]["product_name"] == "大米"
+    assert daily["purchase_options"][0]["items"][0]["product_description"] == new_description
+    assert daily["purchase_options"][0]["items"][0]["image_url"] == new_sku["image_url"]
+
+    detail = await current[0].get(f"{ROOT}/reference-meal-plans/{plan['preview_id']}", headers=current[2]["self"])
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["purchase_items"][0]["product_name"] == "大米"
+    assert detail.json()["purchase_items"][0]["image_url"] == new_sku["image_url"]
+    async with current[1]() as db:
+        saved = await db.get(HealthInitialPlanPreview, plan["preview_id"])
+        assert saved.snapshot["purchase_items"][0]["product_name"] == "示例·大米"
+
+    async def changed_ingredients(category_codes=None):
+        return {"version": "changed-ingredients", "items": [{**new_sku, "ingredients": ["花生"]}]}
+
+    monkeypatch.setattr(service, "current_catalog", changed_ingredients)
+    invalid = await current[0].get(daily_path, headers=current[2]["self"])
+    assert invalid.status_code == 200, invalid.text
+    assert invalid.json()["status"] == "needs_regeneration" and invalid.json()["meals"] == []
+
+
 @pytest.mark.parametrize(
     "change_metadata,code", [(False, "reference_source_unavailable"), (True, "source_invalidated")]
 )

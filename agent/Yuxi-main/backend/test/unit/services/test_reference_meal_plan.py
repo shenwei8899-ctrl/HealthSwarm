@@ -337,6 +337,65 @@ def test_full_product_facts_keep_description_and_issues_in_selection_fingerprint
 
 
 @pytest.mark.asyncio
+async def test_saved_reference_accepts_only_verified_demo_display_rewrite(monkeypatch):
+    """旧演示文案改写可回读，同一商品的安全事实仍须逐项核对。"""
+    from yuxi.services import reference_meal_plan_service as service
+
+    old = {
+        "sku_id": "sku-rice",
+        "product_id": "rice",
+        "product_name": "示例·大米",
+        "sku_name": "500克",
+        "net_content": {"value": "500", "unit": "g"},
+        "ingredients": ["大米"],
+        "allergen_codes": [],
+        "data_completeness": "partial",
+        "data_issues": ["过敏原待核对"],
+        "category_code": "grain",
+        "product_description": "示例·大米\n\n【商品资料】配料及过敏原以包装为准。",
+        "image_url": "https://example.test/old.png",
+        "sale_status": "available",
+        "available_quantity": 5,
+    }
+    saved = service.reference_product(old)
+    current = {
+        **old,
+        "product_name": "大米",
+        "image_url": "https://example.test/current.png",
+        "product_description": "【供货说明】演示商品，非真实供货；图片仅供食材示意。\n\n"
+        + old["product_description"].removeprefix("示例·"),
+    }
+    monkeypatch.setattr(service, "current_reference_catalog", AsyncMock(return_value={"items": [current]}))
+
+    assert saved["facts_hash"] != service.reference_product(current)["facts_hash"]
+    assert await service.current_reference_items([saved]) == {"sku-rice": current}
+    plan = {"purchase_items": [saved], "meals": []}
+    displayed = await service.reference_plan_display(None, plan)
+    assert displayed["purchase_items"][0]["product_name"] == "大米"
+    assert displayed["purchase_items"][0]["product_description"] == current["product_description"]
+    assert displayed["purchase_items"][0]["image_url"] == current["image_url"]
+    assert plan["purchase_items"][0]["product_name"] == "示例·大米"
+    long_description = service.current_reference_display_item(saved, {**current, "product_description": "x" * 4001})
+    assert len(long_description["product_description"]) == 4000 and long_description["description_truncated"] is True
+    for change in (
+        {"product_name": "花生米"},
+        {"product_description": current["product_description"] + "含花生"},
+        {"allergen_codes": ["花生"]},
+        {"ingredients": ["大米", "花生"]},
+        {"sku_name": "一公斤"},
+        {"net_content": {"value": "1000", "unit": "g"}},
+        {"category_code": "snack"},
+        {"sale_status": "unavailable"},
+        {"available_quantity": 0},
+    ):
+        monkeypatch.setattr(
+            service, "current_reference_catalog", AsyncMock(return_value={"items": [{**current, **change}]})
+        )
+        with pytest.raises(HealthVisionError, match="reference_product_changed"):
+            await service.current_reference_items([saved])
+
+
+@pytest.mark.asyncio
 async def test_reference_context_limits_categories_then_preserves_selected_product_facts(monkeypatch):
     """先给分类再读商品，裁剪展示详情仍保留完整事实哈希与保存重验。"""
     from yuxi.services import reference_meal_plan_service as service

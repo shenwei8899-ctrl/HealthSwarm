@@ -540,11 +540,12 @@ async def reference_plan_display(session, plan):
     from yuxi.services.reference_recipe_presentation import attach_recipe_products
 
     current = await current_reference_items(result["purchase_items"])
-    products = [
-        {**item, "image_url": current[str(item["sku_id"])].get("image_url", "")} for item in result["purchase_items"]
+    result["purchase_items"] = [
+        current_reference_display_item(item, current[str(item["sku_id"])]) for item in result["purchase_items"]
     ]
     result["meals"] = [
-        attach_recipe_products(await reference_meal_media(session, meal), products) for meal in result["meals"]
+        attach_recipe_products(await reference_meal_media(session, meal), result["purchase_items"])
+        for meal in result["meals"]
     ]
     return result
 
@@ -580,12 +581,49 @@ async def current_reference_items(items):
         (sku := current.get(str(item["sku_id"]))) is None
         or sku.get("sale_status") != "available"
         or int(sku.get("available_quantity", 0)) < item["quantity"]
-        or input_fingerprint(product_facts(sku, include_description=item.get("facts_version") == 2))
-        != item["facts_hash"]
+        or not same_reference_product_facts(item, sku)
         for item in items
     ):
         raise HealthVisionError("reference_product_changed", "参考餐单的商品或库存已变化，请重新安排", 410)
     return current
+
+
+def same_reference_product_facts(saved, current):
+    """只兼容已核实的演示文案改写，其他商品事实变化仍失效。"""
+    include_description = saved.get("facts_version") == 2
+    if input_fingerprint(product_facts(current, include_description=include_description)) == saved["facts_hash"]:
+        return True
+    old_name = saved.get("product_name") or ""
+    old_description = saved.get("product_description") or ""
+    supply_notice = "【供货说明】演示商品，非真实供货；图片仅供食材示意。\n\n"
+    if (
+        not include_description
+        or saved.get("description_truncated")
+        or not old_name.startswith("示例·")
+        or not old_description.startswith("示例·")
+        or current.get("product_name") != old_name.removeprefix("示例·")
+        or current.get("product_description") != supply_notice + old_description.removeprefix("示例·")
+        or current.get("category_code") != saved.get("category_code")
+        or input_fingerprint(product_facts(saved, include_description=True)) != saved["facts_hash"]
+    ):
+        return False
+    previous_facts = product_facts(saved)
+    current_facts = product_facts(current)
+    previous_facts.pop("product_name")
+    current_facts.pop("product_name")
+    return previous_facts == current_facts
+
+
+def current_reference_display_item(saved, current):
+    """只在读取投影使用当前商城展示文字，不修改原始回执。"""
+    description = current.get("product_description") or ""
+    return {
+        **saved,
+        "product_name": current.get("product_name"),
+        "product_description": description[:4000],
+        "description_truncated": len(description) > 4000,
+        "image_url": current.get("image_url", ""),
+    }
 
 
 async def save_reference_plan(context, draft):
@@ -1115,10 +1153,7 @@ async def validate_reference_purchase_source(session, source):
     )
     current = {str(s["sku_id"]): s for s in catalog["items"]}
     if any(
-        i["sku_id"] not in current
-        or input_fingerprint(product_facts(current[i["sku_id"]], include_description=i.get("facts_version") == 2))
-        != i["facts_hash"]
-        for i in selected_items
+        i["sku_id"] not in current or not same_reference_product_facts(i, current[i["sku_id"]]) for i in selected_items
     ):
         raise HealthVisionError("reference_product_changed", "参考采购的商品身份或包装已变化", 410)
     await current_reference_items(selected_items)
