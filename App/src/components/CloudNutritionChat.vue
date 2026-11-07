@@ -1229,7 +1229,7 @@ function actTodayMenu(){
   if(disposed||!visible||voiceBusy.value||planPurchaseBusy.value||state.busy||!profile.value)return
   if(['answer','candidates'].includes(todayMenu.action))void resumePlanQuestion(todayMenu.pending)
   else if(todayMenu.action==='refresh')void todayMenuClient.open(profile.value,{readOnly:true})
-  else if(todayMenu.action==='regenerate'||todayMenu.phase==='error')void todayMenuClient.open(profile.value)
+  else if(todayMenu.action==='regenerate'||todayMenu.phase==='error')void todayMenuClient.open(profile.value,{retryFailed:true})
 }
 function acceptTodayPlan(plan){
   dailyPlans.value={...dailyPlans.value,[plan.date]:plan}

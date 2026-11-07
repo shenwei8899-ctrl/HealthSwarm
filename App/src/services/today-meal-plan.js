@@ -30,7 +30,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
     const previous = flow; flow = null; previous?.pause()
   }
   function clear() { stop(); verifiedScope = ''; Object.assign(state,todayMealPlanState()) }
-  async function open(profile, { readOnly = false } = {}) {
+  async function open(profile, { readOnly = false, retryFailed = false } = {}) {
     if (disposed) return
     stop()
     const ticket = generation, scope = context(), date = day(), family = profile?.householdId
@@ -40,13 +40,13 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
     Object.assign(state,todayMealPlanState(),{phase:previousPlan?'ready':'loading',date,plan:previousPlan,checking:true,
       notice:previousPlan?'正在核对最新餐单，稍后即可查看详情。':''})
     const current = () => !disposed && ticket === generation && scope === context() && date === day()
-    const fail = (privateData = false, notice = '') => {
+    const fail = (privateData = false, notice = '', canRetry = false) => {
       if (!current()) return
       state.checking = false
       if (privateData) { state.plan = null; state.pending = null; state.verified = false; verifiedScope = '' }
       state.issue = true; state.phase = state.plan ? 'ready' : 'error'
       state.notice = notice || (privateData ? '餐单资料已变化，请刷新后重新核对。' : state.plan ? state.verified ? '暂未获取更新结果，已有餐单仍可查看。' : '暂未完成核对，已有餐单仅供预览，请刷新后查看详情。' : '暂未获取餐单结果，请稍后刷新。')
-      state.action = 'refresh'
+      state.action = canRetry && !privateData ? 'regenerate' : 'refresh'
       if (timer !== null) cancel(timer)
       timer = null
       const previous = flow; flow = null; previous?.pause()
@@ -85,7 +85,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       budget_exceeded:'本月健康 AI 可用额度不足或待核账，请稍后再试。',
       reference_translation_correction_invalid:'餐单译文修正未通过，请重新生成餐单。',
       reference_save_correction_exhausted:'餐单修正未通过，请重新生成餐单。',
-      planner_output_invalid:'本次餐单结果无法核对，请刷新状态或重新安排。',
+      planner_output_invalid:'本次餐单结果无法核对，请重新安排。',
       planner_receipt_invalid:'本次餐单回执无法核对，请刷新状态。',
     })[task?.result?.code] || ''
     const followUp = task => {
@@ -126,7 +126,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
           if (plan.pending?.status === 'needs_input') { state.phase = state.plan?'ready':'error'; flow?.pause(); return }
           if (followUp(task) || showCandidates(task)) return
           if (stopped(plan.pending?.status) || stopped(task?.status) || task?.invalidated || task?.result?.type === 'error') {
-            fail(!!task?.invalidated,taskNotice(task) || (state.plan ? '本次更新已停止，已有餐单仍可查看。' : ''))
+            fail(!!task?.invalidated,taskNotice(task) || (state.plan ? '本次更新已停止，已有餐单仍可查看。' : ''),true)
             return
           }
           if (active(plan.pending?.status)) { poll(); return }
@@ -165,6 +165,10 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       // A task awaiting required input is not permission to invent an answer.
       if (plan.pending?.status === 'needs_input') { state.phase = state.plan?'ready':'error'; return }
       if (state.plan && !requiredMeals(plan).length) return
+      if (stopped(plan.pending?.status) && !retryFailed) {
+        fail(false, state.plan ? '上次更新餐单失败，已有餐次仍可查看。' : '上次生成餐单失败，请点击重新安排。',true)
+        return
+      }
       // Refresh only reads the original task; it must never repeat a generation POST.
       if (readOnly) {
         if (!state.plan) {
@@ -209,7 +213,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       if (!current()) return
       task = owned.getState()
       if (followUp(task) || showCandidates(task)) return
-      if (stopped(task.status) || task.result?.type === 'error') { fail(!!task.invalidated,taskNotice(task)); return }
+      if (stopped(task.status) || task.result?.type === 'error') { fail(!!task.invalidated,taskNotice(task),true); return }
       if (!accepted && !task.submitUnknown && !active(task.status)) {
         // Another device may have won the version/dispatch race.
         plan = await read(family,date)

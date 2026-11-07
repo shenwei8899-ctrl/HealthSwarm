@@ -1206,6 +1206,46 @@ async def test_failed_save_alone_keeps_preparation_and_original_question_contrac
 
 
 @pytest.mark.asyncio
+async def test_unstructured_final_after_real_reads_gets_one_forced_save_attempt(services):
+    """已读商品与原谱时，遗漏保存的自由正文只触发一次受限补救调用。"""
+    messages = [
+        human(),
+        receipt(name="get_reference_plan_context", content="{}"),
+        receipt(name="find_reference_products", content="{}"),
+        receipt(name="search_reference_recipes", content="{}"),
+        receipt(name="read_reference_recipe", content="{}"),
+    ]
+    request = request_for(messages)
+    save = AIMessage(content="", tool_calls=[{"id": "save-once", "name": "save_reference_meal_plan", "args": DRAFT}])
+    handler = AsyncMock(side_effect=[
+        ModelResponse(result=[AIMessage(content="早餐午餐晚餐已经计划好，但没有保存回执")]),
+        ModelResponse(result=[save]),
+    ])
+    response = await MealPlanResultMiddleware().awrap_model_call(request, handler)
+    assert response.result == [save]
+    assert handler.await_count == 2
+    forced = handler.await_args_list[1].args[0]
+    assert [tool.name for tool in forced.tools] == ["save_reference_meal_plan"]
+    assert forced.tool_choice == {"type": "function", "function": {"name": "save_reference_meal_plan"}}
+
+
+@pytest.mark.asyncio
+async def test_valid_questions_and_unread_recipes_do_not_force_save(services):
+    """真实补充问题和缺少原谱回执的自由正文都不能被强迫保存。"""
+    receipt_messages = [human(), receipt(name="get_reference_plan_context", content="{}"),
+                        receipt(name="find_reference_products", content="{}"),
+                        receipt(name="search_reference_recipes", content="{}")]
+    for messages, answer in (
+        (receipt_messages, "还没有打开食谱"),
+        ([*receipt_messages, receipt(name="read_reference_recipe", content="{}")],
+         '{"questions":["请确认食材限制"]}'),
+    ):
+        handler = AsyncMock(return_value=ModelResponse(result=[AIMessage(content=answer)]))
+        await MealPlanResultMiddleware().awrap_model_call(request_for(messages), handler)
+        handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_duplicate_receipts_ignore_failed_or_other_tools_and_use_current_candidate(services):
     """同 ID 幂等去重；失败与其他工具不得制造候选，也不能由最终模型换 ID。"""
     messages = [

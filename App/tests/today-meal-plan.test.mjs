@@ -57,6 +57,18 @@ test('reopening a pending menu never creates a second generation',async()=>{
  assert.equal(h.calls.some(c=>c[0]==='submit'),false);assert.equal(h.timers.size,1)
 })
 
+test('a failed saved task does not start another generation on the next visit',async()=>{
+ const plan={...absent(),needs_regeneration:['breakfast','lunch','dinner'],pending:{status:'failed',request_id:'old'}}
+ const h=fixture({read:async()=>plan})
+ await h.client.open(profile)
+ assert.equal(h.state.phase,'error');assert.equal(h.state.action,'regenerate')
+ assert.match(h.state.notice,/失败|重新/)
+ assert.equal(h.timers.size,0)
+ assert.equal(h.calls.some(c=>c[0]==='flow'||c[0]==='submit'),false)
+ await h.client.open(profile,{retryFailed:true})
+ assert.equal(h.calls.filter(c=>c[0]==='submit').length,1)
+})
+
 for(const saved of [false,true])test(`a first-read candidate pending is terminal without an owned flow and ${saved?'preserves the saved menu':'never becomes a saved menu'}`,async()=>{
  const plan={...(saved?ready():absent()),pending:candidatePending()},h=fixture({read:async()=>plan})
  await h.client.open(profile)
@@ -265,6 +277,7 @@ test('a definite task failure stops skeletons with the actual failure reason and
  const h=fixture({accepted:false,submittedState:{status:'failed',submitUnknown:false,notice:'营养助手资料尚未就绪。'}})
  await h.client.open(profile)
  assert.equal(h.state.phase,'error');assert.equal(h.state.notice,'营养助手资料尚未就绪。')
+ assert.equal(h.state.action,'regenerate')
  assert.equal(h.calls.filter(c=>c[0]==='submit').length,1);assert.equal(h.timers.size,0)
 })
 
@@ -272,6 +285,7 @@ for(const status of ['failed','completed'])test(`an accepted task with ${status}
  const h=fixture({submittedState:{status,result:{type:'error',code:'planner_output_invalid'}}})
  await h.client.open(profile)
  assert.equal(h.state.phase,'error');assert.match(h.state.notice,/餐单结果无法核对/)
+ assert.equal(h.state.action,'regenerate')
  assert.equal(h.timers.size,0);assert.equal(h.calls.filter(c=>c[0]==='submit').length,1)
 })
 

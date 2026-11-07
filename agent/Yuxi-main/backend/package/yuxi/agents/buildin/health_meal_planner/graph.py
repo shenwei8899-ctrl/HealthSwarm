@@ -6,6 +6,7 @@ from contextlib import aclosing
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from pydantic import ValidationError
 
 from yuxi.agents.base import BaseAgent
 from yuxi.agents.buildin.health_consultation.graph import HealthAuthorizationMiddleware
@@ -33,6 +34,7 @@ from yuxi.services.health_initial_meal_plan_types import INITIAL_PLANNER_TOOLS
 from yuxi.services.health_safe_planner_types import SAFE_PLANNER_TOOLS
 from yuxi.services.reference_meal_plan_types import REFERENCE_TOOLS
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.health_meal_plan_types import PlannerAnswer
 from yuxi.agents.toolkits.safe_meal_planner import (
     get_safe_plan_context,
     preview_safe_plan_swap,
@@ -160,7 +162,34 @@ class MealPlanResultMiddleware(AgentMiddleware):
                         )
                     ),
                 )
-            return await handler(request)
+            response = await handler(request)
+            if (
+                tools == REFERENCE_TOOLS
+                and save_failure is None
+                and self._reference_save_ready(request)
+                and response.result
+                and isinstance(response.result[-1], AIMessage)
+            ):
+                answer = response.result[-1]
+                if not answer.tool_calls and not answer.invalid_tool_calls:
+                    try:
+                        PlannerAnswer.model_validate_json(answer.text)
+                    except ValidationError:
+                        save_tool = next(tool for tool in request.tools if tool.name == "save_reference_meal_plan")
+                        original = request.system_message.text if request.system_message else ""
+                        return await handler(
+                            request.override(
+                                tools=[save_tool],
+                                tool_choice={"type": "function", "function": {"name": "save_reference_meal_plan"}},
+                                model_settings={**request.model_settings, "parallel_tool_calls": False},
+                                system_message=SystemMessage(
+                                    content=f"{original}\n\n已读取本轮档案、商品和原谱，但上一条回复没有提交餐单回执。"
+                                    "现在只调用一次save_reference_meal_plan；餐次、菜谱、原料与商品必须来自本轮真实读取，"
+                                    "缺货和无法证明匹配的食材如实保留缺口。不要直接输出餐单正文。"
+                                ),
+                            )
+                        )
+            return response
 
         # 当前 Run 的完成审计、成员权限和菜谱原文仍由原服务重验。
         await planner_final_result(request.runtime.context, json.dumps({"preview_id": preview_id}))
@@ -280,6 +309,31 @@ class MealPlanResultMiddleware(AgentMiddleware):
                 "reference_tool_parameters_invalid", "配餐工具缺少必要参数，本轮已停止，请重新生成", 422
             )
         return calls[0]["name"]
+
+    @staticmethod
+    def _reference_save_ready(request):
+        """仅本轮已成功读取档案、商品和原谱时才补一次遗漏的保存调用。"""
+        if "save_reference_meal_plan" not in {getattr(tool, "name", None) for tool in request.tools}:
+            return False
+        messages = request.state.get("messages", [])
+        for index in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[index], HumanMessage):
+                if messages[index].additional_kwargs.get("health_request_id") != request.runtime.context.request_id:
+                    return False
+                break
+        else:
+            return False
+        read = {
+            message.name
+            for message in messages[index + 1 :]
+            if isinstance(message, ToolMessage) and message.status == "success"
+        }
+        return {
+            "get_reference_plan_context",
+            "find_reference_products",
+            "search_reference_recipes",
+            "read_reference_recipe",
+        } <= read
 
     @staticmethod
     def _saved_reference_preview(state, context):
