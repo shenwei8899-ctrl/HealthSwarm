@@ -56,7 +56,7 @@ from yuxi.services.langfuse_service import (
 from yuxi.services.model_message_audit_service import ModelMessageAuditCollector
 from yuxi.services.run_queue_service import publish_cancel_signals
 from yuxi.services.subagent_run_service import serialize_subagent_run_state
-from yuxi.services.tool_message_audit_service import ToolMessageAuditCollector
+from yuxi.services.tool_message_audit_service import ToolMessageAuditCollector, log_failed_tool_event
 from yuxi.services.workdir_service import resolve_conversation_workdir_path
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import MODEL_AUDIT_MESSAGE_TYPE, Agent, Conversation, User
@@ -762,6 +762,7 @@ async def save_messages_from_langgraph_state(
         reconciled_audits: dict[str, Any] = {}
         state_model_messages: dict[str, dict[str, Any]] = {}
         state_tool_messages: dict[str, dict[str, Any]] = {}
+        reconciled_tool_failures: list[tuple[str, str, str, int | None]] = []
         last_state_ai_id: str | None = None
         last_ai_message = None
         for msg in messages or []:
@@ -841,6 +842,15 @@ async def save_messages_from_langgraph_state(
                     tool_call_id=tool_call_id,
                     msg_dict=msg_dict,
                 )
+                metadata = audit.extra_metadata if isinstance(audit.extra_metadata, dict) else {}
+                reconciled_tool_failures.append(
+                    (
+                        tool_call_id,
+                        str(metadata.get("tool_name") or ""),
+                        _tool_message_content(msg_dict.get("content")),
+                        getattr(audit, "duration_ms", None),
+                    )
+                )
             if current_model_audits and (complete_run or interrupt_run):
                 terminal_ai_message = reconciled_audits.get(last_state_ai_id or "")
                 if complete_run and terminal_ai_message is None:
@@ -915,6 +925,15 @@ async def save_messages_from_langgraph_state(
                     raise ValueError(f"AgentRun 输出已写入但 {terminal_status} 终态未能在同一事务提交")
                 cancelled_descendants = await run_repo.cancel_active_execution_tree_descendants(terminal_run)
             await conv_repo.db.commit()
+            for tool_call_id, tool_name, content, duration_ms in reconciled_tool_failures:
+                log_failed_tool_event(
+                    run_id=run_id,
+                    request_id=request_id,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    content=content,
+                    duration_ms=duration_ms,
+                )
             await publish_cancel_signals([run_id for run_id, _thread_id in cancelled_descendants])
             return terminal_status is not None
         return False

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
 
 from yuxi.repositories.tool_message_audit_repository import ToolMessageAuditRepository
 from yuxi.storage.postgres.manager import pg_manager
+from yuxi.utils.logging_config import logger
 
 
 class ToolMessageAuditCollector:
@@ -20,6 +22,7 @@ class ToolMessageAuditCollector:
         self.thread_id = thread_id
         self.worker_id = worker_id
         self._operations: dict[str, float | None] = {}
+        self._tool_names: dict[str, str] = {}
 
     async def consume(self, event: Any) -> None:
         """消费一条根 tools ProtocolEvent；非生命周期事件保持无副作用。"""
@@ -51,7 +54,7 @@ class ToolMessageAuditCollector:
         monotonic_started_at = monotonic()
         namespace = self._namespace(event)
         async with pg_manager.get_async_session_context() as db:
-            _message, created = await ToolMessageAuditRepository(db).start(
+            message, created = await ToolMessageAuditRepository(db).start(
                 run_id=self.run_id,
                 request_id=self.request_id,
                 thread_id=self.thread_id,
@@ -68,6 +71,10 @@ class ToolMessageAuditCollector:
             self._operations[tool_call_id] = monotonic_started_at
         else:
             self._operations.setdefault(tool_call_id, None)
+        if created or getattr(message, "execution_status", "running") == "running":
+            self._tool_names[tool_call_id] = tool_name
+        else:
+            self._tool_names.pop(tool_call_id, None)
 
     async def _finish(self, event: dict[str, Any], data: dict[str, Any]) -> None:
         tool_call_id = self._tool_call_id(data)
@@ -140,7 +147,17 @@ class ToolMessageAuditCollector:
                 await repository.complete(**kwargs)
             else:
                 await repository.fail(error_message=error_message, **kwargs)
+        if error_message is not None and not wait_for_run_terminal and tool_call_id in self._tool_names:
+            log_failed_tool_event(
+                run_id=self.run_id,
+                request_id=self.request_id,
+                tool_call_id=tool_call_id,
+                tool_name=self._tool_names[tool_call_id],
+                content=content,
+                duration_ms=duration_ms,
+            )
         self._operations.pop(tool_call_id, None)
+        self._tool_names.pop(tool_call_id, None)
 
     @staticmethod
     def _tool_call_id(data: dict[str, Any]) -> str:
@@ -167,6 +184,67 @@ class ToolMessageAuditCollector:
     def _namespace(event: dict[str, Any]) -> list[str]:
         namespace = event.get("namespace")
         return [str(item) for item in namespace] if isinstance(namespace, list) else []
+
+
+def log_failed_tool_event(
+    *, run_id: str, request_id: str, tool_call_id: str, tool_name: str, content: str, duration_ms: int | None
+) -> None:
+    """仅把已确认失败工具的错误码和字段路径写入运行日志。"""
+    diagnosis = {"error_code": "tool_execution_failed"}
+    try:
+        payload = json.loads(content) if len(content) <= 32_768 else None
+    except (ValueError, TypeError, RecursionError):
+        payload = None
+    if isinstance(payload, dict):
+        code = payload.get("error_code")
+        if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", code):
+            diagnosis["error_code"] = code
+        issues = payload.get("issues")
+        if isinstance(issues, dict):
+            safe_issues = {}
+            fields = ("missing_ingredient_paths", "extra_decision_paths", "duplicate_decision_paths")
+            for field in fields:
+                paths = issues.get(field)
+                if not isinstance(paths, list):
+                    continue
+                flattened = [path for item in paths[:12] for path in (item if isinstance(item, list) else [item])]
+                safe_issues[field] = [
+                    path
+                    for path in flattened[:12]
+                    if isinstance(path, str)
+                    and len(path) <= 128
+                    and re.fullmatch(r"(?:meals|purchase_items|purchase_gaps)\[\d+\](?:\.[a-z_]+(?:\[\d+\])?)*", path)
+                ]
+            if safe_issues:
+                diagnosis["issues"] = safe_issues
+            counts = issues.get("counts")
+            if isinstance(counts, dict):
+                diagnosis["issue_counts"] = {
+                    field: counts[field]
+                    for field in fields
+                    if isinstance(counts.get(field), int) and not isinstance(counts[field], bool) and counts[field] >= 0
+                }
+    try:
+        logger.warning(
+            "agent_tool_failed {}",
+            json.dumps(
+                {
+                    "event": "agent_tool_failed",
+                    "run_id": run_id,
+                    "request_id": request_id,
+                    "tool_call_id": tool_call_id
+                    if re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", tool_call_id)
+                    else "invalid",
+                    "tool": tool_name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.:-]{0,79}", tool_name) else "unknown",
+                    "duration_ms": duration_ms,
+                    **diagnosis,
+                },
+                ensure_ascii=False,
+            ),
+        )
+    except Exception:
+        # 运行日志不可使已提交的 Tool 审计或 Run 终态回报失败。
+        pass
 
 
 def _tool_output_content(output: Any) -> str:

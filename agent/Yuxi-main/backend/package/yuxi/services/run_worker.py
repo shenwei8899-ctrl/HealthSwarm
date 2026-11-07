@@ -106,7 +106,9 @@ def health_execution_timeout_seconds(job_timeout: int) -> int:
 def health_agent_timeout_seconds(agent_slug: str, health_timeout: float, job_timeout: float) -> float:
     """配餐检索与有界修正共享双倍总预算，保留外层任务清理余量。"""
     if agent_slug == "health-meal-planner":
-        return min(max(health_timeout, min(health_timeout * 2, 600)), job_timeout - HEALTH_EXECUTION_CLEANUP_MARGIN_SECONDS)
+        return min(
+            max(health_timeout, min(health_timeout * 2, 600)), job_timeout - HEALTH_EXECUTION_CLEANUP_MARGIN_SECONDS
+        )
     return health_timeout
 
 
@@ -550,6 +552,8 @@ async def mark_run_terminal(
         if changed and run is not None:
             cancelled_descendants = await repo.cancel_active_execution_tree_descendants(run)
         persisted_status = run.status if run else None
+    if changed and run is not None and persisted_status == "failed":
+        _log_failed_run(run)
     await publish_cancel_signals([child_id for child_id, _thread_id in cancelled_descendants])
     return TerminalTransition(status=persisted_status, changed=changed)
 
@@ -558,9 +562,33 @@ async def reconcile_expired_run_leases(*, now: datetime | None = None) -> list[s
     """收敛过期 Run ownership；重复或并发执行只返回本次实际转换的 Run。"""
     async with pg_manager.get_async_session_context() as db:
         runs, cancelled_descendants = await AgentRunRepository(db).reconcile_expired_leases(now=now)
+    for run in runs:
+        if run.status == "failed":
+            _log_failed_run(run)
     await publish_cancel_signals([child_id for child_id, _thread_id in cancelled_descendants])
     await reconcile_pending_runtime_cleanups()
     return [run.id for run in runs]
+
+
+def _log_failed_run(run: AgentRun) -> None:
+    """在持久终态确认后记录可关联且不含用户正文的失败原因。"""
+    try:
+        logger.warning(
+            "agent_run_failed {}",
+            json.dumps(
+                {
+                    "event": "agent_run_failed",
+                    "run_id": run.id,
+                    "request_id": run.request_id,
+                    "agent": run.agent_slug,
+                    "error_code": run.error_type or "unknown_error",
+                },
+                ensure_ascii=False,
+            ),
+        )
+    except Exception:
+        # 日志不是终态 Owner，输出通道故障不能改变已提交的 Run。
+        pass
 
 
 async def reconcile_pending_runtime_cleanups() -> list[str]:
@@ -1000,7 +1028,9 @@ async def process_agent_run(ctx, run_id: str):
             run = claimed_run
             execution_scope = await _start_health_execution_scope(
                 run.started_at,
-                health_agent_timeout_seconds(agent_slug, WorkerSettings.health_execution_timeout, WorkerSettings.job_timeout),
+                health_agent_timeout_seconds(
+                    agent_slug, WorkerSettings.health_execution_timeout, WorkerSettings.job_timeout
+                ),
             )
 
         if not isinstance(run.input_payload, dict):

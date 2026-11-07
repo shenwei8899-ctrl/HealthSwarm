@@ -465,10 +465,11 @@ async def test_state_reconcile_uses_latest_error_unless_run_is_interrupted(
     expected: list[str],
 ) -> None:
     """只用最后一条错误补全审计，中断则保留 pending ToolCall 供恢复。"""
+    events = []
 
     class FakeDB:
         async def commit(self):
-            pass
+            events.append("committed")
 
         async def rollback(self):
             pass
@@ -506,7 +507,7 @@ async def test_state_reconcile_uses_latest_error_unless_run_is_interrupted(
                 SimpleNamespace(
                     operation_id="shared-call",
                     execution_status="running",
-                    extra_metadata={"awaiting_run_terminal": True},
+                    extra_metadata={"awaiting_run_terminal": True, "tool_name": "search_reference_recipes"},
                 )
             ]
 
@@ -515,11 +516,15 @@ async def test_state_reconcile_uses_latest_error_unless_run_is_interrupted(
     async def reconcile_tool(_conv_repo, **kwargs):
         reconciled.append(kwargs["msg_dict"]["content"])
 
+    def log_tool_failure(**kwargs):
+        events.append(("logged", kwargs))
+
     fake_db = FakeDB()
     monkeypatch.setattr(svc, "AgentRunRepository", FakeRunRepo)
     monkeypatch.setattr(svc, "ModelMessageAuditRepository", _EmptyModelAuditRepo)
     monkeypatch.setattr(svc, "ToolMessageAuditRepository", FakeToolAuditRepo)
     monkeypatch.setattr(svc, "_reconcile_tool_error_from_state", reconcile_tool)
+    monkeypatch.setattr(svc, "log_failed_tool_event", log_tool_failure, raising=False)
 
     await svc.save_messages_from_langgraph_state(
         state=await FakeGraph().aget_state({}),
@@ -532,6 +537,24 @@ async def test_state_reconcile_uses_latest_error_unless_run_is_interrupted(
     )
 
     assert reconciled == expected
+    assert events == (
+        [
+            "committed",
+            (
+                "logged",
+                {
+                    "run_id": "run-current",
+                    "request_id": "request-current",
+                    "tool_call_id": "shared-call",
+                    "tool_name": "search_reference_recipes",
+                    "content": "current error",
+                    "duration_ms": None,
+                },
+            ),
+        ]
+        if not interrupt_run
+        else ["committed"]
+    )
 
 
 @pytest.mark.asyncio
