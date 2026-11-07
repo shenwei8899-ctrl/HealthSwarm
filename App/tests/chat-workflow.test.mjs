@@ -13,7 +13,7 @@ import { computed, effectScope, nextTick, reactive, ref } from 'vue'
 import { HEALTH_TEXT_TASKS } from '../src/services/health-task-flow.js'
 import { chatPresentation } from '../src/services/chat-presentation.js'
 import { referenceSelection as chooseReference, isReferencePlan } from '../src/services/reference-meal-plan.js'
-import { parseChatMealIntent,isMealPlanningCancelled } from '../src/utils/chat-meal-intent.js'
+import { parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled } from '../src/utils/chat-meal-intent.js'
 import {mealCandidates} from './fixtures/meal-candidates.mjs'
 import { mealPairingText } from '../src/utils/dish-commerce-presentation.js'
 
@@ -121,7 +121,7 @@ function workflow(options = {}) {
   }
   const deps = {setTimeout:options.schedule||setTimeout,clearTimeout:options.cancel||clearTimeout,todayMealPlanState,createTodayMealPlan:config=>options.todayMenu?createTodayMealPlan({...config,...options.todayMenu}):({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}), defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
     onMounted: fn => { hooks.mount = fn }, onUnmounted: fn => { hooks.unmount = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn },
-    dishTitle,mealLabels,mealPairingText,chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, parseChatMealIntent,isMealPlanningCancelled,
+    dishTitle,mealLabels,mealPairingText,chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,
     newHealthRequestId: id, storageContext: () => identity.scope, getSession: () => ({ ...identity }), scopedStorage,
     loadCloudProfile: async () => {if(options.beforeProfile)await options.beforeProfile();return profile()}, localDate: value => value ? nextDay(clock.day) : clock.day,
     dailyArrangementState: () => ({ phase: 'idle', busy: false, date: clock.day, arrangement: null }),

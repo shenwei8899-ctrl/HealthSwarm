@@ -123,6 +123,7 @@ async def main() -> None:
                     32,
                     33,
                     34,
+                    35,
                 ),
             )
 
@@ -194,6 +195,7 @@ async def main() -> None:
                 32,
                 33,
                 34,
+                35,
             ):
                 await pg_manager.create_health_tables()
                 await pg_manager.remove_health_ai_monthly_limit()

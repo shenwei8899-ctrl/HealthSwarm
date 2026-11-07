@@ -80,8 +80,6 @@ export function createExclusivePlanFlow({ state, send, commerce, family, revisio
         const { data } = await send({ path: `/api/health/v1/families/${encodeURIComponent(fid)}/exclusive-plans` })
         if (!active()) return
         await accept(data, active)
-        if (!active()) return
-        if (storage.getStorageSync(key()) || ['empty', 'stale'].includes(data.status)) await submit('ensure', active, fid)
       })
     },
     act(action) { if (!['retry', 'regenerate', 'ensure'].includes(action)) return; return run((active, fid) => submit(action, active, fid)) },

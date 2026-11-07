@@ -12,7 +12,8 @@ import { startMemberAnalysis } from '../services/member-profile.js'
 const consent = reactive({loading:false,busy:false,members:[],error:'',processor:'',policyVersion:''})
 const consentClient = createPlanConsent({state:consent,send:request,family:()=>getSession()?.householdId,revision:sessionRevision,startAnalysis:startMemberAnalysis})
 async function open() { await client.open(); if(active.value&&['consent_required','daily_member_sources_unavailable','daily_member_consent_required'].includes(state.errorCode)) await consentClient.load() }
-async function confirmConsent() { if(await consentClient.accept()) await open() }
+async function startPlan() { await client.act('ensure'); if(active.value&&['consent_required','daily_member_sources_unavailable','daily_member_consent_required'].includes(state.errorCode)) await consentClient.load() }
+async function confirmConsent() { if(await consentClient.accept()) await startPlan() }
 const active = ref(false)
 const state = reactive(exclusivePlanState()), client = createExclusivePlanClient(state)
 const ready = computed(() => state.status === 'ready' && state.plans.length === 3)
@@ -37,6 +38,7 @@ onUnload(stop)
     <view class="overview-family"><text>♧ &nbsp;为全家安排</text><text>21 天 · 每日三餐</text></view>
     <view class="overview-heading"><text>选一份适合家的计划</text><text>三种选择</text></view>
     <ExclusivePlanDeck v-if="ready" :plans="state.plans" :selected="state.tier" :busy="state.busy" :active="active" @select="client.select" @detail="detail"/>
+    <view v-else-if="!state.busy&&['empty','stale'].includes(state.status)" class="overview-error"><text class="error-title">{{state.status==='stale'?'原计划依据已变化':'还没有专属计划'}}</text><text class="error-copy">确认后将准备 21 天、每日三餐的三档计划。</text><button class="overview-retry" @click="startPlan">生成 21 天专属计划</button></view>
     <view v-else-if="placeholder" class="overview-placeholder" aria-label="21天计划加载中" :aria-busy="state.busy || state.status === 'generating'">
       <view class="placeholder-tabs"><view/><view/><view/></view><view class="placeholder-card"><view class="placeholder-line line-short"/><view class="placeholder-line line-title"/><view class="placeholder-photo"/><view class="placeholder-line"/><view class="placeholder-line line-medium"/><view class="placeholder-rule"/><view class="placeholder-line"/><view class="placeholder-line line-medium"/><view class="placeholder-rule"/><view class="placeholder-line line-short"/><view class="placeholder-button"/></view>
       <button v-if="!state.busy && state.status !== 'generating'" class="overview-text-button" @click="open">重新读取</button>

@@ -10,7 +10,7 @@ import { addressNavigation } from './address-test-helpers.mjs'
 import {readyPreparation} from './fixtures/preparation-ready.mjs'
 import {preparationReady as checkPreparation} from '../src/services/preparation-ready.js'
 import test from 'node:test'
-import {parseChatMealIntent,isMealPlanningCancelled} from '../src/utils/chat-meal-intent.js'
+import {parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled} from '../src/utils/chat-meal-intent.js'
 import {loadChatMealPlan} from '../src/services/chat-meal-plan.js'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -26,7 +26,7 @@ import {readDailyMealPlan,mealQuestionAction} from '../src/services/daily-meal-p
 const jsonClone=v=>v===undefined?undefined:JSON.parse(JSON.stringify(v))
 const member='11111111-1111-4111-8111-111111111111',thread='22222222-2222-4222-8222-222222222222',requestId='33333333-3333-4333-8333-333333333333'
 function mount(file,fields,extras={}){
- const hooks={},deps={defineOptions:()=>{},mealPairingText,supplementCandidates,appendMealCandidates,preserveMealEvidence,mealDishKey,createMealSupplementSaver:()=>({read:()=>null,hide(){}}),readDietRecord,mealNutritionState,recognizedMealDish,createMealNutritionClient:({state})=>({invalidate(){Object.assign(state,mealNutritionState())},preview:async()=>{},search:async()=>{},portions:async()=>{}}),defineEmits:()=>()=>{},defineExpose:()=>{},createChatEntryTransition,createChatKeyboardLayout,parseChatMealIntent,isMealPlanningCancelled,loadChatMealPlan,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,watch,chatTimestamp,chatBusinessDate,chatPresentation,defineProps:()=>({route:{}}),onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnload:fn=>hooks.unload=fn,onUnmounted:fn=>hooks.unmount=fn,...extras}
+ const hooks={},deps={defineOptions:()=>{},mealPairingText,supplementCandidates,appendMealCandidates,preserveMealEvidence,mealDishKey,createMealSupplementSaver:()=>({read:()=>null,hide(){}}),readDietRecord,mealNutritionState,recognizedMealDish,createMealNutritionClient:({state})=>({invalidate(){Object.assign(state,mealNutritionState())},preview:async()=>{},search:async()=>{},portions:async()=>{}}),defineEmits:()=>()=>{},defineExpose:()=>{},createChatEntryTransition,createChatKeyboardLayout,listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,loadChatMealPlan,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,watch,chatTimestamp,chatBusinessDate,chatPresentation,defineProps:()=>({route:{}}),onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnload:fn=>hooks.unload=fn,onUnmounted:fn=>hooks.unmount=fn,...extras}
  if(file==='CloudMealPurchase.vue') Object.assign(deps,{defineOptions:()=>{}},addressNavigation(deps.storageContext,deps.uni))
  const source=readFileSync(new URL('../src/components/'+file,import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
  const scope=effectScope();const page=scope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {${fields}}`)(deps))

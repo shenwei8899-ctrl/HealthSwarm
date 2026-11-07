@@ -78,6 +78,17 @@ class DailyStartInput(BaseModel):
     date: date
 
 
+class WeeklyStartInput(BaseModel):
+    """七日请求只接受明确日期、原问题及当前健康对话。"""
+
+    model_config = ConfigDict(extra="forbid")
+    client_request_id: UUID
+    thread_id: UUID
+    start_date: date
+    day_count: int = Field(ge=2, le=7, strict=True)
+    question: str = Field(min_length=1, max_length=1000)
+
+
 class DailyMemberInput(BaseModel):
     """只允许明确调整某一餐的参与者。"""
 
@@ -259,6 +270,52 @@ async def daily_start(
     """建档成功后创建或恢复当天生成。"""
     require_key(data.client_request_id, key)
     return await start_daily_arrangement(str(user.uid), str(fid), data)
+
+
+@daily_arrangement.post("/family/{fid}/weekly-meal-plans")
+async def weekly_start(
+    fid: UUID,
+    data: WeeklyStartInput,
+    key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user=Depends(get_required_user),
+):
+    """用户明确要求七日三餐后才登记七个持久每日任务。"""
+    from yuxi.services.weekly_meal_plan_service import start_weekly_meal_plan
+
+    require_key(data.client_request_id, key)
+    return await start_weekly_meal_plan(str(user.uid), str(fid), data)
+
+
+@daily_arrangement.get("/family/{fid}/weekly-meal-plans/{group_id}")
+async def weekly_get(fid: UUID, group_id: UUID, thread_id: UUID, user=Depends(get_required_user)):
+    """按当前对话权限回读七日结果。"""
+    from yuxi.services.weekly_meal_plan_service import read_weekly_meal_plan
+
+    return await read_weekly_meal_plan(str(user.uid), str(fid), str(thread_id), str(group_id))
+
+
+@daily_arrangement.get("/family/{fid}/weekly-meal-plans/{group_id}/days/{plan_date}")
+async def weekly_day_get(fid: UUID, group_id: UUID, plan_date: date, thread_id: UUID, user=Depends(get_required_user)):
+    """按固定来源版本读取一天的详细餐单。"""
+    from yuxi.services.weekly_meal_plan_service import read_weekly_meal_day
+
+    return await read_weekly_meal_day(str(user.uid), str(fid), str(thread_id), str(group_id), plan_date)
+
+
+@daily_arrangement.get("/family/{fid}/weekly-meal-plans")
+async def weekly_list(fid: UUID, thread_id: UUID, user=Depends(get_required_user)):
+    """恢复当前对话最近的七日摘要。"""
+    from yuxi.services.weekly_meal_plan_service import list_weekly_meal_plans
+
+    return await list_weekly_meal_plans(str(user.uid), str(fid), str(thread_id))
+
+
+@daily_arrangement.post("/family/{fid}/weekly-meal-plans/{group_id}/retry")
+async def weekly_retry(fid: UUID, group_id: UUID, thread_id: UUID, user=Depends(get_required_user)):
+    """仅由用户主动重试失败日。"""
+    from yuxi.services.weekly_meal_plan_service import retry_weekly_meal_plan
+
+    return await retry_weekly_meal_plan(str(user.uid), str(fid), str(thread_id), str(group_id))
 
 
 @daily_arrangement.post("/family/{fid}/daily-arrangements/{day}/resume")

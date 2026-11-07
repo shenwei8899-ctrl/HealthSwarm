@@ -10,18 +10,19 @@ function harness(send, commerce={}) {
     storage:{getStorageSync:k=>values.get(k),setStorageSync:(k,v)=>values.set(k,v)},newId:()=> 'stable-request',later:fn=>{scheduled.push(fn);return scheduled.length},cancelLater:()=>{}})
   return {state,flow,calls,values,scheduled,changeAccount:()=>scope++}
 }
-test('首次进入只提交一次，重进与切档复用服务端任务',async()=>{
+test('首次进入只读取，明确点击生成后才提交，重进与切档复用服务端任务',async()=>{
   let current={status:'empty',plans:[]}
   const h=harness(async r=>{if(r.method==='POST')current={status:'generating',group_id:'g',plans:[]};return {data:current}})
-  await h.flow.open();h.flow.select('premium');await h.flow.open()
+  await h.flow.open();assert.equal(h.calls.filter(r=>r.method==='POST').length,0)
+  await h.flow.act('ensure');h.flow.select('premium');await h.flow.open()
   assert.equal(h.calls.filter(r=>r.method==='POST').length,1)
   assert.equal(h.state.group.group_id,'g')
 })
 test('响应丢失后保留原请求号，恢复不多建推荐组',async()=>{
   let fail=true
   const h=harness(async r=>{if(r.method==='POST' && fail){fail=false;throw new Error('offline')}return {data:{status:r.method?'generating':'empty',group_id:'g',plans:[]}}})
-  await h.flow.open();assert.equal(h.values.get('exclusive-plan-intent:v1:f').client_request_id,'stable-request')
-  await h.flow.open()
+  await h.flow.open();await h.flow.act('ensure');assert.equal(h.values.get('exclusive-plan-intent:v1:f').client_request_id,'stable-request')
+  await h.flow.open();await h.flow.act('ensure')
   assert.deepEqual(h.calls.filter(r=>r.method==='POST').map(r=>r.data.client_request_id),['stable-request','stable-request'])
 })
 test('账号改变时丢弃迟到计划，不跨账号展示',async()=>{

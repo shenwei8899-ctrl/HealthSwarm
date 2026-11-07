@@ -20,12 +20,15 @@ test('the rendered reply bubble follows real reply activity and excludes silent 
 })
 
 test('rendered reference cards wire their detail event to the corresponding selected business date',()=>{
- const cards=elements.filter(n=>n.tag==='DailyMealPlanCard'&&n.props.some(p=>p.name==='detail-mode'))
+ const cards=elements.filter(n=>n.tag==='DailyMealPlanCard'&&n.props.some(p=>p.name==='detail-mode')&&directive(n,'bind','plan')?.includes('message.planDate'))
  assert.equal(cards.length,1)
  for(const card of cards){
   const date=directive(card,'bind','plan').includes('message.planDate')?'message.planDate':'todayPlan.date'
   assert.equal(directive(card,'on','detail'),`openDailyMeal($event,${date},message.menuView?verifiedMealView(message):dailyPlans[message.planDate])`)
  }
+ const weekly=elements.find(n=>n.tag==='WeeklyMealPlanCard')
+ assert.equal(directive(weekly,'bind','detail'),"weeklyOpenGroup===message.weeklyPlan.group_id?weeklyDetail:null")
+ assert.equal(directive(weekly,'on','day'),'openWeeklyDay($event,message.weeklyPlan.group_id)')
  const menu=elements.find(n=>n.tag==='TodayMealPlanSheet')
  assert.ok(menu)
  assert.equal(directive(menu,'on','detail'),'showTodayMeal')

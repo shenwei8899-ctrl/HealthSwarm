@@ -9,7 +9,7 @@ function overview(errorCode = 'consent_required') {
   const deps = {
     ref, computed, reactive, request() {}, getSession: () => ({ householdId: 'family' }), sessionRevision: () => 1,
     startMemberAnalysis() {}, exclusivePlanState: () => state,
-    createExclusivePlanClient: () => ({ open: async () => calls.push('open'), stop: () => calls.push('stop') }),
+    createExclusivePlanClient: () => ({ open: async () => calls.push('open'), act: async action => calls.push(action), stop: () => calls.push('stop') }),
     createPlanConsent: () => ({ load: async () => calls.push('load'), accept: async () => { calls.push('accept'); return true }, stop: () => calls.push('consent-stop') }),
     onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn }, onUnload: fn => { hooks.unload = fn },
   }
@@ -28,7 +28,7 @@ for (const code of ['consent_required', 'daily_member_consent_required', 'daily_
     assert.match(page.source, /@click="confirmConsent"/)
     assert.match(page.source, /member\.checked=\$event\.detail\.value\.includes\(member\.id\)/)
     await page.confirmConsent()
-    assert.deepEqual(page.calls, ['open', 'load', 'accept', 'open', 'load'])
+    assert.deepEqual(page.calls, ['open', 'load', 'accept', 'ensure', 'load'])
     page.hooks.hide()
     assert.equal(page.active.value, false)
     assert.deepEqual(page.calls.slice(-2), ['stop', 'consent-stop'])

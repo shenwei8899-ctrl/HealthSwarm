@@ -1,7 +1,27 @@
 const allMeals = ['breakfast', 'lunch', 'dinner']
+const canonicalWeeklyRequest = /^(?:请|麻烦)?(?:为我们|给全家|为全家|帮全家)?(?:安排|生成|制定|规划|设计|做一份)(?:明天|明日)?(?:起|开始)?(?:一(?:个)?星期|一周|七天|七日|7天|7日|[2-7二两三四五六](?:天|日))(?:的)?(?:三餐|一日三餐|完整餐单|每天的?餐单)[。！？]?$/
 
 export function isMealPlanningCancelled(value) {
   return /(?:不用|不要|不需要|不想|取消|停止)(?:(?:再|继续|这次|本次|当前|的)|(?:给|为|帮|替)[^，。！？；\s]{1,12}?){0,2}(?:配餐|配菜|安排|生成|制定)/.test(String(value || ''))
+}
+
+/** 只把明确要求连续二至七天完整三餐的文本交给多日安排。 */
+export function parseMultiDayMealIntent(value, today) {
+  const text = String(value || '').trim()
+  if (!text || isMealPlanningCancelled(text) || /什么是|介绍|解释|科普|原则|注意事项|怎么理解|如何理解/.test(text)) return null
+  if (!/(?:安排|生成|制定|规划|设计|做一份|给我|帮我|想要|希望|我要)/.test(text) || !/(?:三餐|一日三餐|完整餐单|每天的?餐单)/.test(text)) return null
+  let count = /(?:一(?:个)?星期|一周|七天|七日|7天|7日)/.test(text) ? 7 : null
+  if (count === null) {
+    const found = text.match(/([2-7二两三四五六])(?:天|日)/)
+    const words = {二:2,两:2,三:3,四:4,五:5,六:6}
+    count = found ? words[found[1]] || Number(found[1]) : null
+  }
+  if (!count || /下周|下星期|上周|昨天|昨日|\d{4}[-年/.]\d|\d{1,2}月\d/.test(text)) return null
+  const start = new Date(today + 'T12:00:00Z')
+  if (Number.isNaN(start.getTime())) return null
+  if (/明天|明日/.test(text)) start.setUTCDate(start.getUTCDate() + 1)
+  const requiresProfileReview = !canonicalWeeklyRequest.test(text)
+  return {dayCount:count,startDate:start.toISOString().slice(0,10),requiresProfileReview}
 }
 
 /** 只识别明确的用餐安排请求；疾病科普不会成为本人诊断。 */

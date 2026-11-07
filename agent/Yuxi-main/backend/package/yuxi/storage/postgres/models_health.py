@@ -975,6 +975,27 @@ class HealthExclusivePlanGroup(Base):
     updated_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
+class HealthWeeklyMealPlan(Base):
+    """保存多日请求、对话归属与各日安排版本。"""
+
+    __tablename__ = "health_weekly_meal_plan"
+    __table_args__ = (UniqueConstraint("actor_uid", "request_id", name="uq_health_weekly_plan_request"),)
+    id = Column(String(36), primary_key=True)
+    actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
+    family_id = Column(String(36), ForeignKey("family_archives.id"), nullable=False)
+    conversation_id = Column(
+        Integer, ForeignKey("health_consultation.conversation_id", ondelete="CASCADE"), nullable=False
+    )
+    request_id = Column(String(36), nullable=False)
+    start_date = Column(Date, nullable=False)
+    day_count = Column(Integer, nullable=False)
+    question = Column(String(1000), nullable=False)
+    status = Column(String(24), nullable=False, default="initializing")
+    day_refs = Column(JSON_VALUE, nullable=False, default=dict)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
 class HealthRecipeCommerceSource(Base):
     """发布配方与商城食材编码、真实做法的明确版本映射。"""
 
@@ -1009,6 +1030,7 @@ HEALTH_TABLES = HEALTH_BUDGET_TABLES + [
         HealthDailyMealPlan,
         HealthDailyArrangement,
         HealthExclusivePlanGroup,
+        HealthWeeklyMealPlan,
         HealthRecipeCommerceSource,
         HealthRecipeTranslation,
         FamilyMember,
