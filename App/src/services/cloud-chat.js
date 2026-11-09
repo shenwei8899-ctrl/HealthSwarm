@@ -97,11 +97,12 @@ export function chatMessages(value) {
     const role = ({ human: 'user', user: 'user', ai: 'assistant', assistant: 'assistant' })[item.type || item.role]
     if (!role) return []
     const images = (item.image_contents || (item.image_content ? [item.image_content] : [])).filter(path => typeof path === 'string' && /^data:image\//.test(path))
-    let text=chatText(item.content),business=null
+    let text=chatText(item.content),business=null,exclusivePlanEntry=false
     if(role==='user'){const patterns=[['breakfast',/早餐|早饭|早上|今早|明早/],['lunch',/午餐|午饭|中午/],['dinner',/晚餐|晚饭|晚上|今晚|明晚/]];requestedMeals=patterns.filter(([,pattern])=>pattern.test(text)).map(([type])=>type);if(/三餐|全天|一天/.test(text)||!requestedMeals.length)requestedMeals=['breakfast','lunch','dinner']}
     if(role==='assistant'&&text.trim().startsWith('{')){
       try{const data=JSON.parse(text)
-        if((data.result_type==='needs_input'||data.status==='needs_input')&&Array.isArray(data.questions))text=data.questions.join('\n')
+        if(data.result_type==='health_intent'&&['exclusive_plan','needs_clarification'].includes(data.route)){text=typeof data.message==='string'?data.message:'请补充想咨询的问题。';exclusivePlanEntry=data.route==='exclusive_plan'}
+        else if((data.result_type==='needs_input'||data.status==='needs_input')&&Array.isArray(data.questions))text=data.questions.join('\n')
         else if(data.result_type==='meal_feedback'&&data.feedback?.details?.comment)text=data.feedback.details.comment
         else if(data.status==='reference_candidates'||data.scope==='cooking_reference'){
           if(isMealPlanCandidates(data)){business={type:'business',kind:'meal_plan_candidates',data};text='待核对候选已返回，个人适用性尚未确认。'}
@@ -113,7 +114,7 @@ export function chatMessages(value) {
     }
     const purchaseRequestId = role === 'assistant' && /\[食材包:[A-Za-z0-9_-]{100,4096}\]/.test(text) ? item.request_id || item.extra_metadata?.request_id || '' : ''
     if (role === 'assistant') text = text.replace(/\[食材包:[A-Za-z0-9_-]{100,4096}\]/g, '').trim()
-    return [{ id: String(item.id), role, text, business, purchaseRequestId,
+    return [{ id: String(item.id), role, text, business, purchaseRequestId, exclusivePlanEntry,
       recordedMeals: business?.kind==='meal_plan_candidates' ? [] : Array.isArray(item.recorded_meals) ? item.recorded_meals : [],
       ...(business?.data?.scope==='daily_reference'?{planDate:business.data.plan_date,planMeals:requestedMeals||business.data.meals.map(meal=>meal.meal_type)}:{}), createdAt: chatTimestamp(item.created_at),
       requestId: item.request_id || item.extra_metadata?.request_id || '', status: item.delivery_status || 'saved',

@@ -1,3 +1,4 @@
+import {syntheticIntent} from './fixtures/health-intent.mjs'
 import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
 import { mealPairingText } from '../src/utils/dish-commerce-presentation.js'
 import {parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled} from '../src/utils/chat-meal-intent.js'
@@ -50,7 +51,7 @@ function mount({read=async()=>plan()}={}){
     localDate:()=>today,storageContext:()=> 'scope',getSession:()=>({accountId:'self',householdId:'family',token:'synthetic'}),
     scopedStorage:{getStorageSync:k=>cache.get(k),setStorageSync:(k,v)=>cache.set(k,v)},newHealthRequestId:()=>String(calls.length)+'-id',
     readChatSnapshot:async()=>({messages:[],runs:[]}),selectChatPrompts:()=>[],uni:{showToast(){}},
-    readCurrentPreparation:async()=>({status:'absent'}),request:async()=>({data:{}})}
+    readCurrentPreparation:async()=>({status:'absent'}),request:async request=>({data:syntheticIntent(request.data,today)})}
   const source=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const scope=effectScope()
   const page=scope.run(()=>new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {conversationThreadId,dailyPlans,todayPlan,loadDailyPlan,reloadToday,profile,task,entryReady,question,sendQuestion,messages,buyAllMeals,voiceBusy,planPurchaseBusy,setReference:value=>referenceSelection=value}`)(deps))

@@ -155,6 +155,8 @@ from yuxi.services.health_ai_budget_types import HealthAiOpeningInput, HealthAiP
 from yuxi.services import health_ai_budget_service
 from yuxi.services.health_task_service import create_health_task_entry, read_health_task
 from yuxi.services.health_task_types import HealthTaskEntryInput, HealthTaskEntryResult, HealthTaskResult
+from yuxi.services.health_intent_router_service import route_health_intent
+from yuxi.services.health_intent_router_types import HealthIntentInput, HealthIntentResult
 from yuxi.services.health_capability_service import member_capabilities
 from yuxi.services.health_capability_types import MemberCapabilities
 from yuxi.services.health_readiness_service import member_readiness
@@ -229,6 +231,13 @@ class HealthRoute(APIRoute):
 
 
 health_vision = APIRouter(prefix="/health/v1", tags=["health-vision"], route_class=HealthRoute)
+
+
+@health_vision.post("/chat-intent", response_model=HealthIntentResult)
+async def chat_intent(data: HealthIntentInput, response: Response, user: User = Depends(get_required_user)):
+    """分类聊天入口；只返回路由，不创建健康任务或读取健康资料。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await route_health_intent(str(user.uid), data)
 
 
 @health_vision.get("/consultation-runs/{run_id}/citations", response_model=NutritionCitationsResult)

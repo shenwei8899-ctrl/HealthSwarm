@@ -11,6 +11,18 @@ from yuxi.services.health_vision_types import HealthVisionError
 class HealthCatalogMiddleware(AgentMiddleware):
     """只约束有商品工具的本轮咨询，重试继续经过原有预算与权限检查。"""
 
+    async def awrap_tool_call(self, request, handler):
+        """恢复或伪造的目录调用也必须核对本轮明确商品意图。"""
+        if request.tool_call["name"] in {"get_food_categories", "find_food_packages", "select_food_products"}:
+            human = next((m for m in reversed(request.state.get("messages", [])) if isinstance(m, HumanMessage)), None)
+            if (
+                human is None
+                or human.additional_kwargs.get("health_request_id") != request.runtime.context.request_id
+                or not food_product_intent(human.text)
+            ):
+                raise HealthVisionError("catalog_intent_required", "请明确说明要查询的商品或购买需求", 409)
+        return await handler(request)
+
     async def awrap_model_call(self, request, handler):
         """已查询却未选择时不允许直接以普通文字完成本轮。"""
         available = {tool.name for tool in request.tools}
@@ -26,6 +38,16 @@ class HealthCatalogMiddleware(AgentMiddleware):
         if human.additional_kwargs.get("health_request_id") != request.runtime.context.request_id:
             raise HealthVisionError("catalog_request_mismatch", "当前商品咨询轮次无法核对", 409)
         current = request.messages[human_index + 1 :]
+        # 普通营养咨询不应因模型自行判断而进入商城；只有明确商品意图才开放目录工具。
+        if not food_product_intent(human.text):
+            request = request.override(
+                tools=[
+                    tool
+                    for tool in request.tools
+                    if tool.name not in {"get_food_categories", "find_food_packages", "select_food_products"}
+                ]
+            )
+            return await handler(request)
         categories_missing = "get_food_categories" in available and not any(
             isinstance(m, ToolMessage) and m.name == "get_food_categories" and m.status == "success" for m in current
         )

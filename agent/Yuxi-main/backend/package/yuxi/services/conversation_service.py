@@ -58,7 +58,9 @@ async def require_user_conversation(
     if conversation.agent_id in HEALTH_AGENT_BACKENDS:
         try:
             await HealthConsultationRepository(conv_repo.db).authorize(
-                str(uid), thread_id, preview_history=True,
+                str(uid),
+                thread_id,
+                preview_history=True,
                 allow_stale_reference_results=allow_stale_reference_results,
             )
         except HealthVisionError as exc:
@@ -733,6 +735,10 @@ async def _consultation_message_is_public(db, message, uid, *, run=None):
         return False
     if message.role == "user":
         return message.delivery_status not in {"queued", "cancelled", "rejected"}
+    if message.role == "assistant" and not message.run_id and message.delivery_status == "complete":
+        from yuxi.repositories.health_intent_repository import HealthIntentRepository
+
+        return await HealthIntentRepository(db).is_published_message(message)
     if message.role != "assistant" or not message.run_id:
         return False
     run = run or await db.get(AgentRun, message.run_id)

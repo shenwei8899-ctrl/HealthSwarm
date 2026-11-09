@@ -10,6 +10,7 @@ import { addressNavigation } from './address-test-helpers.mjs'
 import {readyPreparation} from './fixtures/preparation-ready.mjs'
 import {preparationReady as checkPreparation} from '../src/services/preparation-ready.js'
 import test from 'node:test'
+import {syntheticIntent} from './fixtures/health-intent.mjs'
 import {parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled} from '../src/utils/chat-meal-intent.js'
 import {loadChatMealPlan} from '../src/services/chat-meal-plan.js'
 import assert from 'node:assert/strict'
@@ -379,6 +380,7 @@ function chat(){let submits=0,exists=false,invalid=false;const saved=storage(),c
  // separately and must never pick up this fixture's pre-existing daily thread.
  deps.defineProps=()=>({route:{entry:'conversation'}})
  deps.mealQuestionAction=mealQuestionAction;deps.readDailyMealPlan=(family,date)=>readDailyMealPlan(family,date,deps.request)
+ deps.request=async o=>o.path==='/api/health/v1/chat-intent'?{data:syntheticIntent(o.data,deps.localDate())}:send(o)
  return {deps,calls,invalidate:()=>invalid=true}
 }
 for(const rejects of [false,true])test(`chat rereads after session refresh during profile loading (rejected: ${rejects})`,async()=>{
@@ -646,10 +648,10 @@ test('a typed tomorrow breakfast request directly enters the personal meal workf
  assert.deepEqual(queries,['给我安排明天早餐']);assert.equal(p.chatError.value,'');assert.equal(p.question.value,'');p.dispose()
 })
 
-test('unsupported reference dates preserve the complete question before creating a task',async()=>{
- const h=chat(),p=mount('CloudNutritionChat.vue','load,question,chatError,sendQuestion',h.deps)
+test('ambiguous reference dates show clarification before creating a meal task',async()=>{
+ const h=chat(),p=mount('CloudNutritionChat.vue','load,question,messages,chatError,sendQuestion',h.deps)
  await p.load();p.question.value='给全家安排下周一早餐，不要牛奶';await p.sendQuestion('reference_meal_preview')
- assert.equal(p.question.value,'给全家安排下周一早餐，不要牛奶');assert.match(p.chatError.value,/原问题已保留/)
+ assert.equal(p.question.value,'');assert.match(p.messages.value.at(-1).text,/具体日期/);assert.equal(p.chatError.value,'')
  assert.ok(!h.calls.some(c=>c.path==='/api/agent/runs'||c.path.endsWith('/task-entries')));p.dispose()
 })
 

@@ -1,3 +1,4 @@
+import {syntheticIntent} from './fixtures/health-intent.mjs'
 import {dishTitle,mealLabels} from '../src/utils/meal-presentation.js'
 import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
 import {watch} from 'vue'
@@ -131,7 +132,7 @@ function workflow(options = {}) {
       async start(value) { calls.push({ action: 'startPlan', value }); throw new Error('normal chat must not create a saved plan') },
     }),
     readCurrentPreparation: async () => ({ status: 'absent' }),
-    request: async request => { calls.push({ action: 'http', ...clone(request) }); return { data: { status: 'absent' } } },
+    request: async request => { calls.push({ action: 'http', ...clone(request) }); return { data: request.path==='/api/health/v1/chat-intent'?syntheticIntent(request.data,clock.day):{ status: 'absent' } } },
     readChatSnapshot: async threadId => {
       calls.push({ action: 'snapshot', threadId })
       if (snapshotOverride) return snapshotOverride(threadId)
@@ -886,8 +887,8 @@ test('natural meal wording needs no button, keyword or prompt action; general nu
     const count=p.calls.filter(call=>call.action==='submit').length
     p.question.value='为我安排下周三餐';await p.sendQuestion()
     assert.equal(p.calls.filter(call=>call.action==='submit').length,count)
-    assert.match(p.chatError.value,/今天或明天/)
-    assert.equal(p.question.value,'为我安排下周三餐')
+    assert.match(p.messages.value.at(-1).text,/具体日期/)
+    assert.equal(p.question.value,'')
   }finally{p.dispose()}
 })
 
@@ -978,7 +979,7 @@ for (const field of ['scope', 'threadId', 'requestId']) {
   })
 }
 
-test('needs_input期间明确改变日期和家庭成员仍生成新选择，非法日期不提交', async () => {
+test('needs_input期间明确改变日期和家庭成员仍生成新选择，并支持后天', async () => {
   const p = workflow()
   try {
     await p.load(); p.question.value = '整理今天早餐'; await p.sendQuestion('reference_meal_preview')
@@ -994,8 +995,8 @@ test('needs_input期间明确改变日期和家庭成员仍生成新选择，非
     p.publish({ status: 'completed', result: { type: 'needs_input', questions: ['请补充资料'] } })
     const submitted = p.calls.filter(call => call.action === 'submit').length
     p.question.value = '请帮我安排后天三餐'; await p.sendQuestion()
-    assert.equal(p.calls.filter(call => call.action === 'submit').length, submitted)
-    assert.match(p.chatError.value, /今天或明天/)
+    assert.equal(p.calls.filter(call => call.action === 'submit').length, submitted + 1)
+    assert.equal(p.calls.filter(call => call.action === 'submit').at(-1).selection.plan_date,'2026-10-30')
   } finally { p.dispose() }
 })
 

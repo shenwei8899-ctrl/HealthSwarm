@@ -1,3 +1,4 @@
+import {syntheticIntent} from './fixtures/health-intent.mjs'
 import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
 import {chatPresentation} from '../src/services/chat-presentation.js'
 import {watch} from 'vue'
@@ -19,10 +20,10 @@ function setup({linked=true,available=true,entry=true,notice='',error='',prepare
     dailyArrangementState:()=>({phase:prepared?'ready':'error',error:'配餐数据未就绪',busy:false}),
     createDailyArrangementClient:()=>({reset(){},dispose(){},pause(){}}),
     scopedStorage:{getStorageSync:()=>null,setStorageSync(){}},localDate:()=> '2026-10-26',
-    HEALTH_TEXT_TASKS:{consultation:'咨询'},newHealthRequestId:()=> 'synthetic-request',request(){},
+    HEALTH_TEXT_TASKS:{consultation:'咨询'},readChatSnapshot:async()=>({messages:[],runs:[]}),newHealthRequestId:()=> 'synthetic-request',request:async request=>({data:syntheticIntent(request.data,'2026-10-26')}),
     uni:{showToast:o=>toasts.push(o),showModal:o=>modals.push(o),navigateTo(){},hideKeyboard(){}},
     createHealthTaskFlow:({onChange})=>({inject:onChange,
-      async open(id,type){onChange({memberId:id,taskType:type,available,notice,error})},
+      async open(id,type){onChange({memberId:id,taskType:type,available,notice,error,entry:entry?{thread_id:'thread'}:null})},
       async createEntry(){onChange({memberId:'health-self',taskType:'consultation',available,entry:entry?{thread_id:'thread'}:null,error:entry?'':'建立咨询失败，请重试'})},
       async submit(text,retry=false){submits.push(text);submitCalls.push({text,retry,requestId:page.task.value.requestId});return true},hide(){},
       async refresh(...args){refreshCalls.push(args)},pause(){},

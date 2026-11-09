@@ -1,5 +1,5 @@
-export function referenceSelection(profile, text, { today, tomorrow, memberId, previous } = {}) {
-  if (/后天|后日|下周|下星期|星期[一二三四五六日天]|周[一二三四五六日天]|\d+[月号日/-]/.test(text)) {
+export function referenceSelection(profile, text, { today, tomorrow, memberId, previous, intent } = {}) {
+  if (!intent && /后天|后日|下周|下星期|星期[一二三四五六日天]|周[一二三四五六日天]|\d+[月号日/-]/.test(text)) {
     throw new Error('请明确选择今天或明天的餐次，原问题已保留。')
   }
   const selected = memberId ? profile.members.find(m => m.healthMemberId === memberId)
@@ -17,10 +17,10 @@ export function referenceSelection(profile, text, { today, tomorrow, memberId, p
   const mealPatterns=[['breakfast',/早餐|早饭|早上|今早|明早/],['lunch',/午餐|午饭|中午/],['dinner',/晚餐|晚饭|晚上|今晚|明晚/]]
   const preserved=new Set(text.split(/[，。！？；,;]|其他|其余/).filter(part=>/不变|保持原样|照旧|(?:不用|不要|无需|别|不)(?:再)?(?:改|调整|更换)/.test(part)).flatMap(part=>mealPatterns.filter(([,pattern])=>pattern.test(part)).map(([meal])=>meal)))
   const chosen=mealPatterns.filter(([,pattern])=>pattern.test(text)).map(([meal])=>meal).filter(meal=>!preserved.has(meal))
-  const meals = (/三餐|全天|一天/.test(text) ? ['breakfast','lunch','dinner']
-    : chosen.length ? chosen : previous?.meal_types || ['breakfast','lunch','dinner']).filter(meal=>!preserved.has(meal))
+  const meals = (intent?.meal_types || (/三餐|全天|一天/.test(text) ? ['breakfast','lunch','dinner']
+    : chosen.length ? chosen : previous?.meal_types || ['breakfast','lunch','dinner'])).filter(meal=>!preserved.has(meal))
   if(!meals.length)throw new Error('没有需要调整的餐次，原餐单保持不变。')
-  const date = /明天|明日|明早|明晚/.test(text) ? tomorrow : /今天|今日|今早|今晚/.test(text) ? today : previous?.plan_date || today
+  const date = intent?.business_date || (/明天|明日|明早|明晚/.test(text) ? tomorrow : /今天|今日|今早|今晚/.test(text) ? today : previous?.plan_date || today)
   return {mode:'reference',family_id:profile.householdId,plan_date:date,
     participant_ids:[...new Set(ids)].sort(),meal_types:meals}
 }

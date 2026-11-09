@@ -24,7 +24,7 @@ import ConversationFoodPackages from './ConversationFoodPackages.vue'
 import TodayMealPlanSheet from './TodayMealPlanSheet.vue'
 import TodayMealPlanContent from './TodayMealPlanContent.vue'
 import { todayMealPlanState, createTodayMealPlan } from '../services/today-meal-plan.js'
-import {readDailyMealPlan,mealQuestionAction} from '../services/daily-meal-plan.js'
+import {readDailyMealPlan} from '../services/daily-meal-plan.js'
 import {referenceSelection as chooseReference,isReferencePlan} from '../services/reference-meal-plan.js'
 import VoiceInput from './VoiceInput.vue'
 import AiAnswer from './AiAnswer.vue'
@@ -42,9 +42,8 @@ import { persistChatImage, previewChatImage } from '../services/chat-images.js'
 import { readChatSnapshot, chatImageContent, chatTimestamp, chatBusinessDate } from '../services/cloud-chat.js'
 import { localDate } from '../utils/meal-state.js'
 import { selectChatPrompts } from '../services/chat-prompts.js'
-import { parseChatMealIntent, isMealPlanningCancelled } from '../utils/chat-meal-intent.js'
-import { parseMultiDayMealIntent } from '../utils/chat-meal-intent.js'
-import { startWeeklyMealPlan, readWeeklyMealPlan, readWeeklyMealDay, listWeeklyMealPlans, retryWeeklyMealPlan } from '../services/weekly-meal-plan.js'
+import { parseChatMealIntent } from '../utils/chat-meal-intent.js'
+import { readWeeklyMealPlan, readWeeklyMealDay, listWeeklyMealPlans, retryWeeklyMealPlan } from '../services/weekly-meal-plan.js'
 import { loadChatMealPlan } from '../services/chat-meal-plan.js'
 
 const detailRef=ref(null),detailOpen=ref(false)
@@ -983,50 +982,12 @@ async function sendQuestion(promptAction=''){
   let stage='select-task',user=null,localOperation=null
   try{
     const flexibleConsultation=!props.route.taskType||props.route.taskType==='consultation'
-    const multiDay=flexibleConsultation&&!image?parseMultiDayMealIntent(text,localDate()):null
-    if(multiDay){
-      stage='weekly'
-      if(multiDay.requiresProfileReview)throw new Error('多日餐单目前按家庭默认就餐成员生成。请先在家庭档案核对限制和成员，再单独发送“安排一周三餐”；指定个人或附加忌口暂不能自动安排。原问题已保留。')
-      if(!conversationThreadId.value)await restoreChat('consultation',{readHistory:false})
-      if(!conversationThreadId.value)throw new Error('咨询连接尚未建立，请稍后再试。')
-      const threadId=conversationThreadId.value,key='weekly-request:'+threadId
-      const pending=scopedStorage.getStorageSync(key)
-      const clientId=pending?.question===text&&pending?.startDate===multiDay.startDate&&pending?.dayCount===multiDay.dayCount?pending.clientId:newHealthRequestId()
-      scopedStorage.setStorageSync(key,{clientId,question:text,...multiDay})
-      user=reactive({id:clientId,role:'user',text,createdAt:new Date().toISOString(),status:'sending',localOnly:true})
-      messages.value.push(user);question.value='';sendPhase.value=`正在安排 ${multiDay.dayCount} 天三餐`
-      const plan=await startWeeklyMealPlan(profile.value.householdId,{client_request_id:clientId,thread_id:threadId,start_date:multiDay.startDate,day_count:multiDay.dayCount,question:text})
-      if(disposed||!visible||mine!==epoch||scope!==storageContext())return
-      scopedStorage.setStorageSync(key,null)
-      upsertWeeklyPlan(plan)
-      settleDraft(snapshot)
-      if(plan.status==='generating')pollWeeklyPlan(plan.group_id,threadId)
-      return
-    }
     if(flexibleConsultation&&!referenceSelection){
       const previous=[...messages.value].reverse().find(message=>message.role==='assistant'&&isReferencePlan(message.business?.data))?.business.data
       if(previous?.sources?.family_id===profile.value.householdId){
         try{referenceSelection=chooseReference(profile.value,'',{today:localDate(),tomorrow:localDate(new Date(Date.now()+86400000)),previous:{mode:'reference',family_id:previous.sources.family_id,plan_date:previous.plan_date,participant_ids:previous.members.map(member=>member.id),meal_types:previous.meals.map(meal=>meal.meal_type)}})}catch{referenceSelection=null}
       }
     }
-    const mealIntent=flexibleConsultation&&!image?parseChatMealIntent(text,localDate(),!!referenceSelection):null
-    // A revision stays in the selected plan's thread, preserving its date and
-    // participants. A fresh arrangement still creates its own explicit choice.
-    const referenceAdjustment=flexibleConsultation&&!image&&!!referenceSelection&&
-      !(promptAction==='consultation'&&!mealIntent)&&
-      !isMealPlanningCancelled(text)&&
-      !/(?:什么是|介绍|解释|科普|原则|注意事项|怎么理解|如何理解|有什么区别|有何区别)/.test(text)&&
-      !(!mealIntent&&/(?:怎么|怎样|如何|为什么).*(?:选|做|换|替换|调整|搭配|准备|保存|作用|摄入)|(?:有什么|有何)(?:好处|作用)/.test(text))&&
-      !/(?:换(?:个|一个)?话题|换个问题|^(?:取消|停止|不用了|不需要了)(?:[，。！？\s]|$)|(?:取消|停止|不用|不需要|不想|不要)(?:再|继续)?(?:配餐|安排|生成|制定))/.test(text)&&
-      (task.value.taskType==='reference_meal_preview'&&task.value.result?.type==='needs_input'||!/(?:^|[，。！？；、\s])(?:请)?(?:为我|给我|帮我|给全家|为全家|帮全家)?(?:安排|生成|制定|配一)/.test(text)&&
-      (mealIntent?.revision||/换(?:(?:今天|明天|今日|明日)?的?(?:早餐|午餐|晚餐|早饭|午饭|晚饭)|菜|成|掉|一|个|几)|替换|改(?:成|为|一下|早餐|午餐|晚餐|早饭|午饭|晚饭)|调整|重新(?:生成|安排|做)|再(?:生成|安排|做)|去掉|不放|不吃|不含|不要|加(?:一|点|些)|少(?:一|点|些)|多(?:一|点|些)/.test(text)))
-    if(mealIntent?.unsupportedDate)throw new Error('请明确选择今天或明天的一日餐单，原问题已保留。')
-    if(mealIntent?.revision&&!referenceSelection)throw new Error('请先打开要更换的餐单，或说明要重新安排哪一天、哪一餐。')
-    const displayQuestion=text.split(/[，。！？；,;]/).filter(part=>!/不变|保持原样|照旧|不用改|不要改/.test(part)).join('，')
-    const requestedMealTypes=[['breakfast',/早餐|早饭|早上|今早|明早/],['lunch',/午餐|午饭|中午/],['dinner',/晚餐|晚饭|晚上|今晚|明晚/]].filter(([,pattern])=>pattern.test(displayQuestion)).map(([type])=>type)
-    if(/三餐|全天|一天/.test(displayQuestion)||!requestedMealTypes.length)requestedMealTypes.splice(0,requestedMealTypes.length,'breakfast','lunch','dinner')
-    const baseAction=mealQuestionAction(text)
-    let action=image?'consultation':referenceAdjustment?'change':mealIntent||promptAction==='reference_meal_preview'?(baseAction==='change'?'change':'generate'):baseAction
     // Every send uses the same local message and releases only the captured text.
     // Keep pendingUser unbound until flow.submit publishes this request's own ID.
     stage='queue-message'
@@ -1035,16 +996,47 @@ async function sendQuestion(promptAction=''){
     localSend.value=localOperation;messages.value.push(user)
     question.value='';localOperation.clearedVersion=textVersion;uni.hideKeyboard?.()
     sendPhase.value='正在准备对话';void scrollLatest({force:true})
+    let intent=null
+    if(flexibleConsultation&&!image){
+      if(!conversationThreadId.value&&task.value.taskType==='consultation'&&task.value.entry?.thread_id)rememberThread()
+      if(!conversationThreadId.value){
+        await restoreChat('consultation',{readHistory:false})
+        if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration)return
+        if(!task.value.available)throw new Error(task.value.error||task.value.notice||'咨询连接尚未就绪，请先核对家庭档案与授权。')
+        if(!task.value.entry?.thread_id)await flow.createEntry()
+        if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration)return
+        rememberThread()
+        if(task.value.entry?.thread_id)await restoreChat('consultation')
+        if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration)return
+        if(!conversationThreadId.value)throw new Error(task.value.error||task.value.notice||'咨询连接尚未建立，原问题已保留。')
+      }
+      stage='classify-intent';sendPhase.value='正在理解问题'
+      const {data}=await request({path:'/api/health/v1/chat-intent',method:'POST',timeout:18000,data:{text,client_request_id:user.id,thread_id:conversationThreadId.value||null,previous_date:referenceSelection?.plan_date||null,previous_meals:referenceSelection?.meal_types||[],awaiting_meal_details:task.value.taskType==='reference_meal_preview'&&task.value.result?.type==='needs_input'}})
+      if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration)return
+      if(!['nutrition_consultation','single_day_meal','exclusive_plan','needs_clarification'].includes(data?.route))throw new Error('问题分类结果无法读取，原问题已保留。')
+      intent=data
+      if(intent.route==='single_day_meal'&&(!/^\d{4}-\d{2}-\d{2}$/.test(intent.business_date||'')||!Array.isArray(intent.meal_types)||!intent.meal_types.length||intent.meal_types.some(meal=>!['breakfast','lunch','dinner'].includes(meal))||!['generate','view','change','continue'].includes(intent.action)))throw new Error('餐单日期或餐次无法确认，原问题已保留。')
+      if(intent.route==='exclusive_plan'||intent.route==='needs_clarification'){
+        const now=new Date().toISOString()
+        user.status='completed';user.requestId=String(user.id);snapshot.conversation=conversationId.value
+        messages.value.push({id:newHealthRequestId(),requestId:user.id,role:'assistant',text:intent.message||'请说明想咨询营养，还是安排哪一天的餐单。',createdAt:now,localOnly:true,exclusivePlanEntry:intent.route==='exclusive_plan'})
+        user.localOnly=true;settleDraft(snapshot);await scrollLatest({force:true});return
+      }
+    }
+    const mealIntent=intent?.route==='single_day_meal'?{date:intent.business_date,meals:intent.meal_types,revision:intent.action==='change'}:null
+    const referenceAdjustment=!!mealIntent&&['change','continue'].includes(intent.action)&&!!referenceSelection
+    const requestedMealTypes=intent?.meal_types||['breakfast','lunch','dinner']
+    let action=image?'consultation':intent?.route==='single_day_meal'?(intent.action==='continue'?'change':intent.action):!intent&&promptAction==='reference_meal_preview'?'generate':'consultation'
     stage='prepare-conversation'
     if(flexibleConsultation&&action==='view'){
-      const date=/明天|明日/.test(text)?localDate(new Date(Date.now()+86400000)):localDate()
+      const date=intent.business_date
       const plan=await loadDailyPlan(profile.value.householdId,date,epoch,scope)
       if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration||!plan)return
       await replyWithDailyPlan(user,plan,requestedMealTypes,snapshot,plan.status==='ready'?'这是已安排的餐单。':'这一天还没有餐单。');return
     }
-    let continuing=flexibleConsultation&&!image&&task.value.taskType==='reference_meal_preview'&&task.value.result?.type==='needs_input'&&referenceAdjustment
+    let continuing=flexibleConsultation&&!image&&task.value.taskType==='reference_meal_preview'&&task.value.result?.type==='needs_input'&&intent?.action==='continue'
     let referenceFollowUp=false
-    const type=!image&&flexibleConsultation&&(mealIntent||continuing||referenceAdjustment||promptAction==='reference_meal_preview')?'reference_meal_preview'
+    const type=!image&&flexibleConsultation&&(mealIntent||continuing||referenceAdjustment||!intent&&promptAction==='reference_meal_preview')?'reference_meal_preview'
       :Object.hasOwn(HEALTH_TEXT_TASKS,props.route.taskType)?props.route.taskType:'consultation'
     if(!props.route.taskType&&type==='consultation'&&conversationId.value)scopedStorage.setStorageSync('conversation-task:'+conversationId.value,null)
     // A plan-first conversation still needs a real consultation anchor so it
@@ -1062,7 +1054,7 @@ async function sendQuestion(promptAction=''){
     let rebuildReference=false
     if(type==='reference_meal_preview'){
       const previousVersion=referenceSelection?.daily_base_version
-      const candidate=chooseReference(profile.value,text,{today:localDate(),tomorrow:localDate(new Date(Date.now()+86400000)),memberId:props.route.memberId,...(referenceAdjustment?{previous:referenceSelection}:{})})
+      const candidate=chooseReference(profile.value,text,{today:localDate(),tomorrow:localDate(new Date(Date.now()+86400000)),memberId:props.route.memberId,intent:mealIntent?intent:null,...(referenceAdjustment?{previous:referenceSelection}:{})})
       const changedChoice=continuing&&(candidate.plan_date!==referenceSelection.plan_date||JSON.stringify(candidate.participant_ids)!==JSON.stringify(referenceSelection.participant_ids)||/(?:安排|生成|制定|配一|只(?:要|需|用|做|安排)?(?:今天|明天|今晚)?(?:的)?(?:早餐|午餐|晚餐|早饭|午饭|晚饭)|先(?:做|安排|配)?(?:早餐|午餐|晚餐|早饭|午饭|晚饭)|^(?:早餐|午餐|晚餐|早饭|午饭|晚饭)[。！!\s]*$)/.test(text)&&JSON.stringify(candidate.meal_types)!==JSON.stringify(referenceSelection.meal_types))
       if(changedChoice){continuing=false;action='generate'}
       const selection=continuing?referenceSelection:candidate
@@ -1158,7 +1150,7 @@ async function sendQuestion(promptAction=''){
     }
   }}
   finally{if(sendTicket===sendGeneration){
-    if(localOperation&&(user.localOnly||['failed','rejected','interrupted','cancelled'].includes(user.status)))failLocalSend(localOperation)
+    if(localOperation&&user.status!=='completed'&&(user.localOnly||['failed','rejected','interrupted','cancelled'].includes(user.status)))failLocalSend(localOperation)
     localSend.value=null;sendPhase.value='';pendingUser=null;sending.value=false
     if(!disposed&&visible&&mine===epoch&&scope===storageContext()&&chatError.value)uni.showToast({title:chatError.value,icon:'none',duration:3500})
   }}
@@ -1387,7 +1379,7 @@ function messageTime(message,index){
   <view v-for="(message,messageIndex) in visibleMessages" :id="'message-'+message.id" :key="message.id" class="message-turn">
    <view v-if="messageTime(message,messageIndex)" class="message-time"><text>{{messageTime(message,messageIndex)}}</text></view>
    <view v-if="!message.weeklyPlan" class="message-row" :class="message.role"><text v-if="hasMessageIssue(message)||message.role==='user'&&message.status==='unknown'" class="message-issue" :class="{'is-unconfirmed':message.status==='unknown'}" role="button" tabindex="0" :aria-label="message.status==='unknown'?'消息状态待确认':'查看消息失败原因'" @click="messageStatus(message)" @keydown.enter="messageStatus(message)">{{message.status==='unknown'?'?':'!'}}</text><view class="message-content"><view class="bubble"><view v-if="message.role==='assistant'" class="reply-card-head"><AppIcon name="assistant" :size="46" :state="message.business&&isReferencePlan(message.business.data)?'success':'idle'"/><text>家庭营养师</text></view><view class="bubble-body"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><text v-if="message.menuView" selectable>{{mealViewText(message)}}</text><AiAnswer v-else-if="message.role==='assistant'&&message.text" :text="message.text" :citations="message.citations||[]" :message-key="message.requestId" :shown-meals="mealAppearances[message.requestId]||[]" :animate-meals="!!message.mealEnter" @meal-shown="rememberMealAppearance" compact/><text v-else-if="message.text" selectable>{{message.text}}</text>
-   </view></view><text v-if="message.role==='user'&&message.status==='cancelled'" class="message-status-note">已停止</text><DailyMealPlanCard :meal-types="message.planMeals" @dish="openDailyDish($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" @all="buyAllMeals" @detail="openDailyMeal($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" detail-mode v-if="message.planDate&&(message.menuView?verifiedMealView(message):dailyPlans[message.planDate])?.status==='ready'" :plan="message.menuView?verifiedMealView(message):dailyPlans[message.planDate]" :dish-grid="!!message.menuView" :busy="planPurchaseBusy" @open="openDailyMeal($event,message.planDate)" @members="selectDailyMembers($event,message.planDate)" @shop="purchaseDaily($event,dailyPlans[message.planDate])"/><HealthChatBusinessCard detail-mode @detail="openReferencePlan" v-else-if="message.business&&!message.planDate" :result="message.business" :member-id="message.memberId||task.memberId"/><ConversationFoodPackages v-if="message.purchaseRequestId" :offers="message.purchaseOffers" :request-id="message.purchaseRequestId" :animate="message.purchaseEnter" @ready="queueScroll"/><ChatMealRecordCard v-for="receipt in message.recordedMeals||[]" :key="receipt.id" :receipt="receipt" @changed="updateMealReceipt"/><ChatReplyActions v-if="message.role==='assistant'&&message.text&&!message.error" :text="message.text" :message-id="message.serverMessageId||message.id" :can-quote="!chatBusy&&!conversationReadOnly" @quote="quoteReply"/></view></view>
+   <button v-if="message.exclusivePlanEntry" @click="uni.navigateTo({url:'/pages/exclusive-plans/index'})">查看 AI 专属计划</button></view></view><text v-if="message.role==='user'&&message.status==='cancelled'" class="message-status-note">已停止</text><DailyMealPlanCard :meal-types="message.planMeals" @dish="openDailyDish($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" @all="buyAllMeals" @detail="openDailyMeal($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" detail-mode v-if="message.planDate&&(message.menuView?verifiedMealView(message):dailyPlans[message.planDate])?.status==='ready'" :plan="message.menuView?verifiedMealView(message):dailyPlans[message.planDate]" :dish-grid="!!message.menuView" :busy="planPurchaseBusy" @open="openDailyMeal($event,message.planDate)" @members="selectDailyMembers($event,message.planDate)" @shop="purchaseDaily($event,dailyPlans[message.planDate])"/><HealthChatBusinessCard detail-mode @detail="openReferencePlan" v-else-if="message.business&&!message.planDate" :result="message.business" :member-id="message.memberId||task.memberId"/><ConversationFoodPackages v-if="message.purchaseRequestId" :offers="message.purchaseOffers" :request-id="message.purchaseRequestId" :animate="message.purchaseEnter" @ready="queueScroll"/><ChatMealRecordCard v-for="receipt in message.recordedMeals||[]" :key="receipt.id" :receipt="receipt" @changed="updateMealReceipt"/><ChatReplyActions v-if="message.role==='assistant'&&message.text&&!message.error" :text="message.text" :message-id="message.serverMessageId||message.id" :can-quote="!chatBusy&&!conversationReadOnly" @quote="quoteReply"/></view></view>
    <view v-if="message.weeklyPlan" class="message-row assistant"><view class="message-content"><WeeklyMealPlanCard :plan="message.weeklyPlan" :busy="weeklyBusy" :open-date="weeklyOpenGroup===message.weeklyPlan.group_id?weeklyOpenDate:''" :detail="weeklyOpenGroup===message.weeklyPlan.group_id?weeklyDetail:null" @day="openWeeklyDay($event,message.weeklyPlan.group_id)" @retry="retryWeeklyPlan(message.weeklyPlan)" @exclusive="uni.navigateTo({url:'/pages/exclusive-plans/index'})"/></view></view>
   </view>
   <view v-if="mealReplyActions&&!chatBusy&&!conversationReadOnly" class="reply-actions" aria-label="继续安排饮食">

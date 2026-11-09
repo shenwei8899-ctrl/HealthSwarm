@@ -6,8 +6,11 @@ from unittest.mock import AsyncMock
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from yuxi.agents.middlewares.health_catalog import HealthCatalogMiddleware
+from test.unit.middlewares.test_health_final_answer import production_middleware
+
 from yuxi.services.health_vision_types import HealthVisionError
+
+HealthCatalogMiddleware = production_middleware("health_catalog").HealthCatalogMiddleware
 
 
 def model_request(text="帮我推荐商城食材", after=(), request_id="request-current"):
@@ -62,7 +65,7 @@ async def test_explicit_refusal_keeps_ordinary_education_without_catalog_query()
     answer = model_answer()
     handler = AsyncMock(return_value=answer)
     assert await HealthCatalogMiddleware().awrap_model_call(request, handler) is answer
-    assert overrides == []
+    assert overrides == [{"tools": []}]
 
 
 @pytest.mark.asyncio
@@ -114,3 +117,33 @@ async def test_successful_category_from_another_turn_cannot_open_product_tools()
         request, AsyncMock(return_value=model_answer("get_food_categories"))
     )
     assert overrides[-1]["tool_choice"]["function"]["name"] == "get_food_categories"
+
+
+@pytest.mark.asyncio
+async def test_ordinary_nutrition_cannot_expose_catalog_tools():
+    """普通问答的模型工具中不能留下分类入口。"""
+    request, _ = model_request("鸡蛋有什么营养")
+    request.tools.extend(SimpleNamespace(name=name) for name in ("get_food_categories", "finalize_health_answer"))
+    seen = []
+
+    async def handler(filtered):
+        """记录真实模型边界能看到的工具集。"""
+        seen.extend(tool.name for tool in filtered.tools)
+        return model_answer()
+
+    await HealthCatalogMiddleware().awrap_model_call(request, handler)
+    assert seen == ["finalize_health_answer"]
+
+
+@pytest.mark.asyncio
+async def test_direct_catalog_tool_cannot_run_without_purchase_intent():
+    """工具节点恢复不能绕过模型工具过滤。"""
+    request = SimpleNamespace(
+        tool_call={"name": "get_food_categories"},
+        state={"messages": [HumanMessage("后天吃啥", additional_kwargs={"health_request_id": "current"})]},
+        runtime=SimpleNamespace(context=SimpleNamespace(request_id="current")),
+    )
+    handler = AsyncMock()
+    with pytest.raises(HealthVisionError, match="catalog_intent_required"):
+        await HealthCatalogMiddleware().awrap_tool_call(request, handler)
+    handler.assert_not_awaited()
