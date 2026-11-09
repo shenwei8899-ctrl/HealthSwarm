@@ -4,7 +4,6 @@
 import ast
 import asyncio
 from contextlib import asynccontextmanager
-from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 import hashlib
@@ -158,12 +157,10 @@ def explicit_draft():
     }
 
 
-@pytest.mark.parametrize("mode", ["selected", "explicit"])
-def test_tool_schema_accepts_each_complete_mode(selected_tool, mode):
-    """新旧完整请求分别通过，运行对象由服务端给出。"""
-    body = {"read_selection": payload()} if mode == "selected" else explicit_draft()
-    result = selected_tool.schema.model_validate({**body, "runtime": runtime()})
-    assert (result.read_selection is not None) == (mode == "selected")
+def test_tool_schema_accepts_only_server_owned_read_selection(selected_tool):
+    """模型只提交已读来源选择，运行对象仍由服务端给出。"""
+    result = selected_tool.schema.model_validate({"read_selection": payload(), "runtime": runtime()})
+    assert result.read_selection is not None
 
 
 @pytest.mark.parametrize("field", ["meals", "purchase_items", "purchase_gaps"])
@@ -174,23 +171,20 @@ def test_tool_schema_rejects_mixed_quote_and_selection_fields(selected_tool, fie
         selected_tool.schema.model_validate(body)
 
 
-@pytest.mark.parametrize("missing", ["meals", "purchase_items", "purchase_gaps"])
-def test_legacy_schema_keeps_required_fields_and_coverage(selected_tool, missing):
-    """旧入口缺字段或漏采购对应仍被原 DTO 拒绝。"""
-    body = explicit_draft()
-    body.pop(missing)
+@pytest.mark.parametrize("field", ["meals", "purchase_items", "purchase_gaps"])
+def test_tool_schema_rejects_every_legacy_free_form_field(selected_tool, field):
+    """完整或不完整的旧自由事实都不能重新进入 Agent 工具。"""
+    body = {field: explicit_draft()[field]}
     with pytest.raises(ValidationError):
         selected_tool.schema.model_validate({**body, "runtime": runtime()})
 
 
-def test_tool_schema_does_not_allow_forged_runtime_or_missing_purchase_coverage(selected_tool):
-    """新分支不放宽运行注入，旧分支不放宽食材覆盖。"""
+def test_tool_schema_does_not_allow_forged_runtime_or_free_purchase_coverage(selected_tool):
+    """新分支不放宽运行注入，也不接受模型编写采购覆盖。"""
     with pytest.raises(ValidationError):
         selected_tool.schema.model_validate({"read_selection": payload(), "runtime": {"uid": "invented"}})
-    body = explicit_draft()
-    body["purchase_gaps"] = []
     with pytest.raises(ValidationError):
-        selected_tool.schema.model_validate({**body, "runtime": runtime()})
+        selected_tool.schema.model_validate({**explicit_draft(), "runtime": runtime()})
 
 
 async def execute_tool(selected_tool, args, context, *, handle_tool_errors=False):
@@ -245,22 +239,19 @@ async def test_real_tool_node_assembles_parsed_source_before_original_save(selec
 
 
 @pytest.mark.asyncio
-async def test_real_tool_node_legacy_branch_keeps_quotes_and_never_assembles(selected_tool, assembly, monkeypatch):  # noqa: F811
-    """显式原文仍原样进入原保存，不借选择装配改写引句。"""
+async def test_real_tool_node_rejects_legacy_free_form_branch(selected_tool, assembly, monkeypatch):  # noqa: F811
+    """真实执行器在任何装配或保存副作用前拒绝旧自由原文与采购对应。"""
     body, context = explicit_draft(), SaveContext()
-    assemble = AsyncMock(side_effect=AssertionError("旧原文入口不能装配替换"))
-    save = AsyncMock(return_value={"preview_id": "synthetic-legacy"})
+    assemble, save = AsyncMock(), AsyncMock()
     monkeypatch.setattr(selection, "assemble_reference_selection", assemble)
     monkeypatch.setattr(
         sys.modules["yuxi.services.reference_meal_plan_service"], "save_reference_plan", save, raising=False
     )
     result = await execute_tool(selected_tool, body, context)
-    assert json.loads(result["messages"][-1].content)["preview_id"] == "synthetic-legacy"
-    assert (
-        ReferencePlanDraft.model_validate(save.await_args.args[1]).model_dump()
-        == ReferencePlanDraft.model_validate(body).model_dump()
-    )
+    receipt = result["messages"][-1]
+    assert receipt.status == "error" and json.loads(receipt.content)["retryable"] is False
     assemble.assert_not_awaited()
+    save.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -280,10 +271,10 @@ async def test_mixed_real_tool_call_never_reaches_assembly_or_save(selected_tool
 
 
 @pytest.mark.asyncio
-async def test_legacy_missing_gap_returns_retryable_coverage_feedback_without_side_effects(
+async def test_legacy_missing_gap_is_rejected_as_removed_mode_without_side_effects(
     selected_tool, assembly, monkeypatch
 ):
-    """旧引句遗漏水对应时，真实执行器返回字段路径而非 TypeError。"""
+    """旧引句即使只是遗漏缺口，也不能绕回已经移除的自由模式。"""
     assemble, save = AsyncMock(), AsyncMock()
     monkeypatch.setattr(selection, "assemble_reference_selection", assemble)
     monkeypatch.setattr(
@@ -295,67 +286,17 @@ async def test_legacy_missing_gap_returns_retryable_coverage_feedback_without_si
     receipt = result["messages"][-1]
     assert receipt.status == "error" and receipt.tool_call_id == "save-selected"
     feedback = json.loads(receipt.content)
-    assert feedback["error_code"] == "reference_purchase_coverage_invalid" and feedback["retryable"] is True
-    assert feedback["issues"] == {
-        "missing_ingredient_paths": ["meals[0].dishes[0].ingredients[1]"],
-        "extra_decision_paths": [],
-        "duplicate_decision_paths": [],
-        "counts": {"missing_ingredient_paths": 1, "extra_decision_paths": 0, "duplicate_decision_paths": 0},
-    }
-    assert "100 g rice" not in receipt.content and "1 cup water" not in receipt.content
+    assert feedback["error_code"] == "reference_plan_validation_failed" and feedback["retryable"] is False
     assemble.assert_not_awaited()
     save.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_restoring_model_objects_reproduces_broken_legacy_coverage_feedback(selected_tool, assembly, monkeypatch):
-    """负控恢复模型对象输入，证明相同 ToolNode 请求会失去结构化纠错。"""
-    assemble, save = AsyncMock(), AsyncMock()
-    monkeypatch.setattr(selection, "assemble_reference_selection", assemble)
-    monkeypatch.setattr(
-        sys.modules["yuxi.services.reference_meal_plan_service"], "save_reference_plan", save, raising=False
-    )
-    source = BACKEND / "package/yuxi/agents/toolkits/meal_planner.py"
-    tree = ast.parse(source.read_text(encoding="utf-8"))
-    schema = deepcopy(
-        next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ReferencePlanToolInput")
-    )
-    call = next(
-        node
-        for node in ast.walk(schema)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "ReferencePlanDraft"
-    )
-    assert isinstance(call.args[0], ast.Dict)
-    call.args[0].values = [
-        ast.Attribute(value=ast.Name(id="self", ctx=ast.Load()), attr=key.value, ctx=ast.Load())
-        for key in call.args[0].keys
-    ]
-    namespace = dict(selected_tool.namespace)
-    node = deepcopy(
-        next(
-            node
-            for node in tree.body
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "save_reference_meal_plan"
-        )
-    )
-    exec(
-        compile(ast.fix_missing_locations(ast.Module(body=[schema, node], type_ignores=[])), str(source), "exec"),
-        namespace,
-    )
-    mutant = namespace["save_reference_meal_plan"]
-    mutant.handle_validation_error = namespace["_reference_save_validation_error"]
-    body = explicit_draft()
-    body["purchase_gaps"] = []
-    result = await execute_tool(SimpleNamespace(tool=mutant), body, SaveContext(), handle_tool_errors=True)
-    receipt = result["messages"][-1]
-    assert receipt.status == "error" and "not subscriptable" in receipt.content
-    with pytest.raises(json.JSONDecodeError):
-        json.loads(receipt.content)
-    assemble.assert_not_awaited()
-    save.assert_not_awaited()
+def test_tool_json_schema_has_no_legacy_free_form_fields(selected_tool):
+    """供应商看到的 schema 本身不暴露 meals、ingredient_refs 或 purchase_gaps。"""
+    properties = selected_tool.tool.tool_call_schema.model_json_schema()["properties"]
+    assert set(properties) == {"read_selection", "translation_correction"}
+    rendered = json.dumps(properties, ensure_ascii=False)
+    assert "ingredient_refs" not in rendered and '"purchase_gaps"' not in rendered
 
 
 @pytest.mark.asyncio
@@ -372,6 +313,8 @@ async def test_assembled_agent_receives_production_prompt_and_can_use_selection_
             and any(getattr(target, "id", "") == "REFERENCE_MEAL_PROMPT" for target in node.targets)
         )
     )
+    assert "旧完整引句模式" not in prompt and "使用完整引句模式" not in prompt
+    assert "不要提交nutrition_highlights" in prompt
     seen = []
 
     class ObservedModel(GenericFakeChatModel):

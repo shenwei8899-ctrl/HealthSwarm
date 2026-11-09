@@ -159,3 +159,10 @@ test('rendered reference card hides incomplete historical menus and permits veri
  assert.match(ready,/富硒鸡蛋/);assert.match(ready,/确认这些商品并加入购物车/)
  assert.match(await html({meals:[],purchase_items:[]}),/需要重新安排/)
 })
+
+test('reference self-purchase gaps show no price and never become cart products',()=>{
+ const source=readFileSync(new URL('../src/components/ReferenceMealPlanCard.vue',import.meta.url),'utf8')
+ assert.match(source,/no_match:'自行购买 · 暂无价格'/)
+ assert.match(source,/needs_confirmation:'自行购买 · 暂无价格'/)
+ assert.doesNotMatch(source,/purchase_gaps[^\n]+confirm.*cart/i)
+})

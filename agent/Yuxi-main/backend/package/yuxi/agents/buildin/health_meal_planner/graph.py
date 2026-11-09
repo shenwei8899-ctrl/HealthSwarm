@@ -151,8 +151,8 @@ class MealPlanResultMiddleware(AgentMiddleware):
                             "按真实错误定位译文，保持原文数量、时间、单位和步骤顺序。"
                             if save_error_code in {"recipe_translation_missing", "recipe_translation_invalid"}
                             else "所选商品规格未对应本次原谱食材。本次只调用一次save_reference_meal_plan，"
-                            "重新核对已读原谱的ingredient_matches；purchase_items只选status为matched且sku_id一致的商品。"
-                            "needs_confirmation和missing_product必须保留真实缺口，不得把未证明加工状态的商品当成匹配。"
+                            "重新核对已读原谱recipe_check中的candidate_skus；purchase_items只提交候选sku_id、对应candidate_keys及包装quantity。"
+                            "不得自行提交ingredient_refs或purchase_gaps；无候选食材由后台保留为自行购买。"
                             if save_error_code == "reference_ingredient_mismatch"
                             else "餐单保存校验失败，按最新真实工具反馈修正；"
                             "原文、采购对应、中文译文各仅有一次修正机会。"

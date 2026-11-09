@@ -205,7 +205,7 @@ test('unread, rejected or unavailable procurement never displays a known zero am
 
 
 test('saved meal gaps stay visible while only purchasable products reach quote',async()=>{
- const gaps=[{ingredient:'Oil',ingredient_label:'油',reason:'needs_confirmation',detail:'需自行准备并核对原谱用量。'},
+ const gaps=[{ingredient:'Oil',ingredient_label:'油',reason:'needs_confirmation',purchase_mode:'self_purchase',sku_id:null,price_cent:null,detail:'自行购买，暂无价格。'},
    {ingredient:'Scallion (optional), sliced',ingredient_label:'葱（可选），切片',reason:'optional_not_selected',detail:'原谱可选，本次未采用。'}]
  const f=mount({unified:true,selection:{familyId:'family-1',date:'2026-10-21',mealType:'dinner',version:2,dishKeys:['dish-1']},gaps})
  try{
@@ -219,8 +219,8 @@ test('saved meal gaps stay visible while only purchasable products reach quote',
  }finally{f.dispose()}
 })
 
-test('purchase panel distinguishes failure from loading and separates optional items',()=>{
- const props=reactive({gaps:[{ingredient:'Oil',reason:'needs_confirmation'},{ingredient:'Scallion',reason:'optional_not_selected'}],slots:[],ready:false,busy:false,error:'食材核对失败',picked:[]})
+test('purchase panel distinguishes failure from loading and renders self-purchase without a price',async()=>{
+ const props=reactive({gaps:[{ingredient:'Oil',reason:'needs_confirmation',purchase_mode:'self_purchase'},{ingredient:'Scallion',reason:'optional_not_selected'}],slots:[],ready:false,busy:false,error:'食材核对失败',picked:[]})
  const source=readFileSync(new URL('../src/components/MealPurchasePanel.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
  const panel=new Function('computed','ref','defineProps','defineEmits',source+';return {deliveryText,preparationGaps,optionalGaps}')(computed,ref,()=>props,()=>()=>{})
  assert.equal(panel.deliveryText.value,'暂不可用')
@@ -232,4 +232,14 @@ test('purchase panel distinguishes failure from loading and separates optional i
  const template=readFileSync(new URL('../src/components/MealPurchasePanel.vue',import.meta.url),'utf8')
  assert.ok(template.includes('{{deliveryText}}'))
  assert.ok(template.includes('不计入订单金额'))
+ assert.ok(template.includes("gap.purchase_mode==='self_purchase'"))
+ assert.ok(template.includes('自行购买 · 暂无价格'))
+ const {compile,createSSRApp}=await import('vue'),{renderToString}=await import('vue/server-renderer')
+ const render=compile(template.match(/<template>([\s\S]*?)<\/template>\s*<style/)[1])
+ const html=await renderToString(createSSRApp({render,setup:()=>({
+  accessRequired:false,busy:false,ready:false,fixed:false,error:'',retryLabel:'重新核对',preparationGaps:props.gaps.slice(0,1),optionalGaps:[],optionalText:'',
+  address:null,slots:[],slotId:null,timesOpen:false,deliveryText:'待核对',picked:[],products:[],pending:false,pricing:false,canSubmit:false,total:'—',quote:null,
+  slotName:()=>'',money:()=>'',
+ })}))
+ assert.match(html.replace(/<!--[\s\S]*?-->/g,''),/Oil · 自行购买 · 暂无价格/)
 })

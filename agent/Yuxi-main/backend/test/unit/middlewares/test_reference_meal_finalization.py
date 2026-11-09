@@ -22,7 +22,7 @@ from test.unit.middlewares.test_health_final_answer import ControlledStreamModel
 from yuxi.agents.buildin.health_meal_planner.graph import HealthAuthorizationMiddleware, MealPlanResultMiddleware
 from yuxi.agents.toolkits import meal_planner
 from yuxi.models.chat import ChatCompletionsAdapter
-from yuxi.services import health_meal_plan_service, reference_meal_plan_service
+from yuxi.services import health_meal_plan_service, reference_meal_plan_service, reference_meal_selection_service
 from yuxi.services import model_message_audit_service, tool_message_audit_service
 from yuxi.services.health_family_planner_types import FAMILY_PLANNER_TOOLS
 from yuxi.services.health_initial_meal_plan_types import INITIAL_PLANNER_TOOLS
@@ -51,6 +51,29 @@ DRAFT = {
     "purchase_items": [],
     "purchase_gaps": [{"ingredient": "合成食材", "reason": "catalog_unavailable", "detail": "合成目录不可用"}],
 }
+READ_SELECTION = {
+    "use_read_recipes": True,
+    "auto_purchase_matches": True,
+    "meals": [
+        {
+            "meal_type": "dinner",
+            "dishes": [{"file_id": "synthetic-file", "chunk_id": "synthetic-chunk"}],
+        }
+    ],
+    "purchase_items": [],
+}
+SAVE_ARGS = {"read_selection": READ_SELECTION}
+TRANSLATION_CORRECTION = [
+    {
+        "file_id": "synthetic-file",
+        "chunk_id": "synthetic-chunk",
+        "display_zh": {
+            "name": "合成食谱",
+            "ingredients": ["合成食材"],
+            "steps": ["合成步骤"],
+        },
+    }
+]
 
 
 @dataclass
@@ -77,9 +100,9 @@ class RepeatingSaveModel(ControlledStreamModel):
         self.seen_messages.append(messages)
         if kwargs.get("tools"):
             draft = (
-                {"meals": [], "purchase_items": [], "purchase_gaps": []}
+                {"read_selection": {}}
                 if self.fail_first_save and not index
-                else DRAFT
+                else SAVE_ARGS
             )
             chunk = AIMessageChunk(
                 id=f"{self.identity_prefix}provider-planning-{index}",
@@ -155,10 +178,12 @@ def services(monkeypatch):
         return snapshot(json.loads(text)["preview_id"])
 
     saved = AsyncMock(return_value=snapshot())
+    assembled = AsyncMock(return_value=ReferencePlanDraft.model_validate(DRAFT))
     final_result = AsyncMock(side_effect=final)
     monkeypatch.setattr(reference_meal_plan_service, "save_reference_plan", saved)
+    monkeypatch.setattr(reference_meal_selection_service, "assemble_reference_selection", assembled)
     monkeypatch.setattr(health_meal_plan_service, "planner_final_result", final_result)
-    return SimpleNamespace(saved=saved, final=final_result)
+    return SimpleNamespace(saved=saved, assembled=assembled, final=final_result)
 
 
 def request_for(messages, context=None):
@@ -178,7 +203,7 @@ def request_for(messages, context=None):
 @pytest.mark.asyncio
 async def test_quote_correction_budget_applies_to_every_model(services):
     """修正参数仍无效时，各模型都在再次外呼前停止，缺少保存工具同样拒绝。"""
-    failed_call = {"id": "first-save", "name": "save_reference_meal_plan", "args": DRAFT, "type": "tool_call"}
+    failed_call = {"id": "first-save", "name": "save_reference_meal_plan", "args": SAVE_ARGS, "type": "tool_call"}
     first_failure = [
         human(),
         AIMessage(content="", tool_calls=[failed_call]),
@@ -196,7 +221,7 @@ async def test_quote_correction_budget_applies_to_every_model(services):
                 {
                     **failed_call,
                     "id": "corrected-save",
-                    "args": {"meals": [], "purchase_items": [], "purchase_gaps": []},
+                    "args": {"read_selection": {}},
                 }
             ],
         ),
@@ -305,7 +330,7 @@ async def test_full_three_meal_graph_has_room_for_fifteen_recipes_and_final_rece
                 ("read_reference_recipe", {"file_id": f"file-{number}", "chunk_id": f"chunk-{number}"}),
             ]
         )
-    calls.append(("save_reference_meal_plan", DRAFT))
+    calls.append(("save_reference_meal_plan", SAVE_ARGS))
     chunks = [
         [
             AIMessageChunk(
@@ -449,7 +474,7 @@ def test_parameter_recovery_does_not_adopt_unrelated_or_unfinished_calls(boundar
     elif boundary == "different_name":
         messages[-1].name = "read_reference_recipe"
     elif boundary == "nonempty":
-        messages[1].tool_calls[0]["args"] = DRAFT
+        messages[1].tool_calls[0]["args"] = SAVE_ARGS
     elif boundary == "duplicate_id":
         messages[1].tool_calls[1]["id"] = messages[1].tool_calls[0]["id"]
     request = request_for(messages).override(tools=tools)
@@ -539,9 +564,13 @@ async def test_empty_parameters_recover_on_next_real_node_with_audit_authorizati
             return snapshot()
 
         services.saved.side_effect = checked_save
+        invalid = json.loads(json.dumps(DRAFT))
+        invalid["meals"][0]["dishes"][0]["portion_quote"] = "每人建议一份合成份量"
+        services.assembled.side_effect = [
+            ReferencePlanDraft.model_validate(invalid),
+            ReferencePlanDraft.model_validate(invalid if scenario == "quote_repeat" else DRAFT),
+        ]
     wire_requests = []
-    invalid_quote_draft = json.loads(json.dumps(DRAFT))
-    invalid_quote_draft["meals"][0]["dishes"][0]["portion_quote"] = "每人建议一份合成份量"
 
     def respond(request):
         wire = json.loads(request.content)
@@ -551,7 +580,7 @@ async def test_empty_parameters_recover_on_next_real_node_with_audit_authorizati
             count = 1 if quote_case or scenario == "single_empty" else 2
             first_args = {}
             if quote_case:
-                first_args = invalid_quote_draft
+                first_args = SAVE_ARGS
             calls = [
                 {
                     "id": f"empty-{number}",
@@ -562,9 +591,11 @@ async def test_empty_parameters_recover_on_next_real_node_with_audit_authorizati
             ]
         elif index == 2:
             assert wire["tool_choice"] == {"type": "function", "function": {"name": "save_reference_meal_plan"}}
-            corrected = invalid_quote_draft if scenario == "quote_repeat" else json.loads(json.dumps(DRAFT))
-            if quote_case and scenario != "quote_repeat":
-                corrected["meals"][0]["dishes"][0]["portion_quote"] = None
+            corrected = json.loads(json.dumps(SAVE_ARGS))
+            if quote_case:
+                corrected["read_selection"]["meals"][0]["dishes"][0]["display_zh"] = TRANSLATION_CORRECTION[0][
+                    "display_zh"
+                ]
             calls = [
                 {
                     "id": "corrected-save",
@@ -586,7 +617,7 @@ async def test_empty_parameters_recover_on_next_real_node_with_audit_authorizati
                     }
                 )
             if scenario == "quote_invalid_draft":
-                calls[0]["function"]["arguments"] = json.dumps({"meals": [], "purchase_items": [], "purchase_gaps": []})
+                calls[0]["function"]["arguments"] = json.dumps({"read_selection": {}})
             if scenario == "quote_other_tool":
                 calls[0]["function"] = {
                     "name": "read_reference_recipe",
@@ -893,7 +924,7 @@ async def test_complete_tool_responses_keep_arguments_audit_usage_and_streamed_f
                 {
                     "id": "synthetic-save",
                     "type": "function",
-                    "function": {"name": "save_reference_meal_plan", "arguments": json.dumps(DRAFT)},
+                    "function": {"name": "save_reference_meal_plan", "arguments": json.dumps(SAVE_ARGS)},
                 }
             ]
         else:
@@ -1216,7 +1247,9 @@ async def test_unstructured_final_after_real_reads_gets_one_forced_save_attempt(
         receipt(name="read_reference_recipe", content="{}"),
     ]
     request = request_for(messages)
-    save = AIMessage(content="", tool_calls=[{"id": "save-once", "name": "save_reference_meal_plan", "args": DRAFT}])
+    save = AIMessage(
+        content="", tool_calls=[{"id": "save-once", "name": "save_reference_meal_plan", "args": SAVE_ARGS}]
+    )
     handler = AsyncMock(side_effect=[
         ModelResponse(result=[AIMessage(content="早餐午餐晚餐已经计划好，但没有保存回执")]),
         ModelResponse(result=[save]),

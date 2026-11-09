@@ -10,13 +10,7 @@ from yuxi.agents.toolkits.registry import tool
 from yuxi.agents.toolkits.health import HealthKnowledgeInput, HealthReadInput
 from yuxi.services.health_meal_plan_types import MealPlanSpec
 from yuxi.services.health_family_planner_types import FamilySwapToolInput, FamilyParticipationToolInput
-from yuxi.services.reference_meal_plan_types import (
-    REFERENCE_TOOLS,
-    ReferenceMeal,
-    ReferencePlanDraft,
-    ReferencePurchaseGap,
-    ReferencePurchaseItem,
-)
+from yuxi.services.reference_meal_plan_types import REFERENCE_TOOLS
 from yuxi.services.reference_meal_selection_service import (
     ReferenceReadSelection,
     ReferenceTranslationCorrection,
@@ -83,11 +77,8 @@ class ReferenceRecipeInput(HealthReadInput):
 
 
 class ReferencePlanToolInput(HealthReadInput):
-    """显式选择完整引句或本轮已读原谱，禁止混用后覆盖错误引句。"""
+    """只允许选择本轮已读原谱，原文、商品对应和缺口均由服务端拥有。"""
 
-    meals: list[ReferenceMeal] | None = Field(default=None, min_length=1, max_length=3)
-    purchase_items: list[ReferencePurchaseItem] | None = Field(default=None, max_length=30)
-    purchase_gaps: list[ReferencePurchaseGap] | None = Field(default=None, max_length=450)
     read_selection: ReferenceReadSelection | None = None
     translation_correction: list[ReferenceTranslationCorrection] | None = Field(
         default=None, min_length=1, max_length=15
@@ -95,24 +86,9 @@ class ReferencePlanToolInput(HealthReadInput):
 
     @model_validator(mode="after")
     def explicit_mode(self):
-        """两种输入都沿用原参考稿校验，不接受不完整的混合请求。"""
-        values = (self.meals, self.purchase_items, self.purchase_gaps)
-        if self.translation_correction is not None:
-            if self.read_selection is not None or any(value is not None for value in values):
-                raise ValueError("译文修正不能改变餐次、菜谱或采购选择")
-        elif self.read_selection is not None:
-            if any(value is not None for value in values):
-                raise ValueError("已读原谱选择不能同时提供原文副本或采购对应")
-        elif any(value is None for value in values):
-            raise ValueError("完整引句模式必须提供三项原参考稿字段")
-        else:
-            ReferencePlanDraft.model_validate(
-                {
-                    "meals": [meal.model_dump(mode="json") for meal in self.meals],
-                    "purchase_items": [item.model_dump(mode="json") for item in self.purchase_items],
-                    "purchase_gaps": [gap.model_dump(mode="json") for gap in self.purchase_gaps],
-                }
-            )
+        """首次选择与译文修正二选一，不能提交服务端拥有的事实。"""
+        if (self.read_selection is None) == (self.translation_correction is None):
+            raise ValueError("须提交本轮已读原谱选择，或只修正该选择的中文译文")
         return self
 
 
@@ -174,9 +150,6 @@ async def read_reference_recipe(
 @tool(category="health", display_name="保存日常参考餐单", args_schema=ReferencePlanToolInput)
 async def save_reference_meal_plan(
     runtime: ToolRuntime,
-    meals: list | None = None,
-    purchase_items: list | None = None,
-    purchase_gaps: list | None = None,
     read_selection: dict | None = None,
     translation_correction: list | None = None,
 ) -> dict | ToolMessage:
@@ -193,26 +166,35 @@ async def save_reference_meal_plan(
         translation_failure = reference_save_failure_index(
             messages, runtime.context.request_id, error_code="recipe_translation_invalid"
         )
+        purchase_failure = reference_save_failure_index(
+            messages, runtime.context.request_id, error_code="reference_ingredient_mismatch"
+        )
         if translation_correction is not None:
             original = reference_translation_source(messages, translation_failure)
             try:
                 selection = original.get("read_selection")
-                corrected = apply_reference_translation_correction(
-                    selection if selection is not None else original, translation_correction
-                )
+                if selection is None:
+                    raise HealthVisionError(
+                        "reference_translation_correction_invalid", "译文修正缺少首次已读原谱选择", 422
+                    )
+                corrected = apply_reference_translation_correction(selection, translation_correction)
             except ValidationError as error:
                 raise HealthVisionError(
                     "reference_translation_correction_invalid", "中文译文修正结构未通过校验", 422
                 ) from error
-            draft = (
-                await assemble_reference_selection(runtime.context, corrected) if selection is not None else corrected
+            draft = await assemble_reference_selection(
+                runtime.context,
+                corrected,
+                allow_purchase_fallback=purchase_failure is not None,
             )
         elif translation_failure is not None:
             raise HealthVisionError("reference_translation_correction_invalid", "译文修正只能提交原菜谱的中文译文", 422)
         elif read_selection is not None:
-            draft = await assemble_reference_selection(runtime.context, read_selection)
+            draft = await assemble_reference_selection(
+                runtime.context, read_selection, allow_purchase_fallback=purchase_failure is not None
+            )
         else:
-            draft = {"meals": meals, "purchase_items": purchase_items, "purchase_gaps": purchase_gaps}
+            raise HealthVisionError("reference_selection_required", "只能提交本轮已读原谱选择", 422)
         return await save_reference_plan(runtime.context, draft)
     except HealthVisionError as error:
         if translation_failure is not None and error.code in {
@@ -286,15 +268,11 @@ def reference_translation_source(messages, failure_index):
         ]
         if len(calls) == 1:
             args = calls[0]["args"]
-            if isinstance(args.get("read_selection"), dict):
-                return {"read_selection": args["read_selection"]}
-            fields = ("meals", "purchase_items", "purchase_gaps")
-            if (
-                all(key in args for key in fields)
-                and args.get("read_selection") is None
-                and args.get("translation_correction") is None
-            ):
-                return {key: args[key] for key in fields}
+            selected = args.get("read_selection")
+            if isinstance(selected, ReferenceReadSelection):
+                selected = selected.model_dump(mode="json")
+            if isinstance(selected, dict):
+                return {"read_selection": selected}
     raise HealthVisionError("reference_translation_correction_invalid", "首次餐单选择无法核对", 422)
 
 

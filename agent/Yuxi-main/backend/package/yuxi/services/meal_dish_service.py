@@ -123,7 +123,9 @@ async def scoped_purchase(uid, family_id, day, meal_type, version, keys, *, publ
 def purchase_scope_hash(dishes):
     """展示助译和媒体不参与采购身份，原文、来源及份量仍需一致。"""
     presentation = {"display_zh", "translation_status", "image_url", "image_source", "step_images"}
-    return input_fingerprint([{key: value for key, value in dish.items() if key not in presentation} for dish in dishes])
+    return input_fingerprint(
+        [{key: value for key, value in dish.items() if key not in presentation} for dish in dishes]
+    )
 
 
 async def validate_selection_purchase(source):
@@ -349,22 +351,38 @@ def _scoped_reference_gaps(original, source):
         ingredient, reason = gap.get("ingredient"), gap.get("reason")
         if ingredient not in ingredients:
             continue
-        if ingredient in seen or "sku_id" in gap:
+        if ingredient in seen or gap.get("sku_id") is not None:
             raise HealthVisionError("dish_ingredients_missing", "食材采购对应重复或不完整，请重新核对餐单", 409)
         seen.add(ingredient)
         if reason == "not_sold" and cooking_water(ingredient):
             detail = "烹饪用水，需自行准备。"
         elif reason == "optional_not_selected" and optional_reference_ingredient(ingredient):
             detail = "原谱可选，本次未采用。"
-        elif reason in {"no_match", "needs_confirmation"} and not cooking_water(ingredient) and not optional_reference_ingredient(ingredient):
+        elif (
+            reason in {"no_match", "needs_confirmation"}
+            and not cooking_water(ingredient)
+            and not optional_reference_ingredient(ingredient)
+        ):
             detail = (
-                "需自行准备：商城尚未匹配到此食材。"
+                "自行购买，暂无价格：商城商品名中暂未找到对应食材。"
                 if reason == "no_match"
-                else "需自行准备并核对原谱品种、形态和用量。"
+                else "自行购买，暂无价格：请核对菜谱中的具体品种、形态和用量。"
             )
         else:
             raise HealthVisionError("dish_ingredients_missing", "食材缺口说明与原谱不一致，请重新核对餐单", 409)
-        result.append({"ingredient": ingredient, "ingredient_label": labels.get(ingredient, ingredient), "reason": reason, "detail": detail})
+        result.append(
+            {
+                "ingredient": ingredient,
+                "ingredient_label": labels.get(ingredient, ingredient),
+                "reason": reason,
+                "detail": detail,
+                **(
+                    {"purchase_mode": "self_purchase", "sku_id": None, "price_cent": None}
+                    if reason in {"no_match", "needs_confirmation"}
+                    else {}
+                ),
+            }
+        )
     return result
 
 

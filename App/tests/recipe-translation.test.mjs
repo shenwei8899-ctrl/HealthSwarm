@@ -123,5 +123,6 @@ test('actual meal overview keeps concise nutrition and Chinese dishes without pr
  assert.match(html,/鸡肉意面/)
  assert.match(html,/蛋白质 32 克/)
  assert.doesNotMatch(html,/食材准备说明|自行准备|tsp salt|看做法/)
- assert.equal(referenceGapDetail({reason:'needs_confirmation',detail:'SKU information missing'}),'商品资料或规格需要进一步核对。')
+ assert.equal(referenceGapDetail({reason:'needs_confirmation',detail:'SKU information missing'}),'请核对具体品种、形态和用量。')
+ assert.equal(referenceGapDetail({reason:'no_match',detail:'No matching SKU'}),'商城商品名中暂未找到对应食材。')
 })

@@ -37,7 +37,7 @@ export function referenceIngredientLabel(labels, original) {
 
 export function referenceGapDetail(gap) {
   if (!/[a-z]{2,}/i.test(gap.detail || '')) return gap.detail
-  return {no_match:'暂未找到匹配商品，请自行准备或核对同类食材。',needs_confirmation:'商品资料或规格需要进一步核对。',
+  return {no_match:'商城商品名中暂未找到对应食材。',needs_confirmation:'请核对具体品种、形态和用量。',
     not_sold:'此项无需在商城购买，请自行准备。',catalog_unavailable:'商品目录暂时无法读取，请稍后核对。'}[gap.reason] || '采购资料待核对。'
 }
 

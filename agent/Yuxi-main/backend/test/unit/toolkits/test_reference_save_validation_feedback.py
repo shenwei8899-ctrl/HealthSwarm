@@ -127,7 +127,9 @@ def read_selection():
             }
             for meal in ("breakfast", "lunch", "dinner")
         ],
-        "purchase_items": [{"sku_id": "synthetic-sku", "quantity": 1}],
+        "purchase_items": [
+            {"sku_id": "synthetic-sku", "quantity": 1, "candidate_keys": ["ingredient:synthetic"]}
+        ],
     }
 
 
@@ -234,8 +236,49 @@ async def test_translation_retry_uses_first_selection_only(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_legacy_translation_retry_preserves_original_quotes_and_purchase(monkeypatch):
-    """旧版完整稿也只修译文，原文和采购不交回模型重写。"""
+async def test_translation_retry_preserves_prior_purchase_fallback(monkeypatch):
+    """包装纠正已降级为自行购买后，译文修正不能恢复严格 SKU 校验。"""
+    context = SaveContext()
+    selected = read_selection()
+    patch = translation_patch()
+    messages = [
+        HumanMessage("合成保存", additional_kwargs={"health_request_id": context.request_id}),
+        declared("first", {"read_selection": selected}),
+        failure(
+            "first",
+            error_code="reference_ingredient_mismatch",
+            request_id=context.request_id,
+            retryable=True,
+        ),
+        declared("fallback", {"read_selection": selected}),
+        failure(
+            "fallback",
+            error_code="recipe_translation_invalid",
+            request_id=context.request_id,
+            retryable=True,
+        ),
+        declared("translation", {"translation_correction": [patch]}),
+    ]
+    assembled = AsyncMock(return_value=ReferencePlanDraft.model_validate(draft()))
+    saved = AsyncMock(return_value={"preview_id": "synthetic-preview"})
+    monkeypatch.setattr(reference_meal_selection_service, "assemble_reference_selection", assembled)
+    monkeypatch.setattr(reference_meal_plan_service, "save_reference_plan", saved)
+    runtime = ToolRuntime({"messages": messages}, context, {}, lambda _: None, "translation", None)
+
+    result = await save_reference_meal_plan.coroutine(runtime=runtime, translation_correction=[patch])
+
+    assert result == {"preview_id": "synthetic-preview"}
+    assert assembled.await_args.kwargs["allow_purchase_fallback"] is True
+    display = assembled.await_args.args[1]["meals"][1]["dishes"][0]["display_zh"]
+    assert display["name"] == patch["display_zh"]["name"]
+    assert display["ingredients"] == patch["display_zh"]["ingredients"]
+    assert display["steps"] == patch["display_zh"]["steps"]
+    saved.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_legacy_translation_retry_cannot_restore_removed_free_form_mode(monkeypatch):
+    """历史自由原文失败不能借译文修正重新进入已移除的 Agent 模式。"""
     original = draft()
     original["meals"][0]["dishes"][0]["display_zh"] = {
         "name": "合成清粥",
@@ -257,11 +300,9 @@ async def test_legacy_translation_retry_preserves_original_quotes_and_purchase(m
     save = AsyncMock(return_value={"preview_id": "synthetic-preview"})
     monkeypatch.setattr(reference_meal_plan_service, "save_reference_plan", save)
     runtime = ToolRuntime({"messages": messages}, context, {}, lambda _: None, "retry", None)
-    await save_reference_meal_plan.coroutine(runtime=runtime, translation_correction=[patch])
-    corrected = save.await_args.args[1]
-    assert corrected["meals"][0]["dishes"][0]["steps"] == original["meals"][0]["dishes"][0]["steps"]
-    assert corrected["purchase_items"] == original["purchase_items"]
-    assert corrected["meals"][0]["dishes"][0]["display_zh"]["steps"] == ["合成煮粥"]
+    with pytest.raises(HealthVisionError, match="reference_translation_correction_invalid"):
+        await save_reference_meal_plan.coroutine(runtime=runtime, translation_correction=[patch])
+    save.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -288,7 +329,7 @@ async def test_second_semantic_translation_failure_is_typed_terminal_error(monke
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "kind,code",
+    "kind,legacy_code",
     [
         ("duplicate_meals", "reference_duplicate_meals"),
         ("duplicate_sku", "reference_duplicate_sku"),
@@ -296,8 +337,8 @@ async def test_second_semantic_translation_failure_is_typed_terminal_error(monke
         ("missing_decision", "reference_purchase_coverage_invalid"),
     ],
 )
-async def test_real_tool_node_returns_safe_root_validation_feedback(monkeypatch, kind, code):
-    """三类模型级错误仍拒绝，但不会被公共过滤器清空原因。"""
+async def test_real_tool_node_rejects_legacy_root_fields_without_retry(monkeypatch, kind, legacy_code):
+    """旧模型级错误在新的 schema 边界统一终止，不能邀请模型重写服务端事实。"""
     service = AsyncMock()
     monkeypatch.setattr(reference_meal_plan_service, "save_reference_plan", service)
     bad = invalid_draft(kind)
@@ -312,34 +353,57 @@ async def test_real_tool_node_returns_safe_root_validation_feedback(monkeypatch,
     assert isinstance(receipt, ToolMessage)
     assert receipt.status == "error" and receipt.tool_call_id == "invalid"
     payload = json.loads(receipt.content)
-    assert payload["error_code"] == code and payload["retryable"] is True and payload["message"]
+    assert payload["error_code"] == "reference_plan_validation_failed"
+    assert payload["retryable"] is False and payload["message"] and legacy_code
     assert "合成大米原文" not in receipt.content and "with kwargs" not in receipt.content
     service.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_real_create_agent_receives_feedback_then_only_saves_the_corrected_draft(monkeypatch):
-    """真实图把失败送回模型，纠正后的服务只执行一次。"""
-    service = AsyncMock(return_value={"preview_id": "synthetic-saved-preview"})
+    """候选不匹配反馈只允许同一已读选择再纠正一次。"""
+    assembled = AsyncMock(return_value=ReferencePlanDraft.model_validate(draft()))
+    service = AsyncMock(
+        side_effect=[
+            HealthVisionError("reference_ingredient_mismatch", "合成候选不匹配", 422),
+            {"preview_id": "synthetic-saved-preview"},
+        ]
+    )
+    monkeypatch.setattr(reference_meal_selection_service, "assemble_reference_selection", assembled)
     monkeypatch.setattr(reference_meal_plan_service, "save_reference_plan", service)
+    monkeypatch.setattr(
+        health_meal_plan_service,
+        "planner_final_result",
+        AsyncMock(return_value={"preview_id": "synthetic-saved-preview"}),
+    )
     model = FeedbackSaveModel(
         messages=iter(
             [
-                declared("invalid", invalid_draft("duplicate_decision")),
-                declared("corrected", draft()),
+                declared("invalid", {"read_selection": read_selection()}),
+                declared("corrected", {"read_selection": read_selection()}),
                 AIMessage(content="合成最终结果"),
             ]
         )
     )
-    graph = create_agent(model, tools=[save_reference_meal_plan], context_schema=SaveContext)
-    result = await graph.ainvoke({"messages": [HumanMessage("合成保存请求")]}, context=SaveContext())
+    graph = create_agent(
+        model,
+        tools=[save_reference_meal_plan],
+        middleware=[MealPlanResultMiddleware()],
+        context_schema=SaveContext,
+    )
+    human = HumanMessage(
+        "合成保存请求",
+        additional_kwargs={"health_request_id": SaveContext().request_id},
+    )
+    result = await graph.ainvoke({"messages": [human]}, context=SaveContext())
     receipts = [item for item in result["messages"] if isinstance(item, ToolMessage)]
     assert [(item.tool_call_id, item.status) for item in receipts] == [("invalid", "error"), ("corrected", "success")]
-    assert [item["error_code"] for item in model.observed_feedback] == ["reference_purchase_coverage_invalid"]
-    service.assert_awaited_once()
-    context, saved = service.await_args.args
+    assert [item["error_code"] for item in model.observed_feedback] == ["reference_ingredient_mismatch"]
+    assert service.await_count == 2 and assembled.await_count == 2
+    context, saved = service.await_args_list[-1].args
     assert context == SaveContext()
     assert ReferencePlanDraft.model_validate(saved) == ReferencePlanDraft.model_validate(draft())
+    assert assembled.await_args_list[-1].kwargs["allow_purchase_fallback"] is True
     assert "synthetic-saved-preview" in receipts[-1].content
 
 
@@ -449,21 +513,26 @@ async def test_validation_then_quote_failure_has_one_separate_bounded_correction
     context = SaveContext()
     messages = [
         HumanMessage("合成保存", additional_kwargs={"health_request_id": context.request_id}),
-        declared("invalid"),
+        declared("invalid", {"read_selection": read_selection()}),
         failure(),
-        declared("corrected"),
+        declared("corrected", {"read_selection": read_selection()}),
     ]
     error = HealthVisionError("reference_quote_invalid", "合成引文拒绝", 422)
     service = AsyncMock(side_effect=error)
+    monkeypatch.setattr(
+        reference_meal_selection_service,
+        "assemble_reference_selection",
+        AsyncMock(return_value=ReferencePlanDraft.model_validate(draft())),
+    )
     monkeypatch.setattr(reference_meal_plan_service, "save_reference_plan", service)
     runtime = ToolRuntime({"messages": messages}, context, {}, lambda _: None, "corrected", None)
-    feedback = await save_reference_meal_plan.coroutine(runtime=runtime, meals=[], purchase_items=[], purchase_gaps=[])
+    feedback = await save_reference_meal_plan.coroutine(runtime=runtime, read_selection=read_selection())
     assert isinstance(feedback, ToolMessage) and feedback.status == "error"
     assert json.loads(feedback.content)["error_code"] == "reference_quote_invalid"
-    messages.extend([feedback, declared("second-quote")])
+    messages.extend([feedback, declared("second-quote", {"read_selection": read_selection()})])
     runtime = ToolRuntime({"messages": messages}, context, {}, lambda _: None, "second-quote", None)
     with pytest.raises(HealthVisionError) as caught:
-        await save_reference_meal_plan.coroutine(runtime=runtime, meals=[], purchase_items=[], purchase_gaps=[])
+        await save_reference_meal_plan.coroutine(runtime=runtime, read_selection=read_selection())
     assert caught.value is error
     assert reference_save_failure_index(messages, context.request_id) == 4
 
@@ -475,16 +544,25 @@ async def test_real_middleware_stops_reused_save_call_ids_before_another_service
     service = AsyncMock(return_value={"preview_id": "must-not-be-saved"})
     if scenario == "after_quote":
         service.side_effect = HealthVisionError("reference_quote_invalid", "合成引文拒绝", 422)
+    elif scenario == "after_validation":
+        service.side_effect = HealthVisionError("reference_ingredient_mismatch", "合成候选不匹配", 422)
     final = AsyncMock()
     read = AsyncMock()
     monkeypatch.setattr(reference_meal_plan_service, "save_reference_plan", service)
+    monkeypatch.setattr(
+        reference_meal_selection_service,
+        "assemble_reference_selection",
+        AsyncMock(return_value=ReferencePlanDraft.model_validate(draft())),
+    )
     monkeypatch.setattr(reference_meal_plan_service, "read_reference_recipe", read)
     monkeypatch.setattr(health_meal_plan_service, "planner_final_result", final)
     if scenario == "duplicate_before":
-        messages = [AIMessage(content="", tool_calls=[*declared("reused", draft()).tool_calls] * 2)]
+        messages = [
+            AIMessage(content="", tool_calls=[*declared("reused", {"read_selection": read_selection()}).tool_calls] * 2)
+        ]
     elif scenario == "empty_call_id":
         messages = [
-            declared("", draft()),
+            declared("", {"read_selection": read_selection()}),
             AIMessage(
                 content="",
                 tool_calls=[
@@ -497,8 +575,8 @@ async def test_real_middleware_stops_reused_save_call_ids_before_another_service
             ),
         ]
     else:
-        first = draft() if scenario == "after_quote" else invalid_draft("duplicate_decision")
-        messages = [declared("reused", first), declared("reused", draft())]
+        args = {"read_selection": read_selection()}
+        messages = [declared("reused", args), declared("reused", args)]
     model = FeedbackSaveModel(messages=iter(messages))
     graph = create_agent(
         model,
@@ -510,7 +588,7 @@ async def test_real_middleware_stops_reused_save_call_ids_before_another_service
     human = HumanMessage("合成保存", additional_kwargs={"health_request_id": context.request_id})
     with pytest.raises(HealthVisionError, match="reference_save_correction_invalid"):
         await graph.ainvoke({"messages": [human]}, context=context)
-    if scenario == "after_quote":
+    if scenario in {"after_quote", "after_validation"}:
         service.assert_awaited_once()
     else:
         service.assert_not_awaited()

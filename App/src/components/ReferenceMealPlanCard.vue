@@ -12,7 +12,7 @@ const plan=computed(()=>resolved.value||props.plan)
 const purchaseComplete=computed(()=>plan.value.purchase_ready===true||plan.value.purchase_validation_version===1)
 const labels=computed(()=>ingredientLabels((plan.value.meals||[]).flatMap(m=>m.dishes||[])))
 const names={breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}
-const gapNames={no_match:'暂无匹配商品',needs_confirmation:'商品资料待确认',not_sold:'自行准备',catalog_unavailable:'商品目录暂不可用'}
+const gapNames={no_match:'自行购买 · 暂无价格',needs_confirmation:'自行购买 · 暂无价格',not_sold:'自行准备',catalog_unavailable:'商品目录暂不可用'}
 let alive=true,revision=0
 const scope=storageContext(),current=()=>alive&&scope===storageContext()
 onUnmounted(()=>{alive=false;revision++})

@@ -283,14 +283,34 @@ async def test_valid_keyword_does_not_swallow_authorization_or_source_errors(sea
 )
 async def test_reference_save_only_exposes_first_current_quote_failure(monkeypatch, code, boundary):
     """专用工具保留真实失败身份，其他业务错误继续抛出。"""
-    from yuxi.services import reference_meal_plan_service
+    from yuxi.services import reference_meal_plan_service, reference_meal_selection_service
     from yuxi.services.reference_meal_plan_types import REFERENCE_TOOLS
 
     context = SearchContext()
     context.tools = list(REFERENCE_TOOLS)
+    selection = {
+        "use_read_recipes": True,
+        "auto_purchase_matches": True,
+        "meals": [
+            {
+                "meal_type": "breakfast",
+                "dishes": [{"file_id": "synthetic-file", "chunk_id": "synthetic-chunk"}],
+            }
+        ],
+        "purchase_items": [],
+    }
     current = [
         HumanMessage("合成保存请求", additional_kwargs={"health_request_id": context.request_id}),
-        AIMessage(content="", tool_calls=[{"id": "save-quote", "name": "save_reference_meal_plan", "args": {}}]),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": "save-quote",
+                    "name": "save_reference_meal_plan",
+                    "args": {"read_selection": selection},
+                }
+            ],
+        ),
     ]
     if boundary == "optional_knowledge":
         context.tools.append("query_family_nutrition_knowledge")
@@ -325,7 +345,11 @@ async def test_reference_save_only_exposes_first_current_quote_failure(monkeypat
     )
     failure = HealthVisionError(code, "合成原文核验拒绝", 422)
     service = AsyncMock(side_effect=failure)
+    assembled = {"assembled": True}
     monkeypatch.setattr(reference_meal_plan_service, "save_reference_plan", service)
+    monkeypatch.setattr(
+        reference_meal_selection_service, "assemble_reference_selection", AsyncMock(return_value=assembled)
+    )
     if code != "reference_quote_invalid" or boundary in {
         "old_request",
         "unmarked_request",
@@ -333,19 +357,24 @@ async def test_reference_save_only_exposes_first_current_quote_failure(monkeypat
         "non_reference",
     }:
         with pytest.raises(HealthVisionError) as caught:
-            await save_reference_meal_plan.coroutine(runtime=operation, meals=[], purchase_items=[], purchase_gaps=[])
+            await save_reference_meal_plan.coroutine(runtime=operation, read_selection=selection)
         assert caught.value is failure
-        service.assert_awaited_once_with(context, {"meals": [], "purchase_items": [], "purchase_gaps": []})
+        service.assert_awaited_once_with(context, assembled)
         return
-    result = await save_reference_meal_plan.coroutine(runtime=operation, meals=[], purchase_items=[], purchase_gaps=[])
-    service.assert_awaited_once_with(context, {"meals": [], "purchase_items": [], "purchase_gaps": []})
+    result = await save_reference_meal_plan.coroutine(runtime=operation, read_selection=selection)
+    service.assert_awaited_once_with(context, assembled)
     assert isinstance(result, ToolMessage) and result.status == "error"
     assert result.name == "save_reference_meal_plan" and result.tool_call_id == "save-quote"
     assert json.loads(result.content)["error_code"] == code
     current.append(result)
-    current.append(AIMessage(content="", tool_calls=[{"id": "save-retry", "name": result.name, "args": {}}]))
+    current.append(
+        AIMessage(
+            content="",
+            tool_calls=[{"id": "save-retry", "name": result.name, "args": {"read_selection": selection}}],
+        )
+    )
     operation.tool_call_id = "save-retry"
     with pytest.raises(HealthVisionError) as caught:
-        await save_reference_meal_plan.coroutine(runtime=operation, meals=[], purchase_items=[], purchase_gaps=[])
+        await save_reference_meal_plan.coroutine(runtime=operation, read_selection=selection)
     assert caught.value is failure
     assert service.await_count == 2

@@ -29,19 +29,20 @@ class ReferenceReadMeal(HealthDTO):
 
 
 class ReferenceReadPurchase(HealthDTO):
-    """包装数量必须显式给出，不代表个人食用量。"""
+    """Agent 只从服务端候选中选择 SKU 和包装数量。"""
 
     sku_id: str = Field(min_length=1, max_length=80)
     quantity: int = Field(ge=1, le=99, strict=True)
+    candidate_keys: list[str] = Field(min_length=1, max_length=450)
 
 
 class ReferenceReadSelection(HealthDTO):
-    """明确采用程序的原谱装配和已读商品匹配，不接收原文副本。"""
+    """用已读原谱装配菜品，食材对应与缺口由服务端生成。"""
 
     use_read_recipes: Literal[True]
     auto_purchase_matches: Literal[True]
     meals: list[ReferenceReadMeal] = Field(min_length=1, max_length=3)
-    purchase_items: list[ReferenceReadPurchase] = Field(min_length=1, max_length=30)
+    purchase_items: list[ReferenceReadPurchase] = Field(max_length=30)
 
     @field_validator("use_read_recipes", "auto_purchase_matches", mode="before")
     @classmethod
@@ -58,6 +59,9 @@ class ReferenceReadSelection(HealthDTO):
             raise ValueError("参考餐次不能重复")
         if len({item.sku_id for item in self.purchase_items}) != len(self.purchase_items):
             raise ValueError("相同规格须合并数量")
+        keys = [key for item in self.purchase_items for key in item.candidate_keys]
+        if len(keys) != len(set(keys)):
+            raise ValueError("每个候选食材只能选择一次")
         return self
 
 
@@ -96,7 +100,7 @@ def apply_reference_translation_correction(original, corrections) -> dict:
     return model.model_validate(selected).model_dump(mode="json")
 
 
-async def assemble_reference_selection(context, payload) -> "ReferencePlanDraft":
+async def assemble_reference_selection(context, payload, *, allow_purchase_fallback=False) -> "ReferencePlanDraft":
     """重验本轮读取来源后装配原 DTO，保存及发布仍由原 service 执行。"""
     from yuxi.services.health_meal_plan_service import require_planner_run
     from yuxi.services.reference_meal_plan_service import (
@@ -120,12 +124,14 @@ async def assemble_reference_selection(context, payload) -> "ReferencePlanDraft"
         opened = {(item["file_id"], item["chunk_id"]): item for item in receipts}
         reads = await tool_payloads(session, run, "find_reference_products")
         seen = {str(sku["sku_id"]): sku for read in reads for sku in read.get("catalog", [])}
-        if not seen:
+        if not reads:
             raise HealthVisionError("reference_product_required", "请先按商城分类读取在售商品", 409)
+        if not seen and selected.purchase_items:
+            raise HealthVisionError("reference_product_required", "本轮已读分类没有可选择的在售商品", 409)
         if any(item.sku_id not in seen for item in selected.purchase_items):
             raise HealthVisionError("reference_product_changed", "只能选择本轮已读取的商城商品", 409)
 
-        documents, meals = {}, []
+        documents, meals, issued_candidates = {}, [], {}
         for meal in selected.meals:
             dishes = []
             for choice in meal.dishes:
@@ -133,6 +139,20 @@ async def assemble_reference_selection(context, payload) -> "ReferencePlanDraft"
                 receipt = opened.get(key)
                 if receipt is None:
                     raise HealthVisionError("reference_receipt_invalid", "餐单使用了本 Run 未打开的菜谱", 409)
+                issued = receipt.get("recipe_check", {}).get("ingredient_matches")
+                if not isinstance(issued, list) or any(
+                    not isinstance(group, dict)
+                    or not isinstance(group.get("candidate_key"), str)
+                    or not isinstance(group.get("candidate_skus"), list)
+                    for group in issued
+                ):
+                    raise HealthVisionError("reference_receipt_invalid", "菜谱候选回执缺失，请重新读取原谱", 409)
+                for group in issued:
+                    issued_candidates[group["candidate_key"]] = {
+                        str(candidate["sku_id"])
+                        for candidate in group["candidate_skus"]
+                        if isinstance(candidate, dict) and candidate.get("sku_id") is not None
+                    }
                 if key not in documents:
                     fresh = await recipe_document(session, *key)
                     if not same_reference_document(fresh, receipt):
@@ -161,29 +181,53 @@ async def assemble_reference_selection(context, payload) -> "ReferencePlanDraft"
                     dish["display_zh"] = await cached_chinese_display(session, {**dish, "source": source})
                 dishes.append(dish)
             meals.append({"meal_type": meal.meal_type, "dishes": dishes})
-        items, gaps = _purchase_choices(meals, selected.purchase_items, seen)
+        items, gaps = _purchase_choices(
+            meals,
+            selected.purchase_items,
+            seen,
+            issued_candidates=issued_candidates,
+            allow_purchase_fallback=allow_purchase_fallback,
+        )
         return ReferencePlanDraft.model_validate({"meals": meals, "purchase_items": items, "purchase_gaps": gaps})
 
 
-def _purchase_choices(meals, selections, seen):
-    """按已读匹配生成原文对应；只剔除与原谱无关的模型附带规格。"""
-    from yuxi.services.reference_recipe_matching import ingredient_food, product_food, reference_ingredient_matches
+def _purchase_choices(meals, selections, seen, *, issued_candidates=None, allow_purchase_fallback=False):
+    """按商品名核对候选；Agent 只决定候选 SKU 与包装数。"""
+    from yuxi.services.reference_recipe_matching import reference_ingredient_candidates
 
     ingredients = tuple(
         dict.fromkeys(ingredient for meal in meals for dish in meal["dishes"] for ingredient in dish["ingredients"])
     )
-    selected_products = [seen[item.sku_id] for item in selections]
-    chosen_matches = reference_ingredient_matches(ingredients, selected_products)
-    known_matches = reference_ingredient_matches(ingredients, list(seen.values()))
+    if any(item.sku_id not in seen for item in selections):
+        raise HealthVisionError("reference_product_changed", "只能选择本轮已读取的商城商品", 409)
+    groups = reference_ingredient_candidates(ingredients, list(seen.values()))
+    by_key = {group["candidate_key"]: group for group in groups}
     refs = {item.sku_id: [] for item in selections}
+    quantities = {item.sku_id: item.quantity for item in selections}
+    selected_keys = set()
+    for item in selections:
+        invalid = []
+        for key in item.candidate_keys:
+            group = by_key.get(key)
+            issued = issued_candidates.get(key, set()) if issued_candidates is not None else None
+            allowed = {str(candidate["sku_id"]) for candidate in group.get("candidate_skus", [])} if group else set()
+            if issued is not None:
+                allowed &= issued
+            if group is None or item.sku_id not in allowed:
+                invalid.append(key)
+                continue
+            refs[item.sku_id].append(group["ingredient"])
+            selected_keys.add(key)
+        if invalid and not allow_purchase_fallback:
+            raise HealthVisionError("reference_ingredient_mismatch", "所选规格不属于菜谱回执中的候选组", 422)
     gaps = []
-    for chosen, known in zip(chosen_matches, known_matches, strict=True):
-        ingredient = known["ingredient"]
-        if chosen["status"] == "matched":
-            refs[chosen["sku_id"]].append(ingredient)
-        elif known["status"] == "cooking_water":
+    for group in groups:
+        ingredient = group["ingredient"]
+        if group["candidate_key"] in selected_keys:
+            continue
+        if group["status"] == "cooking_water":
             gaps.append({"ingredient": ingredient, "reason": "not_sold", "detail": "原谱烹饪用水，不作为商城商品。"})
-        elif chosen["status"] == "optional_not_selected":
+        elif group["status"] == "optional_not_selected":
             gaps.append(
                 {
                     "ingredient": ingredient,
@@ -191,31 +235,37 @@ def _purchase_choices(meals, selections, seen):
                     "detail": "原谱明确可选食材，本次未选择。",
                 }
             )
-        elif known["status"] == "matched":
-            raise HealthVisionError("reference_product_required", "请明确选择匹配食材的 SKU 及包装数量", 422)
-        elif known["status"] in {"missing_product", "needs_confirmation"}:
-            reason = "no_match" if known["status"] == "missing_product" else "needs_confirmation"
-            detail = (
-                "需自行准备：本轮已查询的商城商品中未找到匹配项。"
-                if reason == "no_match"
-                else "需自行准备并核对原谱品种、形态和用量：尚未确认对应商城商品。"
+        elif group["status"] == "matched":
+            if not allow_purchase_fallback:
+                raise HealthVisionError(
+                    "reference_ingredient_mismatch", "请从该食材的candidate_skus中选择规格及包装数量", 422
+                )
+            gaps.append(
+                {
+                    "ingredient": ingredient,
+                    "reason": "needs_confirmation",
+                    "detail": "需自行购买：未能确认适合当前就餐成员和菜谱用量的包装规格。",
+                }
             )
-            gaps.append({"ingredient": ingredient, "reason": reason, "detail": detail})
+        elif group["status"] in {"missing_product", "needs_confirmation"}:
+            reason = "no_match" if group["status"] == "missing_product" else "needs_confirmation"
+            detail = (
+                "需自行购买：本轮已查询的商城商品名称中未找到对应食材。"
+                if reason == "no_match"
+                else "需自行购买并核对菜谱中的具体品种、形态和用量。"
+            )
+            gaps.append(
+                {
+                    "ingredient": ingredient,
+                    "reason": reason,
+                    "detail": detail,
+                }
+            )
         else:
             raise HealthVisionError("reference_purchase_reason_invalid", "食材匹配状态无法核对", 422)
-    ingredient_foods = {ingredient_food(ingredient) for ingredient in ingredients}
-    ingredient_foods.discard(None)
-    for item in selections:
-        if refs[item.sku_id]:
-            continue
-        food = product_food(str(seen[item.sku_id].get("product_name") or ""))
-        if food is None or food in ingredient_foods:
-            raise HealthVisionError("reference_ingredient_mismatch", "所选规格无法核对，请检查食材或库存", 422)
     items = [
-        {"sku_id": item.sku_id, "quantity": item.quantity, "ingredient_refs": refs[item.sku_id]}
-        for item in selections
-        if refs[item.sku_id]
+        {"sku_id": sku_id, "quantity": quantities[sku_id], "ingredient_refs": ingredient_refs}
+        for sku_id, ingredient_refs in refs.items()
+        if ingredient_refs
     ]
-    if not items:
-        raise HealthVisionError("reference_product_required", "菜品缺少已核对的商城食材，不能保存餐单", 422)
     return items, gaps

@@ -406,7 +406,7 @@ async def read_reference_recipe(context, file_id, chunk_id):
 
 def reference_recipe_check(content, products):
     """展示完整原文的逐项诊断，商品读取快照不能代替保存时重验。"""
-    from yuxi.services.reference_recipe_matching import reference_ingredient_matches
+    from yuxi.services.reference_recipe_matching import reference_ingredient_candidates
 
     parsed = parse_reference_recipe(content)
     if parsed is None:
@@ -417,7 +417,7 @@ def reference_recipe_check(content, products):
             ),
             "ingredient_matches": [],
         }
-    matches = reference_ingredient_matches(parsed.ingredients, products)
+    matches = reference_ingredient_candidates(parsed.ingredients, products)
     return {
         "status": "needs_review"
         if parsed.review_sections
@@ -551,9 +551,9 @@ async def reference_plan_display(session, plan):
 
 
 def products_cover_reference_dishes(meals, items):
-    """每道展示菜至少关联一条本 Run 已核对的商城 SKU。"""
+    """兼容旧测试与审计工具；新餐单允许整道菜的食材全部自行购买。"""
     return all(
-        any(set(item["ingredient_refs"]) & set(dish["ingredients"]) for item in items)
+        any(set(item.get("ingredient_refs", [])) & set(dish["ingredients"]) for item in items)
         for meal in meals
         for dish in meal["dishes"]
     )
@@ -646,7 +646,7 @@ async def save_reference_plan(context, draft):
         if not contexts:
             raise HealthVisionError("reference_receipt_invalid", "请先读取当前成员和商城分类", 409)
         product_reads = await tool_payloads(session, run, "find_reference_products")
-        if not product_reads or not draft.purchase_items:
+        if not product_reads:
             raise HealthVisionError("reference_product_required", "请先按商城分类取得可售食材，再生成参考餐单", 409)
         if any(g.reason == "catalog_unavailable" for g in draft.purchase_gaps) and (
             draft.purchase_items or not contexts[-1].get("commerce_notice")
@@ -670,19 +670,31 @@ async def save_reference_plan(context, draft):
                 or requested.sku_id not in seen
                 or sku.get("sale_status") != "available"
                 or requested.quantity > int(sku.get("available_quantity", 0))
-                or seen[requested.sku_id].get("facts_version") != 2
+            ):
+                gaps.extend(
+                    {
+                        "ingredient": ingredient,
+                        "reason": "needs_confirmation",
+                        "detail": "自行购买，暂无价格：所选商城规格或库存已变化，请重新核对。",
+                        "purchase_mode": "self_purchase",
+                        "sku_id": None,
+                        "price_cent": None,
+                    }
+                    for ingredient in requested.ingredient_refs
+                )
+                continue
+            if (
+                seen[requested.sku_id].get("facts_version") != 2
                 or input_fingerprint(product_facts(sku, include_description=True))
                 != seen[requested.sku_id]["facts_hash"]
             ):
-                raise HealthVisionError("reference_product_changed", "所选商品或库存已变化，请重新读取目录", 409)
+                raise HealthVisionError("reference_product_changed", "所选商品身份已变化，请重新读取目录", 409)
             if reference_restriction_conflict(reference_product_composition(sku), restrictions):
                 raise HealthVisionError("reference_restriction_conflict", "所选商品含已明确填写的过敏或忌口成分", 422)
             identity = product_food(str(sku.get("product_name") or ""))
             if identity is None or any(ingredient_food(ref) != identity for ref in requested.ingredient_refs):
-                raise HealthVisionError("reference_ingredient_mismatch", "原谱食材与所选商城商品不相符", 422)
+                raise HealthVisionError("reference_ingredient_mismatch", "菜谱食材与所选商城商品名称不相符", 422)
             items.append({**reference_product(sku, requested.quantity), "ingredient_refs": requested.ingredient_refs})
-        if not products_cover_reference_dishes(meals, items):
-            raise HealthVisionError("reference_product_required", "菜品缺少已核对的商城食材，不能展示为已安排餐单", 409)
         from yuxi.services.reference_recipe_presentation import check_recipe_nutrition, recipe_pairing_summary
 
         check_recipe_nutrition(meals, items)
@@ -698,9 +710,9 @@ async def save_reference_plan(context, draft):
             "purchase_items": items,
             "purchase_gaps": gaps,
             "purchase_status": "partial"
-            if any(g["reason"] in {"no_match", "needs_confirmation"} for g in gaps)
+            if any(g["reason"] in {"no_match", "needs_confirmation", "selection_pending"} for g in gaps)
             else "selected",
-            "catalog_version": catalog.get("version"),
+            "catalog_version": catalog.get("version") or product_reads[-1].get("catalog_version"),
             "catalog_chain_version": REFERENCE_CATALOG_CHAIN_VERSION,
             "sources": current["sources"],
             "notice": "日常烹饪参考，未作专业审核；个人营养量尚未核算。",
@@ -739,14 +751,32 @@ def checked_reference_gaps(gaps, products):
         elif gap.reason == "optional_not_selected" and optional_reference_ingredient(gap.ingredient):
             result.append(gap.model_dump())
         elif gap.reason in {"no_match", "needs_confirmation"} and status in {"missing_product", "needs_confirmation"}:
-            # 两种原因都表示自备；最终标签由本轮实际核对结果决定。
             reason = "no_match" if status == "missing_product" else "needs_confirmation"
             detail = (
-                "需自行准备：本轮已查询的商城商品中未找到匹配项。"
+                "需自行购买：本轮已查询的商城商品名称中未找到对应食材。"
                 if reason == "no_match"
-                else "需自行准备并核对原谱品种、形态和用量：尚未确认对应商城商品。"
+                else "需自行购买并核对菜谱中的具体品种、形态和用量。"
             )
-            result.append({**gap.model_dump(), "reason": reason, "detail": detail})
+            result.append(
+                {
+                    **gap.model_dump(),
+                    "reason": reason,
+                    "detail": detail,
+                    "purchase_mode": "self_purchase",
+                    "sku_id": None,
+                    "price_cent": None,
+                }
+            )
+        elif gap.reason == "needs_confirmation" and status == "matched":
+            result.append(
+                {
+                    **gap.model_dump(),
+                    "detail": gap.detail or "自行购买，暂无价格：未能确认合适的商城包装规格。",
+                    "purchase_mode": "self_purchase",
+                    "sku_id": None,
+                    "price_cent": None,
+                }
+            )
         else:
             raise HealthVisionError("reference_purchase_reason_invalid", "食材缺口原因与本轮商品核对结果不一致", 422)
     return result
@@ -1097,6 +1127,8 @@ async def current_reference_plan(uid, family_id, plan_date):
 
 def select_reference_purchase_items(plan, meal_types):
     """只返回所选餐次实际引用的商品，保留原包装建议和可核对食材。"""
+    if any("ingredient_refs" not in item for item in plan["purchase_items"]):
+        raise HealthVisionError("reference_items_missing", "旧餐单商品缺少食材对应，请重新生成后购买", 409)
     ingredients = {
         ingredient
         for meal in plan["meals"]
@@ -1131,10 +1163,11 @@ async def validate_reference_purchase_source(session, source):
         }
     # 历史卡片和已签发证明也必须回读当前餐次，不能靠省略每日版本购买旧餐。
     await require_current_reference_purchase(session, source["uid"], daily, source["preview_id"], plan)
-    selected_items = (
-        select_reference_purchase_items(plan, source["daily_plan"]["meal_types"])
-        if source.get("daily_plan")
-        else plan["purchase_items"]
+    selected_items, _ = await reference_purchase_items(
+        plan,
+        source["daily_plan"]["meal_types"] if source.get("daily_plan") else [m["meal_type"] for m in plan["meals"]],
+        source.get("pending_items", []),
+        source.get("skipped_ingredients", []),
     )
     expected = [
         {"sku_id": str(i["sku_id"]), "quantity": i["quantity"], "facts_hash": i["facts_hash"]} for i in selected_items
@@ -1147,21 +1180,11 @@ async def validate_reference_purchase_source(session, source):
         or source["expires_at"] <= time.time()
     ):
         raise HealthVisionError("source_invalidated", "参考采购来源已变化或过期", 410)
-    categories = sorted({item.get("category_code") for item in selected_items if item.get("category_code")})
-    catalog = await current_catalog(
-        category_codes=categories if all(item.get("category_code") for item in selected_items) else None
-    )
-    current = {str(s["sku_id"]): s for s in catalog["items"]}
-    if any(
-        i["sku_id"] not in current or not same_reference_product_facts(i, current[i["sku_id"]]) for i in selected_items
-    ):
-        raise HealthVisionError("reference_product_changed", "参考采购的商品身份或包装已变化", 410)
-    await current_reference_items(selected_items)
     return {"available": True, "selection_mode": "reference", "items": expected}
 
 
-async def publish_reference_purchase(uid, preview_id, daily_plan=None):
-    """用户明确采购才发布固定规格和数量，重试使用同一来源和任务号。"""
+async def publish_reference_purchase(uid, preview_id, daily_plan=None, pending_items=None, skipped_ingredients=None):
+    """用户明确采购时核对补选规格，重试使用同一来源和任务号。"""
     from datetime import date, datetime, time, timedelta
     from zoneinfo import ZoneInfo
     from yuxi.services.daily_commerce_service import commerce_request
@@ -1169,10 +1192,13 @@ async def publish_reference_purchase(uid, preview_id, daily_plan=None):
 
     async with pg_manager.get_async_session_context() as session:
         run, plan = await read_reference_plan_in_session(session, uid, preview_id)
-        selected_items = (
-            select_reference_purchase_items(plan, daily_plan["meal_types"])
-            if daily_plan is not None
-            else plan["purchase_items"]
+        pending_items = pending_items or []
+        skipped_ingredients = skipped_ingredients or []
+        selected_items, catalog_version = await reference_purchase_items(
+            plan,
+            daily_plan["meal_types"] if daily_plan else [m["meal_type"] for m in plan["meals"]],
+            pending_items,
+            skipped_ingredients,
         )
         if not selected_items:
             raise HealthVisionError("reference_items_missing", "该参考餐单未选定可核对的采购商品", 409)
@@ -1193,13 +1219,23 @@ async def publish_reference_purchase(uid, preview_id, daily_plan=None):
             "source_hash": input_fingerprint(plan),
             "expires_at": int(expiry.timestamp()),
         }
+        if pending_items or skipped_ingredients:
+            source["pending_items"] = pending_items
+            source["skipped_ingredients"] = skipped_ingredients
         if daily_plan is not None:
             source["daily_plan"] = daily_plan
         await validate_reference_purchase_source(session, source)
     task = str(
         uuid5(
             NAMESPACE_URL,
-            "reference-purchase:" + str(preview_id) + (":" + input_fingerprint(daily_plan) if daily_plan else ""),
+            "reference-purchase:"
+            + str(preview_id)
+            + (":" + input_fingerprint(daily_plan) if daily_plan else "")
+            + (
+                ":" + input_fingerprint({"pending": pending_items, "skipped": skipped_ingredients})
+                if pending_items or skipped_ingredients
+                else ""
+            ),
         )
     )
     payload = {
@@ -1207,7 +1243,7 @@ async def publish_reference_purchase(uid, preview_id, daily_plan=None):
         "family_ref": "reference:" + str(preview_id),
         "user_ref": "uid:" + uid,
         "menu_version_ref": "reference:" + str(preview_id),
-        "catalog_version": plan["catalog_version"],
+        "catalog_version": catalog_version,
         "ingredient_requirements": [],
         "items": [{"sku_id": i["sku_id"], "quantity": i["quantity"]} for i in items],
         "expires_at": expiry.isoformat(),
@@ -1221,3 +1257,89 @@ async def publish_reference_purchase(uid, preview_id, daily_plan=None):
     }
     package = await commerce_request("POST", "/api/v1/integration/ai/recommendation-packages", payload, request_id=task)
     return {"preview_id": str(preview_id), "package": package}
+
+
+async def reference_purchase_items(plan, meal_types, pending_items, skipped_ingredients=None):
+    """只把当前餐次的已选商品和用户明确补选的候选规格送入采购。"""
+    from yuxi.services.reference_recipe_matching import ingredient_food, product_food
+
+    skipped_ingredients = skipped_ingredients or []
+    all_meals = {meal["meal_type"] for meal in plan["meals"]}
+    items = (
+        plan["purchase_items"]
+        if set(meal_types) == all_meals
+        else select_reference_purchase_items(plan, meal_types)
+    )
+    ingredients = {
+        ingredient
+        for meal in plan["meals"]
+        if meal["meal_type"] in meal_types
+        for dish in meal["dishes"]
+        for ingredient in dish["ingredients"]
+    }
+    gaps = {
+        gap["ingredient"]: gap
+        for gap in plan.get("purchase_gaps", [])
+        if gap["reason"] == "selection_pending" and gap["ingredient"] in ingredients
+    }
+    selected_ingredients = [choice.get("ingredient") for choice in pending_items]
+    if (
+        len(selected_ingredients) != len(set(selected_ingredients))
+        or len(skipped_ingredients) != len(set(skipped_ingredients))
+        or set(selected_ingredients) & set(skipped_ingredients)
+        or set(selected_ingredients) | set(skipped_ingredients) != set(gaps)
+    ):
+        raise HealthVisionError("reference_purchase_choice_invalid", "请逐项选择待选食材规格或确认自行准备", 422)
+    if not pending_items:
+        await current_reference_items(items)
+        return items, plan["catalog_version"]
+
+    catalog = await current_catalog()
+    current = {str(sku["sku_id"]): sku for sku in catalog["items"]}
+    restrictions = reference_member_restrictions(plan["members"])
+    for item in items:
+        sku = current.get(str(item["sku_id"]))
+        if (
+            sku is None
+            or sku.get("sale_status") != "available"
+            or sku.get("category_code") != item.get("category_code")
+            or int(sku.get("available_quantity", 0)) < item["quantity"]
+            or not same_reference_product_facts(item, sku)
+        ):
+            raise HealthVisionError("reference_product_changed", "参考采购的商品身份或库存已变化", 410)
+
+    additions = {}
+    for choice in pending_items:
+        ingredient = choice.get("ingredient")
+        sku_id = str(choice.get("sku_id") or "")
+        quantity = choice.get("quantity")
+        gap = gaps.get(ingredient)
+        if (
+            gap is None
+            or not isinstance(quantity, int)
+            or isinstance(quantity, bool)
+            or not 1 <= quantity <= 99
+            or sku_id in {str(item["sku_id"]) for item in items}
+        ):
+            raise HealthVisionError("reference_purchase_choice_invalid", "只能为本餐待选食材选择有效规格", 422)
+        candidate = next((sku for sku in gap.get("candidates", []) if str(sku["sku_id"]) == sku_id), None)
+        sku = current.get(sku_id)
+        if candidate is None or sku is None:
+            raise HealthVisionError("reference_product_changed", "待选商品已变化，请重新核对本餐", 410)
+        if (
+            sku.get("sale_status") != "available"
+            or sku.get("category_code") != candidate.get("category_code")
+            or int(sku.get("available_quantity", 0)) < quantity
+            or input_fingerprint(product_facts(sku, include_description=True)) != candidate["facts_hash"]
+            or product_food(str(sku.get("product_name") or "")) != ingredient_food(ingredient)
+        ):
+            raise HealthVisionError("reference_product_changed", "待选商品或库存已变化，请重新核对本餐", 410)
+        if reference_restriction_conflict(reference_product_composition(sku), restrictions):
+            raise HealthVisionError("reference_restriction_conflict", "所选商品含已明确填写的过敏或忌口成分", 422)
+        if sku_id in additions:
+            if additions[sku_id]["quantity"] != quantity:
+                raise HealthVisionError("reference_purchase_choice_invalid", "同一规格的包装数量须一致", 422)
+            additions[sku_id]["ingredient_refs"].append(ingredient)
+        else:
+            additions[sku_id] = {**reference_product(sku, quantity), "ingredient_refs": [ingredient]}
+    return [*items, *additions.values()], plan["catalog_version"]

@@ -32,6 +32,7 @@ from yuxi.services.health_consultation_service import require_consultation, requ
 from yuxi.services.health_initial_planner_service import validate_initial_planner_publication, preview_initial_for_run
 from yuxi.services.health_meal_plan_service import planner_final_result
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.reference_recipe_matching import reference_candidate_key
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import Agent, AgentRun, AgentRunRequest, Message, FamilyMember
 from yuxi.storage.postgres.models_health import (
@@ -368,7 +369,13 @@ async def grounded_plan(current, context, *, quantity=1, meal_type="breakfast", 
                     }
                     for meal in draft["meals"]
                 ],
-                "purchase_items": [{"sku_id": "sku-rice", "quantity": quantity}],
+                "purchase_items": [
+                    {
+                        "sku_id": "sku-rice",
+                        "quantity": quantity,
+                        "candidate_keys": [reference_candidate_key("大米100克")],
+                    }
+                ],
             }
         }
     from yuxi.agents.toolkits.meal_planner import save_reference_meal_plan

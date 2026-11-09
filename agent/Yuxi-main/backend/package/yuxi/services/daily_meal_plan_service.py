@@ -109,6 +109,7 @@ async def read_current_plan(uid, family_id, day, session=None):
             regeneration_participants[kind] = ids
 
     stale_codes = {
+        "policy_changed",
         "reference_product_changed",
         "reference_source_unavailable",
         "reference_restriction_conflict",
@@ -174,11 +175,10 @@ async def read_current_plan(uid, family_id, day, session=None):
 
                 if key not in display_reference_items:
                     current_products = await current_reference_items(source.get("purchase_items", []))
-                    display_items = [
+                    display_reference_items[key] = [
                         current_reference_display_item(p, current_products[str(p["sku_id"])])
                         for p in source.get("purchase_items", [])
                     ]
-                    display_reference_items[key] = display_items
                 meal = attach_recipe_products(meal, display_reference_items[key])
             except HealthVisionError as error:
                 if preview is None or (
@@ -205,7 +205,7 @@ async def read_current_plan(uid, family_id, day, session=None):
         if not selected:
             continue
         original = {item.get("meal_type", item.get("type")) for item in source["meals"]}
-        if key[0] == "reference" and source.get("purchase_items"):
+        if key[0] == "reference" and (source.get("purchase_items") or source.get("purchase_gaps")):
             from yuxi.services.reference_meal_plan_service import select_reference_purchase_items
 
             items = select_reference_purchase_items(
@@ -219,7 +219,8 @@ async def read_current_plan(uid, family_id, day, session=None):
                 for dish in meal["dishes"]
                 for ingredient in dish["ingredients"]
             }
-            if not items:
+            gaps = [gap for gap in source.get("purchase_gaps", []) if gap["ingredient"] in ingredients]
+            if not items and not gaps:
                 continue
             purchase_options.append(
                 {
@@ -237,7 +238,7 @@ async def read_current_plan(uid, family_id, day, session=None):
                             dish["ingredients"], dish["display_zh"]["ingredients"], strict=True
                         )
                     },
-                    "gaps": [gap for gap in source.get("purchase_gaps", []) if gap["ingredient"] in ingredients],
+                    "gaps": gaps,
                     "quantity_notice": "数量沿用原餐单的采购建议，可能包含其他餐次份量，请核对包装数量。"
                     if selected != original
                     else "请核对商品与包装数量。",

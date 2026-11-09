@@ -61,8 +61,9 @@ class ReferenceDish(HealthDTO):
     portion_quote: str | None = Field(default=None, max_length=400)
     nutrition_quote: str | None = Field(default=None, max_length=1200)
     display_zh: RecipeChineseDisplay | None = None
-    cooking_minutes: int | None = Field(default=None, ge=1, le=1440, strict=True,
-                                       description="预计总制作分钟数，包含备菜；按原文步骤估算，不是商品事实")
+    cooking_minutes: int | None = Field(
+        default=None, ge=1, le=1440, strict=True, description="预计总制作分钟数，包含备菜；按原文步骤估算，不是商品事实"
+    )
     nutrition_highlights: list[RecipeNutritionHighlight] = Field(default_factory=list, max_length=8)
 
 
@@ -74,7 +75,7 @@ class ReferenceMeal(HealthDTO):
 
 
 class ReferencePurchaseItem(HealthDTO):
-    """Agent 从已读取目录选择商品的包装数量。"""
+    """服务端核对商品名后，保存 Agent 选择的规格与包装数量。"""
 
     sku_id: str = Field(min_length=1, max_length=80)
     quantity: int = Field(ge=1, le=99, strict=True)
@@ -85,7 +86,14 @@ class ReferencePurchaseGap(HealthDTO):
     """未选商品必须指向菜谱中的食材并说明实际原因。"""
 
     ingredient: str = Field(min_length=1, max_length=1200)
-    reason: Literal["no_match", "needs_confirmation", "not_sold", "catalog_unavailable", "optional_not_selected"]
+    reason: Literal[
+        "no_match",
+        "needs_confirmation",
+        "not_sold",
+        "catalog_unavailable",
+        "optional_not_selected",
+        "selection_pending",
+    ]
     detail: str = Field(min_length=2, max_length=300, pattern=r"\S")
 
 

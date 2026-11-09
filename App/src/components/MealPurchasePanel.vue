@@ -30,9 +30,9 @@ const deliveryText = computed(() => slot.value ? slotName(slot.value) : !props.r
         <view v-if="busy&&!ready" class="mp-loading" role="status">{{fixed?'正在准备商品与价格…':'正在准备本餐商品与价格…'}}</view>
         <view v-if="error" class="mp-error" role="alert"><text>{{error}}</text><button :disabled="busy" @click="$emit('retry')">{{retryLabel}}</button></view>
         <view v-if="preparationGaps.length" class="mp-preparation mp-surface">
-          <text class="mp-preparation-title">需自行准备</text>
+          <text class="mp-preparation-title">自行购买 / 自行准备</text>
           <text class="mp-support">以下食材不在本次购买中，也不计入订单金额。</text>
-          <view v-for="gap in preparationGaps" :key="gap.ingredient" class="mp-preparation-item"><text>{{gap.label || gap.ingredient}}</text><text class="mp-support">{{gap.detail}}</text></view>
+          <view v-for="gap in preparationGaps" :key="gap.ingredient" class="mp-preparation-item"><text>{{gap.label || gap.ingredient}}<template v-if="gap.purchase_mode==='self_purchase'"> · 自行购买 · 暂无价格</template></text><text class="mp-support">{{gap.detail}}</text></view>
         </view>
         <view v-if="optionalGaps.length" class="mp-optional"><text>原谱可选，本次未采用：</text><text>{{optionalText}}</text></view>
         <template v-if="ready">

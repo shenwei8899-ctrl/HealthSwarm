@@ -1,7 +1,8 @@
 """从知识库原谱提取完整食材，并只匹配可确认身份的商城商品。"""
 
-import re
 from dataclasses import dataclass
+from hashlib import sha256
+import re
 
 from yuxi.services.reference_cooking_water import cooking_water as cooking_water_ingredient
 
@@ -72,8 +73,15 @@ _RECALL_WORDS = {
     "lettuce": "生菜", "ginger": "姜", "chickpea": "鹰嘴豆", "chickpeas": "鹰嘴豆",
     "walnut": "核桃仁", "walnuts": "核桃仁", "beef": "牛肉", "pork": "猪肉",
 }
-_RECALL_PHRASES = {"sweet potato": "红薯", "olive oil": "橄榄油", "chicken breast": "鸡胸肉",
-                   "bell pepper": "彩椒", "black pepper": "黑胡椒", "napa cabbage": "大白菜", "chinese cabbage": "大白菜"}
+_RECALL_PHRASES = {
+    "sweet potato": "红薯",
+    "olive oil": "橄榄油",
+    "chicken breast": "鸡胸肉",
+    "bell pepper": "彩椒",
+    "black pepper": "黑胡椒",
+    "napa cabbage": "大白菜",
+    "chinese cabbage": "大白菜",
+}
 _UNSUPPORTED_FORMS = re.compile(
     r"\b(?:canned|frozen|dried|powder|flour|paste|sauce|broth|stock|juice|skinless|boneless|"
     r"smoked|pickled|brown rice|glutinous rice|sticky rice|sweet rice|wild rice|black rice|"
@@ -202,12 +210,22 @@ def parse_reference_recipe(content: str) -> ParsedReferenceRecipe | None:
         value = line.strip()
         label = value.lstrip("#").strip().strip("*").strip().rstrip(":：").casefold()
         label = label.removesuffix("（原文）").removesuffix("(original)").strip()
-        kind = ("ingredients" if label in {"食材与用量", "食材", "材料", "配料", "ingredients", "ingredient"}
-                else "steps" if label in {"做法", "作法", "步骤", "制作步骤", "烹饪步骤", "procedure", "directions", "method", "instructions"}
-                else "review" if label in {"notes", "note", "备注", "说明", "notes, tips, and variations"}
-                else "equipment" if label in {"equipment", "器具", "工具"}
-                else "citations" if label in {"references", "external links", "see also", "原文引用与附加署名", "外部链接"}
-                else "notes" if label in _AFTER_RECIPE_HEADINGS else None)
+        kind = (
+            "ingredients"
+            if label in {"食材与用量", "食材", "材料", "配料", "ingredients", "ingredient"}
+            else "steps"
+            if label
+            in {"做法", "作法", "步骤", "制作步骤", "烹饪步骤", "procedure", "directions", "method", "instructions"}
+            else "review"
+            if label in {"notes", "note", "备注", "说明", "notes, tips, and variations"}
+            else "equipment"
+            if label in {"equipment", "器具", "工具"}
+            else "citations"
+            if label in {"references", "external links", "see also", "原文引用与附加署名", "外部链接"}
+            else "notes"
+            if label in _AFTER_RECIPE_HEADINGS
+            else None
+        )
         if label == "原文说明与缺失项":
             # 只略过收录器已知的来源说明；原文附注/Tip 等仍需人工核对。
             following = [item.strip() for item in lines[i + 1:] if item.strip()]
@@ -402,20 +420,71 @@ def match_reference_ingredients(ingredients: tuple[str, ...], products: list[dic
     return result
 
 
+def reference_ingredient_candidates(ingredients: tuple[str, ...], products: list[dict]) -> list[dict]:
+    """只按食材身份与商品名生成在售 SKU 候选，不读取商品详情推断身份。"""
+    by_food: dict[str, list[dict]] = {}
+    for product in products:
+        food = product_food(str(product.get("product_name") or ""))
+        if (
+            food
+            and product.get("sale_status", "available") == "available"
+            and int(product.get("available_quantity") or 0) > 0
+        ):
+            by_food.setdefault(food, []).append(product)
+    result = []
+    for ingredient in ingredients:
+        food = ingredient_food(ingredient)
+        if food == "水":
+            status = "cooking_water"
+            candidates = []
+        elif optional_reference_ingredient(ingredient):
+            status = "optional_not_selected"
+            candidates = []
+        elif food is None:
+            status = "needs_confirmation"
+            candidates = []
+        else:
+            candidates = sorted(
+                by_food.get(food, []),
+                key=lambda product: (int(product.get("price_cent") or 0), str(product.get("sku_id") or "")),
+            )
+            status = "matched" if candidates else "missing_product"
+        result.append(
+            {
+                "candidate_key": reference_candidate_key(ingredient),
+                "ingredient": ingredient,
+                "food": food,
+                "status": status,
+                "candidate_skus": [
+                    {
+                        key: product.get(key)
+                        for key in (
+                            "sku_id",
+                            "product_name",
+                            "sku_name",
+                            "net_content",
+                            "price_cent",
+                            "available_quantity",
+                        )
+                    }
+                    for product in candidates
+                ],
+            }
+        )
+    return result
+
+
+def reference_candidate_key(ingredient: str) -> str:
+    """把逐字食材引用变为只供本轮选择使用的稳定候选键。"""
+    return "ingredient:" + sha256(ingredient.encode("utf-8")).hexdigest()[:20]
+
+
 def reference_ingredient_matches(ingredients: tuple[str, ...], products: list[dict]) -> list[dict]:
     """逐项说明已匹配、缺商品和待确认，缺项不丢弃整份候选。"""
     result = []
-    for ingredient in ingredients:
-        matched = match_reference_ingredients((ingredient,), products)
-        item = {"ingredient": ingredient, "food": ingredient_food(ingredient), "sku_id": None}
-        if matched is None:
-            item["status"] = "needs_confirmation" if item["food"] is None else "missing_product"
-        else:
-            sku = matched[ingredient]
-            item["status"] = ("cooking_water" if sku.get("water") else
-                              "optional_not_selected" if sku.get("optional_not_selected") else "matched")
-            if "sku_id" in sku:
-                item["sku_id"] = str(sku["sku_id"])
+    for group in reference_ingredient_candidates(ingredients, products):
+        item = {key: group[key] for key in ("ingredient", "food", "status")}
+        item["sku_id"] = str(group["candidate_skus"][0]["sku_id"]) if group["candidate_skus"] else None
         result.append(item)
     return result
 

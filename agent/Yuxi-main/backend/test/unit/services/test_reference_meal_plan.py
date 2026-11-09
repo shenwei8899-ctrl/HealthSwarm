@@ -9,13 +9,14 @@ import pytest
 from pydantic import ValidationError
 
 from yuxi.services.reference_meal_plan_service import (
+    checked_reference_gaps,
     checked_reference_meals,
     product_facts,
     reference_binding,
     reference_restriction_conflict,
     select_reference_purchase_items,
 )
-from yuxi.services.reference_meal_plan_types import ReferencePlanDraft, ReferenceSelection
+from yuxi.services.reference_meal_plan_types import ReferencePlanDraft, ReferencePurchaseGap, ReferenceSelection
 from yuxi.services.health_vision_types import HealthVisionError
 
 
@@ -63,6 +64,29 @@ def document(content=None):
             "content": content,
         }
     }
+
+
+def test_unresolved_matched_packaging_projects_as_self_purchase_without_price():
+    """有同名商品但 Agent 无法可靠定包装时，餐单保留且商品不进入订单。"""
+    gaps = [ReferencePurchaseGap(ingredient="大米100克", reason="needs_confirmation", detail="无法可靠定包装")]
+    products = [
+        {
+            "sku_id": "rice",
+            "product_name": "大米",
+            "sale_status": "available",
+            "available_quantity": 5,
+        }
+    ]
+    assert checked_reference_gaps(gaps, products) == [
+        {
+            "ingredient": "大米100克",
+            "reason": "needs_confirmation",
+            "detail": "无法可靠定包装",
+            "purchase_mode": "self_purchase",
+            "sku_id": None,
+            "price_cent": None,
+        }
+    ]
 
 
 @pytest.mark.parametrize("field", ["nutrition", "professional_review", "calories", "portion_note", "uid"])
@@ -272,7 +296,7 @@ async def test_real_tool_node_injects_runtime_into_reference_save(monkeypatch):
     from langgraph.prebuilt import ToolNode
     from yuxi.agents.base import BaseContext
     from yuxi.agents.toolkits.meal_planner import save_reference_meal_plan
-    from yuxi.services import reference_meal_plan_service
+    from yuxi.services import reference_meal_plan_service, reference_meal_selection_service
 
     called = []
 
@@ -281,6 +305,22 @@ async def test_real_tool_node_injects_runtime_into_reference_save(monkeypatch):
         return {"preview_id": "synthetic-receipt"}
 
     monkeypatch.setattr(reference_meal_plan_service, "save_reference_plan", save)
+    monkeypatch.setattr(
+        reference_meal_selection_service,
+        "assemble_reference_selection",
+        AsyncMock(return_value=ReferencePlanDraft.model_validate(draft())),
+    )
+    read_selection = {
+        "use_read_recipes": True,
+        "auto_purchase_matches": True,
+        "meals": [
+            {
+                "meal_type": "breakfast",
+                "dishes": [{"file_id": "recipe", "chunk_id": "chunk"}],
+            }
+        ],
+        "purchase_items": [],
+    }
     graph = StateGraph(MessagesState, context_schema=BaseContext)
     graph.add_node("tools", ToolNode([save_reference_meal_plan], handle_tool_errors=False))
     graph.add_edge(START, "tools")
@@ -293,7 +333,7 @@ async def test_real_tool_node_injects_runtime_into_reference_save(monkeypatch):
                     tool_calls=[
                         {
                             "name": "save_reference_meal_plan",
-                            "args": draft(),
+                            "args": {"read_selection": read_selection},
                             "id": "synthetic-call",
                             "type": "tool_call",
                         }
@@ -314,7 +354,22 @@ def test_model_json_cannot_forge_the_injected_reference_runtime():
     from yuxi.agents.toolkits.meal_planner import ReferencePlanToolInput
 
     with pytest.raises(ValidationError):
-        ReferencePlanToolInput.model_validate({**draft(), "runtime": {"uid": "forged"}})
+        ReferencePlanToolInput.model_validate(
+            {
+                "read_selection": {
+                    "use_read_recipes": True,
+                    "auto_purchase_matches": True,
+                    "meals": [
+                        {
+                            "meal_type": "breakfast",
+                            "dishes": [{"file_id": "recipe", "chunk_id": "chunk"}],
+                        }
+                    ],
+                    "purchase_items": [],
+                },
+                "runtime": {"uid": "forged"},
+            }
+        )
 
 
 def test_empty_procurement_cannot_silently_omit_ingredient_decisions():
@@ -424,12 +479,25 @@ async def test_reference_context_limits_categories_then_preserves_selected_produ
 
     monkeypatch.setattr(service.pg_manager, "get_async_session_context", session_context)
     monkeypatch.setattr(
-        service, "require_planner_run", AsyncMock(return_value=(SimpleNamespace(id="synthetic-run"), object()))
+        service,
+        "require_planner_run",
+        AsyncMock(
+            return_value=(
+                SimpleNamespace(id="synthetic-run"),
+                SimpleNamespace(member_id="synthetic-member", conversation_id="synthetic-conversation"),
+            )
+        ),
     )
     monkeypatch.setattr(
         service,
         "bound_reference_context",
-        AsyncMock(return_value={"selection": {"meal_types": ["breakfast"]}, "members": [], "sources": {}}),
+        AsyncMock(
+            return_value={
+                "selection": {"meal_types": ["breakfast"], "plan_date": "2026-11-09"},
+                "members": [],
+                "sources": {},
+            }
+        ),
     )
     monkeypatch.setattr(
         service,
@@ -500,6 +568,27 @@ async def test_reference_context_limits_categories_then_preserves_selected_produ
         )
         with pytest.raises(HealthVisionError, match="reference_product_changed"):
             await service.save_reference_plan(context, value)
+
+    session.get = AsyncMock(return_value=None)
+    session.add = lambda row: None
+    monkeypatch.setattr(
+        service,
+        "current_catalog",
+        AsyncMock(return_value={"version": "v2", "items": [{**sku, "available_quantity": 0}]}),
+    )
+    result = await service.save_reference_plan(context, value)
+    assert result["purchase_items"] == []
+    assert result["purchase_status"] == "partial"
+    assert result["purchase_gaps"] == [
+        {
+            "ingredient": "大米100克",
+            "reason": "needs_confirmation",
+            "detail": "自行购买，暂无价格：所选商城规格或库存已变化，请重新核对。",
+            "purchase_mode": "self_purchase",
+            "sku_id": None,
+            "price_cent": None,
+        }
+    ]
 
 
 @pytest.mark.parametrize(
