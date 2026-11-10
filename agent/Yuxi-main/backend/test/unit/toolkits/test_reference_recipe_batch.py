@@ -31,6 +31,40 @@ def runtime():
     return ToolRuntime({}, Context(), {}, lambda _: None, "synthetic-call", None)
 
 
+@pytest.mark.asyncio
+async def test_wrong_category_is_tool_feedback_then_can_retry_without_bypassing_service(monkeypatch):
+    """模型抄错分类得到可修正错误，下一次调用仍由服务校验分类来源。"""
+    find = AsyncMock(side_effect=[
+        HealthVisionError("catalog_category_invalid", "分类不在本轮回执", 422),
+        {"products": [{"product_id": "egg"}]},
+    ])
+    monkeypatch.setattr(reference_meal_plan_service, "find_reference_products", find)
+    graph = StateGraph(MessagesState, context_schema=Context)
+    graph.add_node("tools", ToolNode([meal_planner.find_reference_products]))
+    graph.add_edge(START, "tools")
+    graph.add_edge("tools", END)
+    compiled = graph.compile()
+    for code, expected in (("wrong", "error"), ("valid", "success")):
+        result = await compiled.ainvoke({"messages": [AIMessage("", tool_calls=[{
+            "name": "find_reference_products", "id": code, "args": {"category_codes": [code]},
+        }])]}, context=Context())
+        message = result["messages"][-1]
+        assert message.status == expected
+        if expected == "error":
+            assert "get_reference_plan_context" in message.content
+    assert [call.args[1] for call in find.await_args_list] == [["wrong"], ["valid"]]
+
+
+@pytest.mark.asyncio
+async def test_product_authorization_error_does_not_turn_into_retry_feedback(monkeypatch):
+    """权限错误继续拒绝，分类纠错不扩展授权范围。"""
+    monkeypatch.setattr(reference_meal_plan_service, "find_reference_products", AsyncMock(
+        side_effect=HealthVisionError("forbidden", "无权访问", 403)
+    ))
+    with pytest.raises(HealthVisionError, match="forbidden"):
+        await meal_planner.find_reference_products.coroutine(["valid"], runtime())
+
+
 def test_batch_inputs_are_bounded_and_unique():
     """批量和旧单份参数互斥，重复及越界输入在工具边界拒绝。"""
     injected = runtime()
@@ -106,9 +140,9 @@ async def test_batch_reuses_recipe_analysis_without_reusing_later_call(monkeypat
         parsed[content] += 1
         return original_parse(content)
 
-    def match(ingredients, products):
+    def match(ingredients, products, **kwargs):
         matched[ingredients] += 1
-        return original_match(ingredients, products)
+        return original_match(ingredients, products, **kwargs)
 
     monkeypatch.setattr(reference_recipe_index, "parse_reference_recipe", parse)
     monkeypatch.setattr(reference_recipe_index, "reference_ingredient_matches", match)

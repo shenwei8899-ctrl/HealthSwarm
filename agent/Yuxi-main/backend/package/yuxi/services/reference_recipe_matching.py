@@ -456,22 +456,70 @@ def _dynamic_alias_index(products: list[dict]) -> dict[str, set[str]]:
     return aliases
 
 
-def ingredient_food_for_products(ingredient: str, products: list[dict]) -> str | None:
+class ReferenceProductIndex:
+    """一次检索共用商品身份和已编译别名，不跨请求缓存商城资料。"""
+
+    def __init__(self, products: list[dict]):
+        from yuxi.services.daily_commerce_service import group_catalog_products
+
+        self.product_level = all(isinstance(item.get("skus"), list) for item in products) or any(
+            item.get("product_id") is not None for item in products
+        )
+        self.products = (
+            group_catalog_products(products)
+            if self.product_level and not all(isinstance(item.get("skus"), list) for item in products)
+            else products
+        )
+        self.aliases = _dynamic_alias_index(self.products)
+        self.patterns = [
+            (re.compile(
+                rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])"
+                if re.search(r"[a-z0-9]", alias) else re.escape(alias), re.I
+            ), foods)
+            for alias, foods in self.aliases.items()
+        ]
+        self.by_food: dict[str, list[dict]] = {}
+        for product in self.products:
+            if not self.product_level and (
+                product.get("sale_status", "available") != "available"
+                or int(product.get("available_quantity") or 0) <= 0
+            ):
+                continue
+            for food in product_foods(product):
+                self.by_food.setdefault(food, []).append(product)
+        for candidates in self.by_food.values():
+            candidates.sort(key=(
+                (lambda p: (str(p.get("product_name") or ""), str(p.get("product_id") or "")))
+                if self.product_level else
+                (lambda p: (int(p.get("price_cent") or 0), str(p.get("sku_id") or "")))
+            ))
+        self.food_cache: dict[str, str | None] = {}
+
+
+def ingredient_food_for_products(
+    ingredient: str, products: list[dict], *, index: ReferenceProductIndex | None = None
+) -> str | None:
     """先沿用严格旧识别，再用商城别名严格匹配；歧义时保持待确认。"""
-    aliases = _dynamic_alias_index(products)
+    index = index or ReferenceProductIndex(products)
+    if ingredient in index.food_cache:
+        return index.food_cache[ingredient]
+    food = _indexed_ingredient_food(ingredient, index)
+    index.food_cache[ingredient] = food
+    return food
+
+
+def _indexed_ingredient_food(ingredient: str, index: ReferenceProductIndex) -> str | None:
+    """在当前目录索引中解析食材，保留旧严格身份边界。"""
     legacy = ingredient_food(ingredient)
     if legacy is not None:
-        mapped = aliases.get(legacy.casefold(), set())
+        mapped = index.aliases.get(legacy.casefold(), set())
         return next(iter(mapped)) if len(mapped) == 1 else legacy if not mapped else None
     if _UNSUPPORTED_FORMS.search(ingredient) or re.search(r"\b(?:or|optional)\b|或|可选", ingredient, re.I):
         return None
     value = _OPTIONAL_MARKER.sub("", _without_preparation_suffix(ingredient)).casefold()
     matches = set()
-    for alias, foods in aliases.items():
-        if re.search(r"[a-z0-9]", alias):
-            found = re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", value, re.I)
-        else:
-            found = re.search(re.escape(alias), value)
+    for pattern, foods in index.patterns:
+        found = pattern.search(value)
         if found and _identity_remainder_allowed(value[:found.start()] + value[found.end():]):
             matches.update(foods)
     return next(iter(matches)) if len(matches) == 1 else None
@@ -593,23 +641,13 @@ def match_reference_ingredients(ingredients: tuple[str, ...], products: list[dic
 
 def reference_ingredient_candidates(ingredients: tuple[str, ...], products: list[dict]) -> list[dict]:
     """按结构化食材映射与别名匹配商品，并返回商品下全部已发布规格。"""
-    from yuxi.services.daily_commerce_service import group_catalog_products
-
-    product_level = all(isinstance(item.get("skus"), list) for item in products) or any(
-        item.get("product_id") is not None for item in products
-    )
+    index = ReferenceProductIndex(products)
+    product_level = index.product_level
     if not product_level:
-        by_food: dict[str, list[dict]] = {}
-        for product in products:
-            if (
-                product.get("sale_status", "available") == "available"
-                and int(product.get("available_quantity") or 0) > 0
-            ):
-                for food in product_foods(product):
-                    by_food.setdefault(food, []).append(product)
+        by_food = index.by_food
         result = []
         for ingredient in ingredients:
-            food = ingredient_food_for_products(ingredient, products)
+            food = ingredient_food_for_products(ingredient, products, index=index)
             if food == "水":
                 status, candidates = "cooking_water", []
             elif optional_reference_ingredient(ingredient):
@@ -646,16 +684,11 @@ def reference_ingredient_candidates(ingredients: tuple[str, ...], products: list
             )
         return result
 
-    product_groups = (
-        products if all(isinstance(item.get("skus"), list) for item in products) else group_catalog_products(products)
-    )
-    by_food: dict[str, list[dict]] = {}
-    for product in product_groups:
-        for food in product_foods(product):
-            by_food.setdefault(food, []).append(product)
+    product_groups = index.products
+    by_food = index.by_food
     result = []
     for ingredient in ingredients:
-        food = ingredient_food_for_products(ingredient, product_groups)
+        food = ingredient_food_for_products(ingredient, product_groups, index=index)
         if food == "水":
             status = "cooking_water"
             candidates = []
@@ -731,15 +764,34 @@ def reference_candidate_key(ingredient: str) -> str:
     return "ingredient:" + sha256(ingredient.encode("utf-8")).hexdigest()[:20]
 
 
-def reference_ingredient_matches(ingredients: tuple[str, ...], products: list[dict]) -> list[dict]:
+def reference_ingredient_matches(
+    ingredients: tuple[str, ...], products: list[dict], *, index: ReferenceProductIndex | None = None
+) -> list[dict]:
     """逐项说明已匹配、缺商品和待确认，缺项不丢弃整份候选。"""
+    index = index or ReferenceProductIndex(products)
     result = []
-    for group in reference_ingredient_candidates(ingredients, products):
-        item = {key: group[key] for key in ("ingredient", "food", "status")}
-        candidate_products = group.get("candidate_products") or []
-        item["product_id"] = str(candidate_products[0]["product_id"]) if candidate_products else None
-        item["sku_id"] = str(group["candidate_skus"][0]["sku_id"]) if group["candidate_skus"] else None
-        result.append(item)
+    for ingredient in ingredients:
+        food = ingredient_food_for_products(ingredient, products, index=index)
+        candidates = []
+        if food == "水":
+            status = "cooking_water"
+        elif optional_reference_ingredient(ingredient):
+            status = "optional_not_selected"
+        elif food is None:
+            status = "needs_confirmation"
+        else:
+            candidates = index.by_food.get(food, [])
+            status = "matched" if candidates else "missing_product"
+        skus = (
+            [s for p in candidates for s in p.get("skus") or []
+             if s.get("sale_status") == "available" and int(s.get("available_quantity") or 0) > 0]
+            if index.product_level else candidates
+        )
+        result.append({
+            "ingredient": ingredient, "food": food, "status": status,
+            "product_id": str(candidates[0]["product_id"]) if candidates and index.product_level else None,
+            "sku_id": str(skus[0]["sku_id"]) if skus else None,
+        })
     return result
 
 

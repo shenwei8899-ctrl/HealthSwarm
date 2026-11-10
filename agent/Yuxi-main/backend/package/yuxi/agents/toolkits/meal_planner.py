@@ -3,6 +3,7 @@
 import json
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import ToolException
 from langgraph.prebuilt.tool_node import ToolRuntime
 from pydantic import Field, ValidationError, model_validator
 
@@ -111,7 +112,15 @@ async def find_reference_products(category_codes: list[str], runtime: ToolRuntim
     """返回选定分类的商品和全部已发布规格；餐单只选商品。"""
     from yuxi.services.reference_meal_plan_service import find_reference_products as find
 
-    return await find(runtime.context, category_codes)
+    try:
+        return await find(runtime.context, category_codes)
+    except HealthVisionError as error:
+        if error.code != "catalog_category_invalid":
+            raise
+        raise ToolException(
+            "分类编号不属于本轮商城返回的分类。请重新读取get_reference_plan_context，"
+            "从categories原样复制category_code，最多选择四个分类，再调用find_reference_products；不要猜写编号。"
+        ) from error
 
 
 @tool(category="health", display_name="检索参考菜谱", args_schema=ReferenceRecipeSearch)

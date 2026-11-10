@@ -1,23 +1,30 @@
 """用已读商品召回菜谱，完整原文与采购核对由打开和保存步骤拥有。"""
 
 import re
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 from sqlalchemy import or_, select
 
 from yuxi.services.health_family_kb_service import configured_health_kb_ids
 from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.reference_recipe_matching import (
-    parse_reference_recipe, product_foods, reference_food_mentions, reference_ingredient_matches,
+    ReferenceProductIndex, parse_reference_recipe, product_foods, reference_food_mentions, reference_ingredient_matches,
 )
 from yuxi.storage.postgres.models_knowledge import KnowledgeChunk, KnowledgeFile
+
+_SEARCH_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="reference-recipes")
 
 
 async def purchasable_reference_recipes(
     session, products: list[dict], query: str, limit: int = 9, excluded_file_ids: set[str] | None = None
 ) -> list[dict]:
     """相关菜谱允许有待核对项；原文读取与保存仍需独立验证。"""
-    return rank_reference_recipes(
-        await reference_recipe_rows(session), products, query, limit, excluded_file_ids=excluded_file_ids
+    rows = await reference_recipe_rows(session)
+    return await asyncio.get_running_loop().run_in_executor(
+        _SEARCH_EXECUTOR,
+        partial(rank_reference_recipes, rows, products, query, limit, excluded_file_ids=excluded_file_ids),
     )
 
 
@@ -25,12 +32,22 @@ async def purchasable_reference_recipes_batch(
     session, products: list[dict], queries: list[str], excluded_file_ids: set[str] | None = None
 ) -> list[list[dict]]:
     """批量关键词共用菜谱正文和商品匹配，逐词独立排序。"""
-    documents = prepare_reference_documents(await reference_recipe_rows(session))
+    rows = await reference_recipe_rows(session)
+    return await asyncio.get_running_loop().run_in_executor(
+        _SEARCH_EXECUTOR, partial(rank_reference_recipe_batch, rows, products, queries, excluded_file_ids)
+    )
+
+
+def rank_reference_recipe_batch(rows, products, queries, excluded_file_ids=None):
+    """有界后台计算共用目录索引；不在 Worker 事件循环解析和匹配整库。"""
+    documents = prepare_reference_documents(rows)
     available = available_reference_foods(products)
+    product_index = ReferenceProductIndex(products)
     analyzed = {}
     return [
         rank_prepared_reference_recipes(
-            documents, products, available, query, 3, analyzed, excluded_file_ids=excluded_file_ids
+            documents, products, available, query, 3, analyzed, excluded_file_ids=excluded_file_ids,
+            product_index=product_index,
         )
         for query in queries
     ]
@@ -108,10 +125,12 @@ def available_reference_foods(products):
 
 
 def rank_prepared_reference_recipes(
-    documents, products, available, query, limit, analyzed, excluded_file_ids: set[str] | None = None
+    documents, products, available, query, limit, analyzed, excluded_file_ids: set[str] | None = None,
+    *, product_index: ReferenceProductIndex | None = None,
 ):
     """每个关键词独立评分，复用本次调用已解析的候选原谱。"""
     terms = [term.casefold() for term in re.findall(r"[\w\u4e00-\u9fff]+", query) if len(term) > 1]
+    product_index = product_index or ReferenceProductIndex(products)
     query_foods = reference_food_mentions(query) - {"水", "盐", "糖"}
     methods = [pattern for word, pattern in (
         ("煮", r"\b(?:boil\w*|poach\w*)\b|煮"), ("蒸", r"\bsteam\w*\b|蒸"),
@@ -136,7 +155,7 @@ def rank_prepared_reference_recipes(
             parsed = parse_reference_recipe(content)
             analyzed[file_id] = (
                 parsed,
-                reference_ingredient_matches(parsed.ingredients, products) if parsed else [],
+                reference_ingredient_matches(parsed.ingredients, products, index=product_index) if parsed else [],
                 input_fingerprint(document["chunks"]),
             )
         parsed, matches, chunks_hash = analyzed[file_id]

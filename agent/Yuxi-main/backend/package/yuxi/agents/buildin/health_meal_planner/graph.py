@@ -261,8 +261,32 @@ class MealPlanResultMiddleware(AgentMiddleware):
                     for message in messages[:index]
                     if not isinstance(message, ToolMessage)
                     and not (isinstance(message, AIMessage) and (message.tool_calls or message.invalid_tool_calls))
-                ] + messages[index:]
+                ] + [MealPlanResultMiddleware._compact_reference_products(message) for message in messages[index:]]
         return messages
+
+    @staticmethod
+    def _compact_reference_products(message):
+        """只压缩模型输入的重复规格资料，审计与 checkpoint 仍保留原始完整商品。"""
+        if (
+            not isinstance(message, ToolMessage)
+            or message.name != "find_reference_products"
+            or message.status != "success"
+        ):
+            return message
+        try:
+            payload = json.loads(message.content)
+        except (TypeError, ValueError):
+            return message
+        if not isinstance(payload, dict) or not isinstance(payload.get("products"), list) or not payload["products"]:
+            return message
+        if any(not isinstance(product, dict) for product in payload["products"]):
+            return message
+        compact = {key: value for key, value in payload.items() if key not in {"catalog", "products"}}
+        compact["products"] = [
+            {key: value for key, value in product.items() if key not in {"skus", "image_url"}}
+            for product in payload["products"]
+        ]
+        return message.model_copy(update={"content": json.dumps(compact, ensure_ascii=False, separators=(",", ":"))})
 
     @staticmethod
     def _reference_parameter_recovery(request):
