@@ -6,7 +6,7 @@ from yuxi.storage.postgres.models_health import HealthInitialPlanPreview
 
 
 async def run_reference_recipe_images(context):
-    """只读取已提交预览中的菜谱事实，图片缓存失败由 Task Worker 重试。"""
+    """只读取已提交预览中的菜谱事实，图片缓存失败明确记为任务失败，重试复用已有图片。"""
     preview_id = str(context.payload.get("preview_id") or "")
     if not preview_id:
         raise HealthVisionError("reference_preview_invalid", "菜品图片任务缺少餐单标识", 422)
@@ -17,5 +17,7 @@ async def run_reference_recipe_images(context):
         meals = (preview.snapshot or {}).get("meals") or []
     from yuxi.services.reference_recipe_presentation import prepare_recipe_images
 
-    await prepare_recipe_images(meals)
+    results = await prepare_recipe_images(meals)
+    if not all(results):
+        raise RuntimeError("Recipe image generation incomplete; retry missing images")
     return {"preview_id": preview_id, "dish_count": sum(len(meal.get("dishes") or []) for meal in meals)}

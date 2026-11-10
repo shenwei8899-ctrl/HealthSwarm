@@ -102,7 +102,11 @@ async def prepare_recipe_images(meals):
                 StorageHTTPError,
                 TimeoutError,
             ) as error:
-                logger.warning("Recipe illustration unavailable: %s", type(error).__name__)
+                logger.warning(
+                    "Recipe illustration unavailable: {} status={}",
+                    type(error).__name__,
+                    error.response.status_code if isinstance(error, httpx.HTTPStatusError) else None,
+                )
                 return False
 
     # 相同来源的菜谱只生成一次，不在历史 GET 或刷新时发起付费生成。
@@ -131,10 +135,10 @@ async def generated_recipe_image(dish):
     except S3Error as error:
         if error.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
             return {}
-        logger.warning("Recipe image read unavailable: %s", type(error).__name__)
+        logger.warning("Recipe image read unavailable: {}", type(error).__name__)
         return {}
     except (StorageError, StorageHTTPError, OSError) as error:
-        logger.warning("Recipe image read unavailable: %s", type(error).__name__)
+        logger.warning("Recipe image read unavailable: {}", type(error).__name__)
         return {}
     return {
         "image_url": "/minio/public/" + key,
@@ -146,19 +150,11 @@ async def generate_recipe_image(dish):
     """使用现有图片供应商生成成品菜，压缩后保存在公共菜谱图片目录。"""
     if await generated_recipe_image(dish):
         return
-    from yuxi.models.providers.service import get_model_provider_by_id, resolve_api_key
-    from yuxi.storage.postgres.manager import pg_manager
-
-    async with pg_manager.get_async_session_context() as session:
-        provider = await get_model_provider_by_id(session, "openai")
-        if provider is None or not provider.is_enabled:
-            raise ValueError("GPT image provider not configured")
-        key, base_url = (
-            os.getenv("RECIPE_IMAGE_API_KEY") or resolve_api_key(provider),
-            provider.base_url.rstrip("/"),
-        )
-    if not key:
-        raise ValueError("GPT image credential missing")
+    key = os.getenv("RECIPE_IMAGE_API_KEY")
+    base_url = os.getenv("RECIPE_IMAGE_BASE_URL", "").rstrip("/")
+    if not key or not base_url:
+        raise ValueError("Recipe image provider configuration missing")
+    endpoint = base_url if base_url.endswith("/images/generations") else base_url + "/images/generations"
     # 输入仅取已经和知识原文核对的菜名、食材及做法，不包含营养或任何用户字段。
     facts = {k: dish[k] for k in ("name", "ingredients", "steps")}
     prompt = (
@@ -172,23 +168,23 @@ async def generate_recipe_image(dish):
         httpx.AsyncClient(timeout=180, follow_redirects=False) as client,
     ):
         response = await client.post(
-            os.getenv("RECIPE_IMAGE_BASE_URL", base_url).rstrip("/") + "/images/generations",
+            endpoint,
             headers={"Authorization": "Bearer " + key},
             json={
-                "model": os.getenv("RECIPE_IMAGE_MODEL", "gpt-image-2.5"),
+                "model": os.getenv("RECIPE_IMAGE_MODEL", "doubao-seedream-5-0-flash-260915"),
                 "prompt": prompt,
-                "size": "1024x1024",
-                "quality": "low",
-                "n": 1,
+                "size": "2K",
+                "response_format": "b64_json",
+                "watermark": True,
             },
         )
         response.raise_for_status()
         images = response.json().get("data")
         if not isinstance(images, list) or not images or not isinstance(images[0], dict):
-            raise ValueError("GPT returned no image")
+            raise ValueError("Image provider returned no image")
         encoded = images[0].get("b64_json")
         if not isinstance(encoded, str) or not 1 <= len(encoded) <= 16 * 1024 * 1024:
-            raise ValueError("GPT image content missing or oversized")
+            raise ValueError("Image content missing or oversized")
         data = base64.b64decode(encoded, validate=True)
         content = await asyncio.to_thread(compress_recipe_image, data)
     async with asyncio.timeout(12):

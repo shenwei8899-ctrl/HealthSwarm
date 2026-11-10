@@ -228,7 +228,7 @@ async def test_recipe_image_task_reads_saved_preview_and_returns_count(monkeypat
     async def transaction():
         yield session
 
-    prepared = AsyncMock()
+    prepared = AsyncMock(return_value=[True])
     monkeypatch.setattr(reference_recipe_image_tasks.pg_manager, "get_async_session_context", transaction)
     import yuxi.services.reference_recipe_presentation as presentation
 
