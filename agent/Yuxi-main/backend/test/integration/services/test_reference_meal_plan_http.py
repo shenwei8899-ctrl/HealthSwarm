@@ -1535,6 +1535,44 @@ async def test_changed_product_description_requires_fresh_selection(family_profi
         await service.save_reference_plan(context, draft)
 
 
+async def test_single_dish_purchase_reads_product_matches_without_publishing(family_profile_http, monkeypatch):
+    """真实 HTTP 从已发布的新餐单读取可售包装；异用户拒绝且 GET 不写采购。"""
+    current = await setup_reference(family_profile_http, monkeypatch)
+    client, sessions, users, _, _, choice = current
+    bound = await bind_reference(current, daily_base_version=0)
+    context = await running_context(current, bound.json()["thread_id"])
+    plan, _, _ = await grounded_plan(current, context)
+    await complete(current, context, plan)
+
+    async def no_publish(*args, **kwargs):
+        raise AssertionError("GET 采购不得发布商品包或操作订单")
+
+    monkeypatch.setattr("yuxi.services.daily_commerce_service.current_catalog", service.current_catalog)
+    monkeypatch.setattr("yuxi.services.daily_commerce_service.commerce_request", no_publish)
+    path = f"/api/family/{choice['family_id']}/daily-meal-plans/{choice['plan_date']}"
+    daily = await client.get(path, headers=users["self"])
+    assert daily.status_code == 200, daily.text
+    version = daily.json()["version"]
+    async with sessions() as db:
+        before = deepcopy((await db.get(HealthInitialPlanPreview, plan["preview_id"])).snapshot)
+    for _ in range(2):
+        response = await client.get(
+            path + "/meals/breakfast/purchase", params={"version": version}, headers=users["self"]
+        )
+        assert response.status_code == 200, response.text
+        purchase = response.json()["purchase"]
+        assert purchase["available"] is True
+        assert [(i["sku_id"], i["quantity"]) for i in purchase["items"]] == [("sku-rice", 1)]
+        assert purchase["gaps"] == [] and purchase["items"][0]["sku"]["product_id"] == "rice"
+    other = await client.get(path + "/meals/breakfast/purchase", params={"version": version}, headers=users["other"])
+    stale = await client.get(path + "/meals/breakfast/purchase", params={"version": version + 1}, headers=users["self"])
+    assert other.status_code == 404 and stale.status_code == 409
+    async with sessions() as db:
+        row = await db.get(HealthInitialPlanPreview, plan["preview_id"])
+        assert row.snapshot == before
+        assert row.snapshot["purchase_items"] == [] and row.snapshot["product_matches"]
+
+
 @pytest.mark.parametrize("failure_first", [True, False])
 async def test_catalog_failure_is_explicit_and_retry_keeps_full_source_checks(
     family_profile_http, monkeypatch, failure_first

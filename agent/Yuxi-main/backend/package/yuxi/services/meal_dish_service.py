@@ -283,7 +283,13 @@ async def purchase_items(session, uid, family_id, dishes, catalog):
         else:
             ingredients = set(original["ingredients"])
             chosen = [i for i in source.get("purchase_items", []) if ingredients.intersection(i["ingredient_refs"])]
+            product_choices = (
+                reference_product_packages(original, source, catalog) if source.get("product_matches") else []
+            )
+            chosen.extend(product_choices)
             covered = {r for i in chosen for r in i["ingredient_refs"] if r in ingredients}
+            if len(covered) != sum(len(ingredients.intersection(i["ingredient_refs"])) for i in chosen):
+                raise HealthVisionError("dish_ingredients_missing", "食材采购对应重复，请重新核对餐单", 409)
             dish_gaps = _scoped_reference_gaps(original, source)
             exempt = {gap["ingredient"] for gap in dish_gaps}
             if covered & exempt or covered | exempt != ingredients:
@@ -305,7 +311,7 @@ async def purchase_items(session, uid, family_id, dishes, catalog):
                     owners = [
                         d for m in source["meals"] for d in m["dishes"] if set(d["ingredients"]).intersection(refs)
                     ]
-                    if set(item["ingredient_refs"]) != refs or len(owners) != 1:
+                    if set(item["ingredient_refs"]) != refs or (len(owners) != 1 and item not in product_choices):
                         raise HealthVisionError(
                             "dish_quantity_missing", "原食谱缺少独立用量，暂不能计算这道菜的采购数量", 409
                         )
@@ -337,6 +343,55 @@ async def purchase_items(session, uid, family_id, dishes, catalog):
     if not items:
         raise HealthVisionError("dish_stock_missing", "所选菜品的食材暂时无法配齐，请稍后再试", 409)
     return items, requirements, gaps
+
+
+def reference_product_packages(original, source, catalog):
+    """仅将已保存的商品匹配转成当前可售包装建议，不补造食材匹配。"""
+    from yuxi.services.daily_commerce_service import group_catalog_products
+    from yuxi.services.reference_meal_plan_service import (
+        reference_member_restrictions,
+        reference_product,
+        reference_product_composition,
+        reference_restriction_conflict,
+        same_reference_product_information,
+    )
+
+    ingredients = set(original["ingredients"])
+    current = {str(p["product_id"]): p for p in group_catalog_products(catalog["items"])}
+    restrictions = reference_member_restrictions(source.get("members", []))
+    result = []
+    for saved in source.get("product_matches", []):
+        refs = [ref for ref in saved["ingredient_refs"] if ref in ingredients]
+        if not refs:
+            continue
+        product = current.get(str(saved["product_id"]))
+        if product is None:
+            raise HealthVisionError("dish_stock_missing", "本菜已匹配商品暂不可售，请稍后再试", 409)
+        if not same_reference_product_information(saved, product):
+            raise HealthVisionError("dish_product_changed", "食材商品资料已变化，请重新安排", 409)
+        candidates = []
+        for sku in product["skus"]:
+            # 无明确质量时建议一包，沿用购买面板的数量调整；不声称这是个人食用份量。
+            quantity = reference_pack_quantity(refs, sku)
+            if quantity is None:
+                if reference_mass(refs) is not None:
+                    continue
+                quantity = 1
+            if (
+                sku.get("sale_status") != "available"
+                or int(sku.get("available_quantity") or 0) < quantity
+                or type(sku.get("price_cent")) is not int
+                or sku["price_cent"] < 0
+            ):
+                continue
+            if reference_restriction_conflict(reference_product_composition(sku), restrictions):
+                raise HealthVisionError("reference_restriction_conflict", "商品含已明确填写的过敏或忌口成分", 422)
+            candidates.append((sku["price_cent"] * quantity, str(sku["sku_id"]), quantity, sku))
+        if not candidates:
+            raise HealthVisionError("dish_stock_missing", "本菜已匹配商品没有库存充足的可售规格", 409)
+        _, _, quantity, sku = min(candidates, key=lambda item: item[:2])
+        result.append({**reference_product(sku, quantity), "ingredient_refs": refs})
+    return result
 
 
 def _scoped_reference_gaps(original, source):
