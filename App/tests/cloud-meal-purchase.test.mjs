@@ -5,7 +5,7 @@ import {ref,computed,reactive,effectScope,watch} from 'vue'
 import {referenceIngredientLabel,referenceGapDetail} from '../src/utils/meal-presentation.js'
 import {newMealCommerceState,createMealCommerceController,commerceMealView} from '../src/services/meal-commerce-state.js'
 
-function mount({daily=false,reference=false,selection,unified=false,gaps=[]}={}){
+function mount({daily=false,reference=false,productReference=false,unavailableSpec=false,selection,unified=false,gaps=[]}={}){
   const calls=[],hooks={},route={date:'2026-10-21',meal:'dinner',arrangement:'saved-1',version:'2'}
   if(daily){route.meal='daily';route.meals=['breakfast','lunch']}
   let scope='A',linked=false,publicationVersion=2,denied=false,referenceVersion=4
@@ -31,7 +31,14 @@ function mount({daily=false,reference=false,selection,unified=false,gaps=[]}={})
     return {data:{arrangement_id:route.arrangement,version:input.method==='POST'?publicationVersion:2,
       purchase:input.method==='POST'?{...purchase,package_sn:'pack-1',package_version:1}:structuredClone(purchase)}}
   }
-  const uiProps=reactive({unified,visible:true,route,meal:{members:[{id:'member-1'}]},selection,...(reference?{reference:{previewId:'preview',dailyPlanVersion:4,mealTypes:['lunch'],items:[{sku_id:'tomato',product_name:'合成番茄',quantity:1}]}}:{})})
+  const referenceItems=productReference
+    ? [{product_id:'tomato-product',product_name:'合成番茄',ingredient_refs:['番茄300克'],skus:[
+        {sku_id:'tomato-500',sku_name:'500克',price_cent:800,available_quantity:5,sale_status:'available'},
+        {sku_id:'tomato-1000',sku_name:'1千克',price_cent:1400,available_quantity:3,sale_status:'available'},
+        ...(unavailableSpec?[{sku_id:'tomato-2000',sku_name:'2千克',price_cent:2500,available_quantity:0,sale_status:'unavailable'}]:[]),
+      ]}]
+    : [{sku_id:'tomato',product_id:'tomato-product',product_name:'合成番茄',quantity:1}]
+  const uiProps=reactive({unified,visible:true,route,meal:{members:[{id:'member-1'}]},selection,...(reference?{reference:{previewId:'preview',dailyPlanVersion:4,mealTypes:['lunch'],items:referenceItems}}:{})})
   const deps={ref,computed,watch,referenceIngredientLabel,referenceGapDetail,defineEmits:()=>()=>{},defineExpose:()=>{},onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
     defineOptions:()=>{},defineProps:()=>uiProps,commerce:api,request:send,
     commerceMealView,getSession:()=>({householdId:'family-1'}),storageContext:()=>scope,
@@ -41,7 +48,7 @@ function mount({daily=false,reference=false,selection,unified=false,gaps=[]}={})
   const source=readFileSync(new URL('../src/components/CloudMealPurchase.vue',import.meta.url),'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const vueScope=effectScope()
-  const component=vueScope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {refresh,refreshUnified,checkout,toggle,selected,preview,products,picked,total,totalKnown,state,loginOpen,error,purchaseReady,purchaseGaps,returnKey,quoteWaiting,canSubmit,selectSlot}`)(deps))
+  const component=vueScope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {refresh,refreshUnified,checkout,submit,toggle,selected,preview,products,picked,total,totalKnown,state,loginOpen,error,purchaseReady,purchaseGaps,returnKey,quoteWaiting,canSubmit,selectSlot}`)(deps))
   return {...component,calls,uiProps,deny(){denied=true},pending(){purchase.available=false;purchase.confirmation_pending=true;items[0].sku.available_quantity=0},unavailable(){purchase.available=false;purchase.confirmation_pending=false},link(){linked=true},wrongVersion(){publicationVersion=3},switch(){scope='B'},
     changeReferenceVersion(){referenceVersion++},dispose(){hooks.unmount();vueScope.stop()}}
 }
@@ -186,6 +193,28 @@ test('reference sheet reads without publishing, leaves prices unknown and quotes
  f.link();await f.checkout();const write=f.calls.find(c=>c?.method==='POST');assert.deepEqual(write.data,{preview_id:'preview',version:4,meal_types:['lunch']});assert.ok(f.state.quote)
  }finally{f.dispose()}
 })
+test('product reference returns every spec and publishes only the user selected spec',async()=>{
+ const f=mount({reference:true,productReference:true});try{await f.refresh();assert.equal(f.products.value.length,2);assert.deepEqual(f.picked.value,['tomato-500'])
+ f.toggle('tomato-1000');assert.deepEqual(f.picked.value,['tomato-1000']);f.link();await f.checkout();const write=f.calls.find(c=>c?.method==='POST')
+ assert.deepEqual(write.data,{preview_id:'preview',version:4,meal_types:['lunch'],product_choices:[{product_id:'tomato-product',sku_id:'tomato-1000',quantity:1}]})
+ }finally{f.dispose()}
+})
+test('unified product reference waits for an explicit spec choice before publication',async()=>{
+ const f=mount({reference:true,productReference:true,unified:true});try{
+  f.link();await f.refreshUnified()
+  assert.equal(f.products.value.length,2);assert.deepEqual(f.picked.value,['tomato-500'])
+  assert.equal(f.calls.filter(c=>c?.method==='POST').length,0);assert.equal(f.state.ready,false);assert.equal(f.canSubmit.value,true)
+  f.toggle('tomato-1000');await f.submit();const write=f.calls.find(c=>c?.method==='POST')
+  assert.deepEqual(write.data,{preview_id:'preview',version:4,meal_types:['lunch'],product_choices:[{product_id:'tomato-product',sku_id:'tomato-1000',quantity:1}]})
+ }finally{f.dispose()}
+})
+test('unavailable specs stay visible but cannot be selected or restored',async()=>{
+ const f=mount({reference:true,productReference:true,unavailableSpec:true});try{
+  await f.refresh();assert.equal(f.products.value.length,3);assert.deepEqual(f.picked.value,['tomato-500'])
+  f.toggle('tomato-2000');assert.deepEqual(f.picked.value,['tomato-500'])
+  f.selected.value=['tomato-2000'];await f.refresh();assert.deepEqual(f.picked.value,[])
+ }finally{f.dispose()}
+})
 test('changed reference plan prevents publication and discards a prior quote',async()=>{
  const f=mount({reference:true});try{await f.refresh();f.link();f.changeReferenceVersion();await f.checkout();assert.equal(f.calls.some(c=>c?.method==='POST'),false);assert.equal(f.state.quote,null);assert.match(f.error.value,/参考餐单已更新/)}finally{f.dispose()}
 })
@@ -237,9 +266,22 @@ test('purchase panel distinguishes failure from loading and renders self-purchas
  const {compile,createSSRApp}=await import('vue'),{renderToString}=await import('vue/server-renderer')
  const render=compile(template.match(/<template>([\s\S]*?)<\/template>\s*<style/)[1])
  const html=await renderToString(createSSRApp({render,setup:()=>({
-  accessRequired:false,busy:false,ready:false,fixed:false,error:'',retryLabel:'重新核对',preparationGaps:props.gaps.slice(0,1),optionalGaps:[],optionalText:'',
+  accessRequired:false,busy:false,ready:false,choicesReady:false,fixed:false,error:'',retryLabel:'重新核对',preparationGaps:props.gaps.slice(0,1),optionalGaps:[],optionalText:'',
   address:null,slots:[],slotId:null,timesOpen:false,deliveryText:'待核对',picked:[],products:[],pending:false,pricing:false,canSubmit:false,total:'—',quote:null,
   slotName:()=>'',money:()=>'',
  })}))
  assert.match(html.replace(/<!--[\s\S]*?-->/g,''),/Oil · 自行购买 · 暂无价格/)
+ const specHtml=await renderToString(createSSRApp({render,setup:()=>({
+  accessRequired:false,busy:false,ready:false,choicesReady:true,fixed:false,title:'本餐食材',error:'',retryLabel:'重新核对',preparationGaps:[],optionalGaps:[],optionalText:'',
+  address:null,slots:[],slotId:null,timesOpen:false,deliveryText:'待核对',picked:['tomato-500'],products:[{id:'tomato-500',name:'合成番茄',packLabel:'500克',priceCents:800,quantity:1,availableQuantity:5,saleStatus:'available'}],pending:false,pricing:false,canSubmit:true,total:'—',quote:null,
+  slotName:()=>'',money:value=>value==null?'—':'¥'+(value/100).toFixed(2),
+ })}))
+ assert.match(specHtml,/合成番茄/);assert.match(specHtml,/500克/);assert.match(specHtml,/确认规格并核价/);assert.doesNotMatch(specHtml,/商品金额/)
+ const readyHtml=await renderToString(createSSRApp({render,setup:()=>({
+  accessRequired:false,busy:false,ready:true,choicesReady:false,fixed:false,title:'本餐食材',error:'',retryLabel:'重新核对',preparationGaps:[],optionalGaps:[],optionalText:'',
+  address:null,slots:[],slotId:null,timesOpen:false,deliveryText:'待核对',picked:['tomato'],products:[{id:'tomato',name:'合成番茄',packLabel:'500克',priceCents:800,quantity:2,availableQuantity:5}],pending:false,pricing:false,canSubmit:true,total:'—',quote:null,
+  slotName:()=>'',money:()=>'',
+ })}))
+ assert.doesNotMatch(readyHtml,/暂不可选/)
+ assert.doesNotMatch(readyHtml,/<button[^>]*aria-label="(?:取消选择|减少|增加)合成番茄[^"]*"[^>]*disabled/)
 })

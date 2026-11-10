@@ -30,7 +30,7 @@ export function recipeIngredients(dish) {
     const product = typeof quote === 'string' ? products.find(p => p && Array.isArray(p.ingredient_refs) && p.ingredient_refs.includes(quote)) : null
     const label = ingredientCopy(display.ingredients?.[index] ?? quote)
     return { key: index, name: product?.product_name || label, image: typeof product?.image_url === 'string' ? product.image_url : '',
-      skuId: product?.sku_id ?? '', amount: label }
+      productId: product?.product_id ?? '', skuId: product?.sku_id ?? '', skus:Array.isArray(product?.skus)?product.skus:[], amount: label }
   })
 }
 
@@ -39,10 +39,13 @@ export function recipeNutrition(dish) {
   const highlights = Array.isArray(dish?.nutrition_highlights) ? dish.nutrition_highlights : []
   const ingredients = Array.isArray(dish?.ingredients) ? dish.ingredients : []
   return highlights.flatMap(item => {
-    if (!item || item.sku_id == null) return []
-    const product = products.find(p => p?.sku_id != null && String(p.sku_id) === String(item.sku_id) &&
+    if (!item || item.product_id == null && item.sku_id == null) return []
+    const product = products.find(p => ((item.product_id != null && p?.product_id != null && String(p.product_id) === String(item.product_id)) ||
+      (item.sku_id != null && p?.sku_id != null && String(p.sku_id) === String(item.sku_id))) &&
       Array.isArray(p.ingredient_refs) && p.ingredient_refs.some(ref => typeof ref === 'string' && ingredients.includes(ref)))
     const quote = plainNutrition(item.quote)
-    return product && quote ? [{ name: product.product_name || '', skuId: product.sku_id, quote }] : []
+    return product && quote ? [item.product_id != null
+      ? { name: product.product_name || '', productId: product.product_id, quote }
+      : { name: product.product_name || '', skuId: product.sku_id, quote }] : []
   })
 }

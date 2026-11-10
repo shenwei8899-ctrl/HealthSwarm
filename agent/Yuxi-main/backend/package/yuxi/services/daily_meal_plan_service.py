@@ -171,14 +171,20 @@ async def read_current_plan(uid, family_id, day, session=None):
             try:
                 meal = await reference_meal_media(session, meal)
                 from yuxi.services.reference_recipe_presentation import attach_recipe_products
-                from yuxi.services.reference_meal_plan_service import current_reference_items
+                from yuxi.services.reference_meal_plan_service import (
+                    current_reference_items,
+                    current_reference_products,
+                )
 
                 if key not in display_reference_items:
-                    current_products = await current_reference_items(source.get("purchase_items", []))
-                    display_reference_items[key] = [
-                        current_reference_display_item(p, current_products[str(p["sku_id"])])
-                        for p in source.get("purchase_items", [])
-                    ]
+                    if source.get("product_matches"):
+                        display_reference_items[key] = await current_reference_products(source["product_matches"])
+                    else:
+                        current_products = await current_reference_items(source.get("purchase_items", []))
+                        display_reference_items[key] = [
+                            current_reference_display_item(p, current_products[str(p["sku_id"])])
+                            for p in source.get("purchase_items", [])
+                        ]
                 meal = attach_recipe_products(meal, display_reference_items[key])
             except HealthVisionError as error:
                 if preview is None or (
@@ -205,13 +211,11 @@ async def read_current_plan(uid, family_id, day, session=None):
         if not selected:
             continue
         original = {item.get("meal_type", item.get("type")) for item in source["meals"]}
-        if key[0] == "reference" and (source.get("purchase_items") or source.get("purchase_gaps")):
+        if key[0] == "reference" and (
+            source.get("product_matches") or source.get("purchase_items") or source.get("purchase_gaps")
+        ):
             from yuxi.services.reference_meal_plan_service import select_reference_purchase_items
 
-            items = select_reference_purchase_items(
-                {**source, "purchase_items": display_reference_items[key]},
-                sorted(selected),
-            )
             ingredients = {
                 ingredient
                 for meal in source["meals"]
@@ -219,6 +223,20 @@ async def read_current_plan(uid, family_id, day, session=None):
                 for dish in meal["dishes"]
                 for ingredient in dish["ingredients"]
             }
+            if source.get("product_matches"):
+                items = [
+                    {
+                        **product,
+                        "ingredient_refs": [ref for ref in product.get("ingredient_refs", []) if ref in ingredients],
+                    }
+                    for product in display_reference_items[key]
+                    if any(ref in ingredients for ref in product.get("ingredient_refs", []))
+                ]
+            else:
+                items = select_reference_purchase_items(
+                    {**source, "purchase_items": display_reference_items[key]},
+                    sorted(selected),
+                )
             gaps = [gap for gap in source.get("purchase_gaps", []) if gap["ingredient"] in ingredients]
             if not items and not gaps:
                 continue
@@ -239,7 +257,9 @@ async def read_current_plan(uid, family_id, day, session=None):
                         )
                     },
                     "gaps": gaps,
-                    "quantity_notice": "数量沿用原餐单的采购建议，可能包含其他餐次份量，请核对包装数量。"
+                    "quantity_notice": "请选择每个商品的购买规格，结算时实时核价和校验库存。"
+                    if source.get("product_matches")
+                    else "数量沿用原餐单的采购建议，可能包含其他餐次份量，请核对包装数量。"
                     if selected != original
                     else "请核对商品与包装数量。",
                 }

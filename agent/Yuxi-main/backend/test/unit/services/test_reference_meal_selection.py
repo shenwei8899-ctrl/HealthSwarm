@@ -43,16 +43,33 @@ def payload():
         "use_read_recipes": True,
         "auto_purchase_matches": True,
         "meals": [{"meal_type": "breakfast", "dishes": [{"file_id": "rice-file", "chunk_id": "rice-chunk"}]}],
+        "product_matches": [
+            {"product_id": "rice-product", "candidate_keys": [reference_candidate_key("100 g rice")]}
+        ],
+    }
+
+
+def legacy_payload():
+    """旧 SKU 选择只用于覆盖历史匹配函数，不再进入新写入 schema。"""
+    return {
         "purchase_items": [
             {"sku_id": "rice-sku", "quantity": 2, "candidate_keys": [reference_candidate_key("100 g rice")]}
         ],
     }
 
 
-def product(sku_id="rice-sku", name="大米", price=800):
+def legacy_choices(body=None):
+    return [
+        selection.ReferenceReadPurchase.model_validate(item)
+        for item in (body or legacy_payload())["purchase_items"]
+    ]
+
+
+def product(sku_id="rice-sku", name="大米", price=800, product_id=None):
     """仅为词法匹配提供合成已读商品，价格不是营养事实。"""
     return {
         "sku_id": sku_id,
+        "product_id": product_id or ("rice-product" if name == "大米" else sku_id.removesuffix("-sku") + "-product"),
         "product_name": name,
         "price_cent": price,
         "available_quantity": 10,
@@ -85,17 +102,36 @@ def test_selection_cannot_overwrite_source_quotes(field, value):
         selection.ReferenceReadSelection.model_validate(body)
 
 
-@pytest.mark.parametrize("value", [True, 0, 100, "2", 1.5])
-def test_packaging_quantity_is_explicit_bounded_integer(value):
-    """布尔、字符串和越界数量不能作为包装选择。"""
-    body = payload()
-    body["purchase_items"][0]["quantity"] = value
+def test_new_read_selection_rejects_legacy_sku_purchase_items():
+    """新餐单只保存商品身份；SKU 级 purchase_items 仅供旧快照读取兼容。"""
+    body = {
+        "use_read_recipes": True,
+        "auto_purchase_matches": True,
+        "meals": payload()["meals"],
+        "product_matches": [
+            {
+                "product_id": "rice-product",
+                "candidate_keys": [reference_candidate_key("100 g rice")],
+            }
+        ],
+        "purchase_items": legacy_payload()["purchase_items"],
+    }
+
     with pytest.raises(ValidationError):
         selection.ReferenceReadSelection.model_validate(body)
 
 
-@pytest.mark.parametrize("target", ["meals", "purchase_items"])
-def test_duplicate_meal_or_sku_cannot_hide_choices(target):
+@pytest.mark.parametrize("value", [True, 0, 100, "2", 1.5])
+def test_packaging_quantity_is_explicit_bounded_integer(value):
+    """布尔、字符串和越界数量不能作为包装选择。"""
+    body = legacy_payload()
+    body["purchase_items"][0]["quantity"] = value
+    with pytest.raises(ValidationError):
+        legacy_choices(body)
+
+
+@pytest.mark.parametrize("target", ["meals", "product_matches"])
+def test_duplicate_meal_or_product_cannot_hide_choices(target):
     """餐次与商品不能通过重复项覆盖已有决定。"""
     body = payload()
     body[target].append(deepcopy(body[target][0]))
@@ -107,7 +143,7 @@ def test_ingredient_references_are_exact_and_gaps_preserve_real_status():
     """原文完整对应，水、缺货、待确认和可选缺口分别保存。"""
     ingredients = ["100 g rice", "1 cup water", "1 tomato", "1 tablespoon soy sauce", "parsley (optional)"]
     meals = [{"dishes": [{"ingredients": ingredients}]}]
-    choices = selection.ReferenceReadSelection.model_validate(payload()).purchase_items
+    choices = legacy_choices()
     items, gaps = selection._purchase_choices(meals, choices, {"rice-sku": product()})
     assert items == [{"sku_id": "rice-sku", "quantity": 2, "ingredient_refs": ["100 g rice"]}]
     assert [(gap["ingredient"], gap["reason"]) for gap in gaps] == [
@@ -119,10 +155,80 @@ def test_ingredient_references_are_exact_and_gaps_preserve_real_status():
     assert ingredients == ["100 g rice", "1 cup water", "1 tomato", "1 tablespoon soy sauce", "parsley (optional)"]
 
 
+def test_product_selection_keeps_all_specs_and_ignores_stock_until_purchase():
+    ingredient = "100 g rice"
+    key = reference_candidate_key(ingredient)
+    meals = [{"dishes": [{"ingredients": [ingredient]}]}]
+    group = {
+        "product_id": "rice-product",
+        "product_name": "大米",
+        "ingredients": [{"name": "大米", "ingredient_code": "rice", "aliases": ["rice"]}],
+        "skus": [
+            {**product("rice-small"), "product_id": "rice-product", "sku_name": "500克"},
+            {
+                **product("rice-large"),
+                "product_id": "rice-product",
+                "sku_name": "1千克",
+                "sale_status": "unavailable",
+                "available_quantity": 0,
+            },
+        ],
+    }
+    choices = selection.ReferenceReadSelection.model_validate(
+        {
+            "use_read_recipes": True,
+            "auto_purchase_matches": True,
+            "meals": payload()["meals"],
+            "product_matches": [{"product_id": "rice-product", "candidate_keys": [key]}],
+        }
+    ).product_matches
+
+    items, gaps = selection._product_choices(
+        meals,
+        choices,
+        {"rice-product": group},
+        issued_candidates={key: {"rice-product"}},
+    )
+
+    assert items == [{"product_id": "rice-product", "ingredient_refs": [ingredient]}]
+    assert gaps == []
+
+
+def test_product_selection_rejects_an_explicitly_empty_issued_candidate_set():
+    """原谱回执明确没有候选商品时，不能用稍后重算结果绕过签发边界。"""
+    ingredient = "100 g rice"
+    key = reference_candidate_key(ingredient)
+    meals = [{"dishes": [{"ingredients": [ingredient]}]}]
+    group = {
+        "product_id": "rice-product",
+        "product_name": "大米",
+        "ingredients": [{"name": "大米", "ingredient_code": "rice", "aliases": ["rice"]}],
+        "skus": [{**product("rice-small"), "product_id": "rice-product", "sku_name": "500克"}],
+    }
+    choices = selection.ReferenceReadSelection.model_validate(
+        {
+            "use_read_recipes": True,
+            "auto_purchase_matches": True,
+            "meals": payload()["meals"],
+            "product_matches": [{"product_id": "rice-product", "candidate_keys": [key]}],
+        }
+    ).product_matches
+
+    with pytest.raises(HealthVisionError) as failed:
+        selection._product_choices(
+            meals,
+            choices,
+            {"rice-product": group},
+            issued_candidates={key: set()},
+        )
+
+    assert failed.value.code == "reference_ingredient_mismatch"
+
+
 def test_available_required_product_without_quantity_cannot_be_called_a_gap():
     """已知有对应商品时不能为省略包装选择伪造无匹配。"""
     meals = [{"dishes": [{"ingredients": ["100 g rice", "1 tomato"]}]}]
-    choices = selection.ReferenceReadSelection.model_validate(payload()).purchase_items
+    choices = legacy_choices()
     seen = {"rice-sku": product(), "tomato-sku": product("tomato-sku", "番茄")}
     with pytest.raises(HealthVisionError) as failed:
         selection._purchase_choices(meals, choices, seen)
@@ -132,11 +238,9 @@ def test_available_required_product_without_quantity_cannot_be_called_a_gap():
 def test_retry_turns_unresolved_candidate_into_self_purchase_instead_of_guessing():
     """Agent 修正后仍漏选时，后台保留餐单但不擅自选商品或包装数量。"""
     meals = [{"dishes": [{"ingredients": ["100 g rice", "1 tomato"]}]}]
-    body = payload()
-    body["purchase_items"].append(
-        {"sku_id": "unknown-sku", "quantity": 3, "candidate_keys": ["ingredient:invalid"]}
-    )
-    choices = selection.ReferenceReadSelection.model_validate(body).purchase_items
+    body = legacy_payload()
+    body["purchase_items"].append({"sku_id": "unknown-sku", "quantity": 3, "candidate_keys": ["ingredient:invalid"]})
+    choices = legacy_choices(body)
     seen = {
         "rice-sku": product(),
         "tomato-expensive": product("tomato-expensive", "番茄", 900),
@@ -151,7 +255,7 @@ def test_retry_turns_unresolved_candidate_into_self_purchase_instead_of_guessing
 def test_optional_product_can_remain_unselected_even_when_available():
     """原谱可选食材不因商城有货变成强制采购。"""
     meals = [{"dishes": [{"ingredients": ["100 g rice", "1 tomato (optional)"]}]}]
-    choices = selection.ReferenceReadSelection.model_validate(payload()).purchase_items
+    choices = legacy_choices()
     seen = {"rice-sku": product(), "tomato-sku": product("tomato-sku", "番茄")}
     items, gaps = selection._purchase_choices(meals, choices, seen)
     assert len(items) == 1 and gaps[0]["reason"] == "optional_not_selected"
@@ -160,13 +264,13 @@ def test_optional_product_can_remain_unselected_even_when_available():
 def test_explicit_valid_alternative_sku_is_used_instead_of_guessing_cheapest():
     """相同食材的合法已读规格尊重明确选择及数量。"""
     meals = [{"dishes": [{"ingredients": ["100 g rice"]}]}]
-    body = payload()
+    body = legacy_payload()
     body["purchase_items"] = [
         {"sku_id": "chosen", "quantity": 3, "candidate_keys": [reference_candidate_key("100 g rice")]}
     ]
     seen = {"cheap": product("cheap", price=100), "chosen": product("chosen", price=200)}
     items, gaps = selection._purchase_choices(
-        meals, selection.ReferenceReadSelection.model_validate(body).purchase_items, seen
+        meals, legacy_choices(body), seen
     )
     assert items == [{"sku_id": "chosen", "quantity": 3, "ingredient_refs": ["100 g rice"]}]
     assert gaps == []
@@ -177,9 +281,9 @@ def test_selected_sku_must_belong_to_candidate_group_issued_in_recipe_receipt():
     ingredient = "100 g rice"
     key = reference_candidate_key(ingredient)
     meals = [{"dishes": [{"ingredients": [ingredient]}]}]
-    body = payload()
+    body = legacy_payload()
     body["purchase_items"] = [{"sku_id": "rice-new", "quantity": 1, "candidate_keys": [key]}]
-    choices = selection.ReferenceReadSelection.model_validate(body).purchase_items
+    choices = legacy_choices(body)
     seen = {"rice-old": product("rice-old"), "rice-new": product("rice-new")}
     with pytest.raises(HealthVisionError) as failed:
         selection._purchase_choices(meals, choices, seen, issued_candidates={key: {"rice-old"}})
@@ -189,73 +293,74 @@ def test_selected_sku_must_belong_to_candidate_group_issued_in_recipe_receipt():
 def test_unused_sku_is_rejected_from_model_purchase_selection():
     """模型附带的多余规格没有服务端候选键，正常保存不能静默接受。"""
     meals = [{"dishes": [{"ingredients": ["100 g rice"]}]}]
-    body = payload()
-    body["purchase_items"].append(
-        {"sku_id": "tomato-sku", "quantity": 1, "candidate_keys": ["ingredient:unrelated"]}
-    )
+    body = legacy_payload()
+    body["purchase_items"].append({"sku_id": "tomato-sku", "quantity": 1, "candidate_keys": ["ingredient:unrelated"]})
     seen = {"rice-sku": product(), "tomato-sku": product("tomato-sku", "番茄")}
     with pytest.raises(HealthVisionError) as failed:
-        selection._purchase_choices(meals, selection.ReferenceReadSelection.model_validate(body).purchase_items, seen)
+        selection._purchase_choices(meals, legacy_choices(body), seen)
     assert failed.value.code == "reference_ingredient_mismatch"
 
 
 def test_two_valid_skus_for_one_ingredient_still_fail():
     """同一食材的第二个有效规格不能被当作无关选品静默删掉。"""
-    body = payload()
+    body = legacy_payload()
     body["purchase_items"].append(
         {"sku_id": "rice-alt", "quantity": 3, "candidate_keys": [reference_candidate_key("100 g rice")]}
     )
-    with pytest.raises(ValidationError):
-        selection.ReferenceReadSelection.model_validate(body)
+    with pytest.raises(HealthVisionError) as failed:
+        selection._purchase_choices(
+            [{"dishes": [{"ingredients": ["100 g rice"]}]}],
+            legacy_choices(body),
+            {"rice-sku": product(), "rice-alt": product("rice-alt")},
+        )
+    assert failed.value.code == "reference_ingredient_mismatch"
 
 
 def test_out_of_stock_same_food_cannot_become_self_prepare_gap():
     """目录已读的零库存同类规格不能被当成无关商品剔除。"""
     meals = [{"dishes": [{"ingredients": ["100 g rice", "1 tomato"]}]}]
-    body = payload()
+    body = legacy_payload()
     body["purchase_items"].append(
         {"sku_id": "tomato-sku", "quantity": 1, "candidate_keys": [reference_candidate_key("1 tomato")]}
     )
     seen = {"rice-sku": product(), "tomato-sku": {**product("tomato-sku", "番茄"), "available_quantity": 0}}
     with pytest.raises(HealthVisionError) as failed:
-        selection._purchase_choices(meals, selection.ReferenceReadSelection.model_validate(body).purchase_items, seen)
+        selection._purchase_choices(meals, legacy_choices(body), seen)
     assert failed.value.code == "reference_ingredient_mismatch"
 
 
 def test_unrecognized_product_cannot_be_assumed_unrelated():
     """商品身份无法识别时不能擅自删除明确选择。"""
     meals = [{"dishes": [{"ingredients": ["100 g rice"]}]}]
-    body = payload()
-    body["purchase_items"].append(
-        {"sku_id": "unknown-sku", "quantity": 1, "candidate_keys": ["ingredient:unknown"]}
-    )
+    body = legacy_payload()
+    body["purchase_items"].append({"sku_id": "unknown-sku", "quantity": 1, "candidate_keys": ["ingredient:unknown"]})
     seen = {"rice-sku": product(), "unknown-sku": product("unknown-sku", "未识别原料")}
     with pytest.raises(HealthVisionError) as failed:
-        selection._purchase_choices(meals, selection.ReferenceReadSelection.model_validate(body).purchase_items, seen)
+        selection._purchase_choices(meals, legacy_choices(body), seen)
     assert failed.value.code == "reference_ingredient_mismatch"
 
 
 def test_unrelated_sku_cannot_replace_required_product():
     """多余规格不能使缺少已知必需商品的餐单通过。"""
     meals = [{"dishes": [{"ingredients": ["100 g rice"]}]}]
-    body = payload()
+    body = legacy_payload()
     body["purchase_items"] = [
         {"sku_id": "tomato-sku", "quantity": 1, "candidate_keys": [reference_candidate_key("100 g rice")]}
     ]
     seen = {"rice-sku": product(), "tomato-sku": product("tomato-sku", "番茄")}
     with pytest.raises(HealthVisionError) as failed:
-        selection._purchase_choices(meals, selection.ReferenceReadSelection.model_validate(body).purchase_items, seen)
+        selection._purchase_choices(meals, legacy_choices(body), seen)
     assert failed.value.code == "reference_ingredient_mismatch"
 
 
 def test_no_matched_sku_becomes_self_purchase_instead_of_failing_plan():
     """没有同名商城商品时仍保存菜谱，并把原料明确标成自行购买。"""
     meals = [{"dishes": [{"ingredients": ["100 g rice"]}]}]
-    body = payload()
+    body = legacy_payload()
     body["purchase_items"] = []
     items, gaps = selection._purchase_choices(
         meals,
-        selection.ReferenceReadSelection.model_validate(body).purchase_items,
+        legacy_choices(body),
         {"tomato-sku": product("tomato-sku", "番茄")},
     )
     assert items == []
@@ -286,32 +391,19 @@ def test_product_name_owns_candidate_matching_and_returns_every_available_sku():
         },
     ]
     groups = reference_ingredient_candidates(("100 g rice",), products)
-    assert groups == [
-        {
-            "candidate_key": reference_candidate_key("100 g rice"),
-            "ingredient": "100 g rice",
-            "food": "大米",
-            "status": "matched",
-            "candidate_skus": [
-                {
-                    "sku_id": "rice-small",
-                    "product_name": "大米",
-                    "sku_name": "500克",
-                    "net_content": {"value": 500, "unit": "g"},
-                    "price_cent": 500,
-                    "available_quantity": 10,
-                },
-                {
-                    "sku_id": "rice-large",
-                    "product_name": "大米",
-                    "sku_name": "1千克",
-                    "net_content": {"value": 1, "unit": "kg"},
-                    "price_cent": 800,
-                    "available_quantity": 10,
-                },
-            ],
-        }
-    ]
+    assert len(groups) == 1
+    assert {key: groups[0][key] for key in ("candidate_key", "ingredient", "food", "status")} == {
+        "candidate_key": reference_candidate_key("100 g rice"),
+        "ingredient": "100 g rice",
+        "food": "大米",
+        "status": "matched",
+    }
+    assert [item["sku_id"] for item in groups[0]["candidate_skus"]] == ["rice-small", "rice-large"]
+    assert len(groups[0]["candidate_products"]) == 1
+    candidate_product = groups[0]["candidate_products"][0]
+    assert candidate_product["product_id"] == "rice-product"
+    assert candidate_product["product_name"] == "大米"
+    assert [sku["sku_id"] for sku in candidate_product["skus"]] == ["rice-small", "rice-large"]
 
 
 def test_ambiguous_recipe_ingredient_does_not_guess_a_product_name():
@@ -324,6 +416,7 @@ def test_ambiguous_recipe_ingredient_does_not_guess_a_product_name():
             "food": None,
             "status": "needs_confirmation",
             "candidate_skus": [],
+            "candidate_products": [],
         }
     ]
 
@@ -422,10 +515,9 @@ async def test_read_selection_unconfirmed_chicken_sku_keeps_real_gap(assembly):
     graph.add_edge("tools", END)
     compiled = graph.compile()
     chosen = payload()
-    chosen["purchase_items"] = [
+    chosen["product_matches"] = [
         {
-            "sku_id": "garlic-sku",
-            "quantity": 1,
+            "product_id": "garlic-product",
             "candidate_keys": [reference_candidate_key("1 clove garlic")],
         },
     ]
@@ -450,10 +542,9 @@ async def test_read_selection_unconfirmed_chicken_sku_keeps_real_gap(assembly):
     assert result["messages"][-1].content == '{"preview_id": "synthetic-preview"}'
     saved.assert_awaited_once()
     draft = saved.await_args.args[1]
-    assert [item.model_dump() for item in draft.purchase_items] == [
+    assert [item.model_dump() for item in draft.product_matches] == [
         {
-            "sku_id": "garlic-sku",
-            "quantity": 1,
+            "product_id": "garlic-product",
             "ingredient_refs": ["1 clove garlic"],
         }
     ]
@@ -477,9 +568,8 @@ async def test_assembly_copies_full_parsed_source_and_keeps_missing_translation(
         ["Boil rice and water."],
     )
     assert dish.display_zh is None
-    assert result.purchase_items[0].model_dump() == {
-        "sku_id": "rice-sku",
-        "quantity": 2,
+    assert result.product_matches[0].model_dump() == {
+        "product_id": "rice-product",
         "ingredient_refs": ["100 g rice"],
     }
     assert [(gap.ingredient, gap.reason) for gap in result.purchase_gaps] == [("1 cup water", "not_sold")]
@@ -493,8 +583,11 @@ async def test_assembly_copies_full_parsed_source_and_keeps_missing_translation(
 async def test_assembly_allows_every_ingredient_to_be_self_purchased(assembly):
     """商城没有同名商品时，仍装配完整菜谱并保留全部自行购买缺口。"""
     body = payload()
-    body["purchase_items"] = []
+    body["product_matches"] = []
     assembly.products = [product("tomato-sku", "番茄")]
+    assembly.opened[0]["recipe_check"]["ingredient_matches"] = reference_ingredient_candidates(
+        ("100 g rice", "1 cup water"), assembly.products
+    )
     result = await selection.assemble_reference_selection(assembly.context, body)
     assert result.purchase_items == []
     assert [(gap.ingredient, gap.reason) for gap in result.purchase_gaps] == [
@@ -504,15 +597,37 @@ async def test_assembly_allows_every_ingredient_to_be_self_purchased(assembly):
 
 
 @pytest.mark.asyncio
-async def test_assembly_rejects_same_name_sku_not_issued_by_opened_recipe(assembly):
-    """后来读到的同名 SKU 不能越过已打开菜谱当时签发的候选集合。"""
+async def test_opened_recipe_authorizes_product_outside_first_category_even_without_stock(assembly):
+    """原谱已签发的其他分类缺货商品仍可装配，购买时另验库存。"""
+    assembly.products = [product("tomato-sku", "番茄")]
+    rice = {**product(), "available_quantity": 0, "sale_status": "unavailable"}
+    assembly.opened[0]["recipe_check"]["ingredient_matches"] = reference_ingredient_candidates(
+        ("100 g rice", "1 cup water"), [rice]
+    )
+    result = await selection.assemble_reference_selection(assembly.context, payload())
+    assert result.product_matches[0].product_id == "rice-product"
+    assert result.purchase_items == []
+
+
+@pytest.mark.asyncio
+async def test_assembly_rejects_same_name_product_not_issued_by_opened_recipe(assembly):
+    """后来读到的同名商品不能越过已打开菜谱当时签发的候选集合。"""
     key = reference_candidate_key("100 g rice")
     assembly.opened[0]["recipe_check"] = {
-        "ingredient_matches": [{"candidate_key": key, "candidate_skus": [{"sku_id": "rice-old"}]}]
+        "ingredient_matches": [
+            {
+                "candidate_key": key,
+                "candidate_skus": [{"sku_id": "rice-old"}],
+                "candidate_products": [{"product_id": "rice-old-product"}],
+            }
+        ]
     }
-    assembly.products = [product("rice-old"), product("rice-new")]
+    assembly.products = [
+        product("rice-old", product_id="rice-old-product"),
+        product("rice-new", product_id="rice-new-product"),
+    ]
     body = payload()
-    body["purchase_items"] = [{"sku_id": "rice-new", "quantity": 1, "candidate_keys": [key]}]
+    body["product_matches"] = [{"product_id": "rice-new-product", "candidate_keys": [key]}]
     with pytest.raises(HealthVisionError) as failed:
         await selection.assemble_reference_selection(assembly.context, body)
     assert failed.value.code == "reference_ingredient_mismatch"
@@ -531,7 +646,7 @@ async def test_all_three_meals_are_assembled_and_explicit_translation_is_preserv
     assert all(meal.dishes[0].display_zh.model_dump() == CHINESE for meal in result.meals)
     assert all(meal.dishes[0].cooking_minutes == 25 for meal in result.meals)
     translations.cached_chinese_display.assert_not_awaited()
-    assert result.purchase_items[0].quantity == 2
+    assert result.product_matches[0].product_id == "rice-product"
 
 
 @pytest.mark.asyncio
@@ -543,7 +658,7 @@ async def test_all_three_meals_are_assembled_and_explicit_translation_is_preserv
         ("review", "reference_quote_invalid"),
         ("parse", "reference_quote_invalid"),
         ("meal", "reference_meals_mismatch"),
-        ("unread_sku", "reference_product_changed"),
+        ("unread_product", "reference_product_changed"),
         ("no_products", "reference_product_required"),
         ("missing_candidates", "reference_receipt_invalid"),
     ],
@@ -563,12 +678,13 @@ async def test_assembly_rejects_missing_or_changed_authority(assembly, failure, 
         assembly.opened = [{**deepcopy(assembly.document), "recipe_check": {"ingredient_matches": []}}]
     elif failure == "meal":
         assembly.selected_meals = ["dinner"]
-    elif failure == "unread_sku":
-        body["purchase_items"][0]["sku_id"] = "unread"
+    elif failure == "unread_product":
+        body["product_matches"][0]["product_id"] = "unread"
     elif failure == "missing_candidates":
         assembly.opened[0].pop("recipe_check")
     else:
         assembly.products = []
+        assembly.opened[0]["recipe_check"]["ingredient_matches"] = []
     with pytest.raises(HealthVisionError) as failed:
         await selection.assemble_reference_selection(assembly.context, body)
     assert failed.value.code == code

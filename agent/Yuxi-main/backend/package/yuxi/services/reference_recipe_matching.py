@@ -62,16 +62,53 @@ _FOODS = {
 _SINGLE_FOOD = {food: tuple(re.compile(term, re.IGNORECASE) for term in terms) for food, terms in _FOODS.items()}
 # 召回只需词法提示；大段正文使用单次分词，避免逐字符尝试全部身份正则。
 _RECALL_WORDS = {
-    "rice": "大米", "potato": "土豆", "potatoes": "土豆", "egg": "鸡蛋", "eggs": "鸡蛋",
-    "tomato": "番茄", "tomatoes": "番茄", "onion": "洋葱", "onions": "洋葱",
-    "spinach": "菠菜", "broccoli": "西兰花", "cauliflower": "花菜", "carrot": "胡萝卜", "carrots": "胡萝卜",
-    "zucchini": "西葫芦", "chicken": "鸡肉", "salmon": "三文鱼", "cod": "鳕鱼",
-    "cucumber": "黄瓜", "cucumbers": "黄瓜", "milk": "牛奶", "oat": "燕麦", "oats": "燕麦", "oatmeal": "燕麦",
-    "garlic": "大蒜", "water": "水", "salt": "盐", "sugar": "糖", "tofu": "豆腐", "cabbage": "圆白菜",
-    "mushroom": "蘑菇", "mushrooms": "蘑菇", "shiitake": "香菇", "enoki": "金针菇",
-    "eggplant": "茄子", "eggplants": "茄子", "aubergine": "茄子", "asparagus": "芦笋", "celery": "西芹",
-    "lettuce": "生菜", "ginger": "姜", "chickpea": "鹰嘴豆", "chickpeas": "鹰嘴豆",
-    "walnut": "核桃仁", "walnuts": "核桃仁", "beef": "牛肉", "pork": "猪肉",
+    "rice": "大米",
+    "potato": "土豆",
+    "potatoes": "土豆",
+    "egg": "鸡蛋",
+    "eggs": "鸡蛋",
+    "tomato": "番茄",
+    "tomatoes": "番茄",
+    "onion": "洋葱",
+    "onions": "洋葱",
+    "spinach": "菠菜",
+    "broccoli": "西兰花",
+    "cauliflower": "花菜",
+    "carrot": "胡萝卜",
+    "carrots": "胡萝卜",
+    "zucchini": "西葫芦",
+    "chicken": "鸡肉",
+    "salmon": "三文鱼",
+    "cod": "鳕鱼",
+    "cucumber": "黄瓜",
+    "cucumbers": "黄瓜",
+    "milk": "牛奶",
+    "oat": "燕麦",
+    "oats": "燕麦",
+    "oatmeal": "燕麦",
+    "garlic": "大蒜",
+    "water": "水",
+    "salt": "盐",
+    "sugar": "糖",
+    "tofu": "豆腐",
+    "cabbage": "圆白菜",
+    "mushroom": "蘑菇",
+    "mushrooms": "蘑菇",
+    "shiitake": "香菇",
+    "enoki": "金针菇",
+    "eggplant": "茄子",
+    "eggplants": "茄子",
+    "aubergine": "茄子",
+    "asparagus": "芦笋",
+    "celery": "西芹",
+    "lettuce": "生菜",
+    "ginger": "姜",
+    "chickpea": "鹰嘴豆",
+    "chickpeas": "鹰嘴豆",
+    "walnut": "核桃仁",
+    "walnuts": "核桃仁",
+    "beef": "牛肉",
+    "pork": "猪肉",
 }
 _RECALL_PHRASES = {
     "sweet potato": "红薯",
@@ -118,11 +155,42 @@ _REFERENCE_PROVENANCE = {
 }
 _OPTIONAL_MARKER = re.compile(r"(?:\s*\((?:optional|可选)\)|\s*[（](?:optional|可选)[）])\s*$", re.I)
 _ALLOWED_ENGLISH_REMAINDER = {
-    "fl", "unpeeled", "pinch", "pinches", "of",
-    "white", "uncooked", "rinsed", "washed", "drained", "cut", "into", "florets",
-    "crushed", "finely", "roughly", "thinly", "thickly", "and", "trimmed",
-    "grams", "gram", "kilograms", "pounds", "pound", "ounces", "ounce", "lbs",
-    "big", "size", "sized", "to", "taste", "chunk", "chunks", "shredded",
+    "fl",
+    "unpeeled",
+    "pinch",
+    "pinches",
+    "of",
+    "white",
+    "uncooked",
+    "rinsed",
+    "washed",
+    "drained",
+    "cut",
+    "into",
+    "florets",
+    "crushed",
+    "finely",
+    "roughly",
+    "thinly",
+    "thickly",
+    "and",
+    "trimmed",
+    "grams",
+    "gram",
+    "kilograms",
+    "pounds",
+    "pound",
+    "ounces",
+    "ounce",
+    "lbs",
+    "big",
+    "size",
+    "sized",
+    "to",
+    "taste",
+    "chunk",
+    "chunks",
+    "shredded",
     "c",
     "cup",
     "cups",
@@ -163,7 +231,15 @@ _ALLOWED_ENGLISH_REMAINDER = {
     "piece",
 }
 _ALLOWED_CHINESE_REMAINDER = (
-    "切小朵", "洗净", "洗淨", "沥干", "瀝乾", "切段", "拍碎", "剁碎", "去根",
+    "切小朵",
+    "洗净",
+    "洗淨",
+    "沥干",
+    "瀝乾",
+    "切段",
+    "拍碎",
+    "剁碎",
+    "去根",
     "适量",
     "新鲜",
     "冷",
@@ -206,7 +282,7 @@ def parse_reference_recipe(content: str) -> ParsedReferenceRecipe | None:
     if not title or len(title) > 120:
         return None
     sections = []
-    for i, line in enumerate(lines[title_index + 1:], title_index + 1):
+    for i, line in enumerate(lines[title_index + 1 :], title_index + 1):
         value = line.strip()
         label = value.lstrip("#").strip().strip("*").strip().rstrip(":：").casefold()
         label = label.removesuffix("（原文）").removesuffix("(original)").strip()
@@ -228,12 +304,18 @@ def parse_reference_recipe(content: str) -> ParsedReferenceRecipe | None:
         )
         if label == "原文说明与缺失项":
             # 只略过收录器已知的来源说明；原文附注/Tip 等仍需人工核对。
-            following = [item.strip() for item in lines[i + 1:] if item.strip()]
-            kind = "notes" if following and all(
-                item in _REFERENCE_PROVENANCE or item.startswith("Recipe Source: ") for item in following
-            ) else "review"
-        explicit = bool(re.match(r"^#{1,6}\s+", value) or re.fullmatch(r"\*\*.+\*\*", value)
-                        or re.search(r"(?:ingredients?|食材|材料|配料).*[:：]$", value, re.I))
+            following = [item.strip() for item in lines[i + 1 :] if item.strip()]
+            kind = (
+                "notes"
+                if following
+                and all(item in _REFERENCE_PROVENANCE or item.startswith("Recipe Source: ") for item in following)
+                else "review"
+            )
+        explicit = bool(
+            re.match(r"^#{1,6}\s+", value)
+            or re.fullmatch(r"\*\*.+\*\*", value)
+            or re.search(r"(?:ingredients?|食材|材料|配料).*[:：]$", value, re.I)
+        )
         if kind or explicit:
             heading = re.match(r"^(#{1,6})\s+", value)
             sections.append((i, kind, len(heading[1]) if heading else 2))
@@ -242,41 +324,52 @@ def parse_reference_recipe(content: str) -> ParsedReferenceRecipe | None:
     if len(ingredients_at) != 1 or len(steps_at) != 1:
         return None
     i, j = ingredients_at[0], steps_at[0]
-    if j <= i or any(kind != "equipment" for _, kind, _ in sections[i + 1:j]):
+    if j <= i or any(kind != "equipment" for _, kind, _ in sections[i + 1 : j]):
         return None
     ingredient_start, step_start = sections[i][0], sections[j][0]
     step_end = sections[j + 1][0] if j + 1 < len(sections) else len(lines)
-    ingredients = recipe_list_items(lines[ingredient_start + 1:sections[i + 1][0]])
-    steps = recipe_list_items(lines[step_start + 1:step_end])
+    ingredients = recipe_list_items(lines[ingredient_start + 1 : sections[i + 1][0]])
+    steps = recipe_list_items(lines[step_start + 1 : step_end])
     review_sections = []
     for section_index in range(j + 1, len(sections)):
         start, kind, level = sections[section_index]
         end = sections[section_index + 1][0] if section_index + 1 < len(sections) else len(lines)
         section = "\n".join(lines[start:end]).strip()
-        body = "\n".join(lines[start + 1:end]).strip()
+        body = "\n".join(lines[start + 1 : end]).strip()
         if kind == "notes" and level <= sections[j][2]:
             continue
-        if kind == "citations" and (not body or all(
-            re.fullmatch(r"(?:- )?(?:\[[^\]]+\]\(https?://[^\s)]+\)|https?://\S+)", line)
-            for line in body.splitlines()
-        )):
+        if kind == "citations" and (
+            not body
+            or all(
+                re.fullmatch(r"(?:- )?(?:\[[^\]]+\]\(https?://[^\s)]+\)|https?://\S+)", line)
+                for line in body.splitlines()
+            )
+        ):
             continue
         # 后续章节保留为诊断，不因附注边界问题丢掉已经识别的食材。
         if body:
-            informational = kind == "review" and all(re.fullmatch(
-                r"(?:- )?(?:Keep refrigerated|Serve (?:immediately|hot|warm|cold)|"
-                r"Allow to cool before serving|冷藏保存|趁热食用|放凉后食用)[.!。]?",
-                line.strip(), re.I,
-            ) for line in body.splitlines() if line.strip())
+            informational = kind == "review" and all(
+                re.fullmatch(
+                    r"(?:- )?(?:Keep refrigerated|Serve (?:immediately|hot|warm|cold)|"
+                    r"Allow to cool before serving|冷藏保存|趁热食用|放凉后食用)[.!。]?",
+                    line.strip(),
+                    re.I,
+                )
+                for line in body.splitlines()
+                if line.strip()
+            )
             if informational:
                 steps += (section,)
             else:
                 review_sections.append(section)
         elif kind not in {"review", "citations"}:
             review_sections.append(section)
-    if (not 1 <= len(ingredients) <= 30 or not 1 <= len(steps) <= 20
-            or len(set(ingredients)) != len(ingredients)
-            or any(len(value) > 1200 for value in ingredients)):
+    if (
+        not 1 <= len(ingredients) <= 30
+        or not 1 <= len(steps) <= 20
+        or len(set(ingredients)) != len(ingredients)
+        or any(len(value) > 1200 for value in ingredients)
+    ):
         return None
     # 有些来源把油或配菜只写在步骤里；不能把清单可匹配误称为整谱完整。
     ingredient_text = " ".join(ingredients)
@@ -284,8 +377,10 @@ def parse_reference_recipe(content: str) -> ParsedReferenceRecipe | None:
     extra_terms = r"\b(?:butter|oil|flour|vinegar|pepper|parsley|saffron|bread|cheese|honey)\b"
     declared_terms = set(re.findall(extra_terms, ingredient_text.casefold()))
     for step in steps:
-        if (reference_food_mentions(step) - declared_foods - {"水"}
-                or set(re.findall(extra_terms, step.casefold())) - declared_terms):
+        if (
+            reference_food_mentions(step) - declared_foods - {"水"}
+            or set(re.findall(extra_terms, step.casefold())) - declared_terms
+        ):
             review_sections.append(step)
     return ParsedReferenceRecipe(title, ingredients, steps, tuple(review_sections))
 
@@ -297,7 +392,7 @@ def recipe_list_items(lines: list[str]) -> tuple[str, ...]:
         if not line.strip():
             continue
         marker = re.match(r"^\s*(?:[-*+•]\s+|\d+\.\s+|\d+[)、]\s*)", line)
-        value = line[marker.end():].strip() if marker else line.strip()
+        value = line[marker.end() :].strip() if marker else line.strip()
         if not marker and line[:1].isspace() and result:
             result[-1] += "\n" + line.rstrip()
         else:
@@ -325,6 +420,72 @@ def product_food(product_name: str) -> str | None:
     return None
 
 
+def product_foods(product: dict) -> set[str]:
+    """从商城结构化食材映射取得身份；商品标题硬编码仅作历史兼容。"""
+    foods: set[str] = set()
+    for mapping in product.get("ingredients") or []:
+        name = str(mapping.get("name") or "").strip() if isinstance(mapping, dict) else str(mapping).strip()
+        if name:
+            foods.add(product_food(name) or name)
+    legacy = product_food(str(product.get("product_name") or ""))
+    if legacy:
+        foods.add(legacy)
+    elif not foods:
+        name = str(product.get("product_name") or "").removeprefix("示例·").strip()
+        if name:
+            foods.add(name)
+    return foods
+
+
+def _dynamic_alias_index(products: list[dict]) -> dict[str, set[str]]:
+    aliases: dict[str, set[str]] = {}
+    for product in products:
+        for food in product_foods(product):
+            aliases.setdefault(food.casefold(), set()).add(food)
+        for mapping in product.get("ingredients") or []:
+            if not isinstance(mapping, dict):
+                continue
+            name = str(mapping.get("name") or "").strip()
+            if not name:
+                continue
+            terms = {name, str(mapping.get("ingredient_code") or "").strip()}
+            terms.update(str(value).strip() for value in mapping.get("aliases") or [])
+            for term in terms:
+                if term:
+                    aliases.setdefault(term.casefold(), set()).add(product_food(name) or name)
+    return aliases
+
+
+def ingredient_food_for_products(ingredient: str, products: list[dict]) -> str | None:
+    """先沿用严格旧识别，再用商城别名严格匹配；歧义时保持待确认。"""
+    aliases = _dynamic_alias_index(products)
+    legacy = ingredient_food(ingredient)
+    if legacy is not None:
+        mapped = aliases.get(legacy.casefold(), set())
+        return next(iter(mapped)) if len(mapped) == 1 else legacy if not mapped else None
+    if _UNSUPPORTED_FORMS.search(ingredient) or re.search(r"\b(?:or|optional)\b|或|可选", ingredient, re.I):
+        return None
+    value = _OPTIONAL_MARKER.sub("", _without_preparation_suffix(ingredient)).casefold()
+    matches = set()
+    for alias, foods in aliases.items():
+        if re.search(r"[a-z0-9]", alias):
+            found = re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", value, re.I)
+        else:
+            found = re.search(re.escape(alias), value)
+        if found and _identity_remainder_allowed(value[:found.start()] + value[found.end():]):
+            matches.update(foods)
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _identity_remainder_allowed(remaining: str) -> bool:
+    """别名外仅允许已知用量和切配词，保留物种与加工形态差异。"""
+    remaining = remaining.replace("，", ",").replace("–", "-").replace("—", "-")
+    if any(word.casefold() not in _ALLOWED_ENGLISH_REMAINDER for word in re.findall(r"[A-Za-z]+", remaining)):
+        return False
+    remaining = re.sub(r"[A-Za-z]+", "", remaining)
+    for allowed in _ALLOWED_CHINESE_REMAINDER:
+        remaining = remaining.replace(allowed, "")
+    return re.search(r"[^\d\s.,/()\-¼½¾⅓⅔⅛⅜⅝⅞]", remaining) is None
 
 
 def optional_reference_ingredient(ingredient: str) -> bool:
@@ -347,7 +508,9 @@ def ingredient_food(ingredient: str) -> str | None:
     # 括号中的单位换算不是食材替代；只消除纯数字与量具单位构成的说明。
     ingredient = re.sub(
         r"\((?:[\d\s./¼½¾⅓⅔⅛⅜⅝⅞-]|\b(?:or|ml|l|g|kg|oz|fl|cup|cups|lb)\b)+\)",
-        "", ingredient, flags=re.I,
+        "",
+        ingredient,
+        flags=re.I,
     )
     ingredient = re.sub(r",\s*depending on appetite\s*$", "", ingredient, flags=re.I)
     if _UNSUPPORTED_FORMS.search(ingredient) or re.search(r"\b(?:or|optional)\b|或|可选", ingredient, re.I):
@@ -355,8 +518,13 @@ def ingredient_food(ingredient: str) -> str | None:
     matches = {
         food for food, patterns in _SINGLE_FOOD.items() if any(pattern.search(ingredient) for pattern in patterns)
     }
-    for specific, generic in [("红薯", "土豆"), ("鸡胸肉", "鸡肉"), ("大白菜", "圆白菜"),
-                              ("香菇", "蘑菇"), ("金针菇", "蘑菇")]:
+    for specific, generic in [
+        ("红薯", "土豆"),
+        ("鸡胸肉", "鸡肉"),
+        ("大白菜", "圆白菜"),
+        ("香菇", "蘑菇"),
+        ("金针菇", "蘑菇"),
+    ]:
         if specific in matches:
             matches.discard(generic)
     if len(matches) != 1:
@@ -369,9 +537,12 @@ def ingredient_food(ingredient: str) -> str | None:
     # 只消除已识别菜品的切配/用量修饰，不消除加工形态或替代关系。
     remaining = remaining.replace("，", ",").replace("–", "-").replace("—", "-")
     words = re.findall(r"[A-Za-z]+", remaining)
-    if any(word.casefold() not in _ALLOWED_ENGLISH_REMAINDER
-           and not (food == "洋葱" and word.casefold() == "yellow")
-           and not (food == "大米" and word.casefold() == "dry") for word in words):
+    if any(
+        word.casefold() not in _ALLOWED_ENGLISH_REMAINDER
+        and not (food == "洋葱" and word.casefold() == "yellow")
+        and not (food == "大米" and word.casefold() == "dry")
+        for word in words
+    ):
         return None
     remaining = re.sub(r"[A-Za-z]+", "", remaining)
     for allowed in _ALLOWED_CHINESE_REMAINDER:
@@ -396,12 +567,12 @@ def match_reference_ingredients(ingredients: tuple[str, ...], products: list[dic
     """每条原谱食材必须精确落到当前在售商品，烹饪用水独立豁免。"""
     by_food = {}
     for sku in products:
-        food = product_food(str(sku.get("product_name") or ""))
-        if food and sku.get("sale_status", "available") == "available" and int(sku.get("available_quantity", 0)) > 0:
-            by_food.setdefault(food, []).append(sku)
+        if sku.get("sale_status", "available") == "available" and int(sku.get("available_quantity", 0)) > 0:
+            for food in product_foods(sku):
+                by_food.setdefault(food, []).append(sku)
     result = {}
     for ingredient in ingredients:
-        food = ingredient_food(ingredient)
+        food = ingredient_food_for_products(ingredient, products)
         if food is None:
             if optional_reference_ingredient(ingredient):
                 result[ingredient] = {"optional_not_selected": True}
@@ -421,19 +592,70 @@ def match_reference_ingredients(ingredients: tuple[str, ...], products: list[dic
 
 
 def reference_ingredient_candidates(ingredients: tuple[str, ...], products: list[dict]) -> list[dict]:
-    """只按食材身份与商品名生成在售 SKU 候选，不读取商品详情推断身份。"""
+    """按结构化食材映射与别名匹配商品，并返回商品下全部已发布规格。"""
+    from yuxi.services.daily_commerce_service import group_catalog_products
+
+    product_level = all(isinstance(item.get("skus"), list) for item in products) or any(
+        item.get("product_id") is not None for item in products
+    )
+    if not product_level:
+        by_food: dict[str, list[dict]] = {}
+        for product in products:
+            if (
+                product.get("sale_status", "available") == "available"
+                and int(product.get("available_quantity") or 0) > 0
+            ):
+                for food in product_foods(product):
+                    by_food.setdefault(food, []).append(product)
+        result = []
+        for ingredient in ingredients:
+            food = ingredient_food_for_products(ingredient, products)
+            if food == "水":
+                status, candidates = "cooking_water", []
+            elif optional_reference_ingredient(ingredient):
+                status, candidates = "optional_not_selected", []
+            elif food is None:
+                status, candidates = "needs_confirmation", []
+            else:
+                candidates = sorted(
+                    by_food.get(food, []),
+                    key=lambda product: (int(product.get("price_cent") or 0), str(product.get("sku_id") or "")),
+                )
+                status = "matched" if candidates else "missing_product"
+            result.append(
+                {
+                    "candidate_key": reference_candidate_key(ingredient),
+                    "ingredient": ingredient,
+                    "food": food,
+                    "status": status,
+                    "candidate_skus": [
+                        {
+                            key: product.get(key)
+                            for key in (
+                                "sku_id",
+                                "product_name",
+                                "sku_name",
+                                "net_content",
+                                "price_cent",
+                                "available_quantity",
+                            )
+                        }
+                        for product in candidates
+                    ],
+                }
+            )
+        return result
+
+    product_groups = (
+        products if all(isinstance(item.get("skus"), list) for item in products) else group_catalog_products(products)
+    )
     by_food: dict[str, list[dict]] = {}
-    for product in products:
-        food = product_food(str(product.get("product_name") or ""))
-        if (
-            food
-            and product.get("sale_status", "available") == "available"
-            and int(product.get("available_quantity") or 0) > 0
-        ):
+    for product in product_groups:
+        for food in product_foods(product):
             by_food.setdefault(food, []).append(product)
     result = []
     for ingredient in ingredients:
-        food = ingredient_food(ingredient)
+        food = ingredient_food_for_products(ingredient, product_groups)
         if food == "水":
             status = "cooking_water"
             candidates = []
@@ -444,33 +666,63 @@ def reference_ingredient_candidates(ingredients: tuple[str, ...], products: list
             status = "needs_confirmation"
             candidates = []
         else:
-            candidates = sorted(
+            candidate_products = sorted(
                 by_food.get(food, []),
-                key=lambda product: (int(product.get("price_cent") or 0), str(product.get("sku_id") or "")),
+                key=lambda product: (str(product.get("product_name") or ""), str(product.get("product_id") or "")),
             )
-            status = "matched" if candidates else "missing_product"
-        result.append(
-            {
-                "candidate_key": reference_candidate_key(ingredient),
-                "ingredient": ingredient,
-                "food": food,
-                "status": status,
-                "candidate_skus": [
-                    {
-                        key: product.get(key)
-                        for key in (
-                            "sku_id",
-                            "product_name",
-                            "sku_name",
-                            "net_content",
-                            "price_cent",
-                            "available_quantity",
-                        )
-                    }
-                    for product in candidates
-                ],
-            }
-        )
+            status = "matched" if candidate_products else "missing_product"
+        if food == "水" or optional_reference_ingredient(ingredient) or food is None:
+            candidate_products = []
+        normalized_products = []
+        for product in candidate_products:
+            specs = product.get("skus") or []
+            normalized_products.append(
+                {
+                    "product_id": str(product.get("product_id") or ""),
+                    "product_name": product.get("product_name"),
+                    "image_url": product.get("image_url", ""),
+                    "category_code": product.get("category_code"),
+                    "ingredients": product.get("ingredients") or [],
+                    "allergen_codes": product.get("allergen_codes") or [],
+                    "product_description": product.get("product_description") or "",
+                    "data_completeness": product.get("data_completeness"),
+                    "data_issues": product.get("data_issues") or [],
+                    "skus": [
+                        {
+                            key: sku.get(key)
+                            for key in (
+                                "sku_id",
+                                "sku_name",
+                                "net_content",
+                                "net_content_value",
+                                "net_content_unit",
+                                "price_cent",
+                                "available_quantity",
+                                "sale_status",
+                                "image_url",
+                            )
+                        }
+                        for sku in specs
+                    ],
+                }
+            )
+        flattened_skus = [
+            sku
+            for product in normalized_products
+            for sku in product["skus"]
+            if sku.get("sale_status", "available") == "available" and int(sku.get("available_quantity") or 0) > 0
+        ]
+        row = {
+            "candidate_key": reference_candidate_key(ingredient),
+            "ingredient": ingredient,
+            "food": food,
+            "status": status,
+            # 兼容旧回执读取；新选择只使用 candidate_products/product_id。
+            "candidate_skus": flattened_skus,
+        }
+        if product_level:
+            row["candidate_products"] = normalized_products
+        result.append(row)
     return result
 
 
@@ -484,6 +736,8 @@ def reference_ingredient_matches(ingredients: tuple[str, ...], products: list[di
     result = []
     for group in reference_ingredient_candidates(ingredients, products):
         item = {key: group[key] for key in ("ingredient", "food", "status")}
+        candidate_products = group.get("candidate_products") or []
+        item["product_id"] = str(candidate_products[0]["product_id"]) if candidate_products else None
         item["sku_id"] = str(group["candidate_skus"][0]["sku_id"]) if group["candidate_skus"] else None
         result.append(item)
     return result

@@ -48,7 +48,7 @@ def test_legacy_free_form_purchase_mapping_is_rejected_by_tool_schema(scenario, 
 
 @pytest.mark.asyncio
 async def test_real_sdk_corrects_unmatched_product_once(services):
-    """规格不对应原谱时，模型只可按工具回执重选一次。"""
+    """商品不对应原谱时，模型只可按工具回执重选一次。"""
     services.saved.side_effect = [
         HealthVisionError("reference_ingredient_mismatch", "所选规格未对应任何本次原谱食材", 422),
         original.snapshot(),
@@ -69,7 +69,7 @@ async def test_real_sdk_corrects_unmatched_product_once(services):
             assert payload["error_code"] == "reference_ingredient_mismatch"
             assert payload["retryable"] is True
             assert any(
-                "candidate_skus" in str(item.get("content"))
+                "candidate_products" in str(item.get("content"))
                 for item in wire["messages"]
                 if item["role"] == "system"
             )

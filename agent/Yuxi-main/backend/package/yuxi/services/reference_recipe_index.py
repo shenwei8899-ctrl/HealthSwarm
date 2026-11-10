@@ -7,22 +7,33 @@ from sqlalchemy import or_, select
 from yuxi.services.health_family_kb_service import configured_health_kb_ids
 from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.reference_recipe_matching import (
-    parse_reference_recipe, product_food, reference_food_mentions, reference_ingredient_matches,
+    parse_reference_recipe, product_foods, reference_food_mentions, reference_ingredient_matches,
 )
 from yuxi.storage.postgres.models_knowledge import KnowledgeChunk, KnowledgeFile
 
 
-async def purchasable_reference_recipes(session, products: list[dict], query: str, limit: int = 9) -> list[dict]:
+async def purchasable_reference_recipes(
+    session, products: list[dict], query: str, limit: int = 9, excluded_file_ids: set[str] | None = None
+) -> list[dict]:
     """相关菜谱允许有待核对项；原文读取与保存仍需独立验证。"""
-    return rank_reference_recipes(await reference_recipe_rows(session), products, query, limit)
+    return rank_reference_recipes(
+        await reference_recipe_rows(session), products, query, limit, excluded_file_ids=excluded_file_ids
+    )
 
 
-async def purchasable_reference_recipes_batch(session, products: list[dict], queries: list[str]) -> list[list[dict]]:
+async def purchasable_reference_recipes_batch(
+    session, products: list[dict], queries: list[str], excluded_file_ids: set[str] | None = None
+) -> list[list[dict]]:
     """批量关键词共用菜谱正文和商品匹配，逐词独立排序。"""
     documents = prepare_reference_documents(await reference_recipe_rows(session))
     available = available_reference_foods(products)
     analyzed = {}
-    return [rank_prepared_reference_recipes(documents, products, available, query, 3, analyzed) for query in queries]
+    return [
+        rank_prepared_reference_recipes(
+            documents, products, available, query, 3, analyzed, excluded_file_ids=excluded_file_ids
+        )
+        for query in queries
+    ]
 
 
 async def reference_recipe_rows(session):
@@ -50,10 +61,13 @@ async def reference_recipe_rows(session):
     return rows
 
 
-def rank_reference_recipes(rows, products: list[dict], query: str, limit: int = 9) -> list[dict]:
+def rank_reference_recipes(
+    rows, products: list[dict], query: str, limit: int = 9, excluded_file_ids: set[str] | None = None
+) -> list[dict]:
     """先满足食材相关性，再优先可解析、采购覆盖较高的简单做法。"""
     return rank_prepared_reference_recipes(
-        prepare_reference_documents(rows), products, available_reference_foods(products), query, limit, {}
+        prepare_reference_documents(rows), products, available_reference_foods(products), query, limit, {},
+        excluded_file_ids=excluded_file_ids,
     )
 
 
@@ -83,13 +97,19 @@ def prepare_reference_documents(rows):
 
 def available_reference_foods(products):
     """只把当前已读且有库存的商品作为召回加分项。"""
-    available = {product_food(p.get("product_name", "")) for p in products
-                 if p.get("sale_status", "available") == "available" and int(p.get("available_quantity", 0)) > 0}
-    available.discard(None)
+    available = {
+        food
+        for product in products
+        if product.get("sale_status", "available") == "available"
+        and int(product.get("available_quantity", 0)) > 0
+        for food in product_foods(product)
+    }
     return available
 
 
-def rank_prepared_reference_recipes(documents, products, available, query, limit, analyzed):
+def rank_prepared_reference_recipes(
+    documents, products, available, query, limit, analyzed, excluded_file_ids: set[str] | None = None
+):
     """每个关键词独立评分，复用本次调用已解析的候选原谱。"""
     terms = [term.casefold() for term in re.findall(r"[\w\u4e00-\u9fff]+", query) if len(term) > 1]
     query_foods = reference_food_mentions(query) - {"水", "盐", "糖"}
@@ -98,7 +118,10 @@ def rank_prepared_reference_recipes(documents, products, available, query, limit
         ("烤", r"\b(?:bak\w*|roast\w*)\b|烤"), ("粥", r"\bporridge\b|粥"),
     ) if word in query]
     candidates = []
+    excluded_file_ids = excluded_file_ids or set()
     for document in documents:
+        if document["source"]["file_id"] in excluded_file_ids:
+            continue
         title, content = document["title"], document["content"]
         foods = document["foods"]
         title_hits = sum(term in title for term in terms)

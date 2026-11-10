@@ -321,9 +321,16 @@ async def receipt(sessions, context, name, payload):
     return ToolMessage(name=name, tool_call_id=op, content=content)
 
 
-async def grounded_plan(current, context, *, quantity=1, meal_type="breakfast", meal_types=None, read_selection=False):
-    """真实服务读取PG原文并保存，采购只选择已见的合成SKU。"""
+async def grounded_plan(
+    current, context, *, quantity=1, meal_type="breakfast", meal_types=None, read_selection=True, replacement=False
+):
+    """真实服务读取PG原文并按商品保存；规格只在后续购买请求中选择。"""
     sessions = current[1]
+    file_id, chunk_id = "reference-file", "reference-chunk"
+    if replacement:
+        file_id = "replacement-" + str(uuid4())
+        chunk_id = file_id + "-chunk"
+        await add_recipe(current, file_id, "烹饪菜谱｜清粥新做法.md", TEXT.replace("加水煮熟", "加水慢煮至熟"))
     initial = await receipt(
         sessions, context, "get_reference_plan_context", await service.get_reference_context(context)
     )
@@ -333,7 +340,7 @@ async def grounded_plan(current, context, *, quantity=1, meal_type="breakfast", 
     searched = await receipt(
         sessions, context, "search_reference_recipes", await service.search_reference_recipes(context, "清粥")
     )
-    doc = await service.read_reference_recipe(context, "reference-file", "reference-chunk")
+    doc = await service.read_reference_recipe(context, file_id, chunk_id)
     opened = await receipt(sessions, context, "read_reference_recipe", doc)
     draft = {
         "meals": [
@@ -341,17 +348,17 @@ async def grounded_plan(current, context, *, quantity=1, meal_type="breakfast", 
                 "meal_type": meal_type,
                 "dishes": [
                     {
-                        "file_id": "reference-file",
-                        "chunk_id": "reference-chunk",
+                        "file_id": file_id,
+                        "chunk_id": chunk_id,
                         "name": "清粥",
                         "ingredients": ["大米100克"],
-                        "steps": ["加水煮熟"],
+                        "steps": ["加水慢煮至熟" if replacement else "加水煮熟"],
                         "portion_quote": "原食谱供两人食用",
                     }
                 ],
             }
         ],
-        "purchase_items": [{"sku_id": "sku-rice", "quantity": quantity, "ingredient_refs": ["大米100克"]}],
+        "product_matches": [{"product_id": "rice", "ingredient_refs": ["大米100克"]}],
         "purchase_gaps": [],
     }
     if meal_types:
@@ -365,14 +372,13 @@ async def grounded_plan(current, context, *, quantity=1, meal_type="breakfast", 
                 "meals": [
                     {
                         "meal_type": meal["meal_type"],
-                        "dishes": [{"file_id": "reference-file", "chunk_id": "reference-chunk"}],
+                        "dishes": [{"file_id": file_id, "chunk_id": chunk_id}],
                     }
                     for meal in draft["meals"]
                 ],
-                "purchase_items": [
+                "product_matches": [
                     {
-                        "sku_id": "sku-rice",
-                        "quantity": quantity,
+                        "product_id": "rice",
                         "candidate_keys": [reference_candidate_key("大米100克")],
                     }
                 ],
@@ -398,6 +404,7 @@ async def grounded_plan(current, context, *, quantity=1, meal_type="breakfast", 
         context=context,
     )
     plan = json.loads(output["messages"][-1].content)
+    assert "preview_id" in plan, plan
     saved = await receipt(sessions, context, "save_reference_meal_plan", plan)
     await require_consultation_attempt(context, [initial, products, searched, opened, saved])
     return plan, opened, draft
@@ -423,7 +430,7 @@ async def test_read_selection_three_meals_and_dinner_replacement_preserve_other_
     assert all(meal["meal"]["dishes"][0]["ingredients"] == ["大米100克"] for meal in before.values())
     changed = await bind_reference(current, daily_base_version=1, meal_types=["dinner"])
     replacement_context = await running_context(current, changed.json()["thread_id"])
-    replacement, _, _ = await grounded_plan(current, replacement_context, meal_type="dinner", read_selection=True)
+    replacement, _, _ = await grounded_plan(current, replacement_context, meal_type="dinner", replacement=True)
     await complete(current, replacement_context, replacement)
     second = await current[0].get(path, headers=current[2]["self"])
     assert second.status_code == 200 and second.json()["version"] == 2, second.text
@@ -486,11 +493,11 @@ async def test_daily_plan_keeps_saved_meal_after_verified_demo_copy_edit(family_
 
     detail = await current[0].get(f"{ROOT}/reference-meal-plans/{plan['preview_id']}", headers=current[2]["self"])
     assert detail.status_code == 200, detail.text
-    assert detail.json()["purchase_items"][0]["product_name"] == "大米"
-    assert detail.json()["purchase_items"][0]["image_url"] == new_sku["image_url"]
+    assert detail.json()["product_matches"][0]["product_name"] == "大米"
+    assert detail.json()["product_matches"][0]["image_url"] == new_sku["image_url"]
     async with current[1]() as db:
         saved = await db.get(HealthInitialPlanPreview, plan["preview_id"])
-        assert saved.snapshot["purchase_items"][0]["product_name"] == "示例·大米"
+        assert saved.snapshot["product_matches"][0]["product_name"] == "示例·大米"
 
     async def changed_ingredients(category_codes=None):
         return {"version": "changed-ingredients", "items": [{**new_sku, "ingredients": ["花生"]}]}
@@ -555,7 +562,12 @@ async def complete(current, context, plan):
 def assert_reference_display(rendered, stored):
     """展示可附加商品及媒体，但不能改写持久化来源、引句或缺失状态。"""
     for key, value in stored.items():
-        if key != "meals":
+        if key == "product_matches":
+            assert len(rendered[key]) == len(value)
+            for actual, expected in zip(rendered[key], value, strict=True):
+                assert {field: actual[field] for field in expected} == expected
+                assert actual.get("availability", "published") == "published"
+        elif key != "meals":
             assert rendered[key] == value
     assert len(rendered["meals"]) == len(stored["meals"])
     for actual, expected in zip(rendered["meals"], stored["meals"], strict=True):
@@ -575,7 +587,7 @@ async def test_daily_plan_merges_selected_meal_rejects_stale_task_and_purchase(f
         bound = await bind_reference(current, daily_base_version=base, meal_types=[meal])
         assert bound.status_code == 200, bound.text
         context = await running_context(current, bound.json()["thread_id"])
-        plan, _, _ = await grounded_plan(current, context, meal_type=meal)
+        plan, _, _ = await grounded_plan(current, context, meal_type=meal, replacement=base > 0)
         return context, plan
 
     first, breakfast = await make(0, "breakfast")
@@ -595,7 +607,8 @@ async def test_daily_plan_merges_selected_meal_rejects_stale_task_and_purchase(f
     purchase = await client.post(
         path + "/purchase",
         headers=users["self"],
-        json={"preview_id": breakfast["preview_id"], "version": 1, "meal_types": ["breakfast"]},
+        json={"preview_id": breakfast["preview_id"], "version": 1, "meal_types": ["breakfast"],
+              "product_choices": [{"product_id": "rice", "sku_id": "sku-rice", "quantity": 1}]},
     )
     assert purchase.status_code == 200, purchase.text
     proof = published[0]["agent_source_proof"]
@@ -642,7 +655,10 @@ async def test_daily_reference_single_meal_purchase_keeps_current_source_guards(
 
     monkeypatch.setattr("yuxi.services.daily_commerce_service.commerce_request", commerce)
     path = f"/api/family/{choice['family_id']}/daily-meal-plans/{choice['plan_date']}/purchase"
-    body = {"preview_id": plan["preview_id"], "version": 1, "meal_types": ["lunch"]}
+    body = {
+        "preview_id": plan["preview_id"], "version": 1, "meal_types": ["lunch"],
+        "product_choices": [{"product_id": "rice", "sku_id": "sku-rice", "quantity": 1}],
+    }
     receipt = await client.post(path, headers=users["self"], json=body)
     assert receipt.status_code == 200, receipt.text
     assert len(published) == 1
@@ -660,7 +676,7 @@ async def test_daily_reference_single_meal_purchase_keeps_current_source_guards(
 
     changed = await bind_reference(current, daily_base_version=1, meal_types=["lunch"])
     changed_context = await running_context(current, changed.json()["thread_id"])
-    changed_plan, _, _ = await grounded_plan(current, changed_context, meal_type="lunch")
+    changed_plan, _, _ = await grounded_plan(current, changed_context, meal_type="lunch", replacement=True)
     await complete(current, changed_context, changed_plan)
     denied = await client.post(path, headers=users["self"], json={**body, "version": 2})
     assert denied.status_code == 409, denied.text
@@ -726,14 +742,17 @@ async def test_daily_purchase_only_includes_meals_still_using_reference_source(f
         return {"package_sn": "synthetic-package", "package_version": 1}
 
     monkeypatch.setattr("yuxi.services.daily_commerce_service.commerce_request", commerce)
+    choice_payload = {"product_choices": [{"product_id": "rice", "sku_id": "sku-rice", "quantity": 1}]}
     early = await current[0].post(
-        f"{ROOT}/reference-meal-plans/{original['preview_id']}/purchase", headers=current[2]["self"]
+        f"{ROOT}/reference-meal-plans/{original['preview_id']}/purchase",
+        headers=current[2]["self"],
+        json=choice_payload,
     )
     assert early.status_code == 200, early.text
     old_proof = published.pop()["agent_source_proof"]
     changed_binding = await bind_reference(current, daily_base_version=1, meal_types=["dinner"])
     changed = await running_context(current, changed_binding.json()["thread_id"])
-    replacement, _, _ = await grounded_plan(current, changed, meal_type="dinner")
+    replacement, _, _ = await grounded_plan(current, changed, meal_type="dinner", replacement=True)
     await complete(current, changed, replacement)
     response = await current[0].get(path, headers=current[2]["self"])
     assert response.status_code == 200, response.text
@@ -757,9 +776,11 @@ async def test_daily_purchase_only_includes_meals_still_using_reference_source(f
         assert old_preview.snapshot["meals"] == original["meals"]
     option = next(item for item in response.json()["purchase_options"] if item["id"] == original["preview_id"])
     assert option["meal_types"] == ["breakfast", "lunch"]
-    assert "其他餐次" in option["quantity_notice"]
+    assert "购买规格" in option["quantity_notice"]
     legacy = await current[0].post(
-        f"{ROOT}/reference-meal-plans/{original['preview_id']}/purchase", headers=current[2]["self"]
+        f"{ROOT}/reference-meal-plans/{original['preview_id']}/purchase",
+        headers=current[2]["self"],
+        json=choice_payload,
     )
     assert legacy.status_code == 409, legacy.text
     assert legacy.json()["code"] == "daily_plan_source_changed"
@@ -770,14 +791,19 @@ async def test_daily_purchase_only_includes_meals_still_using_reference_source(f
     purchase = await current[0].post(
         path + "/purchase",
         headers=current[2]["self"],
-        json={"preview_id": original["preview_id"], "version": 2, "meal_types": option["meal_types"]},
+        json={
+            "preview_id": original["preview_id"],
+            "version": 2,
+            "meal_types": option["meal_types"],
+            **choice_payload,
+        },
     )
     assert purchase.status_code == 200, purchase.text
     assert published[0]["items"] == [{"sku_id": "sku-rice", "quantity": 1}]
     invalid = await current[0].post(
         path + "/purchase",
         headers=current[2]["self"],
-        json={"preview_id": original["preview_id"], "version": 2, "meal_types": meals},
+        json={"preview_id": original["preview_id"], "version": 2, "meal_types": meals, **choice_payload},
     )
     assert invalid.status_code == 409, invalid.text
 
@@ -897,7 +923,7 @@ async def test_reference_without_formal_rules_publishes_and_reads_same_run(famil
     context = await running_context(current, bound.json()["thread_id"])
     plan, _, _ = await grounded_plan(current, context)
     # 同Run有两份预览，最终只采用第一份。
-    second, _, _ = await grounded_plan(current, context, quantity=2)
+    second, _, _ = await grounded_plan(current, context, replacement=True)
     assert second["preview_id"] != plan["preview_id"]
     result = await complete(current, context, plan)
     assert result["professional_status"] == "not_reviewed" and result["nutrition_status"] == "not_calculated"
@@ -1005,13 +1031,29 @@ async def test_reference_purchase_binds_exact_items_and_invalidates_changed_prod
         return {"package_sn": "synthetic-package", "package_version": 1}
 
     monkeypatch.setattr("yuxi.services.daily_commerce_service.commerce_request", publish)
+    purchase = {"product_choices": [{"product_id": "rice", "sku_id": "sku-rice", "quantity": 1}]}
+    denied = await current[0].post(
+        f"{ROOT}/reference-meal-plans/{plan['preview_id']}/purchase",
+        headers=current[2]["other"],
+        json=purchase,
+    )
+    assert denied.status_code in {403, 404}, denied.text
+    changed = await current[0].post(
+        f"{ROOT}/reference-meal-plans/{plan['preview_id']}/purchase",
+        headers=current[2]["self"],
+        json={"product_choices": [{"product_id": "rice", "sku_id": "missing-sku", "quantity": 1}]},
+    )
+    assert changed.status_code == 410 and changed.json()["code"] == "reference_product_changed", changed.text
     response = await current[0].post(
-        f"{ROOT}/reference-meal-plans/{plan['preview_id']}/purchase", headers=current[2]["self"]
+        f"{ROOT}/reference-meal-plans/{plan['preview_id']}/purchase",
+        headers=current[2]["self"],
+        json=purchase,
     )
     assert response.status_code == 200, response.text
     payload = published[0]
     assert payload["nutrition_validation"]["status"] == "reference_only"
     assert payload["ingredient_requirements"] == []
+    assert payload["items"] == [{"sku_id": "sku-rice", "quantity": 1}]
     source = json.loads(payload["agent_source_proof"]["payload"])
     proof = payload["agent_source_proof"]
     valid = await current[0].post(f"{ROOT}/commerce/source-validation", json=proof)
@@ -1022,7 +1064,9 @@ async def test_reference_purchase_binds_exact_items_and_invalidates_changed_prod
     )
     assert forged.status_code == 403, forged.text
     repeated = await current[0].post(
-        f"{ROOT}/reference-meal-plans/{plan['preview_id']}/purchase", headers=current[2]["self"]
+        f"{ROOT}/reference-meal-plans/{plan['preview_id']}/purchase",
+        headers=current[2]["self"],
+        json=purchase,
     )
     assert repeated.status_code == 200 and published[1] == payload
     async with current[1]() as db:
@@ -1039,6 +1083,11 @@ async def test_reference_purchase_binds_exact_items_and_invalidates_changed_prod
         }
 
     monkeypatch.setattr(service, "current_catalog", changed_catalog)
+    direct = await current[0].post(
+        f"{ROOT}/reference-meal-plans/{plan['preview_id']}/purchase",
+        headers=current[2]["self"], json=purchase,
+    )
+    assert direct.status_code == 410 and direct.json()["code"] == "reference_product_changed", direct.text
     async with current[1]() as db:
         with pytest.raises(HealthVisionError, match="reference_product_changed"):
             await service.validate_reference_purchase_source(db, source)
@@ -1191,7 +1240,9 @@ async def test_existing_preview_rechecks_restrictions_for_publication_history_an
 
     monkeypatch.setattr("yuxi.services.daily_commerce_service.commerce_request", unexpected_purchase)
     response = await current[0].post(
-        f"{ROOT}/reference-meal-plans/{plan['preview_id']}/purchase", headers=current[2]["self"]
+        f"{ROOT}/reference-meal-plans/{plan['preview_id']}/purchase",
+        headers=current[2]["self"],
+        json={"product_choices": [{"product_id": "rice", "sku_id": "sku-rice", "quantity": 1}]},
     )
     assert response.status_code == 422, response.text
     assert code in response.text
@@ -1207,14 +1258,17 @@ async def test_insufficient_sku_stock_and_unselected_meal_cannot_be_saved(family
     bound = await bind_reference(current)
     context = await running_context(current, bound.json()["thread_id"])
     plan, _, draft = await grounded_plan(current, context)
-    draft["purchase_items"][0]["quantity"] = 6
-    with pytest.raises(HealthVisionError, match="reference_product_changed"):
-        await service.save_reference_plan(context, draft)
-    draft["purchase_items"] = []
-    draft["purchase_gaps"] = [{"ingredient": "大米100克", "reason": "needs_confirmation", "detail": "包装待确认"}]
-    draft["meals"][0]["meal_type"] = "dinner"
+    wrong_meal = deepcopy(draft)
+    wrong_meal["meals"][0]["meal_type"] = "dinner"
     with pytest.raises(HealthVisionError, match="reference_meals_mismatch"):
-        await service.save_reference_plan(context, draft)
+        await service.save_reference_plan(context, wrong_meal)
+    await complete(current, context, plan)
+    denied = await current[0].post(
+        f"{ROOT}/reference-meal-plans/{plan['preview_id']}/purchase",
+        headers=current[2]["self"],
+        json={"product_choices": [{"product_id": "rice", "sku_id": "sku-rice", "quantity": 6}]},
+    )
+    assert denied.status_code == 410 and denied.json()["code"] == "reference_product_changed", denied.text
 
 
 async def test_long_document_opens_the_actual_late_search_window(family_profile_http, monkeypatch):
@@ -1319,8 +1373,8 @@ async def test_reference_catalog_summary_preserves_validation_facts(family_profi
         assert summary[key] == sku[key]
     assert summary["facts_hash"] == service.reference_product(sku)["facts_hash"]
     plan, _, _ = await grounded_plan(current, context)
-    assert plan["purchase_items"][0]["product_description"] == sku["product_description"]
-    assert plan["purchase_items"][0]["data_issues"] == sku["data_issues"]
+    assert plan["product_matches"][0]["product_description"] == sku["product_description"]
+    assert plan["product_matches"][0]["data_issues"] == sku["data_issues"]
 
 
 async def test_home_recipe_catalog_is_bounded_and_does_not_authorize_reading(family_profile_http, monkeypatch):
@@ -1451,18 +1505,20 @@ async def test_no_title_match_uses_fixed_kb_indexed_body(family_profile_http, mo
 async def test_empty_purchase_cannot_claim_catalog_failure_or_bypass_product_requirement(
     family_profile_http, monkeypatch
 ):
-    """当前链路要求真实商城食材，缺SKU不能降成已安排餐单。"""
+    """不可伪报目录故障；未选择商品保留真实自购缺口，不阻断菜谱。"""
     current = await setup_reference(family_profile_http, monkeypatch)
     bound = await bind_reference(current)
     context = await running_context(current, bound.json()["thread_id"])
     _, _, draft = await grounded_plan(current, context)
-    draft["purchase_items"] = []
-    for reason in ("catalog_unavailable", "needs_confirmation"):
-        draft["purchase_gaps"] = [{"ingredient": "大米100克", "reason": reason, "detail": "合成待核对说明"}]
-        with pytest.raises(HealthVisionError, match="reference_product_required"):
-            await service.save_reference_plan(context, draft)
+    draft["product_matches"] = []
+    draft["purchase_gaps"] = [{"ingredient": "大米100克", "reason": "catalog_unavailable", "detail": "合成待核对说明"}]
+    with pytest.raises(HealthVisionError, match="reference_purchase_reason_invalid"):
+        await service.save_reference_plan(context, draft)
+    draft["purchase_gaps"][0]["reason"] = "needs_confirmation"
+    saved = await service.save_reference_plan(context, draft)
+    assert not saved["product_matches"] and saved["purchase_gaps"][0]["purchase_mode"] == "self_purchase"
     async with current[1]() as db:
-        assert await db.scalar(select(func.count()).select_from(HealthInitialPlanPreview)) == 1
+        assert await db.scalar(select(func.count()).select_from(HealthInitialPlanPreview)) == 2
 
 
 async def test_changed_product_description_requires_fresh_selection(family_profile_http, monkeypatch):
@@ -1503,10 +1559,10 @@ async def test_catalog_failure_is_explicit_and_retry_keeps_full_source_checks(
         with pytest.raises(HealthVisionError, match="commerce_unavailable"):
             await service.save_reference_plan(context, draft)
         monkeypatch.setattr(service, "current_catalog", original)
-    assert (await service.save_reference_plan(context, draft))["purchase_status"] == "selected"
+    assert (await service.save_reference_plan(context, draft))["purchase_status"] == "product_selected"
 
 
-async def test_reference_quote_failure_audit_then_null_correction(family_profile_http, monkeypatch):
+async def test_reference_legacy_draft_rejection_audit_then_read_selection(family_profile_http, monkeypatch):
     """真实 ToolNode/v3 审计在两次显式操作之间落库；模型声明合成，不冒充完整 worker。"""
     from langchain_core.messages import HumanMessage
     from langgraph.checkpoint.memory import InMemorySaver
@@ -1530,6 +1586,12 @@ async def test_reference_quote_failure_audit_then_null_correction(family_profile
     await receipt(
         sessions,
         context,
+        "find_reference_products",
+        await service.find_reference_products(context, ["grain"]),
+    )
+    await receipt(
+        sessions,
+        context,
         "read_reference_recipe",
         await service.read_reference_recipe(context, "reference-file", "reference-chunk"),
     )
@@ -1549,7 +1611,7 @@ async def test_reference_quote_failure_audit_then_null_correction(family_profile
                 ],
             }
         ],
-        "purchase_items": [{"sku_id": "sku-rice", "quantity": 1, "ingredient_refs": ["大米100克"]}],
+        "product_matches": [{"product_id": "rice", "ingredient_refs": ["大米100克"]}],
         "purchase_gaps": [],
     }
     builder = StateGraph(MessagesState, context_schema=BaseContext)
@@ -1628,7 +1690,7 @@ async def test_reference_quote_failure_audit_then_null_correction(family_profile
             assert audit is not None and compat is not None
             if not attempt:
                 assert result.status == "error" and audit.execution_status == "failed" and compat.status == "error"
-                assert json.loads(audit.content)["error_code"] == "reference_quote_invalid"
+                assert json.loads(audit.content)["error_code"] == "reference_plan_validation_failed"
                 assert not audit.extra_metadata.get("awaiting_run_terminal")
                 assert (
                     await db.scalar(
@@ -1654,7 +1716,13 @@ async def test_reference_quote_failure_audit_then_null_correction(family_profile
                     == 1
                 )
                 assert (await db.get(Message, first_failed_audit)).execution_status == "failed"
-        draft["meals"][0]["dishes"][0]["portion_quote"] = None
+        draft = {"read_selection": {
+            "use_read_recipes": True, "auto_purchase_matches": True,
+            "meals": [{"meal_type": "breakfast", "dishes": [
+                {"file_id": "reference-file", "chunk_id": "reference-chunk"},
+            ]}],
+            "product_matches": [{"product_id": "rice", "candidate_keys": [reference_candidate_key("大米100克")]}],
+        }}
     assert (await planner_final_result(context, json.dumps({"preview_id": plan["preview_id"]})))["preview_id"] == plan[
         "preview_id"
     ]

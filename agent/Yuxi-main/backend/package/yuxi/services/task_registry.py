@@ -66,6 +66,11 @@ _TASK_DEFINITIONS = {
             failure_function="fail_daily_arrangement",
         ),
         TaskDefinition(
+            "reference_recipe_images_v1",
+            "yuxi.services.reference_recipe_image_tasks",
+            "run_reference_recipe_images",
+        ),
+        TaskDefinition(
             "report_extract_v1",
             "yuxi.services.health_vision_tasks",
             "run_health_vision",

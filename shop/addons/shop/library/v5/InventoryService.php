@@ -38,6 +38,7 @@ class InventoryService
                 'operator_type' => 'admin', 'operator_id' => (int)$operatorId, 'reason' => $reason,
                 'request_id' => $requestId, 'createtime' => $now,
             ]);
+            (new CatalogService())->touchVersion('inventory_adjust', $sku['id']);
             Db::commit();
             return ['sku_id' => (string)$sku['id'], 'stock_before' => (int)$sku['stocks'], 'stock_after' => $stockAfter];
         } catch (\Exception $e) {
@@ -86,6 +87,7 @@ class InventoryService
                 'updatetime' => $now,
             ]);
             $this->log($sku, $quantity, (int)$sku['stocks'], (int)$sku['stocks'], (int)$sku['reserved_stock'], (int)$sku['reserved_stock'] + $quantity, 'reserve', $sourceType, $sourceRef, $requestId);
+            (new CatalogService())->touchVersion('inventory_reserve', $sku['id']);
             Db::commit();
             return Db::name('shop_inventory_reservation')->where('id', $id)->find();
         } catch (\Exception $e) {
@@ -135,6 +137,7 @@ class InventoryService
             }
             Db::name('shop_inventory_reservation')->where('id', $reservation['id'])->update($update);
             $this->log($sku, $targetStatus === 'confirmed' ? -(int)$reservation['quantity'] : 0, (int)$sku['stocks'], $stockAfter, (int)$sku['reserved_stock'], $reservedAfter, $targetStatus, $reservation['source_type'], $reservation['source_ref'], $requestId);
+            (new CatalogService())->touchVersion('inventory_' . $targetStatus, $sku['id']);
             Db::commit();
             return Db::name('shop_inventory_reservation')->where('id', $reservation['id'])->find();
         } catch (\Exception $e) {

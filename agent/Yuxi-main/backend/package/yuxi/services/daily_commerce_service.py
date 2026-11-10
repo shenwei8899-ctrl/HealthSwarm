@@ -1,5 +1,7 @@
-"""调用既有商城签名接口，完整分页读取库存并幂等保存推荐版本。"""
+"""调用既有商城签名接口，按版本缓存完整目录并幂等保存推荐版本。"""
 
+import asyncio
+from copy import deepcopy
 import hashlib
 import hmac
 import json
@@ -13,6 +15,12 @@ import httpx
 
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.commerce_sku_selection import direct_sku_matches, match_direct
+
+
+_CATALOG_PROBE_TTL_SECONDS = 30.0
+_catalog_snapshot: dict | None = None
+_catalog_last_probe = 0.0
+_catalog_refresh_lock = asyncio.Lock()
 
 
 async def commerce_request(method, path, payload=None, *, request_id=None):
@@ -64,38 +72,108 @@ async def commerce_request(method, path, payload=None, *, request_id=None):
     return result["data"]
 
 
-async def current_catalog(category_codes=None):
-    """按选定业务分类读取可售目录；跨页版本变化时重读。"""
-    if category_codes is not None and (
-        not isinstance(category_codes, list)
-        or not 1 <= len(category_codes) <= 4
-        or any(not isinstance(code, str) or not code or len(code) > 50 for code in category_codes)
-    ):
-        raise HealthVisionError("catalog_category_invalid", "商品分类选择无效", 422)
+def reset_catalog_cache():
+    """清空进程内目录快照；供进程生命周期和确定性测试使用。"""
+    global _catalog_snapshot, _catalog_last_probe, _catalog_refresh_lock
+    _catalog_snapshot = None
+    _catalog_last_probe = 0.0
+    _catalog_refresh_lock = asyncio.Lock()
+
+
+def _filtered_catalog(snapshot, category_codes):
+    result = deepcopy(snapshot)
+    if category_codes is not None:
+        selected = set(category_codes)
+        result["items"] = [item for item in result["items"] if item.get("category_code") in selected]
+    return result
+
+
+async def _load_full_catalog(expected_version):
+    """完整分页只在版本变化时执行；跨页变化时从第一页重读。"""
     for _ in range(2):
         items, cursor, seen, version = [], "", set(), None
         while True:
-            params = {"limit": 200, "cursor": cursor}
-            if category_codes is not None:
-                params["category_codes[]"] = category_codes
+            params = {"limit": 200, "cursor": cursor, "available_only": 0}
             page = await commerce_request(
                 "GET", "/api/v1/integration/ai/catalog/products?" + urlencode(params, doseq=True)
             )
             if version is not None and version != page["catalog_version"]:
                 break
-            if category_codes is not None and any(
-                item.get("category_code") not in category_codes for item in page["items"]
-            ):
-                raise HealthVisionError("catalog_invalid", "商城商品分类与查询条件不符", 503)
             version = page["catalog_version"]
             items.extend(page["items"])
             if not page.get("has_more"):
+                if expected_version and version != expected_version:
+                    expected_version = version
+                    break
                 return {"items": items, "version": version}
             cursor = page.get("next_cursor")
             if not cursor or cursor in seen:
                 raise HealthVisionError("catalog_invalid", "食材目录分页暂时无法核对", 503)
             seen.add(cursor)
     raise HealthVisionError("catalog_changed", "食材目录正在更新，请稍后重试", 503)
+
+
+async def current_catalog(category_codes=None):
+    """短周期探测版本；版本未变复用全量快照并在内存按分类过滤。"""
+    global _catalog_snapshot, _catalog_last_probe
+    if category_codes is not None and (
+        not isinstance(category_codes, list)
+        or not 1 <= len(category_codes) <= 4
+        or any(not isinstance(code, str) or not code or len(code) > 50 for code in category_codes)
+    ):
+        raise HealthVisionError("catalog_category_invalid", "商品分类选择无效", 422)
+    now = time.monotonic()
+    if _catalog_snapshot is not None and now - _catalog_last_probe < _CATALOG_PROBE_TTL_SECONDS:
+        return _filtered_catalog(_catalog_snapshot, category_codes)
+    async with _catalog_refresh_lock:
+        now = time.monotonic()
+        if _catalog_snapshot is not None and now - _catalog_last_probe < _CATALOG_PROBE_TTL_SECONDS:
+            return _filtered_catalog(_catalog_snapshot, category_codes)
+        summary = await commerce_request("GET", "/api/v1/integration/ai/catalog/version")
+        version = summary.get("catalog_version")
+        if not isinstance(version, str) or not version:
+            raise HealthVisionError("catalog_invalid", "商城目录版本无法核对", 503)
+        if _catalog_snapshot is None or _catalog_snapshot.get("version") != version:
+            _catalog_snapshot = await _load_full_catalog(version)
+        _catalog_last_probe = time.monotonic()
+        return _filtered_catalog(_catalog_snapshot, category_codes)
+
+
+def group_catalog_products(items):
+    """按稳定商品身份聚合规格；价格和库存只属于规格，不参与商品匹配。"""
+    grouped = {}
+    for sku in items:
+        # 历史测试和旧快照可能没有 product_id；仅以 SKU 身份降级，不合并不同规格。
+        product_id = str(sku.get("product_id") or sku.get("sku_id") or "").strip()
+        if not product_id:
+            continue
+        product = grouped.setdefault(
+            product_id,
+            {
+                key: deepcopy(value)
+                for key, value in sku.items()
+                if key
+                not in {
+                    "sku_id",
+                    "sku_code",
+                    "sku_name",
+                    "price_cent",
+                    "available_quantity",
+                    "sale_status",
+                    "net_content_value",
+                    "net_content_unit",
+                }
+            }
+            | {"product_id": product_id, "skus": []},
+        )
+        product["skus"].append(deepcopy(sku))
+    return list(grouped.values())
+
+
+async def current_product_catalog(category_codes=None):
+    """读取动态商城目录并按商品聚合全部已发布规格。"""
+    catalog = await current_catalog(category_codes)
+    return {"version": catalog["version"], "items": group_catalog_products(catalog["items"])}
 
 
 async def refresh_purchase_items(items, catalog, saved_items):

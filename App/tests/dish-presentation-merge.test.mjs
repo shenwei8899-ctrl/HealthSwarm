@@ -52,6 +52,18 @@ test('nutrition quotes belong to this recipe SKU; missing or foreign quotes rema
   assert.deepEqual(recipeNutrition({}),[])
 })
 
+test('product-linked recipe ingredients expose every spec and product nutrition without choosing a SKU', () => {
+  const dish={ingredients:['番茄 200克'],display_zh:{ingredients:['番茄 200克'],steps:[]},ingredient_products:[{
+    product_id:'tomato',product_name:'番茄',ingredient_refs:['番茄 200克'],image_url:'/uploads/tomato.jpg',
+    skus:[{sku_id:'small',sku_name:'500克',sale_status:'available'},{sku_id:'large',sku_name:'1千克',sale_status:'unavailable'}],
+  }],nutrition_highlights:[{product_id:'tomato',quote:'富含商品资料中已填写的营养说明'}]}
+
+  assert.deepEqual(recipeIngredients(dish)[0].skus.map(item=>item.sku_id),['small','large'])
+  assert.deepEqual(recipeNutrition(dish),[{
+    name:'番茄',productId:'tomato',quote:'富含商品资料中已填写的营养说明',
+  }])
+})
+
 test('known legacy merchant images use the same gateway while source/static media remain intact', () => {
   const options={baseUrl:'https://gateway.example/',origin:'https://h5.example'}
   for(const path of ['/uploads/a.jpg','http://8.136.134.29/uploads/a.jpg'])assert.equal(publicImageUrl(path,options),'https://gateway.example/uploads/a.jpg')

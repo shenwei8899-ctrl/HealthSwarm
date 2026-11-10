@@ -48,7 +48,7 @@ DRAFT = {
             ],
         }
     ],
-    "purchase_items": [],
+    "product_matches": [],
     "purchase_gaps": [{"ingredient": "合成食材", "reason": "catalog_unavailable", "detail": "合成目录不可用"}],
 }
 READ_SELECTION = {
@@ -60,7 +60,7 @@ READ_SELECTION = {
             "dishes": [{"file_id": "synthetic-file", "chunk_id": "synthetic-chunk"}],
         }
     ],
-    "purchase_items": [],
+    "product_matches": [],
 }
 SAVE_ARGS = {"read_selection": READ_SELECTION}
 TRANSLATION_CORRECTION = [

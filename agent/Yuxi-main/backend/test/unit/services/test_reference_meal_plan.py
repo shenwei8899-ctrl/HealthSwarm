@@ -14,16 +14,19 @@ from yuxi.services.reference_meal_plan_service import (
     product_facts,
     reference_binding,
     reference_restriction_conflict,
+    save_reference_plan,
     select_reference_purchase_items,
+    reference_purchase_items,
 )
 from yuxi.services.reference_meal_plan_types import ReferencePlanDraft, ReferencePurchaseGap, ReferenceSelection
+from yuxi.services.reference_meal_selection_service import ReferenceReadSelection
 from yuxi.services.health_vision_types import HealthVisionError
 
 
 def draft(**dish_updates):
     """独立合成原文对应的单餐。"""
     return {
-        "purchase_items": [],
+        "product_matches": [],
         "purchase_gaps": [
             {"ingredient": i, "reason": "needs_confirmation", "detail": "需核对商品包装"}
             for i in dish_updates.get("ingredients", ["大米100克"])
@@ -319,7 +322,7 @@ async def test_real_tool_node_injects_runtime_into_reference_save(monkeypatch):
                 "dishes": [{"file_id": "recipe", "chunk_id": "chunk"}],
             }
         ],
-        "purchase_items": [],
+        "product_matches": [],
     }
     graph = StateGraph(MessagesState, context_schema=BaseContext)
     graph.add_node("tools", ToolNode([save_reference_meal_plan], handle_tool_errors=False))
@@ -365,7 +368,7 @@ def test_model_json_cannot_forge_the_injected_reference_runtime():
                             "dishes": [{"file_id": "recipe", "chunk_id": "chunk"}],
                         }
                     ],
-                    "purchase_items": [],
+                    "product_matches": [],
                 },
                 "runtime": {"uid": "forged"},
             }
@@ -454,6 +457,8 @@ async def test_saved_reference_accepts_only_verified_demo_display_rewrite(monkey
 async def test_reference_context_limits_categories_then_preserves_selected_product_facts(monkeypatch):
     """先给分类再读商品，裁剪展示详情仍保留完整事实哈希与保存重验。"""
     from yuxi.services import reference_meal_plan_service as service
+
+    monkeypatch.setattr(service, "queue_reference_images", AsyncMock(return_value=(None, False)))
 
     sku = {
         "sku_id": "synthetic-rice",
@@ -560,14 +565,17 @@ async def test_reference_context_limits_categories_then_preserves_selected_produ
     monkeypatch.setattr(service, "recipe_document", AsyncMock(return_value=document()[("recipe", "chunk")]))
     value = draft()
     value.update(
-        purchase_items=[{"sku_id": sku["sku_id"], "quantity": 1, "ingredient_refs": ["大米100克"]}], purchase_gaps=[]
+        product_matches=[{"product_id": sku["product_id"], "ingredient_refs": ["大米100克"]}],
+        purchase_items=[],
+        purchase_gaps=[],
     )
-    for changed in ({"product_description": "修改后的合成说明"}, {"data_issues": []}):
-        monkeypatch.setattr(
-            service, "current_catalog", AsyncMock(return_value={"version": "v1", "items": [{**sku, **changed}]})
-        )
-        with pytest.raises(HealthVisionError, match="reference_product_changed"):
-            await service.save_reference_plan(context, value)
+    monkeypatch.setattr(
+        service,
+        "current_catalog",
+        AsyncMock(return_value={"version": "v1", "items": [{**sku, "product_name": "身份已变化"}]}),
+    )
+    with pytest.raises(HealthVisionError, match="reference_product_changed"):
+        await service.save_reference_plan(context, value)
 
     session.get = AsyncMock(return_value=None)
     session.add = lambda row: None
@@ -578,17 +586,21 @@ async def test_reference_context_limits_categories_then_preserves_selected_produ
     )
     result = await service.save_reference_plan(context, value)
     assert result["purchase_items"] == []
-    assert result["purchase_status"] == "partial"
-    assert result["purchase_gaps"] == [
-        {
-            "ingredient": "大米100克",
-            "reason": "needs_confirmation",
-            "detail": "自行购买，暂无价格：所选商城规格或库存已变化，请重新核对。",
-            "purchase_mode": "self_purchase",
-            "sku_id": None,
-            "price_cent": None,
-        }
-    ]
+    assert result["purchase_status"] == "product_selected"
+    assert result["product_matches"][0]["product_id"] == sku["product_id"]
+    assert result["product_matches"][0]["skus"][0]["available_quantity"] == 0
+
+    product_value = draft()
+    product_value.update(
+        product_matches=[{"product_id": sku["product_id"], "ingredient_refs": ["大米100克"]}],
+        purchase_items=[],
+        purchase_gaps=[],
+    )
+    product_result = await service.save_reference_plan(context, product_value)
+    assert product_result["purchase_status"] == "product_selected"
+    assert product_result["purchase_items"] == []
+    assert product_result["product_matches"][0]["product_id"] == sku["product_id"]
+    assert product_result["product_matches"][0]["skus"][0]["available_quantity"] == 0
 
 
 @pytest.mark.parametrize(
@@ -616,3 +628,151 @@ def test_partial_selection_keeps_missing_ingredient_explicit():
     result = ReferencePlanDraft.model_validate(value)
     assert result.purchase_items[0].quantity == 1
     assert result.purchase_gaps[0].ingredient == "水适量"
+
+
+def test_product_level_selection_does_not_require_sku_price_or_stock():
+    value = draft()
+    value.update(
+        product_matches=[{"product_id": "rice-product", "ingredient_refs": ["大米100克"]}],
+        purchase_items=[],
+        purchase_gaps=[],
+    )
+
+    result = ReferencePlanDraft.model_validate(value)
+    selected = ReferenceReadSelection.model_validate(
+        {
+            "use_read_recipes": True,
+            "auto_purchase_matches": True,
+            "meals": [
+                {
+                    "meal_type": "breakfast",
+                    "dishes": [{"file_id": "recipe", "chunk_id": "chunk"}],
+                }
+            ],
+            "product_matches": [{"product_id": "rice-product", "candidate_keys": ["ingredient:rice"]}],
+        }
+    )
+
+    assert result.product_matches[0].product_id == "rice-product"
+    assert selected.product_matches[0].product_id == "rice-product"
+
+
+@pytest.mark.asyncio
+async def test_new_reference_save_rejects_legacy_sku_level_draft_before_database_access():
+    """旧快照可继续读取，但新的保存边界不能再写固定 SKU。"""
+    value = draft()
+    value.update(
+        product_matches=[],
+        purchase_items=[{"sku_id": "rice-500", "quantity": 1, "ingredient_refs": ["大米100克"]}],
+        purchase_gaps=[],
+    )
+
+    with pytest.raises(HealthVisionError) as failed:
+        await save_reference_plan(None, value)
+
+    assert failed.value.code == "reference_purchase_schema_legacy"
+
+
+@pytest.mark.asyncio
+async def test_purchase_stage_requires_user_sku_choice_and_rechecks_live_stock(monkeypatch):
+    from yuxi.services import reference_meal_plan_service as service
+
+    sku = {
+        "product_id": "rice-product",
+        "sku_id": "rice-500",
+        "product_name": "大米",
+        "sku_name": "500克",
+        "category_code": "grain",
+        "sale_status": "available",
+        "available_quantity": 5,
+        "price_cent": 800,
+        "ingredients": [],
+        "allergen_codes": [],
+        "data_completeness": "partial",
+        "data_issues": [],
+    }
+    monkeypatch.setattr(service, "current_catalog", AsyncMock(return_value={"version": "v2", "items": [sku]}))
+    plan = {
+        "members": [],
+        "catalog_version": "v1",
+        "meals": [{"meal_type": "breakfast", "dishes": [{"ingredients": ["大米100克"]}]}],
+        "product_matches": [
+            service.reference_product_group({**sku, "skus": [sku]}, ["大米100克"])
+        ],
+        "purchase_items": [],
+        "purchase_gaps": [],
+    }
+
+    with pytest.raises(HealthVisionError, match="reference_purchase_choice_invalid"):
+        await reference_purchase_items(plan, ["breakfast"], [])
+    items, version = await reference_purchase_items(
+        plan,
+        ["breakfast"],
+        [{"product_id": "rice-product", "sku_id": "rice-500", "quantity": 2}],
+    )
+
+    assert version == "v2"
+    assert [(item["sku_id"], item["quantity"], item["ingredient_refs"]) for item in items] == [
+        ("rice-500", 2, ["大米100克"])
+    ]
+    sku["price_cent"] = 900
+    sku["available_quantity"] = 6
+    items, _ = await reference_purchase_items(
+        plan, ["breakfast"], [{"product_id": "rice-product", "sku_id": "rice-500", "quantity": 2}]
+    )
+    assert items[0]["price_cent"] == 900
+    sku["product_name"] = "花生"
+    with pytest.raises(HealthVisionError, match="reference_product_changed"):
+        await reference_purchase_items(
+            plan, ["breakfast"], [{"product_id": "rice-product", "sku_id": "rice-500", "quantity": 2}]
+        )
+
+
+@pytest.mark.asyncio
+async def test_purchase_stage_allows_buying_only_selected_products(monkeypatch):
+    """餐单返回全部商品，但用户可只购买其中有需要且有库存的规格。"""
+    from yuxi.services import reference_meal_plan_service as service
+
+    catalog = [
+        {
+            "product_id": "rice-product",
+            "sku_id": "rice-500",
+            "product_name": "大米",
+            "sale_status": "available",
+            "available_quantity": 5,
+            "price_cent": 800,
+            "ingredients": [],
+            "allergen_codes": [],
+        },
+        {
+            "product_id": "egg-product",
+            "sku_id": "egg-6",
+            "product_name": "鸡蛋",
+            "sale_status": "unavailable",
+            "available_quantity": 0,
+            "price_cent": 1200,
+            "ingredients": [],
+            "allergen_codes": [],
+        },
+    ]
+    monkeypatch.setattr(service, "current_catalog", AsyncMock(return_value={"version": "v3", "items": catalog}))
+    plan = {
+        "members": [],
+        "catalog_version": "v2",
+        "meals": [{"meal_type": "breakfast", "dishes": [{"ingredients": ["大米100克", "鸡蛋1个"]}]}],
+        "product_matches": [
+            service.reference_product_group({**catalog[0], "skus": [catalog[0]]}, ["大米100克"]),
+            service.reference_product_group({**catalog[1], "skus": [catalog[1]]}, ["鸡蛋1个"]),
+        ],
+        "purchase_items": [],
+        "purchase_gaps": [],
+    }
+
+    items, version = await reference_purchase_items(
+        plan,
+        ["breakfast"],
+        [{"product_id": "rice-product", "sku_id": "rice-500", "quantity": 1}],
+    )
+
+    assert version == "v3"
+    assert [(item["sku_id"], item["quantity"]) for item in items] == [("rice-500", 1)]

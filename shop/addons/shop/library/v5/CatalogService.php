@@ -74,9 +74,10 @@ class CatalogService
             array_pop($rows);
         }
         $items = [];
+        $availableOnly = !isset($filters['available_only']) || !in_array($filters['available_only'], [false, 0, '0', 'false'], true);
         foreach ($rows as $row) {
             $item = $this->formatCatalogItem($row);
-            if (!isset($filters['available_only']) || $filters['available_only'] !== false) {
+            if ($availableOnly) {
                 if ($item['sale_status'] !== 'available') {
                     continue;
                 }
@@ -162,6 +163,22 @@ class CatalogService
         return $row ? $row['catalog_version'] : 'catalog_0';
     }
 
+    public function versionSummary()
+    {
+        $row = Db::name('shop_catalog_version')->order('id', 'desc')->find();
+        $published = Db::name('shop_goods')->where('agent_visible', 1)
+            ->where('catalog_status', 'published')->where('status', 'normal')->count();
+        $available = Db::name('shop_goods_sku')->alias('s')->join('shop_goods g', 'g.id=s.goods_id')
+            ->where('g.agent_visible', 1)->where('g.catalog_status', 'published')->where('g.status', 'normal')
+            ->whereRaw('s.stocks - s.reserved_stock - s.safety_stock > 0')->count();
+        return [
+            'catalog_version' => $row ? (string)$row['catalog_version'] : 'catalog_0',
+            'updated_at' => $row && (int)$row['createtime'] > 0 ? date(DATE_ATOM, (int)$row['createtime']) : null,
+            'published_product_count' => (int)$published,
+            'available_sku_count' => (int)$available,
+        ];
+    }
+
     public function touchVersion($changeType, $resourceRef, $summary = '')
     {
         $version = Identifiers::make('catalog');
@@ -189,6 +206,18 @@ class CatalogService
             ->where('i.status','normal')->field('i.id as ingredient_id,i.ingredient_code,i.name,m.role,m.net_value,m.net_unit,m.convert_ratio,m.loss_rate,m.status,m.review_status,m.valid_from,m.valid_to')
             ->order('m.priority', 'desc')->select();
         $maps = array_values(array_filter($maps, [CatalogEligibility::class, 'current']));
+        $ingredientIds = array_values(array_unique(array_map('intval', array_column($maps, 'ingredient_id'))));
+        $aliases = [];
+        if ($ingredientIds) {
+            foreach (Db::name('shop_ingredient_alias')->where('ingredient_id', 'in', $ingredientIds)
+                ->where('status', 'normal')->order('id', 'asc')->select() as $alias) {
+                $aliases[(int)$alias['ingredient_id']][] = (string)$alias['alias'];
+            }
+        }
+        foreach ($maps as &$map) {
+            $map['aliases'] = array_values(array_unique($aliases[(int)$map['ingredient_id']] ?? []));
+        }
+        unset($map);
         $nutrition = null;
         foreach (Db::name('shop_sku_nutrition_fact')->where('sku_id', $skuId)->where('status','normal')->order('valid_from','desc')->select() as $fact) {
             if (CatalogEligibility::current($fact)) { $nutrition=$fact; break; }

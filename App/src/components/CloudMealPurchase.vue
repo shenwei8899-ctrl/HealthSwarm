@@ -31,16 +31,20 @@ const page = useMealCommercePage(() => ({
   members: props.meal.members || [],
 }))
 const state = page.state
+const selectable = item => Boolean(item) && (!(props.reference && !state.ready) || item.saleStatus === 'available' && item.availableQuantity !== 0)
 const purchaseReady = computed(() => Boolean(preview.value?.available || preview.value?.confirmation_pending))
 const purchaseGaps = computed(() => (props.selection ? preview.value?.gaps || [] : props.reference?.gaps || preview.value?.gaps || []).map(gap => ({
   ...gap, label: gap.ingredient_label || referenceIngredientLabel(props.reference?.ingredientLabels, gap.ingredient), detail: referenceGapDetail(gap),
 })))
-const referenceProducts = computed(() => (props.reference?.items || []).map(item => ({id:String(item.sku_id),name:item.product_name,packLabel:item.sku_name||'规格待核对',quantity:draftQuantities.value[String(item.sku_id)]??item.quantity,imageUrl:item.image_url||'',needLabel:'参考用量未核算',priceCents:null,availableQuantity:null})))
+const referenceProducts = computed(() => (props.reference?.items || []).flatMap(item => Array.isArray(item.skus)&&item.skus.length
+  ? item.skus.map(sku=>({id:String(sku.sku_id),productId:String(item.product_id),name:item.product_name,packLabel:sku.sku_name||'规格待核对',quantity:draftQuantities.value[String(sku.sku_id)]??1,imageUrl:sku.image_url||item.image_url||'',needLabel:'参考用量未核算',priceCents:Number.isSafeInteger(sku.price_cent)?sku.price_cent:null,availableQuantity:Number.isSafeInteger(sku.available_quantity)?sku.available_quantity:null,saleStatus:sku.sale_status,ingredientRefs:item.ingredient_refs||[]}))
+  : item.sku_id!=null?[{id:String(item.sku_id),productId:item.product_id!=null?String(item.product_id):null,name:item.product_name,packLabel:item.sku_name||'规格待核对',quantity:draftQuantities.value[String(item.sku_id)]??item.quantity,imageUrl:item.image_url||'',needLabel:'参考用量未核算',priceCents:null,availableQuantity:null,saleStatus:'available',ingredientRefs:item.ingredient_refs||[]}]:[]))
 const products = computed(() => props.reference && !state.ready ? (preview.value?referenceProducts.value:[]) : state.ready ? page.plan.value.products : commerceMealView({
   items: (preview.value?.items || []).filter(item => item.sku?.sku_id),
   ingredient_requirements: preview.value?.ingredient_requirements || [],
   available: preview.value?.available,
 }).products.map(item=>({...item,quantity:draftQuantities.value[item.id]??item.quantity})))
+const productSpecSelection = computed(() => Boolean(props.reference?.items?.some(item => item?.product_id != null && Array.isArray(item.skus)) && preview.value && !state.ready))
 const picked = computed(() => state.ready ? state.selected : selected.value)
 const total = computed(() => products.value.filter(item => picked.value.includes(item.id)).reduce((sum, item) => sum + item.priceCents * item.quantity, 0))
 const totalKnown=computed(()=>!busy.value&&!state.busy&&!error.value&&!state.error&&purchaseReady.value&&products.value.length>0&&!(props.reference?.needsMatching&&!state.ready)&&products.value.filter(item=>picked.value.includes(item.id)).every(item=>Number.isFinite(item.priceCents)))
@@ -105,9 +109,11 @@ async function refresh() {
     preview.value = props.reference ? {available:referenceProducts.value.length>0||props.reference.needsMatching,items:[]} : receipt(data)
     if (!initialized) {
       const saved = scopedStorage.getStorageSync(selectionKey()); if(saved?.version===props.route.version&&saved?.dailyPlanVersion===props.route.daily_plan_version)draftQuantities.value=saved.quantities||{}
-      selected.value = products.value.filter(item => !saved?.known?.includes(item.id) || saved.selected.includes(item.id)).map(item => item.id)
+      const defaults=props.reference?products.value.filter((item,index,all)=>item.saleStatus==='available'&&item.availableQuantity!==0&&all.findIndex(other=>other.productId===item.productId&&other.saleStatus==='available'&&other.availableQuantity!==0)===index):products.value
+      selected.value = saved?.known ? products.value.filter(item => selectable(item)&&saved.known.includes(item.id)&&saved.selected.includes(item.id)).map(item => item.id) : defaults.map(item=>item.id)
       initialized = true
     }
+    selected.value = selected.value.filter(id => selectable(products.value.find(item => item.id === id)))
     if (publication.value && commerce.session()?.token) {
       const slotId = state.slotId, addressId = state.address?.id
       await page.load()
@@ -117,7 +123,7 @@ async function refresh() {
   finally { if (active(scope)) busy.value = false }
   if (!props.unified) await resumeCheckout(scope)
 }
-function toggle(id) { if (busy.value || state.busy) return; if (state.ready) page.toggle(id); else selected.value = selected.value.includes(id) ? selected.value.filter(value => value !== id) : [...selected.value, id]; rememberSelection();scheduleQuote() }
+function toggle(id) { if (busy.value || state.busy) return; const target=products.value.find(item=>item.id===id);if(!target||!selectable(target))return;if (state.ready) page.toggle(id); else {selected.value = selected.value.includes(id) ? selected.value.filter(value => value !== id) : [...selected.value.filter(value=>!target.productId||products.value.find(item=>item.id===value)?.productId!==target.productId), id]}; rememberSelection();scheduleQuote() }
 async function prepareQuote() {
   if (props.unified && (!props.visible || !state.ready || !state.address || !state.selected.length || !state.slots.some(slot=>String(slot.id)===String(state.slotId)) || state.pending || state.orderSn)) return
   await page.prepare(props.unified?{reuseCart:true,requireSlot:true}:undefined)
@@ -138,10 +144,11 @@ async function refreshUnified() {
   clearTimeout(quoteTimer);quoteWaiting.value=false
   await refresh()
   if (!alive || !props.visible || error.value || !purchaseReady.value) return
+  if (productSpecSelection.value) return
   await checkout()
 }
 const unifiedReady=computed(()=>state.ready&&state.menu?.available===true)
-const canSubmit=computed(()=>unifiedReady.value&&picked.value.length>0&&state.address&&state.deliverySupported===true&&state.slots.some(slot=>String(slot.id)===String(state.slotId))&&state.quote?.checkout_token&&['goods_amount_cent','shipping_fee_cent','payable_amount_cent'].every(key=>Number.isSafeInteger(state.quote[key])&&state.quote[key]>=0)&&!quoteWaiting.value&&!busy.value&&!state.busy&&!error.value&&!state.error&&!state.checkoutError)
+const canSubmit=computed(()=>productSpecSelection.value?picked.value.length>0&&!busy.value&&!state.busy&&!error.value:unifiedReady.value&&picked.value.length>0&&state.address&&state.deliverySupported===true&&state.slots.some(slot=>String(slot.id)===String(state.slotId))&&state.quote?.checkout_token&&['goods_amount_cent','shipping_fee_cent','payable_amount_cent'].every(key=>Number.isSafeInteger(state.quote[key])&&state.quote[key]>=0)&&!quoteWaiting.value&&!busy.value&&!state.busy&&!error.value&&!state.error&&!state.checkoutError)
 async function checkout() {
   if (busy.value || state.busy) return
   const scope = storageContext(); busy.value = true; writing.value=true; error.value = ''; checkoutOpen.value = !props.unified
@@ -157,7 +164,8 @@ async function checkout() {
     }
     const previous = [...picked.value], previousIds = products.value.map(item => item.id)
     const ref=props.reference
-    const { data } = await request(props.selection?{path:scopePath(),method:'POST',data:{version:props.selection.version,dish_keys:props.selection.dishKeys},timeout:30000}:ref ? {path:ref.dailyPlanVersion!=null?'/api/family/'+encodeURIComponent(getSession().householdId)+'/daily-meal-plans/'+props.route.date+'/purchase':'/api/health/v1/reference-meal-plans/'+encodeURIComponent(ref.previewId)+'/purchase',method:'POST',data:ref.dailyPlanVersion!=null?{preview_id:ref.previewId,version:ref.dailyPlanVersion,meal_types:ref.mealTypes}:undefined,timeout:30000} : { path: path(), method: 'POST', data: version(), timeout: 30000 })
+    const productChoices=productSpecSelection.value?products.value.filter(item=>item.productId&&previous.includes(item.id)).map(item=>({product_id:item.productId,sku_id:item.id,quantity:item.quantity})):[]
+    const { data } = await request(props.selection?{path:scopePath(),method:'POST',data:{version:props.selection.version,dish_keys:props.selection.dishKeys},timeout:30000}:ref ? {path:ref.dailyPlanVersion!=null?'/api/family/'+encodeURIComponent(getSession().householdId)+'/daily-meal-plans/'+props.route.date+'/purchase':'/api/health/v1/reference-meal-plans/'+encodeURIComponent(ref.previewId)+'/purchase',method:'POST',data:ref.dailyPlanVersion!=null?{preview_id:ref.previewId,version:ref.dailyPlanVersion,meal_types:ref.mealTypes,...(productChoices.length?{product_choices:productChoices}:{})}:{...(productChoices.length?{product_choices:productChoices}:{})},timeout:30000} : { path: path(), method: 'POST', data: version(), timeout: 30000 })
     if (!active(scope)) return
     if(props.reference && (data.preview_id!==props.reference.previewId||!data.package?.package_sn))throw new Error('采购来源无法核对，请重试。')
     publication.value = props.reference ? data.package : receipt(data)
@@ -176,6 +184,7 @@ async function checkout() {
 }
 async function submit() {
   if(writing.value||props.unified&&!canSubmit.value)return
+  if(props.unified&&productSpecSelection.value){await checkout();return}
   writing.value=true;submitting.value=true
   try{await verifyReference();await page.submit();if(alive&&state.orderSn){if(props.managed)emit('ordered',state.orderSn);else uni.navigateTo({url:'/pages/orders/detail?id='+encodeURIComponent(state.orderSn)})}}
   catch(e){error.value=e.message;page.invalidateQuote()}
@@ -188,7 +197,7 @@ async function recover() {
   finally{writing.value=false;submitting.value=false}
 }
 
-function changeQuantity(item,delta){if(busy.value||state.busy)return;const value=item.quantity+delta;if(value<1||Number.isFinite(item.availableQuantity)&&value>item.availableQuantity)return;if(state.ready)page.quantity(item.id,value);draftQuantities.value={...draftQuantities.value,[item.id]:value};rememberSelection();scheduleQuote()}
+function changeQuantity(item,delta){if(busy.value||state.busy||!selectable(item))return;const value=item.quantity+delta;if(value<1||Number.isFinite(item.availableQuantity)&&value>item.availableQuantity)return;if(state.ready)page.quantity(item.id,value);draftQuantities.value={...draftQuantities.value,[item.id]:value};rememberSelection();scheduleQuote()}
 async function selectSlot(id){if(busy.value||state.busy||String(state.slotId)===String(id))return;state.slotId=id;page.invalidateQuote();if(props.unified)scheduleQuote();else await checkout()}
 
 watch(checkoutOpen,value=>emit('checkout',value))
@@ -204,14 +213,14 @@ onUnmounted(() => { alive = false; clearTimeout(quoteTimer); page.dispose() })
 
 <template>
  <view class="meal-purchase" :class="{'is-embedded':embedded}">
-  <MealPurchasePanel v-if="unified" :gaps="purchaseGaps" :products="products" :picked="picked" :address="state.address" :slots="state.slots" :slot-id="state.slotId" :quote="state.quote" :busy="busy||state.busy||submitting" :pricing="quoteWaiting" :ready="unifiedReady" :pending="!!(state.pending||state.orderSn)" :error="error||state.error||state.checkoutError||state.deliveryMessage" :access-required="loginOpen" :can-submit="!!canSubmit" @address="chooseAddress" @slot="selectSlot" @toggle="toggle" @quantity="changeQuantity" @confirm="submit" @recover="recover" @retry="refreshUnified" @scroll="emit('scroll',$event)"><template #access><CommerceAccess entry @ready="refreshUnified"/></template></MealPurchasePanel>
+  <MealPurchasePanel v-if="unified" :gaps="purchaseGaps" :products="products" :picked="picked" :address="state.address" :slots="state.slots" :slot-id="state.slotId" :quote="state.quote" :busy="busy||state.busy||submitting" :pricing="quoteWaiting" :ready="unifiedReady" :choices-ready="productSpecSelection" :pending="!!(state.pending||state.orderSn)" :error="error||state.error||state.checkoutError||state.deliveryMessage" :access-required="loginOpen" :can-submit="!!canSubmit" @address="chooseAddress" @slot="selectSlot" @toggle="toggle" @quantity="changeQuantity" @confirm="submit" @recover="recover" @retry="refreshUnified" @scroll="emit('scroll',$event)"><template #access><CommerceAccess entry @ready="refreshUnified"/></template></MealPurchasePanel>
   <template v-else>
   <scroll-view v-show="!embedded||!checkoutOpen" :scroll-y="embedded" :show-scrollbar="false" class="purchase-scroll">
   <view class="section-head"><text class="section-title">{{route.meal==='daily'&&route.meals?.length>1?'所选餐次食材汇总':'本餐所需食材'}}</text><text>家中已有可取消</text></view>
   <text v-if="reference?.needsMatching&&!state.ready" class="safe-note">将按本餐核对商品；进入结算后可调整包装数量。</text><text v-if="reference" class="safe-note">参考餐单用量未核算，请核对实际需要；未匹配的食材需自行准备。</text><text v-if="busy||state.busy" class="safe-note">正在核对商品与配送…</text>
   <view v-if="error||state.error" class="card status" role="alert"><text>{{error||state.error}}</text><button class="secondary-button" :disabled="busy||state.busy" @click="refresh">重新核对本餐食材</button></view>
   <text v-if="preview&&!preview.available" class="inline-error">{{preview.message||'当前食材暂不可采购，请重新核对。'}}</text><view v-if="reference?.gaps?.length" class="purchase-gaps"><text>这些食材不进入购物车</text><text v-for="(gap,i) in reference.gaps" :key="i">{{referenceIngredientLabel(reference?.ingredientLabels,gap.ingredient)}}：{{['no_match','needs_confirmation'].includes(gap.reason)?'自行购买 · 暂无价格；':''}}{{referenceGapDetail(gap)}}</text></view>
-  <view class="products"><view v-for="item in products" :key="item.id" class="product"><button class="product-select" :disabled="busy||state.busy" :aria-pressed="picked.includes(item.id)" :aria-label="(picked.includes(item.id)?'取消选择':'选择')+item.name" @click="toggle(item.id)"><view class="check" :class="{selected:picked.includes(item.id)}">{{picked.includes(item.id)?'✓':''}}</view></button><FoodImageSlot :src="item.imageUrl" :label="item.name" class="product-image"/><view class="product-copy"><text class="product-name">{{item.name}}</text><text>{{item.needLabel}}</text><text>{{item.packLabel}}</text><view class="quantity-control"><button :aria-label="'减少'+item.name+'数量'" :disabled="busy||state.busy||item.quantity<=1" @click="changeQuantity(item,-1)">−</button><text>{{item.quantity}} 包</text><button :aria-label="'增加'+item.name+'数量'" :disabled="busy||state.busy||(Number.isFinite(item.availableQuantity)&&item.quantity>=item.availableQuantity)" @click="changeQuantity(item,1)">＋</button></view><text v-if="Number.isFinite(item.availableQuantity)&&item.availableQuantity<item.quantity" class="stock-alert">库存不足</text></view><text class="product-price">{{Number.isFinite(item.priceCents)?'¥'+money(item.priceCents*item.quantity):'待核价'}}</text></view></view>
+  <view class="products"><view v-for="item in products" :key="item.id" class="product"><button class="product-select" :disabled="busy||state.busy||!selectable(item)" :aria-pressed="picked.includes(item.id)" :aria-label="(picked.includes(item.id)?'取消选择':'选择')+item.name" @click="toggle(item.id)"><view class="check" :class="{selected:picked.includes(item.id)}">{{picked.includes(item.id)?'✓':''}}</view></button><FoodImageSlot :src="item.imageUrl" :label="item.name" class="product-image"/><view class="product-copy"><text class="product-name">{{item.name}}</text><text>{{item.needLabel}}</text><text>{{item.packLabel}}</text><view class="quantity-control"><button :aria-label="'减少'+item.name+'数量'" :disabled="busy||state.busy||!selectable(item)||item.quantity<=1" @click="changeQuantity(item,-1)">−</button><text>{{item.quantity}} 包</text><button :aria-label="'增加'+item.name+'数量'" :disabled="busy||state.busy||!selectable(item)||(Number.isFinite(item.availableQuantity)&&item.quantity>=item.availableQuantity)" @click="changeQuantity(item,1)">＋</button></view><text v-if="!selectable(item)" class="stock-alert">暂不可选</text><text v-else-if="Number.isFinite(item.availableQuantity)&&item.availableQuantity<item.quantity" class="stock-alert">库存不足</text></view><text class="product-price">{{Number.isFinite(item.priceCents)?'¥'+money(item.priceCents*item.quantity):'待核价'}}</text></view></view>
   </scroll-view>
   <view v-show="!embedded||!checkoutOpen" class="meal-bottom-bar"><view class="selection-summary"><text>{{route.meal==='daily'?(route.meals||[]).map(m=>({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}[m])).join('、')+' · 商品小计':'商品小计 · '+picked.length+' 项'}}</text><text class="amount">{{totalKnown?'¥'+money(total):'价格待核对'}}</text></view><button class="checkout-button" :disabled="busy||state.busy||!purchaseReady||(!picked.length&&!reference?.needsMatching)||!!error" @click="checkout">{{preview?.confirmation_pending?'确认上次采购结果':'去结算'}}<text v-if="!preview?.confirmation_pending">→</text></button></view>
   <PurchaseCheckoutSheet :embedded="embedded" :open="checkoutOpen" :title="route.meal==='daily'&&route.meals?.length>1?'确认采购订单':'确认本餐订单'" :address="state.address" :slots="state.slots" :slot-id="state.slotId" :products="products.filter(p=>picked.includes(p.id))" :quote="state.quote" :busy="busy||state.busy" :error="error||state.error||state.checkoutError||state.deliveryMessage" :pending="!!(state.pending||state.orderSn)" :access-required="loginOpen" @close="checkoutOpen=false" @address="chooseAddress" @slot="selectSlot" @confirm="submit" @recover="recover" @quote="checkout"><template #access><CommerceAccess entry @ready="checkout"/></template></PurchaseCheckoutSheet>
