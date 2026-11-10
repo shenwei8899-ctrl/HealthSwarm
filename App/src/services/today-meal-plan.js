@@ -1,3 +1,4 @@
+import { createTodayMenuCache, profileKey } from './today-menu-cache.js'
 import { readDailyMealPlan } from './daily-meal-plan.js'
 import { createHealthTaskFlow } from './health-task-flow.js'
 import { referenceSelection, isMealPlanCandidates } from './reference-meal-plan.js'
@@ -10,7 +11,7 @@ const mealTypes = ['breakfast','lunch','dinner']
 const requiredMeals = plan => [...new Set([...(plan.needs_regeneration || []),
   ...mealTypes.filter(type => !plan.meals.some(meal => meal.meal_type === type))])]
 export function todayMealPlanState() {
-  return { phase:'idle',date:'',plan:null,verified:false,checking:false,issue:false,label:'正在读取今日餐单',notice:'',action:'',pending:null }
+  return { phase:'idle',date:'',plan:null,verified:false,displayable:false,checking:false,issue:false,label:'正在读取今日餐单',notice:'',action:'',pending:null }
 }
 
 // The menu owns its task. It never reads or writes the chat composer, history,
@@ -18,12 +19,14 @@ export function todayMealPlanState() {
 export function createTodayMealPlan({ state, onPlan = () => {}, read = readDailyMealPlan,
   createFlow = createHealthTaskFlow, context = storageContext, storage = scopedStorage,
   day = localDate, schedule = setTimeout, cancel = clearTimeout, pollLimit = 150 } = {}) {
+  const menuCache = createTodayMenuCache(storage)
   let generation = 0, timer = null, flow = null, disposed = false, verifiedScope = ''
   const taskStorage = {
     getStorageSync: key => storage.getStorageSync('today-menu:' + key),
     setStorageSync: (key,value) => storage.setStorageSync('today-menu:' + key,value),
   }
   function stop() {
+    state.checking = false
     generation++
     if (timer !== null) cancel(timer)
     timer = null
@@ -33,20 +36,21 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
   async function open(profile, { readOnly = false, retryFailed = false } = {}) {
     if (disposed) return
     stop()
-    const ticket = generation, scope = context(), date = day(), family = profile?.householdId
-    const planScope = JSON.stringify([scope,family,date,profile?.selfMemberId,profile?.familyVersion])
-    // A same-session snapshot is a preview until this read verifies it again.
-    const previousPlan = verifiedScope === planScope ? state.plan : null
-    Object.assign(state,todayMealPlanState(),{phase:previousPlan?'ready':'loading',date,plan:previousPlan,checking:true,
-      notice:previousPlan?'正在核对最新餐单，稍后即可查看详情。':''})
+    const cacheProfile = profile, ticket = generation, scope = context(), date = day(), family = profile?.householdId
+    const planScope = JSON.stringify([scope,date,profileKey(profile || {})])
+    // Restore the same-session display immediately; details and purchase verify independently.
+    const previousPlan = verifiedScope === planScope && state.displayable ? state.plan : profile && family ? menuCache.read(scope,profile,date) : null
+    Object.assign(state,todayMealPlanState(),{phase:previousPlan?'ready':'loading',date,plan:previousPlan,displayable:!!previousPlan,checking:true,notice:''})
+    if (previousPlan) onPlan(previousPlan)
     const current = () => !disposed && ticket === generation && scope === context() && date === day()
     const fail = (privateData = false, notice = '', canRetry = false) => {
       if (!current()) return
       state.checking = false
-      if (privateData) { state.plan = null; state.pending = null; state.verified = false; verifiedScope = '' }
+      if (privateData) { state.plan = null; state.pending = null; state.verified = false; state.displayable = false; verifiedScope = ''; menuCache.clear() }
       state.issue = true; state.phase = state.plan ? 'ready' : 'error'
       state.notice = notice || (privateData ? '餐单资料已变化，请刷新后重新核对。' : state.plan ? state.verified ? '暂未获取更新结果，已有餐单仍可查看。' : '暂未完成核对，已有餐单仅供预览，请刷新后查看详情。' : '暂未获取餐单结果，请稍后刷新。')
       state.action = canRetry && !privateData ? 'regenerate' : 'refresh'
+      if (!privateData && !notice && !canRetry && state.displayable) { state.notice = ''; state.action = ''; state.issue = false }
       if (timer !== null) cancel(timer)
       timer = null
       const previous = flow; flow = null; previous?.pause()
@@ -69,6 +73,8 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       if (!current()) return
       state.plan = plan.status === 'ready' ? plan : null
       state.verified = !!state.plan
+      state.displayable = !!state.plan
+      menuCache.write(scope,cacheProfile,date,state.plan)
       state.checking = false
       verifiedScope = state.plan ? planScope : ''
       state.pending = plan.pending || null
@@ -224,7 +230,10 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
         if (!active(plan.pending?.status)) { fail(!!task.invalidated,taskNotice(task)); return }
       }
       poll()
-    } catch (error) { fail([401,403,404,409,410].includes(Number(error.code))) }
+    } catch (error) {
+      if (!current()) { if (ticket === generation) clear(); return }
+      fail([401,403,404,409,410].includes(Number(error.code)))
+    }
   }
   function isGenerating() {
     return !!flow && !state.action &&

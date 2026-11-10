@@ -76,14 +76,55 @@ const mealPlanReady=ref(false),mealPlanAudience=ref('default')
 const liveAnswer=computed(()=>!!task.value.streamText&&!task.value.result)
 const progressText=computed(()=>sendPhase.value||(familyState.busy?'正在生成三餐':task.value.streamStatus||(['queued','pending'].includes(task.value.status)?'问题已收到，正在等待营养师处理':'正在准备回复')))
 let scrollTimer=null,returnRetryTimer=null,returnRetryAttempt=0,entryRetryTimer=null,entryRetryAttempt=0,loginRedirecting=false,entryRecovery=null
+// A dropped native navigation or a load that returns early must never leave the
+// page with no welcome, no error and no retry: that renders as a blank screen.
+const ENTRY_STALL_MS=1200,LOGIN_UNLOCK_MS=800
+let stallTimer=null,loginUnlockTimer=null,stallAttempts=0
+const entryRecovering=ref(false)
 function clearEntryRetry(reset=true){
  if(entryRetryTimer!==null)clearTimeout(entryRetryTimer)
  entryRetryTimer=null;if(reset)entryRetryAttempt=0
+}
+function clearStall(){
+ if(stallTimer!==null)clearTimeout(stallTimer)
+ stallTimer=null
+}
+function stalledEntry(){
+ return !disposed&&visible&&!entryReady.value&&!profileLoading.value&&!entryError.value&&!loginRedirecting&&!loading&&!entryRecovering.value
+}
+function watchEntryStall(){
+ clearStall()
+ stallTimer=setTimeout(()=>{
+  stallTimer=null
+  if(!stalledEntry())return
+  if(stallAttempts<1){
+   stallAttempts++;entryRecovering.value=true
+   const settle=()=>{entryRecovering.value=false;watchEntryStall()}
+   void loadEntry(0,{skipOptional:true}).then(settle,settle)
+   return
+  }
+  entryError.value='没能进入首页，请点击“重新进入”再试。'
+ },ENTRY_STALL_MS)
+}
+function reenter(){
+ if(disposed||!visible)return
+ loginRedirecting=false;clearEntryRetry();clearStall();stallAttempts=0
+ entryError.value='';entryRecovering.value=true
+ const settle=()=>{entryRecovering.value=false;watchEntryStall()}
+ void loadEntry(0).then(settle,settle)
 }
 function requireLogin(){
  if(disposed||!visible||loginRedirecting)return
  loginRedirecting=true;clearPrivate();entryError.value=''
  uni.reLaunch({url:'/pages/index/index'})
+ // Keep the recovery paths usable when the native navigation is dropped.
+ if(loginUnlockTimer!==null)clearTimeout(loginUnlockTimer)
+ loginUnlockTimer=setTimeout(()=>{
+  loginUnlockTimer=null
+  if(disposed||!visible||!loginRedirecting)return
+  loginRedirecting=false
+  entryError.value='没能回到登录页，请点击“重新进入”再试。'
+ },LOGIN_UNLOCK_MS)
 }
 function retryEntryInBackground(){
  if(disposed||!visible||loginRedirecting||entryRetryTimer!==null||entryRetryAttempt>=3)return
@@ -609,7 +650,9 @@ async function restoreChat(type=desiredType,{fresh=false,pending=null,preserveVi
 }
 function load(){
   if(disposed)return
-  clearEntryRetry();loginRedirecting=false
+  clearEntryRetry();clearStall();stallAttempts=0;entryRecovering.value=false
+  loginRedirecting=false
+  if(loginUnlockTimer!==null){clearTimeout(loginUnlockTimer);loginUnlockTimer=null}
   selectionGeneration++;historyDenied=false;historyLoading.value=false;historyError.value='';historyNotice.value='';continuationChecking.value=false;continuationError.value='';switchingConversation.value=false
   clearReturnRetry()
   visible=true
@@ -676,6 +719,7 @@ async function loadEntry(recoveries,{skipOptional=false}={}){
     if(scope!==storageContext())return await recoverSession()
     if(task.value.invalidated){entryError.value='连接暂不可用';retryEntryInBackground();return}
     cardVisible.value=state.phase==='ready';entryReady.value=true;returnVerified.value=true;loadedDate=localDate()
+    clearStall();stallAttempts=0;entryRecovering.value=false
     clearEntryRetry()
     rememberChatEntry(next)
     if(!prompts.value.length||promptDate.value!==localDate())refreshPrompts()
@@ -691,7 +735,7 @@ async function loadEntry(recoveries,{skipOptional=false}={}){
     entryError.value=e.message||'咨询资料暂时无法读取，请重试。'
     retryEntryInBackground()
   }
-  finally{if(mine===epoch){loading=null;profileLoading.value=false}}})()
+  finally{if(mine===epoch){loading=null;profileLoading.value=false;if(stalledEntry())watchEntryStall()}}})()
   return loading
 }
 function clearMealAccess(date){
@@ -867,7 +911,7 @@ function verifiedMealView(message) {
      message.menuFamily !== profile.value?.householdId ||
      message.menuConversation !== conversationId.value ||
      message.planDate !== localDate() || message.planDate !== todayMenu.date ||
-     !todayMenu.verified) return null
+     !todayMenu.displayable) return null
  return todayMenu.plan
 }
 function mealViewText(message) {
@@ -881,7 +925,7 @@ function mealViewText(message) {
  return `今天的${mealLabels[item.meal_type]}安排了${item.meal.dishes.map(dishTitle).join('、')}。`
 }
 async function showTodayMeal(item) {
- if (disposed || !visible || mealViewBlocked.value || !todayMenu.verified ||
+ if (disposed || !visible || mealViewBlocked.value || !todayMenu.displayable ||
      todayMenu.date !== localDate() || !item?.source) return
  const current = todayMenu.plan?.meals.find(meal =>
   meal.meal_type === item.meal_type && meal.source.kind === item.source.kind &&
@@ -1391,7 +1435,8 @@ function messageTime(message,index){
   <view v-if="task.consentOption" class="dialogue-status"><text>本次{{task.taskType==='reference_meal_preview'?'配餐':'咨询'}}处理方：{{task.consentOption.processor}}；政策版本：{{task.consentOption.policyVersion}}。</text><checkbox-group @change="consentChecked=$event.detail.value.includes('yes')"><label><checkbox value="yes" :checked="consentChecked"/>同意本次{{task.taskType==='reference_meal_preview'?'配餐':'咨询'}}的数据处理</label></checkbox-group><button :disabled="!consentChecked||chatBusy" @click="consent">同意并继续{{task.taskType==='reference_meal_preview'?'配餐':'咨询'}}</button></view>
  </template>
  <template #composer>
-  <view v-if="!entryReady&&entryError&&!profileLoading&&!task.consentOption" class="entry-status" role="alert"><text>{{task.notice||profile?.consultationError||entryError}}</text><button :disabled="conversationChangeBusy||returning||pendingEntrySend||voiceBusy||draftSaving" @click="load">重新连接营养师</button></view>
+  <view v-if="!entryReady&&entryRecovering" class="entry-status" role="status"><text>正在重新连接…</text></view>
+  <view v-if="!entryReady&&entryError&&!profileLoading&&!task.consentOption" class="entry-status" role="alert"><text>{{task.notice||profile?.consultationError||entryError}}</text><button :disabled="conversationChangeBusy||returning||pendingEntrySend||voiceBusy||draftSaving" @click="load">重新连接营养师</button><button :disabled="conversationChangeBusy||returning||pendingEntrySend||voiceBusy||draftSaving" @click="reenter">重新进入</button></view>
   <view v-if="conversationReadOnly" class="archived-conversation"><text>这段每日对话已归档，记录仍可查看。</text><button :disabled="chatBusy" @click="newConversation">新对话继续聊</button></view>
   <template v-else>
 

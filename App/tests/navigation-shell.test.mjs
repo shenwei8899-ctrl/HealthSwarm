@@ -6,7 +6,7 @@ const source = file => readFileSync(new URL('../src/'+file, import.meta.url),'ut
 const evaluate = (code, deps, result) => new Function('deps',`const {${Object.keys(deps)}}=deps;${code};return ${result}`)(deps)
 const flush = () => new Promise(resolve=>setImmediate(resolve))
 const deferred = () => {let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}}
-function fixture(h5=false,delayRoute=false) {
+function fixture(h5=false,delayRoute=false,clock={}) {
   let account={accountId:'a',token:'test-token',householdId:'family-a',clientRevision:1,expiresAt:Date.now()/1000+3600,families:[{id:'family-a',onboardingRequired:false}]}
   let route='/pages/chat/index',invite='',preparing=false
   const hooks={},calls=[],loadings=[],toasts=[],checks=[],hashListeners=new Set()
@@ -22,13 +22,29 @@ function fixture(h5=false,delayRoute=false) {
     if(!delayRoute)route=options.url
     options.success?.({errMsg:method+':ok'});options.complete?.({errMsg:method+':ok'})
   }
-  const nav=evaluate(source('services/navigation.js'),{uni,isMockMode:false,isCommerceEnabled:true,immediateShellEntry:shell,
+  const nav=evaluate(source('services/navigation.js'),{...clock,uni,isMockMode:false,isCommerceEnabled:true,immediateShellEntry:shell,
     resolveAppEntry:options=>{checks.push(options);const d=deferred();pending.push(d);return d.promise},
     captureInvitation(){},rememberInvitation(){},storageContext,getSession,
     window:{location:{get hash(){return '#'+route}},addEventListener:(_,fn)=>hashListeners.add(fn),removeEventListener:(_,fn)=>hashListeners.delete(fn)},getCurrentPages:h5?undefined:()=>[{route:route.split('?')[0].slice(1),options:Object.fromEntries(new URLSearchParams(route.split('?')[1]||''))}]},'{installRouteGuards,checkCurrentEntry}')
   nav.installRouteGuards()
   return {nav,uni,calls,checks,pending,loadings,toasts,shell,completeRoute(value){route=value;for(const fn of [...hashListeners])fn()},get account(){return account},set account(value){account=value},set route(value){route=value},get route(){return route},set invite(value){invite=value},set preparing(value){preparing=value}}
 }
+
+test('an entry response after timeout cannot navigate over a newer successful transition',async()=>{
+  const timers=new Set(),finished=[]
+  const h=fixture(false,false,{setTimeout:fn=>{timers.add(fn);return fn},clearTimeout:fn=>timers.delete(fn)})
+  h.uni.redirectTo({url:'/pages/onboarding/index',complete:result=>finished.push(result)})
+  assert.equal(h.pending.length,1);assert.equal(h.calls.length,0)
+  const expire=[...timers][0]
+  expire()
+  assert.equal(finished.length,1);assert.equal(finished[0].code,'NAVIGATION_TIMEOUT')
+  h.uni.redirectTo({url:'/pages/my/index'})
+  h.pending[1].resolve('/pages/chat/index');await flush()
+  assert.equal(h.route,'/pages/my/index');assert.equal(h.calls.length,1)
+  h.pending[0].resolve('/pages/onboarding/index');await flush()
+  assert.equal(h.route,'/pages/my/index');assert.equal(h.calls.length,1)
+  assert.equal(finished.length,1)
+})
 
 for(const url of ['/pages/profile/index','/pages/my/index','/pages/chat/history','/pages/exclusive-plans/index','/pages/scan/index','/pages/meals/detail']) {
   test('native shell opens before unresolved network: '+url,async()=>{

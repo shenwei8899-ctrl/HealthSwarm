@@ -477,7 +477,7 @@ for(const leave of ['hide','unmount'])test(`entry recovery cancels on ${leave} a
 
 test('an initial 401 redirects to login once without scheduling recovery',async()=>{
  const h=entryRetryFixture({failures:99,code:401}),p=h.page,routes=[];h.h.deps.uni.reLaunch=o=>routes.push(o.url)
- try{await p.load();assert.deepEqual(routes,['/pages/index/index']);assert.equal(p.profile.value,null);assert.equal(p.entryError.value,'');assert.equal(h.timers.size,0)}finally{p.dispose()}
+ try{await p.load();assert.deepEqual(routes,['/pages/index/index']);assert.equal(p.profile.value,null);assert.equal(p.entryError.value,'');assert.equal([...h.timers.values()].filter(job=>job.delay>=1500).length,0)}finally{p.dispose()}
 })
 
 test('chat recovers when session changes during conversation restoration without showing old messages',async()=>{

@@ -52,7 +52,7 @@ function fixture({cached=true,createFailure=false}={}){
   uni:{redirectTo(){},reLaunch(){},showToast(){}},
  }
  const script=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
- const scope=effectScope(),page=scope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${script};return {load,messages,visibleMessages,failedQuestion,failedTask,question,draftImage,task,flow,presentation,entryReady,restartChat,editFailedQuestion}`)(deps))
+ const scope=effectScope(),page=scope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${script};return {load,messages,visibleMessages,failedQuestion,failedTask,question,draftImage,task,flow,presentation,entryReady,restartChat,editFailedQuestion,entryError,entryRecovering,reenter,requireLogin,watchEntryStall,clearStall,loginState:()=>loginRedirecting}`)(deps))
  return {page,calls,storage,historyReads,hooks,get idCount(){return idCount},changeAccount(){account='other'},pauseOpen(){let release;pendingOpen=new Promise(r=>release=r);return ()=>{pendingOpen=null;release()}},dispose(){hooks.unmount?.();scope.stop()}}
 }
 
@@ -120,4 +120,45 @@ for(const reason of ['account','hide'])test(`editing never restores private text
  release();await pending;assert.equal(h.page.question.value,'')
  if(reason==='hide'){await h.page.load();assert.equal(h.page.question.value,'');assert.equal(h.calls.some(c=>c.path==='/api/agent/runs'),false)}
  h.dispose()
+})
+
+// A blank entry page (no welcome, no error, no retry) is the reported cold-start
+// symptom: the header renders but the body stays empty until the user re-enters.
+const settle = ms => new Promise(resolve => setTimeout(resolve, ms))
+const notBlank = page => page.entryReady.value === true || page.entryError.value !== ''
+
+test('a login redirect that never lands releases its lock instead of locking the page', async () => {
+  const h = fixture()
+  try {
+    h.page.requireLogin()
+    assert.equal(h.page.loginState(), true)
+    assert.equal(h.page.entryError.value, '')
+    await settle(1000)
+    assert.equal(h.page.loginState(), false)
+    assert.match(h.page.entryError.value, /重新进入/)
+  } finally { h.dispose() }
+})
+
+test('the entry watchdog never leaves an idle page blank', async () => {
+  const h = fixture()
+  try {
+    assert.equal(h.page.entryReady.value, false)
+    h.page.watchEntryStall()
+    await settle(1500 + 250)
+    assert.equal(h.page.entryRecovering.value, false)
+    assert.ok(notBlank(h.page), '白屏不允许出现：要么就绪，要么给出可见错误')
+  } finally { h.dispose() }
+})
+
+test('reenter clears the stall error and drives the entry again', async () => {
+  const h = fixture()
+  try {
+    h.page.requireLogin()
+    await settle(1000)
+    assert.match(h.page.entryError.value, /重新进入/)
+    h.page.reenter()
+    await settle(400)
+    assert.equal(h.page.entryRecovering.value, false)
+    assert.ok(notBlank(h.page), '重新进入后不允许停在白屏')
+  } finally { h.dispose() }
 })

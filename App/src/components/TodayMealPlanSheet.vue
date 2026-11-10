@@ -21,8 +21,8 @@ function end(event){
  else if(action==='collapse')expanded.value=false
  else if(action==='close')emit('close')
 }
-function detail(item){if(props.state.verified&&props.interactive&&props.open)emit('detail',item)}
-function dish(value){if(props.state.verified&&props.interactive&&props.open)emit('dish',value)}
+function detail(item){if(props.state.displayable&&props.interactive&&props.open)emit('detail',item)}
+function dish(value){if(props.state.displayable&&props.interactive&&props.open)emit('dish',value)}
 function act(){if(!props.busy&&props.interactive&&props.open)emit('action')}
 watch(()=>props.open,open=>{touch=null;if(open)expanded.value=false})
 </script>
@@ -34,7 +34,7 @@ watch(()=>props.open,open=>{touch=null;if(open)expanded.value=false})
     <view class="tm-heading" @touchstart="start" @touchend="end" @touchcancel="cancelTouch"><text class="tm-title">今日餐单</text><text class="tm-date">{{displayDate}}</text></view>
     <view class="tm-controls"><button class="tm-expand" :aria-label="expanded?'收起今日餐单':'展开今日餐单'" :aria-expanded="expanded" @click="expanded=!expanded">{{expanded?'收起':'展开'}}</button><button class="tm-close" aria-label="关闭今日餐单" @click="emit('close')"><text>×</text></button></view>
    </view>
-   <scroll-view class="tm-content" scroll-y :show-scrollbar="false" :aria-busy="state.checking||state.phase==='generating'">
+   <scroll-view class="tm-content" scroll-y :show-scrollbar="false" :aria-busy="!state.plan&&(state.checking||state.phase==='generating')">
     <TodayMealPlanContent :state="state" :busy="busy" :interactive="interactive&&open" @action="act" @detail="detail" @dish="dish"/>
    </scroll-view>
   </view>

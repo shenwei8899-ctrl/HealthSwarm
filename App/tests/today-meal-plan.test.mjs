@@ -43,7 +43,7 @@ test('an authoritative absent menu generates once, then renders the read model i
  assert.deepEqual(opened[3],{mode:'reference',family_id:'family',plan_date:date,participant_ids:['self'],meal_types:['breakfast','lunch','dinner'],daily_base_version:0})
  assert.equal(h.calls.filter(c=>c[0]==='submit').length,1)
  plan=ready();await h.tick();assert.equal(h.state.phase,'ready');assert.equal(h.state.plan.version,1)
- assert.equal(h.timers.size,0);assert.deepEqual([...h.cache.keys()],['today-menu:task'])
+ assert.equal(h.timers.size,0);assert.deepEqual([...h.cache.keys()],['today-menu:snapshot-v1','today-menu:task'])
 })
 test('a task running on another device is followed without creating a flow or submitting',async()=>{
  let plan={...absent(),pending:{status:'running',request_id:'other'}}
@@ -344,14 +344,14 @@ test('a single transient poll failure recovers without interrupting the saved me
  assert.equal(h.calls.some(c=>c[0]==='submit'),false)
 })
 
-test('three consecutive transient poll failures stop with a read-only refresh action',async()=>{
+test('three consecutive transient poll failures stop silently while saved meals remain available',async()=>{
  let reads=0
  const h=fixture({read:async()=>{
   if(reads++)throw Object.assign(new Error('offline'),{code:'NETWORK_ERROR'})
   return {...ready(),pending:{status:'running'}}
  }})
  await h.client.open(profile);await h.tick();await h.tick();await h.tick()
- assert.equal(h.state.phase,'ready');assert.equal(h.state.action,'refresh');assert.equal(h.timers.size,0)
+ assert.equal(h.state.phase,'ready');assert.equal(h.state.displayable,true);assert.equal(h.state.action,'');assert.equal(h.timers.size,0)
  assert.equal(h.state.plan.meals.length,3)
  await h.client.open(profile,{readOnly:true})
  assert.equal(h.state.plan.meals.length,3);assert.equal(h.calls.some(c=>c[0]==='flow'),false)
@@ -406,24 +406,24 @@ test('an authoritative refusal on refresh clears the last verified private menu 
  assert.equal(h.state.plan,null);assert.equal(h.state.pending,null);assert.equal(h.timers.size,0)
 })
 
-test('ordinary reopening previews the same scoped menu but waits for verification before publishing again',async()=>{
+test('ordinary reopening immediately publishes the displayable menu while verifying silently',async()=>{
  let reads=0,resolve
  const h=fixture({read:()=>++reads===1?Promise.resolve(ready()):new Promise(done=>resolve=done)})
  await h.client.open(profile);h.client.pause()
  const opening=h.client.open(profile)
  assert.equal(h.state.plan.version,1);assert.equal(h.state.phase,'ready')
- assert.equal(h.state.verified,false);assert.equal(h.state.checking,true);assert.equal(h.published.length,1)
+ assert.equal(h.state.verified,false);assert.equal(h.state.displayable,true);assert.equal(h.state.checking,true);assert.equal(h.state.notice,'');assert.equal(h.published.length,2)
  resolve({...ready(),version:2});await opening
  assert.equal(h.state.verified,true);assert.equal(h.state.checking,false);assert.equal(h.state.plan.version,2)
- assert.equal(h.published.length,2);assert.equal(h.calls.some(c=>c[0]==='flow'),false)
+ assert.equal(h.published.length,3);assert.equal(h.calls.some(c=>c[0]==='flow'),false)
 })
 
-test('a failed reopen retains a read-only preview until a successful refresh verifies it',async()=>{
+test('a failed reopen keeps the saved menu displayable without a checking notice',async()=>{
  let failed=false
  const h=fixture({read:async()=>{if(failed)throw Object.assign(new Error('offline'),{code:503});return ready()}})
  await h.client.open(profile);failed=true;await h.client.open(profile)
  assert.equal(h.state.plan.version,1);assert.equal(h.state.verified,false);assert.equal(h.state.checking,false)
- assert.equal(h.state.action,'refresh');assert.match(h.state.notice,/仅供预览/)
+ assert.equal(h.state.displayable,true);assert.equal(h.state.action,'');assert.equal(h.state.notice,'')
  failed=false;await h.client.open(profile,{readOnly:true})
  assert.equal(h.state.verified,true);assert.equal(h.state.notice,'');assert.equal(h.calls.some(c=>c[0]==='flow'),false)
 })
@@ -445,7 +445,7 @@ test('closing while a cached menu is being verified prevents its late result fro
  const h=fixture({read:()=>++reads===1?Promise.resolve(ready()):new Promise(done=>resolve=done)})
  await h.client.open(profile)
  const opening=h.client.open(profile);h.client.pause();resolve({...ready(),version:2});await opening
- assert.equal(h.state.plan.version,1);assert.equal(h.state.verified,false);assert.equal(h.published.length,1)
+ assert.equal(h.state.plan.version,1);assert.equal(h.state.verified,false);assert.equal(h.state.displayable,true);assert.equal(h.published.length,2)
  h.client.dispose();assert.equal(h.state.plan,null)
 })
 
@@ -557,19 +557,19 @@ test('the actual sheet exposes separate reading and generating copy with a compa
  }finally{h.dispose()}
 })
 
-test('sheet actions cannot navigate an unverified preview, inactive page or closed sheet',async()=>{
+test('sheet actions require a displayable menu, active page and open sheet',async()=>{
  const h=sheetFixture(),item=ready().meals[0];try{
   h.view.detail(item);h.view.dish({item,dishIndex:0});assert.equal(h.events.length,0)
-  h.view.state.verified=true;h.view.detail(item);h.view.dish({item,dishIndex:0});assert.equal(h.events.length,2)
+  h.view.state.displayable=true;h.view.detail(item);h.view.dish({item,dishIndex:0});assert.equal(h.events.length,2)
   h.props.interactive=false;h.view.detail(item);h.view.act();assert.equal(h.events.length,2)
   h.props.interactive=true;h.props.open=false;await nextTick();h.view.detail(item);h.view.act();assert.equal(h.events.length,2)
  }finally{h.dispose()}
 })
 
-test('shared content gates preview interactions and busy recovery actions',()=>{
+test('shared content gates missing snapshots and busy recovery actions',()=>{
  const h=contentFixture(),item=ready().meals[0]
  h.view.detail(item);h.view.dish({item,dishIndex:0});assert.equal(h.events.length,0)
- h.props.state.verified=true;h.view.detail(item);h.view.dish({item,dishIndex:0});assert.equal(h.events.length,2)
+ h.props.state.displayable=true;h.view.detail(item);h.view.dish({item,dishIndex:0});assert.equal(h.events.length,2)
  h.props.busy=true;h.view.act();assert.equal(h.events.length,2)
  h.props.busy=false;h.view.act();assert.deepEqual(h.events.at(-1),['action'])
  h.props.interactive=false;h.view.detail(item);h.view.act();assert.equal(h.events.length,3)
@@ -631,6 +631,6 @@ test('compact meal entries always keep three labels and disable missing or empty
  assert.equal(h.view.missingMeals.value,'午餐、晚餐')
  h.props.state.plan.meals[0].meal.dishes=[]
  assert.equal(h.view.mealEntries.value[0].item,undefined)
- h.props.state.verified=true;h.view.detail(undefined)
+ h.props.state.displayable=true;h.view.detail(undefined)
  assert.equal(h.events.length,0)
 })

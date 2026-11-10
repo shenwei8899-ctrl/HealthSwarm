@@ -8,6 +8,13 @@ export function setSession(session, { preserveRevision = false } = {}) {
   const sameIdentity = preserveRevision && previous && ['accountId','token','householdId','authSource'].every(field => previous[field] === session[field])
   uni.setStorageSync(key(), JSON.parse(JSON.stringify({...session,clientRevision:sameIdentity ? previous.clientRevision : Date.now()+'-'+Math.random().toString(36).slice(2)})))
 }
-export function clearSession() { uni.setStorageSync(key(), null) }
+export function clearSession() {
+  const session = getSession()
+  if (session) try {
+    const snapshotKey = `fn:v2:${serviceMode}:${encodeURIComponent(session.accountId || 'guest')}:${encodeURIComponent(session.householdId || (serviceMode === 'api' ? 'unassigned' : 'preview'))}:today-menu:snapshot-v1`
+    uni.setStorageSync(snapshotKey, null)
+  } catch (_) {}
+  uni.setStorageSync(key(), null)
+}
 
 export function sessionRevision(){return getSession()?.clientRevision||'guest'}

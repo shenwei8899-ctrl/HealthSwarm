@@ -4,12 +4,13 @@ import { readFileSync } from 'node:fs'
 import { computed, effectScope, nextTick, reactive, ref, watch } from 'vue'
 import { scopedStorage } from '../src/services/storage.js'
 import { conversationSummary, conversationTitle, readConversations, readChatSnapshot } from '../src/services/cloud-chat.js'
+import { backdropOpacity, clampDragOffset, DRAWER_SETTLE_MS, shouldCloseDrawer } from '../src/utils/drawer-swipe.js'
 
 const member = '11111111-1111-4111-8111-111111111111'
 const thread = number => `22222222-2222-4222-8222-${String(number).padStart(12, '0')}`
 const item = (number, extra = {}) => ({ thread_id: thread(number), member_id: member, agent_slug: 'health-consultation', business_date: null, title: '合成首问', unavailable: false, created_at: '2026-10-28T01:00:00+00:00', ...extra })
 let revision = 'synthetic-session'
-globalThis.uni = { getStorageSync: () => ({ clientRevision: revision }) }
+globalThis.uni = { getStorageSync: () => ({ clientRevision: revision }), getSystemInfoSync: () => ({ windowWidth: 375 }) }
 const pageResponse = (items, extra = {}) => ({ data: { items, has_more: false, next_offset: null, ...extra } })
 const turn = () => new Promise(resolve => setImmediate(resolve))
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
@@ -76,7 +77,7 @@ function drawer(options = {}) {
   const props = reactive({ open: false, memberId: member, activeThreadId: '', busy: false, displayName: '合成用户' })
   const emitted = [], hooks = {}, cache = new Map(), writes = []
   const identity = { scope: 'synthetic-scope', revision: 'one' }
-  const deps = { computed, ref, watch, defineProps: () => props, defineEmits: () => (...args) => emitted.push(args),
+  const deps = { computed, ref, watch, backdropOpacity, clampDragOffset, DRAWER_SETTLE_MS, shouldCloseDrawer, defineProps: () => props, defineEmits: () => (...args) => emitted.push(args),
     onShow: callback => { hooks.show = callback }, onHide: callback => { hooks.hide = callback }, onUnmounted: callback => { hooks.unmount = callback },
     readConversations: async () => ({ items: [], hasMore: false, nextOffset: null }),
     readChatSnapshot: async () => ({ messages: [] }), conversationTitle, conversationSummary,
@@ -85,7 +86,7 @@ function drawer(options = {}) {
   }
   const source = readFileSync(new URL('../src/components/ChatConversationDrawer.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const state = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${source};return {rows,groups,loading,error,notice,hasMore,nextOffset,load,close,newConversation,select,profile}`)(deps))
+  const state = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${source};return {rows,groups,loading,error,notice,hasMore,nextOffset,load,close,newConversation,select,profile,dragOffset,dragPhase,panelStyle,backdropStyle,beginDrag,moveDrag,endDrag}`)(deps))
   return { ...state, props, emitted, cache, writes, identity, hooks,
     async open() { props.open = true; await nextTick(); await turn() },
     dispose() { hooks.unmount?.(); scope.stop() },
@@ -140,4 +141,107 @@ test('legacy local task links recover a short title in one read-only batch witho
   assert.equal(page.items[0].title,'旧餐单的首个问题');assert.equal(calls.length,2)
   assert.equal(calls.some(call=>call.path.endsWith('/history')),false)
  }finally{scopedStorage.getStorageSync=original}
+})
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+test('drag helpers clamp distance and decide only on a third of the panel or a fast flick', () => {
+  assert.equal(clampDragOffset(80, 285), 80)
+  assert.equal(clampDragOffset(-40, 285), 0)
+  assert.equal(clampDragOffset(400, 285), 285)
+  assert.equal(clampDragOffset(Number.NaN, 285), 0)
+  assert.equal(clampDragOffset(50, 0), 0)
+  assert.equal(shouldCloseDrawer({ distance: 95, width: 285, duration: 900 }), true)
+  assert.equal(shouldCloseDrawer({ distance: 94, width: 285, duration: 900 }), false)
+  assert.equal(shouldCloseDrawer({ distance: 40, width: 285, duration: 50 }), true)
+  assert.equal(shouldCloseDrawer({ distance: 40, width: 285, duration: 900 }), false)
+  assert.equal(shouldCloseDrawer({ distance: 10, width: 285, duration: 5 }), false)
+  assert.equal(backdropOpacity(0, 285), 1)
+  assert.equal(backdropOpacity(142.5, 285), 0.5)
+  assert.equal(backdropOpacity(285, 285), 0)
+  assert.equal(backdropOpacity(400, 285), 0)
+  assert.equal(backdropOpacity(10, 0), 1)
+})
+
+test('the panel follows the finger one-to-one and snaps back below a third', async () => {
+  const realNow = Date.now, p = drawer({ readConversations: async () => ({ items: [item(1)], hasMore: false, nextOffset: null }) })
+  let clock = 1000000
+  try {
+    await p.open()
+    Date.now = () => clock
+    p.beginDrag({ touches: [{ clientX: 280, clientY: 120 }] })
+    assert.equal(p.dragPhase.value, 'dragging')
+    assert.equal(p.dragOffset.value, 0)
+    p.moveDrag({ touches: [{ clientX: 200, clientY: 120 }] })
+    assert.equal(p.dragOffset.value, 80)
+    assert.equal(p.panelStyle.value.transform, 'translateX(-80px)')
+    assert.ok(Math.abs(Number(p.backdropStyle.value.opacity) - (1 - 80 / 285)) < 1e-9)
+    p.moveDrag({ touches: [{ clientX: 300, clientY: 120 }] })
+    assert.equal(p.dragOffset.value, 0)
+    p.moveDrag({ touches: [{ clientX: 200, clientY: 120 }] })
+    clock += 800
+    p.endDrag()
+    assert.equal(p.dragPhase.value, 'settling')
+    assert.equal(p.dragOffset.value, 0)
+    await sleep(DRAWER_SETTLE_MS + 60)
+    assert.deepEqual(p.emitted, [])
+    assert.equal(p.dragPhase.value, '')
+  } finally { Date.now = realNow; p.dispose() }
+})
+
+test('dragging a third of the panel closes the drawer once and clears the directory', async () => {
+  const p = drawer({ readConversations: async () => ({ items: [item(1)], hasMore: false, nextOffset: null }) })
+  try {
+    await p.open()
+    assert.equal(p.rows.value.length, 1)
+    p.beginDrag({ touches: [{ clientX: 280, clientY: 120 }] })
+    p.moveDrag({ touches: [{ clientX: 185, clientY: 120 }] })
+    assert.equal(p.dragOffset.value, 95)
+    p.endDrag()
+    assert.equal(p.dragPhase.value, 'settling')
+    assert.equal(p.dragOffset.value, 285)
+    await sleep(DRAWER_SETTLE_MS + 60)
+    assert.deepEqual(p.emitted, [['close']])
+    assert.deepEqual(p.rows.value, [])
+    assert.equal(p.dragPhase.value, '')
+  } finally { p.dispose() }
+})
+
+test('a short flick closes the drawer but the same slow drag does not', async () => {
+  const realNow = Date.now
+  try {
+    for (const [elapsed, closes] of [[50, true], [900, false]]) {
+      const p = drawer({ readConversations: async () => ({ items: [item(1)], hasMore: false, nextOffset: null }) })
+      let clock = 1000000
+      try {
+        await p.open()
+        Date.now = () => clock
+        p.beginDrag({ touches: [{ clientX: 280, clientY: 120 }] })
+        p.moveDrag({ touches: [{ clientX: 240, clientY: 120 }] })
+        clock += elapsed
+        p.endDrag()
+        assert.equal(p.dragOffset.value, closes ? 285 : 0)
+        await sleep(DRAWER_SETTLE_MS + 60)
+        assert.deepEqual(p.emitted, closes ? [['close']] : [])
+      } finally { Date.now = realNow; p.dispose() }
+    }
+  } finally { Date.now = realNow }
+})
+
+test('a drag cannot open the drawer, run while closed, or outlive a hidden page', async () => {
+  const p = drawer({ readConversations: async () => ({ items: [item(1)], hasMore: false, nextOffset: null }) })
+  try {
+    p.beginDrag({ touches: [{ clientX: 280, clientY: 120 }] })
+    assert.equal(p.dragPhase.value, '')
+    await p.open()
+    p.beginDrag({ touches: [{ clientX: 280, clientY: 120 }] })
+    p.moveDrag({ touches: [{ clientX: 185, clientY: 120 }] })
+    p.endDrag()
+    assert.equal(p.dragPhase.value, 'settling')
+    p.hooks.hide()
+    assert.equal(p.dragPhase.value, '')
+    assert.equal(p.dragOffset.value, 0)
+    await sleep(DRAWER_SETTLE_MS + 60)
+    assert.deepEqual(p.emitted, [])
+  } finally { p.dispose() }
 })

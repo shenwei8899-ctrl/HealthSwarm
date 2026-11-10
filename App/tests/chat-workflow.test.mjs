@@ -132,7 +132,7 @@ function workflow(options = {}) {
       async start(value) { calls.push({ action: 'startPlan', value }); throw new Error('normal chat must not create a saved plan') },
     }),
     readCurrentPreparation: async () => ({ status: 'absent' }),
-    request: async request => { calls.push({ action: 'http', ...clone(request) }); return { data: request.path==='/api/health/v1/chat-intent'?syntheticIntent(request.data,clock.day):{ status: 'absent' } } },
+    request: async request => { calls.push({ action: 'http', ...clone(request) }); return { data: request.path==='/api/health/v1/chat-intent'?(options.intentResponse ? await options.intentResponse(request.data) : syntheticIntent(request.data,clock.day)):{ status: 'absent' } } },
     readChatSnapshot: async threadId => {
       calls.push({ action: 'snapshot', threadId })
       if (snapshotOverride) return snapshotOverride(threadId)
@@ -1687,7 +1687,7 @@ function menuPlan(date='2026-10-28') {
  })),purchase_options:[]}
 }
 function verifyMenu(p,plan=menuPlan()) {
- Object.assign(p.todayMenu,{date:plan.date,plan,verified:true,phase:'ready'})
+ Object.assign(p.todayMenu,{date:plan.date,plan,verified:true,displayable:true,phase:'ready'})
  p.dailyPlans.value[plan.date]=plan
  return plan
 }
@@ -1732,6 +1732,9 @@ test('a viewed meal survives history reconciliation and follows the currently ve
   assert.equal(p.calls.at(-1).target.plan.version,2)
   assert.equal(p.calls.at(-1).target.item.meal_type,'lunch')
   p.todayMenu.verified=false
+  assert.equal(p.verifiedMealView(view).version,2)
+  assert.equal(p.mealViewText(view),'今天的午餐安排了番茄炒蛋。')
+  p.todayMenu.displayable=false
   assert.equal(p.verifiedMealView(view),null)
   assert.match(p.mealViewText(view),/核对/)
  }finally{p.dispose()}
@@ -1741,9 +1744,9 @@ test('meal entry rejects stale or inactive selections and isolates views across 
  const p=workflow({route:{}})
  try{
   await p.load();const plan=verifyMenu(p)
-  p.todayMenu.verified=false;await p.showTodayMeal(plan.meals[0])
+  p.todayMenu.displayable=false;await p.showTodayMeal(plan.meals[0])
   assert.equal(p.messages.value.some(message=>message.menuView),false)
-  p.todayMenu.verified=true
+  p.todayMenu.displayable=true
   await p.showTodayMeal({...plan.meals[0],source:{id:'obsolete',version:1}})
   assert.equal(p.messages.value.some(message=>message.menuView),false)
   p.voiceBusy.value=true;await p.showTodayMeal(plan.meals[0]);p.voiceBusy.value=false
@@ -1765,5 +1768,51 @@ test('viewing a verified meal remains available while an unrelated AI reply is r
   await p.showTodayMeal(plan.meals[2])
   assert.equal(p.messages.value.filter(message=>message.menuView).length,1)
   assert.equal(p.calls.filter(call=>call.action==='submit').length,submits)
+ }finally{p.dispose()}
+})
+
+
+test('intent timeout preserves the question and does not submit a consultation or meal task',async()=>{
+ const p=workflow({intentResponse:async()=>{throw Object.assign(new Error('请求超时，请重试'),{code:'NETWORK_ERROR'})}})
+ try{
+  await p.load();p.question.value='请安排后天午餐';await p.sendQuestion()
+  assert.equal(p.question.value,'请安排后天午餐')
+  assert.match(p.chatError.value,/超时/)
+  assert.equal(p.calls.some(call=>call.action==='submit'),false)
+  assert.equal(p.messages.value.findLast(message=>message.role==='user').status,'failed')
+ }finally{p.dispose()}
+})
+
+test('stopping intent classification prevents a late classification from creating a task',async()=>{
+ const gate=deferred(),p=workflow({intentResponse:()=>gate.promise})
+ try{
+  await p.load();p.question.value='请安排后天午餐';const pending=p.sendQuestion();await flush()
+  assert.equal(p.sendPhase.value,'正在理解问题');p.stopQuestion()
+  gate.resolve({route:'single_day_meal',action:'generate',business_date:'2026-10-30',meal_types:['lunch']});await pending
+  assert.equal(p.calls.some(call=>call.action==='submit'),false)
+  assert.equal(p.messages.value.findLast(message=>message.role==='user').status,'cancelled')
+ }finally{p.dispose()}
+})
+
+test('switching account during intent classification ignores the late result',async()=>{
+ const gate=deferred(),p=workflow({intentResponse:()=>gate.promise})
+ try{
+  await p.load();p.question.value='请安排后天午餐';const pending=p.sendQuestion();await flush()
+  p.identity.scope='another-account'
+  gate.resolve({route:'single_day_meal',action:'generate',business_date:'2026-10-30',meal_types:['lunch']});await pending
+  assert.equal(p.calls.some(call=>call.action==='submit'),false)
+  assert.equal(p.messages.value.some(message=>message.exclusivePlanEntry),false)
+ }finally{p.dispose()}
+})
+
+test('multi-day handoff shows the exclusive plan entry without submitting a meal task',async()=>{
+ const p=workflow()
+ try{
+  await p.load();p.question.value='安排一周三餐';await p.sendQuestion()
+  assert.equal(p.calls.some(call=>call.action==='submit'),false)
+  assert.equal(p.messages.value.at(-1).exclusivePlanEntry,true)
+  assert.match(p.messages.value.at(-1).text,/21 天/)
+  assert.equal(p.question.value,'')
+  assert.equal(p.messages.value.findLast(message=>message.role==='user').status,'completed')
  }finally{p.dispose()}
 })

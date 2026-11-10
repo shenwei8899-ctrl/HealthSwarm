@@ -20,8 +20,8 @@ const mealEntries = computed(() => meals.map(meal => ({ ...meal,
  item: props.state.plan?.meals.find(item => item.meal_type === meal.type && item.meal?.dishes?.length),
 })))
 const missingMeals = computed(() => mealEntries.value.filter(meal => !meal.item).map(meal => meal.name).join('、'))
-function detail(item) { if (item && props.state.verified && props.interactive) emit('detail', item) }
-function dish(value) { if (props.state.verified && props.interactive) emit('dish', value) }
+function detail(item) { if (item && props.state.displayable && props.interactive) emit('detail', item) }
+function dish(value) { if (props.state.displayable && props.interactive) emit('dish', value) }
 function act() { if (!props.busy && props.interactive) emit('action') }
 </script>
 <template>
@@ -32,8 +32,8 @@ function act() { if (!props.busy && props.interactive) emit('action') }
      <text v-for="(question,index) in state.pending?.status==='needs_input'?state.pending.questions:[]" :key="index" class="tm-question">{{question}}</text>
      <button v-if="state.action" class="tm-retry" :disabled="busy" @click="act">{{actionLabels[state.action]}}</button>
     </view>
-    <view class="tm-meal-entries" :aria-busy="state.checking||state.phase==='generating'">
-     <button v-for="meal in mealEntries" :key="meal.type" class="tm-meal-entry" :disabled="!meal.item||!state.verified||!interactive" :aria-label="'查看'+meal.name+'安排'" @click="detail(meal.item)">
+    <view class="tm-meal-entries" :aria-busy="!state.plan&&(state.checking||state.phase==='generating')">
+     <button v-for="meal in mealEntries" :key="meal.type" class="tm-meal-entry" :disabled="!meal.item||!state.displayable||!interactive" :aria-label="'查看'+meal.name+'安排'" @click="detail(meal.item)">
       <view class="tm-meal-symbol" :class="'tm-symbol-'+meal.type" aria-hidden="true"><view class="tm-meal-glyph"><AppIcon :name="meal.icon" :size="44"/></view></view>
       <text>{{meal.name}}</text>
      </button>

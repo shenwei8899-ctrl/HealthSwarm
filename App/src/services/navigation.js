@@ -30,6 +30,8 @@ export function canOpenPage(url) {
     || apiPages.has(path) || isCommerceEnabled && commercePages.has(path)
 }
 let forwarding = false, navigationFlight = null, entryCheck = null, installed = false
+// A native navigation that never calls back must not block every later transition.
+const PREVIOUS_FLIGHT_TIMEOUT = 3000
 export function guardInitialH5Route(location, history) {
   const route = location.hash.slice(1)
   const match = route.match(/^\/?pages\/invite\/index\?[^#]*\btoken=([^&]+)/)
@@ -78,13 +80,19 @@ function forward(method, options) {
   function finish(failed,value) {
     if(flight.finished)return
     flight.finished=true
+    if(flight.timer!==undefined){clearTimeout(flight.timer);flight.timer=undefined}
     if(navigationFlight===flight)navigationFlight=null
     settle({failed,value})
     options[failed?'fail':'success']?.(value);options.complete?.(value)
-    if(failed && method==='navigateTo' && !options.fail && value.code!=='SESSION_CHANGED')
+    if(failed && method==='navigateTo' && !options.fail && value.code!=='SESSION_CHANGED' && value.code!=='NAVIGATION_TIMEOUT')
       uni.showToast?.({title:value.errMsg?.replace(/^\w+:fail\s*/, '')||'页面打开失败，请重试',icon:'none'})
   }
   flight.cancel=()=>finish(true,{errMsg:method+':fail 账号已变化',code:'SESSION_CHANGED'})
+  // Release the shared flight when a native callback never arrives, so one dropped
+  // navigation cannot hang every later entry check or keep a caller awaiting.
+  flight.timer=setTimeout(()=>{
+    if(!flight.finished)finish(true,{errMsg:method+':fail 页面未确认打开，请重试',code:'NAVIGATION_TIMEOUT'})
+  },PREVIOUS_FLIGHT_TIMEOUT)
   // #ifdef H5
   // H5 can acknowledge navigateTo before the lazy page updates its route.
   if(shellEntry && typeof window!=='undefined') {
@@ -102,6 +110,7 @@ function forward(method, options) {
       let url=options.url
       if(!isMockMode && url.split('?')[0]!=='/pages/index/index') url=protectedDestination(url,shellEntry || await resolveAppEntry())
       else if(isMockMode&&!canOpenPage(url))url='/pages/chat/index'
+      if(flight.finished || navigationFlight!==flight)return
       if(!current()) {finish(true,{errMsg:method+':fail 账号已变化',code:'SESSION_CHANGED'});return}
       if(['reLaunch','redirectTo','switchTab'].includes(method)&&url===currentRoute()) {finish(false,{errMsg:method+':ok'});return}
       let outcome
