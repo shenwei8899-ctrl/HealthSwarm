@@ -450,6 +450,7 @@ def save_owner(monkeypatch):
         "recipe_document": AsyncMock(return_value=document),
         "current_reference_catalog": AsyncMock(return_value={"version": "catalog-v1", "items": [sku]}),
         "save_chinese_display": AsyncMock(),
+        "queue_reference_images": AsyncMock(return_value=(None, False)),
     }
     names = [
         "save_reference_plan",

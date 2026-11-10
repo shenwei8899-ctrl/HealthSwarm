@@ -30,6 +30,13 @@ class IntegrationAiCatalog extends IntegrationBase
         }, $this->integrationLog('ai_catalog_products', 'catalog'));
     }
 
+    public function version()
+    {
+        return $this->execute(function () {
+            return (new CatalogService())->versionSummary();
+        }, $this->integrationLog('ai_catalog_version', 'catalog'));
+    }
+
     public function sku($sku_id = null)
     {
         $sku_id = $this->request->route('sku_id', $this->request->param('sku_id', $sku_id));

@@ -455,6 +455,8 @@ async def test_reference_context_limits_categories_then_preserves_selected_produ
     """先给分类再读商品，裁剪展示详情仍保留完整事实哈希与保存重验。"""
     from yuxi.services import reference_meal_plan_service as service
 
+    monkeypatch.setattr(service, "queue_reference_images", AsyncMock(return_value=(None, False)))
+
     sku = {
         "sku_id": "synthetic-rice",
         "product_id": "synthetic-product",

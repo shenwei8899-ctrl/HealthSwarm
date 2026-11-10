@@ -325,6 +325,55 @@ def product_food(product_name: str) -> str | None:
     return None
 
 
+def product_foods(product: dict) -> set[str]:
+    """从商城结构化食材映射取得身份；商品标题硬编码仅作历史兼容。"""
+    foods: set[str] = set()
+    for mapping in product.get("ingredients") or []:
+        name = str(mapping.get("name") or "").strip()
+        if name:
+            foods.add(name)
+    legacy = product_food(str(product.get("product_name") or ""))
+    if legacy:
+        foods.add(legacy)
+    return foods
+
+
+def _dynamic_alias_index(products: list[dict]) -> dict[str, set[str]]:
+    aliases: dict[str, set[str]] = {}
+    for product in products:
+        for mapping in product.get("ingredients") or []:
+            name = str(mapping.get("name") or "").strip()
+            if not name:
+                continue
+            terms = {name, str(mapping.get("ingredient_code") or "").strip()}
+            terms.update(str(value).strip() for value in mapping.get("aliases") or [])
+            for term in terms:
+                if term:
+                    aliases.setdefault(term.casefold(), set()).add(name)
+    return aliases
+
+
+def ingredient_food_for_products(ingredient: str, products: list[dict]) -> str | None:
+    """先沿用严格旧识别，再用商城别名严格匹配；歧义时保持待确认。"""
+    aliases = _dynamic_alias_index(products)
+    legacy = ingredient_food(ingredient)
+    if legacy is not None:
+        mapped = aliases.get(legacy.casefold(), set())
+        return next(iter(mapped)) if len(mapped) == 1 else legacy if not mapped else None
+    if _UNSUPPORTED_FORMS.search(ingredient) or re.search(r"\b(?:or|optional)\b|或|可选", ingredient, re.I):
+        return None
+    value = _OPTIONAL_MARKER.sub("", _without_preparation_suffix(ingredient)).casefold()
+    matches = set()
+    for alias, foods in aliases.items():
+        if re.search(r"[a-z0-9]", alias):
+            found = re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", value, re.I)
+        else:
+            found = alias in value
+        if found:
+            matches.update(foods)
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
 
 
 def optional_reference_ingredient(ingredient: str) -> bool:
@@ -396,12 +445,12 @@ def match_reference_ingredients(ingredients: tuple[str, ...], products: list[dic
     """每条原谱食材必须精确落到当前在售商品，烹饪用水独立豁免。"""
     by_food = {}
     for sku in products:
-        food = product_food(str(sku.get("product_name") or ""))
-        if food and sku.get("sale_status", "available") == "available" and int(sku.get("available_quantity", 0)) > 0:
-            by_food.setdefault(food, []).append(sku)
+        if sku.get("sale_status", "available") == "available" and int(sku.get("available_quantity", 0)) > 0:
+            for food in product_foods(sku):
+                by_food.setdefault(food, []).append(sku)
     result = {}
     for ingredient in ingredients:
-        food = ingredient_food(ingredient)
+        food = ingredient_food_for_products(ingredient, products)
         if food is None:
             if optional_reference_ingredient(ingredient):
                 result[ingredient] = {"optional_not_selected": True}
@@ -421,19 +470,18 @@ def match_reference_ingredients(ingredients: tuple[str, ...], products: list[dic
 
 
 def reference_ingredient_candidates(ingredients: tuple[str, ...], products: list[dict]) -> list[dict]:
-    """只按食材身份与商品名生成在售 SKU 候选，不读取商品详情推断身份。"""
+    """按结构化食材映射与别名生成在售 SKU 候选，不读取商品详情推断身份。"""
     by_food: dict[str, list[dict]] = {}
     for product in products:
-        food = product_food(str(product.get("product_name") or ""))
         if (
-            food
-            and product.get("sale_status", "available") == "available"
+            product.get("sale_status", "available") == "available"
             and int(product.get("available_quantity") or 0) > 0
         ):
-            by_food.setdefault(food, []).append(product)
+            for food in product_foods(product):
+                by_food.setdefault(food, []).append(product)
     result = []
     for ingredient in ingredients:
-        food = ingredient_food(ingredient)
+        food = ingredient_food_for_products(ingredient, products)
         if food == "水":
             status = "cooking_water"
             candidates = []

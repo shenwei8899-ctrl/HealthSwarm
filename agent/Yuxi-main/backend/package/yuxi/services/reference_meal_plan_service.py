@@ -20,10 +20,10 @@ from yuxi.services.health_vision_types import HealthVisionError, NUTRIENTS
 from yuxi.services.miniapp_profile_types import miniapp_onboarding_ready
 from yuxi.services.reference_cooking_water import cooking_water
 from yuxi.services.reference_recipe_matching import (
-    ingredient_food,
+    ingredient_food_for_products,
     optional_reference_ingredient,
     parse_reference_recipe,
-    product_food,
+    product_foods,
 )
 from yuxi.services.reference_meal_plan_types import (
     REFERENCE_CATALOG_CHAIN_VERSION,
@@ -264,12 +264,24 @@ async def search_reference_recipes(context, query):
         reads = await tool_payloads(session, run, "find_reference_products")
         if not reads:
             raise HealthVisionError("reference_product_required", "请先按商城分类读取在售商品", 409)
-        products = {str(sku["sku_id"]): sku for read in reads for sku in read.get("catalog", [])}
+        # 分类读取只控制模型看到的上下文大小；实际菜谱召回使用版本化全量快照，
+        # 因此商城新增商品无需修改 Agent 词表或等待知识库重建。
+        full_catalog = await current_catalog()
+        products = {str(sku["sku_id"]): sku for sku in full_catalog["items"]}
+        excluded_file_ids = await recent_reference_file_ids(
+            session, context.uid, (binding.initial_planner_selection or {}).get("selection") or {}
+        )
         items, seen = [], set()
         ranked = (
-            await purchasable_reference_recipes_batch(session, list(products.values()), queries)
+            await purchasable_reference_recipes_batch(
+                session, list(products.values()), queries, excluded_file_ids=excluded_file_ids
+            )
             if batch
-            else [await purchasable_reference_recipes(session, list(products.values()), queries[0])]
+            else [
+                await purchasable_reference_recipes(
+                    session, list(products.values()), queries[0], excluded_file_ids=excluded_file_ids
+                )
+            ]
         )
         for matches in ranked:
             for item in matches:
@@ -287,6 +299,39 @@ async def search_reference_recipes(context, query):
         "items": items,
         **({"queries": queries} if batch else {}),
     }
+
+
+async def recent_reference_file_ids(session, uid, selection):
+    """同一家庭和日期只排除近期已真正保存的菜谱来源，不改变本次选择。"""
+    family_id = str(selection.get("family_id") or "")
+    plan_date = str(selection.get("plan_date") or "")
+    if not family_id or not plan_date:
+        return set()
+    rows = list(
+        (
+            await session.scalars(
+                select(HealthInitialPlanPreview)
+                .where(HealthInitialPlanPreview.actor_uid == uid)
+                .order_by(HealthInitialPlanPreview.created_at.desc(), HealthInitialPlanPreview.id.desc())
+                .limit(20)
+            )
+        ).all()
+    )
+    excluded = set()
+    for row in rows:
+        saved = row.selection or {}
+        if (
+            saved.get("mode") != "reference"
+            or str(saved.get("family_id") or "") != family_id
+            or str(saved.get("plan_date") or "") != plan_date
+        ):
+            continue
+        for meal in (row.snapshot or {}).get("meals") or []:
+            for dish in meal.get("dishes") or []:
+                file_id = (dish.get("source") or {}).get("file_id")
+                if file_id:
+                    excluded.add(str(file_id))
+    return excluded
 
 
 async def recipe_document(session, file_id, chunk_id):
@@ -370,7 +415,10 @@ async def read_reference_recipe(context, file_id, chunk_id):
             raise HealthVisionError("reference_receipt_invalid", "请先检索当前菜谱资料再打开原文", 409)
         document = await recipe_document(session, file_id, chunk_id)
         reads = await tool_payloads(session, run, "find_reference_products")
-        products = {str(sku["sku_id"]): sku for read in reads for sku in read.get("catalog", [])}
+        if not reads:
+            raise HealthVisionError("reference_product_required", "请先读取本轮商城分类", 409)
+        full_catalog = await current_catalog()
+        products = {str(sku["sku_id"]): sku for sku in full_catalog["items"]}
         check = reference_recipe_check(document["content"], list(products.values()))
         if "name" in check:
             from yuxi.services.recipe_translation_service import cached_chinese_display, needs_translation
@@ -433,6 +481,17 @@ def reference_recipe_check(content, products):
             "缺商品先补查分类；仍缺项可标为需自行准备。missing_product用no_match，"
             "needs_confirmation用同名原因；附加章节待核对时改选可完整解析的菜谱。"
         ),
+    }
+
+
+def reference_candidate_sku_ids(receipts):
+    """只接受已打开菜谱诊断实际返回过的候选 SKU。"""
+    return {
+        str(candidate["sku_id"])
+        for receipt in receipts
+        for match in (receipt.get("recipe_check") or {}).get("ingredient_matches") or []
+        for candidate in match.get("candidate_skus") or []
+        if candidate.get("sku_id") is not None
     }
 
 
@@ -629,6 +688,8 @@ def current_reference_display_item(saved, current):
 async def save_reference_plan(context, draft):
     """持久化参考结果与真实来源，不能写入正式方案或专业批准。"""
     draft = ReferencePlanDraft.model_validate(draft)
+    image_task = None
+    image_task_created = False
     async with pg_manager.get_async_session_context() as session:
         run, binding = await require_planner_run(session, context)
         current = await bound_reference_context(session, context.uid, binding)
@@ -655,11 +716,9 @@ async def save_reference_plan(context, draft):
                 "reference_purchase_reason_invalid", "商品目录已成功读取，不能标记为接口不可用", 422
             )
         seen = {str(s["sku_id"]): s for read in product_reads for s in read.get("catalog", [])}
+        allowed_skus = set(seen) | reference_candidate_sku_ids(receipts)
         gaps = checked_reference_gaps(draft.purchase_gaps, list(seen.values()))
-        selected_codes = sorted(
-            {seen[item.sku_id]["category_code"] for item in draft.purchase_items if item.sku_id in seen}
-        )
-        catalog = await current_reference_catalog(selected_codes) if selected_codes else {"items": []}
+        catalog = await current_catalog() if draft.purchase_items else {"items": [], "version": None}
         by_sku = {str(s["sku_id"]): s for s in catalog["items"]}
         items = []
         restrictions = reference_member_restrictions(current["members"])
@@ -667,7 +726,7 @@ async def save_reference_plan(context, draft):
             sku = by_sku.get(requested.sku_id)
             if (
                 sku is None
-                or requested.sku_id not in seen
+                or requested.sku_id not in allowed_skus
                 or sku.get("sale_status") != "available"
                 or requested.quantity > int(sku.get("available_quantity", 0))
             ):
@@ -683,7 +742,7 @@ async def save_reference_plan(context, draft):
                     for ingredient in requested.ingredient_refs
                 )
                 continue
-            if (
+            if requested.sku_id in seen and (
                 seen[requested.sku_id].get("facts_version") != 2
                 or input_fingerprint(product_facts(sku, include_description=True))
                 != seen[requested.sku_id]["facts_hash"]
@@ -691,8 +750,10 @@ async def save_reference_plan(context, draft):
                 raise HealthVisionError("reference_product_changed", "所选商品身份已变化，请重新读取目录", 409)
             if reference_restriction_conflict(reference_product_composition(sku), restrictions):
                 raise HealthVisionError("reference_restriction_conflict", "所选商品含已明确填写的过敏或忌口成分", 422)
-            identity = product_food(str(sku.get("product_name") or ""))
-            if identity is None or any(ingredient_food(ref) != identity for ref in requested.ingredient_refs):
+            identities = product_foods(sku)
+            if not identities or any(
+                ingredient_food_for_products(ref, [sku]) not in identities for ref in requested.ingredient_refs
+            ):
                 raise HealthVisionError("reference_ingredient_mismatch", "菜谱食材与所选商城商品名称不相符", 422)
             items.append({**reference_product(sku, requested.quantity), "ingredient_refs": requested.ingredient_refs})
         from yuxi.services.reference_recipe_presentation import check_recipe_nutrition, recipe_pairing_summary
@@ -735,8 +796,27 @@ async def save_reference_plan(context, draft):
                 snapshot=snapshot,
             )
             session.add(row)
+        image_task, image_task_created = await queue_reference_images(session, pid)
         result = {"preview_id": pid, **snapshot}
+    if image_task_created:
+        from yuxi.services.task_service import tasker
+
+        await tasker.publish(image_task)
     return result
+
+
+async def queue_reference_images(session, preview_id):
+    """与餐单同事务创建唯一任务，提交后再发布，避免孤儿图片任务。"""
+    from yuxi.services.task_service import tasker
+
+    return await tasker.create_unique_in_session(
+        session,
+        name="准备参考菜品图片",
+        task_type="reference_recipe_images_v1",
+        payload={"preview_id": str(preview_id)},
+        payload_match={"preview_id": str(preview_id)},
+        timeout_seconds=300,
+    )
 
 
 def checked_reference_gaps(gaps, products):
