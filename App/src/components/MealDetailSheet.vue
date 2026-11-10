@@ -35,7 +35,7 @@ const busy=computed(()=>Boolean(props.leaving||memberBusy.value||cookingBusy.val
 const purchaseScope=computed(()=>savedPurchaseScope(target.value,purchaseDish.value?[purchaseDish.value]:undefined))
 const nutritionSummary=computed(()=>mealNutrition(state.meal))
 
-const referencePurchase=computed(()=>target.value.purchaseOption?referencePurchaseFor(target.value):reference.value?{previewId:target.value.sourceId,mealTypes:target.value.purchaseMeals||[target.value.mealType],items:target.value.referencePlan?.purchase_items||[]}:null)
+const referencePurchase=computed(()=>target.value.purchaseOption?referencePurchaseFor(target.value):reference.value?{previewId:target.value.sourceId,mealTypes:target.value.purchaseMeals||[target.value.mealType],items:target.value.referencePlan?.product_matches||target.value.referencePlan?.purchase_items||[]}:null)
 const canPurchase=computed(()=>state.phase==='ready'&&target.value.purchaseReady!==false&&(!reference.value||target.value.purchaseReady===true||!!referencePurchase.value?.items.length))
 const purchaseRoute=computed(()=>formalRoute(target.value))
 const key=computed(()=>detailKey(target.value,owner))

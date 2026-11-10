@@ -74,9 +74,10 @@ class CatalogService
             array_pop($rows);
         }
         $items = [];
+        $availableOnly = !isset($filters['available_only']) || !in_array($filters['available_only'], [false, 0, '0', 'false'], true);
         foreach ($rows as $row) {
             $item = $this->formatCatalogItem($row);
-            if (!isset($filters['available_only']) || $filters['available_only'] !== false) {
+            if ($availableOnly) {
                 if ($item['sale_status'] !== 'available') {
                     continue;
                 }

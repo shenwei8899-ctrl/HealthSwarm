@@ -38,6 +38,50 @@ async def test_catalog_reuses_snapshot_until_lightweight_version_changes(monkeyp
     assert [item["sku_id"] for item in changed["items"]] == ["2"]
     product_calls = [call for call in request.await_args_list if "/catalog/products?" in call.args[1]]
     assert len(product_calls) == 2
+    assert all("available_only=0" in call.args[1] for call in product_calls)
+
+
+@pytest.mark.asyncio
+async def test_product_catalog_groups_all_skus_without_using_stock_as_product_identity(monkeypatch):
+    monkeypatch.setattr(
+        daily_commerce_service,
+        "current_catalog",
+        AsyncMock(
+            return_value={
+                "version": "v1",
+                "items": [
+                    {
+                        "product_id": "goods-1",
+                        "product_name": "番茄",
+                        "sku_id": "sku-500",
+                        "sku_name": "500克",
+                        "sale_status": "available",
+                        "available_quantity": 6,
+                        "price_cent": 680,
+                        "category_code": "vegetable",
+                    },
+                    {
+                        "product_id": "goods-1",
+                        "product_name": "番茄",
+                        "sku_id": "sku-1000",
+                        "sku_name": "1千克",
+                        "sale_status": "unavailable",
+                        "available_quantity": 0,
+                        "price_cent": 1180,
+                        "category_code": "vegetable",
+                    },
+                ],
+            }
+        ),
+    )
+
+    catalog = await daily_commerce_service.current_product_catalog()
+
+    assert catalog["version"] == "v1"
+    assert len(catalog["items"]) == 1
+    assert catalog["items"][0]["product_id"] == "goods-1"
+    assert [sku["sku_id"] for sku in catalog["items"][0]["skus"]] == ["sku-500", "sku-1000"]
+    assert catalog["items"][0]["skus"][1]["sale_status"] == "unavailable"
 
 
 def test_dynamic_product_ingredient_alias_matches_without_product_name_guessing():
@@ -59,6 +103,41 @@ def test_dynamic_product_ingredient_alias_matches_without_product_name_guessing(
     assert matched[0]["candidate_skus"][0]["sku_id"] == "sku-okra"
 
 
+def test_recipe_ingredient_matches_product_once_and_returns_every_spec():
+    products = [
+        {
+            "product_id": "tomato",
+            "sku_id": "tomato-500",
+            "product_name": "番茄",
+            "sku_name": "500克",
+            "sale_status": "available",
+            "available_quantity": 8,
+            "price_cent": 680,
+            "ingredients": [{"ingredient_code": "tomato", "name": "番茄", "aliases": ["西红柿"]}],
+        },
+        {
+            "product_id": "tomato",
+            "sku_id": "tomato-1000",
+            "product_name": "番茄",
+            "sku_name": "1千克",
+            "sale_status": "unavailable",
+            "available_quantity": 0,
+            "price_cent": 1180,
+            "ingredients": [{"ingredient_code": "tomato", "name": "番茄", "aliases": ["西红柿"]}],
+        },
+    ]
+
+    matched = reference_recipe_matching.reference_ingredient_candidates(("西红柿 200克",), products)
+
+    assert matched[0]["status"] == "matched"
+    assert len(matched[0]["candidate_products"]) == 1
+    assert matched[0]["candidate_products"][0]["product_id"] == "tomato"
+    assert [sku["sku_id"] for sku in matched[0]["candidate_products"][0]["skus"]] == [
+        "tomato-500",
+        "tomato-1000",
+    ]
+
+
 def test_ambiguous_dynamic_alias_is_not_silently_selected():
     products = [
         {
@@ -75,6 +154,18 @@ def test_ambiguous_dynamic_alias_is_not_silently_selected():
 
     assert matched[0]["status"] == "needs_confirmation"
     assert matched[0]["candidate_skus"] == []
+
+
+def test_dynamic_alias_does_not_erase_species_or_product_identity():
+    products = [{"product_name": "鸡蛋", "ingredients": [{"name": "鸡蛋", "aliases": ["eggs"]}]}]
+    assert reference_recipe_matching.ingredient_food_for_products("2 duck eggs", products) is None
+    quinoa = [{"product_name": "藜麦", "ingredients": []}]
+    assert reference_recipe_matching.product_foods(quinoa[0]) == {"藜麦"}
+    assert reference_recipe_matching.ingredient_food_for_products("藜麦100克", quinoa) == "藜麦"
+    assert reference_recipe_matching.ingredient_food_for_products("黑藜麦100克", quinoa) is None
+    quinoa[0]["ingredients"] = [{"name": "藜麦", "aliases": ["quinoa"]}]
+    assert reference_recipe_matching.ingredient_food_for_products("100 g quinoa", quinoa) == "藜麦"
+    assert reference_recipe_matching.ingredient_food_for_products("100 g black quinoa", quinoa) is None
 
 
 def test_legacy_food_name_resolves_to_structured_canonical_alias():
@@ -110,15 +201,17 @@ def test_opened_recipe_candidates_authorize_only_returned_skus():
 def test_ranker_excludes_recent_recipe_sources_without_reordering_remaining():
     rows = [
         (
-            file_id, "kb", f"家常菜谱_{name}.md", f"hash-{file_id}", f"chunk-{file_id}",
+            file_id,
+            "kb",
+            f"家常菜谱_{name}.md",
+            f"hash-{file_id}",
+            f"chunk-{file_id}",
             f"# {name}\n\n## 食材\n- 鸡蛋 1个\n\n## 做法\n1. 蒸熟",
         )
         for file_id, name in (("old", "鸡蛋羹"), ("new", "蒸鸡蛋"))
     ]
 
-    ranked = reference_recipe_index.rank_reference_recipes(
-        rows, [], "鸡蛋", 9, excluded_file_ids={"old"}
-    )
+    ranked = reference_recipe_index.rank_reference_recipes(rows, [], "鸡蛋", 9, excluded_file_ids={"old"})
 
     assert [item["file_id"] for item in ranked] == ["new"]
 
@@ -128,9 +221,7 @@ async def test_recipe_image_task_reads_saved_preview_and_returns_count(monkeypat
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
-    preview = SimpleNamespace(
-        snapshot={"scope": "daily_reference", "meals": [{"dishes": [{"name": "番茄炒蛋"}]}]}
-    )
+    preview = SimpleNamespace(snapshot={"scope": "daily_reference", "meals": [{"dishes": [{"name": "番茄炒蛋"}]}]})
     session = SimpleNamespace(get=AsyncMock(return_value=preview))
 
     @asynccontextmanager
@@ -162,9 +253,7 @@ async def test_recent_recipe_exclusions_are_scoped_to_actor_family_and_date():
         selection={"mode": "reference", "family_id": "family-2", "plan_date": "2026-11-09"},
         snapshot={"meals": [{"dishes": [{"source": {"file_id": "other-recipe"}}]}]},
     )
-    session = SimpleNamespace(
-        scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [matching, other_family]))
-    )
+    session = SimpleNamespace(scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [matching, other_family])))
 
     result = await reference_meal_plan_service.recent_reference_file_ids(
         session, "owner", {"family_id": "family-1", "plan_date": "2026-11-09"}

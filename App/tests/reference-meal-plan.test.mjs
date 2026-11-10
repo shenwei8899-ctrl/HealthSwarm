@@ -150,7 +150,7 @@ test('rendered reference card hides incomplete historical menus and permits veri
  const {renderToString}=await import('vue/server-renderer')
  const template=readFileSync(new URL('../src/components/ReferenceMealPlanCard.vue',import.meta.url),'utf8').match(/<template>([\s\S]*?)<\/template>\s*<style/)[1]
  const render=compile(template)
- async function html(plan){return renderToString(createSSRApp({render,setup:()=>({plan,purchaseComplete:plan.purchase_ready===true||plan.purchase_validation_version===1,sourceTitle,dishTitle,recipeDisplay,referenceIngredientLabel,referenceGapDetail,labels:ingredientLabels((plan.meals||[]).flatMap(m=>m.dishes||[])),detailMode:false,displayError:'',names:{breakfast:'早餐'},gapNames:{not_sold:'自行准备'},expanded:false,busy:false,error:'',purchase(){}})}))}
+ async function html(plan,detailMode=false){return renderToString(createSSRApp({render,setup:()=>({plan,purchaseComplete:plan.purchase_ready===true||plan.purchase_validation_version===1,sourceTitle,dishTitle,recipeDisplay,referenceIngredientLabel,referenceGapDetail,labels:ingredientLabels((plan.meals||[]).flatMap(m=>m.dishes||[])),detailMode,displayError:'',names:{breakfast:'早餐'},gapNames:{not_sold:'自行准备'},expanded:false,busy:false,error:'',emit(){},purchase(){}})}))}
  const old={meals:[{meal_type:'breakfast',dishes:[{name:'未配齐的菜',ingredients:[]}]}],purchase_items:[{sku_id:'56',product_name:'富硒鸡蛋',quantity:1}],purchase_gaps:[{ingredient:'盐',reason:'no_match'}]}
  const unavailable=await html(old)
  assert.match(unavailable,/需要重新安排/)
@@ -158,6 +158,8 @@ test('rendered reference card hides incomplete historical menus and permits veri
  const ready=await html({purchase_ready:true,meals:[],purchase_items:[{sku_id:'56',product_name:'富硒鸡蛋',sku_name:'10枚',quantity:1}],purchase_gaps:[]})
  assert.match(ready,/富硒鸡蛋/);assert.match(ready,/确认这些商品并加入购物车/)
  assert.match(await html({meals:[],purchase_items:[]}),/需要重新安排/)
+ const productDetail=await html({purchase_ready:true,meals:[],product_matches:[{product_id:'egg',product_name:'富硒鸡蛋',skus:[{sku_id:'egg-6'}]}],purchase_items:[],purchase_gaps:[]},true)
+ assert.match(productDetail,/选择规格后购买/);assert.doesNotMatch(productDetail,/未记录采购商品/)
 })
 
 test('reference self-purchase gaps show no price and never become cart products',()=>{

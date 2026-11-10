@@ -3,7 +3,7 @@ $_SERVER['REMOTE_ADDR']='127.0.0.1';
 require dirname(__DIR__).'/bootstrap.php';
 set_exception_handler(function($e){fwrite(STDERR,(string)$e."\n");exit(1);});
 use think\Db;
-use addons\shop\library\v5\{CatalogService,DomainException,IngredientCatalogService};
+use addons\shop\library\v5\{CatalogService,DomainException,IngredientCatalogService,InventoryService};
 if(config('database.database')!=='healthflow_link_test'||getenv('HEALTHFLOW_RELEASE_TEST')!=='1')throw new RuntimeException('Dedicated fixture database required');
 function ingredientCheck($ok,$message){if(!$ok)throw new RuntimeException($message);}
 function ingredientReject($fn){try{$fn();}catch(DomainException $e){ingredientCheck($e->getCode()===40004,'Unexpected rejection');return;}throw new RuntimeException('Invalid input was accepted');}
@@ -30,6 +30,22 @@ try {
     ingredientCheck(($skuItem['ingredients'][0]['aliases']??[])===[$prefix.'-product-alias'],'Product catalog must expose structured ingredient aliases');
     $summary=$productCatalog->versionSummary();
     ingredientCheck(isset($summary['catalog_version'],$summary['published_product_count'],$summary['available_sku_count']),'Catalog version summary contract is incomplete');
+    $inventory=new InventoryService();
+    $beforeVersion=$productCatalog->currentVersion();
+    $inventory->adjust($sku,1,'isolated verification',0,$prefix.'_adjust');
+    ingredientCheck($productCatalog->currentVersion()!==$beforeVersion,'Stock adjustment must invalidate catalog cache');
+    $beforeVersion=$productCatalog->currentVersion();
+    $reservation=$inventory->reserve($sku,1,'verification',$prefix,'1',$prefix.'_reserve',time()+60);
+    ingredientCheck($productCatalog->currentVersion()!==$beforeVersion,'Stock reservation must invalidate catalog cache');
+    $beforeVersion=$productCatalog->currentVersion();
+    $inventory->release($reservation['reservation_sn'],'verification',$prefix.'_release');
+    ingredientCheck($productCatalog->currentVersion()!==$beforeVersion,'Stock release must invalidate catalog cache');
+    Db::name('shop_goods_sku')->where('id',$sku)->update(['stocks'=>1]);
+    $availableOnly=$productCatalog->listProducts(['available_only'=>'1']);
+    $allPublished=$productCatalog->listProducts(['available_only'=>'0']);
+    ingredientCheck(count($availableOnly['items'])===0,'Default product reads must continue to hide unavailable SKU rows');
+    ingredientCheck(count($allPublished['items'])===1&&$allPublished['items'][0]['sale_status']==='unavailable','Agent product reads must retain published products when a SKU is temporarily unavailable');
+    Db::name('shop_goods_sku')->where('id',$sku)->update(['stocks'=>20]);
     ingredientCheck(count($catalog->listIngredients(['q'=>'literal %_'])['items'])===1,'SQL wildcard characters must be literal');
     ingredientCheck(count($catalog->listIngredients(['q'=>"%' OR 1=1 --"])['items'])===0,'SQL text cannot broaden the query');
     foreach([0,201,'1.2',[]] as $limit)ingredientReject(function()use($catalog,$limit){$catalog->listIngredients(['limit'=>$limit]);});

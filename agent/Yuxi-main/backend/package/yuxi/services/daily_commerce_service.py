@@ -93,7 +93,7 @@ async def _load_full_catalog(expected_version):
     for _ in range(2):
         items, cursor, seen, version = [], "", set(), None
         while True:
-            params = {"limit": 200, "cursor": cursor}
+            params = {"limit": 200, "cursor": cursor, "available_only": 0}
             page = await commerce_request(
                 "GET", "/api/v1/integration/ai/catalog/products?" + urlencode(params, doseq=True)
             )
@@ -137,6 +137,43 @@ async def current_catalog(category_codes=None):
             _catalog_snapshot = await _load_full_catalog(version)
         _catalog_last_probe = time.monotonic()
         return _filtered_catalog(_catalog_snapshot, category_codes)
+
+
+def group_catalog_products(items):
+    """按稳定商品身份聚合规格；价格和库存只属于规格，不参与商品匹配。"""
+    grouped = {}
+    for sku in items:
+        # 历史测试和旧快照可能没有 product_id；仅以 SKU 身份降级，不合并不同规格。
+        product_id = str(sku.get("product_id") or sku.get("sku_id") or "").strip()
+        if not product_id:
+            continue
+        product = grouped.setdefault(
+            product_id,
+            {
+                key: deepcopy(value)
+                for key, value in sku.items()
+                if key
+                not in {
+                    "sku_id",
+                    "sku_code",
+                    "sku_name",
+                    "price_cent",
+                    "available_quantity",
+                    "sale_status",
+                    "net_content_value",
+                    "net_content_unit",
+                }
+            }
+            | {"product_id": product_id, "skus": []},
+        )
+        product["skus"].append(deepcopy(sku))
+    return list(grouped.values())
+
+
+async def current_product_catalog(category_codes=None):
+    """读取动态商城目录并按商品聚合全部已发布规格。"""
+    catalog = await current_catalog(category_codes)
+    return {"version": catalog["version"], "items": group_catalog_products(catalog["items"])}
 
 
 async def refresh_purchase_items(items, catalog, saved_items):

@@ -100,6 +100,8 @@ def search_services(monkeypatch):
             "require_planner_run": authorize,
             "bound_reference_context": sources,
             "tool_payloads": product_reads,
+            "current_catalog": AsyncMock(return_value={"version": "synthetic", "items": [{"sku_id": "synthetic-sku"}]}),
+            "recent_reference_file_ids": AsyncMock(return_value=set()),
             "configured_health_kb_ids": lambda role: ("synthetic-kb",),
             "search_family_nutrition_knowledge": AsyncMock(
                 return_value={"status": "insufficient_material", "sources": []}
@@ -226,7 +228,10 @@ async def test_real_agent_corrects_invalid_keyword_before_the_only_service_call(
         assert payload == {"scope": "reference_recipe_search", "status": "ok", "items": []}
         search_services.product_reads.assert_awaited_once_with(search_services.session, None, "find_reference_products")
         search_services.recipe_matches.assert_awaited_once_with(
-            search_services.session, [{"sku_id": "synthetic-sku"}], "蒸蛋"
+            search_services.session,
+            [{"sku_id": "synthetic-sku"}],
+            "蒸蛋",
+            excluded_file_ids=set(),
         )
         search_services.authorize.assert_awaited_once_with(search_services.session, SearchContext())
         search_services.sources.assert_awaited_once_with(

@@ -41,7 +41,13 @@ from yuxi.services.reference_meal_plan_types import (
     ReferencePurchaseItem,
 )
 from yuxi.services.reference_meal_selection_service import ReferenceReadSelection, ReferenceTranslationCorrection
-from yuxi.services.reference_recipe_matching import ingredient_food, parse_reference_recipe, product_food
+from yuxi.services.reference_recipe_matching import (
+    ingredient_food,
+    ingredient_food_for_products,
+    parse_reference_recipe,
+    product_food,
+    product_foods,
+)
 
 BACKEND = Path(__file__).resolve().parents[3]
 SERVICE = BACKEND / "package/yuxi/services/reference_meal_plan_service.py"
@@ -219,7 +225,7 @@ async def test_real_tool_node_assembles_parsed_source_before_original_save(selec
         """只隔离保存副作用，输出必须是实际装配的完整原 DTO。"""
         assert received_context is context and isinstance(draft, ReferencePlanDraft)
         assert draft.meals[0].dishes[0].ingredients == ["100 g rice", "1 cup water"]
-        assert draft.purchase_items[0].ingredient_refs == ["100 g rice"]
+        assert draft.product_matches[0].ingredient_refs == ["100 g rice"]
         accepted.append(draft.model_dump())
         return {"preview_id": "synthetic-saved", "nutrition_status": "not_calculated"}
 
@@ -424,7 +430,9 @@ def save_owner(monkeypatch):
         "parse_reference_recipe": parse_reference_recipe,
         "checked_chinese_display": checked_chinese_display,
         "ingredient_food": ingredient_food,
+        "ingredient_food_for_products": ingredient_food_for_products,
         "product_food": product_food,
+        "product_foods": product_foods,
         "input_fingerprint": input_fingerprint,
         "cooking_water": cooking_water,
         "pg_manager": SimpleNamespace(get_async_session_context=transaction),
@@ -449,6 +457,10 @@ def save_owner(monkeypatch):
         ),
         "recipe_document": AsyncMock(return_value=document),
         "current_reference_catalog": AsyncMock(return_value={"version": "catalog-v1", "items": [sku]}),
+        "current_catalog": AsyncMock(return_value={"version": "catalog-v1", "items": [sku]}),
+        "group_catalog_products": __import__(
+            "yuxi.services.daily_commerce_service", fromlist=["group_catalog_products"]
+        ).group_catalog_products,
         "save_chinese_display": AsyncMock(),
         "queue_reference_images": AsyncMock(return_value=(None, False)),
     }
@@ -456,6 +468,8 @@ def save_owner(monkeypatch):
         "save_reference_plan",
         "product_facts",
         "reference_product",
+        "reference_product_group",
+        "same_reference_product_information",
         "same_reference_document",
         "checked_reference_meals",
         "reference_recipe_media",
@@ -465,6 +479,7 @@ def save_owner(monkeypatch):
         "unverified_reference_restrictions",
         "reference_product_composition",
         "reference_restriction_conflict",
+        "reference_candidate_sku_ids",
     ]
     load_nodes(SERVICE, names, namespace)
     receipts = {
@@ -491,7 +506,7 @@ def save_owner(monkeypatch):
                 ],
             }
         ],
-        "purchase_items": [{"sku_id": "rice-sku", "quantity": 1, "ingredient_refs": ["大米100克"]}],
+        "product_matches": [{"product_id": "rice", "ingredient_refs": ["大米100克"]}],
         "purchase_gaps": [{"ingredient": "水适量", "reason": "not_sold", "detail": "烹饪用水无需商城购买。"}],
     }
     return state

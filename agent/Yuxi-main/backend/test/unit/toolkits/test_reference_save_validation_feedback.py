@@ -127,8 +127,8 @@ def read_selection():
             }
             for meal in ("breakfast", "lunch", "dinner")
         ],
-        "purchase_items": [
-            {"sku_id": "synthetic-sku", "quantity": 1, "candidate_keys": ["ingredient:synthetic"]}
+        "product_matches": [
+            {"product_id": "synthetic-product", "candidate_keys": ["ingredient:synthetic"]}
         ],
     }
 
@@ -151,7 +151,7 @@ def test_translation_patch_keeps_first_meals_and_purchase():
     original = read_selection()
     corrected = apply_reference_translation_correction(original, [translation_patch()])
     assert [meal["meal_type"] for meal in corrected["meals"]] == ["breakfast", "lunch", "dinner"]
-    assert corrected["purchase_items"] == original["purchase_items"]
+    assert corrected["product_matches"] == original["product_matches"]
     assert corrected["meals"][1]["dishes"][0]["display_zh"]["name"] == "合成菜谱"
     assert "display_zh" not in original["meals"][1]["dishes"][0]
     with pytest.raises(HealthVisionError, match="reference_translation_correction_invalid"):
@@ -207,7 +207,7 @@ async def test_real_tool_node_repairs_malformed_first_translation_without_changi
     assert json.loads(second["messages"][-1].content) == {"preview_id": "synthetic-preview"}
     corrected = assemble.await_args.args[1]
     assert [meal["meal_type"] for meal in corrected["meals"]] == ["breakfast", "lunch", "dinner"]
-    assert corrected["purchase_items"] == original["purchase_items"]
+    assert corrected["product_matches"] == original["product_matches"]
     assert corrected["meals"][1]["dishes"][0]["display_zh"]["steps"] == ["合成制作 15 分钟"]
     save.assert_awaited_once()
 
@@ -231,7 +231,7 @@ async def test_translation_retry_uses_first_selection_only(monkeypatch):
     result = await save_reference_meal_plan.coroutine(runtime=runtime, translation_correction=[patch])
     assert result == {"preview_id": "synthetic-preview"}
     assert [meal["meal_type"] for meal in assemble.call_args.args[1]["meals"]] == ["breakfast", "lunch", "dinner"]
-    assert assemble.call_args.args[1]["purchase_items"] == read_selection()["purchase_items"]
+    assert assemble.call_args.args[1]["product_matches"] == read_selection()["product_matches"]
     save.assert_awaited_once()
 
 

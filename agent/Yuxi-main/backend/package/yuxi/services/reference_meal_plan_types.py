@@ -46,8 +46,16 @@ class ReferenceSelection(HealthDTO):
 class RecipeNutritionHighlight(HealthDTO):
     """只摘录本轮商城商品实际提供的营养说明。"""
 
-    sku_id: str = Field(min_length=1, max_length=80)
+    product_id: str | None = Field(default=None, min_length=1, max_length=80)
+    sku_id: str | None = Field(default=None, min_length=1, max_length=80)
     quote: str = Field(min_length=2, max_length=800)
+
+    @model_validator(mode="after")
+    def one_product_identity(self):
+        """新回执使用商品身份，旧快照仍可按 SKU 读取。"""
+        if bool(self.product_id) == bool(self.sku_id):
+            raise ValueError("营养摘录须且只能引用一个商品身份")
+        return self
 
 
 class ReferenceDish(HealthDTO):
@@ -82,6 +90,13 @@ class ReferencePurchaseItem(HealthDTO):
     ingredient_refs: list[str] = Field(min_length=1, max_length=450)
 
 
+class ReferenceProductMatch(HealthDTO):
+    """菜谱食材只绑定商城商品，规格由用户购买时再选择。"""
+
+    product_id: str = Field(min_length=1, max_length=80)
+    ingredient_refs: list[str] = Field(min_length=1, max_length=450)
+
+
 class ReferencePurchaseGap(HealthDTO):
     """未选商品必须指向菜谱中的食材并说明实际原因。"""
 
@@ -98,11 +113,12 @@ class ReferencePurchaseGap(HealthDTO):
 
 
 class ReferencePlanDraft(HealthDTO):
-    """模型只提交参考菜单与规格选择，服务端补齐来源与缺失状态。"""
+    """模型只提交参考菜单与商品选择，服务端补齐来源与规格列表。"""
 
     meals: list[ReferenceMeal] = Field(min_length=1, max_length=3)
-    purchase_items: list[ReferencePurchaseItem] = Field(max_length=30)
-    purchase_gaps: list[ReferencePurchaseGap] = Field(max_length=450)
+    product_matches: list[ReferenceProductMatch] = Field(default_factory=list, max_length=30)
+    purchase_items: list[ReferencePurchaseItem] = Field(default_factory=list, max_length=30)
+    purchase_gaps: list[ReferencePurchaseGap] = Field(default_factory=list, max_length=450)
 
     @model_validator(mode="after")
     def complete_day(self):
@@ -111,8 +127,11 @@ class ReferencePlanDraft(HealthDTO):
             raise ValueError("参考餐次不能重复")
         if len({i.sku_id for i in self.purchase_items}) != len(self.purchase_items):
             raise ValueError("相同规格须合并数量")
+        if len({i.product_id for i in self.product_matches}) != len(self.product_matches):
+            raise ValueError("相同商品须合并食材引用")
         ingredients = {i for m in self.meals for d in m.dishes for i in d.ingredients}
-        decisions = [i for item in self.purchase_items for i in item.ingredient_refs]
+        decisions = [i for item in self.product_matches for i in item.ingredient_refs]
+        decisions.extend(i for item in self.purchase_items for i in item.ingredient_refs)
         decisions.extend(gap.ingredient for gap in self.purchase_gaps)
         if set(decisions) != ingredients or len(decisions) != len(set(decisions)):
             raise ValueError("每种食材原文必须且只能对应一个采购商品或一条未选原因")

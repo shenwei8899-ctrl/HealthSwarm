@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import FoodImageSlot from './FoodImageSlot.vue'
 const props = defineProps({ gaps: { type: Array, default: () => [] }, products: Array, picked: Array, address: Object, slots: Array, slotId: [String,Number], quote: Object,
   title: { type: String, default: '本餐食材' }, fixed: Boolean,
-  busy: Boolean, pricing: Boolean, ready: Boolean, pending: Boolean, error: String, accessRequired: Boolean, canSubmit: Boolean, retryLabel: { type: String, default: '重新核对' } })
+  busy: Boolean, pricing: Boolean, ready: Boolean, choicesReady: Boolean, pending: Boolean, error: String, accessRequired: Boolean, canSubmit: Boolean, retryLabel: { type: String, default: '重新核对' } })
 defineEmits(['address','slot','toggle','quantity','confirm','recover','retry','scroll'])
 const timesOpen = ref(false)
 const slot = computed(() => props.slots?.find(item => String(item.id) === String(props.slotId)))
@@ -27,7 +27,7 @@ const deliveryText = computed(() => slot.value ? slotName(slot.value) : !props.r
           <button class="mp-delivery-time" :disabled="busy||!slots?.length" @click="timesOpen=!timesOpen"><text>配送时间</text><text class="mp-time-value">{{deliveryText}}</text><text class="mp-chevron">›</text></button>
           <view v-if="timesOpen&&slots?.length" class="mp-times"><button v-for="item in slots" :key="item.id" :class="{chosen:String(item.id)===String(slotId)}" :disabled="busy" @click="$emit('slot',item.id);timesOpen=false"><text>{{slotName(item)}}</text><text v-if="String(item.id)===String(slotId)">✓</text></button></view>
         </view>
-        <view v-if="busy&&!ready" class="mp-loading" role="status">{{fixed?'正在准备商品与价格…':'正在准备本餐商品与价格…'}}</view>
+        <view v-if="busy&&!ready&&!choicesReady" class="mp-loading" role="status">{{fixed?'正在准备商品与价格…':'正在准备本餐商品与价格…'}}</view>
         <view v-if="error" class="mp-error" role="alert"><text>{{error}}</text><button :disabled="busy" @click="$emit('retry')">{{retryLabel}}</button></view>
         <view v-if="preparationGaps.length" class="mp-preparation mp-surface">
           <text class="mp-preparation-title">自行购买 / 自行准备</text>
@@ -35,22 +35,22 @@ const deliveryText = computed(() => slot.value ? slotName(slot.value) : !props.r
           <view v-for="gap in preparationGaps" :key="gap.ingredient" class="mp-preparation-item"><text>{{gap.label || gap.ingredient}}<template v-if="gap.purchase_mode==='self_purchase'"> · 自行购买 · 暂无价格</template></text><text class="mp-support">{{gap.detail}}</text></view>
         </view>
         <view v-if="optionalGaps.length" class="mp-optional"><text>原谱可选，本次未采用：</text><text>{{optionalText}}</text></view>
-        <template v-if="ready">
+        <template v-if="ready||choicesReady">
           <view class="mp-section-heading"><text>{{title}}</text><text v-if="!fixed">家中已有可取消</text></view>
           <view class="mp-products mp-surface">
             <view v-for="item in products" :key="item.id" class="mp-product">
-              <button v-if="!fixed" class="mp-select" :aria-pressed="picked.includes(item.id)" :aria-label="(picked.includes(item.id)?'取消选择':'选择')+item.name" :disabled="busy||pending" @click="$emit('toggle',item.id)"><view :class="{'is-selected':picked.includes(item.id)}">{{picked.includes(item.id)?'✓':''}}</view></button>
+              <button v-if="!fixed" class="mp-select" :aria-pressed="picked.includes(item.id)" :aria-label="(picked.includes(item.id)?'取消选择':'选择')+item.name" :disabled="busy||pending||(choicesReady&&!ready&&item.saleStatus!=='available')||item.availableQuantity===0" @click="$emit('toggle',item.id)"><view :class="{'is-selected':picked.includes(item.id)}">{{picked.includes(item.id)?'✓':''}}</view></button>
               <FoodImageSlot :src="item.imageUrl" :label="item.name" :width="52" :height="58" :radius="14" fallback-icon/>
-              <view class="mp-product-copy"><text class="mp-product-name">{{item.name}}</text><text class="mp-support">{{item.packLabel}} · {{money(item.priceCents)}}/包</text><view v-if="fixed" class="mp-support">×{{item.quantity}} 包</view><view v-else class="mp-quantity"><button :aria-label="'减少'+item.name+'数量'" :disabled="busy||pending||item.quantity<=1" @click="$emit('quantity',item,-1)">−</button><text>{{item.quantity}}</text><button :aria-label="'增加'+item.name+'数量'" :disabled="busy||pending||item.quantity>=item.availableQuantity" @click="$emit('quantity',item,1)">＋</button></view></view>
+              <view class="mp-product-copy"><text class="mp-product-name">{{item.name}}</text><text class="mp-support">{{item.packLabel}} · {{money(item.priceCents)}}/包</text><text v-if="(choicesReady&&!ready&&item.saleStatus!=='available')||item.availableQuantity===0" class="mp-support">暂不可选</text><view v-if="fixed" class="mp-support">×{{item.quantity}} 包</view><view v-else class="mp-quantity"><button :aria-label="'减少'+item.name+'数量'" :disabled="busy||pending||(choicesReady&&!ready&&item.saleStatus!=='available')||item.availableQuantity===0||item.quantity<=1" @click="$emit('quantity',item,-1)">−</button><text>{{item.quantity}}</text><button :aria-label="'增加'+item.name+'数量'" :disabled="busy||pending||(choicesReady&&!ready&&item.saleStatus!=='available')||item.availableQuantity===0||item.quantity>=item.availableQuantity" @click="$emit('quantity',item,1)">＋</button></view></view>
               <text class="mp-product-price">{{money(Number.isFinite(item.priceCents)?item.priceCents*item.quantity:null)}}</text>
             </view>
           </view>
-          <view class="mp-costs mp-surface"><view><text>商品金额</text><text>{{money(quote?.goods_amount_cent)}}</text></view><view><text>运费</text><text>{{money(quote?.shipping_fee_cent)}}</text></view><view v-if="quote?.discount_amount_cent>0"><text>优惠</text><text>−{{money(quote.discount_amount_cent)}}</text></view><view class="mp-payable"><text>应付总额</text><text>{{money(quote?.payable_amount_cent)}}</text></view></view>
+          <view v-if="ready" class="mp-costs mp-surface"><view><text>商品金额</text><text>{{money(quote?.goods_amount_cent)}}</text></view><view><text>运费</text><text>{{money(quote?.shipping_fee_cent)}}</text></view><view v-if="quote?.discount_amount_cent>0"><text>优惠</text><text>−{{money(quote.discount_amount_cent)}}</text></view><view class="mp-payable"><text>应付总额</text><text>{{money(quote?.payable_amount_cent)}}</text></view></view>
         </template>
       </template>
       <view class="mp-scroll-space"/>
     </scroll-view>
-    <view v-if="!accessRequired" class="mp-order-footer"><view class="mp-total"><text>合计</text><text>{{(busy||pricing)&&ready?'核算中…':total}}</text></view><button :disabled="busy||(!pending&&!canSubmit)" @click="pending?$emit('recover'):$emit('confirm')">{{pending?'确认原订单':busy?'正在核对…':'确认下单'}}</button></view>
+    <view v-if="!accessRequired" class="mp-order-footer"><view class="mp-total"><text>合计</text><text>{{(busy||pricing)&&ready?'核算中…':total}}</text></view><button :disabled="busy||(!pending&&!canSubmit)" @click="pending?$emit('recover'):$emit('confirm')">{{pending?'确认原订单':busy?'正在核对…':choicesReady&&!ready?'确认规格并核价':'确认下单'}}</button></view>
   </view>
 </template>
 <style>

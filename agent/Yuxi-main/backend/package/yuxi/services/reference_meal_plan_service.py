@@ -10,7 +10,7 @@ from sqlalchemy import select
 from yuxi.repositories.family_repository import FamilyRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
 from yuxi.repositories.tool_message_audit_repository import ToolMessageAuditRepository
-from yuxi.services.daily_commerce_service import commerce_request, current_catalog
+from yuxi.services.daily_commerce_service import commerce_request, current_catalog, group_catalog_products
 from yuxi.services.family_service import FamilyService, authorized_fields
 from yuxi.services.health_family_kb_service import configured_health_kb_ids
 from yuxi.services.health_meal_plan_service import require_planner_run
@@ -155,6 +155,43 @@ def reference_product(sku, quantity=1, *, description_limit=4000):
     }
 
 
+def reference_product_group(product, ingredient_refs=()):
+    """保存商品身份与全部规格；规格实时状态不决定餐单是否有效。"""
+    skus = product.get("skus") or []
+    lead = skus[0] if skus else product
+    description = product.get("product_description") or lead.get("product_description") or ""
+    return {
+        "product_id": str(product.get("product_id") or lead.get("product_id") or ""),
+        "product_name": product.get("product_name") or lead.get("product_name"),
+        "category_code": product.get("category_code") or lead.get("category_code"),
+        "image_url": product.get("image_url") or lead.get("image_url", ""),
+        "product_description": description,
+        "ingredients": product.get("ingredients") or lead.get("ingredients") or [],
+        "allergen_codes": product.get("allergen_codes") or lead.get("allergen_codes") or [],
+        "data_completeness": product.get("data_completeness") or lead.get("data_completeness"),
+        "data_issues": product.get("data_issues") or lead.get("data_issues") or [],
+        "ingredient_refs": list(ingredient_refs),
+        "skus": [
+            {
+                key: sku.get(key)
+                for key in (
+                    "sku_id",
+                    "sku_name",
+                    "net_content",
+                    "net_content_value",
+                    "net_content_unit",
+                    "price_cent",
+                    "available_quantity",
+                    "sale_status",
+                    "image_url",
+                )
+            }
+            for sku in skus
+        ],
+        "composition_notice": "商品资料未作个人过敏适用性或专业营养审核，请核对包装信息。",
+    }
+
+
 async def get_reference_context(context):
     """向 Agent 提供授权就餐范围与商城有货分类，不展开商品。"""
     async with pg_manager.get_async_session_context() as session:
@@ -210,7 +247,7 @@ async def get_reference_context(context):
 
 
 async def find_reference_products(context, category_codes):
-    """仅按本 Run 已读真实分类查商品，保留 SKU 原文回执。"""
+    """按本 Run 已读分类查商品；商品负责匹配，规格只作为可选项返回。"""
     async with pg_manager.get_async_session_context() as session:
         run, binding = await require_planner_run(session, context)
         await bound_reference_context(session, context.uid, binding)
@@ -227,6 +264,7 @@ async def find_reference_products(context, category_codes):
         ):
             raise HealthVisionError("catalog_category_invalid", "只能查询本轮商城实际有货的分类", 422)
     catalog = await current_catalog(category_codes=category_codes)
+    product_catalog = {"items": group_catalog_products(catalog["items"])}
     items = [
         reference_product(s, description_limit=320) for s in catalog["items"] if s.get("sale_status") == "available"
     ]
@@ -242,6 +280,13 @@ async def find_reference_products(context, category_codes):
         "category_codes": category_codes,
         "catalog_version": catalog["version"],
         "catalog": items,
+        "products": [
+            {
+                **reference_product_group(product),
+                "skus": [reference_product(sku, description_limit=320) for sku in product.get("skus") or []],
+            }
+            for product in product_catalog["items"]
+        ],
         **({"shared_data_issues": shared_issues} if shared_issues else {}),
     }
 
@@ -598,15 +643,57 @@ async def reference_plan_display(session, plan):
     result = copy.deepcopy(plan)
     from yuxi.services.reference_recipe_presentation import attach_recipe_products
 
-    current = await current_reference_items(result["purchase_items"])
-    result["purchase_items"] = [
-        current_reference_display_item(item, current[str(item["sku_id"])]) for item in result["purchase_items"]
-    ]
+    if result.get("product_matches"):
+        result["product_matches"] = await current_reference_products(result["product_matches"])
+        display_products = result["product_matches"]
+    else:
+        current = await current_reference_items(result.get("purchase_items", []))
+        result["purchase_items"] = [
+            current_reference_display_item(item, current[str(item["sku_id"])])
+            for item in result.get("purchase_items", [])
+        ]
+        display_products = result.get("purchase_items", [])
     result["meals"] = [
-        attach_recipe_products(await reference_meal_media(session, meal), result["purchase_items"])
-        for meal in result["meals"]
+        attach_recipe_products(await reference_meal_media(session, meal), display_products) for meal in result["meals"]
     ]
     return result
+
+
+async def current_reference_products(items):
+    """回读当前商品全部规格；下架或缺货只标记状态，不让历史餐单失效。"""
+    catalog = await current_catalog()
+    current = {str(item["product_id"]): item for item in group_catalog_products(catalog["items"])}
+    result = []
+    for saved in items:
+        product = current.get(str(saved["product_id"]))
+        if product is None:
+            result.append({**saved, "availability": "unavailable", "skus": []})
+            continue
+        if not same_reference_product_information(saved, product):
+            raise HealthVisionError("reference_product_changed", "商品配料或营养说明已变化，请重新安排", 410)
+        result.append(
+            {**reference_product_group(product, saved.get("ingredient_refs", [])), "availability": "published"}
+        )
+    return result
+
+
+def same_reference_product_information(saved, current):
+    """商品资料变化须重新分析，规格增减、价格及库存不使菜谱失效。"""
+    old = reference_product_group(saved)
+    new = reference_product_group(current)
+    notice = "【供货说明】演示商品，非真实供货；图片仅供食材示意。\n\n"
+    if (
+        str(old["product_name"]).startswith("示例·")
+        and old["product_description"].startswith("示例·")
+        and new["product_name"] == old["product_name"].removeprefix("示例·")
+        and new["product_description"] == notice + old["product_description"].removeprefix("示例·")
+    ):
+        old["product_name"] = new["product_name"]
+        old["product_description"] = new["product_description"]
+    return all(old[key] == new[key] for key in (
+        "product_id", "product_name", "product_description", "ingredients", "allergen_codes",
+        "data_completeness", "data_issues",
+    ))
 
 
 def products_cover_reference_dishes(meals, items):
@@ -688,6 +775,12 @@ def current_reference_display_item(saved, current):
 async def save_reference_plan(context, draft):
     """持久化参考结果与真实来源，不能写入正式方案或专业批准。"""
     draft = ReferencePlanDraft.model_validate(draft)
+    if draft.purchase_items:
+        raise HealthVisionError(
+            "reference_purchase_schema_legacy",
+            "新餐单只能保存商品匹配；具体规格须由用户在购买时选择",
+            422,
+        )
     image_task = None
     image_task_created = False
     async with pg_manager.get_async_session_context() as session:
@@ -716,12 +809,44 @@ async def save_reference_plan(context, draft):
                 "reference_purchase_reason_invalid", "商品目录已成功读取，不能标记为接口不可用", 422
             )
         seen = {str(s["sku_id"]): s for read in product_reads for s in read.get("catalog", [])}
+        read_products = [product for read in product_reads for product in read.get("products", [])]
+        if not read_products:
+            read_products = group_catalog_products(list(seen.values()))
+        seen_products = {str(product["product_id"]): product for product in read_products}
+        for receipt in receipts:
+            for group in receipt.get("recipe_check", {}).get("ingredient_matches", []):
+                for product in group.get("candidate_products", []):
+                    seen_products.setdefault(str(product["product_id"]), product)
         allowed_skus = set(seen) | reference_candidate_sku_ids(receipts)
         gaps = checked_reference_gaps(draft.purchase_gaps, list(seen.values()))
-        catalog = await current_catalog() if draft.purchase_items else {"items": [], "version": None}
+        catalog = (
+            await current_catalog() if draft.purchase_items or draft.product_matches else {"items": [], "version": None}
+        )
         by_sku = {str(s["sku_id"]): s for s in catalog["items"]}
+        by_product = {str(p["product_id"]): p for p in group_catalog_products(catalog["items"])}
         items = []
+        product_matches = []
         restrictions = reference_member_restrictions(current["members"])
+        for requested in draft.product_matches:
+            product = by_product.get(requested.product_id)
+            seen_product = seen_products.get(requested.product_id)
+            if product is None or seen_product is None:
+                raise HealthVisionError("reference_product_changed", "所选商品身份已变化，请重新读取目录", 409)
+            if (product.get("product_name") or "") != (seen_product.get("product_name") or ""):
+                raise HealthVisionError("reference_product_changed", "所选商品名称已变化，请重新读取目录", 409)
+            if not same_reference_product_information(seen_product, product):
+                raise HealthVisionError("reference_product_changed", "所选商品资料已变化，请重新读取目录", 409)
+            if any(
+                reference_restriction_conflict(reference_product_composition(sku), restrictions)
+                for sku in product.get("skus") or []
+            ):
+                raise HealthVisionError("reference_restriction_conflict", "所选商品含已明确填写的过敏或忌口成分", 422)
+            identities = product_foods(product)
+            if not identities or any(
+                ingredient_food_for_products(ref, [product]) not in identities for ref in requested.ingredient_refs
+            ):
+                raise HealthVisionError("reference_ingredient_mismatch", "菜谱食材与所选商城商品名称不相符", 422)
+            product_matches.append(reference_product_group(product, requested.ingredient_refs))
         for requested in draft.purchase_items:
             sku = by_sku.get(requested.sku_id)
             if (
@@ -758,7 +883,7 @@ async def save_reference_plan(context, draft):
             items.append({**reference_product(sku, requested.quantity), "ingredient_refs": requested.ingredient_refs})
         from yuxi.services.reference_recipe_presentation import check_recipe_nutrition, recipe_pairing_summary
 
-        check_recipe_nutrition(meals, items)
+        check_recipe_nutrition(meals, product_matches or items)
         snapshot = {
             "pairing_summary": recipe_pairing_summary(meals, draft),
             "scope": "daily_reference",
@@ -768,10 +893,13 @@ async def save_reference_plan(context, draft):
             "nutrition_status": "not_calculated",
             "members": current["members"],
             "meals": meals,
+            "product_matches": product_matches,
             "purchase_items": items,
             "purchase_gaps": gaps,
             "purchase_status": "partial"
             if any(g["reason"] in {"no_match", "needs_confirmation", "selection_pending"} for g in gaps)
+            else "product_selected"
+            if product_matches
             else "selected",
             "catalog_version": catalog.get("version") or product_reads[-1].get("catalog_version"),
             "catalog_chain_version": REFERENCE_CATALOG_CHAIN_VERSION,
@@ -901,14 +1029,19 @@ async def reference_result_in_session(session, run, binding, preview_id):
                 raise ReferencePlanSourceChanged("参考餐单的菜谱来源已变化", current["selection"])
             documents.append(fresh)
     restrictions = reference_member_restrictions(current["members"])
+    product_materials = [
+        reference_product_composition(product) for product in row.snapshot.get("product_matches", [])
+    ]
     for material in [
         *(doc["content"] for doc in documents),
-        *(reference_product_composition(s) for s in row.snapshot["purchase_items"]),
+        *(reference_product_composition(s) for s in row.snapshot.get("purchase_items", [])),
+        *product_materials,
     ]:
         if reference_restriction_conflict(material, restrictions):
             raise HealthVisionError("reference_restriction_conflict", "参考餐单含当前明确限制的食材或成分", 422)
     reference_restriction_conflict("", restrictions)
-    await current_reference_items(row.snapshot["purchase_items"])
+    if row.snapshot.get("purchase_items"):
+        await current_reference_items(row.snapshot["purchase_items"])
     return {"preview_id": row.id, **row.snapshot}
 
 
@@ -1346,9 +1479,7 @@ async def reference_purchase_items(plan, meal_types, pending_items, skipped_ingr
     skipped_ingredients = skipped_ingredients or []
     all_meals = {meal["meal_type"] for meal in plan["meals"]}
     items = (
-        plan["purchase_items"]
-        if set(meal_types) == all_meals
-        else select_reference_purchase_items(plan, meal_types)
+        plan["purchase_items"] if set(meal_types) == all_meals else select_reference_purchase_items(plan, meal_types)
     )
     ingredients = {
         ingredient
@@ -1357,6 +1488,45 @@ async def reference_purchase_items(plan, meal_types, pending_items, skipped_ingr
         for dish in meal["dishes"]
         for ingredient in dish["ingredients"]
     }
+    if plan.get("product_matches"):
+        selected_products = [
+            {**product, "ingredient_refs": [ref for ref in product.get("ingredient_refs", []) if ref in ingredients]}
+            for product in plan["product_matches"]
+            if any(ref in ingredients for ref in product.get("ingredient_refs", []))
+        ]
+        expected = {str(product["product_id"]) for product in selected_products}
+        choice_ids = [str(choice.get("product_id") or "") for choice in pending_items]
+        if not pending_items or len(choice_ids) != len(set(choice_ids)) or not set(choice_ids) <= expected:
+            raise HealthVisionError("reference_purchase_choice_invalid", "请从本餐商品中选择需要购买的规格", 422)
+        catalog = await current_catalog()
+        current = {str(sku["sku_id"]): sku for sku in catalog["items"]}
+        current_products = {str(item["product_id"]): item for item in group_catalog_products(catalog["items"])}
+        products = {str(product["product_id"]): product for product in selected_products}
+        restrictions = reference_member_restrictions(plan["members"])
+        result = []
+        for choice in pending_items:
+            product_id = str(choice.get("product_id") or "")
+            sku_id = str(choice.get("sku_id") or "")
+            quantity = choice.get("quantity")
+            product = products.get(product_id)
+            sku = current.get(sku_id)
+            if (
+                product is None
+                or sku is None
+                or str(sku.get("product_id")) != product_id
+                or not isinstance(quantity, int)
+                or isinstance(quantity, bool)
+                or not 1 <= quantity <= 99
+                or sku.get("sale_status") != "available"
+                or int(sku.get("available_quantity", 0)) < quantity
+            ):
+                raise HealthVisionError("reference_product_changed", "所选规格、价格或库存已变化，请重新核对", 410)
+            if not same_reference_product_information(product, current_products[product_id]):
+                raise HealthVisionError("reference_product_changed", "商品资料已变化，请重新安排后购买", 410)
+            if reference_restriction_conflict(reference_product_composition(sku), restrictions):
+                raise HealthVisionError("reference_restriction_conflict", "所选商品含已明确填写的过敏或忌口成分", 422)
+            result.append({**reference_product(sku, quantity), "ingredient_refs": product["ingredient_refs"]})
+        return result, catalog["version"]
     gaps = {
         gap["ingredient"]: gap
         for gap in plan.get("purchase_gaps", [])

@@ -147,11 +147,11 @@ class MealPlanResultMiddleware(AgentMiddleware):
                         + (
                             "餐单中文译文校验失败。本次只调用一次save_reference_meal_plan，且只提交translation_correction："
                             "列出需修正的首次已选菜谱file_id、chunk_id和完整display_zh。"
-                            "首次保存的餐次、菜谱、商品及数量由服务端保留；不得重新提交read_selection、meals或purchase_items。"
+                            "首次保存的餐次、菜谱和商品由服务端保留；不得重新提交read_selection、meals或product_matches。"
                             "按真实错误定位译文，保持原文数量、时间、单位和步骤顺序。"
                             if save_error_code in {"recipe_translation_missing", "recipe_translation_invalid"}
-                            else "所选商品规格未对应本次原谱食材。本次只调用一次save_reference_meal_plan，"
-                            "重新核对已读原谱recipe_check中的candidate_skus；purchase_items只提交候选sku_id、对应candidate_keys及包装quantity。"
+                            else "所选商品未对应本次原谱食材。本次只调用一次save_reference_meal_plan，"
+                            "重新核对已读原谱recipe_check中的candidate_products；product_matches只提交候选product_id和对应candidate_keys。"
                             "不得自行提交ingredient_refs或purchase_gaps；无候选食材由后台保留为自行购买。"
                             if save_error_code == "reference_ingredient_mismatch"
                             else "餐单保存校验失败，按最新真实工具反馈修正；"

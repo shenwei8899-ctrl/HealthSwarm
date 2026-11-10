@@ -2039,6 +2039,7 @@ async def test_health_external_task_cancel_with_slow_drain_crossing_deadline_sta
 
     monkeypatch.setattr(run_worker, "stream_agent_chat", lambda **kwargs: stream())
     monkeypatch.setattr(run_worker, "mark_run_terminal", AsyncMock(side_effect=AssertionError("not budget failed")))
+    monkeypatch.setattr(run_worker, "append_run_event", AsyncMock())
     released = AsyncMock(side_effect=release)
     monkeypatch.setattr(run_worker, "release_run_lease_for_retry", released)
     task = asyncio.create_task(run_worker.process_agent_run({"job_try": 1}, run.id))

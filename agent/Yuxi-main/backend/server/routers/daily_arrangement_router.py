@@ -109,6 +109,15 @@ class DailyPurchaseInput(BaseModel):
     daily_plan_version: int | None = Field(default=None, ge=0)
 
 
+class ReferenceSkuChoice(BaseModel):
+    """用户在购买阶段为已匹配商品选择一个真实规格。"""
+
+    model_config = ConfigDict(extra="forbid")
+    product_id: str = Field(min_length=1, max_length=80)
+    sku_id: str = Field(min_length=1, max_length=80)
+    quantity: int = Field(ge=1, le=99, strict=True)
+
+
 class DailyReferencePurchaseInput(BaseModel):
     """采购引用当前计划版本和已有参考结果。"""
 
@@ -116,6 +125,7 @@ class DailyReferencePurchaseInput(BaseModel):
     preview_id: UUID
     version: int = Field(ge=0)
     meal_types: list[Literal["breakfast", "lunch", "dinner"]] = Field(min_length=1, max_length=3)
+    product_choices: list[ReferenceSkuChoice] = Field(default_factory=list, max_length=30)
 
     @model_validator(mode="after")
     def unique_meal_types(self):
@@ -123,6 +133,13 @@ class DailyReferencePurchaseInput(BaseModel):
         if len(self.meal_types) != len(set(self.meal_types)):
             raise ValueError("采购餐次不能重复")
         return self
+
+
+class ReferencePurchaseInput(BaseModel):
+    """独立参考餐单购买时的规格选择。"""
+
+    model_config = ConfigDict(extra="forbid")
+    product_choices: list[ReferenceSkuChoice] = Field(default_factory=list, max_length=30)
 
 
 class MealDishInput(BaseModel):
@@ -533,15 +550,24 @@ async def current_daily_reference_purchase(
         "version": data.version,
         "meal_types": sorted(data.meal_types),
     }
-    return await publish_reference_purchase(str(user.uid), str(data.preview_id), daily_plan=daily)
+    return await publish_reference_purchase(
+        str(user.uid),
+        str(data.preview_id),
+        daily_plan=daily,
+        pending_items=[item.model_dump() for item in data.product_choices],
+    )
 
 
 @daily_arrangement.post("/health/v1/reference-meal-plans/{preview_id}/purchase")
-async def reference_meal_purchase(preview_id: UUID, user=Depends(get_required_user)):
+async def reference_meal_purchase(
+    preview_id: UUID, data: ReferencePurchaseInput | None = None, user=Depends(get_required_user)
+):
     """用户明确采购后发布既有参考结果的固定商品选择。"""
     from yuxi.services.reference_meal_plan_service import publish_reference_purchase
 
-    return await publish_reference_purchase(user.uid, str(preview_id))
+    return await publish_reference_purchase(
+        user.uid, str(preview_id), pending_items=[item.model_dump() for item in (data.product_choices if data else [])]
+    )
 
 
 @daily_arrangement.post("/health/v1/nutrition-setup/imports", status_code=201)

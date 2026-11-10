@@ -108,7 +108,7 @@ class ReferenceProductCategories(HealthReadInput):
 
 @tool(category="health", display_name="按商城分类读取参考食材", args_schema=ReferenceProductCategories)
 async def find_reference_products(category_codes: list[str], runtime: ToolRuntime) -> dict:
-    """只返回选定分类里实际在售的规格与商品原文。"""
+    """返回选定分类的商品和全部已发布规格；餐单只选商品。"""
     from yuxi.services.reference_meal_plan_service import find_reference_products as find
 
     return await find(runtime.context, category_codes)
@@ -405,6 +405,10 @@ def _reference_save_validation_error(error: ValidationError) -> str:
                 "reference_duplicate_sku",
                 "相同SKU须合并为一项并合计包装数量；每条食材原文仍只对应一个采购决定。",
             ),
+            "Value error, 相同商品须合并食材引用": (
+                "reference_duplicate_product",
+                "相同商品须合并为一项；每条食材原文仍只对应一个商品决定。",
+            ),
             "Value error, 每种食材原文必须且只能对应一个采购商品或一条未选原因": (
                 "reference_purchase_coverage_invalid",
                 "每条食材原文必须且只能对应一个采购商品或一条未选原因；检查重复、遗漏和多余对应，"
@@ -430,7 +434,10 @@ def reference_coverage_feedback(draft):
             for ii, ingredient in enumerate(dish["ingredients"]):
                 ingredients.setdefault(ingredient.strip(), f"meals[{mi}].dishes[{di}].ingredients[{ii}]")
     decisions = {}
-    for pi, item in enumerate(draft["purchase_items"]):
+    for pi, item in enumerate(draft.get("product_matches", [])):
+        for ri, ingredient in enumerate(item["ingredient_refs"]):
+            decisions.setdefault(ingredient.strip(), []).append(f"product_matches[{pi}].ingredient_refs[{ri}]")
+    for pi, item in enumerate(draft.get("purchase_items", [])):
         for ri, ingredient in enumerate(item["ingredient_refs"]):
             decisions.setdefault(ingredient.strip(), []).append(f"purchase_items[{pi}].ingredient_refs[{ri}]")
     for gi, gap in enumerate(draft["purchase_gaps"]):
