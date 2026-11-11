@@ -4,6 +4,8 @@
 类型：bug-fix
 Owner：backend/package/yuxi/services/reference_meal_plan_service.py
 
+候选可用性、同类商品默认推荐和排名优先级由[参考餐单生成可靠性与候选分散](./2026-11-11-reference-generation-reliability.md)部分取代；其余来源、缓存与判重边界保持适用。
+
 ## 问题
 
 固定前三名与顺序截断让不同家庭取得相同候选。重复解析、商品匹配和遗漏候选商品导致生成耗时。历史排除仅覆盖同账号当天。

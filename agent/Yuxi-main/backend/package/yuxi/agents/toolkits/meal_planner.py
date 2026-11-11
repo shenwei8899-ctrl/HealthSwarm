@@ -104,12 +104,12 @@ async def get_reference_plan_context(runtime: ToolRuntime) -> dict:
 class ReferenceProductCategories(HealthReadInput):
     """模型只从已读分类中选择编码，服务端复核当前 Run。"""
 
-    category_codes: list[str] = Field(min_length=1, max_length=4)
+    category_codes: list[str] | None = Field(default=None, min_length=1, max_length=4)
 
 
 @tool(category="health", display_name="按商城分类读取参考食材", args_schema=ReferenceProductCategories)
-async def find_reference_products(category_codes: list[str], runtime: ToolRuntime) -> dict:
-    """返回选定分类的商品和全部已发布规格；餐单只选商品。"""
+async def find_reference_products(runtime: ToolRuntime, category_codes: list[str] | None = None) -> dict:
+    """默认按已读真实分类取商品；指定分类时必须复制真实编码，餐单只选商品。"""
     from yuxi.services.reference_meal_plan_service import find_reference_products as find
 
     try:

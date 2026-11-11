@@ -2,6 +2,7 @@
 
 import re
 import unicodedata
+from hashlib import sha256
 from collections import Counter
 from datetime import date
 
@@ -33,11 +34,12 @@ def variety_context(history, selection, members=()):
         dietary = member.get("dietary") or {}
         for field in ("cuisines", "flavors", "tastePreferences"):
             preferences.extend(str(value) for value in dietary.get(field, []) if value)
-    return {"excluded": excluded, "recent": recent, "popular": popular, "preferences": preferences}
+    return {"excluded": excluded, "recent": recent, "popular": popular, "preferences": preferences,
+            "seed": f"{selection['family_id']}:{selection['plan_date']}"}
 
 
 def candidate_priority(keys, content, variety):
-    """偏好只加相关分，历史和曝光只在同等来源与采购质量内比较。"""
+    """合格相关候选先尊重偏好，再减少近期与公共重复。"""
     if not variety:
         return ()
     return (
@@ -45,6 +47,14 @@ def candidate_priority(keys, content, variety):
         -max((variety["recent"][key] for key in keys), default=0),
         -max((variety["popular"][key] for key in keys), default=0),
     )
+
+
+def candidate_rotation(keys, variety):
+    """同等候选按家庭和日期稳定打散，重试不抽签且不共享最终餐单。"""
+    if not variety or not variety.get("seed"):
+        return 0
+    value = variety["seed"] + ":" + ":".join(sorted(keys))
+    return int.from_bytes(sha256(value.encode()).digest()[:8], "big")
 
 
 def balanced_candidates(ranked, limit=24):

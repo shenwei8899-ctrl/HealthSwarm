@@ -1351,14 +1351,15 @@ async def test_home_recipe_title_precedes_other_cooking_matches(family_profile_h
     bound = await bind_reference(current)
     context = await running_context(current, bound.json()["thread_id"])
     hits = await service.search_reference_recipes(context, "米饭")
-    assert len(hits["items"]) == 5
+    assert len(hits["items"]) == 1
     assert hits["items"][0]["file_id"] == "reference-file"
     await receipt(current[1], context, "search_reference_recipes", hits)
     opened = await service.read_reference_recipe(context, "reference-file", "reference-chunk")
     assert opened["content"] == TEXT
 
 
-async def test_reference_catalog_summary_preserves_validation_facts(family_profile_http, monkeypatch):
+@pytest.mark.parametrize("category_codes", [None, ["grain"]])
+async def test_reference_catalog_summary_preserves_validation_facts(family_profile_http, monkeypatch, category_codes):
     """上下文只给分类，选中分类详情裁剪仍保留完整商品事实指纹。"""
     current = await setup_reference(family_profile_http, monkeypatch)
     bound = await bind_reference(current)
@@ -1367,7 +1368,8 @@ async def test_reference_catalog_summary_preserves_validation_facts(family_profi
     monkeypatch.setattr(service, "current_catalog", AsyncMock(return_value={"version": "synthetic-v1", "items": [sku]}))
     result = await service.get_reference_context(context)
     assert "catalog" not in result and result["categories"][0]["category_code"] == "grain"
-    read = await service.find_reference_products(context, ["grain"])
+    read = await service.find_reference_products(context, category_codes)
+    assert read["category_codes"] == ["grain"]
     summary = read["catalog"][0]
     assert summary["product_description"] == sku["product_description"][:320]
     assert summary["description_truncated"] is True

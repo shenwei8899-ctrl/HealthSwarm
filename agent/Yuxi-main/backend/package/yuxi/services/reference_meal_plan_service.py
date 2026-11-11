@@ -246,7 +246,7 @@ async def get_reference_context(context):
     return result
 
 
-async def find_reference_products(context, category_codes):
+async def find_reference_products(context, category_codes=None):
     """按本 Run 已读分类查商品；商品负责匹配，规格只作为可选项返回。"""
     async with pg_manager.get_async_session_context() as session:
         run, binding = await require_planner_run(session, context)
@@ -255,6 +255,10 @@ async def find_reference_products(context, category_codes):
         if not receipts:
             raise HealthVisionError("reference_receipt_invalid", "请先读取当前成员和商城分类", 409)
         available = {row["category_code"] for row in receipts[-1].get("categories", [])}
+        if category_codes is None:
+            category_codes = [row["category_code"] for row in sorted(
+                receipts[-1].get("categories", []), key=lambda row: (-row.get("product_count", 0), row["category_code"])
+            )[:4]]
         if (
             not isinstance(category_codes, list)
             or not 1 <= len(category_codes) <= 4
@@ -292,7 +296,7 @@ async def find_reference_products(context, category_codes):
 
 
 async def search_reference_recipes(context, query):
-    """用本 Run 已读商品检索相关菜谱，保留格式和采购待核对项。"""
+    """用本 Run 已读商品检索完整原谱，采购缺口如实保留。"""
     batch = isinstance(query, list)
     queries = query if batch else [query]
     if (

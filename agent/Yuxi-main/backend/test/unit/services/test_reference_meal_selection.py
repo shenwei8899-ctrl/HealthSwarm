@@ -226,8 +226,8 @@ def test_product_selection_rejects_an_explicitly_empty_issued_candidate_set():
 
 
 @pytest.mark.parametrize("issued", [[], ["one"], ["one", "two"]])
-def test_omitted_product_only_fills_unique_current_issued_candidate(issued):
-    """漏选只在实际目录和本轮回执交集唯一时补齐，零或多个候选不猜测。"""
+def test_omitted_product_uses_current_issued_same_food_candidate(issued):
+    """多个合法同类商品可稳定推荐一个；交集为空仍拒绝。"""
     ingredient = "100 g rice"
     key = reference_candidate_key(ingredient)
     groups = {
@@ -235,7 +235,7 @@ def test_omitted_product_only_fills_unique_current_issued_candidate(issued):
         for pid in ("one", "two")
     }
     args = ([{"dishes": [{"ingredients": [ingredient]}]}], [], groups)
-    if len(issued) == 1:
+    if issued:
         assert selection._product_choices(*args, issued_candidates={key: set(issued)}) == (
             [{"product_id": "one", "ingredient_refs": [ingredient]}], []
         )

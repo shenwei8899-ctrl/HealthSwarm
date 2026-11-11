@@ -159,6 +159,7 @@ async def test_real_sdk_corrects_unmatched_product_once(services):
             args = original.SAVE_ARGS
         elif index == 2:
             assert wire["tool_choice"] == {"type": "function", "function": {"name": "save_reference_meal_plan"}}
+            assert [tool["function"]["name"] for tool in wire["tools"]] == ["save_reference_meal_plan"]
             feedback = next(item for item in wire["messages"] if item["role"] == "tool")
             payload = json.loads(feedback["content"])
             assert payload["error_code"] == "reference_ingredient_mismatch"
@@ -171,6 +172,7 @@ async def test_real_sdk_corrects_unmatched_product_once(services):
             args = original.SAVE_ARGS
         else:
             assert index == 3 and "tools" not in wire
+            assert [item["role"] for item in wire["messages"]] == ["system", "user"]
             message["content"] = json.dumps({"preview_id": original.PREVIEW})
             args = None
         if args is not None:

@@ -142,3 +142,22 @@ def test_model_projection_keeps_nutrition_and_identity_without_changing_receipt(
     assert "catalog" not in compact
     assert json.loads(message.content) == payload
     assert projected.tool_call_id == message.tool_call_id
+
+
+def test_read_projection_keeps_complete_recipe_and_does_not_mutate_audit():
+    """去掉重复正文和商品包装，完整食材步骤、来源及硬限制诊断保留。"""
+    payload = {"file_id": "recipe", "chunk_id": "chunk", "content": "重复的长原谱正文",
+               "recipe_check": {"status": "has_gaps", "name": "清粥", "ingredients": ["大米100克"],
+                                "steps": ["加水煮熟"], "ingredient_matches": [
+                                    {"ingredient": "大米100克", "candidate_key": "rice", "status": "matched",
+                                     "candidate_products": [
+                                         {"product_id": "rice", "product_name": "大米", "skus": [1]}],
+                                     "candidate_skus": [1]}]}}
+    message = ToolMessage(json.dumps(payload), name="read_reference_recipe", tool_call_id="read")
+    projected = json.loads(MealPlanResultMiddleware._compact_reference_products(message).content)
+    assert projected["recipe_check"]["ingredients"] == ["大米100克"]
+    assert projected["recipe_check"]["steps"] == ["加水煮熟"]
+    assert projected["file_id"] == "recipe" and projected["chunk_id"] == "chunk"
+    assert "content" not in projected
+    assert "candidate_skus" not in projected["recipe_check"]["ingredient_matches"][0]
+    assert json.loads(message.content) == payload

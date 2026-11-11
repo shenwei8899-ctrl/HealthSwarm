@@ -62,7 +62,7 @@ async def test_product_authorization_error_does_not_turn_into_retry_feedback(mon
         side_effect=HealthVisionError("forbidden", "无权访问", 403)
     ))
     with pytest.raises(HealthVisionError, match="forbidden"):
-        await meal_planner.find_reference_products.coroutine(["valid"], runtime())
+        await meal_planner.find_reference_products.coroutine(runtime=runtime(), category_codes=["valid"])
 
 
 def test_batch_inputs_are_bounded_and_unique():

@@ -119,6 +119,12 @@ class MealPlanResultMiddleware(AgentMiddleware):
                             "餐单保存修正未完成，本轮已停止，请重新生成",
                             422,
                         )
+                    request = request.override(
+                        tools=[
+                            tool for tool in request.tools if getattr(tool, "name", None) == "save_reference_meal_plan"
+                        ],
+                        tool_choice={"type": "function", "function": {"name": "save_reference_meal_plan"}},
+                    )
 
             if tools == REFERENCE_TOOLS and request.tools and isinstance(request.model, ChatCompletionsAdapter):
                 # 工具参数接收完整响应后再执行；不改变原模型或无工具最终回复。
@@ -204,6 +210,7 @@ class MealPlanResultMiddleware(AgentMiddleware):
                 tools=[],
                 tool_choice=None,
                 response_format=None,
+                messages=[next(message for message in reversed(request.messages) if isinstance(message, HumanMessage))],
                 system_message=SystemMessage(content=f"{original}\n\n{instruction}"),
             )
         )
@@ -266,10 +273,10 @@ class MealPlanResultMiddleware(AgentMiddleware):
 
     @staticmethod
     def _compact_reference_products(message):
-        """只压缩模型输入的重复规格资料，审计与 checkpoint 仍保留原始完整商品。"""
+        """模型读取完整原谱字段与精简商品候选；审计保留未裁剪回执。"""
         if (
             not isinstance(message, ToolMessage)
-            or message.name != "find_reference_products"
+            or message.name not in {"find_reference_products", "read_reference_recipe"}
             or message.status != "success"
         ):
             return message
@@ -277,13 +284,37 @@ class MealPlanResultMiddleware(AgentMiddleware):
             payload = json.loads(message.content)
         except (TypeError, ValueError):
             return message
-        if not isinstance(payload, dict) or not isinstance(payload.get("products"), list) or not payload["products"]:
+        if not isinstance(payload, dict):
+            return message
+        if message.name == "read_reference_recipe":
+            from copy import deepcopy
+
+            payload = deepcopy(payload)
+            for item in payload.get("items", [payload]):
+                if not isinstance(item, dict) or not isinstance(item.get("recipe_check"), dict):
+                    return message
+                check = item["recipe_check"]
+                if check.get("status") != "needs_review" and all(
+                    key in check for key in ("name", "ingredients", "steps")
+                ):
+                    item.pop("content", None)
+                for group in check.get("ingredient_matches", []):
+                    group.pop("candidate_skus", None)
+                    group["candidate_products"] = [
+                        {key: value for key, value in product.items() if key in {"product_id", "product_name"}}
+                        for product in group.get("candidate_products", [])
+                    ]
+            return message.model_copy(
+                update={"content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}
+            )
+        if not isinstance(payload.get("products"), list) or not payload["products"]:
             return message
         if any(not isinstance(product, dict) for product in payload["products"]):
             return message
         compact = {key: value for key, value in payload.items() if key not in {"catalog", "products"}}
         compact["products"] = [
-            {key: value for key, value in product.items() if key not in {"skus", "image_url"}}
+            {key: value[:320] if key == "product_description" and isinstance(value, str) else value
+             for key, value in product.items() if key not in {"skus", "image_url"}}
             for product in payload["products"]
         ]
         return message.model_copy(update={"content": json.dumps(compact, ensure_ascii=False, separators=(",", ":"))})
