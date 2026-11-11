@@ -38,7 +38,7 @@ export function createEntryResolver({ auth, readProfile, session, pendingPrepara
     if (invitation()) return invitationRoute(invitation())
     if (profile.invitationReviewPending === true) return '/pages/onboarding/index'
     if (profile.completeProfile === true || profile.onboarded === true) {
-      return '/pages/chat/index'
+      return pendingPreparation() ? '/pages/onboarding/preparing' : '/pages/chat/index'
     }
     if (pendingPreparation()) return '/pages/onboarding/preparing'
     return '/pages/onboarding/index'

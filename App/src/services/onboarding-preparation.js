@@ -11,7 +11,7 @@ export function preparationRoot() {
   return '/api/family/'+encodeURIComponent(id)+'/onboarding-preparations'
 }
 
-export function queueOnboardingPreparation(profile) {
+export function queueOnboardingPreparation(profile, {consentAccepted=false} = {}) {
   const session=getSession()
   if(!session?.token)throw Object.assign(new Error('登录状态已失效，填写内容已保留，请重新登录后继续。'),{code:401})
   if(profile.householdId!==session.householdId)throw Object.assign(new Error('家庭已变化，请重新读取档案。'),{code:'SESSION_CHANGED'})
@@ -19,6 +19,8 @@ export function queueOnboardingPreparation(profile) {
   if(previous)throw Object.assign(new Error('上次准备的提交结果尚未确认，请先继续原准备。'),{code:'PREPARATION_PENDING'})
   const config=profile.healthConfiguration||{}
   const processing_consents=['consultation','meal_plan'].filter(p=>config[p]?.available&&config[p].processor&&config.policy_version).map(p=>({purpose:p,processor:config[p].processor,policy_version:config.policy_version}))
+  if(processing_consents.length!==2)throw new Error('咨询与配餐处理说明尚未读取，请重新读取后再完成建档。')
+  if(!consentAccepted)throw new Error('请先核对咨询与配餐的数据处理说明，并明确选择是否同意。')
   const body={...cloudProfileInput(profile,newHealthRequestId()),processing_consents}
   scopedStorage.setStorageSync('onboarding-preparation-pending',body)
   return body
@@ -29,13 +31,13 @@ export async function readCurrentPreparation() {
 }
 
 // Confirm the existing profile write, without waiting for meal preparation.
-export async function submitOnboardingPreparation(profile) {
+export async function submitOnboardingPreparation(profile, {consentAccepted=false} = {}) {
   const session=getSession()
   if(!session?.token)throw Object.assign(new Error('登录状态已失效，填写内容已保留，请重新登录后继续。'),{code:401})
   if(profile.householdId!==session.householdId)throw Object.assign(new Error('家庭已变化，请重新读取档案。'),{code:'SESSION_CHANGED'})
   const scope=storageContext(),revision=sessionRevision()
   const current=()=>scope===storageContext()&&revision===sessionRevision()
-  const body=scopedStorage.getStorageSync('onboarding-preparation-pending')||queueOnboardingPreparation(profile)
+  const body=scopedStorage.getStorageSync('onboarding-preparation-pending')||queueOnboardingPreparation(profile,{consentAccepted})
   const {processing_consents,...original}=body
   const changed=JSON.stringify(original)!==JSON.stringify(cloudProfileInput(profile,body.client_request_id))
   const client=createPreparationClient({send:request,root:preparationRoot,storage:scopedStorage,

@@ -40,6 +40,7 @@ export function createPreparationClient({send, root, storage, onChange, newId, o
           if (value.status !== 'absent' && (!value.id || !value.date || value.profile_saved !== true)) throw new Error('档案保存状态尚未确认，请继续原请求。')
           if (value.profile_saved) {
             storage.setStorageSync('onboarding-preparation-id',value.id)
+            storage.setStorageSync('onboarding-preparation-active',value.status==='ready'?null:value.id)
             storage.setStorageSync('onboarding-preparation-pending',null)
             storage.setStorageSync('onboarding-preparation-existing-pending',null)
             onSaved()

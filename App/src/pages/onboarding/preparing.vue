@@ -19,7 +19,7 @@ const client=createPreparationClient({send:request,root:preparationRoot,storage:
   current:()=>visible&&!disposed&&scope===storageScope()&&revision===sessionRevision(),
   onInvalidated(){hide();state.value={status:'connection_error',message:'登录或家庭已变化，请重新进入。'};uni.reLaunch({url:'/pages/index/index'})},
   onSaved(){scopedStorage.setStorageSync('frontend-onboarding-progress-v1',null);scopedStorage.setStorageSync('frontend-onboarding-progress-v1:conflict',null);scopedStorage.setStorageSync('frontend-onboarded-v1',true)},
-  onChange(value){state.value=value;if(value.id)routeId=value.id;if(value.profile_saved===true&&!entering){entering=true;uni.reLaunch({url:'/pages/chat/index'})}}
+  onChange(value){state.value=value;if(value.id)routeId=value.id;if(value.status==='ready'&&!entering){entering=true;uni.reLaunch({url:'/pages/chat/index'})}}
 })
 async function load(resume=false){
   if(busy.value||disposed)return
@@ -46,7 +46,7 @@ onHide(hide);onUnload(()=>{disposed=true;hide()})
     <view class="stage-list"><view v-for="(step,i) in steps" :key="step.key" class="stage-row" :class="{done:i<active,current:i===active}"><view class="stage-indicator">{{i<active?'✓':String(i+1).padStart(2,'0')}}</view><view class="stage-copy"><text>{{step.label}}</text><text>{{i<active?'已完成':step.detail}}</text></view><text v-if="i===active&&!problem" class="stage-working">进行中</text></view></view>
    </view>
    <view v-if="problem" class="preparation-error" role="alert"><text>{{state.message}}</text><button v-if="state.retryable!==false" :disabled="busy" @click="load(true)">{{busy?'正在读取…':state.status==='failed'?'继续准备':'继续查看进度'}}</button><button class="text-button" @click="archives">核对档案与授权</button></view>
-   <view class="preparation-note"><view class="note-line"/><text>{{state.profile_saved?'档案已保存，可以进入对话后再准备餐单':'完成准备后，将自动进入对话'}}{{'\n'}}{{state.profile_saved?'暂时离开，也可以回来继续':'正在安全提交本次填写内容'}}</text><view class="note-line"/></view>
+   <view class="preparation-note"><view class="note-line"/><text>{{state.profile_saved?'档案已保存，正在确认授权与今日安排':'完成准备后，将自动进入对话'}}{{'\n'}}{{state.profile_saved?'暂时离开，也可以回来继续':'正在安全提交本次填写内容'}}</text><view class="note-line"/></view>
   </view>
  </view>
 </template>

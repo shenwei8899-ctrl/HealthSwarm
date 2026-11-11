@@ -16,14 +16,15 @@ const candidatePending=()=>({status:'reference_candidates',request_id:'original'
  selection:{mode:'reference',family_id:'family',participant_ids:['self'],plan_date:date,meal_types:['breakfast']}})
 function fixture({read=async()=>absent(),available=true,consent=false,unknown=false,accepted=true,invalid=false,pollLimit,submittedState={},initialState,onPlan=()=>{}}={}){
  const state=initialState||todayMealPlanState(),calls=[],timers=new Map(),cache=new Map(),published=[],scheduledDelays=[]
- let owner='account:family',sequence=0,calendar=date,taskValue={},taskChanged=()=>{}
+ let owner='account:family',sequence=0,calendar=date,taskValue={},taskChanged=()=>{},requiresConsent=consent,accessible=available
  const client=createTodayMealPlan({state,day:()=>calendar,context:()=>owner,read:async(...args)=>{calls.push(['read',...args]);return read(...args)},
   storage:{getStorageSync:k=>cache.get(k),setStorageSync:(k,v)=>cache.set(k,v)},
   schedule:(fn,ms)=>{scheduledDelays.push(ms);timers.set(++sequence,fn);return sequence},cancel:id=>timers.delete(id),pollLimit,onPlan:plan=>{published.push(plan);onPlan(plan)},
   createFlow:({storage,onChange})=>{
    calls.push(['flow']);taskChanged=onChange
    return {getState:()=>taskValue,
-    async open(member,type,selection,options){calls.push(['open',member,type,selection,options]);storage.setStorageSync('task',{member});taskValue={available,consentOption:consent?{}:null,...(unknown?{requestId:'existing',submitUnknown:true}:{})};if(invalid){taskValue.invalidated=true;onChange(taskValue)}},
+    async open(member,type,selection,options){calls.push(['open',member,type,selection,options]);storage.setStorageSync('task',{member});taskValue={available:accessible,consentOption:requiresConsent?{processor:'processor-a',policyVersion:'policy-1'}:null,...(unknown?{requestId:'existing',submitUnknown:true}:{})};if(invalid){taskValue.invalidated=true;onChange(taskValue)}},
+    async acceptConsent(accepted){calls.push(['acceptConsent',accepted]);requiresConsent=false;accessible=true;taskValue={...taskValue,available:true,consentOption:null};onChange(taskValue)},
     async createEntry(){calls.push(['entry']);taskValue.entry={thread_id:'thread'}},
     async submit(query){calls.push(['submit',query]);taskValue={...taskValue,requestId:'new',status:accepted?'queued':'',submitUnknown:!accepted,...submittedState};return accepted},
     pause(){calls.push(['pause']);onChange(taskValue)},
@@ -111,6 +112,10 @@ test('required input and processing consent never get an invented answer or auto
  await h.client.open(profile);assert.equal(h.state.phase,'error');assert.equal(h.calls.length,1)
  const blocked=fixture({available:false,consent:true});await blocked.client.open(profile)
  assert.equal(blocked.state.phase,'error');assert.equal(blocked.calls.some(c=>c[0]==='entry'||c[0]==='submit'),false)
+ assert.equal(blocked.state.action,'consent');assert.equal(blocked.state.consentOption.processor,'processor-a')
+ await blocked.client.acceptConsent()
+ assert.equal(blocked.calls.filter(c=>c[0]==='acceptConsent').length,1)
+ assert.equal(blocked.calls.filter(c=>c[0]==='submit').length,1)
 })
 test('closing a menu invalidates a late read before it can create an AI task',async()=>{
  let resolve;const h=fixture({read:()=>new Promise(r=>resolve=r)})

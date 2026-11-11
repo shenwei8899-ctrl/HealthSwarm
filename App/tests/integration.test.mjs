@@ -374,6 +374,17 @@ test('HTTP transport detects expired sessions, timeout and obsolete responses wi
   await assert.rejects(relogin,error=>error.code==='SESSION_CHANGED');assert.equal(api.session.getSession().token,'renewed')
 })
 
+test('HTTP transport retries one transient read and keeps its endpoint detail',async()=>{
+  setup();const api=await apiRuntime();api.session.setSession({accountId:'A',householdId:'home',token:'test-token'})
+  const callbacks=[];uni.request=options=>callbacks.push(options)
+  const pending=api.transport.request({path:'/api/family/home/miniapp-profile'})
+  callbacks[0].fail({errMsg:'request:fail timeout'})
+  await new Promise(resolve=>setTimeout(resolve,400))
+  assert.equal(callbacks.length,2)
+  callbacks[1].success({statusCode:200,data:{source:'api'}})
+  assert.equal((await pending).data.source,'api')
+})
+
 test('anonymous WeChat credential errors preserve an existing session and structured business errors',async()=>{
   setup();const api=await apiRuntime();api.session.setSession({accountId:'A',token:'existing-token'})
   let callback;uni.request=options=>{callback=options}

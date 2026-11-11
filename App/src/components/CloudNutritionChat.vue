@@ -673,10 +673,10 @@ function load(){
 }
 async function loadEntry(recoveries,{skipOptional=false}={}){
   if(!getSession()?.token){requireLogin();return}
+  if(loading)return loading
   const preserveView=!!profile.value&&loadedDate===localDate()&&pageScope===storageContext()
   entryReady.value=false
   if(pageScope!==storageContext()){clearPrivate();pageScope=storageContext();flowScope=pageScope}
-  if(loading)return loading
   historyDenied=false
   if(!prompts.value.length||promptDate.value!==localDate())refreshPrompts()
   const mine=++epoch,scope=storageContext(),account=getSession()
@@ -1344,7 +1344,8 @@ function resetConversationView(){cancelHistorySelection();historyPreview.value=n
 function generateReference(){if(!voiceBusy.value)inlineTodayOpen.value=true}
 function actTodayMenu(){
   if(disposed||!visible||voiceBusy.value||planPurchaseBusy.value||state.busy||!profile.value)return
-  if(['answer','candidates'].includes(todayMenu.action))void resumePlanQuestion(todayMenu.pending)
+  if(todayMenu.action==='consent')void todayMenuClient.acceptConsent()
+  else if(['answer','candidates'].includes(todayMenu.action))void resumePlanQuestion(todayMenu.pending)
   else if(todayMenu.action==='refresh')void todayMenuClient.open(profile.value,{readOnly:true})
   else if(todayMenu.action==='regenerate'||todayMenu.phase==='error')void todayMenuClient.open(profile.value,{retryFailed:true})
 }
@@ -1539,6 +1540,7 @@ function messageTime(message,index){
  </template>
  <template #composer>
   <view v-if="continuationError" class="composer-note" role="status"><text>暂时无法继续发送，历史内容仍可阅读。</text><button @click="retrySelectedConversation">重试</button></view>
+  <view v-if="!entryReady&&profileLoading" class="entry-status" role="status"><text>正在读取档案并连接营养师…</text></view>
   <view v-if="!entryReady&&entryRecovering" class="entry-status" role="status"><text>正在重新连接…</text></view>
   <view v-if="!entryReady&&entryError&&!profileLoading&&!task.consentOption" class="entry-status" role="alert"><text>{{task.notice||profile?.consultationError||entryError}}</text><button :disabled="conversationChangeBusy||returning||pendingEntrySend||voiceBusy||draftSaving" @click="load">重新连接营养师</button><button :disabled="conversationChangeBusy||returning||pendingEntrySend||voiceBusy||draftSaving" @click="reenter">重新进入</button></view>
   <view v-if="conversationReadOnly" class="archived-conversation"><text>这段每日对话已归档，记录仍可查看。</text><button :disabled="chatBusy" @click="newConversation">新对话继续聊</button></view>

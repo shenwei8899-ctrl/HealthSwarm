@@ -6,7 +6,7 @@ import {createPreparationClient} from '../src/services/preparation-client.js'
 function harness(){
  let revision=1,fail=false,delayed=null
  const values=new Map(),calls=[]
- const profile={householdId:'family',members:[{name:'合成成员'}]}
+ const profile={householdId:'family',members:[{name:'合成成员'}],healthConfiguration:{policy_version:'policy-1',consultation:{available:true,processor:'processor-a'},meal_plan:{available:true,processor:'processor-b'}}}
  const deps={createPreparationClient,getSession:()=>({token:'synthetic',householdId:'family'}),sessionRevision:()=>revision,storageContext:()=>`scope:${revision}`,
   scopedStorage:{getStorageSync:k=>values.get(k),setStorageSync:(k,v)=>values.set(k,v)},newHealthRequestId:()=> 'original-key',
   cloudProfileInput:(p,id)=>({client_request_id:id,members:structuredClone(p.members)}),
@@ -17,14 +17,14 @@ function harness(){
 }
 
 test('direct submission confirms profile while meals are still preparing',async()=>{
- const h=harness(),receipt=await h.submit(h.profile)
+ const h=harness(),receipt=await h.submit(h.profile,{consentAccepted:true})
  assert.equal(receipt.profile_saved,true);assert.equal(h.calls.length,1)
  assert.equal(h.values.get('onboarding-preparation-pending'),null)
 })
 
 test('lost receipt reuses the original body and key without dropping newer edits',async()=>{
  const h=harness();h.setFail(true)
- await assert.rejects(h.submit(h.profile),e=>e.code==='NETWORK_ERROR')
+ await assert.rejects(h.submit(h.profile,{consentAccepted:true}),e=>e.code==='NETWORK_ERROR')
  assert.equal(h.values.get('onboarding-preparation-pending').client_request_id,'original-key')
  h.profile.members[0].name='后来编辑';h.setFail(false)
  await assert.rejects(h.submit(h.profile),e=>e.code===409)
@@ -34,8 +34,17 @@ test('lost receipt reuses the original body and key without dropping newer edits
 })
 
 test('late profile receipt cannot complete onboarding for another account',async()=>{
- const h=harness(),release=h.delay(),pending=h.submit(h.profile)
+ const h=harness(),release=h.delay(),pending=h.submit(h.profile,{consentAccepted:true})
  h.switchAccount();release()
  await assert.rejects(pending,e=>e.code==='SESSION_CHANGED')
  assert.notEqual(h.values.get('onboarding-preparation-pending'),null)
+})
+
+test('new onboarding requires an explicit decision and current processing details',async()=>{
+ const h=harness()
+ await assert.rejects(h.submit(h.profile),/明确选择是否同意/)
+ assert.equal(h.calls.length,0)
+ h.profile.healthConfiguration.meal_plan.processor=''
+ await assert.rejects(h.submit(h.profile,{consentAccepted:true}),/处理说明尚未读取/)
+ assert.equal(h.calls.length,0)
 })

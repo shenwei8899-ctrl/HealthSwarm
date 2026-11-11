@@ -18,14 +18,15 @@ function page(members = [completeMember()], extras = {}) {
   const storage = new Map([['family-profile-v2', true]]), calls = { saves: [], redirects: [], toasts: [] }
   const profile = normalizeProfile({ householdId: 'synthetic-family', familyVersion: 1, usageMode: '家庭使用', members,
     defaultDiners: [members[0].id], goals: [], tastes: [] })
+  profile.healthConfiguration={policy_version:'policy-1',consultation:{available:true,processor:'processor-a'},meal_plan:{available:true,processor:'processor-b'}}
   const deps = { ref, computed, nextTick, watch, newMember, normalizeMember, normalizeProfile, dataWarnings, onboardingIssue, canRestoreOnboardingDraft,
     isMockMode: false, getProfile: () => structuredClone(profile), saveProfile() {}, backHome() {}, sessionRevision: () => 1, storageScope: () => '',
     scopedStorage: { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, value) },
     onLoad() {}, onShow() {}, onUnload() {}, onPageScroll() {}, loadCloudProfile: async () => profile, readCloudReportStatus: async () => 'empty',
     saveCloudProfile: async value => { calls.saves.push(JSON.parse(JSON.stringify(value))); return { ...value, onboarded: true } },
-    submitOnboardingPreparation: value => deps.saveCloudProfile(value),
+    submitOnboardingPreparation: value => deps.saveCloudProfile(value), preparationRoute: () => '/pages/onboarding/preparing',
     uni: { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, structuredClone(value)), pageScrollTo() {}, showToast: value => calls.toasts.push(value.title),
-      showModal() { throw new Error('Required fields must not be bypassable through a warning modal') },
+      showModal(options) { if(options.title!=='确认数据处理')throw new Error('Required fields must not be bypassable through a warning modal');options.success({confirm:true}) },
       navigateTo: value => calls.redirects.push(value.url), reLaunch: value => calls.redirects.push(value.url) }, ...extras }
   const script = readFileSync(new URL('../src/pages/onboarding/index.vue', import.meta.url), 'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
@@ -58,7 +59,7 @@ for (const [label, mutate, step] of missing) {
 test('a complete explicit no-restriction profile can finish without height weight or sex', async () => {
   const p = page(); p.next(); assert.equal(p.step.value, 1)
   p.next(); assert.equal(p.step.value, 2); p.next(); await nextTick()
-  assert.equal(p.calls.saves.length, 1); assert.deepEqual(p.calls.redirects, ['/pages/chat/index?from=onboarding'])
+  assert.equal(p.calls.saves.length, 1); assert.deepEqual(p.calls.redirects, ['/pages/onboarding/preparing'])
   assert.equal(p.calls.saves[0].members[0].height, ''); p.dispose()
 })
 
@@ -69,7 +70,7 @@ for (const cuisines of [[], ['不限菜系'], ['粤菜']]) {
     assert.equal(p.step.value, 2); p.next(); await nextTick()
     assert.equal(p.calls.saves.length, 1)
     assert.deepEqual(p.calls.saves[0].members[0].cuisines, cuisines)
-    assert.deepEqual(p.calls.redirects, ['/pages/chat/index?from=onboarding']); p.dispose()
+    assert.deepEqual(p.calls.redirects, ['/pages/onboarding/preparing']); p.dispose()
   })
 }
 
@@ -141,13 +142,13 @@ test('a completed save from an old session cannot mark the new account onboarded
   assert.equal(p.calls.redirects.length,0);p.dispose()
 })
 
-test('onboarding stays on the form until the saved receipt then enters chat directly',async()=>{
+test('onboarding stays on the form until the saved receipt then enters preparation',async()=>{
  let resolveSave
  const p=page([completeMember()],{saveCloudProfile:()=>new Promise(resolve=>resolveSave=resolve)})
  p.step.value=2;p.next()
  assert.deepEqual(p.calls.redirects,[]);assert.notEqual(p.storage.get('frontend-onboarded-v1'),true)
  resolveSave({profile_saved:true});await nextTick()
- assert.deepEqual(p.calls.redirects,['/pages/chat/index?from=onboarding'])
+ assert.deepEqual(p.calls.redirects,['/pages/onboarding/preparing'])
  assert.equal(p.storage.get('frontend-onboarded-v1'),true);p.dispose()
 })
 

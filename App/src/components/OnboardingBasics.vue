@@ -2,13 +2,17 @@
 import { ageLabel, memberAge, shanghaiDate } from '../utils/member-age.js'
 const props=defineProps({member:{type:Object,required:true},showRelationship:{type:Boolean,default:true},readOnly:Boolean,source:Object,archive:Boolean,onboarding:Boolean})
 const editable=field=>!props.readOnly&&(!props.source||(field==='identity'?props.source.is_self||props.source.is_guardian||props.source.editable_fields?.length:props.source.editable_fields?.includes(field)))
+function selectGender(event){
+  const value=event.detail?.value
+  if(editable('sex')&&['女','男','未填写'].includes(value))props.member.gender=value
+}
 </script>
 <template>
  <view class="basic-fields" :class="{'archive-basics':archive,'onboarding-basics':onboarding}">
   <view class="identity-fields">
   <view v-if="onboarding" class="basic-card-heading"><text>基本信息</text><text class="heading-note">先从认识你开始</text></view>
   <label class="basic-row" id="field-name"><text>姓名／称呼<text v-if="onboarding" class="required-mark"> *</text></text><input v-model="member.name" :disabled="!editable('identity')" aria-label="姓名或称呼" placeholder="怎么称呼你" maxlength="40"/></label>
-  <view class="basic-row" id="field-gender"><text>性别</text><view class="gender-options" role="radiogroup" aria-label="性别"><button v-for="genderOption in ['女','男','未填写']" :key="genderOption" role="radio" :aria-checked="member.gender===genderOption||!member.gender&&genderOption==='未填写'" :class="{selected:member.gender===genderOption||!member.gender&&genderOption==='未填写'}" :disabled="!editable('sex')" @click="member.gender=genderOption">{{genderOption}}</button></view></view>
+  <view class="basic-row" id="field-gender"><text>性别</text><radio-group class="gender-options" aria-label="性别" @change="selectGender"><label v-for="genderOption in ['女','男','未填写']" :key="genderOption" :class="{selected:member.gender===genderOption||!member.gender&&genderOption==='未填写',disabled:!editable('sex')}"><radio :value="genderOption" :checked="member.gender===genderOption||!member.gender&&genderOption==='未填写'" :disabled="!editable('sex')" color="#7964b2"/><text>{{genderOption}}</text></label></radio-group></view>
   <label v-if="showRelationship" class="basic-row"><text>与我的关系</text><input v-model="member.relation" :disabled="!editable('identity')" aria-label="与我的关系" placeholder="例如：妈妈" maxlength="30"/></label>
   <view class="basic-row" id="field-birth"><view class="field-label-line"><text>出生日期<text v-if="onboarding" class="required-mark"> *</text></text><text v-if="member.birthDate" class="age-label">{{ageLabel(member)}}</text></view><picker mode="date" :disabled="!editable('birth_date')" :end="shanghaiDate()" :value="member.birthDate" @change="member.birthDate=$event.detail.value;member.age=memberAge(member).years"><view class="picker-value" :class="{placeholder:!member.birthDate}"><text>{{member.birthDate||'请选择出生日期'}}</text><text class="chevron">›</text></view></picker></view>
   </view>
@@ -27,4 +31,5 @@ const editable=field=>!props.readOnly&&(!props.source||(field==='identity'?props
 .onboarding-basics .basic-row{font-weight:600;margin-bottom:17px;font-size:12px;color:#737c96}.onboarding-basics .basic-row:last-child{margin-bottom:0}.onboarding-basics .basic-row>text,.onboarding-basics .field-label-line{margin-bottom:8px}.onboarding-basics .basic-row input,.onboarding-basics .picker-value{font-weight:600;min-height:44px;height:44px;padding:0 13px;border:1px solid #edeef5;border-radius:12px;background:#f6f7fb;color:#505970;font-size:14px;}.onboarding-basics .basic-row input:focus{border-color:#c7bcdf;background:#fbfaff}.onboarding-basics .picker-value.placeholder{color:#a2a8bb}.onboarding-basics .chevron{font-size:20px;color:#aaa3bf}
 .onboarding-basics .gender-options{gap:8px}.onboarding-basics .gender-options button{font-weight:600;display:flex;align-items:center;justify-content:center;min-height:42px;padding:8px 6px;border:1px solid #eceef5;border-radius:11px;background:#f7f8fc;color:#949bb1;font-size:13px;line-height:1.5}.onboarding-basics .gender-options button.selected{border-color:#d1c4e9;background:#f0ecfa;color:#7e69ab}.onboarding-basics .age-label{font-weight:500;color:#9685b6;font-size:10px}
 .onboarding-basics .measurements{gap:14px;margin:0}.onboarding-basics .measure{font-weight:600;color:#7b839c;font-size:12px}.onboarding-basics .unit{font-weight:500;color:#a4aabf;font-size:10px}.onboarding-basics .measure input{font-weight:600;height:44px;margin-top:8px;padding:0 13px;border:1px solid #edeef5;border-radius:12px;background:#f6f7fb;color:#505970;font-size:14px;}
+.gender-options label{display:flex;align-items:center;justify-content:center;gap:3px;flex:1;min-height:45px;padding:8px 4px;border:1px solid #e3dced;border-radius:12px;background:#f7f6f9;color:#665676;font-size:13px;font-weight:600}.gender-options label.selected{border-color:#a98bd7;background:#ebe3f8;color:#553d79}.gender-options label.disabled{opacity:.55}.gender-options radio{transform:scale(.7)}
 </style>

@@ -16,7 +16,8 @@ export function request({ path, method = 'GET', data, headers = {}, timeout = 15
   if (authenticated && session?.token) header.Authorization = 'Bearer ' + session.token
   if (!authenticated && authenticationToken) header.Authorization = 'Bearer ' + authenticationToken
   return new Promise((resolve, reject) => {
-    uni.request({ url: apiBaseUrl.replace(/\/$/, '') + path, method, data, timeout,
+    let retries=0
+    const dispatch=()=>uni.request({ url: apiBaseUrl.replace(/\/$/, '') + path, method, data, timeout,
       header,
       success(response) {
         if (scope !== storageContext() || revision !== sessionRevision()) return reject(Object.assign(new Error('账号已切换，请重新操作'), { code: 'SESSION_CHANGED' }))
@@ -30,9 +31,13 @@ export function request({ path, method = 'GET', data, headers = {}, timeout = 15
       },
       fail(error) {
         if (scope !== storageContext() || revision !== sessionRevision()) return reject(Object.assign(new Error('账号已切换，请重新操作'), { code: 'SESSION_CHANGED' }))
-        reject(Object.assign(new Error(/timeout/i.test(error.errMsg || '') ? '请求超时，请重试' : '网络暂不可用，请重试'), { code: 'NETWORK_ERROR' }))
+        const networkDetail=String(error?.errMsg||'unknown')
+        console.warn('[health request failed]',method,path,networkDetail)
+        if(method==='GET'&&retries++<1){setTimeout(()=>{if(scope===storageContext()&&revision===sessionRevision())dispatch();else reject(Object.assign(new Error('账号已切换，请重新操作'),{code:'SESSION_CHANGED'}))},350);return}
+        reject(Object.assign(new Error(/timeout/i.test(networkDetail) ? '请求超时，请重试' : '网络暂不可用，请重试'), { code: 'NETWORK_ERROR', path, networkDetail }))
       },
     })
+    dispatch()
   })
 }
 

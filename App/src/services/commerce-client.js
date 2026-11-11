@@ -86,11 +86,14 @@ export function createCommerceClient({
           ...(options.key ? { "Idempotency-Key": options.key } : {}),
         },
       });
-    } catch {
+    } catch (error) {
       current(scope);
+      const networkDetail = String(error?.errMsg || error?.message || "unknown");
+      console.warn("[commerce request failed]", options.method || "GET", prefix + path, networkDetail);
       throw failure(
         "网络暂不可用，操作结果尚未确认，请重试原操作",
         "NETWORK_ERROR",
+        { path: prefix + path, networkDetail },
       );
     }
     if (revision !== read().session?.revision) throw failure("商城账号已切换，请重新操作", "SESSION_CHANGED");

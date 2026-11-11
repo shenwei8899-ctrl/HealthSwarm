@@ -12,6 +12,11 @@ for(const status of ['absent','failed','blocked','stale'])test(`saved profile op
 test('old and incomplete meal receipts do not gate the authenticated homepage',async()=>{
  for(const value of [{status:'ready',id:'broken'},readyPreparation('2026-10-25'),readyPreparation()])assert.equal(await resolver(value)(),'/pages/chat/index')
 })
+test('a saved profile with an active preparation resumes its progress screen',async()=>{
+ const active=session();const resolve=createEntryResolver({auth:{restore:async()=>active},session:()=>active,
+  readProfile:async()=>({householdId:'family-A',completeProfile:true}),pendingPreparation:()=>true})
+ assert.equal(await resolve(),'/pages/onboarding/preparing')
+})
 test('switching family while the profile loads cannot route to private home',async()=>{
  let active=session();const resolve=createEntryResolver({auth:{restore:async()=>active},session:()=>active,readProfile:async()=>{active={...active,householdId:'family-B'};return {householdId:'family-A',completeProfile:true}}})
  await assert.rejects(resolve,e=>e.code==='SESSION_CHANGED')
