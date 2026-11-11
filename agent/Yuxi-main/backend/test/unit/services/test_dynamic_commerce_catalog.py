@@ -242,21 +242,17 @@ async def test_recipe_image_task_reads_saved_preview_and_returns_count(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_recent_recipe_exclusions_are_scoped_to_actor_family_and_date():
+async def test_recent_recipe_exclusions_are_scoped_to_family_across_dates_and_accounts():
     from types import SimpleNamespace
 
-    matching = SimpleNamespace(
-        selection={"mode": "reference", "family_id": "family-1", "plan_date": "2026-11-09"},
-        snapshot={"meals": [{"dishes": [{"source": {"file_id": "used-recipe"}}]}]},
-    )
-    other_family = SimpleNamespace(
-        selection={"mode": "reference", "family_id": "family-2", "plan_date": "2026-11-09"},
-        snapshot={"meals": [{"dishes": [{"source": {"file_id": "other-recipe"}}]}]},
-    )
-    session = SimpleNamespace(scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [matching, other_family])))
+    def meals(file_id):
+        return [{"dishes": [{"source": {"file_id": file_id}}]}]
 
+    rows = [("family-1", "2026-11-09", meals("same-day"), "run-a"),
+            ("family-1", "2026-11-08", meals("yesterday-other-account"), "run-b"),
+            ("family-2", "2026-11-09", meals("other-family"), "run-c")]
+    session = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(all=lambda: rows)))
     result = await reference_meal_plan_service.recent_reference_file_ids(
         session, "owner", {"family_id": "family-1", "plan_date": "2026-11-09"}
     )
-
-    assert result == {"used-recipe"}
+    assert result == {"same-day", "yesterday-other-account"}

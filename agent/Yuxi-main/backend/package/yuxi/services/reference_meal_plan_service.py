@@ -305,7 +305,7 @@ async def search_reference_recipes(context, query):
 
     async with pg_manager.get_async_session_context() as session:
         run, binding = await require_planner_run(session, context)
-        await bound_reference_context(session, context.uid, binding)
+        current = await bound_reference_context(session, context.uid, binding)
         reads = await tool_payloads(session, run, "find_reference_products")
         if not reads:
             raise HealthVisionError("reference_product_required", "请先按商城分类读取在售商品", 409)
@@ -313,31 +313,29 @@ async def search_reference_recipes(context, query):
         # 因此商城新增商品无需修改 Agent 词表或等待知识库重建。
         full_catalog = await current_catalog()
         products = {str(sku["sku_id"]): sku for sku in full_catalog["items"]}
-        excluded_file_ids = await recent_reference_file_ids(
-            session, context.uid, (binding.initial_planner_selection or {}).get("selection") or {}
-        )
-        items, seen = [], set()
+        from yuxi.repositories.reference_variety_repository import reference_history
+        from yuxi.services.reference_recipe_variety import variety_context, balanced_candidates
+
+        selection = (binding.initial_planner_selection or {}).get("selection") or {}
+        variety = None
+        if selection.get("family_id") and selection.get("plan_date"):
+            history = await reference_history(session, selection, run_id=run.id)
+            variety = variety_context(history, selection, current["members"])
+            variety["restrictions"] = reference_member_restrictions(current["members"])
+        excluded_file_ids = set()
+        options = {"variety": variety} if variety else {}
         ranked = (
             await purchasable_reference_recipes_batch(
-                session, list(products.values()), queries, excluded_file_ids=excluded_file_ids
+                session, list(products.values()), queries, excluded_file_ids=excluded_file_ids, **options
             )
             if batch
             else [
                 await purchasable_reference_recipes(
-                    session, list(products.values()), queries[0], excluded_file_ids=excluded_file_ids
+                    session, list(products.values()), queries[0], excluded_file_ids=excluded_file_ids, **options
                 )
             ]
         )
-        for matches in ranked:
-            for item in matches:
-                key = (item["file_id"], item["chunk_id"])
-                if key not in seen:
-                    items.append(item)
-                    seen.add(key)
-                    if len(items) == 9:
-                        break
-            if len(items) == 9:
-                break
+        items = balanced_candidates(ranked)
     return {
         "scope": "reference_recipe_search",
         "status": "ok",
@@ -347,36 +345,14 @@ async def search_reference_recipes(context, query):
 
 
 async def recent_reference_file_ids(session, uid, selection):
-    """同一家庭和日期只排除近期已真正保存的菜谱来源，不改变本次选择。"""
-    family_id = str(selection.get("family_id") or "")
-    plan_date = str(selection.get("plan_date") or "")
-    if not family_id or not plan_date:
+    """已授权家庭内跨账号、相邻日期的已保存菜谱来源。"""
+    from yuxi.repositories.reference_variety_repository import reference_history
+    from yuxi.services.reference_recipe_variety import variety_context
+
+    if not selection.get("family_id") or not selection.get("plan_date"):
         return set()
-    rows = list(
-        (
-            await session.scalars(
-                select(HealthInitialPlanPreview)
-                .where(HealthInitialPlanPreview.actor_uid == uid)
-                .order_by(HealthInitialPlanPreview.created_at.desc(), HealthInitialPlanPreview.id.desc())
-                .limit(20)
-            )
-        ).all()
-    )
-    excluded = set()
-    for row in rows:
-        saved = row.selection or {}
-        if (
-            saved.get("mode") != "reference"
-            or str(saved.get("family_id") or "") != family_id
-            or str(saved.get("plan_date") or "") != plan_date
-        ):
-            continue
-        for meal in (row.snapshot or {}).get("meals") or []:
-            for dish in meal.get("dishes") or []:
-                file_id = (dish.get("source") or {}).get("file_id")
-                if file_id:
-                    excluded.add(str(file_id))
-    return excluded
+    policy = variety_context(await reference_history(session, selection), selection)
+    return {key.removeprefix("file:") for key in policy["excluded"] if key.startswith("file:")}
 
 
 async def recipe_document(session, file_id, chunk_id):
@@ -906,6 +882,12 @@ async def save_reference_plan(context, draft):
             "sources": current["sources"],
             "notice": "日常烹饪参考，未作专业审核；个人营养量尚未核算。",
         }
+        from yuxi.repositories.reference_variety_repository import reference_history, current_reference_menus
+        from yuxi.services.reference_recipe_variety import validate_variety
+
+        history = await reference_history(session, current["selection"], lock=True, run_id=run.id)
+        menus = await current_reference_menus(session, current["selection"])
+        validate_variety(history, current["selection"], meals, current_menus=menus, actor_uid=context.uid)
         ordered_draft = sorted(draft.meals, key=lambda m: ("breakfast", "lunch", "dinner").index(m.meal_type))
         for draft_meal, saved_meal in zip(ordered_draft, meals, strict=True):
             for requested, saved in zip(draft_meal.dishes, saved_meal["dishes"], strict=True):

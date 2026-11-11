@@ -388,6 +388,7 @@ def save_owner(monkeypatch):
     }
     state = SimpleNamespace(rows={}, committed=False, image_entered=asyncio.Event(), image_release=asyncio.Event())
     session = SimpleNamespace()
+    session.execute = AsyncMock(return_value=SimpleNamespace(all=lambda: []))
 
     async def get(model, row_id):
         """仅回读本合成会话中的预览。"""

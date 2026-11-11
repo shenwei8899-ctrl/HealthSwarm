@@ -1643,7 +1643,10 @@ async def process_agent_run(ctx, run_id: str):
 
         public_error_type = (
             e.code
-            if isinstance(e, HealthVisionError) and e.code in {"budget_exceeded", "budget_price_unavailable"}
+            if isinstance(e, HealthVisionError) and e.code in {
+                "budget_exceeded", "budget_price_unavailable", "reference_recipe_repeated",
+                "reference_menu_repeated", "reference_variety_exhausted",
+            }
             else "worker_error"
         )
         error_chunk = {

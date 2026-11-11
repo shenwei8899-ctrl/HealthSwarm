@@ -327,10 +327,19 @@ async def grounded_plan(
     """真实服务读取PG原文并按商品保存；规格只在后续购买请求中选择。"""
     sessions = current[1]
     file_id, chunk_id = "reference-file", "reference-chunk"
+    recipe_name, recipe_step = "清粥", "加水煮熟"
     if replacement:
+        async with sessions() as db:
+            previous = await db.scalar(select(func.count()).select_from(KnowledgeFile).where(
+                KnowledgeFile.file_id.startswith("replacement-")
+            ))
+        recipe_name, recipe_step = [
+            ("蒸米饭", "加水蒸熟"), ("米饭团", "加水蒸熟后捏成团"), ("米饼", "加水煮熟后压饼煎熟"),
+        ][previous % 3]
         file_id = "replacement-" + str(uuid4())
         chunk_id = file_id + "-chunk"
-        await add_recipe(current, file_id, "烹饪菜谱｜清粥新做法.md", TEXT.replace("加水煮熟", "加水慢煮至熟"))
+        await add_recipe(current, file_id, f"烹饪菜谱｜{recipe_name}.md",
+                         TEXT.replace("清粥", recipe_name).replace("加水煮熟", recipe_step))
     initial = await receipt(
         sessions, context, "get_reference_plan_context", await service.get_reference_context(context)
     )
@@ -338,7 +347,8 @@ async def grounded_plan(
         sessions, context, "find_reference_products", await service.find_reference_products(context, ["grain"])
     )
     searched = await receipt(
-        sessions, context, "search_reference_recipes", await service.search_reference_recipes(context, "清粥")
+        sessions, context, "search_reference_recipes",
+        await service.search_reference_recipes(context, "大米" if replacement else "清粥")
     )
     doc = await service.read_reference_recipe(context, file_id, chunk_id)
     opened = await receipt(sessions, context, "read_reference_recipe", doc)
@@ -350,9 +360,9 @@ async def grounded_plan(
                     {
                         "file_id": file_id,
                         "chunk_id": chunk_id,
-                        "name": "清粥",
+                        "name": recipe_name,
                         "ingredients": ["大米100克"],
-                        "steps": ["加水慢煮至熟" if replacement else "加水煮熟"],
+                        "steps": [recipe_step],
                         "portion_quote": "原食谱供两人食用",
                     }
                 ],
@@ -1407,11 +1417,14 @@ async def test_home_recipe_catalog_is_bounded_and_does_not_authorize_reading(fam
 async def test_english_meat_in_source_cannot_bypass_chinese_avoidance(family_profile_http, monkeypatch):
     """当前原文中的英文忌口即使未被模型摘录也不能形成保存结果。"""
     current = await setup_reference(family_profile_http, monkeypatch, avoidances=["牛羊肉"])
-    await replace_source(current, TEXT + "\nOptional beef broth")
     bound = await bind_reference(current)
     context = await running_context(current, bound.json()["thread_id"])
-    with pytest.raises(HealthVisionError, match="reference_restriction_conflict"):
-        await grounded_plan(current, context)
+    # 已知冲突在召回阶段即排除，不为被排除的来源签发读取回执。
+    await replace_source(current, TEXT + "\nOptional beef broth")
+    hits = await service.search_reference_recipes(context, "清粥")
+    assert hits["items"] == []
+    with pytest.raises(HealthVisionError, match="reference_receipt_invalid"):
+        await service.read_reference_recipe(context, "reference-file", "reference-chunk")
     async with current[1]() as db:
         assert await db.scalar(select(func.count()).select_from(HealthInitialPlanPreview)) == 0
 

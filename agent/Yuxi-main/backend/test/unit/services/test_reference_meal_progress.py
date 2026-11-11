@@ -98,3 +98,12 @@ def test_translation_failure_has_specific_public_error_without_private_details()
         "message": "餐单译文修正未通过，请重新生成餐单",
     }
     assert _public_health_error("PRIVATE")["type"] == "health_execution_failed"
+
+
+@pytest.mark.parametrize(
+    "code", ["reference_recipe_repeated", "reference_menu_repeated", "reference_variety_exhausted"]
+)
+def test_variety_failure_has_specific_fixed_public_error(code):
+    result = _public_health_error(code)
+    assert result["type"] == code
+    assert "重复" in result["message"] or "近期餐单" in result["message"]

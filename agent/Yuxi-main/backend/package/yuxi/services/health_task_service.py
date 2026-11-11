@@ -216,6 +216,9 @@ async def read_health_task_in_session(session, uid: str, request_id: str) -> Hea
                 "budget_exceeded",
                 "reference_translation_correction_invalid",
                 "reference_save_correction_exhausted",
+                "reference_recipe_repeated",
+                "reference_menu_repeated",
+                "reference_variety_exhausted",
             }
             else error_codes[terminal]
         )

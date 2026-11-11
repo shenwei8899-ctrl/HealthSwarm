@@ -225,6 +225,25 @@ def test_product_selection_rejects_an_explicitly_empty_issued_candidate_set():
     assert failed.value.code == "reference_ingredient_mismatch"
 
 
+@pytest.mark.parametrize("issued", [[], ["one"], ["one", "two"]])
+def test_omitted_product_only_fills_unique_current_issued_candidate(issued):
+    """漏选只在实际目录和本轮回执交集唯一时补齐，零或多个候选不猜测。"""
+    ingredient = "100 g rice"
+    key = reference_candidate_key(ingredient)
+    groups = {
+        pid: {"product_id": pid, "product_name": "大米", "skus": [product(product_id=pid)]}
+        for pid in ("one", "two")
+    }
+    args = ([{"dishes": [{"ingredients": [ingredient]}]}], [], groups)
+    if len(issued) == 1:
+        assert selection._product_choices(*args, issued_candidates={key: set(issued)}) == (
+            [{"product_id": "one", "ingredient_refs": [ingredient]}], []
+        )
+    else:
+        with pytest.raises(HealthVisionError, match="reference_ingredient_mismatch"):
+            selection._product_choices(*args, issued_candidates={key: set(issued)})
+
+
 def test_available_required_product_without_quantity_cannot_be_called_a_gap():
     """已知有对应商品时不能为省略包装选择伪造无匹配。"""
     meals = [{"dishes": [{"ingredients": ["100 g rice", "1 tomato"]}]}]

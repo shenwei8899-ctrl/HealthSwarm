@@ -477,6 +477,7 @@ async def test_reference_context_limits_categories_then_preserves_selected_produ
         "sale_status": "available",
     }
     session = SimpleNamespace()
+    session.execute = AsyncMock(return_value=SimpleNamespace(all=lambda: []))
 
     @asynccontextmanager
     async def session_context():
@@ -498,7 +499,7 @@ async def test_reference_context_limits_categories_then_preserves_selected_produ
         "bound_reference_context",
         AsyncMock(
             return_value={
-                "selection": {"meal_types": ["breakfast"], "plan_date": "2026-11-09"},
+                "selection": {"family_id": "synthetic-family", "meal_types": ["breakfast"], "plan_date": "2026-11-09"},
                 "members": [],
                 "sources": {},
             }

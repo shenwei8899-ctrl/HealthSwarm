@@ -220,6 +220,8 @@ async def save_reference_meal_plan(
             error.code
             not in {
                 "reference_quote_invalid",
+                "reference_recipe_repeated",
+                "reference_menu_repeated",
                 "reference_ingredient_mismatch",
                 "recipe_translation_missing",
                 "recipe_translation_invalid",
@@ -244,8 +246,27 @@ async def save_reference_meal_plan(
             != 1
         ):
             raise
-        if reference_save_failure_index(messages, runtime.context.request_id, error_code=error.code) is not None:
+        variety_error = error.code in {"reference_recipe_repeated", "reference_menu_repeated"}
+        if not variety_error and reference_save_failure_index(
+            messages, runtime.context.request_id, error_code=error.code
+        ) is not None:
             raise
+        if variety_error:
+            failures = 0
+            for message in messages[human_index + 1:]:
+                if not isinstance(message, ToolMessage) or message.name != "save_reference_meal_plan":
+                    continue
+                try:
+                    receipt = json.loads(message.content)
+                except (ValueError, TypeError):
+                    continue
+                if (isinstance(receipt, dict) and receipt.get("request_id") == runtime.context.request_id
+                        and receipt.get("error_code") in {"reference_recipe_repeated", "reference_menu_repeated"}):
+                    failures += 1
+            if failures >= 2:
+                raise HealthVisionError(
+                    "reference_variety_exhausted", "多次选菜仍与已有餐单重复，请重新生成餐单", 422
+                )
         return ToolMessage(
             name="save_reference_meal_plan",
             tool_call_id=runtime.tool_call_id,
@@ -339,6 +360,10 @@ def _reference_save_failure_index(messages, request_id, *, include_validation, e
                 continue
             if not isinstance(payload, dict):
                 continue
+            if (payload.get("error_code") in {"reference_recipe_repeated", "reference_menu_repeated"}
+                    and payload.get("request_id") == request_id and payload.get("retryable") is True):
+                # 新菜谱重新检索后拥有自己的结构修正；重选次数由保存工具独立限制。
+                failures.clear()
             if payload.get("error_code") == "reference_quote_invalid" and payload.get("request_id") == request_id:
                 failures.append((index, "quote"))
             if (

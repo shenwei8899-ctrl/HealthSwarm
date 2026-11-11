@@ -216,6 +216,9 @@ class HealthTaskError(HealthDTO):
         "budget_exceeded",
         "reference_translation_correction_invalid",
         "reference_save_correction_exhausted",
+        "reference_recipe_repeated",
+        "reference_menu_repeated",
+        "reference_variety_exhausted",
     ]
     retryable: Literal[False] = False
 

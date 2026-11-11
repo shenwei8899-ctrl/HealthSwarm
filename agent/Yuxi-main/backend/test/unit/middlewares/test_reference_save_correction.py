@@ -31,6 +31,101 @@ def services(monkeypatch):
     return SimpleNamespace(saved=saved, assembled=assembled, final=final)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["reference_recipe_repeated", "reference_menu_repeated"])
+@pytest.mark.parametrize("purchase_first", [False, True])
+async def test_repeated_menu_can_search_again_before_saving(services, monkeypatch, code, purchase_first):
+    """真实 SDK 和中间件允许重复失败后检索再保存，不进入仅保存修正通道。"""
+    services.saved.side_effect = (
+        [HealthVisionError("reference_ingredient_mismatch", "商品需修正", 422)] if purchase_first else []
+    ) + [HealthVisionError(code, "请更换菜品", 422), original.snapshot()]
+    search = AsyncMock(return_value={"items": []})
+    monkeypatch.setattr(reference_meal_plan_service, "search_reference_recipes", search)
+    wires = []
+
+    def respond(request):
+        wire = json.loads(request.content)
+        wires.append(wire)
+        index = len(wires)
+        message = {"role": "assistant", "content": ""}
+        search_index = 3 if purchase_first else 2
+        if index == search_index + 2:
+            message["content"] = json.dumps({"preview_id": original.PREVIEW})
+        else:
+            name = "search_reference_recipes" if index == search_index else "save_reference_meal_plan"
+            if index == search_index:
+                assert wire.get("tool_choice") != {"type": "function", "function": {"name": "save_reference_meal_plan"}}
+                feedback = next(item for item in reversed(wire["messages"]) if item["role"] == "tool")
+                assert json.loads(feedback["content"])["error_code"] == code
+            args = {"queries": ["其他蔬菜", "其他主食"]} if index == search_index else original.SAVE_ARGS
+            message["tool_calls"] = [{"id": f"variety-{index}", "type": "function",
+                                      "function": {"name": name, "arguments": json.dumps(args)}}]
+        return original.sdk_response(message, f"variety-{index}", 2, 3, stream=wire.get("stream") is True)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        model = ChatCompletionsAdapter(model="synthetic", api_key="synthetic-test-key",
+                                       base_url="https://example.invalid/v1", http_async_client=client,
+                                       use_responses_api=False, max_retries=0)
+        graph = create_agent(model, tools=original.TOOLS, middleware=[MealPlanResultMiddleware()],
+                             context_schema=original.Context)
+        state = await graph.ainvoke({"messages": [original.human()]}, context=original.Context())
+    assert search.await_count == 1
+    assert services.saved.await_count == (3 if purchase_first else 2)
+    assert json.loads(state["messages"][-1].text) == original.snapshot()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exhausted", [False, True])
+async def test_variety_retry_budget_and_translation_recovery(services, monkeypatch, exhausted):
+    """重复码共用两次预算；换菜后新译文仍可独立纠正一次。"""
+    codes = (
+        ["reference_recipe_repeated", "reference_menu_repeated", "reference_recipe_repeated"]
+        if exhausted else
+        ["recipe_translation_invalid", "reference_recipe_repeated", "recipe_translation_invalid", None]
+    )
+    services.saved.side_effect = [
+        HealthVisionError(code, "合成校验失败", 422) if code else original.snapshot() for code in codes
+    ]
+    search = AsyncMock(return_value={"items": []})
+    monkeypatch.setattr(reference_meal_plan_service, "search_reference_recipes", search)
+    calls = []
+    for index, code in enumerate(codes):
+        args = {"translation_correction": original.TRANSLATION_CORRECTION} if (
+            index and codes[index - 1] == "recipe_translation_invalid"
+        ) else original.SAVE_ARGS
+        calls.append(("save_reference_meal_plan", args))
+        if code in {"reference_recipe_repeated", "reference_menu_repeated"} and index < len(codes) - 1:
+            calls.append(("search_reference_recipes", {"queries": ["新菜谱"]}))
+    wires = []
+
+    def respond(request):
+        wire = json.loads(request.content)
+        index = len(wires)
+        wires.append(wire)
+        message = {"role": "assistant", "content": ""}
+        if index == len(calls):
+            message["content"] = json.dumps({"preview_id": original.PREVIEW})
+        else:
+            name, args = calls[index]
+            message["tool_calls"] = [{"id": f"recovery-{index}", "type": "function",
+                                      "function": {"name": name, "arguments": json.dumps(args)}}]
+        return original.sdk_response(message, f"recovery-{index}", 2, 3, stream=wire.get("stream") is True)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        model = ChatCompletionsAdapter(model="synthetic", api_key="synthetic-test-key",
+                                       base_url="https://example.invalid/v1", http_async_client=client,
+                                       use_responses_api=False, max_retries=0)
+        graph = create_agent(model, tools=original.TOOLS, middleware=[MealPlanResultMiddleware()],
+                             context_schema=original.Context)
+        if exhausted:
+            with pytest.raises(HealthVisionError, match="reference_variety_exhausted"):
+                await graph.ainvoke({"messages": [original.human()]}, context=original.Context())
+        else:
+            state = await graph.ainvoke({"messages": [original.human()]}, context=original.Context())
+            assert json.loads(state["messages"][-1].text) == original.snapshot()
+    assert services.saved.await_count == len(codes)
+
+
 @pytest.mark.parametrize("scenario", ["recover", "repeat", "other_tool", "final_text"])
 def test_legacy_free_form_purchase_mapping_is_rejected_by_tool_schema(scenario, services):
     """旧自由食材对应不能再进入模型工具，无论模型准备如何纠正。"""

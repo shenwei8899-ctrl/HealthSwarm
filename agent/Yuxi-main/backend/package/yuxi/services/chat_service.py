@@ -1441,6 +1441,9 @@ async def stream_agent_chat(
                 "budget_price_unavailable",
                 "reference_translation_correction_invalid",
                 "reference_save_correction_exhausted",
+                "reference_recipe_repeated",
+                "reference_menu_repeated",
+                "reference_variety_exhausted",
                 "answer_citation_invalid",
             }
             else "unexpected_error"
@@ -1763,6 +1766,9 @@ async def stream_agent_resume(
                 "budget_price_unavailable",
                 "reference_translation_correction_invalid",
                 "reference_save_correction_exhausted",
+                "reference_recipe_repeated",
+                "reference_menu_repeated",
+                "reference_variety_exhausted",
                 "answer_citation_invalid",
             }
             else "resume_error"

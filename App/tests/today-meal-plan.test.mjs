@@ -302,6 +302,13 @@ test('a timed-out meal task explains that no menu was saved',async()=>{
  assert.equal(h.state.action,'regenerate')
 })
 
+for(const code of ['reference_recipe_repeated','reference_menu_repeated','reference_variety_exhausted'])test(`variety failure ${code} explains the reason and stops automatic retries`,async()=>{
+ const h=fixture({submittedState:{status:'failed',result:{type:'error',code}}})
+ await h.client.open(profile)
+ assert.equal(h.state.phase,'error');assert.match(h.state.notice,/重复|近期餐单/)
+ assert.equal(h.timers.size,0);assert.equal(h.calls.filter(c=>c[0]==='submit').length,1)
+})
+
 test('regenerating an old meal retains its authorized diners instead of changing to the default self',async()=>{
  const plan=ready();plan.meals=plan.meals.slice(0,1);plan.needs_regeneration=['dinner'];plan.regeneration_participants={dinner:['partner']}
  const h=fixture({read:async()=>plan})

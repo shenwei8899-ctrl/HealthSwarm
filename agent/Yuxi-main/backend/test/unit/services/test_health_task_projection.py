@@ -495,6 +495,9 @@ async def test_ordinary_preview_requires_current_same_run_receipt_and_full_proje
         "budget_exceeded",
         "reference_translation_correction_invalid",
         "reference_save_correction_exhausted",
+        "reference_recipe_repeated",
+        "reference_menu_repeated",
+        "reference_variety_exhausted",
     ],
 )
 async def test_terminal_error_keeps_safe_type_not_private_upstream_text(monkeypatch, code, healthy_task_runtime):

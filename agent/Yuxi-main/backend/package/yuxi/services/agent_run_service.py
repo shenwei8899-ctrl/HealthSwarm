@@ -951,6 +951,9 @@ def _public_health_error(error_type: str | None) -> dict[str, str]:
         "budget_price_unavailable": "健康 AI 计费依据未就绪，可使用人工录入",
         "reference_translation_correction_invalid": "餐单译文修正未通过，请重新生成餐单",
         "reference_save_correction_exhausted": "餐单修正未通过，请重新生成餐单",
+        "reference_recipe_repeated": "菜品已在本家庭近期餐单中安排，请重新选择菜谱",
+        "reference_menu_repeated": "本次三餐组合重复，请重新选择菜谱",
+        "reference_variety_exhausted": "多次选菜仍与已有餐单重复，请重新生成餐单",
     }
     code = error_type if error_type in errors else "health_execution_failed"
     return {"type": code, "message": errors.get(code, "健康解释执行失败，请重新咨询")}

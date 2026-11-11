@@ -443,7 +443,21 @@ async def publish_reference_in_session(session, run, content):
     current_version = row.version if row else 0
     if current_version != base:
         raise HealthVisionError("daily_plan_version_changed", "今日计划已有更新，请重新读取后调整", 409)
+    from yuxi.repositories.reference_variety_repository import reference_history, current_reference_menus
+    from yuxi.services.reference_recipe_variety import validate_variety
+
+    history = await reference_history(session, selection, lock=True, run_id=run.id)
+    menus = await current_reference_menus(session, selection)
     refs = dict(row.meal_sources) if row else await legacy_sources(session, run.uid, family_id, day)
+    if row is None:
+        legacy_meals = []
+        for kind, ref in refs.items():
+            if ref.get("kind") == "reference":
+                previous = await session.get(HealthInitialPlanPreview, ref["id"])
+                if previous:
+                    legacy_meals.extend(m for m in previous.snapshot["meals"] if m["meal_type"] == kind)
+        menus.append((family_id, run.uid, legacy_meals))
+    validate_variety(history, selection, preview.snapshot["meals"], current_menus=menus, actor_uid=run.uid)
     if row is None:
         row = HealthDailyMealPlan(
             id=str(uuid4()), actor_uid=run.uid, family_id=family_id, plan_date=day, version=0, meal_sources={}

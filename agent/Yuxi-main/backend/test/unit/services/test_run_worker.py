@@ -879,7 +879,12 @@ async def test_committed_interrupt_cleanup_failure_keeps_terminal_events_unpubli
 
 
 @pytest.mark.asyncio
-async def test_process_agent_run_non_retryable_error_marks_failed(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    "code", [None, "reference_recipe_repeated", "reference_menu_repeated", "reference_variety_exhausted"]
+)
+async def test_process_agent_run_non_retryable_error_marks_failed(monkeypatch: pytest.MonkeyPatch, code):
+    from yuxi.services.health_vision_types import HealthVisionError
+
     run_obj = _build_run()
     _patch_common(monkeypatch, run_obj)
 
@@ -891,6 +896,7 @@ async def test_process_agent_run_non_retryable_error_marks_failed(monkeypatch: p
         events.append(event_type)
 
     async def fake_mark_terminal(run_id: str, status: str, **kwargs):
+        assert kwargs["error_type"] == (code or "worker_error")
         del run_id, kwargs
         terminal_statuses.append(status)
         return run_worker.TerminalTransition(status=status, changed=True)
@@ -900,7 +906,9 @@ async def test_process_agent_run_non_retryable_error_marks_failed(monkeypatch: p
     monkeypatch.setattr(
         run_worker,
         "_consume_stream_with_cancel",
-        lambda stream, run_ctx: _RaisingAsyncIter(RuntimeError("boom")),
+        lambda stream, run_ctx: _RaisingAsyncIter(
+            HealthVisionError(code, "合成失败", 422) if code else RuntimeError("boom")
+        ),
     )
 
     await run_worker.process_agent_run({"job_try": 1}, "run-1")

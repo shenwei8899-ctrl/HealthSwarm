@@ -246,6 +246,18 @@ def _product_choices(meals, selections, seen, *, issued_candidates=None, allow_p
             selected_keys.add(key)
         if invalid and not allow_purchase_fallback:
             raise HealthVisionError("reference_ingredient_mismatch", "所选商品不属于菜谱回执中的候选组", 422)
+    # 仅补齐本轮已发出且仍唯一的候选；歧义或非法显式选择仍由原校验拒绝。
+    if issued_candidates is not None:
+        for group in groups:
+            key = group["candidate_key"]
+            if key in selected_keys or group["status"] != "matched":
+                continue
+            allowed = {str(item["product_id"]) for item in group.get("candidate_products", [])}
+            allowed &= issued_candidates.get(key, set())
+            if len(allowed) == 1:
+                product_id = next(iter(allowed))
+                refs.setdefault(product_id, []).append(group["ingredient"])
+                selected_keys.add(key)
     gaps = _candidate_gaps(groups, selected_keys, allow_purchase_fallback)
     return [
         {"product_id": product_id, "ingredient_refs": ingredient_refs}
