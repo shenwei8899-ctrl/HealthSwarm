@@ -30,7 +30,7 @@ function preview(path){uni.previewImage({current:path,urls:form.images.map(image
 </script>
 <template>
  <view class="screen product-feedback-screen">
-  <AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回设置" :disabled="form.busy" @click="back">‹</button><text class="nav-title">反馈</text><text/></view></AppNavBar>
+  <AppNavBar title="反馈"><template #left><button class="icon-button" aria-label="返回设置" :disabled="form.busy" @click="back">‹</button></template></AppNavBar>
   <view v-if="form.saved" class="feedback-card success-card" role="status"><text class="success-mark">✓</text><text class="feedback-title">反馈已提交</text><text class="feedback-description">谢谢你的建议，我们会认真阅读。</text><button class="submit-feedback" @click="back">返回设置</button></view>
   <view v-else class="feedback-card">
    <text class="feedback-title">填写反馈</text>

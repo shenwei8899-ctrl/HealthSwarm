@@ -30,7 +30,7 @@ function goRecords(){uni.navigateTo({url:'/pages/records/index'})}
 </script>
 <template>
   <CloudDietFeedback v-if="!isMockMode"/><view v-else class="screen feedback-screen">
-    <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">反馈</text><button class="link" @click="goRecords">看记录</button></view></AppNavBar>
+    <AppNavBar title="反馈"><template #left><button class="icon-button" @click="backHome">‹</button></template><template #right><button class="link" @click="goRecords">看记录</button></template></AppNavBar>
     <view class="hero"><text class="eyebrow">让每次记录，都有回应</text><text class="display-title">从记下的餐食，了解日常饮食</text><text>选择成员，查看本人已确认吃过的菜品。</text></view>
     <scroll-view class="scope-tabs" scroll-x><view class="scope-row"><button :class="{active:scope==='all'}" @click="scope='all'">全家</button><button v-for="m in profile.members" :key="m.id" :class="{active:scope===m.id}" @click="scope=m.id">{{m.name}}</button></view></scroll-view>
     <view class="date-row card"><picker mode="date" :value="date" @change="date=$event.detail.value"><text>{{date}} ›</text></picker><text>选择查看日期</text></view>

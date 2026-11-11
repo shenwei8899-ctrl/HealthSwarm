@@ -208,7 +208,7 @@ function dateText(value){const d=new Date(value);if(!Number.isFinite(d.getTime()
 
 </script>
 <template>
- <view class="screen order-screen" :class="{'has-payment-dock':order&&allowed('pay')}"><view class="order-page-wash" aria-hidden="true"/><AppNavBar centered><view class="nav-row"><button class="icon-button" aria-label="返回" @click="back">‹</button><text class="nav-title">订单详情</text><button class="refresh-link" :disabled="busy" @click="load">{{busy?'读取中':'刷新'}}</button></view></AppNavBar>
+ <view class="screen order-screen" :class="{'has-payment-dock':order&&allowed('pay')}"><view class="order-page-wash" aria-hidden="true"/><AppNavBar title="订单详情"><template #left><button class="icon-button" aria-label="返回" @click="back">‹</button></template><template #right><button class="refresh-link" :disabled="busy" @click="load">{{busy?'读取中':'刷新'}}</button></template></AppNavBar>
   <text v-if="error" class="inline-error" role="alert">{{error}}</text><text v-if="message" class="safe-note">{{message}}</text>
   <view v-if="pending" class="card detail-card"><text>上次售后申请结果待确认</text><button class="primary-button" :disabled="busy" @click="retrySale">确认原售后申请</button></view>
   <template v-if="order">

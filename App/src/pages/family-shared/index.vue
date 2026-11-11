@@ -45,7 +45,7 @@ const metricLabel = row => metricKinds.find(kind => kind.key===row.kind)?.label 
 function back() { uni.navigateBack({ fail: () => uni.reLaunch({url:'/pages/my/index'}) }) }
 </script>
 <template><view class="screen shared-page">
-  <AppNavBar><view class="nav-row"><button class="icon-button" @click="back">‹</button><text class="nav-title">实测指标与修改历史</text></view></AppNavBar>
+  <AppNavBar title="实测指标与修改历史"><template #left><button class="icon-button" @click="back">‹</button></template></AppNavBar>
   <text class="helper">同家庭有效成员可共同查看和维护档案。AI、报告原图和订单仍需各自授权；编辑不代表本人已确认。</text>
   <text v-if="state.error" class="error" role="alert">{{state.error}}</text><text v-if="state.notice" class="notice">{{state.notice}}</text>
   <button class="secondary-button" :disabled="state.busy" @click="client.refresh(state.family?.id,state.member?.id)">{{state.busy?'正在读取…':'重新读取家庭档案'}}</button>

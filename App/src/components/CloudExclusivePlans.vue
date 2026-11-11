@@ -33,7 +33,7 @@ onUnload(stop)
 
 <template>
   <view class="screen exclusive-overview">
-    <AppNavBar><view class="nav-row"><button class="overview-back" aria-label="返回" @click="back">‹</button><text class="nav-title">AI 专属计划</text></view></AppNavBar>
+    <AppNavBar title="AI 专属计划"><template #left><button class="overview-back" aria-label="返回" @click="back">‹</button></template></AppNavBar>
     <view class="overview-hero"><text class="hero-eyebrow">为家人的每一餐，多想一点</text><view class="hero-title"><text>接下来 </text><text class="hero-number">21</text><text> 天，</text><text class="hero-line">好好吃饭。</text></view><text class="hero-caption">根据家庭档案，安排全家的三餐。</text><view class="calendar-stack" aria-hidden="true"><view class="calendar-page"><view class="calendar-header"><text>三餐计划</text></view><view class="calendar-date"><text class="calendar-number">21</text><text class="calendar-unit">天</text></view><view class="calendar-grid"/></view><view class="calendar-ring ring-left"/><view class="calendar-ring ring-right"/></view></view>
     <view class="overview-family"><text>♧ &nbsp;为全家安排</text><text>21 天 · 每日三餐</text></view>
     <view class="overview-heading"><text>选一份适合家的计划</text><text>三种选择</text></view>

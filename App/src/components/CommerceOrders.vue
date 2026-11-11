@@ -46,7 +46,7 @@ const orderDate=value=>{const date=new Date(value);return Number.isFinite(date.g
 </script>
 <template>
 
- <view class="screen orders-screen"><view class="orders-page-wash" aria-hidden="true"/><AppNavBar centered><view class="nav-row"><button class="icon-button" aria-label="返回" @click="back">‹</button><text class="nav-title">我的订单</text></view></AppNavBar>
+ <view class="screen orders-screen"><view class="orders-page-wash" aria-hidden="true"/><AppNavBar title="我的订单"><template #left><button class="icon-button" aria-label="返回" @click="back">‹</button></template></AppNavBar>
   <view class="orders-heading"><text>订单与配送</text></view>
   <view class="tabs"><button v-for="item in [{id:'all',name:'全部'},{id:'delivery',name:'进行中'},{id:'complete',name:'已完成'}]" :key="item.id" :class="{selected:tab===item.id}" :aria-pressed="tab===item.id" @click="tab=item.id">{{item.name}}</button></view>
   <text v-if="error" class="inline-error" role="alert">{{error}}</text>

@@ -1,3 +1,4 @@
+import {createConversationHistoryCache} from '../src/services/conversation-history.js'
 import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
 import {watch} from 'vue'
 import {createChatEntryTransition} from '../src/services/chat-entry-transition.js'
@@ -51,6 +52,7 @@ function fixture({cached=true,createFailure=false}={}){
   readChatSnapshot:async id=>{historyReads.push(id);return {messages:id===thread?[{id:'original',role:'user',requestId:rid,text:'请安排今天早餐',createdAt:'2026-10-26T18:05:40.501841',status:'failed'}]:[],runs:[]}},
   uni:{redirectTo(){},reLaunch(){},showToast(){}},
  }
+ deps.conversationHistory=createConversationHistoryCache({read:deps.readChatSnapshot,context:deps.storageContext})
  const script=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
  const scope=effectScope(),page=scope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${script};return {load,messages,visibleMessages,failedQuestion,failedTask,question,draftImage,task,flow,presentation,entryReady,restartChat,editFailedQuestion,entryError,entryRecovering,reenter,requireLogin,watchEntryStall,clearStall,loginState:()=>loginRedirecting}`)(deps))
  return {page,calls,storage,historyReads,hooks,get idCount(){return idCount},changeAccount(){account='other'},pauseOpen(){let release;pendingOpen=new Promise(r=>release=r);return ()=>{pendingOpen=null;release()}},dispose(){hooks.unmount?.();scope.stop()}}

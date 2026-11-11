@@ -3,14 +3,14 @@ import { reactive, onMounted, onUnmounted, watch } from 'vue'
 import { onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import { chatMealRecordState, createChatMealRecordClient } from '../services/chat-meal-record.js'
 import { mealDay, mealLabels } from '../services/cloud-meals.js'
-const props = defineProps({ receipt: { type: Object, required: true } })
+const props = defineProps({ receipt: { type: Object, required: true }, readOnly: Boolean })
 const emit = defineEmits(['changed'])
 const state = reactive(chatMealRecordState())
 const client = createChatMealRecordClient({ state, id: props.receipt.id })
 async function refresh() { const record = await client.refresh(); if (record) emit('changed', record) }
-async function withdraw() { const record = await client.withdraw(); if (record) emit('changed', record) }
+async function withdraw() { if (props.readOnly) return; const record = await client.withdraw(); if (record) emit('changed', record) }
 function detail() {
-  if (!state.record || state.busy || state.record.status !== 'saved') return
+  if (props.readOnly || !state.record || state.busy || state.record.status !== 'saved') return
   uni.navigateTo({ url: '/pages/records/detail?id=' + encodeURIComponent(state.record.id) + '&memberId=' + encodeURIComponent(state.record.member_id) })
 }
 onMounted(refresh); onShow(refresh); onHide(client.hide); onUnload(client.hide)
@@ -26,10 +26,10 @@ watch(() => props.receipt.source_version, () => {
    <text class="record-subtitle">{{state.record.member_name}} · {{mealDay(state.record.eaten_at)}}</text>
    <view v-for="item in state.record.items" :key="item.name" class="record-food"><text>{{item.name}}</text><text>{{item.quantity_text||'份量未知'}}</text></view>
    <text class="record-note">{{state.record.status==='withdrawn'?'这条记录已从有效饮食记录和后续分析中排除。':'按实际自述保存，未知份量和营养数据保持未知。'}}</text>
-   <view v-if="state.record.status==='saved'" class="record-actions"><button :disabled="state.busy" @click="detail">查看记录</button><button :disabled="state.busy" @click="withdraw">{{state.busy?'正在核对…':state.pending?'重试撤销':'撤销记录'}}</button></view>
+   <view v-if="!readOnly&&state.record.status==='saved'" class="record-actions"><button :disabled="state.busy" @click="detail">查看记录</button><button :disabled="state.busy" @click="withdraw">{{state.busy?'正在核对…':state.pending?'重试撤销':'撤销记录'}}</button></view>
   </template>
   <text v-else class="record-note">{{state.busy?'正在核对记餐结果…':'记餐结果待核对'}}</text>
-  <view v-if="state.error" class="record-error" role="alert"><text>{{state.error}}</text><button :disabled="state.busy" @click="state.pending?withdraw():refresh()">{{state.pending?'重试撤销':'重新读取'}}</button></view>
+  <view v-if="state.error" class="record-error" role="alert"><text>{{state.error}}</text><button :disabled="state.busy" @click="!readOnly&&state.pending?withdraw():refresh()">{{!readOnly&&state.pending?'重试撤销':'重新读取'}}</button></view>
  </view>
 </template>
 <style scoped>

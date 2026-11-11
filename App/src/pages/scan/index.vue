@@ -202,7 +202,7 @@ function help() {
   <CloudMealCapture v-if="!isMockMode" :route="cloudRoute"/>
   <CommerceAccess v-else-if="commerceFlow"><CommerceMealRecord :id="commerceOrderId"/></CommerceAccess>
   <view v-else class="screen scan-screen">
-    <AppNavBar><view class="nav-row"><button class="icon-button" @click="goBack">‹</button><text class="nav-title">拍照记一餐</text><button class="icon-button" aria-label="估算说明" @click="help">?</button></view></AppNavBar>
+    <AppNavBar title="拍照记一餐"><template #left><button class="icon-button" @click="goBack">‹</button></template><template #right><button class="icon-button" aria-label="估算说明" @click="help">?</button></template></AppNavBar>
     <FlowRibbon :current="6" class="scan-flow" />
 
     <view class="scan-status" :class="{ processing: status === 'analyzing' }">

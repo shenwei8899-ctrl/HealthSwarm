@@ -45,7 +45,7 @@ onMounted(load); onShow(load)
 <template>
  <view class="screen address-screen address-list-screen">
   <view class="address-page-wash" aria-hidden="true"/>
-  <AppNavBar centered><view class="nav-row"><button class="icon-button" aria-label="返回" @click="addressBack">‹</button><text class="nav-title">{{mode==='select'?'选择收货地址':'收货地址'}}</text><view class="nav-spacer"/></view></AppNavBar>
+  <AppNavBar :title="(mode==='select'?'选择收货地址':'收货地址')"><template #left><button class="icon-button" aria-label="返回" @click="addressBack">‹</button></template></AppNavBar>
   <view v-if="error" class="address-state" role="alert"><text>{{error}}</text><button class="address-retry" :disabled="busy" @click="load">重新读取</button></view>
   <view v-else-if="busy&&!loaded" class="address-state"><text>正在读取收货地址…</text></view>
   <view v-else-if="loaded&&!addresses.length" class="address-state"><AppIcon name="family" :size="64"/><text class="address-state-title">还没有收货地址</text><text>添加地址，方便下单时选择。</text></view>

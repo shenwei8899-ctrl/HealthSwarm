@@ -34,7 +34,7 @@ onUnmounted(()=>{alive=false;revision++})
 
 </script>
 <template>
- <view class="screen cloud-recipe"><AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回本餐" @click="back">‹</button><text class="nav-title">菜品做法</text><view class="nav-spacer"/></view></AppNavBar>
+ <view class="screen cloud-recipe"><AppNavBar title="菜品做法"><template #left><button class="icon-button" aria-label="返回本餐" @click="back">‹</button></template></AppNavBar>
   <text v-if="busy" class="safe-note">正在读取菜谱…</text><view v-if="error" class="card recipe-error" role="alert"><text>{{error}}</text><button class="secondary-button" @click="load">重新读取</button></view>
   <template v-if="dish"><view class="recipe-heading"><text>跟着步骤，</text><text>做好这一餐。</text></view><CookingGuide :dishes="[dish]" :selected="dish.id" action="返回本餐安排" @action="back"/></template>
  </view>

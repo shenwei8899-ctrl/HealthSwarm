@@ -7,8 +7,8 @@ import { backdropOpacity, clampDragOffset, shouldCloseDrawer, DRAWER_SETTLE_MS }
 import { storageContext } from '../services/storage.js'
 import { sessionRevision } from '../services/session.js'
 
-const props = defineProps({ open: Boolean, memberId: String, activeThreadId: String, busy: Boolean, newBusy: Boolean, displayName: String })
-const emit = defineEmits(['close', 'new', 'select', 'profile'])
+const props = defineProps({ open: Boolean, memberId: String, activeThreadId: String, busy: Boolean, browseBusy: Boolean, newBusy: Boolean, deniedThreadId: String, pendingThreadId: String, selectionError: String, displayName: String })
+const emit = defineEmits(['close', 'new', 'select', 'profile', 'ready'])
 // Drag-to-close from the panel's right edge. The grip is a narrow strip so vertical list scrolling is unaffected.
 const dragOffset = ref(0), dragPhase = ref('')
 let dragStartX = 0, dragStartAt = 0, dragWidth = 0, dragTimer = null
@@ -52,7 +52,7 @@ function endDrag() {
   }, DRAWER_SETTLE_MS)
 }
 const rows = ref([]), loading = ref(false), error = ref(''), notice = ref(''), hasMore = ref(false), nextOffset = ref(null)
-let epoch = 0, disposed = false, directoryTicket = null
+let epoch = 0, disposed = false, directoryTicket = null, retryMore = false
 const today = () => new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10)
 const rowDate = row => row.business_date || new Date(Date.parse(row.created_at) + 8 * 3600000).toISOString().slice(0, 10)
 const groups = computed(() => {
@@ -69,27 +69,38 @@ function reset() {
   clearDrag(); epoch++; directoryTicket = null; rows.value = []; loading.value = false; error.value = ''; notice.value = ''; hasMore.value = false; nextOffset.value = null
 }
 function ticket() { return { epoch, memberId: props.memberId, scope: storageContext(), revision: sessionRevision() } }
+function sameIdentity(value) {
+  return value && value.memberId === props.memberId && value.scope === storageContext() && value.revision === sessionRevision()
+}
 function current(value) {
-  return !disposed && props.open && value.epoch === epoch && value.memberId === props.memberId &&
-    value.scope === storageContext() && value.revision === sessionRevision()
+  return !disposed && props.open && value.epoch === epoch && sameIdentity(value)
 }
 function discardChangedIdentity(value) {
   if (value.epoch === epoch && (value.scope !== storageContext() || value.revision !== sessionRevision())) reset()
 }
 async function load(more = false) {
+  if (directoryTicket && !sameIdentity(directoryTicket)) reset()
   if (!props.open || disposed || loading.value || more && !hasMore.value) return
   if (!props.memberId) { reset(); error.value = '咨询资料尚未读到，请稍后重新读取。'; return }
-  if (!more) reset()
-  const value = ticket(), offset = more ? nextOffset.value : 0
-  loading.value = true; error.value = ''; notice.value = ''
+  const value = ticket(), count = Math.max(1, rows.value.length), collected = new Map()
+  let offset = more ? nextOffset.value : 0, page
+  loading.value = true; error.value = ''; retryMore = more
   try {
-    const page = await readConversations(value.memberId, offset)
-    if (!current(value)) { discardChangedIdentity(value); return }
+    // 刷新整个已加载窗口后统一更新游标；保留可见目录，及时覆盖已知撤权标题。
+    do {
+      page = await readConversations(value.memberId, offset)
+      if (!current(value)) { discardChangedIdentity(value); return }
+      for (const row of page.items) collected.set(row.thread_id, row)
+      rows.value = rows.value.map(row => collected.get(row.thread_id) || row)
+      if (!page.hasMore || more || collected.size >= count) break
+      if (page.nextOffset <= offset) throw new Error('对话分页未前进')
+      offset = page.nextOffset
+    } while (true)
     directoryTicket = value
-    const fresh = page.items.filter(row => !rows.value.some(old => old.thread_id === row.thread_id))
-    rows.value = [...rows.value, ...fresh]
+    rows.value = more ? [...new Map([...rows.value, ...collected.values()].map(row => [row.thread_id, row])).values()] : [...collected.values()]
     hasMore.value = page.hasMore; nextOffset.value = page.nextOffset
     notice.value = rows.value.some(row => row.unavailable) ? '部分对话的授权或资料来源已变化，暂不可访问。' : ''
+    emit('ready', rows.value.map(row => ({ ...row })))
   } catch (failure) {
     if (current(value)) {
       if ([401, 403, 404, 409, 410].includes(Number(failure.code))) { reset(); error.value = '登录或成员授权已变化，请重新进入对话。' }
@@ -98,32 +109,47 @@ async function load(more = false) {
     else discardChangedIdentity(value)
   } finally { if (current(value)) loading.value = false }
 }
-function close() { reset(); emit('close') }
+function suspend() { clearDrag(); epoch++; loading.value = false }
+function close() { suspend(); emit('close') }
 function newConversation() { if (props.open && !props.busy && !props.newBusy) emit('new') }
-function select(row) { if (!props.busy && !row.unavailable && directoryTicket && current(directoryTicket)) emit('select', { ...row }) }
+function select(row) {
+  if (directoryTicket && !sameIdentity(directoryTicket)) { reset(); return }
+  const saved = rows.value.find(item => item.thread_id === row.thread_id)
+  if (props.open && !disposed && !props.browseBusy && saved && !saved.unavailable && directoryTicket) emit('select', { ...saved })
+}
 function profile() { emit('profile') }
 function loadMore() { if (hasMore.value && !loading.value) void load(true) }
-watch(() => [props.open, props.memberId], () => { reset(); if (props.open) void load() }, { immediate: true })
+function retry() { void load(retryMore) }
+watch(() => [props.open, props.memberId], (_next, previous) => {
+  if (previous && previous[1] !== props.memberId || directoryTicket && !sameIdentity(directoryTicket)) reset()
+  if (props.open) void load(); else suspend()
+}, { immediate: true })
+watch(() => props.deniedThreadId, id => {
+  suspend()
+  rows.value = rows.value.map(row => row.thread_id === id ? { ...row, title: '该对话暂不可访问', unavailable: true } : row)
+  notice.value = '部分对话的授权或资料来源已变化，暂不可访问。'
+})
 onShow(() => { if (props.open) void load() })
 onHide(reset)
 onUnmounted(() => { disposed = true; reset() })
 </script>
 
 <template>
-  <view v-if="open" class="conversation-drawer">
+  <view v-show="open" class="conversation-drawer">
     <button class="drawer-backdrop" :class="{'is-dragging':dragPhase==='dragging'}" :style="backdropStyle" aria-label="关闭对话列表" @click="close" @touchmove.stop.prevent/>
     <view class="drawer-panel" :class="{'is-dragging':dragPhase==='dragging','is-settling':dragPhase==='settling'}" :style="panelStyle" role="dialog" aria-modal="true" aria-label="对话列表" @tap.stop>
       <AppNavBar below-capsule><view class="drawer-heading"><text>对话</text><button class="drawer-new" :disabled="busy||newBusy" @click="newConversation"><view class="drawer-compose-icon" aria-hidden="true"><view/></view><text>新对话</text></button></view></AppNavBar>
-      <text v-if="busy" class="drawer-busy" role="status">请等待当前回复结束，再新建或切换对话。</text>
+      <text v-if="busy" class="drawer-busy" role="status">当前对话处理中，仍可查看历史记录。</text>
       <scroll-view class="drawer-list" scroll-y :show-scrollbar="false" @scrolltolower="loadMore">
         <view v-for="group in groups" :key="group.date" class="drawer-group">
           <text class="drawer-date">{{group.label}}</text>
-          <button v-for="row in group.rows" :key="row.thread_id" class="drawer-conversation" :class="{active:row.thread_id===activeThreadId,unavailable:row.unavailable}" :disabled="busy||row.unavailable" :aria-label="row.title" :aria-current="row.thread_id===activeThreadId?'true':undefined" @click="select(row)">
-            <text>{{row.title}}</text>
+          <button v-for="row in group.rows" :key="row.thread_id" class="drawer-conversation" :class="{active:row.thread_id===activeThreadId,unavailable:row.unavailable}" :disabled="browseBusy||row.unavailable" :aria-label="row.title" :aria-current="row.thread_id===activeThreadId?'true':undefined" @click="select(row)">
+            <text>{{row.title}}</text><text v-if="row.thread_id===pendingThreadId" class="drawer-opening" role="status" aria-label="正在打开对话">…</text>
           </button>
         </view>
-        <text v-if="loading" class="drawer-status" role="status">正在读取对话…</text>
-        <view v-if="error" class="drawer-error" role="alert"><text>{{error}}</text><button @click="load(rows.length>0)">重新读取</button></view>
+        <text v-if="loading" class="drawer-status" role="status">{{rows.length?'正在更新对话…':'正在读取对话…'}}</text>
+        <text v-if="selectionError" class="drawer-error" role="alert">{{selectionError}}</text>
+        <view v-if="error" class="drawer-error" role="alert"><text>{{error}}</text><button @click="retry">重新读取</button></view>
         <view v-if="notice" class="drawer-notice" role="status"><text>{{notice}}</text></view>
         <view v-if="!loading&&!error&&!rows.length" class="drawer-empty"><text>还没有对话</text><text>与你的家庭营养师聊聊，记录会保存在这里。</text></view>
         <button v-if="hasMore&&!error" class="drawer-more" :disabled="loading" @click="loadMore">{{loading?'正在读取…':'更早的对话'}}</button>
@@ -135,6 +161,7 @@ onUnmounted(() => { disposed = true; reset() })
 </template>
 
 <style scoped>
+.drawer-conversation>.drawer-opening{flex:none;min-width:18px;text-align:right;color:var(--ui-muted)}
 
 .conversation-drawer{position:fixed;inset:0;z-index:900;overflow:hidden;color:#25262c}.drawer-backdrop{position:absolute;inset:0;width:100%;height:100%;padding:0;margin:0;border:0;border-radius:0;background:rgba(32,35,43,.34);animation:drawer-shade .18s ease-out}.drawer-backdrop:after{border:0}
 .drawer-panel{position:absolute;top:0;bottom:0;left:0;width:76vw;max-width:420px;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;padding:8px 16px calc(env(safe-area-inset-bottom) + 12px);background-color:var(--ui-canvas);

@@ -99,7 +99,7 @@ async function preview(uploadId,pageIndex) {
     @recover="client.retryPending()" @configuration="consent=false;client.refreshConfiguration()" @page="(jobs,drafts)=>client.page(jobs,drafts)"
     @job="readJob" @cancel="cancelReport" @retry="client.retry" @draft="draft" @preview="preview" @reprocess="index=>client.reprocessPages([index])"
     @exclude="excludePage" @add-field="addField" @save="save" @confirm="client.confirm(false)" @new-report="newReport"/>
-  <view v-else class="screen health-vision"><AppNavBar><view class="nav-row"><button class="icon-button" @click="uni.navigateBack()">‹</button><text class="nav-title">{{title}}</text></view></AppNavBar>
+  <view v-else class="screen health-vision"><AppNavBar :title="(title)"><template #left><button class="icon-button" @click="uni.navigateBack()">‹</button></template></AppNavBar>
     <view class="page-heading"><text class="display-title">{{state.kind==='report'?'先核对，再保存':'把这一餐，记清楚'}}</text><text class="subtitle">识别内容为待确认候选。仅由你确认后保存正式记录。</text></view>
     <text v-if="state.error" class="inline-error">{{state.error}}</text><text v-if="state.notice" class="safe-note">{{state.notice}}</text><text v-if="state.busy" class="safe-note">正在核对服务端状态…</text>
     <button v-if="!state.members.length" class="secondary-button" :disabled="state.busy" @click="client.open(route.memberId,route.kind)">重新读取授权成员</button>

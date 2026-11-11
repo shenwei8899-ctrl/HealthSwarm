@@ -72,7 +72,7 @@ const nutritionOpen=ref(false)
 </script>
 <template>
  <view class="screen cloud-meal-detail">
-  <AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button><text class="nav-title">{{names[route.meal]}}安排</text><button class="nav-link" @click="uni.redirectTo({url:'/pages/chat/index'})">今日安排</button></view></AppNavBar>
+  <AppNavBar :title="(names[route.meal]) + &quot;安排&quot;"><template #left><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button></template><template #right><button class="nav-link" @click="uni.redirectTo({url:'/pages/chat/index'})">今日安排</button></template></AppNavBar>
   <text v-if="busy" class="safe-note">正在核对本餐…</text>
   <view v-if="error" class="card status" role="alert"><text>{{error}}</text><button :disabled="busy" class="secondary-button" @click="load">重新读取本餐</button><button v-if="state.error" class="secondary-button" @click="uni.redirectTo({url:'/pages/chat/index'})">返回今日安排恢复调整</button></view>
   <template v-if="meal">

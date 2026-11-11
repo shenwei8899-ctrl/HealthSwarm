@@ -275,7 +275,7 @@ function newMeal(){
 </script>
 <template>
  <view class="screen scan-screen">
-  <view class="capture-fixed-header"><AppNavBar centered><view class="nav-row"><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button><text class="nav-title">拍照记餐</text><view class="nav-spacer"/></view></AppNavBar></view>
+  <view class="capture-fixed-header"><AppNavBar title="拍照记餐"><template #left><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button></template></AppNavBar></view>
   <view class="capture-page-wash" aria-hidden="true"/>
   <view class="meal-context"><text>{{selected.map(p=>p.name).join('、')||'选择记录成员'}}</text><view class="context-time"><picker :range="mealKeys.map(k=>mealLabels[k])" :disabled="captureLocked||!!editingRecord" @change="mealType=mealKeys[$event.detail.value]"><view>{{mealLabels[mealType]}}⌄</view></picker><picker mode="date" :value="date" :disabled="captureLocked||!!editingRecord" @change="date=$event.detail.value"><view>{{date.slice(5).replace('-','月')}}日</view></picker><picker mode="time" :value="time" :disabled="captureLocked||!!editingRecord" @change="time=$event.detail.value"><view>{{time}}⌄</view></picker></view></view>
   <view v-if="people.length>1" class="member-picks"><button v-for="p in people" :key="p.memberId" :class="{active:p.selected}" :disabled="captureLocked" @click="togglePerson(p)">{{p.name}}</button></view>

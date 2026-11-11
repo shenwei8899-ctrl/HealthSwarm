@@ -34,7 +34,7 @@ function consent() { if (consentChecked.value) { consentChecked.value = false; v
 
 <template>
   <view class="screen task-screen">
-    <AppNavBar><view class="nav-row"><button class="text-button" @click="back">返回</button><text class="nav-title">{{ view.title || '健康助手' }}</text><text></text></view></AppNavBar>
+    <AppNavBar :title="(view.title || '健康助手')"><template #left><button class="text-button" @click="back">返回</button></template></AppNavBar>
     <view class="card task-card">
       <text class="section-title">{{ view.title || '健康任务' }}</text>
       <text class="helper">本页只显示服务端当前核验的结果。新问题须由你明确提交；任务入口、运行和专业批准是不同状态。</text>

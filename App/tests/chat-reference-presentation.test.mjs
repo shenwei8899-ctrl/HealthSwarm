@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {ref,watch,nextTick,reactive} from 'vue'
 import {chatPresentation} from '../src/services/chat-presentation.js'
+import {feedbackUrl} from '../src/services/cloud-meals.js'
 
 test('saved onboarding content is shown inside chat without the generic welcome',()=>{
  const state=chatPresentation({route:{preparation:'saved'},hasSavedArrangement:true,preparedThreadId:'first',currentThreadId:'first'})
@@ -21,6 +22,20 @@ test('welcome is visible during first initialization and hidden while restoring 
  assert.equal(chatPresentation({loading:true}).welcome,true)
  assert.equal(chatPresentation({loading:true,currentThreadId:'existing'}).welcome,false)
  assert.equal(chatPresentation({route:{preparation:'saved'},hasMessages:true,hasSavedArrangement:true}).initialResults,true)
+})
+
+test('meal feedback never shows the home welcome while its profile and thread initialize',()=>{
+ const route=Object.fromEntries(new URL(feedbackUrl('member',{id:'record',source_version:3}),'https://test.invalid').searchParams)
+ assert.equal(route.taskType,'diet_analysis')
+ for(const state of [{},{loading:true},{loading:true,currentThreadId:'feedback'},{currentThreadId:'feedback'},{hasMessages:true}]){
+  assert.deepEqual(chatPresentation({route,...state}),{initialResults:false,welcome:false})
+ }
+})
+
+test('explicit task entries reserve the conversation view even with no messages',()=>{
+ for(const taskType of ['consultation','diet_analysis','reference_meal_preview','indicator_review']){
+  assert.equal(chatPresentation({route:{taskType}}).welcome,false,taskType)
+ }
 })
 function layout(){
  const emitted=[],props=reactive({followBottom:true});let dispose=()=>{}

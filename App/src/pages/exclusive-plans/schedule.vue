@@ -34,7 +34,7 @@ const back = () => uni.navigateBack()
 </script>
 <template>
   <view class="screen exclusive-screen schedule-screen">
-    <AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="back">‹</button><text class="nav-title">配送安排</text></view></AppNavBar>
+    <AppNavBar title="配送安排"><template #left><button class="icon-button" aria-label="返回" @click="back">‹</button></template></AppNavBar>
     <view class="plan-heading"><view class="plan-title"><text class="plan-title-line">为接下来的三餐，</text><text class="plan-title-line">做好准备。</text></view><text class="plan-caption">每日一批 · 提前一天送达</text></view>
     <view v-if="pending" class="plan-surface"><text class="plan-section-title">上次下单结果待确认</text><button class="plan-primary" :disabled="busy" @click="submit(true)">查询原订单</button></view>
     <PlanDeliveryPicker v-if="route && !pending" :sn="route.sn" :version="route.version" :disabled="busy" @change="change"/>

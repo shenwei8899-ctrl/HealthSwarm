@@ -13,6 +13,8 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {ref,computed,reactive,nextTick} from 'vue'
 import {packageSpec} from '../src/utils/package-presentation.js'
+import {parse as parseSfc} from 'vue/compiler-sfc'
+import {selectChatPrompts} from '../src/services/chat-prompts.js'
 
 test('商品规格保留数值含义并去掉无意义的小数零',()=>{
  assert.equal(packageSpec('950.000ml'),'950ml')
@@ -21,8 +23,8 @@ test('商品规格保留数值含义并去掉无意义的小数零',()=>{
 })
 
 test('对话商品卡和详情不展示商城长篇说明，购买使用今日餐单采购面板',()=>{
- const card=readFileSync(new URL('../src/components/ConversationFoodPackages.vue',import.meta.url),'utf8').split('<template>')[1].split('</template>')[0]
- const detail=readFileSync(new URL('../src/components/ConversationPackagePurchase.vue',import.meta.url),'utf8').split('<template>')[1].split('</template>')[0]
+ const card=parseSfc(readFileSync(new URL('../src/components/ConversationFoodPackages.vue',import.meta.url),'utf8')).descriptor.template.content
+ const detail=parseSfc(readFileSync(new URL('../src/components/ConversationPackagePurchase.vue',import.meta.url),'utf8')).descriptor.template.content
  assert.match(card,/FoodImageSlot[\s\S]*offer\.name/)
  assert.doesNotMatch(card,/offer\.(?:note|product_description|recommendation_reason)/)
  assert.doesNotMatch(detail,/offer\.(?:note|product_description|recommendation_reason)/)
@@ -44,7 +46,7 @@ function setup(route={}){
  async submit(text){submitted.push(text);return true},async createEntry(){},hide(){}})}
  const source=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
  const code=source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
- const page=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${code};return {profile,question,task,entryReady,chatError,sendQuestion,rememberThread,messages}`)(deps)
+ const page=new Function('deps','selectChatPrompts',`const {${Object.keys(deps).join(',')}}=deps;${code};return {profile,question,task,entryReady,chatError,sendQuestion,rememberThread,messages}`)(deps,selectChatPrompts)
  page.entryReady.value=true
  page.profile.value={selfMemberId:'self',householdId:'family',members:[{id:'self',healthMemberId:'health-self',relation:'本人'}]}
  page.task.value={memberId:'health-self',taskType:'consultation',available:true,entry:{thread_id:thread,agent_slug:'health-consultation'}}

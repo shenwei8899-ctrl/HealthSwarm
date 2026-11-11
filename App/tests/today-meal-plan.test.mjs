@@ -608,7 +608,8 @@ test('WeChat sheet controls receive taps independently from the header drag regi
  for(const name of ['tm-handle','tm-heading']){
   for(const event of ['touchstart','touchend','touchcancel'])assert.match(tag(name),new RegExp(`\\bbind${event}=`))
  }
- for(const name of ['tm-expand','tm-close'])assert.match(tag(name),/\bbindtap=/)
+ assert.equal(tag('tm-expand'),'')
+ assert.match(tag('tm-close'),/\bbindtap=/)
 })
 
 test('card handlers enforce the preview interaction gate even when invoked directly',()=>{

@@ -219,7 +219,7 @@ function editProfile(){uni.navigateTo({url:isMockMode?'/pages/profile/index':'/p
 <CommerceAccess v-else :enabled="isCommerceEnabled" @ready="reloadCommerce"><CommerceShop v-if="commercePage && commerceRoute.cart==='1'" :route="commerceRoute"/><view v-else-if="commercePage" class="screen"><text>请返回 AI 首页选择餐单或询问食材包。</text><button @click="nutritionist">返回营养师</button></view>
 
   <view v-else class="screen shop-screen" :class="{'cloud-meal-screen':!isMockMode}">
-    <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">{{ daily ? '今日采购清单' : sourcePlan ? '食材商城' : meal + '安排与购买' }}</text><text class="pill">{{isCommerceEnabled?(plan.isLocalFixture?'本地联调':'商城'):'演示'}}</text></view></AppNavBar>
+    <AppNavBar :title="(daily ? '今日采购清单' : sourcePlan ? '食材商城' : meal + '安排与购买')"><template #left><button class="icon-button" @click="backHome">‹</button></template></AppNavBar>
     <FlowRibbon :current="orderOpen ? 4 : 3" class="shop-flow" />
     <view v-if="savedArrangementError" class="card commerce-message"><text>{{savedArrangementError}}</text><button class="secondary-button" @click="reloadCommerce">重新读取本餐安排</button></view>
     <view v-if="!savedArrangementError && (blockers.length || sourcePlan?.blocked.length) && isMockMode" class="card safety-card">

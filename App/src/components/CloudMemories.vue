@@ -21,7 +21,7 @@ function memberLabel(member={}){
 </script>
 <template>
 <view class="screen mm-page">
-<AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button><text class="nav-title">AI 记住的事</text></view></AppNavBar>
+<AppNavBar title="AI 记住的事"><template #left><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button></template></AppNavBar>
 <view class="mm-hero"><text class="mm-title">让每一次建议，<br/>更懂你一点。</text></view>
 
 <view class="mm-heading"><text>{{memberId?memberLabel(members.find(m=>m.id===memberId))+'的记忆':'已保存的记忆'}}</text><button :disabled="busy||!!pending" aria-label="重新读取记忆" @click="load()">{{busy?'同步中…':'↻ 刷新'}}</button></view>

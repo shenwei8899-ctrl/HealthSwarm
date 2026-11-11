@@ -43,7 +43,7 @@ onShow(load);onHide(hide);onUnload(hide)
 </script>
 <template>
  <view class="screen df40">
-  <AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button><text class="nav-title">饮食反馈</text></view></AppNavBar>
+  <AppNavBar title="饮食反馈"><template #left><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button></template></AppNavBar>
   <view class="df39"><text class="df34">每一餐，都有回应</text><text class="df15">从真实记录里，发现饮食的小变化</text></view>
   <view class="df24">
    <view class="df13"><picker mode="date" :value="date" :disabled="busy" @change="change('date',$event.detail.value)"><view class="df37"><view class="df12"><AppIcon name="calendar" :size="34"/></view><view><view class="df7"><text>{{dayLabel}}</text><text class="df17">⌄</text></view><text class="df10">{{isToday?'今天的饮食反馈':'这一天的饮食反馈'}}</text></view></view></picker></view>

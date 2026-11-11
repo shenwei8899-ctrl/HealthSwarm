@@ -55,7 +55,7 @@ onLoad(options => {if(options.arrangement){cloudRecipeRoute.value=options;return
   <CloudRecipe v-if="cloudRecipeRoute" :route="cloudRecipeRoute"/>
 <CommerceAccess v-else :enabled="commercePreview" @ready="loadCommerceRecipe">
   <view class="screen recipe-screen">
-    <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">单道菜做法</text><text class="pill">购买前预览</text></view></AppNavBar>
+    <AppNavBar title="单道菜做法"><template #left><button class="icon-button" @click="backHome">‹</button></template></AppNavBar>
     <view class="recipe-hero"><image v-if="guide.image" :src="guide.image" mode="aspectFill"/><view><text class="eyebrow">{{meal}} · 做法预览</text><text class="display-title">{{guide.name}}</text><text>{{commercePreview?(guide.minutes?guide.minutes+' 分钟左右 · 已保存菜谱':'已保存菜谱 · 制作时间待确认'):guide.minutes+' 分钟左右 · 测试菜谱'}}</text></view></view>
     <text v-if="commercePreview && recipePage.busy.value" class="safe-note">正在读取已保存菜谱…</text><view v-if="commercePreview && recipePage.error.value" class="card notice-card"><text class="inline-error">{{recipePage.error.value}}</text><button class="secondary-button" :disabled="recipePage.busy.value" @click="loadCommerceRecipe">重新读取菜谱</button></view>
     <DishNutritionCard :nutrition="guide.nutrition" />

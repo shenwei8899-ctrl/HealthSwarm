@@ -2,5 +2,6 @@
 export function chatPresentation({route = {}, hasMessages = false, hasSavedArrangement = false, loading = false, newConversation = false, preparedThreadId = '', currentThreadId = ''}) {
   const separateThread = !!preparedThreadId && !!currentThreadId && preparedThreadId !== currentThreadId
   const initialResults = hasSavedArrangement && !newConversation && !separateThread && (!!route.preparation || route.from === 'onboarding')
-  return {initialResults, welcome: !hasMessages && !initialResults && !(loading && currentThreadId)}
+  // A task link already identifies the conversation view, before any async reads.
+  return {initialResults, welcome: !route.taskType && !hasMessages && !initialResults && !(loading && currentThreadId)}
 }

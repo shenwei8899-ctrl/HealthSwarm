@@ -19,7 +19,7 @@ function viewOrder(){uni.redirectTo({url:'/pages/orders/detail?id='+encodeURICom
 
 </script>
 <template>
- <view class="screen cooking-screen"><AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回订单" @click="viewOrder">‹</button><text class="nav-title">制作烹饪</text><button class="refresh-link" :disabled="busy" @click="load">{{busy?'读取中':'刷新'}}</button></view></AppNavBar>
+ <view class="screen cooking-screen"><AppNavBar title="制作烹饪"><template #left><button class="icon-button" aria-label="返回订单" @click="viewOrder">‹</button></template><template #right><button class="refresh-link" :disabled="busy" @click="load">{{busy?'读取中':'刷新'}}</button></template></AppNavBar>
   <text v-if="error" class="inline-error" role="alert">{{error}}</text><template v-if="context"><view class="cooking-heading"><text>食材到了，</text><text>一起做顿好饭。</text></view><text v-if="menu.is_local_fixture" class="safe-note">本地联调菜谱</text><CookingGuide :dishes="dishes" :selected="selected" action="吃完拍照，记一餐" @select="selected=$event" @action="record"/></template>
  </view>
 </template>

@@ -20,7 +20,7 @@ onUnmounted(()=>{uni.offKeyboardHeightChange?.(keyboard)})
 <template>
  <view class="profile-layout" :class="{'is-sheet':sheet,'is-onboarding':onboarding}" :style="{'--profile-nav-height':navHeight+'px'}">
   <view v-if="!sheet" class="profile-nav" :class="{'is-collapsed':progress>.9}">
-   <AppNavBar><view class="nav-row"><button class="profile-back" aria-label="返回" @click="$emit('back')">‹</button><text class="nav-title" :style="{opacity:progress}">{{title}}</text><view class="profile-nav-action"><slot name="action"/></view></view></AppNavBar>
+   <AppNavBar :title="(title)" :title-style="{opacity:progress}"><template #left><button class="profile-back" aria-label="返回" @click="$emit('back')">‹</button></template><template #right><view class="profile-nav-action"><slot name="action"/></view></template></AppNavBar>
   </view>
   <view v-if="!sheet" class="profile-nav-spacer"/>
   <view v-if="!sheet" class="profile-hero"><view :style="{opacity:1-progress,transform:'translateY('+(-progress*12)+'px)'}"><text class="profile-brand"><text class="profile-brand-dot"/>家庭营养师</text><text class="profile-heading">{{heading}}</text><text class="profile-description">{{description}}</text></view></view>

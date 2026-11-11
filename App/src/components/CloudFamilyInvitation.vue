@@ -45,7 +45,7 @@ onUnmounted(()=>{alive=false;epoch++})
 </script>
 <template>
  <view class="screen invitation-screen">
-  <AppNavBar><view class="nav-row"><text class="nav-title">家庭邀请</text><view/></view></AppNavBar>
+  <AppNavBar title="家庭邀请"></AppNavBar>
   <text v-if="busy" class="safe-note" role="status">正在核对邀请…</text>
   <view v-if="error" class="card invitation-card" role="alert"><text>{{error}}</text><button :disabled="busy" @click="load">重新读取邀请</button><button :disabled="busy" @click="leave">暂不处理这份邀请</button></view>
   <view v-if="invitation" class="card invitation-card">

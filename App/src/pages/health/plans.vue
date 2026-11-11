@@ -57,7 +57,7 @@ function chat() { if (!locked.value) uni.navigateTo({ url: '/pages/chat/index' }
 </script>
 <template>
   <view class="screen meal-archive">
-    <AppNavBar><view class="nav-row"><button class="mra-back" :aria-label="view==='detail'?'返回餐单列表':'返回'" @click="back">‹</button><text class="nav-title">{{view==='detail'?'餐单详情':'我的餐单'}}</text></view></AppNavBar>
+    <AppNavBar :title="(view==='detail'?'餐单详情':'我的餐单')"><template #left><button class="mra-back" :aria-label="view==='detail'?'返回餐单列表':'返回'" @click="back">‹</button></template></AppNavBar>
     <view v-if="view==='list'" class="mra-heading">
       <text>好好吃饭，</text><text>每一餐都有迹可循。</text>
     </view>

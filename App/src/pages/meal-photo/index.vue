@@ -55,7 +55,7 @@ async function preview(id) { previewPath.value='';const epoch=pageGeneration,mem
 </script>
 <template>
 <view class="screen photo-flow">
-  <AppNavBar><view class="nav-row"><button class="icon-button" @click="uni.navigateBack()">‹</button><text class="nav-title">拍照记餐</text></view></AppNavBar>
+  <AppNavBar title="拍照记餐"><template #left><button class="icon-button" @click="uni.navigateBack()">‹</button></template></AppNavBar>
   <text class="display-title">核对后再记入饮食</text>
   <view v-if="previewPath" class="card section"><image :src="previewPath" mode="widthFix" style="width:100%"/><button @click="previewPath=''">关闭原图</button></view>
   <text class="safe-note">同一餐最多3张照片。识别只提供食物候选，实际份量由你核对，营养按已发布数据计算。</text>

@@ -1,3 +1,4 @@
+import {createConversationHistoryCache} from '../src/services/conversation-history.js'
 import {syntheticIntent} from './fixtures/health-intent.mjs'
 import {dishTitle,mealLabels} from '../src/utils/meal-presentation.js'
 import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
@@ -147,11 +148,12 @@ function workflow(options = {}) {
     uni: { showModal(value){calls.push({action:'modal',...value})}, showToast(value) { calls.push({ action: 'toast', ...value }) }, hideKeyboard() {}, navigateTo(value) { calls.push({ action: 'navigate', ...value }) },
       reLaunch(value) { calls.push({ action: 'reLaunch', ...value }) }, redirectTo(value) { calls.push({ action: 'redirect', ...value }) } },
   }
+  deps.conversationHistory=createConversationHistoryCache({read:deps.readChatSnapshot,context:()=>identity.scope})
   const source=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
   const readOnlyBinding=source.match(/<TodayMealPlanSheet\b[^>]*?:read-only="([^"]+)"/)?.[1]||'false'
   const code = source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {showTodayMeal,verifiedMealView,mealViewText,restoreChat,scrollTarget,loadDailyPlan,currentEpoch:()=>epoch,history,visibleMessages,todayMenu,actTodayMenu,reloadToday,openDailyMeal,openDailyDish,todayMenuReadOnly:()=>{const value=(${readOnlyBinding});return value&&typeof value==='object'&&'value' in value?value.value:value},latestReference,shortcut,inlineTodayOpen,messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
+  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {pendingHistoryThread,historySelectionError,closeHistoryDirectory,prefetchHistory,prompts,shufflePrompts,promptAskBusy,promptShuffleBusy,composerPlaceholder,returning,browseConversation,historyPreview,deniedHistoryThread,deniedPreview,readingSuspended,showTodayMeal,verifiedMealView,mealViewText,restoreChat,scrollTarget,loadDailyPlan,currentEpoch:()=>epoch,history,visibleMessages,todayMenu,actTodayMenu,reloadToday,openDailyMeal,openDailyDish,todayMenuReadOnly:()=>{const value=(${readOnlyBinding});return value&&typeof value==='object'&&'value' in value?value.value:value},latestReference,shortcut,inlineTodayOpen,messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
   const historyRow = threadId => { const row = threads.get(threadId); return { thread_id: threadId, member_id: row.memberId, agent_slug: row.agent, business_date: row.businessDate } }
   return { ...page, calls, writes, identity, clock, hooks, scopedStorage, threads, addThread, historyRow,
     get flow(){return flow},
@@ -159,6 +161,45 @@ function workflow(options = {}) {
     dispose() { hooks.unmount?.(); scope.stop() },
   }
 }
+
+test('browsing history during a reply preserves its task, draft, and final answer',async()=>{
+  const p=workflow(),other=uuid(9900),request=uuid(9901)
+  try{
+    await p.load();const original=p.conversationThreadId.value
+    p.addThread(other);p.question.value='原对话草稿'
+    p.publish({status:'running',requestId:request,streamText:'原对话正在回复',result:null})
+    const calls=p.calls.length,writes=p.writes.length
+    p.history();await p.browseConversation(p.historyRow(other))
+    assert.equal(p.historyPreview.value.thread_id,other);assert.equal(p.readingSuspended.value,true)
+    assert.equal(p.conversationThreadId.value,original);assert.equal(p.task.value.requestId,request)
+    assert.equal(p.task.value.streamText,'原对话正在回复');assert.equal(p.question.value,'原对话草稿')
+    assert.ok(p.calls.slice(calls).every(call=>call.action==='snapshot'));assert.equal(p.writes.length,writes)
+    p.publish({status:'completed',result:{type:'answer',text:'原对话最终回复',citations:[]}})
+    assert.equal(p.historyPreview.value.thread_id,other)
+    assert.ok(p.messages.value.some(message=>message.requestId===request&&message.text==='原对话最终回复'))
+    p.browseConversation(p.historyRow(original));assert.equal(p.historyPreview.value,null)
+    assert.equal(p.task.value.requestId,request);assert.equal(p.question.value,'原对话草稿')
+  }finally{p.dispose()}
+})
+
+test('a denied preview does not invalidate the unrelated active reply and hides with its page',async()=>{
+  const p=workflow(),other=uuid(9902),request=uuid(9903)
+  try{
+    await p.load();p.addThread(other);p.publish({status:'running',requestId:request,result:null})
+    await p.browseConversation(p.historyRow(other));p.deniedPreview({threadId:other,status:403})
+    assert.equal(p.deniedHistoryThread.value,other);assert.equal(p.task.value.requestId,request)
+    assert.equal(p.task.value.status,'running');p.hooks.hide();assert.equal(p.historyPreview.value,null)
+  }finally{p.dispose()}
+})
+
+test('an uncertain submission permits preview without changing its request identity',async()=>{
+  const p=workflow(),other=uuid(9904),request=uuid(9905)
+  try{
+    await p.load();p.addThread(other);p.publish({requestId:request,submitUnknown:true,status:'提交中'})
+    await p.browseConversation(p.historyRow(other));assert.equal(p.historyPreview.value.thread_id,other)
+    assert.equal(p.task.value.requestId,request);assert.equal(p.task.value.submitUnknown,true)
+  }finally{p.dispose()}
+})
 
 test('a completed tomorrow-breakfast candidate ends chat loading without becoming a saved meal, purchase or lock on today',async()=>{
  const p=workflow()
@@ -259,6 +300,123 @@ test('entry failure offers reconnection next to the draft while consent retains 
   assert.match(composer, /@click="load">重新连接营养师/)
 })
 
+test('home renders four interactive local suggestions before any entry request completes',async()=>{
+ const gate=deferred(),p=workflow({route:{},beforeProfile:()=>gate.promise})
+ try{
+  assert.equal(p.prompts.value.length,4)
+  assert.equal(p.welcomeMounted.value,true)
+  assert.equal(p.promptAskBusy.value,false)
+  assert.equal(p.promptShuffleBusy.value,false)
+  const opening=p.load();await flush()
+  const first=p.prompts.value.map(prompt=>prompt.id),before=p.calls.length
+  p.shufflePrompts()
+  assert.equal(p.prompts.value.length,4)
+  assert.ok(p.prompts.value.every(prompt=>!first.includes(prompt.id)))
+  assert.equal(p.calls.length,before,'shuffle must not call a service')
+  assert.equal(p.chatBusy.value,true)
+  assert.equal(p.promptAskBusy.value,false)
+  assert.equal(p.composerPlaceholder,'有问题尽管问我')
+  const phase=p.entryView.value.phase,generation=p.entryView.value.generation
+  gate.resolve();await opening;await flush()
+  assert.equal(p.welcomeMounted.value,true)
+  assert.equal(p.entryView.value.phase,phase)
+  assert.equal(p.entryView.value.generation,generation,'readiness must not remount the welcome layer')
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('a suggestion clicked during initial entry appears immediately and submits once',async()=>{
+ const gate=deferred(),p=workflow({route:{},beforeProfile:()=>gate.promise})
+ try{
+  const opening=p.load(),text='早餐怎样省时准备？'
+  const sending=p.askPrompt({text,action:'consultation'})
+  await p.askPrompt({text:'第二次点击',action:'consultation'})
+  assert.equal(p.messages.value.filter(row=>row.role==='user').length,1)
+  assert.equal(p.messages.value.at(-1).text,text)
+  assert.equal(p.question.value,text)
+  assert.equal(p.calls.filter(call=>call.action==='submit').length,0)
+  gate.resolve();await Promise.all([opening,sending])
+  assert.deepEqual(p.calls.filter(call=>call.action==='submit').map(call=>call.text),[text])
+  assert.equal(p.messages.value.filter(row=>row.role==='user').length,1)
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('a suggestion waits for the existing return refresh without restarting profile initialization',async()=>{
+ let reads=0
+ const gate=deferred(),p=workflow({route:{},beforeProfile:()=>{if(++reads===2)return gate.promise}})
+ try{
+  await p.load()
+  const refreshing=p.refreshReturn()
+  assert.equal(p.refreshReturn(),refreshing,'concurrent return checks share one promise')
+  assert.equal(p.returnVerified.value,false)
+  assert.equal(p.promptAskBusy.value,false)
+  assert.equal(p.welcomeMounted.value,true)
+  const before=p.prompts.value.map(prompt=>prompt.id);p.shufflePrompts()
+  assert.ok(p.prompts.value.every(prompt=>!before.includes(prompt.id)))
+  const sending=p.askPrompt({text:'早餐怎样省时准备？',action:'consultation'})
+  assert.equal(p.messages.value.at(-1).text,'早餐怎样省时准备？')
+  await flush()
+  assert.equal(reads,2)
+  assert.equal(p.calls.filter(call=>call.action==='submit').length,0)
+  gate.resolve();await Promise.all([refreshing,sending])
+  assert.equal(reads,2)
+  assert.equal(p.returning.value,false)
+  assert.equal(p.calls.filter(call=>call.action==='submit').length,1)
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('suggestions stay interactive during the readiness part of return checks',async()=>{
+ const gate=deferred(),p=workflow({route:{}})
+ try{
+  await p.load()
+  const resume=p.flow.resume
+  p.flow.resume=async()=>{p.publish({loading:true});await gate.promise;p.publish({loading:false});return resume()}
+  const refreshing=p.refreshReturn();await flush()
+  assert.equal(p.task.value.loading,true)
+  assert.equal(p.promptAskBusy.value,false)
+  const sending=p.askPrompt({text:'早餐怎样省时准备？',action:'consultation'})
+  assert.equal(p.messages.value.at(-1).text,'早餐怎样省时准备？')
+  gate.resolve();await Promise.all([refreshing,sending])
+  assert.equal(p.calls.filter(call=>call.action==='submit').length,1)
+  assert.equal(p.returning.value,false)
+ }finally{gate.resolve();p.dispose()}
+})
+
+for(const cancel of ['hide','account'])test(`an early suggestion cannot submit after ${cancel}`,async()=>{
+ const gate=deferred(),p=workflow({route:{},beforeProfile:()=>gate.promise})
+ try{
+  const opening=p.load(),sending=p.askPrompt({text:'早餐怎样省时准备？',action:'consultation'})
+  if(cancel==='hide')p.hooks.hide()
+  else {p.identity.scope='account-b';p.identity.accountId='account-b';p.identity.householdId='family-b'}
+  gate.resolve();await Promise.all([opening,sending])
+  assert.equal(p.calls.filter(call=>call.action==='submit').length,0)
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('entry failure preserves an early suggestion without automatically submitting it on retry',async()=>{
+ const gate=deferred();let fail=true
+ const p=workflow({route:{},beforeProfile:async()=>{await gate.promise;if(fail)throw new Error('合成网络失败')}})
+ try{
+  const opening=p.load(),sending=p.askPrompt({text:'早餐怎样省时准备？',action:'consultation'})
+  gate.resolve();await Promise.all([opening,sending])
+  assert.equal(p.question.value,'早餐怎样省时准备？')
+  assert.equal(p.calls.filter(call=>call.action==='submit').length,0)
+  fail=false;await p.load()
+  assert.equal(p.calls.filter(call=>call.action==='submit').length,0)
+  assert.equal(p.promptAskBusy.value,false)
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('record suggestions navigate immediately during entry checks without submitting a question',async()=>{
+ const gate=deferred(),p=workflow({route:{},beforeProfile:()=>gate.promise})
+ try{
+  const opening=p.load()
+  await p.askPrompt({text:'看看我的饮食记录',action:'open_records'})
+  assert.equal(p.calls.filter(call=>call.action==='navigate'&&call.url==='/pages/records/index').length,1)
+  assert.equal(p.calls.filter(call=>call.action==='submit').length,0)
+  gate.resolve();await opening
+ }finally{gate.resolve();p.dispose()}
+})
+
 test('a question appears immediately during entry checks and submits only once after readiness',async()=>{
  const gate=deferred(),p=workflow({beforeProfile:()=>gate.promise,route:{}})
  try{
@@ -338,18 +496,68 @@ test('a failed background history read stays silent and a later successful check
  }finally{p.dispose()}
 })
 
-test('switching history reads the selected conversation without showing reply progress',async()=>{
+test('a cold selection keeps its previous view while preparing history without showing reply progress',async()=>{
  const p=workflow(),gate=deferred()
  let changing
  try{
   await p.load();p.setSnapshot(async()=>{await gate.promise;return {messages:[],runs:[]}})
   changing=p.selectConversation(p.historyRow(p.identity.dailyThread));await flush()
-  assert.equal(p.chatBusy.value,true)
+  assert.equal(p.pendingHistoryThread.value,p.identity.dailyThread)
+  assert.equal(p.historyLoading.value,false)
   assert.equal(p.replyPending.value,false)
   assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
   gate.resolve();await changing
   assert.equal(p.chatBusy.value,false)
  }finally{gate.resolve();await changing;p.dispose()}
+})
+
+test('uncached history keeps the drawer, conversation and draft until the target body is ready',async()=>{
+ const p=workflow(),target=uuid(9980),gate=deferred();p.addThread(target)
+ try{
+  await p.load();const original=p.conversationThreadId.value;p.question.value='保留原草稿';p.history()
+  p.setSnapshot(async()=>gate.promise);const selecting=p.browseConversation(p.historyRow(target));await flush()
+  assert.equal(p.historyOpen.value,true);assert.equal(p.conversationThreadId.value,original);assert.equal(p.question.value,'保留原草稿')
+  gate.resolve({messages:[{id:'ready',role:'assistant',text:'目标历史正文',createdAt:'2026-10-28T10:00:00Z'}],runs:[]});await selecting
+  assert.equal(p.historyOpen.value,false);assert.equal(p.conversationThreadId.value,target);assert.equal(p.messages.value[0].text,'目标历史正文')
+ }finally{gate.resolve({messages:[],runs:[]});p.dispose()}
+})
+test('cached history is visible immediately while revalidation and continuation remain pending',async()=>{
+ const p=workflow(),target=uuid(9981),gate=deferred();p.addThread(target,{messages:[{id:'saved',role:'assistant',text:'缓存正文',createdAt:'2026-10-28T10:00:00Z'}]})
+ let selecting
+ try{
+  await p.load();await p.selectConversation(p.historyRow(target));await p.newConversation();p.history()
+  p.setSnapshot(async()=>gate.promise);selecting=p.browseConversation(p.historyRow(target))
+  assert.equal(p.historyOpen.value,false);assert.equal(p.messages.value[0].text,'缓存正文');assert.equal(p.historyLoading.value,true)
+  gate.resolve({messages:[{id:'saved',role:'assistant',text:'刷新正文',createdAt:'2026-10-28T10:00:00Z'}],runs:[]});await selecting
+  assert.equal(p.messages.value[0].text,'刷新正文')
+ }finally{gate.resolve({messages:[],runs:[]});await selecting;p.dispose()}
+})
+test('a failed cold selection leaves the original conversation and draft intact',async()=>{
+ const p=workflow(),target=uuid(9982);p.addThread(target)
+ try{
+  await p.load();const original=p.conversationThreadId.value;p.question.value='原草稿';p.history()
+  p.setSnapshot(async()=>{throw Error('network')});await p.browseConversation(p.historyRow(target))
+  assert.equal(p.conversationThreadId.value,original);assert.equal(p.question.value,'原草稿');assert.equal(p.historyOpen.value,true);assert.match(p.historySelectionError.value,/重试/)
+ }finally{p.dispose()}
+})
+test('closing the drawer cancels a pending selection without cancelling the current conversation',async()=>{
+ const p=workflow(),target=uuid(9983),gate=deferred();p.addThread(target)
+ try{
+  await p.load();const original=p.conversationThreadId.value;p.history();p.setSnapshot(async()=>gate.promise)
+  const selecting=p.browseConversation(p.historyRow(target));await flush();p.closeHistoryDirectory()
+  gate.resolve({messages:[{id:'late',role:'assistant',text:'迟到正文'}],runs:[]});await selecting
+  assert.equal(p.conversationThreadId.value,original);assert.equal(p.messages.value.some(m=>m.id==='late'),false)
+ }finally{gate.resolve({messages:[],runs:[]});p.dispose()}
+})
+test('an empty anchor does not commit until its first readable related history arrives',async()=>{
+ const p=workflow(),target=uuid(9984),child=uuid(9985),gate=deferred();p.addThread(target);p.addThread(child)
+ try{
+  await p.load();const original=p.conversationThreadId.value;p.history()
+  p.setSnapshot(async id=>id===target?{messages:[],runs:[],relatedThreads:[{thread_id:child,memberId:member,task_type:'reference_meal_preview'}]}:gate.promise)
+  const selecting=p.browseConversation(p.historyRow(target));await flush();assert.equal(p.conversationThreadId.value,original);assert.equal(p.historyOpen.value,true)
+  gate.resolve({messages:[{id:'child-body',role:'assistant',text:'关联正文',createdAt:'2026-10-28T10:00:00Z'}],runs:[]});await selecting
+  assert.equal(p.messages.value[0].text,'关联正文');assert.equal(p.historyOpen.value,false)
+ }finally{gate.resolve({messages:[],runs:[]});p.dispose()}
 })
 
 test('only an actual active request keeps reply progress across background checks',async()=>{
@@ -593,6 +801,29 @@ test('a lost submission response reuses the displayed message and never clears t
   p.publish({submitUnknown:false,canRetry:false,status:'queued',error:''})
   assert.equal(p.question.value,'下一条草稿');assert.equal(p.messages.value.filter(m=>m.role==='user').length,1)
  }finally{gate.resolve();p.dispose()}
+})
+
+test('meal feedback stays in its conversation view across delayed profile and task reads',async()=>{
+  const profileGate=deferred(),taskGate=deferred()
+  const route={taskType:'diet_analysis',memberId:member,recordId:uuid(900),version:'3'}
+  const p=workflow({route,beforeProfile:()=>profileGate.promise,beforeOpen:()=>taskGate.promise})
+  const noWelcome=()=>{
+    assert.equal(p.presentation.value.welcome,false)
+    assert.equal(p.welcomeMounted.value,false)
+  }
+  try{
+    noWelcome()
+    const loading=p.load();await flush();noWelcome()
+    assert.equal(p.entryReady.value,false)
+    profileGate.resolve();await flush();noWelcome()
+    assert.equal(p.entryReady.value,false)
+    const opened=p.calls.find(c=>c.action==='open')
+    assert.equal(opened.taskType,'diet_analysis')
+    assert.deepEqual(opened.selection,{record_id:route.recordId,source_version:3})
+    taskGate.resolve();await loading;await flush();noWelcome()
+    assert.equal(p.entryReady.value,true)
+    assert.equal(p.calls.some(c=>c.action==='submit'),false)
+  }finally{profileGate.resolve();taskGate.resolve();p.dispose()}
 })
 
 test('plain login or cold entry shows home despite an existing server daily conversation',async()=>{

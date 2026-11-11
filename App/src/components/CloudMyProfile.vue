@@ -54,7 +54,7 @@ const serviceItems=[dietItems[1],profileItems[1],settingItems.find(item=>item.ur
 </script>
 <template>
   <view id="my-page" class="screen cloud-my" :class="{'is-entering':entering}" @animationend="finishEntrance">
-    <AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="uni.navigateBack({fail:()=>uni.reLaunch({url:'/pages/chat/index'})})">‹</button><text class="nav-title">我的</text><text/></view></AppNavBar>
+    <AppNavBar title="我的"><template #left><button class="icon-button" aria-label="返回" @click="uni.navigateBack({fail:()=>uni.reLaunch({url:'/pages/chat/index'})})">‹</button></template></AppNavBar>
     <view class="profile-heading">
       <view class="profile-avatar"><image v-if="avatar" class="personal-avatar" :src="avatar" mode="aspectFill" @error="avatar=''"/><AppIcon v-else name="user" :size="56"/></view>
       <view class="profile-identity"><text class="profile-name">{{name}}</text><text class="profile-caption">照顾自己，也照顾家人的每一餐</text></view>

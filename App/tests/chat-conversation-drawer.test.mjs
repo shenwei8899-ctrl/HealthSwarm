@@ -75,9 +75,9 @@ test('titles use the first user message, keep emoji intact and distinguish image
 
 function drawer(options = {}) {
   const props = reactive({ open: false, memberId: member, activeThreadId: '', busy: false, displayName: '合成用户' })
-  const emitted = [], hooks = {}, cache = new Map(), writes = []
+  const emitted = [], ready = [], hooks = {}, cache = new Map(), writes = []
   const identity = { scope: 'synthetic-scope', revision: 'one' }
-  const deps = { computed, ref, watch, backdropOpacity, clampDragOffset, DRAWER_SETTLE_MS, shouldCloseDrawer, defineProps: () => props, defineEmits: () => (...args) => emitted.push(args),
+  const deps = { computed, ref, watch, backdropOpacity, clampDragOffset, DRAWER_SETTLE_MS, shouldCloseDrawer, defineProps: () => props, defineEmits: () => (...args) => args[0]==='ready'?ready.push(args[1]):emitted.push(args),
     onShow: callback => { hooks.show = callback }, onHide: callback => { hooks.hide = callback }, onUnmounted: callback => { hooks.unmount = callback },
     readConversations: async () => ({ items: [], hasMore: false, nextOffset: null }),
     readChatSnapshot: async () => ({ messages: [] }), conversationTitle, conversationSummary,
@@ -86,7 +86,7 @@ function drawer(options = {}) {
   }
   const source = readFileSync(new URL('../src/components/ChatConversationDrawer.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const state = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${source};return {rows,groups,loading,error,notice,hasMore,nextOffset,load,close,newConversation,select,profile,dragOffset,dragPhase,panelStyle,backdropStyle,beginDrag,moveDrag,endDrag}`)(deps))
+  const state = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${source};return {rows,groups,loading,error,notice,hasMore,nextOffset,load,retry,close,newConversation,select,profile,dragOffset,dragPhase,panelStyle,backdropStyle,beginDrag,moveDrag,endDrag}`)(deps))
   return { ...state, props, emitted, cache, writes, identity, hooks,
     async open() { props.open = true; await nextTick(); await turn() },
     dispose() { hooks.unmount?.(); scope.stop() },
@@ -116,9 +116,9 @@ test('closing or changing the account rejects a late directory without private c
   }finally{p.dispose()}
  }
 })
-test('creation and selection respect busy while profile and closing remain available',async()=>{
+test('reply activity blocks creation but permits history browsing and preserves the directory on close',async()=>{
  const p=drawer({readConversations:async()=>({items:[item(1)],hasMore:false,nextOffset:null})})
- try{await p.open();p.props.busy=true;p.newConversation();p.select(p.rows.value[0]);assert.equal(p.emitted.length,0);p.profile();assert.deepEqual(p.emitted.at(-1),['profile']);p.close();assert.deepEqual(p.rows.value,[])}finally{p.dispose()}
+ try{await p.open();p.props.busy=true;p.newConversation();assert.equal(p.emitted.length,0);p.select(p.rows.value[0]);assert.equal(p.emitted.at(-1)[0],'select');p.props.browseBusy=true;p.select(p.rows.value[0]);assert.equal(p.emitted.length,1);p.profile();assert.deepEqual(p.emitted.at(-1),['profile']);p.close();assert.equal(p.rows.value.length,1)}finally{p.dispose()}
 })
 test('pagination retains its first page and retries the same failed offset',async()=>{
  let fail=true;const offsets=[]
@@ -144,6 +144,46 @@ test('legacy local task links recover a short title in one read-only batch witho
 })
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+test('reopening shows its directory before a delayed refresh and replaces revoked titles', async () => {
+  const gate = deferred(); let calls = 0
+  const p = drawer({readConversations:async()=>++calls===1?{items:[item(1)],hasMore:false,nextOffset:null}:gate.promise})
+  try {
+    await p.open(); p.close(); p.props.open=false; await nextTick(); await p.open()
+    assert.equal(p.rows.value[0].title,'合成首问'); assert.equal(p.loading.value,true)
+    gate.resolve({items:[item(1,{title:'该对话暂不可访问',unavailable:true})],hasMore:false,nextOffset:null}); await turn()
+    assert.equal(p.rows.value[0].unavailable,true); assert.equal(p.rows.value[0].title,'该对话暂不可访问')
+    p.select(item(1)); assert.equal(p.emitted.filter(event=>event[0]==='select').length,0)
+  } finally {gate.resolve({items:[],hasMore:false,nextOffset:null});p.dispose()}
+})
+
+test('a failed refresh preserves rows and retries the first page rather than loading more', async () => {
+  const offsets=[];let fail=false
+  const p=drawer({readConversations:async(_id,offset)=>{offsets.push(offset);if(fail)throw Error('timeout');return {items:[item(1)],hasMore:true,nextOffset:1}}})
+  try {
+    await p.open();fail=true;await p.load();assert.equal(p.rows.value.length,1)
+    fail=false;p.retry();await turn();assert.deepEqual(offsets,[0,0,0])
+  } finally {p.dispose()}
+})
+
+test('refresh rebuilds the loaded window and cursor after an insertion at the front', async () => {
+  let inserted=false;const offsets=[]
+  const p=drawer({readConversations:async(_id,offset)=>{offsets.push(offset);return {items:[item(inserted?[3,1,2][offset]:[1,2][offset])],hasMore:offset<(inserted?2:1),nextOffset:offset<(inserted?2:1)?offset+1:null}}})
+  try {
+    await p.open();await p.load(true);inserted=true;await p.load()
+    assert.deepEqual(p.rows.value.map(row=>row.thread_id),[thread(3),thread(1)])
+    assert.equal(p.nextOffset.value,2);await p.load(true)
+    assert.deepEqual(p.rows.value.map(row=>row.thread_id),[thread(3),thread(1),thread(2)])
+    assert.deepEqual(offsets,[0,1,0,1,2])
+  } finally {p.dispose()}
+})
+
+test('a changed login revision purges retained titles before reopening',async()=>{
+  const gate=deferred();let calls=0
+  const p=drawer({readConversations:async()=>++calls===1?{items:[item(1)],hasMore:false,nextOffset:null}:gate.promise})
+  try{await p.open();p.props.open=false;await nextTick();p.identity.revision='new-login';await p.open();assert.deepEqual(p.rows.value,[])}
+  finally{gate.resolve({items:[],hasMore:false,nextOffset:null});p.dispose()}
+})
 
 test('drag helpers clamp distance and decide only on a third of the panel or a fast flick', () => {
   assert.equal(clampDragOffset(80, 285), 80)
@@ -189,7 +229,7 @@ test('the panel follows the finger one-to-one and snaps back below a third', asy
   } finally { Date.now = realNow; p.dispose() }
 })
 
-test('dragging a third of the panel closes the drawer once and clears the directory', async () => {
+test('dragging a third of the panel closes the drawer once and retains the directory', async () => {
   const p = drawer({ readConversations: async () => ({ items: [item(1)], hasMore: false, nextOffset: null }) })
   try {
     await p.open()
@@ -202,7 +242,7 @@ test('dragging a third of the panel closes the drawer once and clears the direct
     assert.equal(p.dragOffset.value, 285)
     await sleep(DRAWER_SETTLE_MS + 60)
     assert.deepEqual(p.emitted, [['close']])
-    assert.deepEqual(p.rows.value, [])
+    assert.equal(p.rows.value.length, 1)
     assert.equal(p.dragPhase.value, '')
   } finally { p.dispose() }
 })

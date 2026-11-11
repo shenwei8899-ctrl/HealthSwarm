@@ -20,7 +20,7 @@ const back = () => uni.navigateBack()
 </script>
 <template>
   <view class="screen exclusive-screen detail-screen">
-    <AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="back">‹</button><text class="nav-title">计划详情</text></view></AppNavBar>
+    <AppNavBar title="计划详情"><template #left><button class="icon-button" aria-label="返回" @click="back">‹</button></template></AppNavBar>
     <view v-if="error" class="plan-surface plan-empty"><text class="plan-caption">{{error}}</text><button class="plan-secondary" :disabled="busy" @click="load">重新读取</button><button class="plan-text-link" @click="back">返回选择计划</button></view>
     <text v-else-if="busy && !plan" class="plan-notice">正在读取计划…</text>
     <template v-if="plan">

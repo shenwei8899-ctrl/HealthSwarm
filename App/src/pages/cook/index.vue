@@ -58,7 +58,7 @@ function photoUpload() {
 <template>
   <CommerceAccess v-if="commerceFlow"><CommerceCooking :id="commerceOrderId"/></CommerceAccess>
   <view v-else class="screen cook-screen">
-    <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">{{guide?.meal||selectedMeal}}制作</text><text class="pill">演示</text></view></AppNavBar>
+    <AppNavBar :title="(guide?.meal||selectedMeal) + &quot;制作&quot;"><template #left><button class="icon-button" @click="backHome">‹</button></template></AppNavBar>
     <FlowRibbon :current="5" class="cook-flow" />
     <view v-if="!order" class="state-card card"><text class="section-title">未找到这笔订单</text><text>请从订单详情进入烹饪步骤。</text><button class="primary-button" @click="backHome">返回</button></view>
     <view v-else-if="!ready" class="state-card card"><text class="section-title">收到食材后再开始</text><text>请先在订单详情确认已收到食材，然后查看对应的烹饪步骤。</text><button class="primary-button" @click="viewOrder">查看订单配送进度 →</button></view>

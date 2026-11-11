@@ -36,7 +36,7 @@ function nutritionist() { uni.reLaunch({ url: '/pages/chat/index' }) }
 <CommerceAccess v-if="isCommerceEnabled"><CommerceOrders /></CommerceAccess>
 
   <view v-else class="screen orders-screen">
-    <AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">我的订单</text><text class="pill">测试数据</text></view></AppNavBar>
+    <AppNavBar title="我的订单"><template #left><button class="icon-button" @click="backHome">‹</button></template></AppNavBar>
     <view class="orders-hero">
       <text class="eyebrow">ORDER DESK · 一餐之后还有交付</text>
       <text class="display-title">买到了哪一步，<br />一眼看明白。</text>

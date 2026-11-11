@@ -50,7 +50,7 @@ onUnmounted(()=>{remembered=null;clearSheet();discard()})
  <view class="screen family-overview">
   <view class="family-canvas" aria-hidden="true"/>
   <view class="family-content" :class="{'sheet-open':sheetId}">
-   <AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="uni.navigateBack({fail:()=>uni.reLaunch({url:'/pages/chat/index'})})">‹</button><text class="nav-title">家庭健康档案</text><text/></view></AppNavBar>
+   <AppNavBar title="家庭健康档案"><template #left><button class="icon-button" aria-label="返回" @click="uni.navigateBack({fail:()=>uni.reLaunch({url:'/pages/chat/index'})})">‹</button></template></AppNavBar>
    <view class="family-heading"><view class="family-summary"><text class="family-name">{{profile?.householdName||'我的家'}}</text></view><button v-if="profile&&owner" class="family-invite" @click="openInvites">＋ 邀请家人</button></view>
    <view v-if="busy" class="family-loading" role="status"><view class="loading-tabs"/><view class="loading-card"><view class="loading-avatar"/><view class="loading-line"/><view class="loading-line short"/></view><text>正在读取家庭档案…</text></view>
    <view v-else-if="error" class="family-notice" role="alert"><view class="notice-symbol" aria-hidden="true">↻</view><text class="notice-title">家庭档案暂未读取</text><text class="notice-copy">{{error}}</text><button class="retry-button" @click="load">重新读取</button></view>

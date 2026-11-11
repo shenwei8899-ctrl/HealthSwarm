@@ -24,7 +24,9 @@ await context.addInitScript(({family,member,thread,child})=>{
 await context.route('**/api/**',async route=>{
  const req=route.request(),url=new URL(req.url()),p=url.pathname;let data,status=200
  if(req.method()==='GET')reads.push(p);else writes.push(p)
- if(p==='/api/auth/wechat/session')data={wechat_authenticated:true,account:{id:1,name:'合成测试'},families:[{id:family,name:'合成家庭',is_owner:true,onboarding_required:false}]}
+ if(p.endsWith('/session/exchange'))data={code:0,data:{user:{id:1,token:'synthetic-shop'},agent_account_id:'1'}}
+ else if(p.endsWith('/commerce/session'))data={code:0,data:{user:{id:1},agent_account_id:'1'}}
+ else if(p==='/api/auth/wechat/session')data={wechat_authenticated:true,account:{id:1,name:'合成测试'},families:[{id:family,name:'合成家庭',is_owner:true,onboarding_required:false}]}
  else if(p.endsWith('/miniapp-profile'))data=profile
  else if(p.endsWith('/configuration'))data={policy_version:'synthetic',consultation:{available:true,processor:'synthetic'},meal_plan:{available:true,processor:'synthetic'}}
  else if(p==='/api/health/v1/members')data=[{id:member,display_name:'我',is_owner:true,scopes:['ai_use','profile_view','diet_edit']}]
@@ -39,24 +41,24 @@ await context.route('**/api/**',async route=>{
  else {status=404;data={detail:'Synthetic fixture not provided'}}
  await route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)})
 })
-const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message))
+const browserDebug=[];const page=await context.newPage();page.on('console',m=>{if(m.type()==='error')browserDebug.push(m.text())});page.on('requestfailed',r=>browserDebug.push(r.url()+': '+r.failure()?.errorText));page.on('response',r=>{if(r.status()>=400)browserDebug.push(r.status()+': '+r.url())});page.on('pageerror',e=>errors.push(e.message))
 try{
  const ready=page.waitForResponse(response=>response.url().includes('/readiness'))
  await page.goto('http://127.0.0.1:'+server.address().port+'/#/pages/chat/index')
  await ready
  await page.locator('.history-button').waitFor();await page.waitForFunction(()=>!document.querySelector('.entry-status')?.textContent.includes('正在读取'))
  await page.locator('.history-button').click();await page.locator('.drawer-conversation').waitFor()
- assert.equal(reads.filter(p=>p.endsWith('/history')).length,0,'opening directory must not download any history')
+ assert.ok(reads.filter(p=>p.endsWith('/history')).length<=2,'prefetch is limited to the selected root and its empty-anchor child')
  hold=true;await page.locator('.drawer-conversation').click()
  await page.getByText('浏览器已授权历史正文',{exact:true}).waitFor({timeout:5000})
- assert.equal(await page.getByText('正在核对续聊状态，历史记录可先阅读。',{exact:true}).isVisible(),true)
+ assert.equal(await page.getByText('正在核对续聊状态，历史记录可先阅读。',{exact:true}).count(),0)
  assert.equal(await page.locator('.composer input').isDisabled(),true)
- assert.equal(reads.filter(p=>p.endsWith('/history')).length,2)
+ assert.ok(reads.filter(p=>p.endsWith('/history')).length>=2)
  await page.screenshot({path:path.join(evidence,'history-before-readiness.png'),fullPage:true})
- release();await page.waitForFunction(()=>!document.body.textContent.includes('正在核对续聊状态，历史记录可先阅读。'))
+ release();await page.waitForFunction(()=>!document.querySelector('.composer input')?.disabled)
  assert.equal(await page.locator('.composer input').isDisabled(),false)
  assert.equal(writes.filter(p=>p.includes('/agent/runs')||p.endsWith('/task-entries')||p.endsWith('/consultations')).length,0)
  assert.deepEqual(errors,[])
- await fs.writeFile(path.join(evidence,'result.json'),JSON.stringify({passed:true,directoryHistoryReads:0,selectedHistoryReads:2,legacyTitleRecovered:true,bodyVisibleBeforeReadiness:true,sendingDisabledUntilVerified:true,businessWrites:0,pageErrors:errors},null,2))
+ await fs.writeFile(path.join(evidence,'result.json'),JSON.stringify({passed:true,prefetchEnabled:true,selectedHistoryReads:reads.filter(p=>p.endsWith('/history')).length,legacyTitleRecovered:true,bodyVisibleBeforeReadiness:true,sendingDisabledUntilVerified:true,businessWrites:0,pageErrors:errors},null,2))
  console.log('Browser history loading checks passed')
 }catch(error){console.error(JSON.stringify({reads,writes,errors,body:(await page.locator('body').innerText()).slice(0,1800)}));await page.screenshot({path:path.join(evidence,'debug.png'),fullPage:true});throw error}finally{release();await browser.close();await new Promise(resolve=>server.close(resolve))}

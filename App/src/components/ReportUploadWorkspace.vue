@@ -33,7 +33,7 @@ function page(jobs, drafts) { emit('page', jobs, drafts) }
 
 <template>
   <view class="screen report-workspace">
-    <AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="emit('back')">‹</button><text class="nav-title">上传报告</text></view></AppNavBar>
+    <AppNavBar title="上传报告"><template #left><button class="icon-button" aria-label="返回" @click="emit('back')">‹</button></template></AppNavBar>
     <view class="report-heading"><text class="report-title">{{stage==='review'?'核对报告指标':stage==='saved'?'报告已存入档案':'上传体检报告'}}</text><text class="report-subtitle">{{stage==='review'?'对照原报告确认结果，再保存到成员档案。':stage==='saved'?'每一项健康记录，都归属对应的家庭成员。':'拍下报告或导入文件，核对后存入成员档案。'}}</text></view>
     <view class="report-steps" aria-label="上传、核对、保存"><view v-for="(label,index) in ['上传报告','核对指标','保存档案']" :key="label" :class="{'is-current':step===index+1,'is-complete':step>index+1}"><text class="step-dot">{{step>index+1?'✓':index+1}}</text><text>{{label}}</text></view></view>
 

@@ -5,7 +5,7 @@ import {request} from '../services/request.js'
 import {commerce} from '../services/commerce.js'
 import {storageContext} from '../services/storage.js'
 import {sourceTitle} from '../utils/ai-answer.js'
-const props=defineProps({plan:{type:Object,required:true},detailMode:Boolean})
+const props=defineProps({plan:{type:Object,required:true},detailMode:Boolean,readOnly:Boolean})
 const emit=defineEmits(['detail'])
 const expanded=ref(false),busy=ref(false),error=ref(''),resolved=ref(null),displayError=ref('')
 const plan=computed(()=>resolved.value||props.plan)
@@ -27,7 +27,7 @@ watch(()=>props.plan,async original=>{
   }catch(e){if(current()&&ticket===revision)displayError.value='中文详情暂时无法读取，请稍后重新打开。'}
 },{immediate:true})
 async function purchase(){
-  if(busy.value||!current())return
+  if(props.readOnly||busy.value||!current())return
   busy.value=true;error.value=''
   const previewId=props.plan.preview_id,active=()=>current()&&props.plan.preview_id===previewId
   try{
@@ -58,10 +58,10 @@ async function purchase(){
     <template v-if="expanded"><text>食材：{{recipeDisplay(dish).ingredients.join('；')}}</text><text v-for="(step,i) in recipeDisplay(dish).steps" :key="i">{{i+1}}. {{step}}</text><text v-if="dish.nutrition_quote">原食谱营养说明：{{recipeDisplay(dish).nutrition_quote}}</text><text class="reference-note">个人营养量尚未核算，未知值不按零处理。</text></template>
    </view>
   </view>
-  <button class="reference-detail" @click="detailMode?emit('detail',plan):expanded=!expanded">{{expanded?'收起详情':'查看食材、做法与营养说明'}}</button>
-  <view v-if="plan.product_matches?.length&&!detailMode" class="reference-products"><text class="meal-title">商城食材 · 购买时选择规格</text><view v-for="item in plan.product_matches" :key="item.product_id"><text>{{item.product_name}} · {{item.skus?.length||0}} 个规格</text><text v-if="item.ingredient_refs?.length">用于：{{item.ingredient_refs.map(ref=>referenceIngredientLabel(labels,ref)).join('、')}}</text></view><button @click="emit('detail',{plan,purchase:true})">选择规格后购买</button></view>
-  <view v-else-if="plan.purchase_items?.length&&!detailMode" class="reference-products"><text class="meal-title">采购建议 · 请核对商品与包装数量</text><view v-for="item in plan.purchase_items" :key="item.sku_id"><text>{{item.product_name}} {{item.sku_name||''}} × {{item.quantity}}</text><text v-if="item.ingredient_refs?.length">用于：{{item.ingredient_refs.map(ref=>referenceIngredientLabel(labels,ref)).join('、')}}</text></view><button :disabled="busy" @click="purchase">{{busy?'正在核对来源…':'确认这些商品并加入购物车'}}</button></view>
-  <button v-else-if="detailMode&&plan.product_matches?.length" @click="emit('detail',{plan,purchase:true})">选择规格后购买</button><button v-else-if="detailMode&&plan.purchase_items?.length" @click="emit('detail',{plan,purchase:true})">查看采购食材</button><text v-else class="reference-note">{{plan.purchase_gaps?.length?'本次未选定采购商品，原因见下方。':'这份餐单未记录采购商品及原因，可重新生成参考餐单。'}}</text>
+  <button class="reference-detail" @click="detailMode&&!readOnly?emit('detail',plan):expanded=!expanded">{{expanded?'收起详情':'查看食材、做法与营养说明'}}</button>
+  <view v-if="plan.product_matches?.length&&!detailMode" class="reference-products"><text class="meal-title">商城食材 · 购买时选择规格</text><view v-for="item in plan.product_matches" :key="item.product_id"><text>{{item.product_name}} · {{item.skus?.length||0}} 个规格</text><text v-if="item.ingredient_refs?.length">用于：{{item.ingredient_refs.map(ref=>referenceIngredientLabel(labels,ref)).join('、')}}</text></view><button v-if="!readOnly" @click="emit('detail',{plan,purchase:true})">选择规格后购买</button></view>
+  <view v-else-if="plan.purchase_items?.length&&!detailMode" class="reference-products"><text class="meal-title">采购建议 · 请核对商品与包装数量</text><view v-for="item in plan.purchase_items" :key="item.sku_id"><text>{{item.product_name}} {{item.sku_name||''}} × {{item.quantity}}</text><text v-if="item.ingredient_refs?.length">用于：{{item.ingredient_refs.map(ref=>referenceIngredientLabel(labels,ref)).join('、')}}</text></view><button v-if="!readOnly" :disabled="busy" @click="purchase">{{busy?'正在核对来源…':'确认这些商品并加入购物车'}}</button></view>
+  <button v-else-if="!readOnly&&detailMode&&plan.product_matches?.length" @click="emit('detail',{plan,purchase:true})">选择规格后购买</button><button v-else-if="!readOnly&&detailMode&&plan.purchase_items?.length" @click="emit('detail',{plan,purchase:true})">查看采购食材</button><text v-else class="reference-note">{{plan.purchase_gaps?.length?'本次未选定采购商品，原因见下方。':'这份餐单未记录采购商品及原因，可重新生成参考餐单。'}}</text>
   <view v-if="plan.purchase_gaps?.length" class="reference-products"><text class="meal-title">{{plan.purchase_items?.length?'其余食材':'食材采购说明'}}</text><view v-for="gap in plan.purchase_gaps" :key="gap.ingredient"><text>{{referenceIngredientLabel(labels,gap.ingredient)}} · {{gapNames[gap.reason]||'待核对'}}</text><text class="reference-note">{{referenceGapDetail(gap)}}</text></view></view>
   </template>
   <text v-else class="reference-note">这份餐单需要重新安排，请从今日餐单生成。</text>

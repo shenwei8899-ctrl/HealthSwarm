@@ -40,7 +40,7 @@ function save(){return run(async active=>{
 </script>
 <template>
   <view class="screen">
-    <AppNavBar><view class="nav-row"><button class="icon-button" @click="uni.navigateBack()">‹</button><text class="nav-title">记录这一餐</text><text/></view></AppNavBar>
+    <AppNavBar title="记录这一餐"><template #left><button class="icon-button" @click="uni.navigateBack()">‹</button></template></AppNavBar>
     <FlowRibbon :current="6"/>
     <view class="page-heading"><text class="display-title">实际吃了哪些菜？</text><text class="subtitle">按订单菜谱逐人确认食量，可附上餐盘照片。</text></view>
     <text class="safe-note">记录按当前会员保存在本机。照片用于回看；AI 识别和营养计算尚未接入。</text>

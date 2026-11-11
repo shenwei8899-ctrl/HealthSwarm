@@ -30,7 +30,7 @@ async function consult(){
  try{const selection={start_date:start.value,end_date:end.value,records:rows.map(r=>({record_id:r.record_id,version:r.version}))};const {data}=await request({path:`/api/health/v1/members/${healthMemberId.value}/indicator-reviews/${kind.value}`,method:'POST',data:selection});if(mine!==epoch||rev!==sessionRevision())return;if(data.source_member_id!==familyMember.value||data.records.length!==rows.length)throw new Error('实测来源已变化，请重新读取记录后选择');const task=kind.value+'_review';scopedStorage.setStorageSync(`indicator-choice:${healthMemberId.value}:${task}`,data.selection);uni.navigateTo({url:`/pages/chat/index?memberId=${encodeURIComponent(healthMemberId.value)}&taskType=${task}&indicatorChoice=1`})}catch(e){if(mine===epoch)error.value=e.message}finally{if(mine===epoch)busy.value=false}
 }
 </script>
-<template><view class="screen"><AppNavBar><view class="nav-row"><button class="icon-button" @click="uni.navigateBack()">‹</button><text class="nav-title">实测记录回顾</text></view></AppNavBar>
+<template><view class="screen"><AppNavBar title="实测记录回顾"><template #left><button class="icon-button" @click="uni.navigateBack()">‹</button></template></AppNavBar>
 <view class="panel"><text class="display-title">回顾测量事实</text><text class="safe-note">北京时间最多366天；统计原值，不作诊断或个体化建议。</text>
 <picker :range="members.map(m=>m.name)" :disabled="busy" @change="selectMember(members[$event.detail.value])"><view class="field-input">{{members.find(m=>m.id===familyMember)?.name||'选择成员'}} ›</view></picker>
 <picker :range="names" :disabled="busy" @change="change('kind',kinds[$event.detail.value])"><view class="field-input">{{names[kinds.indexOf(kind)]}} ›</view></picker>

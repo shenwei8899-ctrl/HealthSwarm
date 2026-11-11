@@ -50,7 +50,7 @@ onUnload(() => { alive = false; regionGeneration++; directory.value = []; draft.
 
 <template>
   <view class="screen partner-page">
-    <AppNavBar centered><view class="nav-row"><button class="icon-button" aria-label="返回" :disabled="state.busy" @click="backHome">‹</button><text class="nav-title">合作申请</text><text/></view></AppNavBar>
+    <AppNavBar title="合作申请"><template #left><button class="icon-button" aria-label="返回" :disabled="state.busy" @click="backHome">‹</button></template></AppNavBar>
     <view v-if="state.saved" class="partner-success" role="status">
       <text class="success-symbol">✓</text><text class="success-title">合作申请已提交</text>
       <text class="success-description">我们会根据合作匹配情况与您联系。</text>

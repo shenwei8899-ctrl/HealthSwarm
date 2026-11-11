@@ -9,13 +9,7 @@ function back() {
 
 <template>
   <view class="screen health-profile">
-    <AppNavBar>
-      <view class="nav-row">
-        <button class="icon-button" aria-label="返回我的页面" @click="back">‹</button>
-        <text class="nav-title">我的健康资料</text>
-        <text/>
-      </view>
-    </AppNavBar>
+    <AppNavBar title="我的健康资料"><template #left><button class="icon-button" aria-label="返回我的页面" @click="back">‹</button></template></AppNavBar>
     <SelfAccountDetails/>
   </view>
 </template>

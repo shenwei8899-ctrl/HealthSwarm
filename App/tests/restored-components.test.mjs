@@ -1,3 +1,4 @@
+import {createConversationHistoryCache} from '../src/services/conversation-history.js'
 import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
 import { mealPairingText } from '../src/utils/dish-commerce-presentation.js'
 import {supplementCandidates,appendMealCandidates,preserveMealEvidence,mealDishKey} from '../src/services/meal-supplement.js'
@@ -16,6 +17,7 @@ import {loadChatMealPlan} from '../src/services/chat-meal-plan.js'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { ref,reactive,computed,nextTick,watch,effectScope } from 'vue'
+import {parse as parseSfc} from 'vue/compiler-sfc'
 import {chatTimestamp,chatBusinessDate} from '../src/services/cloud-chat.js'
 import {chatPresentation} from '../src/services/chat-presentation.js'
 import { createHealthTaskFlow,HEALTH_TEXT_TASKS } from '../src/services/health-task-flow.js'
@@ -29,6 +31,7 @@ const member='11111111-1111-4111-8111-111111111111',thread='22222222-2222-4222-8
 function mount(file,fields,extras={}){
  const hooks={},deps={defineOptions:()=>{},mealPairingText,supplementCandidates,appendMealCandidates,preserveMealEvidence,mealDishKey,createMealSupplementSaver:()=>({read:()=>null,hide(){}}),readDietRecord,mealNutritionState,recognizedMealDish,createMealNutritionClient:({state})=>({invalidate(){Object.assign(state,mealNutritionState())},preview:async()=>{},search:async()=>{},portions:async()=>{}}),defineEmits:()=>()=>{},defineExpose:()=>{},createChatEntryTransition,createChatKeyboardLayout,listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,loadChatMealPlan,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,watch,chatTimestamp,chatBusinessDate,chatPresentation,defineProps:()=>({route:{}}),onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnload:fn=>hooks.unload=fn,onUnmounted:fn=>hooks.unmount=fn,...extras}
  if(file==='CloudMealPurchase.vue') Object.assign(deps,{defineOptions:()=>{}},addressNavigation(deps.storageContext,deps.uni))
+ if(file==='CloudNutritionChat.vue')deps.conversationHistory=createConversationHistoryCache({read:deps.readChatSnapshot,context:deps.storageContext})
  const source=readFileSync(new URL('../src/components/'+file,import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
  const scope=effectScope();const page=scope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {${fields}}`)(deps))
  return {...page,hooks,dispose(){hooks.unmount?.();hooks.unload?.();scope.stop()}}
@@ -228,7 +231,7 @@ test('memory heading identifies the authorized family member when the self membe
   assert.equal(p.memberId.value,'health-mother')
   assert.deepEqual(calls,['/api/health/v1/members','/api/health/v1/members/health-mother/memory'])
   const Vue=await import('vue'),{renderToString}=await import('vue/server-renderer')
-  const template=readFileSync(new URL('../src/components/CloudMemories.vue',import.meta.url),'utf8').match(/<template>([\s\S]*?)<\/template>/)[1]
+  const template=parseSfc(readFileSync(new URL('../src/components/CloudMemories.vue',import.meta.url),'utf8')).descriptor.template.content
   const render=Vue.compile(template)
   const html=await renderToString(Vue.createSSRApp({setup:()=>p,render,components:{AppNavBar:{setup:(_,ctx)=>()=>Vue.h('view',ctx.slots.default?.())}}}))
   assert.match(html,/妈妈的记忆/)

@@ -5,7 +5,7 @@ import { onShow } from '@dcloudio/uni-app'
 import { request } from '../services/request.js'
 import { storageContext } from '../services/storage.js'
 import { packagePrice, packageSpec } from '../utils/package-presentation.js'
-const props = defineProps({ offers: Array, requestId: String, animate: Boolean })
+const props = defineProps({ offers: Array, requestId: String, animate: Boolean, readOnly: Boolean })
 const emit = defineEmits(['ready'])
 const offers = ref([]), error = ref(''), loading = ref(false), opening = ref('')
 let alive = true, revision = 0, owner = storageContext(), navigationTimer
@@ -27,7 +27,7 @@ async function load() {
   finally { if (current()) loading.value = false }
 }
 function open(offer) {
-  if (!alive || owner !== storageContext() || opening.value || !offer.available || !offer.offer_token || !props.requestId) return
+  if (props.readOnly || !alive || owner !== storageContext() || opening.value || !offer.available || !offer.offer_token || !props.requestId) return
   const ticket = revision, scope = owner
   opening.value = offer.offer_token; error.value = ''
   uni.navigateTo({
@@ -46,7 +46,7 @@ onUnmounted(() => { alive = false; revision++; clearTimeout(navigationTimer) })
   <view v-if="loading" class="package-loading" role="status"><view class="loading-image"/><view><text>正在读取食材包</text><text>稍等一下，正在核对商品信息</text></view></view>
   <view v-if="error" class="package-status" role="alert"><text>{{error}}</text><button v-if="!offers.length" @click="load">重新读取</button></view>
   <text v-else-if="!loading&&!offers.length" class="package-empty">这次没有可展示的食材包，可以重新问问营养师。</text>
-  <button v-for="(offer,index) in offers" :key="offer.offer_token" class="package-card" :class="{'is-unavailable':!offer.available}" :style="{'animation-delay':index*45+'ms'}" :disabled="!offer.available||!!opening" hover-class="package-pressed" :hover-stay-time="90" :aria-label="offer.name+'，'+packageSpec(offer.spec)+'，'+(packagePrice(offer.price_cent)===null?'价格待核对':'参考价'+packagePrice(offer.price_cent)+'元')+'，'+(offer.available?'查看商品':'暂不可选，请重新询问')" @click="open(offer)">
+  <button v-for="(offer,index) in offers" :key="offer.offer_token" class="package-card" :class="{'is-unavailable':!offer.available}" :style="{'animation-delay':index*45+'ms'}" :disabled="readOnly||!offer.available||!!opening" hover-class="package-pressed" :hover-stay-time="90" :aria-label="offer.name+'，'+packageSpec(offer.spec)+'，'+(packagePrice(offer.price_cent)===null?'价格待核对':'参考价'+packagePrice(offer.price_cent)+'元')+'，'+(offer.available?'查看商品':'暂不可选，请重新询问')" @click="open(offer)">
    <FoodImageSlot :src="offer.image_url" :label="offer.name" :width="76" :height="76" :radius="18" fallback-icon class="package-image"/>
    <view class="package-copy">
     <text class="package-name">{{offer.name}}</text>

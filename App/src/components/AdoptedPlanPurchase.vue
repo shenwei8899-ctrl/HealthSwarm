@@ -31,7 +31,7 @@ onUnload(() => flow.reset())
 <template>
   <CommerceAccess @ready="load">
     <view class="screen purchase-page">
-      <AppNavBar><view class="nav-row"><button class="icon-button" @click="uni.navigateBack()">‹</button><text class="nav-title">餐单采购</text><button class="text-button" :disabled="state.busy" @click="load">刷新</button></view></AppNavBar>
+      <AppNavBar title="餐单采购"><template #left><button class="icon-button" @click="uni.navigateBack()">‹</button></template><template #right><button class="text-button" :disabled="state.busy" @click="load">刷新</button></template></AppNavBar>
       <view class="page-heading"><text class="display-title">从餐单到食材</text><text class="subtitle">只读取服务器已批准并采用的餐单。演示数据不会用于真实采购。</text></view>
       <view v-if="state.missing.length" class="card"><text class="section-title">采购服务未就绪</text><text class="helper">{{ configurationNotice }}</text></view>
       <view class="card">

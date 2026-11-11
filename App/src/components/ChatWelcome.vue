@@ -1,6 +1,6 @@
 <script setup>
 import NutritionistCharacter from './NutritionistCharacter.vue'
-defineProps({prompts:{type:Array,default:()=>[]},disabled:Boolean,compact:Boolean,density:String})
+defineProps({prompts:{type:Array,default:()=>[]},disabled:Boolean,shuffleDisabled:Boolean,compact:Boolean,density:String})
 defineEmits(['ask','shuffle'])
 </script>
 <template>
@@ -13,7 +13,7 @@ defineEmits(['ask','shuffle'])
   <view class="welcome-suggestions">
    <view class="suggestion-heading">
     <text class="suggestion-label">你可以这样问我</text>
-    <button class="shuffle-prompts" :disabled="disabled" aria-label="换一换推荐问题" @click="$emit('shuffle')"><text class="refresh-icon" aria-hidden="true">↻</text><text>换一换</text></button>
+    <button class="shuffle-prompts" :disabled="shuffleDisabled" aria-label="换一换推荐问题" @click="$emit('shuffle')"><text class="refresh-icon" aria-hidden="true">↻</text><text>换一换</text></button>
    </view>
    <view class="prompt-grid"><button v-for="(prompt,index) in prompts" :key="index" :disabled="disabled" @click="$emit('ask',prompt)">{{prompt.text}}</button></view>
    <text class="welcome-note">内容由 AI 生成，仅供参考</text>

@@ -40,7 +40,7 @@ function logout(){uni.showModal({title:'退出账号？',content:'已保存的�
 </script>
 <template>
  <view class="screen settings-screen">
-  <AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回我的" :disabled="busy" @click="back">‹</button><text class="nav-title">设置</text><text/></view></AppNavBar>
+  <AppNavBar title="设置"><template #left><button class="icon-button" aria-label="返回我的" :disabled="busy" @click="back">‹</button></template></AppNavBar>
   <view class="settings-group">
    <!-- #ifdef MP-WEIXIN -->
    <button class="settings-row" open-type="chooseAvatar" :disabled="busy" @chooseavatar="chooseAvatar"><text>头像</text><view><text v-if="busy&&!nicknameOpen" class="row-detail">保存中…</text><image v-if="avatar" class="avatar" :src="avatar" mode="aspectFill" @error="avatar=''"/><view v-else class="avatar avatar-fallback"><AppIcon name="user" :size="34"/></view><text class="row-arrow">›</text></view></button>

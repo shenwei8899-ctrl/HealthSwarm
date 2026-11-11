@@ -93,7 +93,7 @@ function nutritionist(){uni.reLaunch({url:'/pages/chat/index'})}
 <CommerceAccess v-if="isCommerceEnabled"><CommerceOrderDetail :id="commerceOrderId"/></CommerceAccess>
 
 <view v-else class="screen detail-screen">
-<AppNavBar><view class="nav-row"><button class="icon-button" @click="backHome">‹</button><text class="nav-title">订单详情</text><text class="pill">测试数据</text></view></AppNavBar>
+<AppNavBar title="订单详情"><template #left><button class="icon-button" @click="backHome">‹</button></template></AppNavBar>
 <text v-if="loading" class="safe-note">正在读取订单…</text>
 <view v-if="error" class="error-panel"><text class="inline-error">{{error}}</text><button v-if="!busy" @click="loadOrder">刷新订单</button></view>
 <view v-if="!loading&&!order&&!error" class="card info-card"><text>订单不存在或当前账号无权查看。</text><button @click="backHome">返回</button></view>

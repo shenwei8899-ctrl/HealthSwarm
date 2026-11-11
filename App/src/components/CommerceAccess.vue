@@ -21,7 +21,7 @@ onMounted(restore);onShow(restore);onUnmounted(()=>{alive=false;epoch++})
  <view>
   <slot v-if="enabled===false||ready"/>
   <view v-else :class="{'screen commerce-access-screen':pageTitle}">
-   <AppNavBar v-if="pageTitle" centered><view class="nav-row"><button class="icon-button" aria-label="返回" @click="emit('back')">‹</button><text class="nav-title">{{pageTitle}}</text><view class="nav-spacer"/></view></AppNavBar>
+   <AppNavBar v-if="pageTitle" :title="(pageTitle)"><template #left><button class="icon-button" aria-label="返回" @click="emit('back')">‹</button></template></AppNavBar>
    <view class="card commerce-status" :class="{'page-status':pageTitle}" :role="error?'alert':'status'" :aria-busy="busy">
     <text>{{busy?loadingText:error||unavailableText}}</text>
     <button v-if="!busy&&!loginRequired" class="secondary-button" @click="restore">重新连接</button>

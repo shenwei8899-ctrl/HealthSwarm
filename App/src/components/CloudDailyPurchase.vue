@@ -30,7 +30,7 @@ onUnmounted(() => { alive = false; epoch++ })
 const dateLabel=value=>{const match=/^\d{4}-(\d{2})-(\d{2})$/.exec(value||'');return match?Number(match[1])+'月'+Number(match[2])+'日':value}
 </script>
 <template>
- <view class="screen summary-screen"><AppNavBar><view class="nav-row"><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button><text class="nav-title">汇总采购</text><view class="nav-spacer"/></view></AppNavBar>
+ <view class="screen summary-screen"><AppNavBar title="汇总采购"><template #left><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button></template></AppNavBar>
   <view class="summary-heading"><text>把今天需要的，</text><text>一次备齐。</text></view>
   <view v-if="error" class="card status" role="alert"><text>{{error}}</text><button @click="load">重新读取今日安排</button><button @click="uni.redirectTo({url:'/pages/chat/index'})">返回今日安排</button></view>
   <template v-if="arrangement"><view class="meal-selection"><view class="selection-heading"><text>选择需要采购的餐次</text><text>{{dateLabel(route.date)}}</text></view>

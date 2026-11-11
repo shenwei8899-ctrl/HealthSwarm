@@ -45,7 +45,7 @@ onUnmounted(() => { active = false; invalidate() })
 
 <template>
   <view class="screen daily-purchase">
-    <AppNavBar><view class="nav-row"><button class="icon-button" @click="uni.navigateBack()">‹</button><text class="nav-title">今日采购清单</text><button class="text-button" :disabled="busy" @click="load">刷新</button></view></AppNavBar>
+    <AppNavBar title="今日采购清单"><template #left><button class="icon-button" @click="uni.navigateBack()">‹</button></template><template #right><button class="text-button" :disabled="busy" @click="load">刷新</button></template></AppNavBar>
     <view class="page-heading"><text class="display-title">三餐食材，按需准备</text><text class="helper">根据今日已保存安排查看食材，购买前会再次核对库存与价格。</text></view>
     <text v-if="busy" class="helper" aria-live="polite">正在读取已保存的采购清单…</text>
     <view v-if="error || notice" class="card status" role="status"><text>{{ error || notice }}</text><button v-if="error" class="secondary-button" :disabled="busy" @click="load">重试读取</button></view>
