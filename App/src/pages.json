@@ -8,13 +8,6 @@
       }
     },
     {
-      "path": "pages/indicators/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "实测记录回顾"
-      }
-    },
-    {
       "path": "pages/account/index",
       "style": {
         "navigationStyle": "custom",
@@ -47,13 +40,6 @@
       "style": {
         "navigationStyle": "custom",
         "navigationBarTitleText": "家庭邀请"
-      }
-    },
-    {
-      "path": "pages/devices/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "健康设备"
       }
     },
     {
@@ -109,52 +95,10 @@
       }
     },
     {
-      "path": "pages/feedback/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "饮食反馈"
-      }
-    },
-    {
-      "path": "pages/memories/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "AI 记住的事"
-      }
-    },
-    {
-      "path": "pages/address/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "收货地址"
-      }
-    },
-    {
-      "path": "pages/address/edit",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "收货地址"
-      }
-    },
-    {
       "path": "pages/chat/history",
       "style": {
         "navigationStyle": "custom",
         "navigationBarTitleText": "历史记录"
-      }
-    },
-    {
-      "path": "pages/reports/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "体检报告"
-      }
-    },
-    {
-      "path": "pages/reports/detail",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "报告核对"
       }
     },
     {
@@ -169,20 +113,6 @@
       "style": {
         "navigationStyle": "custom",
         "navigationBarTitleText": "正在准备今日饮食"
-      }
-    },
-    {
-      "path": "pages/meals/detail",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "餐单详情"
-      }
-    },
-    {
-      "path": "pages/meals/purchase",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "全天食材"
       }
     }
   ],
@@ -380,6 +310,111 @@
           "style": {
             "navigationStyle": "custom",
             "navigationBarTitleText": "单道菜做法"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/reports",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "体检报告"
+          }
+        },
+        {
+          "path": "detail",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "报告核对"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/feedback",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "饮食反馈"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/indicators",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "实测记录回顾"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/memories",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "AI 记住的事"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/address",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "收货地址"
+          }
+        },
+        {
+          "path": "edit",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "收货地址"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/devices",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "健康设备"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/meals",
+      "pages": [
+        {
+          "path": "detail",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "餐单详情"
+          }
+        },
+        {
+          "path": "purchase",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "全天食材"
           }
         }
       ]
