@@ -101,3 +101,22 @@ def test_negative_spice_preference_never_promotes_spicy_recipe():
         assert candidate_priority(set(), "Spicy chicken with chilli", variety) <= candidate_priority(
             set(), "Poached chicken", variety
         )
+
+
+def test_translation_chinese_count_words_keep_original_quantity_and_fraction():
+    from yuxi.services.recipe_translation_service import quantity_signature
+
+    assert quantity_signature("one of flavoring packets") == quantity_signature("其中一包调味料")
+    assert quantity_signature("four dinner plates (about 1 cup each), one-fourth") == quantity_signature(
+        "四个餐盘（每份约1杯），四分之一"
+    )
+    assert quantity_signature("four plates") != quantity_signature("三个餐盘")
+    assert quantity_signature("20 plates") != quantity_signature("一百二十个餐盘")
+    from yuxi.services.health_vision_types import HealthVisionError
+    import pytest
+
+    for unsupported in ("一百四分之一杯", "一百零四分之一杯", "百分之一杯", "三分之1杯",
+                        "四分之一百零四", "四分之一百", "四分之一点五", "四分之一點五"):
+        with pytest.raises(HealthVisionError, match="recipe_translation_invalid"):
+            quantity_signature(unsupported)
+    assert quantity_signature("salmon") == quantity_signature("三文鱼")

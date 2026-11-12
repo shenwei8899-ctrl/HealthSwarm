@@ -128,6 +128,34 @@ def quantity_signature(text):
     text = unicodedata.normalize("NFKC", text).lower().replace("⁄", "/")
     # 形状中的 half 不表示原料用量；保留 half cup 等真正的分数量词。
     text = re.sub(r"\bhalf[- ]rings?\b", "semicircles", text)
+    chinese_digits = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+                      "六": 6, "七": 7, "八": 8, "九": 9}
+
+    def chinese_integer(value):
+        """只将可核对的一至九十九转换为整数。"""
+        if "十" in value:
+            left, right = value.split("十", 1)
+            if left not in chinese_digits and left:
+                return None
+            if right not in chinese_digits and right:
+                return None
+            return (chinese_digits[left] if left else 1) * 10 + (chinese_digits[right] if right else 0)
+        return chinese_digits.get(value)
+
+    numerals = r"[一二两三四五六七八九十]{1,3}"
+    text = re.sub(
+        rf"(?<![零一二两三四五六七八九十百千万亿点點半])({numerals})分之({numerals})(?![零一二两三四五六七八九十百千万亿点點半])",
+        lambda match: f"{chinese_integer(match[2])}/{chinese_integer(match[1])}"
+        if chinese_integer(match[1]) and chinese_integer(match[2]) is not None else match[0],
+        text,
+    )
+    text = re.sub(
+        rf"(?<![零一二两三四五六七八九十百千万亿之])({numerals})(?=个|份|包|片|块|根|条|只|瓣|碗|盘|杯|勺|厘米|毫米|分钟|小时|秒|张|罐|滴|朵|颗|汤匙|茶匙)",
+        lambda match: str(chinese_integer(match[1])) if chinese_integer(match[1]) is not None else match[0],
+        text,
+    )
+    if "分之" in text:
+        raise HealthVisionError("recipe_translation_invalid", "中文分数超出可核对范围", 422)
     text = re.sub(
         r"\b(?:a|an|another)\s+(?=(?:minute|hour|second|cup|tablespoon|teaspoon|ounce|pound|"
         r"kilogram|gram|milligram|microgram|milliliter|liter|inch|pinch)\b)",
