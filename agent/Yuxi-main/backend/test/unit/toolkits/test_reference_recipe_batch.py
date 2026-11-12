@@ -32,27 +32,20 @@ def runtime():
 
 
 @pytest.mark.asyncio
-async def test_wrong_category_is_tool_feedback_then_can_retry_without_bypassing_service(monkeypatch):
-    """模型抄错分类得到可修正错误，下一次调用仍由服务校验分类来源。"""
-    find = AsyncMock(side_effect=[
-        HealthVisionError("catalog_category_invalid", "分类不在本轮回执", 422),
-        {"products": [{"product_id": "egg"}]},
-    ])
+async def test_product_tool_uses_server_categories_without_model_identifiers(monkeypatch):
+    """模型无需复制分类编号，真实 ToolNode 仍注入身份并调用服务。"""
+    find = AsyncMock(return_value={"products": [{"product_id": "egg"}]})
     monkeypatch.setattr(reference_meal_plan_service, "find_reference_products", find)
     graph = StateGraph(MessagesState, context_schema=Context)
     graph.add_node("tools", ToolNode([meal_planner.find_reference_products]))
     graph.add_edge(START, "tools")
     graph.add_edge("tools", END)
-    compiled = graph.compile()
-    for code, expected in (("wrong", "error"), ("valid", "success")):
-        result = await compiled.ainvoke({"messages": [AIMessage("", tool_calls=[{
-            "name": "find_reference_products", "id": code, "args": {"category_codes": [code]},
-        }])]}, context=Context())
-        message = result["messages"][-1]
-        assert message.status == expected
-        if expected == "error":
-            assert "get_reference_plan_context" in message.content
-    assert [call.args[1] for call in find.await_args_list] == [["wrong"], ["valid"]]
+    result = await graph.compile().ainvoke({"messages": [AIMessage("", tool_calls=[{
+        "name": "find_reference_products", "id": "products", "args": {},
+    }])]}, context=Context())
+    assert result["messages"][-1].status == "success"
+    assert find.await_args.args == (Context(),)
+    assert "category_codes" not in meal_planner.find_reference_products.tool_call_schema.model_fields
 
 
 @pytest.mark.asyncio
@@ -62,7 +55,7 @@ async def test_product_authorization_error_does_not_turn_into_retry_feedback(mon
         side_effect=HealthVisionError("forbidden", "无权访问", 403)
     ))
     with pytest.raises(HealthVisionError, match="forbidden"):
-        await meal_planner.find_reference_products.coroutine(runtime=runtime(), category_codes=["valid"])
+        await meal_planner.find_reference_products.coroutine(runtime=runtime())
 
 
 def test_batch_inputs_are_bounded_and_unique():

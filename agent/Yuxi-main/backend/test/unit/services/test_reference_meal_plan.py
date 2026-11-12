@@ -526,6 +526,16 @@ async def test_reference_context_limits_categories_then_preserves_selected_produ
         return receipts[name]
 
     monkeypatch.setattr(service, "tool_payloads", tool_payloads)
+    result["categories"] = [
+        {"category_code": code, "name": name, "product_count": count}
+        for code, name, count in (
+            ("seasoning", "调味品", 200), ("fruit", "水果", 100), ("grain", "米面粮油", 40),
+            ("vegetable", "蔬菜菌菇", 50), ("protein", "禽肉蛋", 30), ("fish", "水产鱼类", 10),
+        )
+    ]
+    automatic = await service.find_reference_products(context)
+    assert set(automatic["category_codes"]) == {"grain", "vegetable", "protein", "fish"}
+    assert "未展示不等于缺货" in automatic["catalog_scope"]
     read = await service.find_reference_products(context, ["grain"])
     receipts["find_reference_products"] = [read]
     product = read["catalog"][0]

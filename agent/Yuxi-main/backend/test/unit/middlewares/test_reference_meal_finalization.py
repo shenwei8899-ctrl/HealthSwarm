@@ -1404,3 +1404,24 @@ async def test_provider_tool_calls_in_tool_free_final_turn_never_execute(argumen
         await run_graph(model)
     assert [bool(call["tools"]) for call in model.calls] == [True, False]
     assert services.saved.await_count == 1 and services.final.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_reference_reads_candidates_before_repeated_searches():
+    from yuxi.agents.buildin.health_meal_planner.graph import ReferenceContextMiddleware
+
+    middleware = ReferenceContextMiddleware()
+    context = receipt(name="get_reference_plan_context", content='{"restriction_verification":{"status":"verified"}}')
+    messages = [human(), context]
+    handler = AsyncMock(return_value="observed")
+    await middleware.awrap_model_call(request_for(messages), handler)
+    assert [t.name for t in handler.call_args.args[0].tools] == ["find_reference_products"]
+    messages.extend([
+        receipt(name="find_reference_products"),
+        receipt(name="search_reference_recipes", content='{"items":[{"file_id":"source"}]}'),
+    ])
+    await middleware.awrap_model_call(request_for(messages), handler)
+    assert [t.name for t in handler.call_args.args[0].tools] == ["read_reference_recipe"]
+    context.content = '{"restriction_verification":{"status":"needs_verification"}}'
+    await middleware.awrap_model_call(request_for(messages), handler)
+    assert len(handler.call_args.args[0].tools) == len(TOOLS)

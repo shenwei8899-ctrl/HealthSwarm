@@ -38,9 +38,11 @@ def checked_chinese_display(dish, display):
     translated = RecipeChineseDisplay.model_validate(display).model_dump(mode="json")
     if any(len(translated[k]) != len(dish[k]) for k in ("ingredients", "steps")):
         raise HealthVisionError("recipe_translation_invalid", "中文食材及步骤须与原文逐项对应", 422)
+    errors = []
     for (path, original), (_, chinese) in zip(originals, quote_pairs(translated), strict=True):
         if bool(original) != bool(chinese):
-            raise HealthVisionError("recipe_translation_invalid", "中文译文不能增删原食谱说明", 422)
+            errors.append(f"{path} 中文译文不能增删原食谱说明")
+            continue
         if not original:
             continue
         if (
@@ -50,12 +52,14 @@ def checked_chinese_display(dish, display):
             or needs_translation(original)
             and not re.search(r"[\u3400-\u9fff]", chinese)
         ):
-            raise HealthVisionError("recipe_translation_invalid", f"{path} 缺少完整中文译文", 422)
+            errors.append(f"{path} 缺少完整中文译文（不能保留英文名称或术语）")
         try:
             if quantity_signature(original) != quantity_signature(chinese):
                 raise HealthVisionError("recipe_translation_invalid", "数量、时间或单位与原文不一致", 422)
         except HealthVisionError as error:
-            raise HealthVisionError(error.code, f"菜谱 {dish['name'][:120]} 的 {path}：{error.message}", 422) from error
+            errors.append(f"{path}：{error.message}；原文={original[:180]}；译文={chinese[:180]}")
+    if errors:
+        raise HealthVisionError("recipe_translation_invalid", f"菜谱 {dish['name'][:120]}：" + "；".join(errors), 422)
     return translated
 
 
@@ -122,6 +126,8 @@ def quantity_signature(text):
     """规范化数字、分数和计量名称，拒绝修改或虚构数量单位。"""
     text = re.sub(r"(?<=\d)([¼½¾⅐⅑⅒⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞])", r" \1", text)
     text = unicodedata.normalize("NFKC", text).lower().replace("⁄", "/")
+    # 形状中的 half 不表示原料用量；保留 half cup 等真正的分数量词。
+    text = re.sub(r"\bhalf[- ]rings?\b", "semicircles", text)
     text = re.sub(
         r"\b(?:a|an|another)\s+(?=(?:minute|hour|second|cup|tablespoon|teaspoon|ounce|pound|"
         r"kilogram|gram|milligram|microgram|milliliter|liter|inch|pinch)\b)",
@@ -203,6 +209,8 @@ def quantity_signature(text):
         "hour": r"(?<![a-z])(?:hours?|hrs?)(?![a-z])|小时",
         "second": r"(?<![a-z])(?:seconds?|secs?)(?![a-z])|秒",
         "inch": r"(?<![a-z])inch(?:es)?(?![a-z])|英寸",
+        "cm": r"(?<![a-z])(?:cm|centimeters?|centimetres?)(?![a-z])|厘米|公分",
+        "mm": r"(?<![a-z])(?:mm|millimeters?|millimetres?)(?![a-z])|毫米",
         "fahrenheit": r"(?:°|degrees?)\s*f(?![a-z])|(?<![a-z])fahrenheit(?![a-z])|华氏度|华氏",
         "celsius": r"(?:°|degrees?)\s*c(?![a-z])|(?<![a-z])celsius(?![a-z])|摄氏度|摄氏",
         "kcal": r"(?<![a-z])kcal(?![a-z])|千卡",

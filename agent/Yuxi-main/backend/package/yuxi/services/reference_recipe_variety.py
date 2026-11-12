@@ -42,8 +42,16 @@ def candidate_priority(keys, content, variety):
     """合格相关候选先尊重偏好，再减少近期与公共重复。"""
     if not variety:
         return ()
+    text = content.casefold()
+    preference = sum(word.casefold() in text for word in variety["preferences"])
+    # 只用于口味排序，不声明医学适用性，也不改写原谱食材。
+    if any("清淡" in word for word in variety["preferences"]):
+        preference += bool(re.search(r"清蒸|水煮|白灼|\b(?:steam\w*|poach\w*|boil\w*)\b", text))
+        preference -= bool(re.search(r"油炸|油煎|\bdeep[- ]fr\w*\b", text))
+    if any(re.fullmatch(r"(?:微辣|中辣|重辣|特辣|香辣|麻辣|辣)", word.strip()) for word in variety["preferences"]):
+        preference += bool(re.search(r"辣椒|\b(?:chill?i|spicy|sichuan|szechuan)\b", text))
     return (
-        sum(word.casefold() in content.casefold() for word in variety["preferences"]),
+        preference,
         -max((variety["recent"][key] for key in keys), default=0),
         -max((variety["popular"][key] for key in keys), default=0),
     )

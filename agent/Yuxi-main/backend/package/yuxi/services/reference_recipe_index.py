@@ -120,7 +120,7 @@ def prepared_content(filename, chunks):
     title = re.sub(r"__[0-9a-f]+\.md$", "", filename, flags=re.I)
     title = title.removesuffix(".md").replace("_", " ").casefold()
     return {"content": content, "body": content.casefold(), "title": title,
-            "title_foods": reference_food_mentions(title), "foods": reference_food_mentions(content),
+            "title_foods": recall_foods(title), "foods": recall_foods(content),
             "parsed": parse_reference_recipe(content), "chunks_hash": input_fingerprint(chunks)}
 
 
@@ -148,6 +148,19 @@ def available_reference_foods(products):
     return available
 
 
+def recall_foods(text):
+    """通用鱼虾蔬菜词只扩展目录召回，不参与原谱和商品身份校验。"""
+    foods = reference_food_mentions(text)
+    for food, pattern in {
+        "鱼": r"鱼|魚|\b(?:fish|salmon|cod|tilapia|trout)\b",
+        "虾": r"虾|蝦|\b(?:shrimp|prawns?)\b",
+        "蔬菜": r"蔬菜|时蔬|青菜|\b(?:vegetables?|greens?)\b",
+    }.items():
+        if re.search(pattern, text, re.I):
+            foods.add(food)
+    return foods
+
+
 def rank_prepared_reference_recipes(
     documents, products, available, query, limit, analyzed, excluded_file_ids: set[str] | None = None,
     *, catalog_key=None, variety=None,
@@ -155,11 +168,12 @@ def rank_prepared_reference_recipes(
     """每个关键词独立评分，复用本次调用已解析的候选原谱。"""
     terms = [term.casefold() for term in re.findall(r"[\w\u4e00-\u9fff]+", query) if len(term) > 1]
     catalog_key = catalog_key or json.dumps(products, ensure_ascii=False, sort_keys=True)
-    query_foods = reference_food_mentions(query) - {"水", "盐", "糖"}
-    methods = [pattern for word, pattern in (
-        ("煮", r"\b(?:boil\w*|poach\w*)\b|煮"), ("蒸", r"\bsteam\w*\b|蒸"),
-        ("烤", r"\b(?:bak\w*|roast\w*)\b|烤"), ("粥", r"\bporridge\b|粥"),
-    ) if word in query]
+    query_foods = recall_foods(query) - {"水", "盐", "糖"}
+    methods = [pattern for pattern in (
+        r"\b(?:boil\w*|poach\w*)\b|煮", r"\bsteam\w*\b|蒸",
+        r"\b(?:bak\w*|roast\w*)\b|烤", r"\b(?:porridge|congee)\b|粥",
+        r"\bstir[- ]fr(?:y|ied)\b|炒",
+    ) if re.search(pattern, query, re.I)]
     candidates = []
     excluded_file_ids = excluded_file_ids or set()
     for document in documents:

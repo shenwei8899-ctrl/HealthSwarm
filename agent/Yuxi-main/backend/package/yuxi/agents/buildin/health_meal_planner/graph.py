@@ -76,6 +76,22 @@ class ReferenceContextMiddleware(AgentMiddleware):
                         model_settings={**request.model_settings, "parallel_tool_calls": False},
                     )
                 )
+            successful = [m for m in current[start + 1 :] if isinstance(m, ToolMessage) and m.status == "success"]
+            context = json.loads(receipts[-1].content)
+            if context.get("restriction_verification", {}).get("status") == "needs_verification":
+                return await handler(request)
+            next_tool = None
+            if not any(m.name == "find_reference_products" for m in successful):
+                next_tool = "find_reference_products"
+            elif successful[-1].name == "search_reference_recipes" and json.loads(successful[-1].content).get("items"):
+                # 先核对已检索的真实做法，避免只看名字就反复换词检索。
+                next_tool = "read_reference_recipe"
+            if next_tool:
+                request = request.override(
+                    tools=[tool for tool in request.tools if getattr(tool, "name", None) == next_tool],
+                    tool_choice={"type": "function", "function": {"name": next_tool}},
+                    model_settings={**request.model_settings, "parallel_tool_calls": False},
+                )
         return await handler(request)
 
 

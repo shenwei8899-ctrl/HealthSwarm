@@ -257,7 +257,10 @@ async def find_reference_products(context, category_codes=None):
         available = {row["category_code"] for row in receipts[-1].get("categories", [])}
         if category_codes is None:
             category_codes = [row["category_code"] for row in sorted(
-                receipts[-1].get("categories", []), key=lambda row: (-row.get("product_count", 0), row["category_code"])
+                receipts[-1].get("categories", []), key=lambda row: (
+                    not bool(re.search(r"肉|禽|蛋|蔬|菌|粮|谷|米|面|水产|鱼", row.get("name", ""))),
+                    -row.get("product_count", 0), row["category_code"],
+                )
             )[:4]]
         if (
             not isinstance(category_codes, list)
@@ -282,6 +285,7 @@ async def find_reference_products(context, category_codes=None):
         shared_issues = None
     return {
         "category_codes": category_codes,
+        "catalog_scope": "当前仅展示主要食材分类；未展示不等于缺货。后续检索和原谱读取会核对全量在售商品。",
         "catalog_version": catalog["version"],
         "catalog": items,
         "products": [
@@ -528,6 +532,7 @@ def same_reference_document(fresh, receipt):
 def checked_reference_meals(draft, documents, members):
     """核对原文引句及明确限制，数值和专业状态由服务端固定。"""
     result = []
+    translation_errors = []
     restrictions = reference_member_restrictions(members)
     for meal in draft.meals:
         dishes = []
@@ -554,10 +559,15 @@ def checked_reference_meals(draft, documents, members):
                 raise HealthVisionError("reference_quote_invalid", "菜谱食材或步骤与完整原文不一致", 422)
             if reference_restriction_conflict(doc["content"], restrictions):
                 raise HealthVisionError("reference_restriction_conflict", "所选菜谱含已明确填写的过敏或忌口食材", 422)
-            checked_chinese_display(
-                dish.model_dump(exclude={"display_zh"}),
-                dish.display_zh.model_dump() if dish.display_zh else None,
-            )
+            try:
+                checked_chinese_display(
+                    dish.model_dump(exclude={"display_zh"}),
+                    dish.display_zh.model_dump() if dish.display_zh else None,
+                )
+            except HealthVisionError as error:
+                if error.code not in {"recipe_translation_invalid", "recipe_translation_missing"}:
+                    raise
+                translation_errors.append(f"{dish.file_id}/{dish.chunk_id}: {error.message}")
             dishes.append(
                 {
                     **dish.model_dump(mode="json", exclude={"display_zh"}),
@@ -571,6 +581,8 @@ def checked_reference_meals(draft, documents, members):
                 }
             )
         result.append({"meal_type": meal.meal_type, "dishes": dishes})
+    if translation_errors:
+        raise HealthVisionError("recipe_translation_invalid", "；".join(translation_errors), 422)
     return sorted(result, key=lambda m: ("breakfast", "lunch", "dinner").index(m["meal_type"]))
 
 

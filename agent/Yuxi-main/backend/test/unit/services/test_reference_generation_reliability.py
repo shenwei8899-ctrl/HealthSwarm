@@ -62,3 +62,42 @@ def test_automatic_product_uses_only_current_issued_candidates_without_price_bia
     chosen, gaps = _product_choices(meals, [], seen, issued_candidates={key: {"a", "b", "deleted"}})
     assert chosen == [{"product_id": "a", "ingredient_refs": [ingredient]}]
     assert gaps == []
+
+
+def test_generic_fish_queries_recall_english_source_without_product_identity_guessing():
+    from yuxi.services.reference_recipe_index import recall_foods
+    from yuxi.services.reference_recipe_matching import reference_food_mentions
+
+    assert "鱼" in recall_foods("清蒸鱼") & recall_foods("Steamed Tilapia")
+    assert "虾" in recall_foods("虾仁") & recall_foods("Shrimp")
+    assert "鱼" not in reference_food_mentions("清蒸鱼")
+
+
+def test_translation_geometry_is_not_a_quantity_and_length_units_still_match():
+    from yuxi.services.recipe_translation_service import quantity_signature
+
+    assert quantity_signature("Slice onion into 1 cm half-rings.") == quantity_signature("洋葱切成1厘米半圆环。")
+    assert quantity_signature("1 cm") != quantity_signature("1毫米")
+    assert quantity_signature("half cup water") == quantity_signature("1/2杯水")
+
+
+def test_translation_reports_all_fields_and_rejects_added_temperature():
+    import pytest
+    from yuxi.services.recipe_translation_service import checked_chinese_display
+    from yuxi.services.health_vision_types import HealthVisionError
+
+    original = {"name": "Salad", "ingredients": ["1 tomato"], "steps": ["Preheat to 400 °F."]}
+    display = {"name": "沙拉（Salad）", "ingredients": ["2个番茄"], "steps": ["预热到400°F（200°C）。"]}
+    with pytest.raises(HealthVisionError) as caught:
+        checked_chinese_display(original, display)
+    assert all(part in caught.value.message for part in ("name", "ingredients[0]", "steps[0]"))
+
+
+def test_negative_spice_preference_never_promotes_spicy_recipe():
+    from yuxi.services.reference_recipe_variety import candidate_priority
+
+    for preference in ("不吃辣", "不喜欢辣", "忌辣", "不辣"):
+        variety = {"preferences": [preference], "recent": {}, "popular": {}}
+        assert candidate_priority(set(), "Spicy chicken with chilli", variety) <= candidate_priority(
+            set(), "Poached chicken", variety
+        )
