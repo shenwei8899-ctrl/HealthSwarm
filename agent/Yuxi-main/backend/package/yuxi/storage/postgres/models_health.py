@@ -926,11 +926,22 @@ class HealthDailyMealPlan(Base):
     """每日当前计划只保存餐次来源引用，内容由各来源持有。"""
 
     __tablename__ = "health_daily_meal_plan"
-    __table_args__ = (UniqueConstraint("actor_uid", "family_id", "plan_date", name="uq_health_daily_meal_plan"),)
+    __table_args__ = (
+        Index("uq_shared_daily_meal_plan", "family_id", "plan_date", unique=True, postgresql_where=text("is_shared")),
+        Index(
+            "uq_legacy_daily_meal_plan",
+            "actor_uid",
+            "family_id",
+            "plan_date",
+            unique=True,
+            postgresql_where=text("NOT is_shared"),
+        ),
+    )
     id = Column(String(36), primary_key=True)
     actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
     family_id = Column(String(36), ForeignKey("family_archives.id"), nullable=False)
     plan_date = Column(Date, nullable=False)
+    is_shared = Column(Boolean, nullable=False, default=True, server_default=text("false"))
     version = Column(Integer, nullable=False, default=0)
     meal_sources = Column(JSON_VALUE, nullable=False, default=dict)
     pending = Column(JSON_VALUE, nullable=False, default=dict)

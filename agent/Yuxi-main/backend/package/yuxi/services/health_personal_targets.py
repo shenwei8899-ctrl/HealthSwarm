@@ -37,7 +37,7 @@ def calculate_personal_targets(profile: ProfileProjection, rules: QualityRules, 
     if formula is None:
         result["reason"] = "personal_target_formula_not_approved"
         return result
-    if profile.activity_code not in formula.activity_factors:
+    if formula.activity_factors is not None and profile.activity_code not in formula.activity_factors:
         result["reason"] = "confirmed_approved_activity_required"
         return result
     inputs = {
@@ -46,8 +46,9 @@ def calculate_personal_targets(profile: ProfileProjection, rules: QualityRules, 
         "sex_code": profile.sex_code,
         "conditions": list(profile.conditions.codes),
         "doctor_requirements": list(profile.doctor_requirements.codes),
-        "activity_code": profile.activity_code,
     }
+    if formula.activity_factors is not None:
+        inputs["activity_code"] = profile.activity_code
     with localcontext() as context:
         context.prec = 64
         base = formula.intercept_kcal
@@ -67,7 +68,9 @@ def calculate_personal_targets(profile: ProfileProjection, rules: QualityRules, 
                 return result
             inputs[name] = str(value)
             base += coefficient * Decimal(value)
-        energy = base * formula.activity_factors[profile.activity_code]
+        energy = base
+        if formula.activity_factors is not None:
+            energy *= formula.activity_factors[profile.activity_code]
         if not 0 < energy <= 1000000:
             result["reason"] = "formula_result_outside_supported_range"
             return result

@@ -353,10 +353,10 @@ async def meal_get(
 ):
     """详情严格绑定首页显示的保存ID和版本。"""
     if daily_plan_version is not None:
-        from yuxi.services.daily_meal_plan_service import require_formal_current
+        from yuxi.services.daily_meal_plan_service import read_shared_formal_meal
 
-        await require_formal_current(
-            str(user.uid), str(fid), day, str(arrangement_id), version, daily_plan_version, [meal]
+        return await read_shared_formal_meal(
+            str(user.uid), str(fid), day, str(arrangement_id), version, daily_plan_version, meal
         )
     result = await read_daily_arrangement(str(user.uid), str(fid), day)
     if result.get("status") != "ready" or result["id"] != str(arrangement_id) or result["version"] != version:
@@ -493,17 +493,18 @@ async def current_reference_meal_plan(
 @daily_arrangement.get("/family/{family_id}/daily-meal-plans/{plan_date}")
 async def current_daily_meal_plan(family_id: UUID, plan_date: date, user=Depends(get_required_user)):
     """聊天和快捷入口读取同一当前计划。"""
-    from yuxi.services.daily_meal_plan_service import read_current_plan
+    from yuxi.services.daily_meal_plan_service import daily_plan_response, read_current_plan
 
-    return await read_current_plan(str(user.uid), str(family_id), plan_date)
+    return daily_plan_response(await read_current_plan(str(user.uid), str(family_id), plan_date))
 
 
 @daily_arrangement.post("/family/{family_id}/daily-meal-plans/{plan_date}/dishes")
 async def add_daily_dish(family_id: UUID, plan_date: date, data: MealDishInput, user=Depends(get_required_user)):
     """只保存今日餐单选择，不写入饮食记录。"""
     from yuxi.services.meal_dish_service import add_saved_dish
+    from yuxi.services.daily_meal_plan_service import daily_plan_response
 
-    return await add_saved_dish(str(user.uid), str(family_id), plan_date, data)
+    return daily_plan_response(await add_saved_dish(str(user.uid), str(family_id), plan_date, data))
 
 
 @daily_arrangement.get("/family/{family_id}/daily-meal-plans/{plan_date}/meals/{meal_type}/purchase")

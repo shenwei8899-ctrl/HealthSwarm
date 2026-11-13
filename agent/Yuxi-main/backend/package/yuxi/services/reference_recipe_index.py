@@ -1,4 +1,4 @@
-"""用已读商品召回菜谱，完整原文与采购核对由打开和保存步骤拥有。"""
+"""根据菜名和食材召回候选，保留旧任务的商城排序。"""
 
 import re
 import asyncio
@@ -20,7 +20,7 @@ _SEARCH_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="referen
 
 
 async def purchasable_reference_recipes(
-    session, products: list[dict], query: str, limit: int = 9, excluded_file_ids: set[str] | None = None,
+    session, products: list[dict] | None, query: str, limit: int = 9, excluded_file_ids: set[str] | None = None,
     *, variety=None,
 ) -> list[dict]:
     """召回可完整解析的相关菜谱；原文读取与保存仍需独立验证。"""
@@ -33,7 +33,7 @@ async def purchasable_reference_recipes(
 
 
 async def purchasable_reference_recipes_batch(
-    session, products: list[dict], queries: list[str], excluded_file_ids: set[str] | None = None,
+    session, products: list[dict] | None, queries: list[str], excluded_file_ids: set[str] | None = None,
     *, variety=None,
 ) -> list[list[dict]]:
     """批量关键词共用菜谱正文和商品匹配，逐词独立排序。"""
@@ -47,7 +47,7 @@ async def purchasable_reference_recipes_batch(
 def rank_reference_recipe_batch(rows, products, queries, excluded_file_ids=None, *, variety=None):
     """有界后台计算共用目录索引；不在 Worker 事件循环解析和匹配整库。"""
     documents = prepare_reference_documents(rows)
-    available = available_reference_foods(products)
+    available = available_reference_foods(products or [])
     analyzed = {}
     catalog_key = json.dumps(products, ensure_ascii=False, sort_keys=True)
     return [
@@ -85,12 +85,12 @@ async def reference_recipe_rows(session):
 
 
 def rank_reference_recipes(
-    rows, products: list[dict], query: str, limit: int = 9, excluded_file_ids: set[str] | None = None,
+    rows, products: list[dict] | None, query: str, limit: int = 9, excluded_file_ids: set[str] | None = None,
     *, variety=None,
 ) -> list[dict]:
     """先满足食材相关性，再优先可解析、采购覆盖较高的简单做法。"""
     return rank_prepared_reference_recipes(
-        prepare_reference_documents(rows), products, available_reference_foods(products), query, limit, {},
+        prepare_reference_documents(rows), products, available_reference_foods(products or []), query, limit, {},
         excluded_file_ids=excluded_file_ids, variety=variety,
     )
 
@@ -207,7 +207,7 @@ def rank_prepared_reference_recipes(
         if file_id not in analyzed:
             analyzed[file_id] = (
                 parsed,
-                deepcopy(cached_ingredient_matches(parsed.ingredients, catalog_key)) if parsed else [],
+                deepcopy(cached_ingredient_matches(parsed.ingredients, catalog_key)) if parsed and products is not None else [],
                 document["chunks_hash"],
             )
         parsed, matches, chunks_hash = analyzed[file_id]
@@ -233,7 +233,7 @@ def rank_prepared_reference_recipes(
             "parse_status": "parsed",
             "ingredient_matches": matches,
             "review_sections": [],
-            "purchase_status": "has_gaps" if gaps else "matched_in_index",
+            "purchase_status": "unchecked" if products is None else "has_gaps" if gaps else "matched_in_index",
             "notice": "打开完整原文后逐项核对。缺商品先补查，仍缺项可明确列为需自行准备，不冒充商城商品。",
         }))
     candidates.sort(key=lambda pair: (tuple(-value for value in pair[0]), pair[1]["filename"]))

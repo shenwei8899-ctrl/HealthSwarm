@@ -2,7 +2,7 @@ import {request} from './request.js'
 import {getSession,sessionRevision} from './session.js'
 import {scopedStorage,storageContext} from './storage.js'
 import {createPreparationClient} from './preparation-client.js'
-import {cloudProfileInput} from './cloud-profile.js'
+import {cloudProfileInput, loadCloudProfile, saveCloudProfile} from './cloud-profile.js'
 import {newHealthRequestId} from './health-task-flow.js'
 
 export function preparationRoot() {
@@ -53,4 +53,20 @@ export async function submitOnboardingPreparation(profile, {consentAccepted=fals
 
 export function preparationRoute(value) {
   return '/pages/onboarding/preparing'+(value?.id?'?id='+encodeURIComponent(value.id):'')
+}
+
+// New saves use the profile API. Only replay a legacy uncertain submission with its original key.
+export async function saveOnboardingProfile(profile, onMemberRefs, analysisConsent = null) {
+  const revision = sessionRevision()
+  let saved
+  if (scopedStorage.getStorageSync('onboarding-preparation-pending')) {
+    await submitOnboardingPreparation(profile)
+    saved = await loadCloudProfile({openConsultation:false,readConfiguration:false})
+  } else {
+    saved = await saveCloudProfile(profile,{reviewOnly:true,...(analysisConsent ? {analysisConsent} : {}),...(onMemberRefs ? {onMemberRefs} : {})})
+  }
+  if(revision!==sessionRevision())throw Object.assign(new Error('账号或家庭已变化，请重新读取档案。'),{code:'SESSION_CHANGED'})
+  if(!saved.completeProfile&&!saved.onboarded)throw new Error('云端保存尚未确认，请核对当前档案后重试。')
+  scopedStorage.setStorageSync('onboarding-preparation-active',null)
+  return saved
 }

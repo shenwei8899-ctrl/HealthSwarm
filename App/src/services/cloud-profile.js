@@ -75,6 +75,7 @@ async function fetchCloudProfile({openConsultation=true, readConfiguration=true}
       }catch(error){
         if(ticket!==sessionRevision()||[401,403,404,410].includes(Number(error.code)))throw error
         profile.consultationError=error.message||'咨询连接暂未完成，请重新读取。'
+        profile.consultationConsentRequired=error.businessCode==='consultation_consent_required'
       }
     }
   }
@@ -101,7 +102,7 @@ export function cloudProfileInput(profile, id = newHealthRequestId(), consent = 
     })) }
 }
 
-export async function saveCloudProfile(profile, { analysisConsent = null, reviewOnly = false } = {}) {
+export async function saveCloudProfile(profile, { analysisConsent = null, reviewOnly = false, onMemberRefs } = {}) {
   const session = getSession()
   if (!session?.token) throw Object.assign(new Error('登录状态已失效，填写内容已保留，请重新登录后继续。'), { code: 401 })
   if (!session.householdId) throw Object.assign(new Error('请先选择当前家庭。'), { code: 'FAMILY_SELECTION_REQUIRED' })
@@ -114,9 +115,11 @@ export async function saveCloudProfile(profile, { analysisConsent = null, review
   const changed = !!pending && JSON.stringify(pending.data) !== JSON.stringify(submitted)
   if (!pending) { pending = { path, data: submitted }; scopedStorage.setStorageSync('cloud-onboarding-pending', pending) }
   if (pending.path !== path) throw new Error('家庭已变化，请重新读取档案。')
-  if (JSON.stringify(pending.data.analysis_consent || null) !== JSON.stringify(analysisConsent)) throw new Error('上次保存结果尚未确认，请先恢复原操作；普通保存不会重放分析同意。')
+  if (pending.data.analysis_consent && !analysisConsent) throw new Error('上次保存结果尚未确认，请先恢复原操作；普通保存不会重放分析同意。')
+  const write = () => request({ path, method: 'POST', data: pending.data, headers: { 'Idempotency-Key': pending.data.client_request_id }, timeout: 30000 })
+  let receipt
   try {
-    await request({ path, method: 'POST', data: pending.data, headers: { 'Idempotency-Key': pending.data.client_request_id }, timeout: 30000 })
+    receipt = await write()
   } catch (error) {
     if (Number(error.code) === 401) throw error
     current()
@@ -124,12 +127,13 @@ export async function saveCloudProfile(profile, { analysisConsent = null, review
     // 先读服务端，再用原请求取得幂等收据；不依据本机草稿标记完成。
     await request({ path })
     current()
-    await request({ path, method: 'POST', data: pending.data, headers: { 'Idempotency-Key': pending.data.client_request_id }, timeout: 30000 })
+    receipt = await write()
   }
   current()
   const result = await loadCloudProfile(reviewOnly?{openConsultation:false,readConfiguration:false}:undefined)
   if (!result.completeProfile && !result.onboarded) throw new Error('云端保存尚未确认，请重试原请求。')
   scopedStorage.setStorageSync('cloud-onboarding-pending', null)
   if (changed) throw Object.assign(new Error('上次提交已确认，本次修改尚未提交。请重新读取当前档案，核对本次修改后再次保存。'), {code:409,businessCode:'previous_profile_submission_settled'})
+  onMemberRefs?.(receipt?.data?.memberRefs)
   return result
 }

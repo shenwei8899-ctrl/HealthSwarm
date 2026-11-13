@@ -8,12 +8,28 @@ from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from yuxi.knowledge.implementations.milvus import OrphanedMilvusHitsError
 from yuxi.services import health_family_kb_service as service
 from yuxi.services.health_vision_types import HealthVisionError
 
 KB_ID = "kb-synthetic-family"
+
+
+def test_history_excludes_prior_family_source_and_answer_but_preserves_current_turn():
+    """下一轮不能从旧答复带回家庭库内容，普通对话和本轮来源仍可使用。"""
+    old_question = HumanMessage(content="旧问题")
+    old_source = ToolMessage(content="旧家庭资料", name=service.TOOL_NAME, tool_call_id="old")
+    old_answer = AIMessage(content="复述旧家庭资料")
+    regular = [HumanMessage(content="普通问题"), AIMessage(content="普通答复")]
+    current = [
+        HumanMessage(content="新问题"),
+        ToolMessage(content="当前家庭资料", name=service.TOOL_NAME, tool_call_id="current"),
+    ]
+    assert service.filter_family_kb_history([old_question, old_source, old_answer, *regular, *current]) == [
+        old_question, *regular, *current
+    ]
 
 
 def _source_records():

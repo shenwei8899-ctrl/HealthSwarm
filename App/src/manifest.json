@@ -9,7 +9,10 @@
     "enable": false
   },
   "h5": {
-    "title": "家庭营养师原型"
+    "title": "家庭营养师原型",
+    "router": {
+      "base": "/family-app/"
+    }
   },
   "mp-weixin": {
     "appid": "",
@@ -29,6 +32,14 @@
     "usingComponents": true,
     "packOptions": {
       "ignore": [
+        {
+          "type": "file",
+          "value": "project.config.json"
+        },
+        {
+          "type": "file",
+          "value": "static/food/welcome-kitchen-20261026.jpg"
+        },
         {
           "type": "file",
           "value": "static/food/welcome-family-table-v6.jpg"
@@ -84,6 +95,14 @@
         {
           "type": "file",
           "value": "static/chat/today-menu-plate.svg"
+        },
+        {
+          "type": "file",
+          "value": "static/chat/reply-like-v2.png"
+        },
+        {
+          "type": "file",
+          "value": "static/chat/reply-dislike-v2.png"
         }
       ]
     },

@@ -3,9 +3,9 @@ import { getSession, sessionRevision } from './session.js'
 
 export const HEALTH_PROGRESS_LABELS = Object.freeze({
   running: '正在结合资料整理建议', validating: '正在核对内容与资料来源',
-  reading_profile: '正在读取已确认的健康资料', reading_categories: '正在读取商城商品分类',
-  choosing_categories: '正在结合健康资料选择商品分类', reading_products: '正在读取所选分类的商品',
-  choosing_products: '正在根据商品资料挑选食材', selecting_products: '正在核对所选食材',
+  reading_profile: '正在读取已确认的健康资料', reading_categories: '正在整理食材分类',
+  choosing_categories: '正在结合健康资料筛选食材', reading_products: '正在核对食材资料',
+  choosing_products: '正在挑选搭配食材', selecting_products: '正在核对所选食材',
   preparing_answer: '正在整理食材推荐说明',
   searching_recipes: '正在查找合适的菜谱', reading_recipes: '正在核对菜谱原文和食材',
   saving_meal_plan: '正在核对并保存餐单',

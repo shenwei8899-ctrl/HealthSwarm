@@ -66,12 +66,12 @@ class HealthAuthorizationMiddleware(AgentMiddleware):
             }
 
     async def awrap_model_call(self, request, handler):
-        """模型输入排除旧家庭库正文及已经修改或撤回的历史轮次。"""
+        """完整回执先参与失效过滤，再精简模型可见的旧家庭库工具过程。"""
         from yuxi.services.health_family_kb_service import filter_family_kb_history
         from yuxi.services.health_meal_feedback_service import filter_health_history
 
-        messages = filter_family_kb_history(request.messages)
-        messages = await filter_health_history(request.runtime.context, messages)
+        messages = await filter_health_history(request.runtime.context, request.messages)
+        messages = filter_family_kb_history(messages)
         return await handler(request.override(messages=messages))
 
 

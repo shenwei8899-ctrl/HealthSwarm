@@ -116,12 +116,21 @@ test('all-day reference purchases retain Chinese labels for ingredients belongin
 test('actual meal overview keeps concise nutrition and Chinese dishes without preparation diagnostics',async()=>{
  const source=readFileSync(new URL('../src/components/MealDetailSheet.vue',import.meta.url),'utf8')
  const template=source.split('<template v-if="state.view===\'meal\'">')[1].split('</template>')[0]
- const html=await renderToString(createSSRApp({render:compile(template),components:{FoodImageSlot:{template:'<view />'}},setup:()=>({
-  state:{meal:{members:[{name:'我'}],dishes:[translated()]}},nutritionSummary:[{key:'protein',label:'蛋白质',value:32,unit:'克'}],
-  dishKey,dishTitle,recipeCover,showDish:()=>{},
+ const portionsSource=readFileSync(new URL('../src/components/DishMemberPortions.vue',import.meta.url),'utf8')
+ const renderPortions=compile(portionsSource.split('<template>')[1].split('</template>')[0])
+ const DishMemberPortions={props:['portions'],render:renderPortions,setup:props=>({visible:props.portions.slice(0,4),expanded:false})}
+ const portions=['我','爸爸','妈妈','哥哥','姐姐'].map((name,index)=>({memberId:String(index),name,grams:100+index*10}))
+ const html=await renderToString(createSSRApp({render:compile(template),components:{FoodImageSlot:{template:'<view />'},DishMemberPortions},setup:()=>({
+  state:{meal:{members:[{name:'我'}],dishes:[translated(),{id:'unknown',name:'蔬菜汤'}]}},nutritionSummary:[{key:'protein',label:'蛋白质',value:32,unit:'克'}],
+  key:'meal',portionRows:[portions,[]],dishKey,dishTitle,recipeCover,showDish:()=>{},
  })}))
  assert.match(html,/鸡肉意面/)
  assert.match(html,/蛋白质 32 克/)
+ assert.match(html,/建议食用量按成品可食重量计/)
+ assert.match(html,/爸爸<\/text><text class="grams">110 克/)
+ assert.match(html,/展开全部成员/)
+ assert.match(html,/个人份量待确定/)
+ assert.doesNotMatch(html,/姐姐|140 克/)
  assert.doesNotMatch(html,/食材准备说明|自行准备|tsp salt|看做法/)
  assert.equal(referenceGapDetail({reason:'needs_confirmation',detail:'SKU information missing'}),'请核对具体品种、形态和用量。')
  assert.equal(referenceGapDetail({reason:'no_match',detail:'No matching SKU'}),'商城商品名中暂未找到对应食材。')

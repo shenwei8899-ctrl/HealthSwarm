@@ -3,25 +3,39 @@ import { loadCloudProfile } from './cloud-profile.js'
 import { getSession, sessionRevision } from './session.js'
 import { scopedStorage } from './storage.js'
 import { newHealthRequestId } from './health-request-id.js'
+import { birthDateError } from '../utils/member-age.js'
 
 const dietaryKeys = ['healthStatus','conditions','otherCondition','allergyStatus','allergies','intoleranceStatus','intolerances','avoidanceStatus','avoidances','doctorStatus','clinicianGuidance','goals','cuisines','tastePreferences','flavors','recentNote','hypoglycemiaRisk','kidneyCondition']
 const same = (a,b) => JSON.stringify(a) === JSON.stringify(b)
-const number = value => {
+const number = (value, limit = 1000) => {
   if (value === '' || value == null) return null
   const result = Number(value)
-  if (!Number.isFinite(result) || result <= 0) throw new Error('身高、体重须填写有效的正数。')
+  if (!Number.isFinite(result) || result <= 0 || result > limit) throw new Error('身高、体重须填写有效的正数。')
   return result
 }
 
 // Compare the selected member's draft, keeping every unedited source field intact.
 export function memberProfileChanges(original, draft, source) {
   const changes = {}, dietary = { ...(source.profile?.dietary_details || {}) }
-  for (const [field,key,convert] of [['sex','gender',v=>v==='女'?'female':v==='男'?'male':'unspecified'],['birth_date','birthDate',v=>v||null],['height_cm','height',number]]) {
+  for (const [field,key,convert] of [['sex','gender',v=>v==='女'?'female':v==='男'?'male':'unspecified'],['birth_date','birthDate',v=>v||null],['height_cm','height',v=>number(v,300)]]) {
     if (!same(original[key],draft[key])) changes[field] = convert(draft[key])
   }
+  if (changes.sex === 'unspecified') throw new Error('请选择性别')
+  if ('birth_date' in changes) {
+    const issue = changes.birth_date ? birthDateError(changes.birth_date) : '请选择出生日期'
+    if (issue) throw new Error(issue)
+  }
+  if ('height_cm' in changes && changes.height_cm == null) throw new Error('请填写身高')
   let dietaryChanged = false
   for (const key of dietaryKeys) if (!same(original[key],draft[key])) { dietary[key]=draft[key]; dietaryChanged=true }
-  if (number(original.weight)!==number(draft.weight)) { dietary.statedWeightKg=number(draft.weight); dietaryChanged=true }
+  if (!same(original.weight, draft.weight)) {
+    const weight = number(draft.weight)
+    if (weight == null) throw new Error('请填写体重')
+    if (Number(original.weight) !== weight) {
+      dietary.statedWeightKg = weight
+      dietaryChanged = true
+    }
+  }
   if (dietaryChanged) changes.dietary_details = dietary
   if (!same(original.goals,draft.goals)) changes.goal = draft.goals?.join('、') || null
   if (['allergyStatus','allergies'].some(k=>!same(original[k],draft[k]))) changes.allergens = draft.allergyStatus==='unknown'?null:draft.allergyStatus==='none'?[]:draft.allergies
@@ -41,10 +55,20 @@ export async function readMemberProfile(id, { readOnly = false } = {}) {
   const profile=await loadCloudProfile(readOnly?{openConsultation:false,readConfiguration:false}:undefined),current=currentSession(profile.householdId)
   const {data}=await request({path:'/api/family/'+encodeURIComponent(profile.householdId)})
   current()
-  const member=profile.members.find(m=>m.id===id),source=data.members?.find(m=>m.id===id&&m.is_active)
+  const member=profile.members.find(m=>m.memberId===id||m.id===id),source=data.members?.find(m=>m.id===member?.id&&m.is_active)
   if(data.id!==profile.householdId||!member||!source)throw Object.assign(new Error('该成员已不可访问，请返回家庭档案核查。'),{code:404})
   if(source.version!==member.version)throw Object.assign(new Error('成员资料已变化，请重新读取后再编辑。'),{code:409})
   return {profile,member,source}
+}
+
+export async function readFamilyHealthBinding(personId) {
+  const revision = sessionRevision()
+  const profile = await loadCloudProfile({openConsultation:false,readConfiguration:false})
+  if (sessionRevision() !== revision) throw Object.assign(new Error('账号或家庭已变化，请重新读取。'), {code:'SESSION_CHANGED'})
+  currentSession(profile.householdId)()
+  const member = profile.members.find(row => (row.memberId || row.id) === personId)
+  if (!member?.healthMemberId) throw new Error('这位成员的健康服务尚不可用，请核对当前家庭档案。')
+  return member.healthMemberId
 }
 
 export async function saveMemberProfile(familyId, source, original, draft, extraChanges={}, send=request) {

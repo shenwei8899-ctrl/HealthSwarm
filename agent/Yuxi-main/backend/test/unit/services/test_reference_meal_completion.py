@@ -40,7 +40,10 @@ from yuxi.services.reference_meal_plan_types import (
     ReferencePurchaseGap,
     ReferencePurchaseItem,
 )
-from yuxi.services.reference_meal_selection_service import ReferenceReadSelection, ReferenceTranslationCorrection
+from yuxi.services.reference_meal_composition import REFERENCE_MEAL_POLICY_VERSION
+from yuxi.services.reference_meal_selection_service import (
+    ReferenceOptionSelection, ReferenceOptionTranslationCorrection, ReferenceReadSelection, ReferenceTranslationCorrection,
+)
 from yuxi.services.reference_recipe_matching import (
     ingredient_food,
     ingredient_food_for_products,
@@ -93,6 +96,8 @@ def selected_tool():
         "ReferencePlanDraft": ReferencePlanDraft,
         "ReferenceReadSelection": ReferenceReadSelection,
         "ReferenceTranslationCorrection": ReferenceTranslationCorrection,
+        "ReferenceOptionSelection": ReferenceOptionSelection,
+        "ReferenceOptionTranslationCorrection": ReferenceOptionTranslationCorrection,
         "REFERENCE_TOOLS": REFERENCE_TOOLS,
         "AIMessage": AIMessage,
         "HumanMessage": HumanMessage,
@@ -428,6 +433,7 @@ def save_owner(monkeypatch):
         "ReferencePlanDraft": ReferencePlanDraft,
         "NUTRIENTS": NUTRIENTS,
         "REFERENCE_CATALOG_CHAIN_VERSION": REFERENCE_CATALOG_CHAIN_VERSION,
+        "REFERENCE_MEAL_POLICY_VERSION": REFERENCE_MEAL_POLICY_VERSION,
         "parse_reference_recipe": parse_reference_recipe,
         "checked_chinese_display": checked_chinese_display,
         "ingredient_food": ingredient_food,
@@ -441,7 +447,7 @@ def save_owner(monkeypatch):
         "require_planner_run": AsyncMock(
             return_value=(
                 SimpleNamespace(id="run", conversation_id="conversation"),
-                SimpleNamespace(member_id="member", conversation_id="conversation"),
+                SimpleNamespace(member_id="member", conversation_id="conversation", initial_planner_selection={}),
             )
         ),
         "bound_reference_context": AsyncMock(

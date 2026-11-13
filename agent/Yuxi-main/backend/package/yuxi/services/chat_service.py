@@ -1406,10 +1406,13 @@ async def stream_agent_chat(
                 raise ValueError("健康解释终态尚未提交")
         except Exception as e:
             logger.exception(f"Error saving messages from LangGraph state: {e}")
+            from yuxi.services.health_vision_types import HealthVisionError
+
+            version_changed = isinstance(e, HealthVisionError) and e.code == "daily_plan_version_changed"
             yield make_chunk(
                 status="error",
-                error_type="output_persistence_error",
-                error_message="最终输出持久化或绑定失败",
+                error_type="daily_plan_version_changed" if version_changed else "output_persistence_error",
+                error_message="餐单已更新，请查看新餐单后再调整" if version_changed else "最终输出持久化或绑定失败",
                 meta=meta,
             )
             return
@@ -1444,6 +1447,8 @@ async def stream_agent_chat(
                 "reference_recipe_repeated",
                 "reference_menu_repeated",
                 "reference_variety_exhausted",
+                "reference_meal_incomplete",
+                "daily_plan_version_changed",
                 "answer_citation_invalid",
             }
             else "unexpected_error"
@@ -1733,10 +1738,13 @@ async def stream_agent_resume(
                 raise ValueError("健康解释终态尚未提交")
         except Exception as e:
             logger.exception(f"Error saving messages from LangGraph state: {e}")
+            from yuxi.services.health_vision_types import HealthVisionError
+
+            version_changed = isinstance(e, HealthVisionError) and e.code == "daily_plan_version_changed"
             yield make_resume_chunk(
                 status="error",
-                error_type="output_persistence_error",
-                error_message="最终输出持久化或绑定失败",
+                error_type="daily_plan_version_changed" if version_changed else "output_persistence_error",
+                error_message="餐单已更新，请查看新餐单后再调整" if version_changed else "最终输出持久化或绑定失败",
                 meta=meta,
             )
             return
@@ -1769,6 +1777,8 @@ async def stream_agent_resume(
                 "reference_recipe_repeated",
                 "reference_menu_repeated",
                 "reference_variety_exhausted",
+                "reference_meal_incomplete",
+                "daily_plan_version_changed",
                 "answer_citation_invalid",
             }
             else "resume_error"

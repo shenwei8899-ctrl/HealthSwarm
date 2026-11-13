@@ -500,6 +500,10 @@ async def daily_selection(db, uid, family, day, *, participation=None, allow_int
                     "配餐所需的营养规则或档案编码规则尚未配置完成，档案已保存，请等待服务配置后继续准备",
                     503,
                 )
+            if profile.get("reason") == "family_profile_incomplete":
+                raise HealthVisionError(
+                    "profile_incomplete", "当前就餐成员尚有必填建档资料未完成，请在家庭档案中补齐", 422
+                )
             raise HealthVisionError(
                 "daily_profile_source_unavailable", "营养师的档案来源尚未同步完成，系统会保留已有建档", 503
             )

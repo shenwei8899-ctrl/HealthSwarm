@@ -19,8 +19,7 @@ export const resolveAppEntry = createEntryCoordinator({ resolve, session: getSes
 export function rememberChatEntry(profile) {
   const session=getSession()
   if (!session?.token || !session.householdId || session.householdId!==profile?.householdId ||
-      !(profile.completeProfile || profile.onboarded) || profile.invitationReviewPending || pendingInvitation() ||
-      preparationPending()) return
+      !(profile.completeProfile || profile.onboarded) || profile.invitationReviewPending || pendingInvitation()) return
   resolveAppEntry.remember('/pages/chat/index')
 }
 
@@ -35,7 +34,6 @@ export function immediateShellEntry() {
   const invitation = pendingInvitation()
   if (invitation) return invitationRoute(invitation)
   if (family.invitationReviewPending) return '/pages/onboarding/index'
-  if (preparationPending()) return '/pages/onboarding/preparing'
   if (family.onboardingRequired === false) return '/pages/chat/index'
   return null
 }

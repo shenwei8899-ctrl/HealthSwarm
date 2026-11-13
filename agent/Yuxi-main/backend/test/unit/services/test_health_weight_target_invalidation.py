@@ -32,8 +32,9 @@ def write_context(monkeypatch):
 
     monkeypatch.setattr(HealthQualityRepository, "invalidate", invalidate)
     db = SimpleNamespace(commit=AsyncMock(side_effect=commit), add=Mock(), flush=AsyncMock(), scalar=AsyncMock())
-    family = SimpleNamespace(id=fid, owner_uid="owner")
+    family = SimpleNamespace(id=fid, owner_uid="owner", settings={})
     member = SimpleNamespace(
+        person_id=None,
         id=mid,
         subject_uid="subject",
         name="合成成员",
@@ -81,6 +82,7 @@ def write_context(monkeypatch):
     service.context = AsyncMock(return_value=(family, member))
     service.repo.measurement = AsyncMock(return_value=record)
     service.repo.members = AsyncMock(return_value=[member])
+    service.repo.active_membership = AsyncMock(return_value=None)
     service.repo.actor_names = AsyncMock(return_value={"subject": "合成成员"})
     service.repo.audit = AsyncMock()
     service.repo.linked_health_member = AsyncMock(return_value=health_id)

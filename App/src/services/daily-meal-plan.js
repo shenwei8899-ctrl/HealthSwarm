@@ -1,4 +1,7 @@
 import { request } from './request.js'
+import { storageContext } from './storage.js'
+
+const pendingByTransport = new WeakMap()
 
 export function isCandidateMealPending(pending,familyId,date) {
   const text = value => typeof value === 'string' && value.trim().length > 0
@@ -11,7 +14,32 @@ export function isCandidateMealPending(pending,familyId,date) {
     selection.meal_types.every(type => ['breakfast','lunch','dinner'].includes(type)) && new Set(selection.meal_types).size === selection.meal_types.length
 }
 
-export async function readDailyMealPlan(familyId, date, send = request) {
+export function readDailyMealPlan(familyId, date, send = request, { fresh = false, scope } = {}) {
+  const key = JSON.stringify([scope ?? (typeof uni === 'undefined' ? '' : storageContext()), familyId, date])
+  let pending = pendingByTransport.get(send)
+  if (!pending) {
+    pending = new Map()
+    pendingByTransport.set(send, pending)
+  }
+  const previous = pending.get(key)
+  if (previous && !fresh) return previous.promise
+
+  const entry = {}
+  entry.promise = fetchDailyMealPlan(familyId, date, send).then(
+    plan => entry.successor || plan,
+    error => {
+      if (entry.successor) return entry.successor
+      throw error
+    },
+  ).finally(() => {
+    if (pending.get(key) === entry) pending.delete(key)
+  })
+  if (previous) previous.successor = entry.promise
+  pending.set(key, entry)
+  return entry.promise
+}
+
+async function fetchDailyMealPlan(familyId, date, send) {
   const { data } = await send({ path: `/api/family/${encodeURIComponent(familyId)}/daily-meal-plans/${encodeURIComponent(date)}` })
   if (!data || data.date !== date || !['ready', 'absent', 'needs_regeneration'].includes(data.status) ||
       !Number.isInteger(data.version) || data.version < 0 || !Array.isArray(data.meals) ||

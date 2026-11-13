@@ -85,20 +85,16 @@ def evaluate_plan_quality(snapshot, profile, rules, ingredients, *, classificati
         p = ProfileProjection.model_validate(p)
     if not isinstance(r, QualityRules):
         r = QualityRules.model_validate(r)
-    targets = (
-        calculate_personal_targets(
-            p,
-            r,
-            weight_source_missing=bool((profile.get("attestation") or {}).get("family_profile_source"))
-            and not (profile.get("attestation") or {}).get("weight_measurement_source"),
-        )
-        if r.personal_targets is not None
-        else None
+    targets = calculate_personal_targets(
+        p,
+        r,
+        weight_source_missing=bool((profile.get("attestation") or {}).get("family_profile_source"))
+        and not (profile.get("attestation") or {}).get("weight_measurement_source"),
     )
     partial = covered_meals is not None and set(covered_meals) != {"breakfast", "lunch", "dinner"}
     if partial and r.meal_target_shares is None:
         unknown("rules.meal_target_shares", "covered_meal_ranges_not_approved")
-    if targets is not None and targets["status"] != "ready":
+    if targets["status"] != "ready":
         unknown("personal_targets", targets["reason"])
     if p.age_years is None or p.population_code is None:
         unknown("profile.population", "not_filled")
@@ -159,7 +155,7 @@ def evaluate_plan_quality(snapshot, profile, rules, ingredients, *, classificati
             unknown(f"nutrition.{nutrient}", "unknown_nutrient_or_portion")
         if partial and r.meal_target_shares is None:
             continue
-        personal = targets["bounds"][nutrient] if targets is not None and targets["status"] == "ready" else None
+        personal = targets["bounds"][nutrient] if targets["status"] == "ready" else None
         if not bounds and personal is None:
             unknown(f"rules.daily_bounds.{nutrient}", "bound_not_approved")
             continue
@@ -179,8 +175,8 @@ def evaluate_plan_quality(snapshot, profile, rules, ingredients, *, classificati
         "status": "conflict" if conflicts else "unknown" if missing else "passed",
         "missing": missing,
         "conflicts": conflicts,
-        "checks_version": "quality-rules-v2-personal" if targets is not None else "quality-rules-v1",
-        **({"personal_targets": targets} if targets is not None else {}),
+        "checks_version": "quality-rules-v3-required-personal",
+        "personal_targets": targets,
         **(
             {
                 "coverage": {

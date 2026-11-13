@@ -1,6 +1,6 @@
 <script setup>
 defineProps({ arrangement: { type: Object, required: true }, disabled: Boolean, family: Boolean })
-defineEmits(['open','members','shop'])
+defineEmits(['open','members'])
 const names={breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}
 function dateLabel(value){const match=/^\d{4}-(\d{2})-(\d{2})$/.exec(value||'');return match ? `${Number(match[1])}月${Number(match[2])}日` : value}
 </script>
@@ -17,7 +17,6 @@ function dateLabel(value){const match=/^\d{4}-(\d{2})-(\d{2})$/.exec(value||'');
         </view>
       </view>
     </view>
-    <button class="shop-button" :disabled="disabled" @click="$emit('shop',arrangement)"><text>一键选购</text><text class="shop-arrow">→</text></button>
   </view>
 </template>
 <style scoped>

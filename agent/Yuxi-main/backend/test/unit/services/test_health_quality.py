@@ -26,6 +26,7 @@ def profile_payload():
     return {
         "population_code": "synthetic_adult",
         "age_years": 30,
+        "sex_code": "synthetic_sex",
         **{
             key: {"state": "none", "codes": []}
             for key in ("conditions", "allergies", "intolerances", "avoidances", "doctor_requirements", "preferences")
@@ -54,6 +55,33 @@ def rules_payload():
             }
         ],
         "doctor_requirement_rules": [],
+        "personal_targets": [
+            {
+                "population_code": "synthetic_adult",
+                "sex_code": "synthetic_sex",
+                "condition_codes": [],
+                "intercept_kcal": "300",
+                "weight_kg_coefficient": "0",
+                "height_cm_coefficient": "0",
+                "age_years_coefficient": "0",
+                "activity_factors": None,
+                "nutrient_ranges": {
+                    code: {
+                        "minimum_per_energy": "0",
+                        "maximum_per_energy": "0",
+                        "minimum_constant": str(lo),
+                        "maximum_constant": str(hi),
+                    }
+                    for code, lo, hi in [
+                        ("energy_kcal", 250, 350),
+                        ("protein_g", 20, 40),
+                        ("fat_g", 4, 8),
+                        ("carbohydrate_g", 50, 70),
+                        ("sodium_mg", 100, 200),
+                    ]
+                },
+            }
+        ],
         "daily_bounds": {
             code: {"minimum": str(lo), "maximum": str(hi)}
             for code, lo, hi in [
@@ -92,14 +120,18 @@ def evaluated(profile=None, rules=None, nutrient=None, ingredients=None):
 
 def test_quality_uses_approved_bounds_and_preserves_unknown():
     """完整已知合成输入通过，缺钠不变成零。"""
-    assert evaluated() == {"status": "passed", "missing": [], "conflicts": [], "checks_version": "quality-rules-v1"}
+    result = evaluated()
+    assert result["status"] == "passed" and result["missing"] == result["conflicts"] == []
+    assert result["checks_version"] == "quality-rules-v3-required-personal"
+    assert result["personal_targets"]["status"] == "ready"
     result = evaluated(nutrient={"sodium_mg": None})
     assert result["status"] == "unknown" and result["missing"] == [
         {"path": "nutrition.sodium_mg", "reason": "unknown_nutrient_or_portion"}
     ]
     rules = rules_payload()
     del rules["daily_bounds"]["sodium_mg"]
-    assert evaluated(rules=rules)["status"] == "unknown"
+    # 通用钠范围缺失时，已明确的个人钠范围仍是有效依据。
+    assert evaluated(rules=rules)["status"] == "passed"
 
 
 @pytest.mark.parametrize("field", ["conditions", "allergies", "intolerances", "avoidances", "doctor_requirements"])
@@ -151,6 +183,7 @@ def test_population_combination_and_unapproved_codes_are_not_guessed():
     profile["conditions"] = {"state": "specified", "codes": ["a", "b"]}
     rules = rules_payload()
     rules["supported_condition_sets"] = [["a"], ["b"]]
+    rules["personal_targets"][0]["condition_codes"] = ["a"]
     assert evaluated(profile=profile, rules=rules)["conflicts"][0]["code"] == "unsupported_condition_combination"
     profile = profile_payload()
     profile["allergies"] = {"state": "specified", "codes": ["unknown_catalog_code"]}
@@ -185,6 +218,7 @@ def test_approved_age_range_is_data_driven_and_empty_ingredients_are_unknown():
     profile, rules = profile_payload(), rules_payload()
     profile.update(age_years=10, population_code="synthetic_child")
     rules.update(minimum_age_years=5, maximum_age_years=12, allowed_population_codes=["synthetic_child"])
+    rules["personal_targets"][0]["population_code"] = "synthetic_child"
     assert evaluated(profile=profile, rules=rules)["status"] == "passed"
     profile["age_years"] = 13
     assert evaluated(profile=profile, rules=rules)["status"] == "conflict"

@@ -55,7 +55,7 @@ export function dataWarnings(member) {
   const height = Number(member.height), weight = Number(member.weight)
   const warnings = []
   if (member.height !== '' && member.height != null && (!Number.isFinite(height) || height <= 0 || height > 300)) warnings.push('请填写有效的身高数值')
-  if (member.weight !== '' && member.weight != null && (!Number.isFinite(weight) || weight <= 0 || weight > 500)) warnings.push('请填写有效的体重数值')
+  if (member.weight !== '' && member.weight != null && (!Number.isFinite(weight) || weight <= 0 || weight > 1000)) warnings.push('请填写有效的体重数值')
   const dateError = birthDateError(member.birthDate)
   if (dateError) warnings.push(dateError)
   if ((member.goals || []).includes('增肌') && /限制蛋白|低蛋白/.test(member.clinicianGuidance)) warnings.push('饮食目标与填写的医嘱可能不一致')

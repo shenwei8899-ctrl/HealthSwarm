@@ -13,6 +13,9 @@ def complete_input():
         "name": "校验边界",
         "relation": "本人",
         "birth_date": "2000-01-01",
+        "sex": "female",
+        "height_cm": 165,
+        "weight_kg": 55,
         "dietary": {
             "healthStatus": "none",
             "allergyStatus": "none",
@@ -92,7 +95,10 @@ class OptionalCuisineTest(unittest.TestCase):
             is_active=True,
             version=2,
             confirmed_version=2,
-            profile={"birth_date": value["birth_date"], "dietary_details": value["dietary"]},
+            profile={
+                "birth_date": value["birth_date"], "sex": value["sex"], "height_cm": value["height_cm"],
+                "dietary_details": {**value["dietary"], "statedWeightKg": value["weight_kg"]},
+            },
         )
         self.assertTrue(miniapp_onboarding_ready(member, None))
         member.confirmed_version = 1

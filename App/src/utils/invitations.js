@@ -13,7 +13,7 @@ export function createInvite(memberId=null) {
   scopedStorage.setStorageSync('family-invites-v1',invites);return token
 }
 export function getInvite(token){return read()[token] || null}
-export function shareInvite(token){return {title:'邀请你加入家庭',path:'/pages/invite/index?token='+token,imageUrl:'/static/food/welcome-kitchen-20261026.jpg'}}
+export function shareInvite(token){return {title:'邀请你加入家庭',path:'/pages/invite/index?token='+token,imageUrl:'/static/food/welcome-kitchen-20261026.webp'}}
 export function acceptInvite(token,account) {
   const invites=read(),invite=invites[token],profile=getProfile()
   if(!invite)return {error:'邀请不存在'}

@@ -62,16 +62,16 @@ test('a complete profile opens chat across unfinished, failed, ready and absent 
  }
 })
 
-test('pending submission can enter preparation before the cloud profile is complete',async()=>{
+test('pending legacy submission remains on the form until cloud completion',async()=>{
  const session={accountId:'self',token:'synthetic',householdId:'family',families:[{id:'family'}]}
  const resolve=createEntryResolver({auth:{restore:async()=>session},session:()=>session,readProfile:async()=>({householdId:'family',completeProfile:false}),pendingPreparation:()=>true})
- assert.equal(await resolve(),'/pages/onboarding/preparing')
+ assert.equal(await resolve(),'/pages/onboarding/index')
 })
 
-test('a confirmed profile resumes an active preparation',async()=>{
+test('a confirmed profile ignores an active preparation',async()=>{
  const session={accountId:'self',token:'synthetic',householdId:'family',families:[{id:'family'}]}
  const resolve=createEntryResolver({auth:{restore:async()=>session},session:()=>session,readProfile:async()=>({householdId:'family',completeProfile:true}),pendingPreparation:()=>true})
- assert.equal(await resolve(),'/pages/onboarding/preparing')
+ assert.equal(await resolve(),'/pages/chat/index')
 })
 
 test('direct onboarding returns the saved receipt without polling meal preparation',async()=>{

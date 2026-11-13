@@ -57,7 +57,7 @@ SOURCE_MARKER = re.compile(r"\[资料:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 
 
 def filter_family_kb_history(messages):
-    """模型输入删除含家庭库回执的旧轮次，当前轮必须重新检索。"""
+    """旧家庭库轮次只保留用户问题，当前轮来源保持完整。"""
     chunks, chunk = [], []
     for message in messages:
         if isinstance(message, HumanMessage) and chunk:

@@ -1,13 +1,14 @@
 <script setup>
 import {reactive,ref,computed,nextTick,onMounted,onUnmounted} from 'vue'
 import {onShow} from '@dcloudio/uni-app'
-import {referencePurchaseFor} from '../services/meal-workspace.js'
+import {mealTarget,referencePurchaseFor} from '../services/meal-workspace.js'
 import {addDishToMeal,savedPurchaseScope} from '../services/meal-dish-actions.js'
 import {localDate} from '../utils/meal-state.js'
 import {recipeCover} from '../utils/recipe-cover.js'
-import {dishTitle,dishKey,mealNutrition} from '../utils/meal-presentation.js'
+import {dishTitle,dishKey,mealNutrition,dishMemberPortions} from '../utils/meal-presentation.js'
 import DetailOverlay from './DetailOverlay.vue'
 import FoodImageSlot from './FoodImageSlot.vue'
+import DishMemberPortions from './DishMemberPortions.vue'
 import CookingGuide from './CookingGuide.vue'
 import CloudMealPurchase from './CloudMealPurchase.vue'
 import MealPurchaseSheet from './MealPurchaseSheet.vue'
@@ -16,9 +17,11 @@ import {createDailyArrangementClient,dailyArrangementState} from '../services/da
 import {request} from '../services/request.js'
 import {storageContext,scopedStorage} from '../services/storage.js'
 import {newHealthRequestId} from '../services/health-task-flow.js'
+import {createTodayMealPlan,todayMealPlanState} from '../services/today-meal-plan.js'
 const props=defineProps({members:{type:Array,default:()=>[]},reload:Function,standalone:Boolean,leaving:Boolean,returnError:String})
 const emit=defineEmits(['open-change','leave'])
 const state=reactive(detailState()),shown=ref(false),purchaseRef=ref(null),memberIds=ref([]),memberBusy=ref(false),memberError=ref('')
+const referenceRevisionState=reactive(todayMealPlanState())
 const dishOpened=ref(false)
 const purchaseOpen=ref(false),purchaseMounted=ref(false),purchaseSheet=ref(null)
 const cookingOpen=ref(false),cookingMeal=ref('dinner'),cookingBusy=ref(false),cookingError=ref(''),cookingRequest=ref(''),purchaseDish=ref(null)
@@ -28,12 +31,18 @@ const memberState=reactive(dailyArrangementState())
 const memberClient=createDailyArrangementClient({state:memberState,send:request,context:()=>({scope:storageContext(),familyId:state.target?.familyId}),storage:scopedStorage,newId:newHealthRequestId})
 let owner='',touch=null,disposed=false,openRevision=0
 const target=computed(()=>state.target||{}),reference=computed(()=>target.value.kind==='reference')
+let referenceRevision=null
+const referenceRevisionClient=createTodayMealPlan({
+ state:referenceRevisionState,day:()=>target.value.date,onPlan:applyReferenceRevision,taskNamespace:'meal-member-revision',
+})
 const dish=computed(()=>state.meal?.dishes?.[state.dishIndex])
 const title=computed(()=>state.view==='dish'?'菜品详情':state.view==='members'?'调整就餐成员':mealNames[target.value.mealType]+'安排')
 const height=computed(()=>Math.round(state.expanded?viewport.value-safeTop.value:Math.min(viewport.value*.82,viewport.value-safeTop.value)))
-const busy=computed(()=>Boolean(props.leaving||memberBusy.value||cookingBusy.value||purchaseRef.value?.isBusy))
+const revisingReference=computed(()=>referenceRevisionState.checking)
+const busy=computed(()=>Boolean(props.leaving||memberBusy.value||revisingReference.value||cookingBusy.value||purchaseRef.value?.isBusy))
 const purchaseScope=computed(()=>savedPurchaseScope(target.value,purchaseDish.value?[purchaseDish.value]:undefined))
 const nutritionSummary=computed(()=>mealNutrition(state.meal))
+const portionRows = computed(() => (state.meal?.dishes || []).map(item => dishMemberPortions(state.meal, item)))
 
 const referencePurchase=computed(()=>target.value.purchaseOption?referencePurchaseFor(target.value):reference.value?{previewId:target.value.sourceId,mealTypes:target.value.purchaseMeals||[target.value.mealType],items:target.value.referencePlan?.product_matches||target.value.referencePlan?.purchase_items||[]}:null)
 const canPurchase=computed(()=>state.phase==='ready'&&target.value.purchaseReady!==false&&(!reference.value||target.value.purchaseReady===true||!!referencePurchase.value?.items.length))
@@ -43,18 +52,18 @@ const key=computed(()=>detailKey(target.value,owner))
 
 
 function measure(){try{const info=uni.getWindowInfo?uni.getWindowInfo():uni.getSystemInfoSync();viewport.value=info.windowHeight||800;safeTop.value=(info.statusBarHeight||24)+44;try{safeTop.value=Math.max(safeTop.value,uni.getMenuButtonBoundingClientRect().bottom+8)}catch{}}catch{}}
-function open(value){if(disposed)return;const revision=++openRevision;purchaseOpen.value=false;purchaseMounted.value=false;dishOpened.value=value.initialView==='dish';owner=storageContext();measure();Object.keys(scrollPositions).forEach(k=>delete scrollPositions[k]);bodyTop.value=0;bodyRestore.value=0;memberError.value='';cookingOpen.value=false;cookingError.value='';purchaseDish.value=null;shown.value=true;emit('open-change',true);uni.hideKeyboard?.();return client.open({...value,initialView:value.initialView==='purchase'?'meal':value.initialView}).then(()=>{if(revision!==openRevision||!shown.value)return;if(state.view==='members')memberIds.value=(state.meal?.members||[]).map(m=>m.id);if(value.initialView==='purchase'&&state.phase==='ready')showPurchase()}).catch(e=>{if(revision!==openRevision||!shown.value)return;state.open=true;state.target={...value};state.view='meal';state.phase='error';state.error=e.message})}
+function open(value){if(disposed)return;resetReferenceRevision();const revision=++openRevision;purchaseOpen.value=false;purchaseMounted.value=false;dishOpened.value=value.initialView==='dish';owner=storageContext();measure();Object.keys(scrollPositions).forEach(k=>delete scrollPositions[k]);bodyTop.value=0;bodyRestore.value=0;memberError.value='';cookingOpen.value=false;cookingError.value='';purchaseDish.value=null;shown.value=true;emit('open-change',true);uni.hideKeyboard?.();return client.open({...value,initialView:value.initialView==='purchase'?'meal':value.initialView}).then(()=>{if(revision!==openRevision||!shown.value)return;if(state.view==='members')memberIds.value=(state.meal?.members||[]).map(m=>m.id);if(value.initialView==='purchase'&&state.phase==='ready')showPurchase()}).catch(e=>{if(revision!==openRevision||!shown.value)return;state.open=true;state.target={...value};state.view='meal';state.phase='error';state.error=e.message})}
 function close(force=false){if(busy.value&&force!==true)return;if(purchaseOpen.value&&force!==true){closePurchase();return}purchaseOpen.value=false;if(props.standalone){emit('leave');return}shown.value=false}
-function closed(){if(shown.value)return;client.close();memberClient.reset();emit('open-change',false)}
-function clear(){openRevision++;shown.value=false;purchaseOpen.value=false;purchaseMounted.value=false;client.clear();memberClient.reset();emit('open-change',false)}
+function closed(){if(shown.value)return;resetReferenceRevision();client.close();memberClient.reset();emit('open-change',false)}
+function clear(){resetReferenceRevision();openRevision++;shown.value=false;purchaseOpen.value=false;purchaseMounted.value=false;client.clear();memberClient.reset();emit('open-change',false)}
 function scrollKey(){return state.view==='dish'?'dish:'+state.dishIndex:state.view}
 async function switchView(view,index=state.dishIndex){scrollPositions[scrollKey()]=bodyTop.value;state.dishIndex=index;state.view=view;bodyTop.value=scrollPositions[scrollKey()]||0;bodyRestore.value=-1;await nextTick();bodyRestore.value=bodyTop.value}
 // Native back may leave the page itself; button back must explicitly request it.
 function requestBack(native=false){
- if(busy.value)return true
+ if(busy.value&&!revisingReference.value)return true
  if(purchaseOpen.value){closePurchase();return true}
  if(cookingOpen.value){cookingOpen.value=false;return true}
- if(state.view==='members'||state.view==='dish'&&target.value.initialView!=='dish'){void switchView('meal');return true}
+ if(state.view==='members'||state.view==='dish'&&target.value.initialView!=='dish'){resetReferenceRevision();void switchView('meal');return true}
  if(native===true)return false
  close();return true
 }
@@ -70,10 +79,34 @@ async function confirmCooking(){
  catch(e){if(scope===storageContext())cookingError.value=e.message}
  finally{cookingBusy.value=false}
 }
-function startMembers(){memberIds.value=(state.meal?.members||[]).map(m=>m.id);memberError.value='';switchView('members')}
-function toggleMember(id){memberIds.value=memberIds.value.includes(id)?memberIds.value.filter(x=>x!==id):[...memberIds.value,id]}
+function startMembers(){resetReferenceRevision();memberIds.value=(state.meal?.members||[]).map(m=>m.id);memberError.value='';switchView('members')}
+function toggleMember(id){resetReferenceRevision();memberIds.value=memberIds.value.includes(id)?memberIds.value.filter(x=>x!==id):[...memberIds.value,id]}
+function resetReferenceRevision(){
+ referenceRevision=null
+ referenceRevisionClient.clear()
+}
+function reviseReferenceMembers(){
+ const previous=state.meal.members.map(member=>member.id).sort()
+ const participantIds=[...memberIds.value].sort()
+ if(JSON.stringify(previous)===JSON.stringify(participantIds)){resetReferenceRevision();return switchView('meal')}
+ if(!referenceRevision)referenceRevision={version:target.value.dailyPlanVersion,mealType:target.value.mealType,
+  sourceId:target.value.sourceId,participantIds,scope:storageContext()}
+ const profile={householdId:target.value.familyId,members:props.members}
+ return referenceRevisionClient.open(profile,{revision:referenceRevision,retryFailed:true})
+}
+function applyReferenceRevision(plan){
+ const revision=referenceRevision
+ if(!revision||revision.scope!==storageContext()||!shown.value||plan.version<=revision.version)return
+ const item=plan.meals.find(item=>item.meal_type===revision.mealType&&item.source.kind==='reference')
+ if(!item||item.source.id===revision.sourceId||
+   JSON.stringify((item.members||[]).map(member=>member.id).sort())!==JSON.stringify(revision.participantIds))return
+ void open(mealTarget(item,plan))
+ void props.reload?.(plan.date)?.catch(()=>{})
+}
 async function saveMembers(){
- if(memberBusy.value||!memberIds.value.length||state.phase!=='ready')return
+ if(reference.value&&referenceRevisionState.consentOption){await referenceRevisionClient.acceptConsent();return}
+ if(busy.value||!memberIds.value.length||state.phase!=='ready')return
+ if(reference.value)return reviseReferenceMembers()
  const original={...target.value},scope=storageContext();memberBusy.value=true;memberError.value=''
  try{
   await memberClient.load(original.date)
@@ -106,7 +139,7 @@ onShow(()=>{if(!state.open)return;if(owner!==storageContext()){clear();return}vo
 onMounted(()=>{measure();uni.onWindowResize?.(measure);/* #ifdef H5 */
  if(typeof window!=='undefined'){window.addEventListener('resize',measure);window.addEventListener('keydown',keydown)}
  /* #endif */})
-onUnmounted(()=>{uni.offWindowResize?.(measure);disposed=true;client.dispose();memberClient.dispose();/* #ifdef H5 */
+onUnmounted(()=>{uni.offWindowResize?.(measure);disposed=true;client.dispose();memberClient.dispose();referenceRevisionClient.dispose();/* #ifdef H5 */
  if(typeof window!=='undefined'){window.removeEventListener('resize',measure);window.removeEventListener('keydown',keydown)}
  /* #endif */})
 defineExpose({open,close,clear,handleBack:()=>requestBack(true)})
@@ -125,21 +158,24 @@ defineExpose({open,close,clear,handleBack:()=>requestBack(true)})
 
      <template v-if="state.view==='meal'">
 
-      <view class="meal-overview"><text class="meal-overview-title">好好吃饭，轻松安排</text><text v-if="(state.meal.members||[]).length" class="detail-members">{{(state.meal.members||[]).map(m=>m.name).join(' · ')}}</text><view v-if="nutritionSummary.length" class="meal-nutrition-summary"><text>{{(state.meal.members||[]).length>1?'全餐合计':'本餐份量'}}</text><text v-for="item in nutritionSummary" :key="item.key">{{item.label}} {{item.value}} {{item.unit}}</text></view></view>
+      <view class="meal-overview"><text class="meal-overview-title">好好吃饭，轻松安排</text><button v-if="reference&&members.length&&Number.isInteger(target.dailyPlanVersion)" class="detail-secondary" :disabled="busy" @click="startMembers">{{(state.meal.members||[]).map(m=>m.name).join(' · ')}} · 调整就餐成员</button><text v-else-if="(state.meal.members||[]).length" class="detail-members">{{(state.meal.members||[]).map(m=>m.name).join(' · ')}}</text><view v-if="nutritionSummary.length" class="meal-nutrition-summary"><text>{{(state.meal.members||[]).length>1?'全餐合计':'本餐份量'}}</text><text v-for="item in nutritionSummary" :key="item.key">{{item.label}} {{item.value}} {{item.unit}}</text></view></view>
       <view class="detail-section-heading"><text>本餐菜品</text><text>共 {{state.meal.dishes.length}} 道</text></view>
-      <button tabindex="0" role="button" v-for="(item,index) in state.meal.dishes" :key="dishKey(item)" class="detail-dish-row" :aria-label="dishTitle(item)" @click="showDish(index)"><FoodImageSlot :src="recipeCover(item)?.image_url" :label="dishTitle(item)" :width="72" :height="72" :radius="18" fallback-icon class="detail-thumb"/><view><text class="detail-dish-name">{{dishTitle(item)}}</text></view></button>
+      <text v-if="portionRows.some(rows => rows.length)" class="portion-basis">建议食用量按成品可食重量计</text>
+      <view v-for="(item,index) in state.meal.dishes" :key="key+':'+dishKey(item)" class="detail-dish-card">
+       <button tabindex="0" role="button" class="detail-dish-row" :aria-label="dishTitle(item)" @click="showDish(index)"><FoodImageSlot :src="recipeCover(item)?.image_url" :label="dishTitle(item)" :width="72" :height="72" :radius="18" fallback-icon class="detail-thumb"/><view><text class="detail-dish-name">{{dishTitle(item)}}</text></view></button>
+       <DishMemberPortions class="detail-dish-portions" :portions="portionRows[index]"/>
+      </view>
 
 
      </template>
      <view v-if="dishOpened&&dish" v-show="state.view==='dish'"><CookingGuide :dishes="[dish]" continuous action=""/></view>
-     <template v-if="state.view==='members'"><text class="detail-copy">只调整本餐，确认后重新核对餐单与采购。</text><button tabindex="0" role="button" v-for="member in members" :key="member.id" class="detail-member-choice" :aria-pressed="memberIds.includes(member.id)" :disabled="memberBusy" @click="toggleMember(member.id)"><text>{{member.name}}</text><text>{{memberIds.includes(member.id)?'✓':'○'}}</text></button><text v-if="memberError" class="detail-error">{{memberError}}</text></template>
+     <template v-if="state.view==='members'"><text class="detail-copy">只调整本餐，确认后重新核对餐单与采购。</text><button tabindex="0" role="button" v-for="member in members" :key="member.id" class="detail-member-choice" :aria-pressed="memberIds.includes(member.id)" :disabled="busy" @click="toggleMember(member.id)"><text>{{member.name}}</text><text>{{memberIds.includes(member.id)?'✓':'○'}}</text></button><text v-if="memberError||referenceRevisionState.notice" class="detail-error">{{memberError||referenceRevisionState.notice}}</text><text v-if="referenceRevisionState.consentOption" class="detail-copy">处理方：{{referenceRevisionState.consentOption.processor}}。政策版本：{{referenceRevisionState.consentOption.policyVersion}}。</text><text v-for="(question,index) in referenceRevisionState.pending?.questions||[]" :key="index" class="detail-copy">{{question}}</text></template>
     </template>
     <view class="detail-bottom-space"/>
    </scroll-view>
-   <view class="detail-footer" :class="{'dish-actions':state.view==='dish'}">
-    <template v-if="state.view==='members'"><button tabindex="0" role="button" class="detail-secondary" :disabled="busy" @click="requestBack()">取消调整</button><button tabindex="0" role="button" class="detail-primary" :disabled="busy||!memberIds.length||state.phase!=='ready'" @click="saveMembers">{{memberBusy?'正在核对…':'确认成员'}}</button></template>
-    <template v-else-if="state.view==='dish'"><button role="button" tabindex="0" class="detail-secondary" :disabled="busy||state.phase!=='ready'||!purchaseScope" @click="showPurchase">购买</button><button role="button" tabindex="0" class="detail-primary" :disabled="busy||state.phase!=='ready'||target.dailyPlanVersion==null||target.date!==localDate()" @click="startCooking">烹饪</button></template>
-    <template v-else><button role="button" tabindex="0" class="detail-primary" :disabled="busy||!canPurchase" @click="showPurchase">购买</button></template>
+   <view v-if="state.view==='dish'||state.view==='members'" class="detail-footer" :class="{'dish-actions':state.view==='dish'}">
+    <template v-if="state.view==='members'"><button tabindex="0" role="button" class="detail-secondary" :disabled="busy" @click="requestBack()">取消调整</button><button tabindex="0" role="button" class="detail-primary" :disabled="busy||!memberIds.length||state.phase!=='ready'" @click="saveMembers">{{memberBusy||revisingReference?'正在核对…':referenceRevisionState.consentOption?'同意并继续配餐':'确认成员'}}</button></template>
+    <button v-else role="button" tabindex="0" class="detail-primary" :disabled="busy||state.phase!=='ready'||target.dailyPlanVersion==null||target.date!==localDate()" @click="startCooking">烹饪</button>
    </view>
    <view v-if="cookingOpen" class="cook-mask" @click.self="!cookingBusy&&(cookingOpen=false)"><view class="cook-sheet" role="dialog" aria-modal="true" aria-label="选择烹饪餐段"><view class="cook-heading"><text>加入今日哪一餐？</text><button role="button" tabindex="0" :disabled="cookingBusy" @click="cookingOpen=false">×</button></view><view class="cook-choices"><button role="button" tabindex="0" v-for="(label,type) in {breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}" :key="type" :aria-pressed="cookingMeal===type" :class="{selected:cookingMeal===type}" :disabled="cookingBusy" @click="cookingMeal=type">{{label}}</button></view><text v-if="cookingError" class="detail-error" role="alert">{{cookingError}}</text><button role="button" tabindex="0" class="detail-primary" :disabled="cookingBusy" @click="confirmCooking">{{cookingBusy?'正在加入…':'确认加入'}}</button></view></view>
    <MealPurchaseSheet v-if="purchaseMounted&&state.phase==='ready'&&canPurchase" ref="purchaseSheet" :open="purchaseOpen" :busy="!!purchaseRef?.isBusy" @close="closePurchase"><CloudMealPurchase :key="key+':'+(purchaseDish?dishKey(purchaseDish):'meal')" ref="purchaseRef" embedded unified :visible="purchaseOpen" :meal="target.purchaseMembers?{...state.meal,members:target.purchaseMembers}:state.meal" :route="purchaseRoute" :reference="purchaseScope?null:referencePurchase" :selection="purchaseScope" @scroll="purchaseSheet?.setScrollTop($event)"/></MealPurchaseSheet>
@@ -157,4 +193,11 @@ defineExpose({open,close,clear,handleBack:()=>requestBack(true)})
 .detail-skeleton>view{height:14px;border-radius:14px;margin-bottom:18px;background:#f0f1f3}.detail-skeleton>view:nth-child(3){width:75%}.detail-skeleton .skeleton-image{height:180px}.meal-detail-panel button:after{border:0}.meal-detail-panel button[disabled]{opacity:.45}.detail-body :deep(.guide-action){display:none}
 .cook-mask{position:absolute;inset:0;z-index:10;background:var(--ui-overlay);display:flex;align-items:flex-end}.cook-sheet{width:100%;padding:20px 20px calc(env(safe-area-inset-bottom) + 20px);border-radius:24px 24px 0 0;background:var(--ui-surface)}.cook-heading{display:flex;align-items:center;justify-content:space-between;font-size:18px;font-weight:500}.cook-heading button{min-width:44px;min-height:44px;font-size:26px}.cook-choices{display:flex;gap:10px;margin:15px 0 20px}.cook-choices button{flex:1;min-height:48px;border:1px solid var(--ui-line);border-radius:13px;background:var(--ui-soft);font-size:15px}.cook-choices .selected{background:var(--ui-accent-soft);border-color:var(--ui-accent);color:var(--ui-accent)}.cook-sheet>.detail-primary{width:100%}
 @media(max-width:350px){.detail-header,.detail-body{padding-left:16px;padding-right:16px}.detail-dish-row{gap:12px;padding:14px}.meal-overview-title{font-size:20px}}@media(prefers-reduced-motion:reduce){.meal-detail-panel{transition:none}}
+</style>
+
+<style scoped>
+.portion-basis { display: block; margin: -6px 2px 12px; color: var(--ui-muted); font-size: 13px; }
+.detail-dish-card { margin-bottom: 14px; border: 1px solid var(--ui-bubble-line); border-radius: 26px; background: var(--ui-bubble); box-shadow: var(--ui-bubble-shadow); }
+.detail-dish-card .detail-dish-row { margin: 0; border: 0; background: transparent; box-shadow: none; }
+.detail-dish-portions { padding: 0 18px 15px; }
 </style>

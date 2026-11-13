@@ -1,18 +1,18 @@
 """按本 Run 已打开的原谱装配参考稿，不让模型重写来源事实。"""
 
 from copy import deepcopy
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
+from uuid import UUID
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, TypeAdapter, field_validator, model_validator
 
 from yuxi.services.health_vision_types import HealthDTO, HealthVisionError
 from yuxi.services.recipe_translation_types import RecipeChineseDisplay
+from yuxi.services.reference_meal_composition import MAX_REFERENCE_DISHES
+from yuxi.services.reference_meal_plan_types import ReferenceDishAssignment, ReferencePlanDraft
 
-if TYPE_CHECKING:
-    from yuxi.services.reference_meal_plan_types import ReferencePlanDraft
 
-
-class ReferenceReadDish(HealthDTO):
+class ReferenceReadDish(ReferenceDishAssignment):
     """只选择本轮已打开的原谱，可另给中文展示和制作估时。"""
 
     file_id: str = Field(min_length=1, max_length=64)
@@ -25,7 +25,7 @@ class ReferenceReadMeal(HealthDTO):
     """餐次必须明确，不能借选菜扩展用户选择范围。"""
 
     meal_type: Literal["breakfast", "lunch", "dinner"]
-    dishes: list[ReferenceReadDish] = Field(min_length=1, max_length=5)
+    dishes: list[ReferenceReadDish] = Field(min_length=1, max_length=MAX_REFERENCE_DISHES)
 
 
 class ReferenceReadPurchase(HealthDTO):
@@ -80,11 +80,41 @@ class ReferenceTranslationCorrection(HealthDTO):
     display_zh: RecipeChineseDisplay
 
 
+class ReferenceOptionDish(HealthDTO):
+    """用本次读取回执的选项标识菜谱及被替代的共用菜。"""
+
+    recipe_option: str = Field(pattern=r"^r[0-9a-f]{16}$")
+    display_zh: RecipeChineseDisplay | None = None
+    cooking_minutes: int | None = Field(default=None, ge=1, le=1440, strict=True)
+    alternative_for: list[UUID] = Field(default_factory=list, max_length=20)
+    replaces_recipe_option: str | None = Field(default=None, pattern=r"^r[0-9a-f]{16}$")
+
+
+class ReferenceOptionMeal(ReferenceReadMeal):
+    """保存工具按选项编号选择餐次菜谱。"""
+
+    dishes: list[ReferenceOptionDish] = Field(min_length=1, max_length=MAX_REFERENCE_DISHES)
+
+
+class ReferenceOptionSelection(ReferenceReadSelection):
+    """模型保存契约只接受菜谱选项。"""
+
+    meals: list[ReferenceOptionMeal] = Field(min_length=1, max_length=3)
+
+
+class ReferenceOptionTranslationCorrection(HealthDTO):
+    """按首次保存提交的选项修正译文。"""
+
+    recipe_option: str = Field(pattern=r"^r[0-9a-f]{16}$")
+    display_zh: RecipeChineseDisplay
+
+
+_read_selection = TypeAdapter(ReferenceOptionSelection | ReferenceReadSelection)
+
+
 def apply_reference_translation_correction(original, corrections) -> dict:
     """沿用首次保存的全部选择，只覆盖明确指定原谱的译文。"""
-    from yuxi.services.reference_meal_plan_types import ReferencePlanDraft
 
-    model = ReferenceReadSelection if "use_read_recipes" in original else ReferencePlanDraft
     selected = deepcopy(original)
     baseline = deepcopy(original)
     for meal in baseline.get("meals", []):
@@ -92,19 +122,25 @@ def apply_reference_translation_correction(original, corrections) -> dict:
             for dish in meal["dishes"]:
                 if isinstance(dish, dict):
                     dish.pop("display_zh", None)
-    model.model_validate(baseline)
-    patches = [ReferenceTranslationCorrection.model_validate(item) for item in corrections]
-    if not patches or len({(item.file_id, item.chunk_id) for item in patches}) != len(patches):
+    validated = (
+        _read_selection.validate_python(baseline)
+        if "use_read_recipes" in original
+        else ReferencePlanDraft.model_validate(baseline)
+    )
+    by_option = isinstance(validated, ReferenceOptionSelection)
+    patch_model = ReferenceOptionTranslationCorrection if by_option else ReferenceTranslationCorrection
+    fields = ("recipe_option",) if by_option else ("file_id", "chunk_id")
+    patches = [patch_model.model_validate(item).model_dump(mode="json") for item in corrections]
+    displays = {tuple(item[field] for field in fields): item["display_zh"] for item in patches}
+    if not patches or len(displays) != len(patches):
         raise HealthVisionError("reference_translation_correction_invalid", "译文修正须指定不重复的已选菜谱", 422)
-    dishes = {(dish["file_id"], dish["chunk_id"]) for meal in selected["meals"] for dish in meal["dishes"]}
-    if any((item.file_id, item.chunk_id) not in dishes for item in patches):
+    dishes = [dish for meal in selected["meals"] for dish in meal["dishes"]]
+    if displays.keys() - {tuple(dish[field] for field in fields) for dish in dishes}:
         raise HealthVisionError("reference_translation_correction_invalid", "译文修正只能引用首次已选菜谱", 422)
-    displays = {(item.file_id, item.chunk_id): item.display_zh.model_dump(mode="json") for item in patches}
-    for meal in selected["meals"]:
-        for dish in meal["dishes"]:
-            if display := displays.get((dish["file_id"], dish["chunk_id"])):
-                dish["display_zh"] = display
-    return model.model_validate(selected).model_dump(mode="json")
+    for dish in dishes:
+        if display := displays.get(tuple(dish[field] for field in fields)):
+            dish["display_zh"] = display
+    return type(validated).model_validate(selected).model_dump(mode="json")
 
 
 async def assemble_reference_selection(context, payload, *, allow_purchase_fallback=False) -> "ReferencePlanDraft":
@@ -121,13 +157,15 @@ async def assemble_reference_selection(context, payload, *, allow_purchase_fallb
     from yuxi.services.recipe_translation_service import cached_chinese_display
     from yuxi.storage.postgres.manager import pg_manager
 
-    selected = ReferenceReadSelection.model_validate(payload)
+    selected = _read_selection.validate_python(payload)
     async with pg_manager.get_async_session_context() as session:
         run, binding = await require_planner_run(session, context)
         current = await bound_reference_context(session, context.uid, binding)
         if {meal.meal_type for meal in selected.meals} != set(current["selection"]["meal_types"]):
             raise HealthVisionError("reference_meals_mismatch", "餐次须与用户明确选择一致", 422)
         receipts = await tool_payloads(session, run, "read_reference_recipe")
+        if isinstance(selected, ReferenceOptionSelection):
+            selected = _resolve_recipe_options(selected, receipts)
         opened = {(item["file_id"], item["chunk_id"]): item for item in receipts}
         reads = await tool_payloads(session, run, "find_reference_products")
         seen = {str(sku["sku_id"]): sku for read in reads for sku in read.get("catalog", [])}
@@ -141,8 +179,8 @@ async def assemble_reference_selection(context, payload, *, allow_purchase_fallb
             for group in receipt.get("recipe_check", {}).get("ingredient_matches", []):
                 for product in group.get("candidate_products", []):
                     seen_products.setdefault(str(product["product_id"]), product)
-        if not reads:
-            raise HealthVisionError("reference_product_required", "请先按商城分类读取在售商品", 409)
+        if not reads and not any(receipt.get("catalog_version") for receipt in receipts):
+            raise HealthVisionError("reference_product_required", "请打开本轮菜谱并核对商城食材", 409)
         if not seen_products and selected.product_matches:
             raise HealthVisionError("reference_product_required", "本轮已读分类没有可选择的在售商品", 409)
         if any(item.product_id not in seen_products for item in selected.product_matches):
@@ -186,6 +224,7 @@ async def assemble_reference_selection(context, payload, *, allow_purchase_fallb
                     documents[key] = fresh, parsed
                 fresh, parsed = documents[key]
                 dish = {
+                    **choice.model_dump(mode="json", include={"alternative_for", "replaces_file_id"}),
                     "file_id": choice.file_id,
                     "chunk_id": choice.chunk_id,
                     "name": parsed.name,
@@ -214,6 +253,32 @@ async def assemble_reference_selection(context, payload, *, allow_purchase_fallb
         return ReferencePlanDraft.model_validate(
             {"meals": meals, "product_matches": products, "purchase_items": [], "purchase_gaps": gaps}
         )
+
+
+def _resolve_recipe_options(selected, receipts) -> ReferenceReadSelection:
+    """从当前运行的已读回执恢复原始来源编号。"""
+    opened = {item["recipe_option"]: item for item in receipts if "recipe_option" in item}
+    payload = selected.model_dump(mode="json")
+    for meal in payload["meals"]:
+        shared_options = {dish["recipe_option"] for dish in meal["dishes"] if not dish["alternative_for"]}
+        for dish in meal["dishes"]:
+            option = dish.pop("recipe_option")
+            replaces = dish.pop("replaces_recipe_option")
+            if option not in opened:
+                raise HealthVisionError(
+                    "reference_recipe_option_invalid", "请选择本轮已打开原谱回执中的 recipe_option", 422
+                )
+            if replaces is not None and (replaces not in shared_options or replaces not in opened):
+                raise HealthVisionError(
+                    "reference_recipe_option_invalid", "替代菜须引用本餐已选共用菜的 recipe_option", 422
+                )
+            receipt = opened[option]
+            dish.update(
+                file_id=receipt["file_id"],
+                chunk_id=receipt["chunk_id"],
+                replaces_file_id=opened[replaces]["file_id"] if replaces is not None else None,
+            )
+    return ReferenceReadSelection.model_validate(payload)
 
 
 def _product_choices(meals, selections, seen, *, issued_candidates=None, allow_purchase_fallback=False):

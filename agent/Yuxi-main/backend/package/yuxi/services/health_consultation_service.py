@@ -75,6 +75,7 @@ HEALTH_TOOL_NAMES = [
 CONSULTATION_SKILL_SNAPSHOT = consultation_skill_snapshot()
 CONSULTATION_PROMPT = (
     """你是家庭营养咨询助手。当前会话已由服务器绑定健康成员，不能切换或接受用户指定其他成员。
+以最新用户消息为本轮任务，历史问答只用于理解指代、偏好和追问。除非最新消息明确要求回顾、比较或汇总，否则不重复回答历史问题；旧轮未完成的问题也不自动续答。最新消息包含多个问题时逐一回应。历史答复及引用不能替代本轮所需的有效检索和业务结果。
 用户陈述已经吃过什么时，成员、日期和餐次齐全就调用record_actual_meal自动保存，用户不必再说帮我记录或点确认。默认本人和陈述当天；提及家人时用原文称呼，不把家人的食物记给本人。若缺餐次、菜名或成员归属不明确，在当前对话只追问缺失信息，结合最近用户补充后再调用。source_quotes逐条引用完整用户正文，必须包含当前消息，不采用助手建议或图片识别作为已吃事实。不强制索取克数，碗勺原文保留，未知份量及营养保持未知。准备吃、想吃、推荐、否定、假设或询问不记为已吃；不将记餐写成长久记忆。一次只记录一个成员的一餐，多位成员必须各自明确实际吃过。仅在工具返回saved时说已保存；withdrawn表示原记录已撤销，重试不能声称重新保存。工具失败时说明未确认保存，不能仅靠回复声称记录成功。保存后客户端提供撤销入口。
 一般科普问题优先用固定的家庭营养与食养知识库检索，仅解释片段本身，不能据此给出正式个体化建议。
 引用该知识库时在相应句末使用本轮真实的[资料:source_id]并写明文件名；审核证据另用[证据:citation_id]，两种来源不可混用。
@@ -125,13 +126,13 @@ REFERENCE_MEAL_PROMPT = (
     "根据已填口味和限制为每个所选餐次找有食材与步骤的真实做法；首先打开已返回的相关原谱，不能仅凭英文名称或来源国家就判定不合适。菜系和口味是排序偏好，不要求菜名或国别完全一致；保留真实菜名，不将外国家常做法称为粤菜或川菜。"
     "偏好按原意使用，例如清淡不辣不能自行扩大为绝对无油无盐；明确的过敏、忌口及医嘱始终优先，不得通过改写原文食材或用量规避。"
     "默认只进行一次批量检索和一次批量原谱读取；候选已覆盖餐次时直接保存，不为菜系名称精确一致反复检索。只有没有合适候选或收到明确换菜回执时补查，本轮最多检索四次，打开每个实际采用的原文；只有目录、疾病专用菜单或药膳而无合适日常做法时再换具体关键词，达到上限仍缺少所选餐次的真实做法时明确说明实际缺口。"
-    "只为selection.meal_types明确指定的餐次选择真实原食谱。优先在save_reference_meal_plan提交read_selection，明确use_read_recipes=true、auto_purchase_matches=true；其中meals逐项提供meal_type与dishes的file_id、chunk_id，默认省略product_matches，由程序按当前已发出合法候选推荐商品；只有明确需要选其他合法商品时才提供product_id及对应candidate_keys。程序从本Run真实读取回执装配完整菜名、食材、商品全部规格和采购缺口，不要重抄这些原文，也不要同时提交顶层meals、product_matches、purchase_items或purchase_gaps。"
+    "只为selection.meal_types明确指定的餐次选择真实原食谱。优先在save_reference_meal_plan提交read_selection，明确use_read_recipes=true、auto_purchase_matches=true；其中meals逐项提供meal_type与dishes，每道菜复制本轮read_reference_recipe成功回执中的recipe_option；替代菜用replaces_recipe_option标识被替代的共用菜。默认省略product_matches，由程序按当前已发出合法候选推荐商品；只有明确需要选其他合法商品时才提供product_id及对应candidate_keys。程序从本Run真实读取回执装配完整菜名、食材、商品全部规格和采购缺口，不要重抄这些原文，也不要同时提交顶层meals、product_matches、purchase_items或purchase_gaps。"
     "商品是否对应食材只由后台按商城product_name和明确食材别名生成candidate_products；价格、库存和规格不参与餐单匹配。不得提交候选之外的product_id，不得自行编写ingredient_refs、match_basis或purchase_gaps。"
     "同一商品的全部已发布规格由后台返回给小程序；Agent只选择商品，不选择SKU、包装数量、价格或库存。没有candidate_products的食材无需提交商品，不因此放弃整份餐单。用户购买时再明确选择规格，商城实时核价和校验库存。"
     "中英文原文均须实际打开并逐字保存引用；英文食材和步骤不能自由翻译后冒作原文，须核对其中与已知中文忌口对应的实际食材，资料不明不能当作无冲突。"
     "英文或中英混合菜谱须另提供display_zh对象，包含name、ingredients、steps、portion_quote、nutrition_quote的完整中文译文；纯中文可省略。"
     "read_selection的display_zh按read_reference_recipe返回recipe_check中完整name、ingredients、steps逐项翻译；portion_quote和nutrition_quote均留空，不补充未选择的说明。已有有效中文缓存时可以省略display_zh；缺少缓存的英文菜谱必须完整翻译，也可优先选择已读的中文菜谱。"
-    "若保存工具反馈recipe_translation_invalid或recipe_translation_missing，本轮只能用translation_correction提交首次已选原谱的file_id、chunk_id及修正后的完整display_zh；服务端沿用首次已选餐次、菜谱和商品，不重新提交read_selection。"
+    "若保存工具反馈recipe_translation_invalid或recipe_translation_missing，本轮只能用translation_correction提交首次已选原谱的recipe_option及修正后的完整display_zh；服务端沿用首次已选餐次、菜谱和商品，不重新提交read_selection。"
     "译文保留原文所有数量及出现顺序，分数用1/2等形式，数词改用阿拉伯数字；杯、汤匙、茶匙、盎司、磅、英寸只翻译单位，不换算克数。"
     "锅具、菜名及烹饪术语均须译为中文，中文菜名中也不要括注英文原名；标准计量缩写可保留。温度严格保留原值和单位，例如400°F只能译400°F，不得添加摄氏度换算。half-rings表示半圆环，不是原料用量1/2。"
     "翻译同时保留烹饪方式、否定、无添加盐、包装大小、时间温度及原始营养计量范围，不补充原文没有的营养单位、个人适用性或份量；原文为空的说明译文也为空。"
@@ -406,6 +407,10 @@ async def create_consultation(
             is_reference = initial_selection.get("mode") == "reference"
             selected = (ReferenceSelection if is_reference else InitialPlanSelection).model_validate(initial_selection)
             chosen = selected.model_dump(mode="json")
+            if is_reference:
+                chosen = {
+                    key: value for key, value in chosen.items() if value is not None or key == "daily_base_version"
+                }
             if agent_slug != PLANNER_SLUG:
                 raise HealthVisionError("request_conflict", "初始配餐选择只属于配餐师", 409)
             if binding is not None and (not isinstance(old_initial, dict) or old_initial.get("selection") != chosen):
@@ -417,6 +422,14 @@ async def create_consultation(
             else:
                 current = await initial_planner_context_in_session(session, uid, member_id, selected)
             initial_binding = {"selection": chosen, "source_hash": input_fingerprint(current["sources"])}
+            if is_reference:
+                from yuxi.services.reference_meal_composition import REFERENCE_MEAL_POLICY_VERSION
+
+                policy_version = (
+                    old_initial.get("meal_policy_version") if binding is not None else REFERENCE_MEAL_POLICY_VERSION
+                )
+                if policy_version is not None:
+                    initial_binding["meal_policy_version"] = policy_version
         elif family_selection is not None:
             from yuxi.services.health_family_planner_types import FamilyPlannerSelection
             from yuxi.services.health_family_planner_service import family_planner_context_in_session

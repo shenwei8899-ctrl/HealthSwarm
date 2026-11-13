@@ -52,6 +52,16 @@ export function mealNutrition(meal) {
     .map(([key, label, unit]) => ({ key, label, unit, value: Math.round(values[key] * 10) / 10 }))
 }
 
+export function dishMemberPortions(meal, dish) {
+  const id = dish?.id ?? dishKey(dish)
+  if (!id) return []
+  return (meal?.memberNotes || []).flatMap(member => {
+    const portion = (member.dishes || []).find(row => String(row.dishId) === String(id))
+    if (!member.memberId || !member.name || !Number.isFinite(portion?.grams) || portion.grams <= 0) return []
+    return [{ memberId: member.memberId, name: member.name, grams: portion.grams }]
+  })
+}
+
 export function dishPortion(meal, dish) {
   const rows = (meal?.memberNotes || []).flatMap(member => (member.dishes || []).filter(row => String(row.dishId) === dishKey(dish)))
   if (rows.length && rows.every(row => Number.isFinite(row.grams))) return '本餐安排 ' + Math.round(rows.reduce((sum, row) => sum + row.grams, 0)) + ' 克'

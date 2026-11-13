@@ -7,9 +7,12 @@ import { dataWarnings } from '../src/utils/health.js'
 import * as health from '../src/utils/health.js'
 import { onboardingIssue } from '../src/utils/onboarding-validation.js'
 import { canRestoreOnboardingDraft } from '../src/services/onboarding-draft.js'
+import { processingDisclosure, processingPolicyKey } from '../src/utils/processing-disclosure.js'
+import { resolveOnboardingReports } from '../src/services/report-entry.js'
 
 function completeMember(id = 'self') {
   return { ...newMember(0), id, name: id, relation: id === 'self' ? '本人' : '家人', birthDate: '1995-01-01',
+    gender: '女', height: 165, weight: 60,
     healthStatus: 'none', goals: ['饮食均衡'], tastePreferences: ['不限口味'], cuisines: ['不限菜系'],
     allergyStatus: 'none', intoleranceStatus: 'none', avoidanceStatus: 'none', doctorStatus: 'none' }
 }
@@ -19,25 +22,69 @@ function page(members = [completeMember()], extras = {}) {
   const profile = normalizeProfile({ householdId: 'synthetic-family', familyVersion: 1, usageMode: '家庭使用', members,
     defaultDiners: [members[0].id], goals: [], tastes: [] })
   profile.healthConfiguration={policy_version:'policy-1',consultation:{available:true,processor:'processor-a'},meal_plan:{available:true,processor:'processor-b'}}
-  const deps = { ref, computed, nextTick, watch, newMember, normalizeMember, normalizeProfile, dataWarnings, onboardingIssue, canRestoreOnboardingDraft,
+  const deps = { ref, computed, nextTick, watch, newMember, normalizeMember, normalizeProfile, dataWarnings, onboardingIssue, canRestoreOnboardingDraft, processingDisclosure, processingPolicyKey,
     isMockMode: false, getProfile: () => structuredClone(profile), saveProfile() {}, backHome() {}, sessionRevision: () => 1, storageScope: () => '',
+    storageContext: () => 'synthetic-scope', resolveOnboardingReports,
     scopedStorage: { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, value) },
     onLoad() {}, onShow() {}, onUnload() {}, onPageScroll() {}, loadCloudProfile: async () => profile, readCloudReportStatus: async () => 'empty',
     saveCloudProfile: async value => { calls.saves.push(JSON.parse(JSON.stringify(value))); return { ...value, onboarded: true } },
-    submitOnboardingPreparation: value => deps.saveCloudProfile(value), preparationRoute: () => '/pages/onboarding/preparing',
+    saveOnboardingProfile: value => deps.saveCloudProfile(value),
     uni: { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, structuredClone(value)), pageScrollTo() {}, showToast: value => calls.toasts.push(value.title),
-      showModal(options) { if(options.title!=='确认数据处理')throw new Error('Required fields must not be bypassable through a warning modal');options.success({confirm:true}) },
-      navigateTo: value => calls.redirects.push(value.url), reLaunch: value => calls.redirects.push(value.url) }, ...extras }
+      showModal(options) { if(options.title!==processingDisclosure().title)throw new Error('Required fields must not be bypassable through a warning modal');options.success({confirm:true}) },
+      navigateTo: value => { calls.redirects.push(value.url); calls.navigation = value; value.complete?.() },
+      reLaunch: value => calls.redirects.push(value.url) }, ...extras }
   const script = readFileSync(new URL('../src/pages/onboarding/index.vue', import.meta.url), 'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const value = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${script};return {profile,step,current,self,memberIndex,memberComplete,cloudLoaded,cloudLoading,cloudError,cloudErrorCode,recoverCloud,preserveProgress,next,mode,selectMember,readCloud};`)(deps))
+  const value = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${script};return {profile,step,current,self,memberIndex,memberComplete,cloudLoaded,cloudLoading,cloudError,cloudErrorCode,recoverCloud,preserveProgress,next,mode,selectMember,readCloud,openReport};`)(deps))
   value.cloudLoaded.value = true; value.cloudLoading.value = false
   return { ...value, calls, storage, dispose: () => scope.stop() }
 }
 
+test('onboarding stages a report for a new member and uses only the saved mapping to open upload', async () => {
+  const first = {...completeMember('self'), name:'同名成员'}
+  const second = {...completeMember('2'), name:'同名成员'}
+  const files = [{path:'wxfile://synthetic-report.pdf', name:'报告.pdf'}]
+  const p = page([first,second], {saveOnboardingProfile:async (value, memberRefs) => {
+    memberRefs({self:'stored-self','2':'stored-child'})
+    return {...value,onboarded:true,members:[
+      {...second,id:'stored-child',healthMemberId:'child-health-id'},
+      {...first,id:'stored-self',healthMemberId:'self-health-id'},
+    ]}
+  }})
+  try {
+    p.step.value = 2; p.selectMember(second.id); p.openReport()
+    assert.match(p.calls.navigation.url, /onboarding=select$/)
+    p.calls.navigation.events.onboardingReportSelected({files})
+    p.preserveProgress()
+    assert.doesNotMatch(JSON.stringify([...p.storage]), /wxfile/)
+    p.next(true); await nextTick()
+    assert.match(p.calls.navigation.url, /onboarding=upload&memberId=child-health-id$/)
+    let handoff
+    p.calls.navigation.success({eventChannel:{emit(event, value){handoff={event,value}}}})
+    assert.equal(handoff.event,'onboardingReport')
+    assert.deepEqual(handoff.value.files,files)
+    assert.equal(handoff.value.memberId,'child-health-id')
+  } finally { p.dispose() }
+})
+
+test('a report can be skipped after file selection and a missing member mapping never guesses by name', async () => {
+  const files = [{path:'wxfile://synthetic.pdf'}]
+  const p = page()
+  try {
+    p.step.value = 2; p.openReport(); p.calls.navigation.events.onboardingReportSelected({files})
+    p.next(false); await nextTick()
+    assert.deepEqual(p.calls.redirects, ['/pages/health/vision?kind=report&onboarding=select','/pages/chat/index'])
+    assert.equal(p.calls.saves.length,1)
+    assert.deepEqual(resolveOnboardingReports(new Map([['2',files]]), [{id:'server-2',healthMemberId:'id'}], {}), [])
+  } finally { p.dispose() }
+})
+
 const missing = [
   ['出生日期', m => m.birthDate = '', 0],
+  ['性别', m => m.gender = '未填写', 0],
+  ['身高', m => m.height = '', 0],
+  ['体重', m => m.weight = '', 0],
   ['已知基础病', m => m.healthStatus = 'unknown', 1],
   ['口味偏好', m => m.tastePreferences = [], 1],
   ['饮食目标', m => m.goals = [], 1],
@@ -56,11 +103,13 @@ for (const [label, mutate, step] of missing) {
   })
 }
 
-test('a complete explicit no-restriction profile can finish without height weight or sex', async () => {
+test('a complete explicit no-restriction profile finishes with body measurements and sex', async () => {
   const p = page(); p.next(); assert.equal(p.step.value, 1)
   p.next(); assert.equal(p.step.value, 2); p.next(); await nextTick()
-  assert.equal(p.calls.saves.length, 1); assert.deepEqual(p.calls.redirects, ['/pages/onboarding/preparing'])
-  assert.equal(p.calls.saves[0].members[0].height, ''); p.dispose()
+  assert.equal(p.calls.saves.length, 1); assert.deepEqual(p.calls.redirects, ['/pages/chat/index'])
+  assert.equal(p.calls.saves[0].members[0].height, 165)
+  assert.equal(p.calls.saves[0].members[0].weight, 60)
+  assert.equal(p.calls.saves[0].members[0].gender, '女'); p.dispose()
 })
 
 for (const cuisines of [[], ['不限菜系'], ['粤菜']]) {
@@ -70,7 +119,7 @@ for (const cuisines of [[], ['不限菜系'], ['粤菜']]) {
     assert.equal(p.step.value, 2); p.next(); await nextTick()
     assert.equal(p.calls.saves.length, 1)
     assert.deepEqual(p.calls.saves[0].members[0].cuisines, cuisines)
-    assert.deepEqual(p.calls.redirects, ['/pages/onboarding/preparing']); p.dispose()
+    assert.deepEqual(p.calls.redirects, ['/pages/chat/index']); p.dispose()
   })
 }
 
@@ -142,13 +191,13 @@ test('a completed save from an old session cannot mark the new account onboarded
   assert.equal(p.calls.redirects.length,0);p.dispose()
 })
 
-test('onboarding stays on the form until the saved receipt then enters preparation',async()=>{
+test('onboarding stays on the form until the saved receipt then enters the ordinary AI homepage',async()=>{
  let resolveSave
  const p=page([completeMember()],{saveCloudProfile:()=>new Promise(resolve=>resolveSave=resolve)})
  p.step.value=2;p.next()
  assert.deepEqual(p.calls.redirects,[]);assert.notEqual(p.storage.get('frontend-onboarded-v1'),true)
- resolveSave({profile_saved:true});await nextTick()
- assert.deepEqual(p.calls.redirects,['/pages/onboarding/preparing'])
+ resolveSave({...p.profile.value,onboarded:true});await nextTick()
+ assert.deepEqual(p.calls.redirects,['/pages/chat/index'])
  assert.equal(p.storage.get('frontend-onboarded-v1'),true);p.dispose()
 })
 
@@ -204,6 +253,23 @@ test('profile saving rejects a missing login or changed household before prepari
   const changed = cloudSaver({ token: 'verified', accountId: '25', householdId: 'family-b' })
   await assert.rejects(changed.save(profile), error => error.code === 'SESSION_CHANGED')
   assert.equal(changed.requests.length, 0)
+})
+
+test('a lost profile response forwards the recovered member mapping from the original save', async () => {
+  const profile = {householdId:'family-a', members:[completeMember()], defaultDiners:['self']}
+  const memberRefs = {self:'confirmed-member'}
+  let writes = 0, mapping
+  const h = cloudSaver({token:'verified',accountId:'25',householdId:'family-a'}, options => {
+    if (options.method === 'POST') {
+      if (++writes === 1) throw Object.assign(new Error('保存响应超时'), {code:'NETWORK_ERROR'})
+      return {data:{memberRefs}}
+    }
+    return {data:{...profile,source:'api',onboarded:true}}
+  })
+  await h.save(profile,{reviewOnly:true,onMemberRefs:refs=>{mapping=refs}})
+  const [first,retry] = h.requests.filter(request=>request.method==='POST')
+  assert.deepEqual(first,retry)
+  assert.deepEqual(mapping,memberRefs)
 })
 
 test('a save 401 keeps its authentication error and original recovery receipt after the transport clears login', async () => {
@@ -330,9 +396,16 @@ test('self identity follows the stable member id when relationship labels or ord
 test('cloud onboarding restores the selected member by id instead of a stale array index',async()=>{
  const p=page([completeMember('self'),completeMember('relative')]);p.selectMember('relative');p.preserveProgress();const draft=p.storage.get('frontend-onboarding-progress-v1');draft.memberIndex=0;p.storage.set('frontend-onboarding-progress-v1',draft);await p.readCloud();assert.equal(p.current.value.id,'relative');p.dispose()
 })
-test('per-step completion uses required answers and permits height and weight to remain empty',()=>{
+test('per-step completion requires body measurements and identity',()=>{
  const p=page();assert.equal(p.memberComplete(p.current.value),true);p.current.value.birthDate='';assert.equal(p.memberComplete(p.current.value),false);p.dispose()
 })
+
+for(const [field,label,values] of [['height','身高',[' ',0,-1,'abc',301]],['weight','体重',[' ',0,-1,'abc',1001]]]){
+ for(const value of values)test(`invalid ${field} ${JSON.stringify(value)} cannot be bypassed through a warning`,async()=>{
+  const m=completeMember();m[field]=value;const p=page([m]);p.step.value=2;p.next();await nextTick()
+  assert.equal(p.calls.saves.length,0);assert.equal(p.step.value,0);assert.ok(p.calls.toasts.some(x=>x.includes(label)));p.dispose()
+ })
+}
 
 test('an individual draft cannot resume on a hidden relative',async()=>{
  const p=page([completeMember('self'),completeMember('relative')]);p.mode('个人使用');p.preserveProgress();const saved=p.storage.get('frontend-onboarding-progress-v1');saved.memberId='relative';saved.memberIndex=1;p.storage.set('frontend-onboarding-progress-v1',saved);await p.readCloud();assert.equal(p.current.value.id,'self');p.dispose()
@@ -353,4 +426,17 @@ test('invited edits persist separately, restore only the same saved version and 
  await p.readCloud();assert.equal(p.current.value.name,'云端新资料')
  assert.ok(p.storage.get('frontend-invited-onboarding-progress-v1:relative:conflict'))
  p.dispose()
+})
+
+for (const config of [{}, {policy_version:'policy',consultation:{available:true,processor:'consultation-only'},meal_plan:{available:false}}]) {
+ test('saving reaches ordinary home without available meal preparation: '+JSON.stringify(config),async()=>{
+  const p=page();p.profile.value.healthConfiguration=config;p.step.value=2;p.next();await nextTick()
+  assert.equal(p.calls.saves.length,1);assert.deepEqual(p.calls.redirects,['/pages/chat/index']);p.dispose()
+ })
+}
+test('repeated clicks while the profile save is pending perform only one write',async()=>{
+ let finish,writes=0
+ const p=page([completeMember()],{saveCloudProfile:value=>{writes++;return new Promise(resolve=>finish=()=>resolve({...value,onboarded:true}))}})
+ p.step.value=2;p.next();p.next();assert.equal(writes,1);assert.deepEqual(p.calls.redirects,[])
+ finish();await nextTick();assert.deepEqual(p.calls.redirects,['/pages/chat/index']);p.dispose()
 })

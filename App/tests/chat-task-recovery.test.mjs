@@ -102,6 +102,7 @@ for(const businessCode of [undefined,'daily_plan_version_changed'])test(`submit 
   assert.equal(state.submitRejected,true)
   assert.equal(state.submitUnknown,false)
   assert.equal(state.failureStatus,409)
+  assert.equal(state.result.code,businessCode||'request_rejected')
   assert.equal(h.calls.filter(c=>c.path.endsWith('/history')).length,1)
   assert.equal(h.calls.filter(c=>c.path==='/api/agent/runs').length,1)
  }finally{h.flow.hide()}

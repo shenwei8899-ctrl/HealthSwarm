@@ -29,7 +29,7 @@ export async function prepareFamilyShare(memberId = '') {
   const { data } = await request({ path, method: 'POST' })
   if (revision !== sessionRevision()) throw new Error('账号已变化，请重新准备邀请。')
   if (!valid(data.code)) throw new Error('邀请尚未准备完成，请重试。')
-  return { title: '邀请你加入家庭', path: invitationRoute(data.code), imageUrl: '/static/food/welcome-kitchen-20261026.jpg' }
+  return { title: '邀请你加入家庭', path: invitationRoute(data.code), imageUrl: '/static/food/welcome-kitchen-20261026.webp' }
 }
 
 export function familyShareState() {
@@ -40,7 +40,7 @@ export function familyShareState() {
 export function createFamilyShareController({ state, send = request, session = getSession, revision = sessionRevision, now = Date.now }) {
   let epoch = 0, owner = '', familyId = ''
   const context = () => JSON.stringify([session()?.accountId, session()?.householdId, revision()])
-  const cover = '/static/food/welcome-kitchen-20261026.jpg'
+  const cover = '/static/food/welcome-kitchen-20261026.webp'
   function discard() { epoch++; owner = ''; familyId = ''; state.options = []; state.busy = false; state.revoking = ''; state.error = '' }
   async function prepare() {
     if (state.busy && owner === context()) return

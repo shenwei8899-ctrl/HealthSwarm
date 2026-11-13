@@ -70,6 +70,7 @@ class HealthVisionRepository:
             .join(actor, actor.family_id == FamilyArchive.id)
             .where(
                 SourceMember.family_id == FamilyArchive.id,
+                FamilyArchive.archived_at.is_(None),
                 SourceMember.is_active.is_(True),
                 actor.subject_uid == uid,
                 actor.is_active.is_(True),
@@ -463,9 +464,12 @@ class HealthVisionRepository:
         link = await self.session.get(HealthFamilyProfileLink, member.id, populate_existing=True)
         if link is None:
             return
+        family = await self.session.get(FamilyArchive, link.family_id, populate_existing=True)
         source = await self.session.get(SourceMember, link.source_member_id, populate_existing=True)
         if (
-            source is None
+            family is None
+            or family.archived_at is not None
+            or source is None
             or not source.is_active
             or member.owner_uid != link.actor_uid
             or source.subject_uid != link.actor_uid
@@ -478,7 +482,9 @@ class HealthVisionRepository:
         link = await self.session.get(HealthFamilyProfileLink, member_id, populate_existing=True)
         if link is None:
             return False
-        family_query = select(FamilyArchive).where(FamilyArchive.id == link.family_id)
+        family_query = select(FamilyArchive).where(
+            FamilyArchive.id == link.family_id, FamilyArchive.archived_at.is_(None)
+        )
         if lock:
             family_query = family_query.with_for_update()
         family = await self.session.scalar(family_query)

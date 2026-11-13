@@ -1,28 +1,31 @@
 <script setup>
 import { computed, ref } from 'vue'
-import AppNavBar from './AppNavBar.vue'
-import AppIcon from './AppIcon.vue'
-import { visionPermissions } from '../services/health-vision-client.js'
-import { reportRecognitionError } from '../services/report-recognition-error.js'
+import AppNavBar from '../../components/AppNavBar.vue'
+import AppIcon from '../../components/AppIcon.vue'
+import { visionPermissions } from '../../services/health-vision-client.js'
+import { reportRecognitionError } from '../../services/report-recognition-error.js'
 
-const props = defineProps({ state: Object, files: Array, payload: Object, reason: String, consent: Boolean, previewPath: String, dirty: Boolean })
-const emit = defineEmits(['back', 'reload', 'member', 'pick', 'remove', 'recognize', 'manual', 'recover', 'configuration', 'page', 'job', 'cancel', 'retry', 'draft', 'preview', 'reprocess', 'exclude', 'add-field', 'save', 'confirm', 'new-report', 'update:reason', 'update:consent'])
+const props = defineProps({ state: Object, files: Array, payload: Object, reason: String, consent: Boolean, previewPath: String, dirty: Boolean,
+  selectionOnly: Boolean, draftMember: String, fixedMember: Boolean })
+const emit = defineEmits(['back', 'reload', 'member', 'pick', 'remove', 'recognize', 'manual', 'recover', 'configuration', 'page', 'job', 'cancel', 'retry', 'draft', 'preview', 'reprocess', 'exclude', 'add-field', 'save', 'confirm', 'new-report', 'update:reason', 'update:consent', 'keep-selection'])
 const historyOpen = ref(false)
 const permissions = computed(() => visionPermissions(props.state))
 const member = computed(() => props.state.members.find(row => row.id === props.state.memberId))
-const ready = computed(() => props.state.memberStatus === 'ready')
+const ready = computed(() => props.selectionOnly ? !!props.draftMember : props.state.memberStatus === 'ready')
 const stage = computed(() => props.state.confirmation ? 'saved' : props.state.draft && props.payload ? 'review' : props.state.job || props.state.pending ? 'processing' : 'upload')
 const step = computed(() => stage.value === 'saved' ? 3 : ['review', 'processing'].includes(stage.value) ? 2 : 1)
 const locked = computed(() => props.state.busy || !!props.state.pending)
 const editable = computed(() => permissions.value.edit && !locked.value && !props.state.blocked && props.state.draft?.review_status !== 'confirmed')
-const canPick = computed(() => ready.value && permissions.value.upload && !locked.value)
+const canPick = computed(() => ready.value && (props.selectionOnly || permissions.value.upload) && !locked.value)
 const canRecognize = computed(() => canPick.value && permissions.value.recognize && !!props.state.policy && !!props.files.length && (props.consent || props.state.consent))
 const status = computed(() => ({
   idle: ['正在准备报告上传', '请稍候，正在确认报告归属。'],
   loading: ['正在读取成员', '正在确认报告归属，请稍候。'],
   failed: ['暂时无法读取成员', '请检查网络后重新加载，稍后也可以继续上传。'],
   empty: ['暂无可用的报告成员', '请返回家庭档案核对成员资料和家庭关系。'],
-  'selection-required': ['请选择报告所属成员', '原成员当前不可用，请选择下方有权限的成员。'],
+  'selection-required': props.fixedMember
+    ? ['当前成员的报告暂不可用', '可以重新加载，或返回建档后稍后补传。']
+    : ['请选择报告所属成员', '原成员当前不可用，请选择下方有权限的成员。'],
   revoked: ['成员资料或授权已变化', '请重新读取成员，再继续核对报告。'],
 }[props.state.memberStatus] || ['', '']))
 const jobLabels = { pending: '等待识别', running: '正在识别', success: '识别完成', failed: '识别失败', cancelled: '已取消' }
@@ -33,16 +36,16 @@ function page(jobs, drafts) { emit('page', jobs, drafts) }
 
 <template>
   <view class="screen report-workspace">
-    <AppNavBar title="上传报告"><template #left><button class="icon-button" aria-label="返回" @click="emit('back')">‹</button></template></AppNavBar>
-    <view class="report-heading"><text class="report-title">{{stage==='review'?'核对报告指标':stage==='saved'?'报告已存入档案':'上传体检报告'}}</text><text class="report-subtitle">{{stage==='review'?'对照原报告确认结果，再保存到成员档案。':stage==='saved'?'每一项健康记录，都归属对应的家庭成员。':'拍下报告或导入文件，核对后存入成员档案。'}}</text></view>
-    <view class="report-steps" aria-label="上传、核对、保存"><view v-for="(label,index) in ['上传报告','核对指标','保存档案']" :key="label" :class="{'is-current':step===index+1,'is-complete':step>index+1}"><text class="step-dot">{{step>index+1?'✓':index+1}}</text><text>{{label}}</text></view></view>
+    <AppNavBar :title="selectionOnly?'选择报告':'上传报告'"><template #left><button class="icon-button" aria-label="返回" @click="emit('back')">‹</button></template></AppNavBar>
+    <view class="report-heading"><text class="report-title">{{selectionOnly?'选择体检报告':stage==='review'?'核对报告指标':stage==='saved'?'报告已存入档案':'上传体检报告'}}</text><text class="report-subtitle">{{selectionOnly?'可以先选文件，保存档案后再上传。':stage==='review'?'对照原报告确认结果，再保存到成员档案。':stage==='saved'?'每一项健康记录，都归属对应的家庭成员。':'拍下报告或导入文件，核对后存入成员档案。'}}</text></view>
+    <view v-if="!selectionOnly" class="report-steps" aria-label="上传、核对、保存"><view v-for="(label,index) in ['上传报告','核对指标','保存档案']" :key="label" :class="{'is-current':step===index+1,'is-complete':step>index+1}"><text class="step-dot">{{step>index+1?'✓':index+1}}</text><text>{{label}}</text></view></view>
 
     <view v-if="!ready" class="report-card member-state" role="status">
       <view class="state-symbol"><AppIcon name="family" :size="48"/></view><text class="card-title">{{status[0]}}</text><text class="report-note">{{status[1]}}</text>
-      <view v-if="state.memberStatus==='selection-required'" class="member-options"><button v-for="row in state.members" :key="row.id" :disabled="state.busy" @click="emit('member',row.id)">{{row.display_name}} ›</button></view>
-      <template v-else-if="!['idle','loading'].includes(state.memberStatus)"><button class="secondary-button" :disabled="state.busy" @click="emit('reload')">重新加载成员</button><button v-if="state.memberStatus==='empty'" class="text-action" @click="emit('back')">返回家庭档案 ›</button></template>
+      <view v-if="state.memberStatus==='selection-required'&&!fixedMember" class="member-options"><button v-for="row in state.members" :key="row.id" :disabled="state.busy" @click="emit('member',row.id)">{{row.display_name}} ›</button></view>
+      <template v-else-if="!['idle','loading'].includes(state.memberStatus)"><button class="secondary-button" :disabled="state.busy" @click="emit('reload')">重新加载成员</button><button v-if="state.memberStatus==='empty'" class="text-action" @click="emit('back')">{{fixedMember?'返回 ›':'返回家庭档案 ›'}}</button></template>
     </view>
-    <view v-else class="report-member"><view><text class="member-label">报告归属</text><text class="member-name">{{member?.display_name}}</text></view><picker :range="state.members.map(row=>row.display_name)" :value="state.members.findIndex(row=>row.id===state.memberId)" :disabled="locked" @change="chooseMember"><view class="member-switch">切换成员 ›</view></picker></view>
+    <view v-else class="report-member"><view><text class="member-label">报告归属</text><text class="member-name">{{selectionOnly?draftMember:member?.display_name}}</text></view><picker v-if="!selectionOnly&&!fixedMember" :range="state.members.map(row=>row.display_name)" :value="state.members.findIndex(row=>row.id===state.memberId)" :disabled="locked" @change="chooseMember"><view class="member-switch">切换成员 ›</view></picker></view>
     <text v-if="state.error" class="report-error" role="alert">{{state.error}}</text>
     <view v-if="state.pending&&ready" class="report-card recovery-card"><text class="card-title">继续上次操作</text><text class="report-note">上次提交的结果尚未确认，继续读取即可，无需重复上传。</text><button class="primary-button" :disabled="state.busy" @click="emit('recover')">{{state.busy?'正在确认…':'确认上次操作结果'}}</button></view>
 
@@ -54,7 +57,7 @@ function page(jobs, drafts) { emit('page', jobs, drafts) }
         <view v-for="(file,index) in files" :key="index" class="selected-file"><AppIcon name="record" :size="32"/><view><text>{{file.name}}</text><text>{{file.uploadId?'已上传，可继续识别':'已选择，等待上传'}}</text></view><button :disabled="locked" aria-label="移除文件" @click="emit('remove',index)">×</button></view>
         <text class="file-limits">图片每张 ≤ {{state.limits.image_mb}} MiB；PDF ≤ {{state.limits.pdf_mb}} MiB，最多 {{state.limits.report_pages}} 页。</text>
       </view>
-      <template v-if="ready">
+      <template v-if="ready&&!selectionOnly">
         <text v-if="!permissions.upload" class="permission-note">{{permissions.view?'当前成员仅开放报告查看。上传新报告需要报告上传授权。':'当前成员尚未开放报告上传授权，请确认成员权限后继续。'}}</text>
         <text v-else-if="!permissions.recognize" class="permission-note">当前成员的报告访问不可用，请重新读取家庭成员。</text>
         <view v-if="!state.policy" class="service-note"><text>{{state.configurationError||'正在检查识别服务…'}}</text><button :disabled="locked" @click="emit('configuration')">重新检查 ›</button></view>
@@ -63,9 +66,12 @@ function page(jobs, drafts) { emit('page', jobs, drafts) }
         </view>
       </template>
       <view v-if="state.uploading" class="upload-progress" role="status"><text>正在上传文件 · {{state.progress}}%</text><progress :percent="state.progress" activeColor="#75658c" backgroundColor="#eae8f0" stroke-width="3"/><button class="text-action" @click="emit('cancel','upload')">取消上传</button></view>
-      <button class="primary-button upload-primary" :disabled="!canRecognize" @click="emit('recognize')">{{state.busy?'正在处理…':'开始识别'}}</button>
-      <text class="save-note">识别结果经你核对后，才会保存。</text>
-      <button v-if="ready&&permissions.edit" class="text-action manual-action" :disabled="locked||state.blocked" @click="emit('manual')">也可以手动录入指标 ›</button>
+      <button v-if="selectionOnly" class="primary-button upload-primary" :disabled="!ready" @click="emit('keep-selection')">{{files.length?'保留已选文件':'返回建档'}}</button>
+      <template v-else>
+        <button class="primary-button upload-primary" :disabled="!canRecognize" @click="emit('recognize')">{{state.busy?'正在处理…':'开始识别'}}</button>
+        <text class="save-note">识别结果经你核对后，才会保存。</text>
+        <button v-if="ready&&permissions.edit" class="text-action manual-action" :disabled="locked||state.blocked" @click="emit('manual')">也可以手动录入指标 ›</button>
+      </template>
     </template>
 
     <view v-if="ready&&stage==='processing'&&!state.pending" class="report-card task-state">

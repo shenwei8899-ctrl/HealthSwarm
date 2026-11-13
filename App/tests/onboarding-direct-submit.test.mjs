@@ -5,15 +5,17 @@ import {createPreparationClient} from '../src/services/preparation-client.js'
 
 function harness(){
  let revision=1,fail=false,delayed=null
- const values=new Map(),calls=[]
+ const values=new Map(),calls=[],profileSaves=[]
  const profile={householdId:'family',members:[{name:'合成成员'}],healthConfiguration:{policy_version:'policy-1',consultation:{available:true,processor:'processor-a'},meal_plan:{available:true,processor:'processor-b'}}}
- const deps={createPreparationClient,getSession:()=>({token:'synthetic',householdId:'family'}),sessionRevision:()=>revision,storageContext:()=>`scope:${revision}`,
+ const deps={createPreparationClient,
+  saveCloudProfile:async(p,options)=>{profileSaves.push({profile:structuredClone(p),options});if(fail)throw new Error('保存失败');return {...p,completeProfile:true}},
+  loadCloudProfile:async()=>({...profile,completeProfile:true}),getSession:()=>({token:'synthetic',householdId:'family'}),sessionRevision:()=>revision,storageContext:()=>`scope:${revision}`,
   scopedStorage:{getStorageSync:k=>values.get(k),setStorageSync:(k,v)=>values.set(k,v)},newHealthRequestId:()=> 'original-key',
   cloudProfileInput:(p,id)=>({client_request_id:id,members:structuredClone(p.members)}),
   request:async input=>{calls.push(structuredClone(input));if(delayed)await delayed;if(fail)throw Object.assign(new Error('请求超时'),{code:'NETWORK_ERROR'});return {data:{id:'receipt',date:'2026-10-28',profile_saved:true,status:'preparing',stage:'analyzing'}}}}
  const source=readFileSync(new URL('../src/services/onboarding-preparation.js',import.meta.url),'utf8').replace(/^import .*$/gm,'').replace(/export /g,'')
- const {submitOnboardingPreparation:submit}=new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {submitOnboardingPreparation}`)(deps)
- return {submit,profile,values,calls,setFail:v=>fail=v,switchAccount:()=>revision++,delay(){let release;delayed=new Promise(r=>release=r);return ()=>{delayed=null;release()}}}
+ const {submitOnboardingPreparation:submit,saveOnboardingProfile:save}=new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {submitOnboardingPreparation,saveOnboardingProfile}`)(deps)
+ return {submit,save,profile,values,calls,profileSaves,setFail:v=>fail=v,switchAccount:()=>revision++,delay(){let release;delayed=new Promise(r=>release=r);return ()=>{delayed=null;release()}}}
 }
 
 test('direct submission confirms profile while meals are still preparing',async()=>{
@@ -47,4 +49,33 @@ test('new onboarding requires an explicit decision and current processing detail
  h.profile.healthConfiguration.meal_plan.processor=''
  await assert.rejects(h.submit(h.profile,{consentAccepted:true}),/处理说明尚未读取/)
  assert.equal(h.calls.length,0)
+})
+
+test('new profile saves do not submit or wait for preparation, even without any meal configuration',async()=>{
+ const h=harness();h.profile.healthConfiguration={};h.values.set('onboarding-preparation-active','failed-old-task')
+ const saved=await h.save(h.profile)
+ assert.equal(saved.completeProfile,true);assert.equal(h.calls.length,0)
+ assert.equal(h.profileSaves.length,1);assert.deepEqual(h.profileSaves[0].options,{reviewOnly:true})
+ assert.equal(h.values.get('onboarding-preparation-active'),null)
+})
+test('failed ordinary saving retains recovery state and never reports success',async()=>{
+ const h=harness();h.values.set('onboarding-preparation-active','old-task');h.setFail(true)
+ await assert.rejects(h.save(h.profile),/保存失败/)
+ assert.equal(h.calls.length,0);assert.equal(h.values.get('onboarding-preparation-active'),'old-task')
+})
+test('an uncertain legacy save is replayed once without starting a replacement or polling meals',async()=>{
+ const h=harness();h.setFail(true)
+ await assert.rejects(h.submit(h.profile,{consentAccepted:true}))
+ const original=structuredClone(h.calls[0]);h.setFail(false)
+ const result=await h.save(h.profile)
+ assert.equal(result.completeProfile,true);assert.equal(h.profileSaves.length,0)
+ assert.equal(h.calls.length,2);assert.deepEqual(h.calls[1],original)
+ assert.equal(h.values.get('onboarding-preparation-pending'),null)
+ assert.equal(h.values.get('onboarding-preparation-active'),null)
+})
+test('legacy recovery cannot silently discard edits made after the uncertain submission',async()=>{
+ const h=harness();h.setFail(true);await assert.rejects(h.submit(h.profile,{consentAccepted:true}))
+ h.profile.members[0].name='后续修改';h.setFail(false)
+ await assert.rejects(h.save(h.profile),e=>e.businessCode==='previous_profile_submission_settled')
+ assert.equal(h.profileSaves.length,0);assert.equal(h.profile.members[0].name,'后续修改')
 })

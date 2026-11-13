@@ -207,7 +207,7 @@ def test_personal_targets_actually_constrain_quality_and_missing_is_not_passed()
     assert evaluated()["status"] == "passed"
     profile, rules = confirmed_inputs()
     result = evaluated(profile=profile, rules=rules)
-    assert result["checks_version"] == "quality-rules-v2-personal"
+    assert result["checks_version"] == "quality-rules-v3-required-personal"
     assert result["status"] == "conflict" and result["conflicts"] == [
         {"path": "nutrition.energy_kcal", "code": "approved_nutrient_range", "reason": "计划量超出当前批准范围"}
     ]
@@ -231,14 +231,44 @@ def test_target_only_approved_bounds_work_but_unknown_allergies_still_block_plan
     assert result["missing"] == [{"path": "profile.allergies", "reason": "not_filled"}]
 
 
-def test_legacy_general_rule_is_not_reported_as_personal_target():
-    """没有批准公式仍保留历史通用检查契约，个人读取明确不可用。"""
+def test_general_bounds_cannot_pass_without_personal_formula():
+    """通用范围合格也不能替代必需的个人公式。"""
     profile, rules = confirmed_inputs()
     del rules["personal_targets"]
     assert calculated(profile, rules)["reason"] == "personal_target_formula_not_approved"
-    assert evaluated(profile=profile, rules=rules) == {
-        "status": "passed",
-        "missing": [],
-        "conflicts": [],
-        "checks_version": "quality-rules-v1",
-    }
+    result = evaluated(profile=profile, rules=rules)
+    assert result["status"] == "unknown" and result["conflicts"] == []
+    assert result["missing"] == [{"path": "personal_targets", "reason": "personal_target_formula_not_approved"}]
+    assert result["personal_targets"]["status"] == "not_ready"
+
+
+def test_explicit_direct_formula_needs_no_activity_and_uses_body_measurements():
+    """直接公式只用批准系数：100+2*60+150-30=340，不补活动水平。"""
+    profile, rules = confirmed_inputs()
+    profile.update(height_cm="150", activity_code=None)
+    rules["daily_bounds"] = {}
+    rules["personal_targets"][0].update(
+        intercept_kcal="100",
+        weight_kg_coefficient="2",
+        height_cm_coefficient="1",
+        age_years_coefficient="-1",
+        activity_factors=None,
+    )
+    result = calculated(profile, rules)
+    assert result["status"] == "ready" and Decimal(result["energy_kcal"]) == 340
+    assert "activity_code" not in result["inputs"]
+    profile["weight_kg"] = "80"
+    assert Decimal(calculated(profile, rules)["energy_kcal"]) == 380
+    profile["height_cm"] = "170"
+    assert Decimal(calculated(profile, rules)["energy_kcal"]) == 400
+    assert evaluated(profile=profile, rules=rules, nutrient={"energy_kcal": "400"})["status"] == "passed"
+
+
+def test_activity_independence_must_be_explicit_in_published_formula():
+    """省略活动策略不能悄悄按直接公式执行；原映射公式仍须活动水平。"""
+    profile, rules = confirmed_inputs()
+    profile["activity_code"] = None
+    assert calculated(profile, rules)["reason"] == "confirmed_approved_activity_required"
+    del rules["personal_targets"][0]["activity_factors"]
+    with pytest.raises(ValidationError):
+        QualityRules.model_validate(rules)

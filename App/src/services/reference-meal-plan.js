@@ -11,8 +11,9 @@ export function referenceSelection(profile, text, { today, tomorrow, memberId, p
   const family = /全家|一家|家人|我们|家庭(?:三餐|配餐|餐单|菜单|用餐|饮食计划)/.test(text)
   const self = /为我|给我|帮我|本人|自己|一个人|一人|只(?:有|给)?我/.test(text)
   const named=profile.members.filter(m=>[m.name,m.relation].some(label=>typeof label==='string'&&label.length>1&&['给','为','帮'].some(prefix=>['','我','我的'].some(owner=>text.includes(prefix+owner+label)))))
-  // 没有指定全家时使用当前档案；续改沿用餐单成员，不能悄悄扩大到默认全家。
-  const ids = family ? profile.members.map(m => m.id) : named.length ? named.map(m=>m.id) : previous && !self ? previous.participant_ids : [selected?.id]
+  const defaults = profile.defaultDiners?.length ? profile.defaultDiners : [selected?.id]
+  const ids = family ? profile.members.map(m => m.id) : named.length ? named.map(m=>m.id) :
+    previous && !self ? previous.participant_ids : self || memberId ? [selected?.id] : defaults
   if (!ids.length || ids.some(id => !id)) throw new Error('请先选择可访问的就餐成员。')
   const mealPatterns=[['breakfast',/早餐|早饭|早上|今早|明早/],['lunch',/午餐|午饭|中午/],['dinner',/晚餐|晚饭|晚上|今晚|明晚/]]
   const preserved=new Set(text.split(/[，。！？；,;]|其他|其余/).filter(part=>/不变|保持原样|照旧|(?:不用|不要|无需|别|不)(?:再)?(?:改|调整|更换)/.test(part)).flatMap(part=>mealPatterns.filter(([,pattern])=>pattern.test(part)).map(([meal])=>meal)))
@@ -21,8 +22,17 @@ export function referenceSelection(profile, text, { today, tomorrow, memberId, p
     : chosen.length ? chosen : previous?.meal_types || ['breakfast','lunch','dinner'])).filter(meal=>!preserved.has(meal))
   if(!meals.length)throw new Error('没有需要调整的餐次，原餐单保持不变。')
   const date = intent?.business_date || (/明天|明日|明早|明晚/.test(text) ? tomorrow : /今天|今日|今早|今晚/.test(text) ? today : previous?.plan_date || today)
+  const clauses = text.split(/[，。！？；,;!?]/)
+  const requested = clauses.filter(clause=>(meals.length===1||/每餐|每顿/.test(clause))&&
+    !/(?:不要|不用|不需要|不想|别|少做|少配)/.test(clause)).map(clause=>
+    clause.match(/(?:安排|准备|推荐|做|配|就要|只要|要|吃|改成|改为|早餐|午餐|晚餐|早饭|午饭|晚饭)\s*(10|[一二两三四五六七八九十1-9])\s*道/)
+  ).find(Boolean)?.[1]
+  const count = requested && ({一:1,二:2,两:2,三:3,四:4,五:5,六:6,七:7,八:8,九:9,十:10}[requested] || Number(requested))
+  const simple = clauses.some(clause=>/简餐|一盘餐|一碗餐|一人食/.test(clause)&&!/(?:不要|不用|不想吃|别做|不吃)/.test(clause))
   return {mode:'reference',family_id:profile.householdId,plan_date:date,
-    participant_ids:[...new Set(ids)].sort(),meal_types:meals}
+    participant_ids:[...new Set(ids)].sort(),meal_types:meals,
+    ...(count ? {requested_dish_count:count} : {}),
+    ...(simple ? {simple_meal:true} : {})}
 }
 
 export function isReferencePlan(value) {

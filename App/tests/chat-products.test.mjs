@@ -1,3 +1,4 @@
+import {chatPromptProfileKey} from '../src/services/chat-prompt-profile.js'
 import {syntheticIntent} from './fixtures/health-intent.mjs'
 import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
 import {mealPairingText} from '../src/utils/dish-commerce-presentation.js'
@@ -46,7 +47,7 @@ function setup(route={}){
  async submit(text){submitted.push(text);return true},async createEntry(){},hide(){}})}
  const source=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
  const code=source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
- const page=new Function('deps','selectChatPrompts',`const {${Object.keys(deps).join(',')}}=deps;${code};return {profile,question,task,entryReady,chatError,sendQuestion,rememberThread,messages}`)(deps,selectChatPrompts)
+ const page=new Function('deps','selectChatPrompts','chatPromptProfileKey',`const {${Object.keys(deps).join(',')}}=deps;${code};return {profile,question,task,entryReady,chatError,sendQuestion,rememberThread,messages}`)(deps,selectChatPrompts,chatPromptProfileKey)
  page.entryReady.value=true
  page.profile.value={selfMemberId:'self',householdId:'family',members:[{id:'self',healthMemberId:'health-self',relation:'本人'}]}
  page.task.value={memberId:'health-self',taskType:'consultation',available:true,entry:{thread_id:thread,agent_slug:'health-consultation'}}

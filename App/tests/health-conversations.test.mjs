@@ -204,19 +204,15 @@ test('切换会话后迟到的列表结果不能覆盖当前新咨询或写入�
   assert.equal(h.calls.some(call => call.path.includes('/requests?')), false)
 })
 
-test('同一 conversationId 的参考任务按类型和 selection 隔离，授权重开保留 options', async () => {
-  let accepted = false
+test('同一 conversationId 的参考任务直接打开并按类型和 selection 隔离', async () => {
   const h = fixture(options => {
     if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [
-      { entry_type: 'reference_meal_preview', status: accepted ? 'available' : 'needs_input', reason_code: accepted ? null : 'consent_required' },
+      { entry_type: 'reference_meal_preview', status: 'needs_input', reason_code: 'selection_required' },
       { entry_type: 'consultation', status: 'available' },
     ] } }
-    if (options.path.endsWith('/configuration')) return { data: { policy_version: 'synthetic-v1', meal_plan: { available: true, processor: 'synthetic' } } }
-    if (options.path.endsWith('/processing-consents')) { accepted = true; return { data: { accepted: true } } }
   })
   const first = { date: '2026-10-28', plan_kind: 'reference' }, second = { date: '2026-10-29', plan_kind: 'reference' }
   await h.flow.open(memberId, 'reference_meal_preview', first, { conversationId: firstConversation })
-  await h.flow.acceptConsent(true)
   await h.flow.createEntry()
   assert.ok(h.storage.getStorageSync(key(firstConversation, 'reference_meal_preview', first)).entry.thread_id)
   await h.flow.open(memberId, 'reference_meal_preview', second, { conversationId: firstConversation })
@@ -226,6 +222,7 @@ test('同一 conversationId 的参考任务按类型和 selection 隔离，授�
   await h.flow.open(memberId, 'consultation', null, { conversationId: firstConversation })
   assert.equal(h.flow.getState().entry, null)
   assert.equal(h.calls.some(call => call.path.includes('/daily-')), false)
+  assert.equal(h.calls.some(call => call.path.endsWith('/processing-consents')), false)
 })
 
 test('旧三参 open 仍恢复当日 daily 并使用原存储 key', async () => {

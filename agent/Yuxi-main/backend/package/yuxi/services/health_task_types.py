@@ -219,6 +219,8 @@ class HealthTaskError(HealthDTO):
         "reference_recipe_repeated",
         "reference_menu_repeated",
         "reference_variety_exhausted",
+        "reference_meal_incomplete",
+        "daily_plan_version_changed",
     ]
     retryable: Literal[False] = False
 
