@@ -159,13 +159,13 @@ def test_no_approved_formula_or_catalog_has_specific_gap():
     assert nutrition_readiness(*args)["personal_targets"]["reason"] == "personal_target_formula_not_approved"
 
 
-def test_approved_daily_bounds_allow_preview_without_personal_formula():
-    """通用批准范围可支持预览，不能因此宣称已有个体目标公式。"""
+def test_approved_daily_bounds_cannot_replace_a_personal_formula():
+    """仅有通用批准范围时，正式配餐预览仍缺个人目标公式。"""
     args = sources()
     args[1]["payload"].pop("personal_targets")
     result = nutrition_readiness(*args)
     assert result["personal_targets"] == {"status": "not_ready", "reason": "personal_target_formula_not_approved"}
-    assert result["meal_preview"]["status"] == "can_attempt_preview"
+    assert result["meal_preview"]["status"] == "not_ready"
     assert result["meal_preview"]["combination_checked"] is False
 
 

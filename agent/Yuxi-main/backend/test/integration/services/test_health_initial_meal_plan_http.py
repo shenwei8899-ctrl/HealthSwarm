@@ -33,13 +33,13 @@ from yuxi.storage.postgres.models_health import (
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
-async def setup_initial(client, users):
+async def setup_initial(client, users, *, personal=False):
     """全新成员及批准目录，不建立供生成器读取的旧餐单。"""
     owner, reviewer, admin = [u["headers"] for u in users]
     members = [await create_member(client, owner), await create_member(client, owner)]
     recipe = await publish_planner_recipe(client, admin, "合成初始配餐110", "110")
     profile = {**proof(), "status": "confirmed", "payload": profile_payload()}
-    for mid in members:
+    for index, mid in enumerate(members):
         for uid, scopes in [
             (users[2]["uid"], ["profile_edit"]),
             (users[1]["uid"], ["profile_view", "professional_review"]),
@@ -48,7 +48,10 @@ async def setup_initial(client, users):
                 f"{ROOT}/members/{mid}/grants", headers=owner, json={"actor_uid": uid, "scopes": scopes}
             )
             assert response.status_code == 200, response.text
-        response = await client.post(f"{ROOT}/members/{mid}/external-profile-versions", headers=admin, json=profile)
+        submitted = deepcopy(profile)
+        if personal and index == 1:
+            submitted["payload"]["sex_code"] = "synthetic_second"
+        response = await client.post(f"{ROOT}/members/{mid}/external-profile-versions", headers=admin, json=submitted)
         assert response.status_code == 201, response.text
     async with pg_manager.get_async_session_context() as session:
         row = await session.get(RecipeVersion, recipe)
@@ -79,6 +82,15 @@ async def setup_initial(client, users):
         }
     ]
     rules["daily_bounds"]["energy_kcal"] = {"minimum": "330", "maximum": "330"}
+    if personal:
+        rules["daily_bounds"].pop("energy_kcal")
+        original = rules["personal_targets"][0]
+        rules["personal_targets"] = []
+        for sex_code, energy in (("synthetic_sex", "330"), ("synthetic_second", "286")):
+            formula = deepcopy(original)
+            formula.update(sex_code=sex_code, intercept_kcal=energy)
+            formula["nutrient_ranges"]["energy_kcal"].update(minimum_constant=energy, maximum_constant=energy)
+            rules["personal_targets"].append(formula)
     rules["meal_target_shares"] = meal_shares()
     rules["meal_generation"] = {
         "recipe_classifications": [

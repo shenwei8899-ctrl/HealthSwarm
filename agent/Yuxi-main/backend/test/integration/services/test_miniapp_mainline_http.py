@@ -264,7 +264,7 @@ async def test_conversation_package_http_reads_own_final_message_and_publishes_o
     from yuxi.services.health_vision_service import health_vision_service
     from yuxi.services.health_nutrition_service import input_fingerprint
     from yuxi.storage.postgres.models_business import AgentRun, AgentRunRequest, Conversation, Message, Project, Skill
-    from yuxi.storage.postgres.models_health import HealthConsultation, HealthFamilyProfileLink, HealthProcessingConsent
+    from yuxi.storage.postgres.models_health import HealthConsultation, HealthFamilyProfileLink
 
     monkeypatch.setenv("HEALTH_COMMERCE_SOURCE_SECRET", "synthetic-conversation-http-proof-secret-012345")
     approved = {"model": "synthetic/model", "processor": "synthetic-processor", "policy_version": "synthetic-policy"}
@@ -300,8 +300,9 @@ async def test_conversation_package_http_reads_own_final_message_and_publishes_o
         "allergen_codes": [],
     }
 
-    async def catalog():
-        """使用商城实际目录字段，不接受客户端商品字段。"""
+    async def catalog(category_codes=None):
+        """本回执属于旧版全目录查询，不能替换成客户端指定的商品。"""
+        assert category_codes is None
         return {"version": "catalog-1", "items": [item]}
 
     writes = []
@@ -316,8 +317,11 @@ async def test_conversation_package_http_reads_own_final_message_and_publishes_o
     monkeypatch.setattr(purchase, "commerce_request", publish)
     client, sessions, users = family_profile_http
     _, path, data, headers = await source(client, users["self"])
-    data["analysis_consent"] = {key: approved[key] for key in ["processor", "policy_version"]}
-    assert (await client.post(path, headers=headers, json=data)).status_code == 200
+    data["analysis_consent"] = {
+        "purpose": "consultation", "processor": approved["processor"], "policy_version": approved["policy_version"],
+    }
+    saved = await client.post(path, headers=headers, json=data)
+    assert saved.status_code == 200, saved.text
     request_id, run_id, thread, project = [str(uuid4()) for _ in range(4)]
     async with sessions() as db:
         member = await db.scalar(select(FamilyMember).where(FamilyMember.subject_uid == "self"))
@@ -346,15 +350,6 @@ async def test_conversation_package_http_reads_own_final_message_and_publishes_o
         db.add(
             HealthConsultation(
                 conversation_id=conversation.id, member_id=link.member_id, actor_uid="self", request_id=str(uuid4())
-            )
-        )
-        db.add(
-            HealthProcessingConsent(
-                member_id=link.member_id,
-                actor_uid="self",
-                purpose="consultation",
-                processor=approved["processor"],
-                policy_version=approved["policy_version"],
             )
         )
         run = AgentRun(
@@ -432,7 +427,9 @@ async def test_conversation_package_http_reads_own_final_message_and_publishes_o
         "required_unit": "g",
     }
     item["net_content"]["value"] = "250"
-    assert (await client.get(url, headers=users["self"])).json()["offers"][0]["available"] is False
+    changed = await client.get(url, headers=users["self"])
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["offers"] == []
     assert (await client.post(url, headers=users["self"], json={"offer_token": token})).status_code == 409
     assert len(writes) == 2
     async with sessions() as db:

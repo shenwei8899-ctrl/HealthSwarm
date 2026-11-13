@@ -209,7 +209,7 @@ async def test_onboarding_never_downgrades_existing_professional_source(monkeypa
         Session(),
         "actor",
         SimpleNamespace(id="family"),
-        [SimpleNamespace(id="member", subject_uid="actor")],
+        [SimpleNamespace(id="member", subject_uid="actor", person_id="health-member")],
         {"processor": "test-processor", "policy_version": "test-policy"},
     )
     assert link.source_kind == "self_confirmed"

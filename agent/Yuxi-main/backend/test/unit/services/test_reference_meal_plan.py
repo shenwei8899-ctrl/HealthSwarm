@@ -490,7 +490,9 @@ async def test_reference_context_limits_categories_then_preserves_selected_produ
         AsyncMock(
             return_value=(
                 SimpleNamespace(id="synthetic-run"),
-                SimpleNamespace(member_id="synthetic-member", conversation_id="synthetic-conversation"),
+                SimpleNamespace(
+                    member_id="synthetic-member", conversation_id="synthetic-conversation", initial_planner_selection={},
+                ),
             )
         ),
     )

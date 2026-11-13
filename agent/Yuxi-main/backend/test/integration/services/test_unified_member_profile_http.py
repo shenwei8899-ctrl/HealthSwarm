@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from uuid import uuid4
 
 import pytest
+from unittest.mock import AsyncMock
 from sqlalchemy import func, select
 
 from test.integration.services.test_health_family_profile_http import (  # noqa: F401
@@ -17,7 +18,7 @@ from test.integration.services.test_health_family_profile_http import (  # noqa:
 )
 from test.integration.services.test_daily_arrangement_http import source
 from yuxi.services.health_vision_service import health_vision_service
-from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.health_vision_types import FAMILY_REPORT_SCOPES, HealthVisionError
 from yuxi.services.miniapp_planning_source import submitted_profile_projection
 from yuxi.storage.postgres.models_business import FamilyMember as SourceMember
 from yuxi.storage.postgres.models_health import (
@@ -46,6 +47,14 @@ def configured(monkeypatch):
         }
 
     monkeypatch.setattr(health_vision_service, "configuration", config)
+
+
+@pytest.fixture
+def pre_report_link_onboarding(monkeypatch):
+    """复现升级前已保存的档案，分析入口继续用真实服务消费这些记录。"""
+    from yuxi.services import miniapp_report_service
+
+    monkeypatch.setattr(miniapp_report_service, "ensure_member_reports", AsyncMock())
 
 
 async def saved_source(client, users):
@@ -80,14 +89,18 @@ async def submit(client, path, headers, body):
 async def test_concurrent_confirmation_and_withdrawn_replay(family_profile_http):
     """并发只有一个来源；旧成功请求与普通编辑均不能恢复撤回的用途同意。"""
     client, sessions, users = family_profile_http
-    family, path, member, _ = await saved_source(client, users)
+    family, path, member, saved = await saved_source(client, users)
     body = analysis(member)
     responses = await asyncio.gather(*(submit(client, path, users["self"], body) for _ in range(2)))
     assert all(r.status_code == 200 for r in responses), [r.text for r in responses]
     health_id = next(m["healthMemberId"] for m in responses[0].json()["members"] if m["id"] == member["id"])
     async with sessions() as db:
-        assert await db.scalar(select(func.count()).select_from(FamilyMember)) == 1
-        assert await db.scalar(select(func.count()).select_from(HealthFamilyProfileLink)) == 1
+        assert await db.scalar(select(func.count()).select_from(FamilyMember)) == len(saved["members"])
+        links = list((await db.scalars(select(HealthFamilyProfileLink))).all())
+        assert {link.source_member_id: link.member_id for link in links} == {
+            row["id"]: row["healthMemberId"] for row in saved["members"]
+        }
+        assert health_id == member["healthMemberId"]
         assert await db.scalar(select(func.count()).select_from(HealthProcessingConsent)) == 1
         assert (await db.get(HealthProcessingConsent, (health_id, "self", "consultation"))).revoked_at is None
         assert await db.get(HealthProcessingConsent, (health_id, "self", "meal_plan")) is None
@@ -112,7 +125,7 @@ async def test_concurrent_confirmation_and_withdrawn_replay(family_profile_http)
 
 
 @pytest.mark.parametrize("candidate_count", [1, 2])
-async def test_old_same_account_self_is_reused_or_conflict(family_profile_http, candidate_count):
+async def test_old_same_account_self_is_reused_or_conflict(family_profile_http, candidate_count, pre_report_link_onboarding):
     """已有本人只按同账号身份复用；有歧义时不增建或覆盖。"""
     client, sessions, users = family_profile_http
     _, path, member, _ = await saved_source(client, users)
@@ -131,11 +144,14 @@ async def test_old_same_account_self_is_reused_or_conflict(family_profile_http, 
 async def test_wrong_version_or_policy_rolls_back(family_profile_http, change):
     """拒绝过期确认时不留下来源、同意或分析收据。"""
     client, sessions, users = family_profile_http
-    _, path, member, _ = await saved_source(client, users)
+    _, path, member, saved = await saved_source(client, users)
     response = await submit(client, path, users["self"], analysis(member, **change))
     assert response.status_code == 409, response.text
     async with sessions() as db:
-        assert await db.scalar(select(func.count()).select_from(HealthFamilyProfileLink)) == 0
+        links = list((await db.scalars(select(HealthFamilyProfileLink))).all())
+        assert {link.source_member_id: link.member_id for link in links} == {
+            row["id"]: row["healthMemberId"] for row in saved["members"]
+        }
         assert await db.scalar(select(func.count()).select_from(HealthProcessingConsent)) == 0
         assert await db.scalar(select(func.count()).select_from(HealthMiniappProfileReceipt)) == 1
 
@@ -206,7 +222,7 @@ async def test_revoked_access_is_not_restored_by_analysis(family_profile_http):
         assert (await db.get(HealthGrant, (health_id, "self"))).revoked_at is not None
 
 
-async def test_existing_professional_snapshot_is_not_replaced_by_self_report(family_profile_http):
+async def test_existing_professional_snapshot_is_not_replaced_by_self_report(family_profile_http, pre_report_link_onboarding):
     """无关联但已有专业快照的本人对象要求核查，不能自动改为自述来源。"""
     client, sessions, users = family_profile_http
     _, path, member, _ = await saved_source(client, users)
@@ -283,8 +299,13 @@ async def test_onboarding_self_consent_does_not_include_guardian_children(family
     assert response.status_code == 200, response.text
     async with sessions() as db:
         links = list((await db.scalars(select(HealthFamilyProfileLink))).all())
-        assert len(links) == 1 and links[0].source_member_id == own["id"]
-        assert await db.scalar(select(func.count()).select_from(HealthProcessingConsent)) == 1
+        assert {link.source_member_id: link.member_id for link in links} == {
+            row["id"]: row["healthMemberId"] for row in saved["members"]
+        }
+        consents = list((await db.scalars(select(HealthProcessingConsent))).all())
+        assert [(row.member_id, row.purpose) for row in consents] == [(own["healthMemberId"], "consultation")]
+        grant = await db.get(HealthGrant, (child["healthMemberId"], "self"))
+        assert set(grant.scopes) == FAMILY_REPORT_SCOPES
 
 
 @pytest.mark.parametrize("claimed", [False, True])
@@ -419,7 +440,7 @@ async def test_completed_profile_requires_current_explicit_consultation_consent(
     response = await submit(client, path, users["self"], automatic_open(member))
     assert response.status_code == 200, response.text
     async with sessions() as db:
-        assert await db.scalar(select(func.count()).select_from(HealthFamilyProfileLink)) == 1
+        assert own["healthMemberId"] == member["healthMemberId"]
         record = await db.get(HealthProcessingConsent, (own["healthMemberId"], "self", "consultation"))
         assert record and record.revoked_at is None
         assert await db.get(HealthProcessingConsent, (own["healthMemberId"], "self", "meal_plan")) is None
@@ -453,18 +474,20 @@ async def test_automatic_open_preserves_deliberate_stop(family_profile_http):
 
 
 async def test_automatic_open_cannot_enable_another_family_member(family_profile_http):
-    """创建者的自动衔接只作用本人，不能顺带为其他家人建关联或启用。"""
+    """创建者的自动衔接只作用本人，其他家人仍只保留报告权限。"""
     client, sessions, users = family_profile_http
     _, path, own, saved = await saved_source(client, users)
     other = next(m for m in saved["members"] if m["id"] != own["id"])
     response = await submit(client, path, users["self"], automatic_open(other))
     assert response.status_code == 403, response.text
     async with sessions() as db:
-        assert await db.scalar(select(func.count()).select_from(HealthFamilyProfileLink)) == 0
+        grant = await db.get(HealthGrant, (other["healthMemberId"], "self"))
+        assert set(grant.scopes) == FAMILY_REPORT_SCOPES
+        assert await db.scalar(select(func.count()).select_from(HealthProcessingConsent)) == 0
 
 
 async def test_automatic_open_checks_current_saved_profile_and_version(family_profile_http):
-    """缺少必填健康信息不能伪装就绪，旧版本也不能创建关联。"""
+    """缺少必填健康信息或版本过期时，报告关联不能升级成 AI 来源。"""
     client, sessions, users = family_profile_http
     _, path, own, _ = await saved_source(client, users)
     stale = await submit(client, path, users["self"], automatic_open(own, expected_version=99))
@@ -476,16 +499,21 @@ async def test_automatic_open_checks_current_saved_profile_and_version(family_pr
     response = await submit(client, path, users["self"], automatic_open(own))
     assert response.status_code == 422, response.text
     async with sessions() as db:
-        assert await db.scalar(select(func.count()).select_from(HealthFamilyProfileLink)) == 0
+        grant = await db.get(HealthGrant, (own["healthMemberId"], "self"))
+        assert set(grant.scopes) == FAMILY_REPORT_SCOPES
+        assert await db.scalar(select(func.count()).select_from(HealthProcessingConsent)) == 0
 
 
-async def test_automatic_open_reuses_old_profile_and_does_not_override_conflict(family_profile_http):
-    """新自动入口也沿用旧本人对象；多个候选时明确冲突，不重复建档。"""
+async def test_automatic_open_requires_consent_for_unlinked_old_profiles(
+    family_profile_http, pre_report_link_onboarding
+):
+    """旧档案没有咨询同意时自动进入不能关联或创建成员。"""
     client, sessions, users = family_profile_http
     _, path, own, _ = await saved_source(client, users)
     ids = [await create_health_member(client, users["self"]) for _ in range(2)]
     response = await submit(client, path, users["self"], automatic_open(own))
     assert response.status_code == 409, response.text
+    assert response.json()["code"] == "consultation_consent_required"
     async with sessions() as db:
         assert await db.scalar(select(func.count()).select_from(FamilyMember)) == len(ids)
         assert await db.scalar(select(func.count()).select_from(HealthFamilyProfileLink)) == 0

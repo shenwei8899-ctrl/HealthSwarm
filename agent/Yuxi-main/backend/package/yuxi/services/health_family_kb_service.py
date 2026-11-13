@@ -7,7 +7,7 @@ import re
 from itertools import zip_longest
 from uuid import UUID, uuid4
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from sqlalchemy import select
 
 from yuxi.knowledge.base import FileStatus
@@ -57,7 +57,7 @@ SOURCE_MARKER = re.compile(r"\[资料:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 
 
 def filter_family_kb_history(messages):
-    """旧家庭库轮次保留问答并移除工具过程，当前轮来源保持完整。"""
+    """旧家庭库轮次只保留用户问题，当前轮来源保持完整。"""
     chunks, chunk = [], []
     for message in messages:
         if isinstance(message, HumanMessage) and chunk:
@@ -74,14 +74,6 @@ def filter_family_kb_history(messages):
         )
         if historical_family_turn:
             filtered.extend(message for message in turn if isinstance(message, HumanMessage))
-            final = turn[-1]
-            if (
-                isinstance(final, AIMessage)
-                and not final.tool_calls
-                and not final.invalid_tool_calls
-                and final.text.strip()
-            ):
-                filtered.append(final)
         else:
             filtered.extend(turn)
     return filtered

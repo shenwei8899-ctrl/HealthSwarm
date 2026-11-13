@@ -261,7 +261,7 @@ def test_zero_meal_share_cannot_erase_incompatible_daily_medical_bounds():
         rules["meal_target_shares"][meal]["sodium_mg"] = share
     current["plan_snapshot"]["members"]["b"]["nutrition"]["totals"]["sodium_mg"] = "0"
     result = quality_snapshot(current)["safety_check"]
-    assert result["members"]["a"]["status"] == "passed" and result["members"]["b"]["status"] == "conflict"
+    assert result["members"]["a"]["status"] == "unknown" and result["members"]["b"]["status"] == "conflict"
     assert {
         "member_id": "b",
         "path": "nutrition.sodium_mg",

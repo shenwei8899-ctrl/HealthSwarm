@@ -32,6 +32,7 @@ from yuxi.services.health_consultation_service import require_consultation, requ
 from yuxi.services.health_initial_planner_service import validate_initial_planner_publication, preview_initial_for_run
 from yuxi.services.health_meal_plan_service import planner_final_result
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.reference_meal_composition import REFERENCE_MEAL_POLICY_VERSION
 from yuxi.services.reference_recipe_matching import reference_candidate_key
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import Agent, AgentRun, AgentRunRequest, Message, FamilyMember
@@ -233,14 +234,20 @@ async def add_recipe(
         )
 
 
-async def bind_reference(current, **changes):
-    """通过统一任务HTTP入口创建真实固定选择线程。"""
-    client, _, users, mid, _, choice = current
+async def bind_reference(current, *, legacy=True, **changes):
+    """创建真实固定选择线程，旧版回归复现升级前已存的绑定。"""
+    client, sessions, users, mid, _, choice = current
     key = str(uuid4())
     payload = {"task_type": "reference_meal_preview", "client_request_id": key, "selection": {**choice, **changes}}
     response = await client.post(
         f"{ROOT}/members/{mid}/task-entries", json=payload, headers={**users["self"], "Idempotency-Key": key}
     )
+    if legacy and response.is_success:
+        async with sessions.begin() as db:
+            binding, _ = await require_consultation(db, "self", response.json()["thread_id"])
+            initial = dict(binding.initial_planner_selection)
+            assert initial.pop("meal_policy_version") == REFERENCE_MEAL_POLICY_VERSION
+            binding.initial_planner_selection = initial
     return response
 
 
@@ -418,6 +425,60 @@ async def grounded_plan(
     saved = await receipt(sessions, context, "save_reference_meal_plan", plan)
     await require_consultation_attempt(context, [initial, products, searched, opened, saved])
     return plan, opened, draft
+
+
+async def test_new_reference_binding_requires_complete_breakfast(family_profile_http, monkeypatch):
+    """新绑定拒绝单独清粥，补齐同一运行已核对的蛋白质菜谱后才保存。"""
+    current = await setup_reference(family_profile_http, monkeypatch)
+    await add_recipe(
+        current, "egg", "烹饪菜谱｜水煮蛋.md",
+        TEXT.replace("清粥", "水煮蛋").replace("大米100克", "鸡蛋50克"),
+    )
+    bound = await bind_reference(current, legacy=False)
+    assert bound.is_success, bound.text
+    context = await running_context(current, bound.json()["thread_id"], read_products=False)
+    options = []
+    for keyword, file_id, chunk_id in (
+        ("清粥", "reference-file", "reference-chunk"),
+        ("水煮蛋", "egg", "egg-chunk"),
+    ):
+        hits = await service.search_reference_recipes(context, keyword)
+        await receipt(current[1], context, "search_reference_recipes", hits)
+        opened = await service.read_reference_recipe(context, file_id, chunk_id)
+        await receipt(current[1], context, "read_reference_recipe", opened)
+        options.append({"recipe_option": opened["recipe_option"]})
+    dishes = options[:1]
+    selection = {
+        "use_read_recipes": True,
+        "auto_purchase_matches": True,
+        "meals": [{"meal_type": "breakfast", "dishes": dishes}],
+    }
+    from yuxi.agents.toolkits.meal_planner import save_reference_meal_plan
+
+    graph = StateGraph(MessagesState, context_schema=BaseContext)
+    graph.add_node("tools", ToolNode([save_reference_meal_plan], handle_tool_errors=False))
+    graph.add_edge(START, "tools")
+    graph.add_edge("tools", END)
+    runnable = graph.compile()
+
+    async def save_selection():
+        output = await runnable.ainvoke(
+            {"messages": [AIMessage(content="", tool_calls=[{
+                "name": "save_reference_meal_plan",
+                "args": {"read_selection": selection},
+                "id": str(uuid4()),
+                "type": "tool_call",
+            }])]},
+            context=context,
+        )
+        return json.loads(output["messages"][-1].content)
+
+    with pytest.raises(HealthVisionError, match="reference_meal_incomplete"):
+        await save_selection()
+    dishes.append(options[1])
+    result = await save_selection()
+    assert {dish["name"] for dish in result["meals"][0]["dishes"]} == {"清粥", "水煮蛋"}
+    assert result["meal_policy_version"] == REFERENCE_MEAL_POLICY_VERSION
 
 
 async def test_read_selection_three_meals_and_dinner_replacement_preserve_other_sources(
@@ -1014,7 +1075,7 @@ async def test_reference_purchase_binds_exact_items_and_invalidates_changed_prod
     family_profile_http, monkeypatch, legacy
 ):
     current = await setup_reference(family_profile_http, monkeypatch)
-    bound = await bind_reference(current)
+    bound = await bind_reference(current, daily_base_version=0)
     context = await running_context(current, bound.json()["thread_id"])
     plan, _, draft = await grounded_plan(current, context)
     if legacy:
