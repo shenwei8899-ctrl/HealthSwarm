@@ -10,6 +10,7 @@ from test.integration.services.test_health_family_profile_http import family_pro
 from test.integration.services.test_health_family_profile_http import ensure_live_api_schema  # noqa: F401
 from test.integration.services.test_health_family_profile_http import cleanup_test_sandboxes  # noqa: F401
 from test.integration.services.test_health_family_profile_http import cleanup_test_knowledge_resources  # noqa: F401
+from test.integration.services.test_health_initial_meal_plan_http import save, selection, setup_initial
 
 from yuxi.storage.postgres.models_business import FamilyMember
 from yuxi.storage.postgres.models_health import (
@@ -19,6 +20,7 @@ from yuxi.storage.postgres.models_health import (
     HealthProfileSnapshot,
     HealthProcessingConsent,
     HealthDailyArrangement,
+    HealthMealPlan,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -254,6 +256,9 @@ async def source(client, headers):
                 "name": "合成家人",
                 "relation": "家人",
                 "birth_date": "2015-01-01",
+                "sex": "male",
+                "height_cm": 140,
+                "weight_kg": 35,
                 "dietary": {
                     "healthStatus": "none",
                     "allergyStatus": "none",
@@ -282,7 +287,13 @@ async def test_complete_onboarding_is_atomic_idempotent_and_server_backed(family
     assert saved["source"] == "api" and saved["onboarded"] is True
     assert len(saved["defaultDiners"]) == 2 and len(saved["members"]) == 2
     own = next(member for member in saved["members"] if member["relation"] == "本人")
-    assert own["allergyStatus"] == "none" and own["weight"] == 55
+    child = next(member for member in saved["members"] if member["relation"] != "本人")
+    refs = {data["members"][0]["client_ref"]: own["id"], data["members"][1]["client_ref"]: child["id"]}
+    assert all(response.json()["memberRefs"] == refs for response in responses)
+    assert own["healthMemberId"] and child["healthMemberId"]
+    assert "memberRefs" not in saved
+    assert saved["completeProfile"] and own["allergyStatus"] == "none" and own["weight"] == 55
+    assert own["height"] == 165 and own["gender"] == "女"
     async with sessions() as db:
         assert (
             await db.scalar(
@@ -307,6 +318,9 @@ async def test_onboarding_rejects_changed_replay_and_foreign_family(family_profi
     "field",
     [
         "birth_date",
+        "sex",
+        "height_cm",
+        "weight_kg",
         "healthStatus",
         "allergyStatus",
         "intoleranceStatus",
@@ -321,13 +335,40 @@ async def test_incomplete_onboarding_does_not_mark_family_complete(family_profil
     client, sessions, users = family_profile_http
     _, path, data, headers = await source(client, users["self"])
     member = data["members"][0]
-    del (member if field == "birth_date" else member["dietary"])[field]
+    del (member if field in {"birth_date", "sex", "height_cm", "weight_kg"} else member["dietary"])[field]
     response = await client.post(path, headers=headers, json=data)
     assert response.status_code == 422, response.text
     saved = (await client.get(path, headers=users["self"])).json()
     assert saved["onboarded"] is False
     async with sessions() as db:
         assert await db.scalar(select(func.count()).select_from(HealthMiniappProfileReceipt)) == 0
+
+
+async def test_completed_profile_patch_keeps_required_body_data(family_profile_http):  # noqa: F811
+    """用真实保存、局部更新与重读验证体重回填及清空拒绝。"""
+    client, sessions, users = family_profile_http
+    family, path, data, headers = await source(client, users["self"])
+    saved = await client.post(path, headers=headers, json=data)
+    assert saved.status_code == 200, saved.text
+    own = next(member for member in saved.json()["members"] if member["isSelf"])
+    member_path = f"/api/family/{family['id']}/members/{own['id']}"
+    for change in ({"height_cm": None}, {"sex": "unspecified"}, {"dietary_details": None}):
+        response = await client.put(member_path, headers=users["self"], json={
+            "expected_version": own["version"], "profile": change,
+        })
+        assert response.status_code == 422, response.text
+    changed = await client.put(member_path, headers=users["self"], json={
+        "expected_version": own["version"], "profile": {"height_cm": 166},
+    })
+    assert changed.status_code == 200, changed.text
+    read = (await client.get(path, headers=users["self"])).json()
+    assert read["completeProfile"]
+    latest = next(member for member in read["members"] if member["isSelf"])
+    assert latest["version"] == own["version"] + 1
+    assert latest["height"] == 166 and latest["weight"] == 55
+    async with sessions() as db:
+        row = await db.get(FamilyMember, own["id"])
+        assert row.profile["dietary_details"]["statedWeightKg"] == 55
 
 
 async def test_missing_real_planner_dependencies_cannot_publish_a_placeholder(family_profile_http):  # noqa: F811
@@ -510,3 +551,31 @@ async def test_daily_purchase_source_survives_other_meal_changes_but_not_revocat
         await db.commit()
     denied = await client.post(endpoint, json=proof)
     assert denied.status_code == 404 and "available" not in denied.json(), denied.text
+
+
+async def test_family_initial_generation_allocates_distinct_portions_without_activity(family_profile_http):  # noqa: F811
+    """相同的菜按两个档案计算 330 和 286 千卡，分别分配 100 和 60 克早餐。"""
+    client, sessions, identities = family_profile_http
+    users = [{"uid": uid, "headers": identities[uid]} for uid in ("self", "other", "admin")]
+    current = await setup_initial(client, users, personal=True)
+    owner = users[0]["headers"]
+    request = selection(current, family=True)
+    for meal in request["meals"]:
+        meal["participant_ids"] = [current["member"], current["second"]]
+    response = await client.post(
+        f"/api/health/v1/members/{current['member']}/initial-meal-plan-previews", headers=owner, json=request
+    )
+    assert response.status_code == 200, response.text
+    generated = response.json()
+    assert generated["status"] == "ready", generated
+    breakfast = generated["plan_spec"]["meals"][0]["dishes"][0]
+    assert breakfast["recipe_version_id"] == current["recipe"]
+    assert {row["member_id"]: row["grams"] for row in breakfast["member_portions"]} == {
+        current["member"]: "100",
+        current["second"]: "60",
+    }
+    saved = await save(client, owner, current, generated["preview_id"])
+    assert saved.status_code == 201, saved.text
+    async with sessions() as session:
+        row = await session.get(HealthMealPlan, saved.json()["plan_id"])
+        assert row.spec == generated["plan_spec"]

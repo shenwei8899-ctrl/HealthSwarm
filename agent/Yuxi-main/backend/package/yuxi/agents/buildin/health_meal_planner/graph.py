@@ -168,10 +168,13 @@ class MealPlanResultMiddleware(AgentMiddleware):
                         )
                         + (
                             "餐单中文译文校验失败。本次只调用一次save_reference_meal_plan，且只提交translation_correction："
-                            "列出需修正的首次已选菜谱file_id、chunk_id和完整display_zh。"
+                            "列出需修正的首次已选recipe_option和完整display_zh。"
                             "首次保存的餐次、菜谱和商品由服务端保留；不得重新提交read_selection、meals或product_matches。"
                             "按真实错误定位译文，保持原文数量、时间、单位和步骤顺序。"
                             if save_error_code in {"recipe_translation_missing", "recipe_translation_invalid"}
+                            else "餐单的菜谱选项无效。本次只调用一次save_reference_meal_plan，"
+                            "从本轮read_reference_recipe的成功回执逐字复制recipe_option。"
+                            if save_error_code == "reference_recipe_option_invalid"
                             else "所选商品未对应本次原谱食材。本次只调用一次save_reference_meal_plan，"
                             "重新核对已读原谱recipe_check中的candidate_products；product_matches只提交候选product_id和对应candidate_keys。"
                             "不得自行提交ingredient_refs或purchase_gaps；无候选食材由后台保留为自行购买。"
@@ -395,16 +398,21 @@ class MealPlanResultMiddleware(AgentMiddleware):
         else:
             return False
         read = {
-            message.name
+            message.name: message
             for message in messages[index + 1 :]
             if isinstance(message, ToolMessage) and message.status == "success"
         }
-        return {
-            "get_reference_plan_context",
-            "find_reference_products",
-            "search_reference_recipes",
-            "read_reference_recipe",
-        } <= read
+        required = {"get_reference_plan_context", "search_reference_recipes", "read_reference_recipe"}
+        if not required <= read.keys():
+            return False
+        if "find_reference_products" in read:
+            return True
+        try:
+            recipe = json.loads(read["read_reference_recipe"].content)
+            items = recipe.get("items", [recipe])
+            return bool(items) and all(item.get("catalog_version") for item in items)
+        except (TypeError, ValueError, AttributeError):
+            return False
 
     @staticmethod
     def _saved_reference_preview(state, context):

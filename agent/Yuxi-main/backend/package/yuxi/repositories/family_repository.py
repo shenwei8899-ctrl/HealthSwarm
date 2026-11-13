@@ -1,6 +1,6 @@
 """家庭档案持久化与带身份范围的查询。"""
 
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import and_, exists, func, or_, select, text
 from yuxi.storage.postgres.models_business import (
     FamilyArchive,
     FamilyAudit,
@@ -22,7 +22,7 @@ class FamilyRepository:
         membership = exists().where(FamilyMember.family_id == FamilyArchive.id, FamilyMember.subject_uid == uid)
         if not include_inactive:
             membership = membership.where(FamilyMember.is_active.is_(True))
-        return select(FamilyArchive).where(membership)
+        return select(FamilyArchive).where(membership, FamilyArchive.archived_at.is_(None))
 
     async def list_families(self, uid):
         """列出可访问家庭。"""
@@ -38,7 +38,33 @@ class FamilyRepository:
 
     async def owned_family(self, uid):
         """读取用户唯一管理的家庭。"""
-        return await self.db.scalar(select(FamilyArchive).where(FamilyArchive.owner_uid == uid))
+        return await self.db.scalar(
+            select(FamilyArchive).where(FamilyArchive.owner_uid == uid, FamilyArchive.archived_at.is_(None))
+        )
+
+    async def lock_membership(self, uid):
+        """同一账号的建家、加入与切换串行。"""
+        await self.db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
+            {"scope": f"family-membership:{uid}"},
+        )
+
+    async def active_membership(self, uid):
+        """有效归属由数据库唯一索引保证。"""
+        return await self.db.scalar(
+            select(FamilyMember).where(FamilyMember.subject_uid == uid, FamilyMember.is_active.is_(True))
+        )
+
+    async def lock_families(self, ids):
+        """多家庭事务固定按编号加锁。"""
+        rows = await self.db.scalars(
+            select(FamilyArchive)
+            .where(FamilyArchive.id.in_(ids), FamilyArchive.archived_at.is_(None))
+            .order_by(FamilyArchive.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return {row.id: row for row in rows}
 
     async def pending_guardians(self):
         """审核队列只查询有效待审关系。"""
@@ -47,13 +73,17 @@ class FamilyRepository:
                 select(FamilyArchive, FamilyMember, User.username)
                 .join(FamilyMember, FamilyMember.family_id == FamilyArchive.id)
                 .join(User, User.uid == FamilyMember.guardian_uid)
-                .where(FamilyMember.guardian_status == "pending", FamilyMember.is_active.is_(True))
+                .where(
+                    FamilyArchive.archived_at.is_(None),
+                    FamilyMember.guardian_status == "pending",
+                    FamilyMember.is_active.is_(True),
+                )
             )
         ).all()
 
     async def guardian_review_context(self, fid, mid):
         """独立审核入口以家庭行锁串行化，不借用家庭管理员权限。"""
-        family = await self.db.scalar(select(FamilyArchive).where(FamilyArchive.id == fid).with_for_update())
+        family = (await self.lock_families([fid])).get(fid)
         return family, await self.member(fid, mid) if family else None
 
     async def members(self, fid):
@@ -78,7 +108,7 @@ class FamilyRepository:
 
     async def invitation_family(self, fid):
         """签名已校验的邀请按家庭行锁串行接受与认领。"""
-        return await self.db.scalar(select(FamilyArchive).where(FamilyArchive.id == fid).with_for_update())
+        return (await self.lock_families([fid])).get(fid)
 
     async def inviter_name(self, uid):
         """邀请预览仅读取邀请人的公开称呼。"""

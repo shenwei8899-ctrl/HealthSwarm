@@ -244,7 +244,7 @@ def test_shipping_skills_keep_required_dependencies():
         "family-blood-lipids",
         "family-blood-pressure",
     }
-    assert found["family-meal-planner"]["version"] == "2026.11.07.1"
+    assert found["family-meal-planner"]["version"] == "2026.11.12.1"
     assert found["family-quality-review"]["tool_dependencies"] == [
         "get_quality_review_context",
         "check_selected_plan_quality",

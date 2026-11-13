@@ -29,7 +29,7 @@ function act() { if (!props.busy && props.interactive) emit('action') }
   <view v-if="heading" class="tm-inline-heading"><text class="tm-inline-title">今日餐单</text><text class="tm-inline-date">{{displayDate}}</text></view>
     <view v-if="state.plan&&state.notice" class="tm-status" role="status" aria-live="polite">
      <text>{{state.notice}}</text>
-     <text v-if="state.consentOption">处理方：{{state.consentOption.processor}}；政策版本：{{state.consentOption.policyVersion}}</text>
+     <text v-if="state.consentOption">处理方：{{state.consentOption.processor}}。政策版本：{{state.consentOption.policyVersion}}。</text>
      <text v-for="(question,index) in state.pending?.status==='needs_input'?state.pending.questions:[]" :key="index" class="tm-question">{{question}}</text>
      <button v-if="state.action" class="tm-retry" :disabled="busy" @click="act">{{actionLabels[state.action]}}</button>
     </view>
@@ -40,7 +40,7 @@ function act() { if (!props.busy && props.interactive) emit('action') }
      </button>
     </view>
     <text v-if="state.plan&&missingMeals" class="tm-missing">{{missingMeals}}尚未安排</text>
-    <view v-if="!state.plan&&state.phase==='error'" class="tm-error" role="status" aria-live="polite"><text class="tm-error-title">{{state.consentOption?'请确认配餐授权':state.pending?.status==='reference_candidates'?'待核对候选':'暂时无法读取餐单'}}</text><text>{{state.notice||'请稍后重试，我们会重新核对餐单状态。'}}</text><text v-if="state.consentOption">处理方：{{state.consentOption.processor}}；政策版本：{{state.consentOption.policyVersion}}</text><text v-for="(question,index) in state.pending?.status==='needs_input'?state.pending.questions:[]" :key="index" class="tm-question">{{question}}</text><button class="tm-retry" :disabled="busy" @click="act">{{actionLabels[state.action]||'重新读取'}}</button></view>
+    <view v-if="!state.plan&&state.phase==='error'" class="tm-error" role="status" aria-live="polite"><text class="tm-error-title">{{state.consentOption?'确认配餐授权':state.pending?.status==='reference_candidates'?'待核对候选':'暂时无法读取餐单'}}</text><text>{{state.notice||'请稍后重试，我们会重新核对餐单状态。'}}</text><text v-if="state.consentOption">处理方：{{state.consentOption.processor}}。政策版本：{{state.consentOption.policyVersion}}。</text><text v-for="(question,index) in state.pending?.status==='needs_input'?state.pending.questions:[]" :key="index" class="tm-question">{{question}}</text><button class="tm-retry" :disabled="busy" @click="act">{{actionLabels[state.action]||'重新读取'}}</button></view>
     <view v-else-if="!state.plan" class="tm-loading" :aria-busy="true">
      <view class="tm-loading-status" role="status" aria-live="polite"><view class="tm-pulse" aria-hidden="true"/><text>{{loadingLabel}}</text></view>
     </view>

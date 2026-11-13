@@ -418,7 +418,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
           try {
             await verifyThreadAccess(state.entry)
             if (!current(ticket)) return false
-            state.submitRejected = true; failRequest(error); return false
+            state.submitRejected = true; failRequest(error, error.businessCode || 'request_rejected'); return false
           } catch (accessError) {
             if (!current(ticket)) return false
             error = accessError

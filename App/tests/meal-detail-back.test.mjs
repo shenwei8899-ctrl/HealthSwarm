@@ -4,6 +4,8 @@ import {readFileSync} from 'node:fs'
 import {reactive,ref,computed,nextTick,watch,effectScope} from 'vue'
 import {detailState,createMealDetailClient,mealNames,formalRoute,detailKey} from '../src/services/meal-detail-client.js'
 
+import {createTodayMealPlan,todayMealPlanState} from '../src/services/today-meal-plan.js'
+
 const sheetSource=readFileSync(new URL('../src/components/MealDetailSheet.vue',import.meta.url),'utf8')
 const routeSource=readFileSync(new URL('../src/pages/meals/detail.vue',import.meta.url),'utf8')
 const script=source=>source.split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm,'')
@@ -27,7 +29,7 @@ function harness({stack=2,backThrows=false,fallbackThrows=false}={}){
  page=scope.run(()=>new Function('deps',`const {${Object.keys(routeDeps)}}=deps;${script(routeSource)};return {leave,detail,leaving,returnError}`)(routeDeps))
  const deps={reactive,ref,computed,nextTick,onMounted(){},onUnmounted(){},onShow(){},
   defineProps:()=>props,defineEmits:()=>((event,...args)=>{events.push(event);if(event==='leave')page.leave(...args)}),defineExpose:value=>{exposed=value},
-  detailState,createMealDetailClient,mealNames,formalRoute,detailKey,
+  detailState,createMealDetailClient,mealNames,formalRoute,detailKey,createTodayMealPlan,todayMealPlanState,
   request:async()=>({data:{arrangement_id:'saved',version:2,meal}}),storageContext:()=> 'A',scopedStorage:{},newHealthRequestId:()=> 'test-request',
   dailyArrangementState:()=>({}),createDailyArrangementClient:()=>({reset(){},dispose(){}}),uni,
  }

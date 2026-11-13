@@ -13,6 +13,7 @@ from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.health_quality_types import ProfileProjection, QualityRules
 from yuxi.services.health_quality_checks import external_projection
 from yuxi.services.health_vision_types import FAMILY_REPORT_SCOPES, HealthVisionError
+from yuxi.storage.postgres.models_business import FamilyAudit
 from yuxi.storage.postgres.models_health import (
     FamilyMember,
     HealthFamilyProfileLink,
@@ -111,7 +112,16 @@ async def bind_submitted_profile(session, uid, family, members, consent):
             if (
                 link.source_kind != "miniapp_reported"
                 or (member.subject_uid != uid and not guardian_active(member, uid))
-                or link.actor_uid != family.owner_uid
+            ):
+                raise HealthVisionError("profile_link_conflict", "成员已有独立的分析来源，请使用原有授权", 409)
+            if link.actor_uid != family.owner_uid and not await session.scalar(
+                select(FamilyAudit.id)
+                .where(
+                    FamilyAudit.family_id == family.id,
+                    FamilyAudit.actor_uid == link.actor_uid,
+                    FamilyAudit.action == "family.transfer.completed",
+                )
+                .limit(1)
             ):
                 raise HealthVisionError("profile_link_conflict", "成员已有独立的分析来源，请使用原有授权", 409)
             health = await session.get(FamilyMember, link.member_id)
@@ -143,6 +153,8 @@ async def bind_submitted_profile(session, uid, family, members, consent):
             from yuxi.repositories.health_quality_repository import HealthQualityRepository
 
             await HealthQualityRepository(session).invalidate(member_id=link.member_id, reason="member_claimed")
+        if member.person_id is None:
+            member.person_id = link.member_id
         # 既有专业确认来源保留原语义，不能因再次建档降为自述并丢失临床资料。
         await session.flush()
         grant = await session.get(HealthGrant, (link.member_id, uid), populate_existing=True)
@@ -218,11 +230,15 @@ async def submitted_profile_projection(session, link):
         "attestation": None,
         "source_kind": "user_reported",
     }
-    if link.source_kind == "self_confirmed":
-        from yuxi.services.miniapp_profile_types import miniapp_onboarding_ready
+    from yuxi.services.miniapp_profile_types import miniapp_onboarding_ready, miniapp_profile_complete
 
-        if not miniapp_onboarding_ready(member, family):
-            return {**result, "reason": "family_profile_incomplete"}
+    complete = (
+        miniapp_onboarding_ready(member, family)
+        if link.source_kind == "self_confirmed"
+        else miniapp_profile_complete(member)
+    )
+    if not complete:
+        return {**result, "reason": "family_profile_incomplete"}
     from yuxi.repositories.health_quality_repository import HealthQualityRepository
 
     rule_code = os.environ.get("HEALTH_DAILY_RULE_CODE", "")
@@ -242,6 +258,10 @@ async def submitted_profile_projection(session, link):
 
             mapping = validated_profile_mapping(member.profile, mapping, coding.coding)
         payload = code_submitted_profile(member.profile, approved, mapping)
+    except HealthVisionError as error:
+        if error.code != "profile_coding_rules_unavailable":
+            raise
+        return result
     except (KeyError, ValueError):
         return {**result, "reason": "profile_coding_unavailable"}
     return {
@@ -287,7 +307,14 @@ def code_submitted_profile(profile, rules, mapping):
         if age is not None and int(span.split(":")[0]) <= age <= int(span.split(":")[1])
     ]
     if len(populations) != 1 or populations[0] not in rules.allowed_population_codes:
-        raise ValueError("没有明确批准的人群编码")
+        raise HealthVisionError(
+            "profile_coding_rules_unavailable", "系统尚未配置对应人群的配餐规则，已填写资料无需重复提交", 503
+        )
+    sex_code = mapping.get("sex", {}).get(profile.get("sex"))
+    if sex_code is None:
+        raise HealthVisionError(
+            "profile_coding_rules_unavailable", "系统的性别编码规则尚未配置完成，已填写资料无需重复提交", 503
+        )
     dietary = profile.get("dietary_details") or {}
     values = {}
     for target, state_key, list_key in (
@@ -317,7 +344,7 @@ def code_submitted_profile(profile, rules, mapping):
     return ProfileProjection(
         population_code=populations[0],
         age_years=age,
-        sex_code=mapping.get("sex", {}).get(profile.get("sex")),
+        sex_code=sex_code,
         weight_kg=dietary.get("statedWeightKg"),
         height_cm=profile.get("height_cm"),
         activity_code=mapping.get("activity", {}).get(profile.get("activity_level")),

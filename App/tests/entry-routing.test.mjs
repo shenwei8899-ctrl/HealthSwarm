@@ -58,9 +58,9 @@ test('a freshly restored confirmed WeChat family enters chat without another pro
   assert.equal(restores,1);assert.equal(reads,0)
 })
 
-test('ready-family shortcut still gives pending invitation and profile preparation priority',async()=>{
+test('ready-family shortcut preserves invitation priority but ignores old preparation',async()=>{
   const account={accountId:'17',token:'synthetic',householdId:'family-1',families:[{id:'family-1',onboardingRequired:false}]}
-  for(const [invitation,preparation,expected] of [['family_pending',false,'/pages/invite/index?token=family_pending'],['',true,'/pages/onboarding/preparing']]){
+  for(const [invitation,preparation,expected] of [['family_pending',false,'/pages/invite/index?token=family_pending'],['',true,'/pages/chat/index']]){
     const resolve=createEntryResolver({session:()=>account,auth:{restore:async()=>account},readProfile:()=>assert.fail('no duplicate profile read'),invitation:()=>invitation,pendingPreparation:()=>preparation})
     assert.equal(await resolve(),expected)
   }

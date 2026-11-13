@@ -99,6 +99,7 @@ class HealthFinalAnswerMiddleware(AgentMiddleware[HealthFinalAnswerState]):
         # 预算已准备本轮模型；继续使用标准 handler，让用量和执行链看到真正的无工具请求。
         prompt = (
             "资料准备已经结束。当前只生成给用户的最终正文，不再调用工具或输出分析、工具计划。"
+            "以最新用户消息为本轮任务，结合历史理解追问；除非本轮明确要求回顾、比较或汇总，否则不重复回答历史问题，也不自动续答旧轮未完成的问题。"
             "继续遵守原有用途、专业安全与引用规则，只使用本轮实际取得的资料和业务结果。"
         )
         labels = self._citation_labels(request)

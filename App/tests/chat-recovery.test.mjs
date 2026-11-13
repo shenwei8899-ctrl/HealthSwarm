@@ -1,3 +1,4 @@
+import {chatPromptProfileKey} from '../src/services/chat-prompt-profile.js'
 import {createConversationHistoryCache} from '../src/services/conversation-history.js'
 import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
 import {watch} from 'vue'
@@ -42,7 +43,7 @@ function fixture({cached=true,createFailure=false}={}){
   if(o.path.includes('/reference-meal-plans/')||o.path.includes('/daily-arrangements/'))return {data:{status:'absent'}}
   throw new Error('Unexpected endpoint '+o.path)
  }
- const deps={todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),defineOptions(){},createChatEntryTransition,createChatKeyboardLayout,watch,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,HEALTH_TEXT_TASKS,chatPresentation,chatTimestamp,chatBusinessDate,isReferencePlan:()=>false,
+ const deps={chatPromptProfileKey,todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),defineOptions(){},createChatEntryTransition,createChatKeyboardLayout,watch,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,HEALTH_TEXT_TASKS,chatPresentation,chatTimestamp,chatBusinessDate,isReferencePlan:()=>false,
   defineProps:()=>({route:{entry:'conversation'}}),onMounted:f=>hooks.mount=f,onShow:f=>hooks.show=f,onHide:f=>hooks.hide=f,onUnmounted:f=>hooks.unmount=f,
   storageContext:()=>account,scopedStorage:storage,getSession:session,localDate:()=>date,newHealthRequestId:()=>rid,
   loadCloudProfile:async()=>({onboarded:true,householdId:'family',selfMemberId:'self',members:[{id:'self',relation:'本人',healthMemberId:member}]}),

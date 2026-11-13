@@ -297,6 +297,19 @@ class JoinInput(BaseModel):
     code: str = Field(min_length=20, max_length=100)
 
 
+class AcceptFamilyInvitation(JoinInput):
+    """切换须明确确认原家庭及看到的交接。"""
+
+    expected_family_id: UUID | None = None
+    expected_transfer_id: UUID | None = None
+
+
+class FamilyTransferInput(BaseModel):
+    """由现任管理员选择家庭内的接手人。"""
+
+    member_id: UUID
+
+
 class FamilyInviteRevoke(BaseModel):
     """按准备时的邀请版本撤销，重复请求不撤销后续新版本。"""
 

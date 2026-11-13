@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.utils.auth_middleware import get_admin_user, get_db, get_required_user
 from yuxi.services.family_schemas import (
+    AcceptFamilyInvitation,
     AuthorizationInput,
     FamilyInput,
     FamilyInviteRevoke,
@@ -14,6 +15,7 @@ from yuxi.services.family_schemas import (
     GuardianRequest,
     GuardianReview,
     JoinInput,
+    FamilyTransferInput,
     MeasurementInput,
     MeasurementQuery,
     MeasurementUpdate,
@@ -64,9 +66,25 @@ async def create_family(payload: FamilyInput, user: User = Depends(get_required_
 
 
 @family.post("/join")
-async def join_family(payload: JoinInput, user: User = Depends(get_required_user), service=Depends(family_service)):
+async def join_family(
+    payload: AcceptFamilyInvitation, user: User = Depends(get_required_user), service=Depends(family_service)
+):
     """本人明确接受普通家庭邀请或绑定成员邀请。"""
-    return await FamilyInvitationService(service).accept(payload.code, user.username)
+    expected = str(payload.expected_family_id) if payload.expected_family_id else None
+    transfer = str(payload.expected_transfer_id) if payload.expected_transfer_id else None
+    return await FamilyInvitationService(service).accept(payload.code, user.username, expected, transfer)
+
+
+@family.post("/{fid}/owner-transfer")
+async def propose_owner_transfer(fid: str, payload: FamilyTransferInput, service=Depends(family_service)):
+    """现任管理员指定接手人。"""
+    return await FamilyInvitationService(service).propose_transfer(fid, str(payload.member_id))
+
+
+@family.post("/{fid}/owner-transfer/{transfer_id}/confirm")
+async def confirm_owner_transfer(fid: str, transfer_id: str, service=Depends(family_service)):
+    """接手人确认后等待原管理员完成切换。"""
+    return await FamilyInvitationService(service).confirm_transfer(fid, transfer_id)
 
 
 @family.get("/invitations/{code}")

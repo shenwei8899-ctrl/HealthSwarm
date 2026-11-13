@@ -3,30 +3,27 @@
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import text, select
-from sqlalchemy.dialects.postgresql import insert
-
+from sqlalchemy import select, text
 from yuxi.services.family_service import (
     FamilyService,
-    member_view,
-    is_adult,
     guardian_active,
+    is_adult,
+    member_view,
 )
 from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.miniapp_profile_types import (
-    MiniappMemberInput,
     miniapp_onboarding_ready,
     miniapp_profile_complete,
+    saved_miniapp_member,
 )
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import FamilyMember, FamilyProfileRevision
 from yuxi.storage.postgres.models_health import (
+    HealthGrant,
     HealthMiniappProfileReceipt,
     HealthProcessingConsent,
-    HealthGrant,
 )
 from yuxi.utils.datetime_utils import utc_now_naive
-from yuxi.services.health_vision_types import FAMILY_REPORT_SCOPES
 
 
 async def read_miniapp_profile(uid, fid):
@@ -59,8 +56,6 @@ async def start_miniapp_analysis(uid, fid, data):
             )
         if member.invitation_review_pending:
             raise HealthVisionError("invitation_review_required", "请先核对并保存本人资料", 409)
-        if data.action == "open_consultation" and member.invitation_analysis_pending:
-            return await profile_result(service, family)
         receipt = await db.get(HealthMiniappProfileReceipt, (uid, str(data.client_request_id)))
         if receipt:
             if receipt.family_id != fid or receipt.fingerprint != digest:
@@ -70,21 +65,8 @@ async def start_miniapp_analysis(uid, fid, data):
         if automatic and member.subject_uid != uid:
             raise HealthVisionError("member_unavailable", "只能自动衔接当前账号本人的营养咨询", 403)
         service.require_version(member, data.expected_version)
-        profile = member.profile or {}
         try:
-            MiniappMemberInput.model_validate(
-                {
-                    "client_ref": member.id,
-                    "member_id": member.id,
-                    "version": member.version,
-                    "name": member.name,
-                    "relation": member.relationship,
-                    "birth_date": profile.get("birth_date"),
-                    "sex": profile.get("sex") or "unspecified",
-                    "height_cm": profile.get("height_cm"),
-                    "dietary": profile.get("dietary_details") or {},
-                }
-            )
+            saved_miniapp_member(member)
         except ValidationError as exc:
             labels = {
                 "birth_date": "出生日期",
@@ -92,6 +74,7 @@ async def start_miniapp_analysis(uid, fid, data):
                 "sex": "性别",
                 "name": "姓名或称呼",
                 "statedWeightKg": "体重",
+                "weight_kg": "体重",
                 "dietary": "饮食与健康资料",
             }
             messages = list(
@@ -106,82 +89,29 @@ async def start_miniapp_analysis(uid, fid, data):
         if automatic:
             from yuxi.services.health_vision_service import health_vision_service
 
-            # 本人读取完整且当前的服务端资料即可衔接咨询，不要求额外确认步骤。
-            if member.confirmed_version != member.version:
-                member.confirmed_version, member.confirmed_at = (
-                    member.version,
-                    utc_now_naive(),
-                )
             config = await health_vision_service.configuration(db)
             configured = config["consultation"]
             if not configured["available"]:
                 raise HealthVisionError("configuration_unavailable", "营养咨询服务暂未就绪，档案已保存", 503)
-            processing = {
-                "purpose": "consultation",
-                "processor": configured["processor"],
-                "policy_version": config["policy_version"],
-            }
             health_id = await service.repo.linked_health_member(fid, member.id)
-            existing = None
-            if health_id:
+            if health_id and not member.invitation_analysis_pending:
                 grant = await db.get(HealthGrant, (health_id, uid), populate_existing=True)
-                if grant is not None and (
-                    grant.revoked_at is not None
-                    or ("ai_use" not in grant.scopes and set(grant.scopes) != FAMILY_REPORT_SCOPES)
+                consent = await db.get(HealthProcessingConsent, (health_id, uid, "consultation"), populate_existing=True)
+                if (
+                    grant is not None and grant.revoked_at is None and "ai_use" in grant.scopes
+                    and consent is not None and consent.revoked_at is None
+                    and consent.processor == configured["processor"]
+                    and consent.policy_version == config["policy_version"]
                 ):
+                    if member.confirmed_version != member.version:
+                        member.confirmed_version, member.confirmed_at = member.version, utc_now_naive()
                     return await profile_result(service, family)
-                if grant is not None and "ai_use" not in grant.scopes:
-                    previous_ai = await db.scalar(
-                        select(HealthProcessingConsent.member_id)
-                        .where(
-                            HealthProcessingConsent.member_id == health_id,
-                            HealthProcessingConsent.actor_uid == uid,
-                            HealthProcessingConsent.purpose != "report",
-                        )
-                        .limit(1)
-                    )
-                    if previous_ai is not None:
-                        return await profile_result(service, family)
-                if grant is not None and "ai_use" in grant.scopes:
-                    # 与主动停用的写入按同一用途行排序，不反向获取健康成员锁。
-                    await db.execute(
-                        insert(HealthProcessingConsent)
-                        .values(
-                            member_id=health_id,
-                            actor_uid=uid,
-                            purpose="consultation",
-                            processor=processing["processor"],
-                            policy_version=processing["policy_version"],
-                            granted_at=utc_now_naive(),
-                        )
-                        .on_conflict_do_nothing(index_elements=["member_id", "actor_uid", "purpose"])
-                    )
-                    existing = await db.scalar(
-                        select(HealthProcessingConsent)
-                        .where(
-                            HealthProcessingConsent.member_id == health_id,
-                            HealthProcessingConsent.actor_uid == uid,
-                            HealthProcessingConsent.purpose == "consultation",
-                        )
-                        .with_for_update()
-                        .execution_options(populate_existing=True)
-                    )
-            if existing is not None and existing.revoked_at is not None:
-                return await profile_result(service, family)
-            if (
-                existing is not None
-                and existing.processor == processing["processor"]
-                and existing.policy_version == processing["policy_version"]
-                and grant is not None
-                and "ai_use" in grant.scopes
-            ):
-                return await profile_result(service, family)
-        else:
-            processing = {
-                "purpose": data.purpose,
-                "processor": data.processor,
-                "policy_version": data.policy_version,
-            }
+            raise HealthVisionError("consultation_consent_required", "请确认当前营养咨询的数据处理说明。", 409)
+        processing = {
+            "purpose": data.purpose,
+            "processor": data.processor,
+            "policy_version": data.policy_version,
+        }
         await bind_submitted_profile(db, uid, family, [member], processing)
         member.invitation_analysis_pending = False
         member.confirmed_version, member.confirmed_at = member.version, utc_now_naive()
@@ -198,7 +128,7 @@ async def start_miniapp_analysis(uid, fid, data):
             fid,
             member.id,
             uid,
-            "miniapp.consultation.open" if automatic else "miniapp.analysis.consent",
+            "miniapp.analysis.consent",
             member.version,
         )
         await db.flush()
@@ -224,7 +154,7 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
     if receipt:
         if receipt.family_id != fid or receipt.fingerprint != digest:
             raise HTTPException(409, "同一保存请求不能改变建档内容")
-        return await profile_result(service, family)
+        return {**await profile_result(service, family), "memberRefs": receipt.member_refs}
     if data.analysis_consent is not None and data.analysis_consent.get("purpose") not in {
         "consultation",
         "meal_plan",
@@ -355,7 +285,7 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
     )
     await service.repo.audit(fid, None, uid, "miniapp.onboarding.save", family.version)
     await db.flush()
-    return await profile_result(service, family)
+    return {**await profile_result(service, family), "memberRefs": refs}
 
 
 async def profile_result(service, family):
@@ -391,6 +321,7 @@ async def profile_result(service, family):
         members.append(
             {
                 "id": member.id,
+                "memberId": member.person_id or member.id,
                 "healthMemberId": await service.repo.linked_health_member(family.id, member.id),
                 "version": member.version,
                 "relationshipVersion": member.relationship_version,
@@ -420,6 +351,7 @@ async def profile_result(service, family):
         "invitationReviewPending": bool(actor and actor.invitation_review_pending),
         "invitationAnalysisPending": bool(actor and actor.invitation_analysis_pending),
         "selfMemberId": actor.id if actor else None,
+        "selfPersonId": (actor.person_id or actor.id) if actor else None,
         "isOwner": family.owner_uid == service.uid,
         "members": members,
         "source": "api",

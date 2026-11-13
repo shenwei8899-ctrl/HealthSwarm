@@ -37,8 +37,9 @@ for (const [label, sourcePermissions, readOnly, enabled] of [
 })
 
 test('archive gender changes produce the corresponding saved sex field', () => {
-  for (const [gender, sex] of [['男', 'male'], ['未填写', 'unspecified'], ['女', 'female']]) {
+  for (const [gender, sex] of [['男', 'male'], ['女', 'female']]) {
     const original = { gender: gender === '女' ? '男' : '女' }
     assert.deepEqual(memberProfileChanges(original, { gender }, { editable_fields: ['sex'] }), { sex })
   }
+  assert.throws(()=>memberProfileChanges({gender:'女'},{gender:'未填写'},{editable_fields:['sex']}),/性别/)
 })

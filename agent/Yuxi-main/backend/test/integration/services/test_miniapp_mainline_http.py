@@ -7,7 +7,7 @@ from copy import deepcopy
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from test.integration.services.test_health_family_profile_http import (  # noqa: F401
     family_profile_http,
@@ -16,9 +16,127 @@ from test.integration.services.test_health_family_profile_http import (  # noqa:
     cleanup_test_knowledge_resources,
 )
 from test.integration.services.test_daily_arrangement_http import source
-from yuxi.storage.postgres.models_business import FamilyMember
+from yuxi.storage.postgres.models_business import FamilyArchive, FamilyMember
+from yuxi.storage_migrations.v016_family_membership import upgrade_family_membership
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
+async def test_membership_upgrade_rejects_ambiguous_legacy_data_without_mutating_it(family_profile_http):
+    """迁移不能替多家庭旧账号选择归属。"""
+    from types import SimpleNamespace
+
+    client, sessions, users = family_profile_http
+    first = (await client.post("/api/family", headers=users["self"], json={"name": "原家庭"})).json()
+    second = (await client.post("/api/family", headers=users["other"], json={"name": "另一家庭"})).json()
+    engine = sessions.kw["bind"]
+    async with engine.begin() as connection:
+        await connection.execute(text("DROP INDEX uq_active_family_subject"))
+    async with sessions() as db:
+        db.add(FamilyMember(
+            id=str(uuid4()), family_id=second["id"], subject_uid="self", name="重复归属", relationship="家人",
+        ))
+        await db.commit()
+    with pytest.raises(RuntimeError, match="1 个账号存在多个有效家庭归属"):
+        await upgrade_family_membership(SimpleNamespace(async_engine=engine))
+    async with sessions() as db:
+        members = list(await db.scalars(select(FamilyMember).where(FamilyMember.subject_uid == "self")))
+        assert {member.family_id for member in members if member.is_active} == {first["id"], second["id"]}
+
+
+async def test_switch_archives_only_membership_and_preserves_person_identity(family_profile_http):
+    """本人切换保留编号，原家庭未认领的档案与历史仍在原处。"""
+    client, sessions, users = family_profile_http
+    old = (await client.post("/api/family", headers=users["self"], json={"name": "我的家"})).json()
+    fid = old["id"]
+    other = await client.post(
+        f"/api/family/{fid}/members", headers=users["self"], json={"name": "家人", "relationship": "母亲"}
+    )
+    assert other.status_code == 200, other.text
+    destination = (await client.post("/api/family", headers=users["other"], json={"name": "受邀家庭"})).json()
+    did = destination["id"]
+    code = (await client.post(f"/api/family/{did}/invite", headers=users["other"])).json()["code"]
+    preview = await client.get(f"/api/family/invitations/{code}", headers=users["self"])
+    assert preview.json()["state"] == "switch"
+    assert (await client.post("/api/family/join", headers=users["self"], json={"code": code})).status_code == 409
+    body = {"code": code, "expected_family_id": fid}
+    switched = await client.post("/api/family/join", headers=users["self"], json=body)
+    assert switched.status_code == 200, switched.text
+    assert switched.json()["id"] == did
+    repeated = await client.post("/api/family/join", headers=users["self"], json=body)
+    assert repeated.status_code == 200
+    assert (await client.get(f"/api/family/{fid}", headers=users["self"])).status_code == 404
+    async with sessions() as db:
+        assert (await db.get(FamilyArchive, fid)).archived_at is not None
+        original = await db.get(FamilyMember, old["members"][0]["id"])
+        relative = await db.get(FamilyMember, other.json()["id"])
+        joined_id = next(member["id"] for member in switched.json()["members"] if member["is_self"])
+        joined = await db.get(FamilyMember, joined_id)
+        assert not original.is_active and joined.is_active
+        assert original.person_id == joined.person_id
+        assert relative.family_id == fid and relative.is_active and relative.subject_uid is None
+
+
+async def test_confirmed_handoff_only_takes_effect_with_valid_switch(family_profile_http):
+    """无交接拒绝；接手人同意后，撤销的目的地邀请也不会改变原家庭。"""
+    client, _, users = family_profile_http
+    old = (await client.post("/api/family", headers=users["self"], json={"name": "原家庭"})).json()
+    fid = old["id"]
+    original_invite = (await client.post(f"/api/family/{fid}/invite", headers=users["self"])).json()["code"]
+    successor = await client.post("/api/family/join", headers=users["other"], json={"code": original_invite})
+    assert successor.status_code == 200, successor.text
+    successor_id = next(member["id"] for member in successor.json()["members"] if member["is_self"])
+    destination = (await client.post("/api/family", headers=users["admin"], json={"name": "新家庭"})).json()
+    did = destination["id"]
+    code = (await client.post(f"/api/family/{did}/invite", headers=users["admin"])).json()["code"]
+    body = {"code": code, "expected_family_id": fid}
+    assert (await client.post("/api/family/join", headers=users["self"], json=body)).status_code == 409
+    proposal = await client.post(
+        f"/api/family/{fid}/owner-transfer", headers=users["self"], json={"member_id": successor_id}
+    )
+    assert proposal.status_code == 200, proposal.text
+    endpoint = f"/api/family/{fid}/owner-transfer/{proposal.json()['id']}/confirm"
+    assert (await client.post(endpoint, headers=users["self"])).status_code == 404
+    assert (await client.post(endpoint, headers=users["other"])).status_code == 200
+    body["expected_transfer_id"] = proposal.json()["id"]
+    revoked = await client.post(
+        f"/api/family/{did}/invite/revoke", headers=users["admin"], json={"expected_version": 0}
+    )
+    assert revoked.status_code == 200
+    assert (await client.post("/api/family/join", headers=users["self"], json=body)).status_code == 410
+    assert (await client.get(f"/api/family/{fid}", headers=users["self"])).json()["is_owner"]
+    body["code"] = (await client.post(f"/api/family/{did}/invite", headers=users["admin"])).json()["code"]
+    switched = await client.post("/api/family/join", headers=users["self"], json=body)
+    assert switched.status_code == 200, switched.text
+    old_after = await client.get(f"/api/family/{fid}", headers=users["other"])
+    assert old_after.json()["is_owner"]
+    assert old_after.json()["members"][0]["id"] == successor_id
+    assert (await client.get(f"/api/family/{fid}", headers=users["self"])).status_code == 404
+
+
+async def test_simultaneous_switches_can_only_accept_one_destination(family_profile_http):
+    """两个目的地以同一原家庭并发确认，只能成功切换一次。"""
+    client, sessions, users = family_profile_http
+    original = (await client.post("/api/family", headers=users["self"], json={"name": "原家庭"})).json()
+    codes = []
+    for name in ("other", "admin"):
+        destination = (await client.post("/api/family", headers=users[name], json={"name": name})).json()
+        invitation = await client.post(f"/api/family/{destination['id']}/invite", headers=users[name])
+        codes.append(invitation.json()["code"])
+    results = await asyncio.gather(*(
+        client.post(
+            "/api/family/join",
+            headers=users["self"],
+            json={"code": code, "expected_family_id": original["id"]},
+        )
+        for code in codes
+    ))
+    assert sorted(response.status_code for response in results) == [200, 409]
+    async with sessions() as db:
+        members = list(await db.scalars(select(FamilyMember).where(FamilyMember.subject_uid == "self")))
+        assert len(members) == 2
+        assert sum(member.is_active for member in members) == 1
+        assert len({member.person_id for member in members}) == 1
 
 
 async def test_ordinary_invite_preview_decline_multi_user_and_concurrent_repeat(family_profile_http):
@@ -68,7 +186,9 @@ async def test_bound_invite_claims_existing_profile_and_requires_personal_confir
 
     monkeypatch.setattr(health_vision_service, "configuration", configured)
     family, path, data, headers = await source(client, users["self"])
-    data["analysis_consent"] = {"processor": "synthetic-processor", "policy_version": "synthetic-policy"}
+    data["analysis_consent"] = {
+        "purpose": "meal_plan", "processor": "synthetic-processor", "policy_version": "synthetic-policy"
+    }
     saved = await client.post(path, headers=headers, json=data)
     assert saved.status_code == 200, saved.text
     before = saved.json()
@@ -100,6 +220,10 @@ async def test_bound_invite_claims_existing_profile_and_requires_personal_confir
     )
     own_headers = {**users["other"], "Idempotency-Key": draft["client_request_id"]}
     assert (await client.post(path, headers=own_headers, json=wrong)).status_code == 403
+    incomplete = deepcopy(draft)
+    del incomplete["members"][0]["weight_kg"]
+    assert (await client.post(path, headers=own_headers, json=incomplete)).status_code == 422
+    assert (await client.get(path, headers=users["other"])).json()["onboarded"] is False
     complete = await client.post(path, headers=own_headers, json=draft)
     assert complete.status_code == 200, complete.text
     assert complete.json()["onboarded"] is True

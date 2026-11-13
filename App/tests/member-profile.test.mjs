@@ -1,4 +1,4 @@
-import {restrictionIssue} from '../src/utils/onboarding-validation.js'
+import {restrictionIssue,basicProfileIssue} from '../src/utils/onboarding-validation.js'
 import {restrictionFields} from '../src/utils/health.js'
 import {preserveMemberEdit,readMemberEdit,clearMemberEdit} from '../src/services/member-edit-draft.js'
 import test from 'node:test'
@@ -13,7 +13,15 @@ import { readCloudReportStatus } from '../src/services/report-entry.js'
 
 function setup(){const values=new Map();globalThis.uni={getStorageSync:k=>values.get(k),setStorageSync:(k,v)=>values.set(k,structuredClone(v))};setSession({accountId:'creator',householdId:'family',token:'synthetic'});return values}
 const source=()=>({id:'mother',is_active:true,is_self:false,version:7,relationship_version:2,confirmed:true,editable_fields:['sex','birth_date','height_cm','dietary_details','goal','allergens','avoidances','doctor_instructions'],profile:{dietary_details:{statedWeightKg:55,conditions:['合成情况'],recentNote:'保留原文'},medications:'保留用药记录'}})
-const member=()=>({id:'mother',name:'妈妈',relation:'妈妈',weight:55,gender:'女',conditions:['合成情况'],recentNote:'保留原文',allergyStatus:'none',allergies:[],goals:['饮食均衡']})
+const member=()=>({id:'mother',name:'妈妈',relation:'妈妈',birthDate:'1960-01-01',height:160,weight:55,gender:'女',conditions:['合成情况'],recentNote:'保留原文',allergyStatus:'none',allergies:[],goals:['饮食均衡']})
+
+test('member editing rejects clearing confirmed body fields and can correct an old invalid weight', () => {
+  const original = member()
+  for (const [field, value, message] of [['birthDate', '', /出生日期/], ['gender', '未填写', /性别/], ['height', '', /身高/], ['weight', '', /体重/]]) {
+    assert.throws(() => memberProfileChanges(original, { ...original, [field]: value }, source()), message)
+  }
+  assert.equal(memberProfileChanges({ ...original, weight: 1001 }, { ...original, weight: 56 }, source()).dietary_details.statedWeightKg, 56)
+})
 
 test('report status checks report grants before reading private reports',async()=>{
   setup();const calls=[]
@@ -97,26 +105,26 @@ function detail(overrides={}){
   const src=readFileSync(new URL('../src/components/CloudMemberDetail.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const raw=source(),m=member();let revision=1;const writes=[]
   const deps={ref,computed,defineOptions(){},defineProps:()=>({id:'mother'}),defineEmits:()=>()=>{},defineExpose(){},onMounted(){},onUnmounted(){},onShow(){},onHide(){},onUnload(){},sessionRevision:()=>revision,profileDraft,profileChanges,
-    restrictionIssue,restrictionFields,preserveMemberEdit,readMemberEdit,clearMemberEdit,readMemberProfile:async()=>({profile:{householdId:'family',isOwner:true,selfMemberId:'creator',members:[m]},member:m,source:raw}),
+    restrictionIssue,basicProfileIssue,restrictionFields,preserveMemberEdit,readMemberEdit,clearMemberEdit,readMemberProfile:async()=>({profile:{householdId:'family',isOwner:true,selfMemberId:'creator',members:[m]},member:m,source:raw}),
     saveMemberProfile:async(...args)=>writes.push(args),request:async()=>({data:{}}),...overrides}
   const page=new Function('deps',`const {${Object.keys(deps)}}=deps;${src};return {load,edit,save,hide,cancelEdit,section,conflictEdit,canEdit,profile,source,draft,error,busy,editing,requestClose,reload,writing,dirty,writeUncertain,report,reportError,reportBusy,reportHint,canOpenReport}`)(deps)
   return {...page,writes,changeAccount:()=>revision++}
 }
 
-test('self report entry opens the linked member directly without an enable request',async()=>{
+test('self report entry passes the person number without an enable request',async()=>{
   const opened=[]
-  const p=detail({readMemberProfile:async()=>({profile:{householdId:'family',members:[{...member(),healthMemberId:'same-health'}]},source:{...source(),is_self:true}}),readCloudReportStatus:async()=> 'empty'})
+  const p=detail({readMemberProfile:async()=>({profile:{householdId:'family',members:[{...member(),memberId:'same-person',healthMemberId:'same-health'}]},source:{...source(),is_self:true}}),readCloudReportStatus:async()=> 'empty'})
   uni.navigateTo=o=>opened.push(o.url)
   await p.load();assert.equal(p.reportError.value,'');assert.equal(p.reportHint.value,'可添加')
-  await p.report();assert.deepEqual(opened,['/pages/health/vision?kind=report&memberId=same-health'])
+  await p.report();assert.deepEqual(opened,['/pages/health/vision?kind=report&personId=same-person'])
 })
 
 test('ordinary family members can open the shared members report directly',async()=>{
   const opened=[]
-  const p=detail({readMemberProfile:async()=>({profile:{householdId:'family',isOwner:true,members:[{...member(),healthMemberId:'family-health'}]},source:source()}),readCloudReportStatus:async()=> 'empty'})
+  const p=detail({readMemberProfile:async()=>({profile:{householdId:'family',isOwner:true,members:[{...member(),memberId:'family-person',healthMemberId:'family-health'}]},source:source()}),readCloudReportStatus:async()=> 'empty'})
   uni.navigateTo=o=>opened.push(o.url)
   await p.load();assert.equal(p.reportError.value,'');assert.equal(p.reportHint.value,'可添加');assert.equal(p.canOpenReport.value,true)
-  await p.report();assert.deepEqual(opened,['/pages/health/vision?kind=report&memberId=family-health'])
+  await p.report();assert.deepEqual(opened,['/pages/health/vision?kind=report&personId=family-person'])
 })
 
 test('report navigation ignores overlapping clicks and hidden archives cannot start another navigation',async()=>{

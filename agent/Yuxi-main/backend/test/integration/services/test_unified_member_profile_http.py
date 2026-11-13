@@ -402,11 +402,15 @@ def automatic_open(member, **changes):
     }
 
 
-async def test_completed_profile_opens_consultation_without_manual_consent(family_profile_http):
-    """已有建档无关联时直接开启本人咨询，重复进入不重复创建或扩及配餐。"""
+async def test_completed_profile_requires_current_explicit_consultation_consent(family_profile_http):
+    """完整档案不会自动授权，明确确认后可重复进入且不会扩及配餐。"""
     client, sessions, users = family_profile_http
     _, path, member, _ = await saved_source(client, users)
     response = await submit(client, path, users["self"], automatic_open(member))
+    assert response.status_code == 409, response.text
+    async with sessions() as db:
+        assert await db.scalar(select(func.count()).select_from(HealthProcessingConsent)) == 0
+    response = await submit(client, path, users["self"], analysis(member))
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["completeProfile"] and result["onboarded"]
@@ -419,14 +423,20 @@ async def test_completed_profile_opens_consultation_without_manual_consent(famil
         record = await db.get(HealthProcessingConsent, (own["healthMemberId"], "self", "consultation"))
         assert record and record.revoked_at is None
         assert await db.get(HealthProcessingConsent, (own["healthMemberId"], "self", "meal_plan")) is None
+        record.policy_version = "synthetic-previous-policy"
+        await db.commit()
+    assert (await submit(client, path, users["self"], automatic_open(member))).status_code == 409
+    async with sessions() as db:
+        record = await db.get(HealthProcessingConsent, (own["healthMemberId"], "self", "consultation"))
+        assert record.policy_version == "synthetic-previous-policy"
 
 
 async def test_automatic_open_preserves_deliberate_stop(family_profile_http):
-    """首次自动开启后主动停用，重新进入和普通保存不恢复停用。"""
+    """明确授权后主动停用，重新进入不会恢复停用。"""
     client, sessions, users = family_profile_http
     _, path, member, _ = await saved_source(client, users)
     body = automatic_open(member)
-    response = await submit(client, path, users["self"], body)
+    response = await submit(client, path, users["self"], analysis(member))
     assert response.status_code == 200, response.text
     own = next(m for m in response.json()["members"] if m["id"] == member["id"])
     health_id = own["healthMemberId"]
@@ -437,7 +447,7 @@ async def test_automatic_open_preserves_deliberate_stop(family_profile_http):
     )
     assert revoked.status_code == 200, revoked.text
     for payload in [body, automatic_open(member)]:
-        assert (await submit(client, path, users["self"], payload)).status_code == 200
+        assert (await submit(client, path, users["self"], payload)).status_code == 409
     async with sessions() as db:
         assert (await db.get(HealthProcessingConsent, (health_id, "self", "consultation"))).revoked_at is not None
 
@@ -485,7 +495,7 @@ async def test_complete_profile_after_edit_returns_to_chat_without_reconfirmatio
     """本人档案更新后完整性仍满足时自动衔接，不能因旧确认版本而循环回建档。"""
     client, sessions, users = family_profile_http
     family, path, own, _ = await saved_source(client, users)
-    response = await submit(client, path, users["self"], automatic_open(own))
+    response = await submit(client, path, users["self"], analysis(own))
     assert response.status_code == 200, response.text
     health_id = next(m["healthMemberId"] for m in response.json()["members"] if m["id"] == own["id"])
     update = await client.put(

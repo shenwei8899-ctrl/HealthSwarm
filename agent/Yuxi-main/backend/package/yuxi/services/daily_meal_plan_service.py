@@ -4,89 +4,66 @@ from uuid import uuid4
 
 from sqlalchemy import select, text
 
-from yuxi.repositories.daily_arrangement_repository import DailyArrangementRepository
 from yuxi.services.family_service import FamilyService
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.reference_meal_plan_types import REFERENCE_CATALOG_CHAIN_VERSION
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_health import HealthDailyMealPlan, HealthInitialPlanPreview
+from yuxi.storage.postgres.models_health import HealthDailyArrangement, HealthDailyMealPlan, HealthInitialPlanPreview
 from yuxi.utils.datetime_utils import utc_now_naive
 
 MEALS = ("breakfast", "lunch", "dinner")
 
 
 async def current_row(session, uid, family_id, day, *, lock=False):
-    """以账号、家庭和日期定位当前引用，写入时串行化并发首次创建。"""
+    """核对当前家庭归属，并按家庭和日期串行化写入。"""
+    await FamilyService(session, uid).context(family_id)
     if lock:
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-            {"key": f"daily-meal-plan:{uid}:{family_id}:{day}"},
+            {"key": f"daily-meal-plan:{family_id}:{day}"},
         )
-    await FamilyService(session, uid).context(family_id)
     return await session.scalar(
         select(HealthDailyMealPlan).where(
-            HealthDailyMealPlan.actor_uid == uid,
             HealthDailyMealPlan.family_id == family_id,
             HealthDailyMealPlan.plan_date == day,
+            HealthDailyMealPlan.is_shared.is_(True),
         )
     )
 
 
-async def legacy_sources(session, uid, family_id, day):
-    """没有关联记录时读取已有正式安排或最近完成的参考结果。"""
+async def read_published_reference_source(session, family_id, day, preview_id):
+    """回读已纳入共享餐单的参考来源，并沿用发布者的来源校验。"""
+    from yuxi.services.reference_meal_plan_service import read_reference_plan_in_session
+
+    preview = await session.get(HealthInitialPlanPreview, preview_id)
+    selection = preview.selection if preview else {}
+    if selection.get("family_id") != family_id or selection.get("plan_date") != str(day):
+        raise HealthVisionError("daily_plan_source_invalid", "餐单日期或家庭不一致", 409)
+    return await read_reference_plan_in_session(session, preview.actor_uid, preview_id)
+
+
+async def read_published_formal_source(session, family_id, day, ref):
+    """核对共享索引指向的正式餐单来源。"""
     from yuxi.services.daily_arrangement_service import authorize_sources
-    from yuxi.repositories.health_task_repository import HealthTaskRepository
-    from yuxi.storage.postgres.models_business import AgentRun
-    import json
 
-    _, arrangement = await DailyArrangementRepository(session, uid, family_id).context(day)
-    if arrangement and arrangement.snapshot and arrangement.snapshot.get("status") == "ready":
-        await authorize_sources(session, uid, arrangement, published=True)
-        source = {"kind": "formal", "id": arrangement.id, "version": arrangement.snapshot["version"]}
-        return {meal["type"]: source for meal in arrangement.snapshot["meals"]}
-
-    runs = (
-        (
-            await session.scalars(
-                select(AgentRun)
-                .join(HealthInitialPlanPreview, AgentRun.id == HealthInitialPlanPreview.run_id)
-                .where(
-                    HealthInitialPlanPreview.actor_uid == uid,
-                    AgentRun.status == "completed",
-                    HealthInitialPlanPreview.selection["mode"].as_string() == "reference",
-                    HealthInitialPlanPreview.selection["family_id"].as_string() == family_id,
-                    HealthInitialPlanPreview.selection["plan_date"].as_string() == day.isoformat(),
-                )
-                .order_by(AgentRun.finished_at.desc().nullslast(), AgentRun.created_at.desc(), AgentRun.id.desc())
-            )
-        )
-        .unique()
-        .all()
-    )
-    for run in runs:
-        message = await HealthTaskRepository(session).final_message(run)
-        preview_id = json.loads(message.content).get("preview_id")
-        if preview_id:
-            preview = await session.get(HealthInitialPlanPreview, preview_id)
-            if preview is None or preview.actor_uid != uid:
-                continue
-            if (preview.snapshot or {}).get("catalog_chain_version") != REFERENCE_CATALOG_CHAIN_VERSION:
-                return {
-                    meal["meal_type"]: {"kind": "reference", "id": preview_id}
-                    for meal in preview.snapshot.get("meals", [])
-                    if meal.get("meal_type") in MEALS
-                }
-            return {meal["meal_type"]: {"kind": "reference", "id": preview_id} for meal in preview.snapshot["meals"]}
-    return {}
+    arrangement = await session.get(HealthDailyArrangement, ref["id"])
+    if (
+        not arrangement
+        or arrangement.family_id != family_id
+        or arrangement.plan_date != day
+        or not arrangement.snapshot
+        or arrangement.snapshot.get("version") != ref.get("version")
+    ):
+        raise HealthVisionError("daily_plan_source_changed", "今日计划来源已变化，请重新核对", 409)
+    await authorize_sources(session, arrangement.actor_uid, arrangement, published=True)
+    return arrangement
 
 
 async def read_current_plan(uid, family_id, day, session=None):
     """回读每个来源并重验权限，结果不会触发模型或写入。"""
-    from yuxi.services.daily_arrangement_service import authorize_sources
     from yuxi.services.reference_meal_plan_service import (
         ReferencePlanSourceChanged,
         current_reference_display_item,
-        read_reference_plan_in_session,
     )
 
     if session is None:
@@ -95,9 +72,9 @@ async def read_current_plan(uid, family_id, day, session=None):
     from yuxi.services.meal_dish_service import selected_source, attach_origins
 
     row = await current_row(session, uid, family_id, day)
-    refs = dict(row.meal_sources) if row else await legacy_sources(session, uid, family_id, day)
+    refs = dict(row.meal_sources) if row else {}
     sources, meals, needs_regeneration, regeneration_participants = {}, [], [], {}
-    display_reference_items = {}
+    display_reference_items, source_owners = {}, {}
 
     def mark_reference_regeneration(kind, preview):
         """来源失效时仅提示重排，并保留已存餐单供审计。"""
@@ -123,7 +100,8 @@ async def read_current_plan(uid, family_id, day, session=None):
             preview = await session.get(HealthInitialPlanPreview, ref["id"])
             if (
                 preview is not None
-                and preview.actor_uid == uid
+                and preview.selection.get("family_id") == family_id
+                and preview.selection.get("plan_date") == day.isoformat()
                 and (preview.snapshot or {}).get("catalog_chain_version") != REFERENCE_CATALOG_CHAIN_VERSION
             ):
                 mark_reference_regeneration(kind, preview)
@@ -132,7 +110,8 @@ async def read_current_plan(uid, family_id, day, session=None):
         if key not in sources:
             if ref["kind"] == "reference":
                 try:
-                    _, source = await read_reference_plan_in_session(session, uid, ref["id"])
+                    run, source = await read_published_reference_source(session, family_id, day, ref["id"])
+                    source_owners[key] = run.uid
                 except HealthVisionError as error:
                     if preview is None or (
                         not isinstance(error, ReferencePlanSourceChanged) and error.code not in stale_codes
@@ -146,18 +125,12 @@ async def read_current_plan(uid, family_id, day, session=None):
                 ):
                     raise HealthVisionError("daily_plan_source_invalid", "餐单日期或家庭不一致", 409)
             elif ref["kind"] == "formal":
-                _, arrangement = await DailyArrangementRepository(session, uid, family_id).context(day)
-                if (
-                    not arrangement
-                    or arrangement.id != ref["id"]
-                    or not arrangement.snapshot
-                    or arrangement.snapshot.get("version") != ref.get("version")
-                ):
-                    raise HealthVisionError("daily_plan_source_changed", "今日计划来源已变化，请重新核对", 409)
-                await authorize_sources(session, uid, arrangement, published=True)
+                arrangement = await read_published_formal_source(session, family_id, day, ref)
                 source = arrangement.snapshot
+                source_owners[key] = arrangement.actor_uid
             elif ref["kind"] == "selection":
                 source = await selected_source(session, uid, family_id, ref, kind)
+                source_owners[key] = source.get("source_owner")
             else:
                 raise HealthVisionError("daily_plan_source_invalid", "今日计划来源无法核对", 409)
             sources[key] = source
@@ -195,12 +168,16 @@ async def read_current_plan(uid, family_id, day, session=None):
                 continue
         if ref["kind"] != "selection":
             meal = attach_origins(meal, ref, day, kind)
+        members = meal.get("members", source.get("members", []))
+        if source_owners.get(key) != uid:
+            members = [{"id": member["id"], "name": member["name"]} for member in members]
+            meal = shared_meal_view(meal, members)
         meals.append(
             {
                 "meal_type": kind,
                 "source": ref,
                 "meal": meal,
-                "members": meal.get("members", source.get("members", [])),
+                "members": members,
             }
         )
     purchase_options = []
@@ -264,14 +241,14 @@ async def read_current_plan(uid, family_id, day, session=None):
                     else "请核对商品与包装数量。",
                 }
             )
-        if key[0] == "formal" and len(selected) == 3 and selected == original:
+        if key[0] == "formal" and source_owners.get(key) == uid and len(selected) == 3 and selected == original:
             purchase_options.append({"kind": "formal", "id": key[1], "version": key[2], "meal_types": sorted(selected)})
     formal = None
     if len(sources) == 1 and len(meals) == 3:
         key, source = next(iter(sources.items()))
-        if key[0] == "formal":
+        if key[0] == "formal" and source_owners.get(key) == uid:
             formal = source
-    pending = await pending_request(session, row) if row else None
+    pending = await pending_request(session, row, viewer_uid=uid) if row else None
     if pending and pending["status"] == "expired":
         selection = pending["selection"]
         if selection["family_id"] != family_id or selection["plan_date"] != day.isoformat():
@@ -296,7 +273,48 @@ async def read_current_plan(uid, family_id, day, session=None):
     }
 
 
-async def pending_request(session, row):
+def daily_plan_response(plan):
+    """只返回页面所需的来源标识，保留服务端内部的原始回执。"""
+    meals = []
+    for item in plan["meals"]:
+        ref = {key: value for key, value in item["source"].items() if key in {"kind", "id", "version"}}
+        meal = {key: value for key, value in item["meal"].items() if key != "dishes"}
+        meal["dishes"] = [
+            {key: value for key, value in dish.items() if key != "origin"} for dish in item["meal"]["dishes"]
+        ]
+        meals.append({**item, "source": ref, "meal": meal})
+    return {**plan, "meals": meals}
+
+
+async def read_shared_formal_meal(uid, family_id, day, arrangement_id, version, daily_version, meal_type):
+    """只返回共享餐单当前版本中对应的正式餐次。"""
+    ref = {"kind": "formal", "id": arrangement_id, "version": version}
+    async with pg_manager.get_async_session_context() as session:
+        await require_formal_current_in_session(
+            session, uid, family_id, day, arrangement_id, version, daily_version, [meal_type]
+        )
+        arrangement = await read_published_formal_source(session, family_id, day, ref)
+        meal = next((item for item in arrangement.snapshot["meals"] if item["type"] == meal_type), None)
+    if meal is None:
+        raise HealthVisionError("daily_plan_source_changed", "所选餐次已调整，请重新读取", 409)
+    if arrangement.actor_uid != uid:
+        members = [{"id": member["id"], "name": member["name"]} for member in meal.get("members", [])]
+        meal = shared_meal_view(meal, members)
+    return {
+        "arrangement_id": arrangement_id,
+        "version": version,
+        "meal": meal,
+        "analysis": arrangement.snapshot.get("analysis") if arrangement.actor_uid == uid else None,
+    }
+
+
+def shared_meal_view(meal, members):
+    """保留家庭餐单内容，隐藏生成来源中的个人资料和发起人的采购回执。"""
+    public = {key: value for key, value in meal.items() if key not in {"nutritionSource", "purchase"}}
+    return {**public, "members": members, "memberNotes": []}
+
+
+async def pending_request(session, row, *, viewer_uid=None):
     """请求与运行表持有终态；索引只保存可恢复的请求身份。"""
     from yuxi.storage.postgres.models_business import AgentRun, AgentRunRequest
 
@@ -304,10 +322,15 @@ async def pending_request(session, row):
     if not saved.get("request_id"):
         return None
     request = await session.scalar(select(AgentRunRequest).where(AgentRunRequest.request_id == saved["request_id"]))
-    if request is None or request.uid != row.actor_uid or request.conversation_thread_id != saved.get("thread_id"):
+    actor_uid = saved.get("actor_uid", row.actor_uid)
+    if request is None or request.uid != actor_uid or request.conversation_thread_id != saved.get("thread_id"):
         raise HealthVisionError("daily_plan_request_invalid", "饮食计划请求无法核对", 409)
     run = await session.get(AgentRun, request.dispatched_run_id) if request.dispatched_run_id else None
     status = run.status if run is not None else request.status
+    if viewer_uid is not None and viewer_uid != actor_uid:
+        if status in {"queued", "dispatched", "pending", "running", "cancel_requested"}:
+            return {"status": status}
+        return None
     result = {"request_id": request.request_id, "thread_id": request.conversation_thread_id, "status": status}
     if status == "completed":
         from yuxi.services.health_task_service import read_health_task_in_session
@@ -315,7 +338,7 @@ async def pending_request(session, row):
         from yuxi.services.reference_meal_plan_service import ReferencePlanSourceChanged
 
         try:
-            task = await read_health_task_in_session(session, row.actor_uid, request.request_id)
+            task = await read_health_task_in_session(session, actor_uid, request.request_id)
         except ReferencePlanSourceChanged as error:
             return {**result, "status": "expired", "selection": error.selection}
         if task.result and task.result.result_type == "needs_input":
@@ -350,44 +373,44 @@ async def reserve_reference_request(session, uid, binding, request):
     if (row.version if row else 0) != base:
         raise HealthVisionError("daily_plan_version_changed", "饮食计划已更新，请重新读取后操作", 409)
     if row:
-        pending = await pending_request(session, row)
+        pending = await pending_request(session, row, viewer_uid=uid)
         if (
             pending
-            and pending["request_id"] != request.request_id
+            and pending.get("request_id") != request.request_id
             and pending["status"] in {"queued", "dispatched", "pending", "running", "cancel_requested"}
         ):
             raise HealthVisionError("daily_plan_busy", "该日饮食计划正在生成，请读取已有任务", 423)
     else:
-        refs = await legacy_sources(session, uid, family_id, day)
         row = HealthDailyMealPlan(
-            id=str(uuid4()), actor_uid=uid, family_id=family_id, plan_date=day, version=0, meal_sources=refs, pending={}
+            id=str(uuid4()), actor_uid=uid, family_id=family_id, plan_date=day, version=0, meal_sources={}, pending={}
         )
         session.add(row)
     row.pending = {
+        "actor_uid": uid,
         "request_id": request.request_id,
         "thread_id": request.conversation_thread_id,
         "selection": selection,
     }
 
 
-async def require_current_reference_purchase(session, uid, daily, preview_id, plan):
+async def require_current_reference_purchase(session, uid, daily, preview_id, plan=None):
     """采购餐次必须仍属于当前每日版本的同一参考来源。"""
     from datetime import date
 
     day = date.fromisoformat(daily["date"])
-    if plan["plan_date"] != daily["date"] or plan["sources"]["family_id"] != daily["family_id"]:
+    if plan is not None and (plan["plan_date"] != daily["date"] or plan["sources"]["family_id"] != daily["family_id"]):
         raise HealthVisionError("daily_plan_source_invalid", "采购餐单日期或家庭不符", 409)
     row = await current_row(session, uid, daily["family_id"], day)
     if (row.version if row else 0) != daily["version"]:
         raise HealthVisionError("daily_plan_version_changed", "饮食计划已更新，请重新核对采购", 409)
-    refs = dict(row.meal_sources) if row else await legacy_sources(session, uid, daily["family_id"], day)
+    refs = dict(row.meal_sources) if row else {}
     selected = {meal for meal, ref in refs.items() if ref.get("kind") == "reference" and ref.get("id") == preview_id}
     requested = daily.get("meal_types", [])
     if (
         not requested
         or len(requested) != len(set(requested))
         or not set(requested).issubset(selected)
-        or not selected.issubset({meal["meal_type"] for meal in plan["meals"]})
+        or (plan is not None and not selected.issubset({meal["meal_type"] for meal in plan["meals"]}))
     ):
         raise HealthVisionError("daily_plan_source_changed", "采购来源中的餐次已变化，请重新核对", 409)
 
@@ -399,7 +422,7 @@ async def require_formal_current_in_session(
     row = await current_row(session, uid, family_id, day)
     if (row.version if row else 0) != daily_version:
         raise HealthVisionError("daily_plan_version_changed", "饮食计划已更新，请重新读取", 409)
-    refs = dict(row.meal_sources) if row else await legacy_sources(session, uid, family_id, day)
+    refs = dict(row.meal_sources) if row else {}
     expected = {"kind": "formal", "id": arrangement_id, "version": version}
     if any(refs.get(meal) != expected for meal in meals):
         raise HealthVisionError("daily_plan_source_changed", "所选餐次已调整，请重新读取", 409)
@@ -448,16 +471,8 @@ async def publish_reference_in_session(session, run, content):
 
     history = await reference_history(session, selection, lock=True, run_id=run.id)
     menus = await current_reference_menus(session, selection)
-    refs = dict(row.meal_sources) if row else await legacy_sources(session, run.uid, family_id, day)
-    if row is None:
-        legacy_meals = []
-        for kind, ref in refs.items():
-            if ref.get("kind") == "reference":
-                previous = await session.get(HealthInitialPlanPreview, ref["id"])
-                if previous:
-                    legacy_meals.extend(m for m in previous.snapshot["meals"] if m["meal_type"] == kind)
-        menus.append((family_id, run.uid, legacy_meals))
     validate_variety(history, selection, preview.snapshot["meals"], current_menus=menus, actor_uid=run.uid)
+    refs = dict(row.meal_sources) if row else {}
     if row is None:
         row = HealthDailyMealPlan(
             id=str(uuid4()), actor_uid=run.uid, family_id=family_id, plan_date=day, version=0, meal_sources={}
@@ -478,7 +493,7 @@ async def publish_formal_in_session(session, uid, family_id, day, arrangement, b
     version = row.version if row else 0
     if version != base:
         raise HealthVisionError("daily_plan_version_changed", "饮食计划已有更新，请重新读取后调整", 409)
-    refs = dict(row.meal_sources) if row else await legacy_sources(session, uid, family_id, day)
+    refs = dict(row.meal_sources) if row else {}
     if row is None:
         row = HealthDailyMealPlan(
             id=str(uuid4()), actor_uid=uid, family_id=family_id, plan_date=day, version=0, meal_sources={}

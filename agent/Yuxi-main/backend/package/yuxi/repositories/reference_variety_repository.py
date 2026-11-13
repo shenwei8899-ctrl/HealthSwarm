@@ -47,7 +47,10 @@ async def current_reference_menus(session, selection):
                 HealthDailyMealPlan.family_id,
                 HealthDailyMealPlan.actor_uid,
                 HealthDailyMealPlan.meal_sources,
-            ).where(HealthDailyMealPlan.plan_date == date.fromisoformat(selection["plan_date"]))
+            ).where(
+                HealthDailyMealPlan.plan_date == date.fromisoformat(selection["plan_date"]),
+                HealthDailyMealPlan.is_shared.is_(True),
+            )
         )
     ).all()
     ids = {ref["id"] for _, _, sources in rows for ref in (sources or {}).values() if ref.get("kind") == "reference"}

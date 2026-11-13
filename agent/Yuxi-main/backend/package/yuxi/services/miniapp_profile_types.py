@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
 class DietaryDetails(BaseModel):
@@ -59,9 +59,9 @@ class MiniappMemberInput(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     relation: str = Field(min_length=1, max_length=30)
     birth_date: date
-    sex: Literal["female", "male", "unspecified"] = "unspecified"
-    height_cm: float | None = Field(default=None, gt=0, le=300, allow_inf_nan=False)
-    weight_kg: float | None = Field(default=None, gt=0, le=1000, allow_inf_nan=False)
+    sex: Literal["female", "male"]
+    height_cm: float = Field(gt=0, le=300, allow_inf_nan=False, strict=True)
+    weight_kg: float = Field(gt=0, le=1000, allow_inf_nan=False, strict=True)
     dietary: DietaryDetails
 
     @model_validator(mode="after")
@@ -152,36 +152,41 @@ class MiniappConsultationOpenInput(BaseModel):
     expected_version: int = Field(ge=1)
 
 
-def miniapp_profile_complete(member):
-    """按当前本人完整档案与确认版本判定，不继承其他家人的完成标记。"""
-    if member is None or not member.is_active:
-        return False
-    from pydantic import ValidationError
-
-    profile = member.profile or {}
-    try:
-        MiniappMemberInput.model_validate(
-            {
-                "client_ref": member.id,
-                "member_id": member.id,
-                "version": member.version,
-                "name": member.name,
-                "relation": "本人",
-                "birth_date": profile.get("birth_date"),
-                "sex": profile.get("sex", "unspecified"),
-                "height_cm": profile.get("height_cm"),
-                "dietary": profile.get("dietary_details", {}),
-            }
-        )
-    except ValidationError:
-        return False
-    return True
-
-
 def miniapp_onboarding_ready(member, family):
     """保留建档完成标记，咨询自动衔接只使用完整的服务端档案。"""
     return (
         miniapp_profile_complete(member)
         and member.confirmed_version == member.version
         and not getattr(member, "invitation_review_pending", False)
+    )
+
+
+def miniapp_profile_complete(member):
+    """按当前正式字段判断完整性，历史缺失资料不继承完成标记。"""
+    if member is None or not member.is_active:
+        return False
+    try:
+        saved_miniapp_member(member)
+    except ValidationError:
+        return False
+    return True
+
+
+def saved_miniapp_member(member, profile=None):
+    """将已保存字段还原为提交契约，体重只读取自述体重的正式位置。"""
+    profile = (member.profile or {}) if profile is None else profile
+    dietary = profile.get("dietary_details") or {}
+    return MiniappMemberInput.model_validate(
+        {
+            "client_ref": str(member.id),
+            "member_id": member.id,
+            "version": member.version,
+            "name": member.name,
+            "relation": getattr(member, "relationship", "本人"),
+            "birth_date": profile.get("birth_date"),
+            "sex": profile.get("sex"),
+            "height_cm": profile.get("height_cm"),
+            "weight_kg": dietary.get("statedWeightKg") if isinstance(dietary, dict) else None,
+            "dietary": dietary,
+        }
     )

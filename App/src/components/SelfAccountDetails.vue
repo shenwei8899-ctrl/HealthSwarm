@@ -10,6 +10,7 @@ import { isCommerceEnabled } from '../services/config.js'
 
 const account = ref(null), families = ref([]), member = ref(null), form = ref({})
 const familyName = ref(''), invitation = ref(''), error = ref(''), busy = ref(false), uncertain = ref(false)
+const ownerTransfer = ref(null)
 const healthMembers = ref([]), selectedHealthId = ref(''), healthLink = ref(null)
 const healthBusy = ref(false), healthError = ref(''), healthUncertain = ref(false)
 const healthDiagnostics = ref(null)
@@ -49,11 +50,13 @@ function discard() {
   invitation.value = ''; familyName.value = ''; error.value = ''; uncertain.value = false; busy.value = false
   healthMembers.value = []; selectedHealthId.value = ''; healthLink.value = null; healthDiagnostics.value = null
   healthBusy.value = false; healthError.value = ''; healthUncertain.value = false
+  ownerTransfer.value = null
 }
 async function load() {
   const mine = ++generation
   busy.value = true; error.value = ''; member.value = null; form.value = {}; families.value = []
   healthMembers.value = []; selectedHealthId.value = ''; healthLink.value = null; healthDiagnostics.value = null
+  ownerTransfer.value = null
   try {
     if (!getSession()?.token) { uni.reLaunch({ url: '/pages/index/index' }); return }
     const result = await wechatAuth.restore()
@@ -64,6 +67,7 @@ async function load() {
       const response = await request({ path: '/api/family/' + encodeURIComponent(result.householdId) })
       if (!active(ticket)) return
       member.value = selfMember(response.data)
+      ownerTransfer.value = response.data.owner_transfer?.member_id === member.value?.id ? response.data.owner_transfer : null
       form.value = member.value ? { ...member.value.profile } : {}
     }
   } catch (e) {
@@ -105,7 +109,12 @@ function createFamily() {
 function joinFamily() {
   const code = invitation.value.trim()
   if (code.length < 20 || code.length > 100) { error.value = '请填写有效的家庭成员邀请码'; return }
-  return write({ path: '/api/family/join', method: 'POST', data: { code } })
+  uni.navigateTo({ url: '/pages/invite/index?token=' + encodeURIComponent(code) })
+}
+function confirmOwnerTransfer() {
+  if (!account.value?.householdId || !ownerTransfer.value?.id || ownerTransfer.value.accepted) return
+  const root = '/api/family/' + encodeURIComponent(account.value.householdId)
+  return write({ path: root + '/owner-transfer/' + encodeURIComponent(ownerTransfer.value.id) + '/confirm', method: 'POST' })
 }
 function save() {
   if (!member.value || !account.value?.householdId) return
@@ -216,7 +225,7 @@ function showLoad() {
 }
 onMounted(showLoad); onShow(showLoad); onHide(discard); onUnload(discard)
 </script>
-<template><view class="self-details"><text v-if="error" class="error-note">{{error}}</text><button class="secondary-button" :disabled="busy" @click="load">重新读取本人资料</button><text v-if="!member&&!busy" class="helper">尚未读到可维护的本人成员，请先保存家庭健康档案。</text>      <view v-if="member" class="card section"><text class="section-title">本人基础资料</text>
+<template><view class="self-details"><text v-if="error" class="error-note">{{error}}</text><button class="secondary-button" :disabled="busy" @click="load">重新读取本人资料</button><view v-if="ownerTransfer" class="card section"><text class="section-title">家庭管理员交接</text><text class="helper">{{ownerTransfer.accepted?'你已确认接手，等待原管理员完成切换。':'原管理员邀请你接手管理这个家庭。'}}</text><button v-if="!ownerTransfer.accepted" class="primary-button" :disabled="busy||uncertain" @click="confirmOwnerTransfer">同意接手</button></view><text v-if="!member&&!busy" class="helper">尚未读到可维护的本人成员，请先保存家庭健康档案。</text>      <view v-if="member" class="card section"><text class="section-title">本人基础资料</text>
         <text class="helper">填写自己的资料，未填写的项目保持未知。保存后请核对，再确认当前版本。</text>
         <text class="label">性别</text><view class="choices"><button v-for="item in [{v:'female',n:'女'},{v:'male',n:'男'},{v:'unspecified',n:'暂不说明'}]" :key="item.v" :class="{ selected: form.sex === item.v }" :disabled="busy || uncertain" @click="form.sex=item.v">{{ item.n }}</button></view>
         <input v-model="form.birth_date" class="field-input" maxlength="10" placeholder="生日 YYYY-MM-DD" :disabled="busy || uncertain"/>

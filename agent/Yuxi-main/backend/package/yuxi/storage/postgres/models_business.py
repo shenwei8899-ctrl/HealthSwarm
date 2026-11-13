@@ -71,8 +71,13 @@ class FamilyArchive(Base):
     """家庭关系，管理员身份不表示健康数据授权。"""
 
     __tablename__ = "family_archives"
+    __table_args__ = (
+        Index("uq_active_family_owner", "owner_uid", unique=True, postgresql_where=text("archived_at IS NULL")),
+    )
     id = Column(String(36), primary_key=True)
-    owner_uid = Column(String, ForeignKey("users.uid"), nullable=False, unique=True)
+    owner_uid = Column(String, ForeignKey("users.uid"), nullable=False)
+    archived_at = Column(DateTime, nullable=True)
+    pending_owner_transfer = Column(JSON_VALUE, nullable=True)
     name = Column(String(80), nullable=False)
     settings = Column(JSON_VALUE, nullable=False, default=dict)
     invitation_version = Column(Integer, nullable=False, default=0, server_default="0")
@@ -84,10 +89,21 @@ class FamilyMember(Base):
     """成员档案及向家庭管理员授予的明确字段权限。"""
 
     __tablename__ = "family_members"
-    __table_args__ = (UniqueConstraint("family_id", "subject_uid", name="uq_family_member_subject"),)
+    __table_args__ = (
+        UniqueConstraint("family_id", "subject_uid", name="uq_family_member_subject"),
+        Index(
+            "uq_active_family_subject", "subject_uid", unique=True,
+            postgresql_where=text("is_active AND subject_uid IS NOT NULL"),
+        ),
+        Index(
+            "uq_active_family_person", "person_id", unique=True,
+            postgresql_where=text("is_active AND person_id IS NOT NULL"),
+        ),
+    )
     id = Column(String(36), primary_key=True)
     family_id = Column(String(36), ForeignKey("family_archives.id"), nullable=False, index=True)
     subject_uid = Column(String, ForeignKey("users.uid"), nullable=True)
+    person_id = Column(String(36), nullable=True)
     name = Column(String(80), nullable=False)
     relationship = Column(String(30), nullable=False)
     is_active = Column(Boolean, nullable=False, default=True)

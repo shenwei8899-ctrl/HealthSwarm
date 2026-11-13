@@ -12,8 +12,8 @@ from yuxi.services.health_meal_plan_types import MealPlanSpec
 from yuxi.services.health_family_planner_types import FamilySwapToolInput, FamilyParticipationToolInput
 from yuxi.services.reference_meal_plan_types import REFERENCE_TOOLS
 from yuxi.services.reference_meal_selection_service import (
-    ReferenceReadSelection,
-    ReferenceTranslationCorrection,
+    ReferenceOptionSelection,
+    ReferenceOptionTranslationCorrection,
 )
 from yuxi.services.health_vision_types import HealthDTO, HealthVisionError
 
@@ -79,8 +79,8 @@ class ReferenceRecipeInput(HealthReadInput):
 class ReferencePlanToolInput(HealthReadInput):
     """只允许选择本轮已读原谱，原文、商品对应和缺口均由服务端拥有。"""
 
-    read_selection: ReferenceReadSelection | None = None
-    translation_correction: list[ReferenceTranslationCorrection] | None = Field(
+    read_selection: ReferenceOptionSelection | None = None
+    translation_correction: list[ReferenceOptionTranslationCorrection] | None = Field(
         default=None, min_length=1, max_length=15
     )
 
@@ -133,7 +133,7 @@ async def read_reference_recipe(
     chunk_id: str | None = None,
     recipes: list[ReferenceRecipeRef] | None = None,
 ) -> dict:
-    """打开完整原文并逐项返回匹配、缺商品或待确认状态；缺项可补查分类。"""
+    """打开完整原文并发放 recipe_option，供本轮保存时选择；逐项返回商品核对状态。"""
     from yuxi.services.reference_meal_plan_service import read_reference_recipe as read
 
     if recipes is None:
@@ -147,7 +147,7 @@ async def save_reference_meal_plan(
     read_selection: dict | None = None,
     translation_correction: list | None = None,
 ) -> dict | ToolMessage:
-    """优先用read_selection选择本轮已打开原谱，程序装配完整原文后严格保存。"""
+    """用 recipe_option 选择本轮已打开的原谱，服务端核对回执并保存。"""
     from yuxi.services.reference_meal_plan_service import save_reference_plan
     from yuxi.services.reference_meal_selection_service import (
         apply_reference_translation_correction,
@@ -205,8 +205,10 @@ async def save_reference_meal_plan(
             error.code
             not in {
                 "reference_quote_invalid",
+                "reference_recipe_option_invalid",
                 "reference_recipe_repeated",
                 "reference_menu_repeated",
+                "reference_meal_incomplete",
                 "reference_ingredient_mismatch",
                 "recipe_translation_missing",
                 "recipe_translation_invalid",
@@ -284,7 +286,7 @@ def reference_translation_source(messages, failure_index):
         if len(calls) == 1:
             args = calls[0]["args"]
             selected = args.get("read_selection")
-            if isinstance(selected, ReferenceReadSelection):
+            if isinstance(selected, ReferenceOptionSelection):
                 selected = selected.model_dump(mode="json")
             if isinstance(selected, dict):
                 return {"read_selection": selected}
@@ -349,6 +351,13 @@ def _reference_save_failure_index(messages, request_id, *, include_validation, e
                     and payload.get("request_id") == request_id and payload.get("retryable") is True):
                 # 新菜谱重新检索后拥有自己的结构修正；重选次数由保存工具独立限制。
                 failures.clear()
+            if (
+                error_code == "reference_meal_incomplete"
+                and payload.get("error_code") == error_code
+                and payload.get("request_id") == request_id
+                and payload.get("retryable") is True
+            ):
+                failures.append((index, "composition"))
             if payload.get("error_code") == "reference_quote_invalid" and payload.get("request_id") == request_id:
                 failures.append((index, "quote"))
             if (
@@ -359,6 +368,7 @@ def _reference_save_failure_index(messages, request_id, *, include_validation, e
                     "reference_duplicate_sku",
                     "reference_purchase_coverage_invalid",
                     "reference_ingredient_mismatch",
+                    "reference_recipe_option_invalid",
                     "recipe_translation_missing",
                     "recipe_translation_invalid",
                 }
@@ -383,8 +393,12 @@ def _reference_save_failure_index(messages, request_id, *, include_validation, e
 
 def reference_save_error_group(code):
     """有限错误类别共享各自预算，改变错误码不能绕过次数限制。"""
+    if code == "reference_meal_incomplete":
+        return "composition"
     if code == "reference_quote_invalid":
         return "quote"
+    if code == "reference_recipe_option_invalid":
+        return "recipe_option"
     if code in {"recipe_translation_missing", "recipe_translation_invalid"}:
         return "translation"
     return "purchase"

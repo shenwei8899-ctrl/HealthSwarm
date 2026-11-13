@@ -310,11 +310,11 @@ test('ordinary consultation reports an unexpected consent gate and recovers thro
   } finally { h.flow.hide() }
 })
 
-test('meal planning retains explicit consent using the current processor and policy', async () => {
+test('initial meal planning retains explicit consent using the current processor and policy', async () => {
   let accepted = false
   const h = fixture({ send: async options => {
     if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [
-      { entry_type: 'reference_meal_preview', status: accepted ? 'available' : 'needs_input', reason_code: accepted ? null : 'consent_required' },
+      { entry_type: 'initial_meal_preview', status: accepted ? 'available' : 'needs_input', reason_code: accepted ? null : 'consent_required' },
     ] } }
     if (options.path === '/api/health/v1/configuration') return { data: { policy_version: 'approved-v2',
       meal_plan: { available: true, processor: 'approved-provider' } } }
@@ -322,7 +322,7 @@ test('meal planning retains explicit consent using the current processor and pol
     return fixtureBase(options)
   } })
   try {
-    await h.flow.open(memberId, 'reference_meal_preview')
+    await h.flow.open(memberId, 'initial_meal_preview')
     assert.ok(!h.flow.getState().available)
     assert.deepEqual(h.flow.getState().consentOption, { processor: 'approved-provider', policyVersion: 'approved-v2', purpose: 'meal_plan' })
     await h.flow.acceptConsent(false)
@@ -331,6 +331,21 @@ test('meal planning retains explicit consent using the current processor and pol
     assert.equal(h.flow.getState().available, true)
     assert.deepEqual(h.calls.find(call => call.path.endsWith('/processing-consents')).data,
       { purpose: 'meal_plan', accepted: true, processor: 'approved-provider', policy_version: 'approved-v2' })
+  } finally { h.flow.hide() }
+})
+
+test('reference meals open directly with family readiness', async () => {
+  const h = fixture({ send: async options => {
+    if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [
+      { entry_type: 'reference_meal_preview', status: 'needs_input', reason_code: 'selection_required' },
+    ] } }
+    return fixtureBase(options)
+  } })
+  try {
+    await h.flow.open(memberId, 'reference_meal_preview', { meal_types: ['lunch'] })
+    assert.equal(h.flow.getState().available, true)
+    assert.equal(h.flow.getState().consentOption, null)
+    assert.equal(h.calls.some(call => call.path.endsWith('/processing-consents') || call.path.endsWith('/configuration')), false)
   } finally { h.flow.hide() }
 })
 
@@ -485,7 +500,7 @@ test('cancel sends the running Run ID and a new queued question can be selected 
 })
 
 
-for(const code of ['budget_price_unavailable','budget_exceeded','reference_translation_correction_invalid','reference_save_correction_exhausted','reference_recipe_repeated','reference_menu_repeated','reference_variety_exhausted'])test(`terminal ${code} stops polling and keeps structured failure`,async()=>{
+for(const code of ['budget_price_unavailable','budget_exceeded','reference_translation_correction_invalid','reference_save_correction_exhausted'])test(`terminal ${code} stops polling and keeps structured failure`,async()=>{
  const h=fixture({send:async options=>options.path.endsWith('/tasks/'+requestId)?{data:{request_id:requestId,member_id:memberId,task_type:taskType,thread_id:threadId,agent_slug:'health-blood-glucose',request_status:'dispatched',execution_status:'failed',result:{result_type:'error',code,retryable:false}}}:fixtureBase(options)})
  await h.flow.open(memberId,taskType);await h.flow.createEntry();await h.flow.submit('你好')
  assert.deepEqual(h.flow.getState().result,{type:'error',code,retryable:false});assert.equal(h.flow.getState().status,'failed')
@@ -593,7 +608,7 @@ test('catalog progress survives successful task reads and ignores another reques
   stream.onEvent({phase:'reading_products',requestId:'another-request'})
   assert.notEqual(h.flow.getState().streamPhase,'reading_products')
   stream.onEvent({phase:'reading_products',requestId})
-  assert.equal(h.flow.getState().streamStatus,'正在读取所选分类的商品')
+  assert.equal(h.flow.getState().streamStatus,'正在核对食材资料')
   await h.flow.refresh()
   assert.equal(h.flow.getState().streamPhase,'reading_products')
   stream.onEvent({phase:'running',requestId})

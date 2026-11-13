@@ -1,16 +1,21 @@
 """完整建档输入必须具备明确日期、状态和偏好，局部编辑仍允许未知。"""
 
 from copy import deepcopy
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
-
-from yuxi.services.miniapp_profile_types import DietaryDetails, MiniappProfileInput
+from yuxi.services.miniapp_profile_types import (
+    DietaryDetails,
+    MiniappProfileInput,
+    miniapp_onboarding_ready,
+    saved_miniapp_member,
+)
 
 
 def complete_profile():
-    """纯合成建档，未额外提供身高、体重或性别。"""
+    """纯合成建档，基础计算资料均明确提供。"""
     return {
         "client_request_id": str(uuid4()),
         "family_version": 1,
@@ -22,6 +27,9 @@ def complete_profile():
                 "name": "合成本人",
                 "relation": "本人",
                 "birth_date": "1995-01-01",
+                "sex": "female",
+                "height_cm": 165,
+                "weight_kg": 60,
                 "dietary": {
                     "healthStatus": "none",
                     "allergyStatus": "none",
@@ -41,6 +49,9 @@ def complete_profile():
     "field",
     [
         "birth_date",
+        "sex",
+        "height_cm",
+        "weight_kg",
         "healthStatus",
         "allergyStatus",
         "intoleranceStatus",
@@ -54,7 +65,7 @@ def test_missing_required_field_rejected(field):
     """删除任何必填信息都不能提交完整建档。"""
     data = complete_profile()
     member = data["members"][0]
-    del (member if field == "birth_date" else member["dietary"])[field]
+    del (member if field in {"birth_date", "sex", "height_cm", "weight_kg"} else member["dietary"])[field]
     with pytest.raises(ValidationError):
         MiniappProfileInput.model_validate(data)
 
@@ -105,15 +116,63 @@ def test_every_member_required_even_when_not_a_default_diner():
 
 
 def test_explicit_none_and_neutral_preferences_are_valid():
-    """明确无限制及均衡饮食是有效答案，其他基础资料仍可后补。"""
+    """明确无限制及均衡饮食是有效答案，身体资料也完整保留。"""
     value = MiniappProfileInput.model_validate(complete_profile())
     assert value.members[0].dietary.doctorStatus == "none"
-    assert value.members[0].height_cm is None and value.members[0].weight_kg is None
+    assert value.members[0].height_cm == 165 and value.members[0].weight_kg == 60
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("sex", "unspecified"),
+        ("sex", None),
+        ("height_cm", None),
+        ("weight_kg", None),
+        ("height_cm", 0),
+        ("weight_kg", 0),
+        ("height_cm", 301),
+        ("weight_kg", 1001),
+        ("height_cm", " "),
+        ("weight_kg", float("nan")),
+    ],
+)
+def test_body_fields_cannot_be_blank_or_invalid(field, value):
+    """空值、占位、非有限值和越界值不能构成完整建档。"""
+    data = complete_profile()
+    data["members"][0][field] = value
+    with pytest.raises(ValidationError):
+        MiniappProfileInput.model_validate(data)
 
 
 def test_partial_dietary_edit_still_preserves_unknown():
     """共享档案字段模型继续表达草稿和局部更新。"""
     assert DietaryDetails().healthStatus == "unknown"
+
+
+def test_saved_body_data_is_reused_and_legacy_missing_weight_is_incomplete():
+    """读取已存的规范体重。旧档案保留其它资料，且不能通过完整性检查。"""
+    body = complete_profile()["members"][0]
+    member = SimpleNamespace(
+        id=str(uuid4()),
+        name=body["name"],
+        relationship=body["relation"],
+        is_active=True,
+        version=1,
+        confirmed_version=1,
+        profile={
+            "sex": body["sex"],
+            "birth_date": body["birth_date"],
+            "height_cm": body["height_cm"],
+            "dietary_details": {**body["dietary"], "statedWeightKg": body["weight_kg"]},
+        },
+    )
+    assert saved_miniapp_member(member).weight_kg == 60
+    assert miniapp_onboarding_ready(member, None)
+    del member.profile["dietary_details"]["statedWeightKg"]
+    before = deepcopy(member.profile)
+    assert not miniapp_onboarding_ready(member, None)
+    assert member.profile == before
 
 
 @pytest.mark.parametrize("omitted", [True, False])

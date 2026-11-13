@@ -70,13 +70,32 @@ class FamilyInvitationService:
 
     async def preview(self, code):
         """接受前仅展示邀请人、家庭和共享说明，不返回任何成员健康资料。"""
-        family, member = await self.resolve(code)
+        current = await self.repo.active_membership(self.service.uid)
+        family, member = await self.resolve(code, current.family_id if current else None)
         actor = await self.repo.subject_member(family.id, self.service.uid)
         own_claim = member is not None and member.subject_uid == self.service.uid
         can_accept = not actor or actor.is_active and (member is None or own_claim)
         state = "available"
         if actor:
             state = "inactive" if not actor.is_active else "already_joined" if can_accept else "member_conflict"
+        switch = None
+        if state == "available" and current and current.family_id != family.id:
+            source, _ = await self.service.context(current.family_id)
+            others = await self.successors(source, current)
+            transfer = source.pending_owner_transfer or {}
+            can_accept = not others or any(
+                row.id == transfer.get("member_id")
+                and row.relationship_version == transfer.get("member_version")
+                and transfer.get("accepted")
+                for row in others
+            )
+            state = "switch" if can_accept else "transfer_required"
+            switch = {
+                "family_id": source.id,
+                "family_name": source.name,
+                "successors": [{"id": row.id, "name": row.name} for row in others],
+                "transfer": transfer or None,
+            }
         return {
             "kind": "member" if member else "family",
             "family_id": family.id,
@@ -87,6 +106,7 @@ class FamilyInvitationService:
             "already_accepted": bool(actor and actor.is_active and (member is None or own_claim)),
             "can_accept": bool(can_accept),
             "state": state,
+            "switch": switch,
             "sharing": [
                 "有效家庭成员可查看和维护普通健康档案，包括健康情况、用药、饮食偏好与限制",
                 "家庭内共享实测指标、普通档案修改历史与共同饮食安排",
@@ -95,30 +115,39 @@ class FamilyInvitationService:
             ],
         }
 
-    async def accept(self, code, username):
+    async def accept(self, code, username, expected_family_id=None, expected_transfer_id=None):
         """明确接受才建立成员关系，重复接受不创建第二份档案。"""
-        if not code.startswith("familyshare_"):
-            return await self.service.join(code)
-        family, _ = await self.resolve(code)
+        await self.repo.lock_membership(self.service.uid)
+        current = await self.repo.active_membership(self.service.uid)
+        family, reserved = await self.resolve(code, current.family_id if current else None)
         actor = await self.repo.subject_member(family.id, self.service.uid)
         if actor is not None:
             if not actor.is_active:
                 raise HTTPException(403, "当前家庭关系已停用，请联系家庭创建人")
+            if reserved and reserved.id != actor.id:
+                raise HTTPException(409, "邀请对应另一份成员档案")
             return await self.service.family(family.id)
-        if sum(member.is_active for member in await self.repo.members(family.id)) >= 30:
+        if reserved is None and sum(member.is_active for member in await self.repo.members(family.id)) >= 30:
             raise HTTPException(422, "一个家庭最多30名有效成员")
-        actor = FamilyMember(
-            id=str(uuid4()),
-            family_id=family.id,
-            subject_uid=self.service.uid,
-            name=username or "我",
-            relationship="家人",
-            profile={},
-            version=1,
-            invitation_review_pending=True,
-            invitation_analysis_pending=True,
-        )
-        self.service.db.add(actor)
+        if (current.family_id if current else None) != expected_family_id:
+            raise HTTPException(409, "当前家庭已变化，请重新查看并确认邀请")
+        person_id = None
+        if current:
+            source, _ = await self.service.context(current.family_id)
+            person_id = current.person_id or await self.repo.linked_health_member(source.id, current.id) or current.id
+            current.person_id = person_id
+            await self.leave_for_switch(source, current, expected_transfer_id)
+        actor = reserved
+        if actor is None:
+            actor = FamilyMember(
+                id=str(uuid4()), family_id=family.id, name=username or "我", relationship="家人", profile={}, version=1
+            )
+            self.service.db.add(actor)
+        actor.subject_uid = self.service.uid
+        if person_id:
+            actor.person_id = person_id
+        actor.invitation_review_pending = actor.invitation_analysis_pending = True
+        actor.confirmed_version = actor.confirmed_at = None
         await self.service.db.flush()
         from yuxi.services.miniapp_report_service import ensure_member_reports
 
@@ -127,6 +156,83 @@ class FamilyInvitationService:
         await self.service.db.commit()
         return await self.service.family(family.id)
 
+    async def propose_transfer(self, fid, member_id):
+        """现任管理员指定接手人，留待本人确认。"""
+        family, _ = await self.service.context(fid)
+        current = await self.repo.subject_member(fid, self.service.uid)
+        target = next((row for row in await self.successors(family, current) if row.id == member_id), None)
+        if target is None:
+            raise HTTPException(403, "请由现任管理员选择原家庭中的有效成员")
+        transfer = family.pending_owner_transfer or {}
+        if transfer.get("member_id") != target.id or transfer.get("member_version") != target.relationship_version:
+            transfer = {
+                "id": str(uuid4()),
+                "member_id": target.id,
+                "member_version": target.relationship_version,
+                "accepted": False,
+            }
+            family.pending_owner_transfer = transfer
+            await self.repo.audit(fid, target.id, self.service.uid, "family.transfer.proposed")
+        await self.service.db.commit()
+        return transfer
+
+    async def confirm_transfer(self, fid, transfer_id):
+        """只允许被指定成员确认；生效时仍要验证身份。"""
+        family, _ = await self.service.context(fid)
+        actor = await self.repo.subject_member(fid, self.service.uid)
+        transfer = family.pending_owner_transfer or {}
+        if (
+            transfer.get("id") != transfer_id
+            or transfer.get("member_id") != actor.id
+            or transfer.get("member_version") != actor.relationship_version
+        ):
+            raise HTTPException(404, "未找到需要你确认的交接")
+        if not transfer.get("accepted"):
+            family.pending_owner_transfer = {**transfer, "accepted": True}
+            await self.repo.audit(fid, actor.id, self.service.uid, "family.transfer.accepted")
+        await self.service.db.commit()
+        return {"accepted": True}
+
+    async def leave_for_switch(self, family, current, expected_transfer_id):
+        """退出、原家庭交接或归档由加入事务统一提交。"""
+        if family.owner_uid == self.service.uid:
+            others = await self.successors(family, current)
+            if others:
+                transfer = family.pending_owner_transfer or {}
+                target = next((row for row in others if row.id == transfer.get("member_id")), None)
+                if (
+                    target is None
+                    or transfer.get("id") != expected_transfer_id
+                    or target.relationship_version != transfer.get("member_version")
+                    or not transfer.get("accepted")
+                ):
+                    raise HTTPException(409, "原家庭仍有成员，请先完成管理员交接")
+                family.owner_uid = target.subject_uid
+                await self.repo.audit(family.id, target.id, self.service.uid, "family.transfer.completed")
+            else:
+                family.archived_at = utc_now_naive()
+                await self.repo.audit(family.id, current.id, self.service.uid, "family.archive")
+            family.pending_owner_transfer = None
+            family.invitation_version += 1
+            family.version += 1
+            for member in await self.repo.members(family.id):
+                member.invite_hash = member.invite_expires_at = None
+                # 旧字段授权只面向原管理员，绝不随管理权转移。
+                member.grant_fields, member.grant_edit_fields = [], []
+                member.grant_expires_at = member.grant_purpose = None
+        await self.service.set_membership_status(family, current, False, "member.switch_leave")
+        await self.service.db.flush()
+
+    async def successors(self, family, current):
+        """可接手人必须是同家庭内已认领且有效的其他账号。"""
+        if family.owner_uid != self.service.uid:
+            return []
+        return [
+            row
+            for row in await self.repo.members(family.id)
+            if row.id != current.id and row.is_active and row.subject_uid
+        ]
+
     async def decline(self, code):
         """拒绝只记录决定，不加入家庭、不创建或认领档案。"""
         family, member = await self.resolve(code)
@@ -134,7 +240,7 @@ class FamilyInvitationService:
         await self.service.db.commit()
         return {"declined": True}
 
-    async def resolve(self, code):
+    async def resolve(self, code, source_family_id=None):
         """先验证签名或摘要，再锁定家庭并重验绑定档案的可认领性。"""
         member = None
         if code.startswith("familyshare_"):
@@ -147,7 +253,7 @@ class FamilyInvitationService:
             if member is None:
                 raise HTTPException(410, "邀请已失效")
             fid = member.family_id
-        family = await self.repo.invitation_family(fid)
+        family = (await self.repo.lock_families({fid, source_family_id} - {None})).get(fid)
         if family is None:
             raise HTTPException(410, "邀请已失效")
         if member is None and not hmac.compare_digest(code, family_invite_code(fid, family.invitation_version)):

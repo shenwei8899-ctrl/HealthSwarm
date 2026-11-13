@@ -2,9 +2,10 @@
 import { ageLabel, memberAge, shanghaiDate } from '../utils/member-age.js'
 const props=defineProps({member:{type:Object,required:true},showRelationship:{type:Boolean,default:true},readOnly:Boolean,source:Object,archive:Boolean,onboarding:Boolean})
 const editable=field=>!props.readOnly&&(!props.source||(field==='identity'?props.source.is_self||props.source.is_guardian||props.source.editable_fields?.length:props.source.editable_fields?.includes(field)))
+const genderOptions=['女','男']
 function selectGender(event){
   const value=event.detail?.value
-  if(editable('sex')&&['女','男','未填写'].includes(value))props.member.gender=value
+  if(editable('sex')&&genderOptions.includes(value))props.member.gender=value
 }
 </script>
 <template>
@@ -12,13 +13,13 @@ function selectGender(event){
   <view class="identity-fields">
   <view v-if="onboarding" class="basic-card-heading"><text>基本信息</text><text class="heading-note">先从认识你开始</text></view>
   <label class="basic-row" id="field-name"><text>姓名／称呼<text v-if="onboarding" class="required-mark"> *</text></text><input v-model="member.name" :disabled="!editable('identity')" aria-label="姓名或称呼" placeholder="怎么称呼你" maxlength="40"/></label>
-  <view class="basic-row" id="field-gender"><text>性别</text><radio-group class="gender-options" aria-label="性别" @change="selectGender"><label v-for="genderOption in ['女','男','未填写']" :key="genderOption" :class="{selected:member.gender===genderOption||!member.gender&&genderOption==='未填写',disabled:!editable('sex')}"><radio :value="genderOption" :checked="member.gender===genderOption||!member.gender&&genderOption==='未填写'" :disabled="!editable('sex')" color="#7964b2"/><text>{{genderOption}}</text></label></radio-group></view>
+  <view class="basic-row" id="field-gender"><text>性别<text v-if="onboarding" class="required-mark"> *</text></text><radio-group class="gender-options" aria-label="性别，必填" @change="selectGender"><label v-for="genderOption in genderOptions" :key="genderOption" :class="{selected:member.gender===genderOption,disabled:!editable('sex')}"><radio :value="genderOption" :checked="member.gender===genderOption" :disabled="!editable('sex')" color="#7964b2"/><text>{{genderOption}}</text></label></radio-group></view>
   <label v-if="showRelationship" class="basic-row"><text>与我的关系</text><input v-model="member.relation" :disabled="!editable('identity')" aria-label="与我的关系" placeholder="例如：妈妈" maxlength="30"/></label>
   <view class="basic-row" id="field-birth"><view class="field-label-line"><text>出生日期<text v-if="onboarding" class="required-mark"> *</text></text><text v-if="member.birthDate" class="age-label">{{ageLabel(member)}}</text></view><picker mode="date" :disabled="!editable('birth_date')" :end="shanghaiDate()" :value="member.birthDate" @change="member.birthDate=$event.detail.value;member.age=memberAge(member).years"><view class="picker-value" :class="{placeholder:!member.birthDate}"><text>{{member.birthDate||'请选择出生日期'}}</text><text class="chevron">›</text></view></picker></view>
   </view>
   <view class="measure-fields">
-  <view v-if="onboarding" class="basic-card-heading"><text>身体数据</text><text class="heading-note">可稍后补充</text></view>
-  <view class="measurements"><label class="measure"><text>身高 <text class="unit">cm</text></text><input v-model="member.height" :disabled="!editable('height_cm')" type="digit" aria-label="身高厘米，可后补" placeholder="可后补"/></label><label class="measure"><text>体重 <text class="unit">kg</text></text><input v-model="member.weight" :disabled="!editable('dietary_details')" type="digit" aria-label="体重公斤，可后补" placeholder="可后补"/></label></view>
+  <view v-if="onboarding" class="basic-card-heading"><text>身体数据</text><text class="heading-note">用于计算个人饮食目标</text></view>
+  <view class="measurements"><label class="measure" id="field-height"><text>身高<text v-if="onboarding" class="required-mark"> *</text> <text class="unit">cm</text></text><input v-model="member.height" :disabled="!editable('height_cm')" type="digit" aria-label="身高厘米，必填" placeholder="请输入身高"/></label><label class="measure" id="field-weight"><text>体重<text v-if="onboarding" class="required-mark"> *</text> <text class="unit">kg</text></text><input v-model="member.weight" :disabled="!editable('dietary_details')" type="digit" aria-label="体重公斤，必填" placeholder="请输入体重"/></label></view>
   </view>
  </view>
 </template>

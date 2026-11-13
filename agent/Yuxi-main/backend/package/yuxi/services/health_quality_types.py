@@ -199,8 +199,10 @@ class PersonalTargetFormula(HealthDTO):
     weight_kg_coefficient: Decimal = Field(ge=-1000000, le=1000000, decimal_places=6)
     height_cm_coefficient: Decimal = Field(ge=-1000000, le=1000000, decimal_places=6)
     age_years_coefficient: Decimal = Field(ge=-1000000, le=1000000, decimal_places=6)
-    activity_factors: dict[Code, Annotated[Decimal, Field(gt=0, le=1000000, decimal_places=6)]] = Field(
-        min_length=1, max_length=50
+    activity_factors: dict[Code, Annotated[Decimal, Field(gt=0, le=1000000, decimal_places=6)]] | None = Field(
+        min_length=1,
+        max_length=50,
+        description="必须明确提供：null 为直接公式，不使用活动水平；非空映射为按活动水平调整的公式",
     )
     nutrient_ranges: dict[str, TargetRangeFactors]
 

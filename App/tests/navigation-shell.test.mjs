@@ -6,7 +6,7 @@ const source = file => readFileSync(new URL('../src/'+file, import.meta.url),'ut
 const evaluate = (code, deps, result) => new Function('deps',`const {${Object.keys(deps)}}=deps;${code};return ${result}`)(deps)
 const flush = () => new Promise(resolve=>setImmediate(resolve))
 const deferred = () => {let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}}
-function fixture(h5=false,delayRoute=false,clock={}) {
+function fixture(h5=false,delayRoute=false,clock={},startup) {
   let account={accountId:'a',token:'test-token',householdId:'family-a',clientRevision:1,expiresAt:Date.now()/1000+3600,families:[{id:'family-a',onboardingRequired:false}]}
   let route='/pages/chat/index',invite='',preparing=false
   const hooks={},calls=[],loadings=[],toasts=[],checks=[],hashListeners=new Set()
@@ -26,9 +26,38 @@ function fixture(h5=false,delayRoute=false,clock={}) {
     resolveAppEntry:options=>{checks.push(options);const d=deferred();pending.push(d);return d.promise},
     captureInvitation(){},rememberInvitation(){},storageContext,getSession,
     window:{location:{get hash(){return '#'+route}},addEventListener:(_,fn)=>hashListeners.add(fn),removeEventListener:(_,fn)=>hashListeners.delete(fn)},getCurrentPages:h5?undefined:()=>[{route:route.split('?')[0].slice(1),options:Object.fromEntries(new URLSearchParams(route.split('?')[1]||''))}]},'{installRouteGuards,checkCurrentEntry}')
-  nav.installRouteGuards()
+  nav.installRouteGuards(startup)
   return {nav,uni,calls,checks,pending,loadings,toasts,shell,completeRoute(value){route=value;for(const fn of [...hashListeners])fn()},get account(){return account},set account(value){account=value},set route(value){route=value},get route(){return route},set invite(value){invite=value},set preparing(value){preparing=value}}
 }
+
+test('a protected cold launch redirects to login after the native page is ready',async()=>{
+  const startup=deferred(),h=fixture(false,false,{},startup.promise)
+  h.account=null
+  const opening=h.nav.checkCurrentEntry({path:'pages/chat/index'})
+  await flush()
+  assert.deepEqual(h.checks,[])
+  assert.deepEqual(h.calls,[])
+  startup.resolve()
+  await flush()
+  h.pending[0].resolve('/pages/index/index')
+  await opening
+  assert.deepEqual(h.calls,[{method:'reLaunch',url:'/pages/index/index'}])
+})
+
+test('a page login redirect during startup waits without starting the navigation timeout',async()=>{
+  const startup=deferred(),timers=new Set()
+  const clock={setTimeout:fn=>{timers.add(fn);return fn},clearTimeout:fn=>timers.delete(fn)}
+  const h=fixture(false,false,clock,startup.promise)
+  h.account=null
+  h.uni.reLaunch({url:'/pages/index/index'})
+  const checking=h.nav.checkCurrentEntry({path:'pages/chat/index'})
+  assert.equal(timers.size,0)
+  assert.deepEqual(h.calls,[])
+  startup.resolve()
+  await checking
+  assert.deepEqual(h.calls,[{method:'reLaunch',url:'/pages/index/index'}])
+  assert.equal(timers.size,0)
+})
 
 test('an entry response after timeout cannot navigate over a newer successful transition',async()=>{
   const timers=new Set(),finished=[]
@@ -65,12 +94,12 @@ test('unknown, expired, unselected and unfinished sessions cannot use the shell 
   }
  }
 })
-test('invitation and pending preparation still take priority',()=>{
+test('invitation retains priority while old preparation does not gate navigation',()=>{
  for(const url of ['/pages/exclusive-plans/index','/pages/meals/detail']) {
   const h=fixture();h.invite='test-invite';h.uni.navigateTo({url})
   assert.equal(h.calls[0].url,'/pages/invite/index?token=test-invite')
   const p=fixture();p.preparing=true;p.uni.navigateTo({url})
-  assert.equal(p.calls[0].url,'/pages/onboarding/preparing')
+  assert.equal(p.calls[0].url,url)
  }
 })
 test('server entry decision corrects a shell after it has opened',async()=>{

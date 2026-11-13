@@ -1,4 +1,5 @@
 <script setup>
+import { basicProfileIssue } from '../utils/onboarding-validation.js'
 import { computed,ref,onMounted,onUnmounted } from 'vue'
 import { onShow,onHide,onUnload } from '@dcloudio/uni-app'
 import ProfileFormLayout from './ProfileFormLayout.vue'
@@ -20,7 +21,7 @@ const props=defineProps({id:String,shareReady:Boolean,shareError:String,shareBus
 const emit=defineEmits(['close','saved','prepare-invite','manage-invite'])
 const writing=ref(false)
 const profile=ref(null),draft=ref(null),editing=ref(false),busy=ref(false),error=ref(''),records=ref([]),dietError=ref(''),reportError=ref('')
-const member=computed(()=>profile.value?.members.find(m=>String(m.id)===props.id))
+const member=computed(()=>profile.value?.members.find(m=>String(m.memberId||m.id)===props.id||String(m.id)===props.id))
 const source=ref(null),additional=ref({}),writeUncertain=ref(false)
 const canEdit=computed(()=>!!source.value?.editable_fields?.length&&(source.value.is_self||source.value.is_guardian||profile.value?.isOwner))
 const reportBusy=ref(false)
@@ -46,11 +47,8 @@ async function report(){
  if(reportBusy.value||!canOpenReport.value||!member.value)return
  const mine=epoch,rev=sessionRevision(),person=member.value;reportBusy.value=true;reportError.value=''
  try{
-  const healthId=person.healthMemberId
-  if(!healthId)throw new Error('成员报告档案尚未关联，请保存成员档案后重试。')
   if(mine!==epoch||rev!==sessionRevision())return
-  person.healthMemberId=healthId
-  await uni.navigateTo({url:'/pages/health/vision?kind=report&memberId='+encodeURIComponent(healthId)})
+  await uni.navigateTo({url:'/pages/health/vision?kind=report&personId='+encodeURIComponent(person.memberId||person.id)})
  }catch(e){if(mine===epoch&&rev===sessionRevision())reportError.value=e.message}
  finally{if(mine===epoch&&rev===sessionRevision())reportBusy.value=false}
 }
@@ -73,6 +71,10 @@ function edit(){if(!canEdit.value)return;draft.value=JSON.parse(JSON.stringify(m
 async function save(){
   if(busy.value||writeUncertain.value||!canEdit.value||!draft.value)return
   if(!draft.value.name?.trim()){error.value='请填写姓名／称呼';section.value='basic';return}
+  if(['sex','birth_date','height_cm','dietary_details'].every(field=>source.value.editable_fields?.includes(field))){
+    const issue=basicProfileIssue(draft.value)
+    if(issue){error.value=issue.message;section.value='basic';return}
+  }
   for(const type of [...Object.keys(restrictionFields),'doctor']){
     const cfg=restrictionFields[type],status=cfg?.status||'doctorStatus',field=cfg?.field||'clinicianGuidance'
     const text=cfg&&draft.value['restrictionDraft_'+type]?.trim()
@@ -88,7 +90,7 @@ async function save(){
   }catch(e){if(mine===epoch){writeUncertain.value=e.partialSave||e.code==='NETWORK_ERROR'||Number(e.code)>=500||Number(e.code)===409;error.value=e.message;if(rev!==sessionRevision()||[401,403,404,410].includes(Number(e.code))){hide();error.value='当前授权或来源已变化，请重新读取。'}}}
   finally{if((mine===epoch||mine+1===epoch)&&rev===sessionRevision()){busy.value=false;writing.value=false}}
 }
-function consult(){if(member.value?.healthMemberId)uni.navigateTo({url:'/pages/chat/agent?memberId='+encodeURIComponent(member.value.healthMemberId)+'&taskType=consultation'})}
+function consult(){if(member.value)uni.navigateTo({url:'/pages/chat/agent?personId='+encodeURIComponent(member.value.memberId||member.value.id)+'&taskType=consultation'})}
 function record(r){uni.navigateTo({url:'/pages/records/detail?id='+encodeURIComponent(r.id)+'&memberId='+encodeURIComponent(member.value.healthMemberId)})}
 onShow(load);onHide(hide);onUnload(hide)
 onMounted(()=>{if(props.embedded)void load()});onUnmounted(hide)
@@ -114,7 +116,7 @@ onMounted(()=>{if(props.embedded)void load()});onUnmounted(hide)
     <view v-show="section==='preferences'" class="archive-read"><view v-for="item in [{t:'饮食目标',v:member.goals},{t:'口味',v:member.tastePreferences},{t:'菜系',v:member.cuisines}]" :key="item.t" class="read-row"><text class="read-label">{{item.t}}</text><text class="read-value">{{item.v.join('、')||'待补充'}}</text></view><MemberAdditionalFields :archive="embedded" :draft="additional" :source="source" :editing="false" section="preferences"/></view>
     <view v-show="section==='restrictions'" class="archive-read"><MemberFields :archive="embedded" :member="member" read-only :sections="['restrictions']" inline-restrictions/><MemberAdditionalFields :archive="embedded" :draft="additional" :source="source" :editing="false" section="restrictions"/></view>
    </template>
-   <view class="archive-links"><button :disabled="reportBusy||!canOpenReport" @click="report"><view><text>体检报告</text><text>{{reportHint}}</text></view><text>›</text></button></view><text v-if="reportError" class="form-error" role="alert">{{reportError}}</text>
+   <view class="archive-links"><button :disabled="reportBusy||!canOpenReport" @click="report"><view><text>体检报告</text><text>{{reportHint}}</text></view><text>›</text></button><button v-if="!editing&&member.healthMemberId" @click="consult"><view><text>营养咨询</text></view><text>›</text></button></view><text v-if="reportError" class="form-error" role="alert">{{reportError}}</text>
    <template v-if="!editing"><template v-if="profile?.isOwner&&!member.claimed"><button class="archive-share" :open-type="shareReady?'share':undefined" :data-invite-key="member.id" :disabled="!shareReady">{{shareBusy?'正在准备邀请…':'邀请'+member.name+'加入'}}</button><text v-if="shareError" class="form-error" role="alert">{{shareError}}</text><button v-if="!shareReady&&!shareBusy" class="archive-share" @click="emit('prepare-invite')">重新准备邀请</button><button class="archive-share" @click="emit('manage-invite')">管理邀请</button></template></template>
   </template>
   <template #footer><view class="profile-footer-actions"><template v-if="editing"><button class="form-cancel archive-cancel" :disabled="busy" @click="cancelEdit">取消</button><button class="archive-submit" :disabled="busy||writeUncertain" @click="save">{{writing?'正在保存…':'保存修改'}}</button></template><button v-else-if="canEdit" class="archive-submit" :disabled="busy||writeUncertain" @click="edit">{{embedded?'修改档案':'修改资料'}}</button><button v-else class="archive-submit" @click="back">{{embedded?'关闭档案':'返回'}}</button></view></template>

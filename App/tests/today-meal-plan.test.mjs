@@ -14,17 +14,16 @@ const absent=()=>({status:'absent',date,version:0,meals:[]})
 const ready=()=>({status:'ready',date,version:1,meals:['breakfast','lunch','dinner'].map(meal_type=>({meal_type,source:{kind:'reference',id:'preview'},meal:{dishes:[{name:'菜品一'},{name:'菜品二'}]}}))})
 const candidatePending=()=>({status:'reference_candidates',request_id:'original',thread_id:'original-thread',member_id:'health-self',
  selection:{mode:'reference',family_id:'family',participant_ids:['self'],plan_date:date,meal_types:['breakfast']}})
-function fixture({read=async()=>absent(),available=true,consent=false,unknown=false,accepted=true,invalid=false,pollLimit,submittedState={},initialState,onPlan=()=>{}}={}){
+function fixture({read=async()=>absent(),available=true,unknown=false,accepted=true,invalid=false,pollLimit,submittedState={},initialState,onPlan=()=>{}}={}){
  const state=initialState||todayMealPlanState(),calls=[],timers=new Map(),cache=new Map(),published=[],scheduledDelays=[]
- let owner='account:family',sequence=0,calendar=date,taskValue={},taskChanged=()=>{},requiresConsent=consent,accessible=available
+ let owner='account:family',sequence=0,calendar=date,taskValue={},taskChanged=()=>{},accessible=available
  const client=createTodayMealPlan({state,day:()=>calendar,context:()=>owner,read:async(...args)=>{calls.push(['read',...args]);return read(...args)},
   storage:{getStorageSync:k=>cache.get(k),setStorageSync:(k,v)=>cache.set(k,v)},
   schedule:(fn,ms)=>{scheduledDelays.push(ms);timers.set(++sequence,fn);return sequence},cancel:id=>timers.delete(id),pollLimit,onPlan:plan=>{published.push(plan);onPlan(plan)},
   createFlow:({storage,onChange})=>{
    calls.push(['flow']);taskChanged=onChange
    return {getState:()=>taskValue,
-    async open(member,type,selection,options){calls.push(['open',member,type,selection,options]);storage.setStorageSync('task',{member});taskValue={available:accessible,consentOption:requiresConsent?{processor:'processor-a',policyVersion:'policy-1'}:null,...(unknown?{requestId:'existing',submitUnknown:true}:{})};if(invalid){taskValue.invalidated=true;onChange(taskValue)}},
-    async acceptConsent(accepted){calls.push(['acceptConsent',accepted]);requiresConsent=false;accessible=true;taskValue={...taskValue,available:true,consentOption:null};onChange(taskValue)},
+    async open(member,type,selection,options){calls.push(['open',member,type,selection,options]);storage.setStorageSync('task',{member});taskValue={available:accessible,...(unknown?{requestId:'existing',submitUnknown:true}:{})};if(invalid){taskValue.invalidated=true;onChange(taskValue)}},
     async createEntry(){calls.push(['entry']);taskValue.entry={thread_id:'thread'}},
     async submit(query){calls.push(['submit',query]);taskValue={...taskValue,requestId:'new',status:accepted?'queued':'',submitUnknown:!accepted,...submittedState};return accepted},
     pause(){calls.push(['pause']);onChange(taskValue)},
@@ -107,15 +106,11 @@ test('a cached uncertain task survives reopening without a fresh POST',async()=>
  const h=fixture({unknown:true});await h.client.open(profile)
  assert.equal(h.calls.some(c=>c[0]==='entry'||c[0]==='submit'),false);assert.equal(h.state.phase,'generating');h.client.pause()
 })
-test('required input and processing consent never get an invented answer or automatic acceptance',async()=>{
+test('required input and unavailable tasks do not submit',async()=>{
  const h=fixture({read:async()=>({...absent(),pending:{status:'needs_input',questions:['食物限制？']}})})
  await h.client.open(profile);assert.equal(h.state.phase,'error');assert.equal(h.calls.length,1)
- const blocked=fixture({available:false,consent:true});await blocked.client.open(profile)
+ const blocked=fixture({available:false});await blocked.client.open(profile)
  assert.equal(blocked.state.phase,'error');assert.equal(blocked.calls.some(c=>c[0]==='entry'||c[0]==='submit'),false)
- assert.equal(blocked.state.action,'consent');assert.equal(blocked.state.consentOption.processor,'processor-a')
- await blocked.client.acceptConsent()
- assert.equal(blocked.calls.filter(c=>c[0]==='acceptConsent').length,1)
- assert.equal(blocked.calls.filter(c=>c[0]==='submit').length,1)
 })
 test('closing a menu invalidates a late read before it can create an AI task',async()=>{
  let resolve;const h=fixture({read:()=>new Promise(r=>resolve=r)})
@@ -302,13 +297,6 @@ test('a timed-out meal task explains that no menu was saved',async()=>{
  assert.equal(h.state.action,'regenerate')
 })
 
-for(const code of ['reference_recipe_repeated','reference_menu_repeated','reference_variety_exhausted'])test(`variety failure ${code} explains the reason and stops automatic retries`,async()=>{
- const h=fixture({submittedState:{status:'failed',result:{type:'error',code}}})
- await h.client.open(profile)
- assert.equal(h.state.phase,'error');assert.match(h.state.notice,/重复|近期餐单/)
- assert.equal(h.timers.size,0);assert.equal(h.calls.filter(c=>c[0]==='submit').length,1)
-})
-
 test('regenerating an old meal retains its authorized diners instead of changing to the default self',async()=>{
  const plan=ready();plan.meals=plan.meals.slice(0,1);plan.needs_regeneration=['dinner'];plan.regeneration_participants={dinner:['partner']}
  const h=fixture({read:async()=>plan})
@@ -478,7 +466,7 @@ function contentFixture(state=reactive(todayMealPlanState())){
 
 function sheetFixture({clientOptions,readOnly=false}={}){
  const source=readFileSync(new URL('../src/components/TodayMealPlanSheet.vue',import.meta.url),'utf8').split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm,'')
- const scope=effectScope(),state=reactive(todayMealPlanState()),props=reactive({open:true,state,profile,busy:false,interactive:true,unavailable:false,readOnly}),events=[],calls=[],hooks={}
+ const scope=effectScope(),state=reactive(todayMealPlanState()),props=reactive({open:true,state,profile,members:profile.members,defaultDiners:['self'],busy:false,interactive:true,unavailable:false,readOnly}),events=[],calls=[],hooks={}
  const clientFixture=clientOptions?fixture({...clientOptions,initialState:state}):null
  const client=clientFixture?.client||{open:()=>calls.push('open'),pause:()=>calls.push('pause'),clear:()=>calls.push('clear'),dispose:()=>calls.push('dispose')}
  const load=()=>{if(!props.profile||props.unavailable){client.clear();return}if(!props.open){client.pause();return}void client.open(props.profile,{readOnly:props.readOnly})}
@@ -486,11 +474,27 @@ function sheetFixture({clientOptions,readOnly=false}={}){
  const deps={computed,ref,watch,defineProps:()=>props,defineEmits:()=>handle,localDate:()=>date,detailGesture}
  const view=scope.run(()=>{
   watch(()=>[props.open,props.profile,props.unavailable,props.readOnly],load,{immediate:true})
-  return new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {expanded,displayDate,start,cancelTouch,end,detail,dish,act}`)(deps)
+  return new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {expanded,displayDate,start,cancelTouch,end,detail,dish,act,startEditing,selectMeal,confirm,toggleMember,dismiss,editing}`)(deps)
  })
  hooks.unmount=()=>client.dispose()
  return {view:{...view,state,loadingLabel:computed(()=>state.label)},props,events,calls,hooks,clientFixture,dispose(){hooks.unmount();scope.stop()}}
 }
+
+test('the sheet can confirm a diner draft with no readable menu and stays open',()=>{
+ const h=sheetFixture()
+ try {
+  h.props.members=[{id:'self'},{id:'child'}]
+  h.view.state.phase='error'
+  h.view.startEditing()
+  h.view.selectMeal('dinner')
+  h.view.toggleMember('child')
+  h.view.confirm()
+  assert.deepEqual(h.events,[['confirm-diners',{mealType:'dinner',participantIds:['child','self']}]])
+  assert.equal(h.view.editing.value,false)
+  h.view.startEditing();h.view.selectMeal('lunch');h.view.dismiss()
+  assert.equal(h.events.length,1)
+ } finally { h.dispose() }
+})
 
 test('actual sheet consumes the saved three-meal plan and opens the selected real meal',async()=>{
  let plan=absent()
@@ -606,7 +610,7 @@ test('WeChat sheet controls receive taps independently from the header drag regi
  const {compile}=weixinRequire('@dcloudio/uni-mp-compiler')
  const source=readFileSync(new URL('../src/components/TodayMealPlanSheet.vue',import.meta.url),'utf8')
  const assets=[]
- compile(source.match(/<template>([\s\S]*?)<\/template>/)[1],{
+ compile(source.slice(source.indexOf('<template>')+10,source.lastIndexOf('</template>')),{
   filename:'components/TodayMealPlanSheet.wxml',
   miniProgram:{directive:'wx:',event:{key:true},class:{array:true},
    slot:{fallbackContent:false,dynamicSlotNames:true},emitFile:asset=>assets.push(asset)},
@@ -646,4 +650,76 @@ test('compact meal entries always keep three labels and disable missing or empty
  assert.equal(h.view.mealEntries.value[0].item,undefined)
  h.props.state.displayable=true;h.view.detail(undefined)
  assert.equal(h.events.length,0)
+})
+
+test('home generation uses the configured diners and leaves unrelated household members out',async()=>{
+ const h=fixture()
+ await h.client.open({...profile,defaultDiners:['child','self'],members:[...profile.members,
+  {id:'child',healthMemberId:'health-child'},{id:'guest',healthMemberId:'health-guest'}]})
+ assert.deepEqual(h.calls.find(call=>call[0]==='open')[3].participant_ids,['child','self'])
+})
+
+test('adjusting lunch participants submits only lunch at the saved version and accepts its replacement',async()=>{
+ let plan=ready()
+ const original=plan
+ const h=fixture({read:async()=>plan})
+ const revisedProfile={...profile,members:[...profile.members,{id:'child',healthMemberId:'health-child'}]}
+ const revision={version:1,sourceId:'preview',mealType:'lunch',participantIds:['child','self']}
+ await h.client.open(revisedProfile,{revision})
+ const selection=h.calls.find(call=>call[0]==='open')[3]
+ assert.deepEqual(selection.meal_types,['lunch'])
+ assert.deepEqual(selection.participant_ids,['child','self'])
+ assert.equal(selection.daily_base_version,1)
+ plan={...plan,version:2,meals:plan.meals.map(item=>item.meal_type==='lunch'?
+  {...item,source:{kind:'reference',id:'new-lunch'},members:revisedProfile.members}:item)}
+ await h.tick()
+ assert.equal(h.state.plan.version,2)
+ assert.equal(h.state.plan.meals[0],original.meals[0])
+ assert.equal(h.state.plan.meals[2],original.meals[2])
+ assert.equal(h.timers.size,0)
+ assert.equal(h.calls.filter(call=>call[0]==='submit').length,1)
+})
+
+test('adjusting members rejects a stale meal version before opening a generation task',async()=>{
+ const h=fixture({read:async()=>({...ready(),version:2})})
+ await h.client.open(profile,{revision:{version:1,sourceId:'preview',mealType:'lunch',participantIds:['self']}})
+ assert.equal(h.calls.some(call=>call[0]==='submit'),false)
+ assert.match(h.state.notice,/版本已更新/)
+})
+
+test('a diner change directly submits only the selected meal and member IDs',async()=>{
+ const h=fixture({read:async()=>ready()})
+ const revision={version:1,sourceId:'preview',mealType:'lunch',participantIds:['self']}
+ await h.client.open(profile,{revision})
+ const calls=h.calls.filter(call=>call[0]==='open')
+ assert.equal(calls.length,1)
+ assert.deepEqual(calls[0][3].meal_types,['lunch'])
+ assert.deepEqual(calls[0][3].participant_ids,['self'])
+ assert.equal(h.calls.filter(call=>call[0]==='submit').length,1)
+})
+
+test('an explicit diner draft directly generates only the selected missing meal',async()=>{
+ let plan=absent()
+ const h=fixture({read:async()=>plan})
+ const family={...profile,members:[...profile.members,{id:'child',healthMemberId:'health-child'}]}
+ const dinerChange={mealType:'dinner',participantIds:['child','self']}
+ await h.client.open(family,{readOnly:true})
+ assert.equal(h.calls.some(call=>call[0]==='submit'),false)
+ await h.client.open(family,{dinerChange,retryFailed:true})
+ assert.equal(h.calls.filter(call=>call[0]==='submit').length,1)
+ const selection=h.calls.filter(call=>call[0]==='open').at(-1)[3]
+ assert.deepEqual(selection.meal_types,['dinner'])
+ assert.deepEqual(selection.participant_ids,['child','self'])
+ assert.equal(selection.daily_base_version,0)
+ plan={...ready(),meals:[{...ready().meals[2],members:[{id:'child'},{id:'self'}]}]}
+ await h.tick()
+ assert.equal(h.timers.size,0)
+ assert.equal(h.calls.filter(call=>call[0]==='submit').length,1)
+})
+
+test('an unavailable selected diner task can be retried without submitting a different roster',async()=>{
+ const h=fixture({available:false})
+ await h.client.open(profile,{dinerChange:{mealType:'dinner',participantIds:['self']},retryFailed:true})
+ assert.equal(h.state.action,'regenerate')
+ assert.equal(h.calls.some(call=>call[0]==='submit'),false)
 })

@@ -211,6 +211,17 @@ test('explicit acceptance selects the accepted household before own onboarding',
   assert.equal(h.redirects.at(-1),'/pages/onboarding/index')
 })
 
+test('switch confirmation sends the original household and approved transfer',async()=>{
+  const h=invitationPage();await h.page.load()
+  h.page.invitation.value={state:'switch',can_accept:true,switch:{
+    family_id:'source-home',transfer:{id:'approved-transfer',accepted:true},
+  }}
+  await h.page.decide(true)
+  assert.equal(h.calls[1].data.expected_family_id,'source-home')
+  assert.equal(h.calls[1].data.expected_transfer_id,'approved-transfer')
+  assert.deepEqual(h.calls[2],{selected:'home'})
+})
+
 function packagePage() {
   const {redirects}=storage(),calls=[]
   let failConfirm=true,pending=null,expires=new Date(Date.now()+60000).toISOString(),scope='self',release

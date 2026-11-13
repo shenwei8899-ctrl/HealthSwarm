@@ -16,7 +16,7 @@ from yuxi.utils.datetime_utils import utc_now_naive
 async def add_saved_dish(uid, family_id, day, data):
     """在同一当前计划事务中追加所选菜，重复确认不重复加入。"""
     from yuxi.storage.postgres.manager import pg_manager
-    from yuxi.services.daily_meal_plan_service import current_row, legacy_sources, read_current_plan
+    from yuxi.services.daily_meal_plan_service import current_row, read_current_plan
     from yuxi.storage.postgres.models_health import HealthDailyMealPlan
 
     if day != datetime.now(ZoneInfo("Asia/Shanghai")).date():
@@ -38,7 +38,7 @@ async def add_saved_dish(uid, family_id, day, data):
         dishes = (target or {}).get("meal", {}).get("dishes", [])
         if len(dishes) >= 10:
             raise HealthVisionError("meal_dishes_limit", "本餐菜品已满，请先调整餐单", 422)
-        refs = dict(row.meal_sources) if row else await legacy_sources(session, uid, family_id, day)
+        refs = dict(row.meal_sources) if row else {}
         refs[data.meal_type] = {
             "kind": "selection",
             "id": str(uuid4()),
@@ -157,10 +157,11 @@ async def selected_source(session, uid, family_id, ref, meal_type):
     """用户选菜只存原引用；读取时重新装配单餐内容。"""
     if not ref.get("dish_sources") or not ref.get("member_ids"):
         raise HealthVisionError("dish_source_invalid", "本餐菜品来源不完整，请重新读取", 409)
-    dishes, member_notes = [], {}
+    dishes, member_notes, owners = [], {}, set()
     expected = set(ref["member_ids"])
     for origin in ref["dish_sources"]:
-        dish, original, members, _ = await read_origin(session, uid, family_id, origin)
+        dish, original, members, source = await read_origin(session, uid, family_id, origin)
+        owners.add(source.get("source_owner"))
         if {m["id"] for m in members} != expected:
             raise HealthVisionError("dish_members_changed", "就餐成员已有变化，请重新读取餐单", 409)
         dish.update(dish_key=dish_key(dish), origin=origin)
@@ -180,38 +181,38 @@ async def selected_source(session, uid, family_id, ref, meal_type):
         "memberNotes": list(member_notes.values()),
     }
     meal["nutrition"] = selection_nutrition(meal)
-    return {"meals": [meal], "members": members}
+    return {"meals": [meal], "members": members, "source_owner": next(iter(owners)) if len(owners) == 1 else None}
 
 
 async def read_origin(session, uid, family_id, origin):
     """每次回读原业务来源的权限、版本和菜谱内容。"""
     from yuxi.services.daily_arrangement_service import authorize_sources, validate_daily_quality
-    from yuxi.repositories.daily_arrangement_repository import DailyArrangementRepository
-    from yuxi.services.reference_meal_plan_service import read_reference_plan_in_session
+    from yuxi.services.daily_meal_plan_service import read_published_reference_source
+    from yuxi.storage.postgres.models_health import HealthDailyArrangement
 
     ref = origin["source"]
     if ref["kind"] == "reference":
-        _, source = await read_reference_plan_in_session(session, uid, ref["id"])
-        if source["sources"]["family_id"] != family_id or source["plan_date"] != origin["date"]:
-            raise HealthVisionError("dish_source_changed", "菜谱来源已变化，请重新打开餐单", 409)
+        run, source = await read_published_reference_source(session, family_id, origin["date"], ref["id"])
+        owner = run.uid
     elif ref["kind"] == "formal":
         from types import SimpleNamespace
 
+        row = await session.get(HealthDailyArrangement, ref["id"])
+        if row is None or row.family_id != family_id or row.plan_date.isoformat() != origin["date"]:
+            raise HealthVisionError("dish_source_changed", "菜谱来源已变化，请重新打开餐单", 409)
+        owner = row.actor_uid
         frozen = origin.get("frozen")
         if frozen:
             receipt = SimpleNamespace(
                 family_id=family_id, status="ready", selection={}, sources=frozen["sources"], snapshot=frozen["quality"]
             )
-            await authorize_sources(session, uid, receipt, published=True)
+            await authorize_sources(session, row.actor_uid, receipt, published=True)
             source = {"meals": [frozen["meal"]]}
         else:
-            _, row = await DailyArrangementRepository(session, uid, family_id).context(
-                date.fromisoformat(origin["date"])
-            )
-            if not row or row.id != ref["id"] or not row.snapshot or row.snapshot["version"] != ref["version"]:
+            if not row.snapshot or row.snapshot["version"] != ref["version"]:
                 raise HealthVisionError("dish_source_changed", "菜谱来源已变化，请重新打开餐单", 409)
-            await authorize_sources(session, uid, row, published=True)
-            await validate_daily_quality(session, uid, row.snapshot)
+            await authorize_sources(session, row.actor_uid, row, published=True)
+            await validate_daily_quality(session, row.actor_uid, row.snapshot)
             source = row.snapshot
     else:
         raise HealthVisionError("dish_source_invalid", "菜谱来源无法读取", 409)
@@ -225,7 +226,7 @@ async def read_origin(session, uid, family_id, origin):
 
         decorated = await reference_meal_media(session, {"dishes": [dish]})
         dish = decorated["dishes"][0]
-    return copy.deepcopy(dish), meal, members, source
+    return copy.deepcopy(dish), meal, members, {**source, "source_owner": owner}
 
 
 async def freeze_origin(session, origin):

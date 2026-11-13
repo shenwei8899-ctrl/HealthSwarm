@@ -57,7 +57,7 @@ function onboardingPage(extras = {}) {
 }
 
 function completeOnboardingMember(member) {
-  Object.assign(member, { birthDate: '1995-01-01', healthStatus: 'none', goals: ['饮食均衡'],
+  Object.assign(member, { birthDate: '1995-01-01', gender: '女', height: 165, weight: 60, healthStatus: 'none', goals: ['饮食均衡'],
     tastePreferences: ['不限口味'], cuisines: ['不限菜系'], allergyStatus: 'none',
     intoleranceStatus: 'none', avoidanceStatus: 'none', doctorStatus: 'none' })
 }
@@ -121,7 +121,7 @@ test('three-step progress restores and completion does not resurrect the draft',
   page.next();await nextTick();page.dispose()
   page=onboardingPage();assert.equal(page.step.value,1);assert.equal(page.current.value.name,'妈妈');assert.equal(page.dinerCount.value,2)
   page.next();assert.equal(page.step.value,2);await nextTick();page.next();await nextTick()
-  assert.equal(redirect,'/pages/chat/index?from=onboarding');assert.equal(scopedStorage.getStorageSync('frontend-onboarded-v1'),true)
+  assert.equal(redirect,'/pages/chat/index');assert.equal(scopedStorage.getStorageSync('frontend-onboarded-v1'),true)
   assert.equal(scopedStorage.getStorageSync('frontend-onboarding-progress-v1'),null);page.dispose()
 })
 
@@ -133,7 +133,7 @@ test('invited members start at basic information and keep the household draft an
   const page=onboardingPage({options:{member:'2'}});assert.equal(page.invited.value,true);assert.equal(page.step.value,0);assert.equal(page.current.value.id,2)
   completeOnboardingMember(page.current.value)
   page.current.value.height='160';page.next();page.next();page.next();await nextTick()
-  assert.equal(redirect,'/pages/chat/index?from=onboarding');assert.deepEqual(profiles.getProfile().defaultDiners,[1])
+  assert.equal(redirect,'/pages/chat/index');assert.deepEqual(profiles.getProfile().defaultDiners,[1])
   assert.deepEqual(scopedStorage.getStorageSync('frontend-onboarding-progress-v1'),draft);page.dispose()
 })
 

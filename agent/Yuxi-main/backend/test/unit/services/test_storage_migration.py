@@ -24,6 +24,8 @@ def family_schema_upgrade(monkeypatch):
     monkeypatch.setattr(storage_migration, "upgrade_family_care", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_wechat_identity", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_product_feedback", upgrade)
+    monkeypatch.setattr(storage_migration, "upgrade_family_membership", upgrade)
+    monkeypatch.setattr(storage_migration, "upgrade_shared_daily_meal_plan", upgrade)
 
 
 class _Session:
@@ -205,6 +207,8 @@ async def test_storage_migration_rejects_v071_schema_without_quiescence_proof(mo
         32,
         33,
         34,
+        35,
+        36,
         storage_migration.HEALTH_SCHEMA_VERSION,
     ],
 )
@@ -270,12 +274,12 @@ async def test_current_schema_skips_unrelated_ddl_and_upgrades_health(monkeypatc
         f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}",
         f"version:knowledge:{storage_migration.KNOWLEDGE_SCHEMA_VERSION}",
     }.isdisjoint(calls)
-    assert ("create_health" in calls) == (health_version != storage_migration.HEALTH_SCHEMA_VERSION)
-    assert ("remove_health_ai_monthly_limit" in calls) == (health_version != storage_migration.HEALTH_SCHEMA_VERSION)
+    assert ("create_health" in calls) == (health_version < 36)
+    assert ("remove_health_ai_monthly_limit" in calls) == (health_version < 36)
     assert (f"version:health:{storage_migration.HEALTH_SCHEMA_VERSION}" in calls) == (
         health_version != storage_migration.HEALTH_SCHEMA_VERSION
     )
-    if health_version != storage_migration.HEALTH_SCHEMA_VERSION:
+    if health_version < 36:
         assert calls.index("create_health") < calls.index("remove_health_ai_monthly_limit")
         assert calls.index("remove_health_ai_monthly_limit") < calls.index(
             f"version:health:{storage_migration.HEALTH_SCHEMA_VERSION}"

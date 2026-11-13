@@ -219,6 +219,8 @@ async def read_health_task_in_session(session, uid: str, request_id: str) -> Hea
                 "reference_recipe_repeated",
                 "reference_menu_repeated",
                 "reference_variety_exhausted",
+                "reference_meal_incomplete",
+                "daily_plan_version_changed",
             }
             else error_codes[terminal]
         )

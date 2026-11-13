@@ -2034,3 +2034,65 @@ async def test_restricted_cooking_candidates_recheck_changed_profile_and_source_
     assert "source-hard-cooked-egg" not in response.text
     state = await cooking_candidate_write_state(current[1])
     assert set(state["counts"].values()) == {0} and state["daily_rows"] == []
+
+
+async def test_shared_daily_plan_migration_preserves_existing_rows(family_profile_http):
+    """迁移保留旧记录，重复运行不会再次推进共享版本。"""
+    from datetime import datetime
+
+    from test.integration.services.test_health_family_profile_http import create_source
+    from yuxi.storage.postgres.models_health import HealthDailyArrangement, HealthDailyMealPlan
+    from yuxi.storage_migrations.v037_shared_daily_meal_plan import upgrade_shared_daily_meal_plan
+
+    client, sessions, users = family_profile_http
+    family = await create_source(client, users["self"])
+    day = date(2099, 1, 1)
+    old_id, newest_id = str(uuid4()), str(uuid4())
+    formal_day = day + timedelta(days=1)
+    formal_id = str(uuid4())
+    async with sessions.begin() as db:
+        for uid, row_id, version, hour in (("self", old_id, 9, 10), ("other", newest_id, 4, 11)):
+            db.add(
+                HealthDailyMealPlan(
+                    id=row_id,
+                    actor_uid=uid,
+                    family_id=family["family_id"],
+                    plan_date=day,
+                    is_shared=False,
+                    version=version,
+                    meal_sources={"breakfast": {"kind": "reference", "id": str(uuid4())}},
+                    pending={"request_id": "legacy-request"},
+                    updated_at=datetime(2099, 1, 1, hour),
+                )
+            )
+        db.add(
+            HealthDailyArrangement(
+                id=formal_id,
+                actor_uid="self",
+                family_id=family["family_id"],
+                plan_date=formal_day,
+                version=2,
+                status="ready",
+                request_id=str(uuid4()),
+                selection={},
+                sources={},
+                snapshot={"status": "ready", "version": 2, "meals": [{"type": "dinner"}]},
+            )
+        )
+    manager = SimpleNamespace(async_engine=sessions.kw["bind"])
+    await upgrade_shared_daily_meal_plan(manager)
+    await upgrade_shared_daily_meal_plan(manager)
+    async with sessions() as db:
+        old = await db.get(HealthDailyMealPlan, old_id)
+        newest = await db.get(HealthDailyMealPlan, newest_id)
+        assert not old.is_shared and old.version == 9
+        assert newest.is_shared and newest.version == 10 and newest.pending == {}
+        formal = await db.scalar(
+            select(HealthDailyMealPlan).where(
+                HealthDailyMealPlan.family_id == family["family_id"],
+                HealthDailyMealPlan.plan_date == formal_day,
+                HealthDailyMealPlan.is_shared.is_(True),
+            )
+        )
+        assert formal.meal_sources == {"dinner": {"kind": "formal", "id": formal_id, "version": 2}}
+        assert formal.version == 1

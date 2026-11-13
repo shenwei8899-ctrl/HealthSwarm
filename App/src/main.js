@@ -11,8 +11,20 @@ export function createApp() {
   // #ifdef H5
   guardInitialH5Route(window.location, window.history)
   // #endif
-  installRouteGuards()
   const app = createSSRApp(App)
+  // #ifdef MP-WEIXIN
+  let firstPageReady
+  const startup = new Promise(resolve => { firstPageReady = resolve })
+  app.mixin({
+    onReady() {
+      if (this.$mpType === 'page') firstPageReady()
+    },
+  })
+  installRouteGuards(startup)
+  // #endif
+  // #ifndef MP-WEIXIN
+  installRouteGuards()
+  // #endif
   app.component('AppNavBar', AppNavBar)
   app.component('AppIcon', AppIcon)
   return { app }

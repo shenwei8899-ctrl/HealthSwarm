@@ -8,6 +8,7 @@ import FamilyInviteSheet from './FamilyInviteSheet.vue'
 import {loadCloudProfile} from '../services/cloud-profile.js'
 import {storageContext} from '../services/storage.js'
 import {getSession} from '../services/session.js'
+import {request} from '../services/request.js'
 const props=defineProps({shareState:Object})
 const emit=defineEmits(['prepare-invites','revoke-invite','discard-invites'])
 const inviteOpen=ref(false)
@@ -15,29 +16,59 @@ function openInvites(){if(!owner.value||profileContext.value!==storageContext())
 function prepareInvite(){if(owner.value)emit('prepare-invites')}
 const profile=ref(null),error=ref(''),busy=ref(false),profileContext=ref(''),selectedId=ref('')
 const owner=computed(()=>profile.value?.isOwner===true)
+const transfer=ref(null),transferBusy=ref(false),transferError=ref('')
 const sheetId=ref(''),sheetName=ref(''),sheetSection=ref('basic'),sheetDetail=ref(null),sheetClosing=ref(false),sheetExpanded=ref(false)
+const sheetMember = computed(() => profile.value?.members.find(member => String(member.memberId || member.id) === sheetId.value))
 let sheetContext='',sheetTimer=null,dragStart=null
 let epoch=0,remembered=null
+function isCurrentFamily(ticket,context,householdId){
+ return ticket===epoch&&context===storageContext()&&profile.value?.householdId===householdId&&getSession()?.householdId===householdId
+}
+async function readTransfer(ticket,context,result){
+ if(result.isOwner)return
+ const householdId=result.householdId
+ try{
+  const {data}=await request({path:'/api/family/'+encodeURIComponent(householdId)})
+  if(isCurrentFamily(ticket,context,householdId)&&data.owner_transfer?.member_id===result.selfMemberId)transfer.value=data.owner_transfer
+ }catch{
+  if(isCurrentFamily(ticket,context,householdId))transferError.value='暂时无法读取管理员交接状态，请重新读取。'
+ }
+}
+async function confirmTransfer(){
+ const pending=transfer.value,householdId=profile.value?.householdId
+ const ticket=epoch,context=profileContext.value
+ if(!pending?.id||pending.accepted||transferBusy.value||!isCurrentFamily(ticket,context,householdId))return
+ transferBusy.value=true;transferError.value=''
+ try{
+  await request({path:'/api/family/'+encodeURIComponent(householdId)+'/owner-transfer/'+encodeURIComponent(pending.id)+'/confirm',method:'POST'})
+  if(isCurrentFamily(ticket,context,householdId))transfer.value={...pending,accepted:true}
+ }catch(e){
+  if(isCurrentFamily(ticket,context,householdId))transferError.value=e.message||'暂时无法确认接手，请重试。'
+ }finally{
+  if(isCurrentFamily(ticket,context,householdId))transferBusy.value=false
+ }
+}
 async function load(){
  if(busy.value)return
  const mine=++epoch,context=storageContext()
- busy.value=true;error.value='';profile.value=null;profileContext.value=''
+ busy.value=true;error.value='';profile.value=null;profileContext.value='';transfer.value=null;transferError.value='';transferBusy.value=false
  try{
   const result=await loadCloudProfile({openConsultation:false,readConfiguration:false})
   if(mine!==epoch)return
   if(context!==storageContext()||result.householdId!==getSession()?.householdId){error.value='账号或家庭已变化，请重新读取。';return}
   selectedId.value=remembered?.context===context&&result.members.some(m=>String(m.id)===remembered.memberId)?remembered.memberId:String(result.selfMemberId||result.members[0]?.id||'')
   profileContext.value=context;profile.value=result
+  void readTransfer(mine,context,result)
  }catch(e){if(mine===epoch)error.value=e.message}
  finally{if(mine===epoch)busy.value=false}
 }
 function select(id){if(profileContext.value!==storageContext()){discard();return}selectedId.value=String(id);remembered={context:profileContext.value,memberId:String(id)}}
-function discard(){epoch++;profile.value=null;profileContext.value='';busy.value=false;error.value='';inviteOpen.value=false;emit('discard-invites')}
-function detail(member,section='basic'){if(owner.value&&member.claimed===false)prepareInvite();if(!profile.value||profileContext.value!==storageContext()){discard();return}if(!profile.value.members.some(m=>String(m.id)===String(member.id)))return;select(member.id);sheetContext=profileContext.value;sheetName.value=member.name;sheetSection.value=['health','preferences','restrictions'].includes(section)?section:'basic';sheetClosing.value=false;sheetExpanded.value=false;sheetId.value=String(member.id)}
+function discard(){epoch++;profile.value=null;profileContext.value='';busy.value=false;error.value='';inviteOpen.value=false;transfer.value=null;transferError.value='';transferBusy.value=false;emit('discard-invites')}
+function detail(member,section='basic'){if(owner.value&&member.claimed===false)prepareInvite();if(!profile.value||profileContext.value!==storageContext()){discard();return}if(!profile.value.members.some(m=>String(m.id)===String(member.id)))return;select(member.id);sheetContext=profileContext.value;sheetName.value=member.name;sheetSection.value=['health','preferences','restrictions'].includes(section)?section:'basic';sheetClosing.value=false;sheetExpanded.value=false;sheetId.value=String(member.memberId||member.id)}
 function clearSheet(){clearTimeout(sheetTimer);sheetId.value='';sheetContext='';sheetClosing.value=false}
 function requestSheetClose(){if(!sheetClosing.value)sheetDetail.value?.requestClose?.()}
 function closeSheet(){if(sheetClosing.value)return;sheetClosing.value=true;sheetTimer=setTimeout(()=>{clearSheet();void refreshCard()},240)}
-function updateSaved(next){if(sheetContext===storageContext()&&next?.householdId===profile.value?.householdId){profile.value=next;sheetName.value=next.members.find(m=>String(m.id)===sheetId.value)?.name||sheetName.value}}
+function updateSaved(next){if(sheetContext===storageContext()&&next?.householdId===profile.value?.householdId){profile.value=next;sheetName.value=sheetMember.value?.name||sheetName.value}}
 async function refreshCard(){const ticket=epoch,context=storageContext();try{const next=await loadCloudProfile({openConsultation:false,readConfiguration:false});if(ticket===epoch&&context===storageContext()&&next.householdId===profile.value?.householdId)profile.value=next}catch(e){if(ticket===epoch&&[401,403,404,410].includes(Number(e.code)))discard()}}
 function beginDrag(event){const p=event.touches?.[0];dragStart=p?{x:p.clientX,y:p.clientY}:null}
 function endDrag(event){const p=event.changedTouches?.[0],start=dragStart;dragStart=null;if(!p||!start)return;const dy=p.clientY-start.y;if(Math.abs(dy)<50||Math.abs(dy)<Math.abs(p.clientX-start.x)*1.4)return;if(dy>0)requestSheetClose();else sheetExpanded.value=true}
@@ -55,6 +86,13 @@ onUnmounted(()=>{remembered=null;clearSheet();discard()})
    <view v-if="busy" class="family-loading" role="status"><view class="loading-tabs"/><view class="loading-card"><view class="loading-avatar"/><view class="loading-line"/><view class="loading-line short"/></view><text>正在读取家庭档案…</text></view>
    <view v-else-if="error" class="family-notice" role="alert"><view class="notice-symbol" aria-hidden="true">↻</view><text class="notice-title">家庭档案暂未读取</text><text class="notice-copy">{{error}}</text><button class="retry-button" @click="load">重新读取</button></view>
    <template v-else-if="profile">
+    <view v-if="transfer||transferError" class="family-notice transfer-notice">
+     <text class="notice-title">家庭管理员交接</text>
+     <text v-if="transfer" class="notice-copy">{{transfer.accepted?'你已确认接手，等待原管理员完成切换。':'原管理员邀请你接手管理这个家庭。'}}</text>
+     <text v-if="transferError" class="notice-copy" role="alert">{{transferError}}</text>
+     <button v-if="transfer&&!transfer.accepted" class="retry-button" :disabled="transferBusy" @click="confirmTransfer">同意接手</button>
+     <button v-else-if="!transfer&&transferError" class="retry-button" @click="load">重新读取</button>
+    </view>
     <FamilyMemberDeck v-if="profile.members.length" :members="profile.members" :scope="profileContext" :self-id="profile.selfMemberId" :preferred-id="selectedId" :can-manage="owner" @selected="select" @open="detail" @manage="manage"/>
     <view v-else class="family-notice"><text class="notice-title">先为家人留一个位置</text><text class="notice-copy">添加成员后，就能查看每位家人的健康档案。</text></view>
    </template>
@@ -64,12 +102,13 @@ onUnmounted(()=>{remembered=null;clearSheet();discard()})
    <view class="archive-sheet-backdrop" aria-hidden="true" @click="requestSheetClose" @touchmove.stop.prevent @wheel.prevent/>
    <view class="archive-sheet-window" :class="{'is-expanded':sheetExpanded}" role="dialog" aria-modal="true" :aria-label="sheetName+'的健康档案'">
     <view class="archive-sheet-hero" @touchstart="beginDrag" @touchend="endDrag"><view class="sheet-grab"/><text class="sheet-title">健康档案</text><text class="sheet-person">{{sheetName}}</text><image class="sheet-assistant" src="/static/chat/nutrition-boy-v2-poster.png" mode="aspectFit" aria-hidden="true"/><button class="sheet-close" aria-label="关闭档案面板" @click.stop="requestSheetClose">×</button></view>
-    <view class="sheet-detail"><CloudMemberDetail ref="sheetDetail" :key="sheetId" :id="sheetId" :initial-section="sheetSection" :share-ready="!!props.shareState?.options?.some(o=>o.key===sheetId&&!!o.code)" :share-error="props.shareState?.error" :share-busy="props.shareState?.busy" @prepare-invite="prepareInvite" @manage-invite="openInvites" embedded @close="closeSheet" @saved="updateSaved"/></view>
+    <view class="sheet-detail"><CloudMemberDetail ref="sheetDetail" :key="sheetId" :id="sheetId" :initial-section="sheetSection" :share-ready="!!props.shareState?.options?.some(o=>o.key===sheetMember?.id&&!!o.code)" :share-error="props.shareState?.error" :share-busy="props.shareState?.busy" @prepare-invite="prepareInvite" @manage-invite="openInvites" embedded @close="closeSheet" @saved="updateSaved"/></view>
    </view>
   </view>
  </view>
 </template>
 <style scoped>
+.transfer-notice{margin:0 0 20px;padding:16px 20px}
 .family-invite{flex:none;min-height:44px;padding:10px 14px;border:1px solid rgba(255,255,255,.9);border-radius:15px;background:rgba(255,255,255,.8);color:#7964a4;font-size:12px;line-height:24px}.family-invite:after{border:0}
 .archive-sheet-backdrop{position:absolute;inset:0}
 .family-overview{--archive-canvas:linear-gradient(180deg,#d6e1fd 0%,#e8edff 42%,#edf0ff 70%);--ui-text:#343546;position:relative;min-height:100vh;padding:0 21px calc(env(safe-area-inset-bottom) + 28px);background:transparent;color:var(--ui-text)}.family-canvas{position:fixed;inset:0;z-index:0;height:100vh;height:100dvh;background:var(--archive-canvas);pointer-events:none}.family-content{position:relative;z-index:1;max-width:440px;margin:0 auto}.icon-button{min-width:44px;min-height:44px;margin-left:-9px;color:#645b70}

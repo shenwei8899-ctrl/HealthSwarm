@@ -31,16 +31,15 @@ export function createEntryResolver({ auth, readProfile, session, pendingPrepara
     if (invitation()) return invitationRoute(invitation())
     const selected = (session()?.families || families).find(family => family.id === id)
     if (selected?.invitationReviewPending === true) return '/pages/onboarding/index'
-    if (selected?.onboardingRequired === false) return pendingPreparation() ? '/pages/onboarding/preparing' : '/pages/chat/index'
+    if (selected?.onboardingRequired === false) return '/pages/chat/index'
     const profile = await readProfile()
     current()
     if (session()?.householdId !== id || profile.householdId !== id) throw new Error('家庭已变化，请重新选择。')
     if (invitation()) return invitationRoute(invitation())
     if (profile.invitationReviewPending === true) return '/pages/onboarding/index'
     if (profile.completeProfile === true || profile.onboarded === true) {
-      return pendingPreparation() ? '/pages/onboarding/preparing' : '/pages/chat/index'
+      return '/pages/chat/index'
     }
-    if (pendingPreparation()) return '/pages/onboarding/preparing'
     return '/pages/onboarding/index'
   }
 }

@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from yuxi.repositories.family_repository import FamilyRepository
@@ -79,6 +78,7 @@ def member_view(family, member, uid):
     full_profile_access = set(REQUIRED_PROFILE_FIELDS) <= allowed
     return {
         "id": member.id,
+        "member_id": member.person_id or member.id,
         "name": member.name,
         "relationship": member.relationship,
         "is_active": member.is_active,
@@ -180,12 +180,17 @@ class FamilyService:
         """返回当前字段范围内的档案，记录访问。"""
         family, _ = await self.context(fid)
         members = await self.repo.members(fid)
+        transfer = family.pending_owner_transfer
+        actor = next(member for member in members if member.subject_uid == self.uid and member.is_active)
         result = {
             "id": fid,
             "name": family.name,
             "settings": family.settings or {},
             "version": family.version,
             "is_owner": family.owner_uid == self.uid,
+            "owner_transfer": transfer
+            if transfer and (family.owner_uid == self.uid or transfer.get("member_id") == actor.id)
+            else None,
             "members": [member_view(family, member, self.uid) for member in members if member.is_active],
             "inactive_members": [member_view(family, member, self.uid) for member in members if not member.is_active]
             if family.owner_uid == self.uid
@@ -309,14 +314,19 @@ class FamilyService:
 
     async def create_family(self, name, username):
         """每个用户管理一个家庭；重复相同请求返回已有家庭。"""
+        await self.repo.lock_membership(self.uid)
         existing = await self.repo.owned_family(self.uid)
         if existing:
             if existing.name != name:
                 raise HTTPException(409, "当前账户已经管理一个家庭")
             return await self.family(existing.id)
+        if await self.repo.active_membership(self.uid):
+            raise HTTPException(409, "当前账号已经属于一个家庭")
         family = FamilyArchive(id=str(uuid.uuid4()), owner_uid=self.uid, name=name)
+        member_id = str(uuid.uuid4())
         member = FamilyMember(
-            id=str(uuid.uuid4()), family_id=family.id, subject_uid=self.uid, name=username, relationship="本人"
+            id=member_id, person_id=member_id, family_id=family.id,
+            subject_uid=self.uid, name=username, relationship="本人"
         )
         try:
             self.db.add(family)
@@ -377,33 +387,53 @@ class FamilyService:
         if member.is_active != payload.is_active:
             if payload.is_active and sum(row.is_active for row in await self.repo.members(fid)) >= 30:
                 raise HTTPException(422, "一个家庭最多30名有效成员")
-            member.is_active = payload.is_active
-            member.relationship_version += 1
-            member.grant_fields, member.grant_edit_fields = [], []
-            member.grant_expires_at, member.grant_purpose = None, None
-            member.guardian_status = "revoked" if member.guardian_uid else None
-            member.guardian_version += 1
-            if not payload.is_active:
-                for ward in await self.repo.members(fid):
-                    if ward.guardian_uid == member.subject_uid and ward.guardian_status in {"pending", "approved"}:
-                        ward.guardian_status = "revoked"
-                        ward.guardian_version += 1
-                        await self.repo.audit(fid, ward.id, self.uid, "guardian.revoke", ward.guardian_version)
-            member.invite_hash, member.invite_expires_at = None, None
+            if payload.is_active and member.subject_uid and await self.repo.active_membership(member.subject_uid):
+                raise HTTPException(409, "该账号已加入其他家庭")
             action = "member.restore" if payload.is_active else "member.deactivate" if is_owner else "member.leave"
-            await self.repo.audit(fid, mid, self.uid, action, member.relationship_version)
-            if not payload.is_active:
-                health_member_id = await self.repo.linked_health_member(fid, mid)
-                if health_member_id is not None:
-                    from yuxi.repositories.health_quality_repository import HealthQualityRepository
-
-                    # 已持家庭锁；失效事务不反向取得健康成员锁。
-                    await HealthQualityRepository(self.db).invalidate(
-                        member_id=health_member_id, reason="family_profile_source_unavailable"
-                    )
+            await self.set_membership_status(family, member, payload.is_active, action)
         result = member_view(family, member, self.uid)
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except IntegrityError as error:
+            await self.db.rollback()
+            if "uq_active_family_subject" not in str(error.orig):
+                raise
+            raise HTTPException(409, "该账号已加入其他家庭") from None
         return result
+
+    async def set_membership_status(self, family, member, active, action):
+        """退出及切换共用同一撤权路径，由调用方提交。"""
+        member.is_active = active
+        member.relationship_version += 1
+        member.grant_fields, member.grant_edit_fields = [], []
+        member.grant_expires_at, member.grant_purpose = None, None
+        member.guardian_status = "revoked" if member.guardian_uid else None
+        member.guardian_version += 1
+        member.invite_hash, member.invite_expires_at = None, None
+        await self.repo.audit(family.id, member.id, self.uid, action, member.relationship_version)
+        if active:
+            return
+        for ward in await self.repo.members(family.id):
+            if (
+                member.subject_uid
+                and ward.guardian_uid == member.subject_uid
+                and ward.guardian_status in {"pending", "approved"}
+            ):
+                ward.guardian_status = "revoked"
+                ward.guardian_version += 1
+                await self.repo.audit(family.id, ward.id, self.uid, "guardian.revoke", ward.guardian_version)
+        settings = family.settings or {}
+        diners = settings.get("default_diners") or []
+        if member.id in diners:
+            family.settings = {**settings, "default_diners": [item for item in diners if item != member.id]}
+            family.version += 1
+        health_member_id = await self.repo.linked_health_member(family.id, member.id)
+        if health_member_id is not None:
+            from yuxi.repositories.health_quality_repository import HealthQualityRepository
+
+            await HealthQualityRepository(self.db).invalidate(
+                member_id=health_member_id, reason="family_profile_source_unavailable"
+            )
 
     async def revoke_invitation(self, fid, mid, code=None):
         """管理员撤销未认领邀请，下次生成不同代码。"""
@@ -428,40 +458,6 @@ class FamilyService:
         await self.repo.audit(fid, mid, self.uid, "member.invite")
         await self.db.commit()
         return ticket
-
-    async def join(self, code):
-        """已登录本人认领后共享普通档案，AI 等用途仍独立授权。"""
-        digest = hashlib.sha256(code.encode()).hexdigest()
-        candidate = await self.repo.invitation(digest)
-        if candidate is None:
-            raise HTTPException(410, "邀请已失效")
-        fid, mid = candidate.family_id, candidate.id
-        family = await self.db.scalar(select(FamilyArchive).where(FamilyArchive.id == fid).with_for_update())
-        member = await self.repo.member(fid, mid)
-        await self.db.refresh(member)
-        if member.is_active and member.invite_hash == digest and member.subject_uid == self.uid:
-            return await self.family(fid)
-        if (
-            member.invite_hash != digest
-            or not member.is_active
-            or member.subject_uid
-            or not member.invite_expires_at
-            or member.invite_expires_at <= utc_now_naive()
-        ):
-            raise HTTPException(410, "邀请已失效")
-        if family.owner_uid == self.uid or await self.repo.subject_member(fid, self.uid):
-            raise HTTPException(409, "当前账户已经是此家庭成员")
-        member.subject_uid = self.uid
-        member.invitation_review_pending = True
-        member.invitation_analysis_pending = True
-        member.confirmed_version = None
-        member.confirmed_at = None
-        from yuxi.services.miniapp_report_service import ensure_member_reports
-
-        await ensure_member_reports(self, family, member)
-        await self.repo.audit(fid, mid, self.uid, "member.claim")
-        await self.db.commit()
-        return await self.family(fid)
 
     async def authorization(self, fid, mid, fields, purpose, expires_at, edit_fields):
         """本人授予或撤回管理员的独立来源字段权限，不改变普通档案共享。"""
@@ -498,7 +494,15 @@ class FamilyService:
             result = member_view(family, member, self.uid)
             await self.db.commit()
             return result
-        member.profile = {**(member.profile or {}), **changes}
+        merged_profile = {**(member.profile or {}), **changes}
+        from yuxi.services.miniapp_profile_types import miniapp_profile_complete, saved_miniapp_member
+
+        if miniapp_profile_complete(member):
+            try:
+                saved_miniapp_member(member, merged_profile)
+            except ValidationError:
+                raise HTTPException(422, "请完整填写性别、出生日期、身高、体重及必填饮食健康资料") from None
+        member.profile = merged_profile
         if "birth_date" in changes and member.guardian_status in {"pending", "approved"}:
             member.guardian_status = "revoked"
             member.guardian_version += 1

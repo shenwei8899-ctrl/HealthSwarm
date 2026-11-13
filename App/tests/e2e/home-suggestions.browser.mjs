@@ -4,6 +4,7 @@ import fs from 'node:fs/promises'
 import http from 'node:http'
 import path from 'node:path'
 import {createRequire} from 'node:module'
+import {PERSONALIZED_CHAT_PROMPT_POOL} from '../../src/services/chat-prompts.js'
 const require=createRequire(import.meta.url),{chromium}=require(process.env.PLAYWRIGHT_PACKAGE||'playwright')
 const root=path.resolve(process.env.HOME_SUGGESTIONS_BUILD),evidence=path.resolve(process.env.HOME_SUGGESTIONS_EVIDENCE)
 await fs.mkdir(evidence,{recursive:true})
@@ -22,17 +23,25 @@ const profile={source:'api',householdId:family,householdName:'合成家庭',fami
 const row={thread_id:thread,member_id:member,agent_slug:'health-consultation',business_date:null,feedback_selection:null}
 const results=[]
 try{
- for(const scenario of ['stable-home','initial-click','return-click']){
+ for(const scenario of ['stable-home','initial-click','return-click','personalized-family','personalized-send','personalized-goals']){
   const context=await browser.newContext({viewport:{width:390,height:844}}),requests=[],errors=[]
+  const scenarioProfile=structuredClone(profile)
+  const personalizedLabels=new Set(PERSONALIZED_CHAT_PROMPT_POOL.filter(p=>scenario==='personalized-goals'?['salt','sugar','fat'].includes(p.topic):p.topic==='hypertension').map(p=>p.text))
+  if(scenario==='personalized-goals'){
+   scenarioProfile.members[0].goals=['控压','控糖'];scenarioProfile.members[0].tastePreferences=['少油']
+  }else if(scenario.startsWith('personalized')){
+   scenarioProfile.usageMode='家庭使用'
+   scenarioProfile.members.push({...structuredClone(profile.members[0]),id:'22222222-2222-4222-8222-222222222223',healthMemberId:null,name:'妈妈',relation:'母亲',isSelf:false,claimed:false,healthStatus:'set',conditions:['高血压']})
+  }
   let hold=true,release,created=false
   let gate=new Promise(resolve=>release=resolve)
   await context.addInitScript(({family})=>localStorage.setItem('fn-session-v2:api',JSON.stringify({type:'object',data:{accountId:'1',accountName:'合成测试',householdId:family,token:'synthetic-home-test',authSource:'wechat',expiresAt:Date.now()/1000+86400,clientRevision:'home-test',families:[{id:family,name:'合成家庭',isOwner:true,onboardingRequired:false}]}})),{family})
   await context.route('**/api/**',async route=>{
-   const request=route.request(),p=new URL(request.url()).pathname,method=request.method();requests.push({path:p,method})
+   const request=route.request(),p=new URL(request.url()).pathname,method=request.method();requests.push({path:p,method,body:method==='POST'?request.postDataJSON():null})
    let data,status=200
    if(p.endsWith('/session/exchange'))data={code:0,data:{user:{id:1,token:'synthetic-shop'},agent_account_id:'1'}}
    else if(p==='/api/auth/wechat/session')data={wechat_authenticated:true,account:{id:1,name:'合成测试'},families:[{id:family,name:'合成家庭',is_owner:true,onboarding_required:false}]}
-   else if(p.endsWith('/miniapp-profile')){if(method==='GET'&&hold)await gate;data=profile}
+   else if(p.endsWith('/miniapp-profile')){if(method==='GET'&&hold)await gate;data=scenarioProfile}
    else if(p.endsWith('/configuration'))data={policy_version:'synthetic',consultation:{available:true,processor:'synthetic'},meal_plan:{available:true,processor:'synthetic'}}
    else if(p==='/api/health/v1/members')data=[{id:member,display_name:'我',is_owner:true,scopes:['ai_use','profile_view','diet_edit']}]
    else if(p.endsWith('/readiness'))data={capabilities:{member_id:member},entries:[{entry_type:'consultation',status:'available'}]}
@@ -70,11 +79,48 @@ try{
    assert.equal(requests.length,before)
    assert.ok((await cards.allTextContents()).every(text=>!old.includes(text)))
    await page.screenshot({path:path.join(evidence,scenario+'-before-ready.png'),fullPage:true})
-   if(scenario==='stable-home'){
+   if(scenario==='stable-home'||scenario.startsWith('personalized')){
     await page.evaluate(()=>window.homeLayer=document.querySelector('#chat-welcome-layer'))
     const ready=page.waitForResponse(r=>r.url().includes('/readiness'));hold=false;release();await ready
     await page.waitForFunction(()=>document.querySelector('.camera-button')&&!document.querySelector('.camera-button').classList.contains('uni-button-disabled'))
     assert.equal(await page.evaluate(()=>window.homeLayer===document.querySelector('#chat-welcome-layer')),true)
+    if(scenario.startsWith('personalized')){
+     assert.equal((await cards.allTextContents()).filter(text=>personalizedLabels.has(text)).length,3)
+     const previous=await cards.allTextContents(),requestCount=requests.length
+     await shuffle.click()
+     assert.equal(requests.length,requestCount)
+     assert.equal((await cards.allTextContents()).filter(text=>personalizedLabels.has(text)).length,3)
+     assert.ok((await cards.allTextContents()).every(text=>!previous.includes(text)))
+     await page.screenshot({path:path.join(evidence,scenario+'-personalized.png'),fullPage:true})
+     if(scenario==='personalized-goals'){
+      for(const width of [320,375,390,430]){
+       await page.setViewportSize({width,height:844})
+       const fits=await cards.evaluateAll(buttons=>buttons.every(button=>{
+        const range=document.createRange();range.selectNodeContents(button)
+        const text=range.getBoundingClientRect(),card=button.getBoundingClientRect()
+        return range.getClientRects().length===1&&text.top>=card.top-1&&text.bottom<=card.bottom+1&&text.left>=card.left-1&&text.right<=card.right+1
+       }))
+       assert.ok(fits,'question text must fit on one line in the '+width+'px cards')
+       await page.screenshot({path:path.join(evidence,scenario+'-'+width+'.png'),fullPage:true})
+      }
+     }else if(scenario==='personalized-send'){
+      const index=(await cards.allTextContents()).findIndex(text=>personalizedLabels.has(text))
+      const label=await cards.nth(index).innerText()
+      await cards.nth(index).click()
+      await page.getByText('合成确认：问题已经收到。',{exact:true}).waitFor()
+      const sends=requests.filter(r=>r.path.endsWith('/chat-intent'))
+      assert.equal(sends.length,1)
+      assert.equal(sends[0].body.text,label)
+      assert.deepEqual(await page.locator('.message-row.user .bubble').allTextContents(),[label])
+     }else{
+      await page.locator('.shortcut-family').click();await page.waitForURL(/pages\/profile\/index/)
+      await page.getByText('合成家庭',{exact:true}).first().waitFor()
+      scenarioProfile.members[1].healthStatus='none'
+      await page.goBack();await cards.nth(3).waitFor()
+      await page.waitForFunction(labels=>![...document.querySelectorAll('#chat-welcome-layer .prompt-grid > *')].some(card=>labels.includes(card.textContent)),[...personalizedLabels])
+      assert.equal(await cards.count(),4)
+     }
+    }
    }else{
     if(scenario==='return-click'){
      const ready=page.waitForResponse(r=>r.url().includes('/readiness'));hold=false;release();await ready

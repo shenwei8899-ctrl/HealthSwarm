@@ -16,7 +16,7 @@ test('source-based candidates retain their date, breakfast, restrictions and mat
  assert.equal(isMealPlanCandidates(data),true);assert.equal(isReferencePlan(data),false)
  const [message]=chatMessages({history:[{id:1,type:'ai',content:JSON.stringify(data),recorded_meals:[{id:'not-a-candidate-receipt'}],request_id:'original'}]})
  assert.equal(message.business.kind,'meal_plan_candidates');assert.deepEqual(message.business.data,data)
- assert.equal(message.planDate,undefined);assert.equal(message.planMeals,undefined);assert.equal(message.purchaseRequestId,'')
+ assert.equal(message.planDate,undefined);assert.equal(message.planMeals,undefined);assert.equal(message.purchaseRequestId,undefined)
  assert.deepEqual(message.recordedMeals,[]);assert.match(message.text,/待核对候选.*尚未确认/)
 })
 
@@ -40,7 +40,7 @@ for(const change of [data=>data.status='reference_ready',data=>data.scope='daily
  test('a candidate with an unverified identity or readiness claim fails closed: '+change.toString(),()=>{
   const data=mealCandidates();change(data);assert.equal(isMealPlanCandidates(data),false)
   const [message]=chatMessages({history:[{id:1,type:'ai',content:JSON.stringify(data)}]})
-  assert.equal(message.business,null);assert.equal(message.planDate,undefined);assert.equal(message.purchaseRequestId,'')
+  assert.equal(message.business,null);assert.equal(message.planDate,undefined);assert.equal(message.purchaseRequestId,undefined)
   assert.match(message.text,/无法核对/)
  })
 }
@@ -75,11 +75,11 @@ test('reference choice preserves requested meal set, date and actor scope',()=>{
  assert.throws(()=>referenceSelection(profile,'后天三餐',dates),/原问题已保留/)
  assert.throws(()=>referenceSelection(profile,'今天三餐',{...dates,memberId:'inaccessible'}),/成员/)
 })
-test('an unspecified personal request uses the current profile rather than all default diners',()=>{
+test('an unspecified request uses default diners while explicit personal and named requests select their members',()=>{
  const family={...profile,defaultDiners:['self','mother']}
  assert.deepEqual(referenceSelection(family,'为我配餐',dates).participant_ids,['self'])
  assert.deepEqual(referenceSelection(family,'按家庭档案为我配餐',dates).participant_ids,['self'])
- assert.deepEqual(referenceSelection(family,'今天怎么吃',dates).participant_ids,['self'])
+ assert.deepEqual(referenceSelection(family,'今天怎么吃',dates).participant_ids,['mother','self'])
  assert.deepEqual(referenceSelection(family,'今天怎么吃',{...dates,memberId:'health-mother'}).participant_ids,['mother'])
  const named={...family,members:[...family.members,{id:'father',healthMemberId:'health-father',relation:'父亲'}]}
  for(const text of ['给我父亲配餐','为我的父亲配餐','帮我的父亲安排今天晚餐'])assert.deepEqual(referenceSelection(named,text,dates).participant_ids,['father'],text)
@@ -167,4 +167,11 @@ test('reference self-purchase gaps show no price and never become cart products'
  assert.match(source,/no_match:'自行购买 · 暂无价格'/)
  assert.match(source,/needs_confirmation:'自行购买 · 暂无价格'/)
  assert.doesNotMatch(source,/purchase_gaps[^\n]+confirm.*cart/i)
+})
+
+test('explicit dish counts and solo simple meals reach the bound selection',()=>{
+ assert.equal(referenceSelection(profile,'午餐做三道菜',dates).requested_dish_count,3)
+ assert.equal(referenceSelection(profile,'只给我安排午餐简餐',dates).simple_meal,true)
+ assert.equal(referenceSelection(profile,'午餐不要做一道菜',dates).requested_dish_count,undefined)
+ assert.equal(referenceSelection(profile,'午餐换一道菜',dates).requested_dish_count,undefined)
 })

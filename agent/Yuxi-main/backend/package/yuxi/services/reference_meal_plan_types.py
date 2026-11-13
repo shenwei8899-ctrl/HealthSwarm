@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import Field, model_validator
 
 from yuxi.services.health_vision_types import HealthDTO
+from yuxi.services.reference_meal_composition import MAX_REFERENCE_DISHES
 from yuxi.services.recipe_translation_types import RecipeChineseDisplay
 
 REFERENCE_TOOLS = (
@@ -31,6 +32,8 @@ class ReferenceSelection(HealthDTO):
         default_factory=lambda: ["breakfast", "lunch", "dinner"], min_length=1, max_length=3
     )
     daily_base_version: int | None = Field(default=None, ge=0, strict=True)
+    requested_dish_count: int | None = Field(default=None, ge=1, le=MAX_REFERENCE_DISHES, strict=True)
+    simple_meal: Literal[True] | None = None
 
     @model_validator(mode="after")
     def unique_members(self):
@@ -58,7 +61,24 @@ class RecipeNutritionHighlight(HealthDTO):
         return self
 
 
-class ReferenceDish(HealthDTO):
+class ReferenceDishAssignment(HealthDTO):
+    """替代菜须明确对应的本餐成员和原共用菜。"""
+
+    alternative_for: list[UUID] = Field(default_factory=list, max_length=20)
+    replaces_file_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def paired_assignment(self):
+        """拒绝缺项和重复成员。"""
+        if bool(self.alternative_for) != bool(self.replaces_file_id) or len(set(self.alternative_for)) != len(
+            self.alternative_for
+        ):
+            raise ValueError("替代菜须提供共用菜来源和不重复的就餐成员")
+        self.alternative_for.sort(key=str)
+        return self
+
+
+class ReferenceDish(ReferenceDishAssignment):
     """菜名和食材、步骤来自本 Run 打开的原食谱。"""
 
     file_id: str = Field(min_length=1, max_length=64)
@@ -79,7 +99,7 @@ class ReferenceMeal(HealthDTO):
     """三餐使用当前已选成员，模型不能另选家庭或日期。"""
 
     meal_type: Literal["breakfast", "lunch", "dinner"]
-    dishes: list[ReferenceDish] = Field(min_length=1, max_length=5)
+    dishes: list[ReferenceDish] = Field(min_length=1, max_length=MAX_REFERENCE_DISHES)
 
 
 class ReferencePurchaseItem(HealthDTO):

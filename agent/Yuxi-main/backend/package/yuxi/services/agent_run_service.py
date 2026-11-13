@@ -945,6 +945,7 @@ def _public_health_error(error_type: str | None) -> dict[str, str]:
         "cancelled": "咨询已取消",
         "interrupted": "咨询已中断，请重新发送文字咨询",
         "output_persistence_error": "答复来源或输出校验未通过，请重新咨询",
+        "daily_plan_version_changed": "餐单已更新，请查看新餐单后再调整",
         "health_execution_timeout": "咨询执行超时，请重新咨询",
         "worker_lease_expired": "咨询执行已停止，请重新咨询",
         "budget_exceeded": "健康 AI 费用账本已冻结，可使用人工录入",
@@ -954,6 +955,7 @@ def _public_health_error(error_type: str | None) -> dict[str, str]:
         "reference_recipe_repeated": "菜品已在本家庭近期餐单中安排，请重新选择菜谱",
         "reference_menu_repeated": "本次三餐组合重复，请重新选择菜谱",
         "reference_variety_exhausted": "多次选菜仍与已有餐单重复，请重新生成餐单",
+        "reference_meal_incomplete": "本餐待补齐，当前可核对的菜品无法覆盖就餐人数和搭配要求",
     }
     code = error_type if error_type in errors else "health_execution_failed"
     return {"type": code, "message": errors.get(code, "健康解释执行失败，请重新咨询")}

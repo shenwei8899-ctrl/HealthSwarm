@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {dishTitle,dishKey,mealNutrition,dishPortion,canPurchaseAllMeals,mealTypes} from '../src/utils/meal-presentation.js'
+import {dishTitle,dishKey,mealNutrition,dishPortion,dishMemberPortions,canPurchaseAllMeals,mealTypes} from '../src/utils/meal-presentation.js'
 
 const fullPlan=()=>({status:'ready',meals:mealTypes.map(type=>({meal_type:type,source:{kind:'reference',id:'saved'},meal:{dishes:[{name:type}]}})),purchase_options:[{kind:'reference',id:'saved',meal_types:[...mealTypes]}]})
 
@@ -38,6 +38,20 @@ test('meal summary uses saved meal totals and never per-100g dish numbers',()=>{
  assert.deepEqual(mealNutrition({nutrition:{kcal:0,protein:null},dishes:[{nutrition:{energyKcal:200}}]}),[{key:'kcal',label:'能量',unit:'千卡',value:0}])
  assert.deepEqual(mealNutrition({nutrition:{kcal:NaN,protein:-1}}),[])
  assert.equal(dishPortion({memberNotes:[{dishes:[{dishId:'r',grams:120}]},{dishes:[{dishId:'r',grams:80}]}]},{id:'r'}),'本餐安排 200 克')
+})
+
+test('dish cards only use the recorded allocation for each member and exact dish',()=>{
+ const dish={id:'recipe',dish_key:'display-key',portion_quote:'300 克',ingredients:[{planned_grams:'180'}]}
+ const meal={memberNotes:[
+  {memberId:'me',name:'我',dishes:[{dishId:'recipe',grams:100.5},{dishId:'other',grams:90}]},
+  {memberId:'dad',name:'爸爸',dishes:[{dishId:'recipe',grams:150}]},
+  {memberId:'mom',name:'妈妈',dishes:[{dishId:'recipe',grams:null}]},
+  {memberId:'other',name:'家人',dishes:[{dishId:'display-key',grams:120}]}
+ ]}
+ assert.deepEqual(dishMemberPortions(meal,dish),[
+  {memberId:'me',name:'我',grams:100.5},{memberId:'dad',name:'爸爸',grams:150}
+ ])
+ assert.deepEqual(dishMemberPortions({members:[{id:'me',name:'我'}]},dish),[])
 })
 
 

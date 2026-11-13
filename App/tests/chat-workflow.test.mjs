@@ -7,6 +7,7 @@ import {createChatEntryTransition} from '../src/services/chat-entry-transition.j
 import {createChatKeyboardLayout} from '../src/services/chat-keyboard-layout.js'
 import {mealQuestionAction,readDailyMealPlan} from '../src/services/daily-meal-plan.js'
 import {selectChatPrompts,CHAT_PROMPT_POOL} from '../src/services/chat-prompts.js'
+import {chatPromptProfileKey} from '../src/services/chat-prompt-profile.js'
 import {chatTimestamp,chatBusinessDate} from '../src/services/cloud-chat.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -37,7 +38,7 @@ function workflow(options = {}) {
     selfMemberId: 'self', defaultDiners: ['self', 'father'], healthConfiguration: { consultation: { available: true }, meal_plan: { available: true } },
     members: [{ id: 'self', relation: '本人', name: '合成本人', healthMemberId: member, allergyStatus: 'set', allergies: ['花生'], doctorStatus: 'none' },
       { id: 'father', relation: '父亲', name: '合成家人', healthMemberId: relative, restrictionStatus: 'set', restrictions: ['少辣'] }],
-  });if(options.relativeFirst)value.members.reverse();if(options.diners)value.defaultDiners=options.diners;return value }
+  });if(options.profile)options.profile(value);if(options.relativeFirst)value.members.reverse();if(options.diners)value.defaultDiners=options.diners;return value }
   const addThread = (threadId, config = {}) => {
     const row = { threadId, memberId: member, taskType: 'consultation', agent: 'health-consultation', businessDate: null,
       messages: [], runs: [], owner: identity.scope, ...config }
@@ -121,7 +122,7 @@ function workflow(options = {}) {
     }
     return flow
   }
-  const deps = {setTimeout:options.schedule||setTimeout,clearTimeout:options.cancel||clearTimeout,todayMealPlanState,createTodayMealPlan:config=>options.todayMenu?createTodayMealPlan({...config,...options.todayMenu}):({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}), defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
+  const deps = {setTimeout:options.schedule||setTimeout,clearTimeout:options.cancel||clearTimeout,todayMealPlanState,createTodayMealPlan:config=>options.todayMenu?createTodayMealPlan({...config,...options.todayMenu}):({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}), defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatPromptProfileKey,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
     onMounted: fn => { hooks.mount = fn }, onUnmounted: fn => { hooks.unmount = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn },
     dishTitle,mealLabels,mealPairingText,chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,
     newHealthRequestId: id, storageContext: () => identity.scope, getSession: () => ({ ...identity }), scopedStorage,
@@ -153,7 +154,7 @@ function workflow(options = {}) {
   const readOnlyBinding=source.match(/<TodayMealPlanSheet\b[^>]*?:read-only="([^"]+)"/)?.[1]||'false'
   const code = source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {pendingHistoryThread,historySelectionError,closeHistoryDirectory,prefetchHistory,prompts,shufflePrompts,promptAskBusy,promptShuffleBusy,composerPlaceholder,returning,browseConversation,historyPreview,deniedHistoryThread,deniedPreview,readingSuspended,showTodayMeal,verifiedMealView,mealViewText,restoreChat,scrollTarget,loadDailyPlan,currentEpoch:()=>epoch,history,visibleMessages,todayMenu,actTodayMenu,reloadToday,openDailyMeal,openDailyDish,todayMenuReadOnly:()=>{const value=(${readOnlyBinding});return value&&typeof value==='object'&&'value' in value?value.value:value},latestReference,shortcut,inlineTodayOpen,messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
+  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {pendingHistoryThread,historySelectionError,closeHistoryDirectory,prefetchHistory,prompts,shufflePrompts,promptAskBusy,promptShuffleBusy,composerPlaceholder,returning,browseConversation,historyPreview,deniedHistoryThread,deniedPreview,reading,rememberReading,latestAvailable,readingSuspended,showTodayMeal,verifiedMealView,mealViewText,restoreChat,scrollTarget,loadDailyPlan,currentEpoch:()=>epoch,history,visibleMessages,todayMenu,actTodayMenu,reloadToday,openDailyMeal,openDailyDish,todayMenuReadOnly:()=>{const value=(${readOnlyBinding});return value&&typeof value==='object'&&'value' in value?value.value:value},latestReference,shortcut,inlineTodayOpen,messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
   const historyRow = threadId => { const row = threads.get(threadId); return { thread_id: threadId, member_id: row.memberId, agent_slug: row.agent, business_date: row.businessDate } }
   return { ...page, calls, writes, identity, clock, hooks, scopedStorage, threads, addThread, historyRow,
     get flow(){return flow},
@@ -212,7 +213,7 @@ test('a completed tomorrow-breakfast candidate ends chat loading without becomin
   const message=p.messages.value.at(-1)
   assert.equal(p.chatBusy.value,false);assert.equal(p.replyPending.value,false)
   assert.equal(message.business.kind,'meal_plan_candidates');assert.deepEqual(message.business.data,data)
-  assert.equal(message.planDate,'');assert.equal(message.planMeals,undefined);assert.equal(message.purchaseRequestId,'')
+  assert.equal(message.planDate,'');assert.equal(message.planMeals,undefined);assert.equal(message.purchaseRequestId,undefined)
   assert.deepEqual(message.purchaseOffers,[]);assert.deepEqual(message.recordedMeals,[]);assert.equal(p.latestReference.value,null)
   assert.equal(p.todayMenuReadOnly(),false);assert.ok(Object.values(p.dailyPlans.value).every(plan=>plan.status!=='ready'))
   const before=p.calls.filter(call=>call.action==='submit'||call.action==='startPlan').length
@@ -321,6 +322,48 @@ test('home renders four interactive local suggestions before any entry request c
   assert.equal(p.welcomeMounted.value,true)
   assert.equal(p.entryView.value.phase,phase)
   assert.equal(p.entryView.value.generation,generation,'readiness must not remount the welcome layer')
+ }finally{gate.resolve();p.dispose()}
+})
+
+test('verified household data personalizes home and return edits replace stale questions',async()=>{
+ let condition='高血压',revision=1
+ const p=workflow({route:{},profile:value=>{
+  value.revision=revision
+  value.members[0].allergyStatus='none'
+  Object.assign(value.members[1],{healthStatus:condition?'set':'none',conditions:['高血压'],goals:[]})
+ }})
+ try{
+  assert.ok(p.prompts.value.every(prompt=>!prompt.topic),'first render must not read unverified health caches')
+  await p.load()
+  assert.equal(p.prompts.value.filter(prompt=>prompt.topic==='hypertension').length,3)
+  const before=p.prompts.value.map(prompt=>prompt.id)
+  revision++;await p.refreshReturn()
+  assert.deepEqual(p.prompts.value.map(prompt=>prompt.id),before,'a cache timestamp change must not shuffle cards')
+  condition='';await p.refreshReturn()
+  assert.ok(p.prompts.value.every(prompt=>!prompt.topic),'clearing disease status must remove recommendations despite residual selections')
+ }finally{p.dispose()}
+})
+
+test('a personalized card displays and submits its exact text once',async()=>{
+ const p=workflow({route:{},profile:value=>Object.assign(value.members[1],{healthStatus:'set',conditions:['高血压']})})
+ try{
+  await p.load()
+  const prompt=p.prompts.value.find(prompt=>prompt.topic==='hypertension')
+  await p.askPrompt({ ...prompt, question: '不应发送的旧版扩充文案' })
+  const submissions=p.calls.filter(call=>call.action==='submit')
+  assert.equal(submissions.length,1)
+  assert.equal(submissions[0].text,prompt.text)
+  assert.deepEqual(p.messages.value.filter(message=>message.role==='user').map(message=>message.text),[prompt.text])
+ }finally{p.dispose()}
+})
+
+test('a late household response cannot display prior-account personalized questions',async()=>{
+ const gate=deferred(),p=workflow({route:{},beforeProfile:()=>gate.promise,profile:value=>Object.assign(value.members[1],{healthStatus:'set',conditions:['高血压']})})
+ try{
+  const opening=p.load()
+  p.identity.scope='account-b';p.identity.accountId='account-b';p.identity.householdId='family-b'
+  gate.resolve();await opening
+  assert.ok(p.prompts.value.every(prompt=>!prompt.topic))
  }finally{gate.resolve();p.dispose()}
 })
 
@@ -992,7 +1035,7 @@ for(const returnImmediately of [false,true])test(`leaving during the pre-submit 
   }finally{scroll.resolve();await pending;p.dispose()}
 })
 
-test('typed meal intent uses the current profile and a dinner revision preserves the other meals', async () => {
+test('typed meal intent uses the current profile and a chat revision leaves the saved plan alone', async () => {
   let saved=null
   const p = workflow({readDailyMealPlan:async(_family,date)=>saved||{date,status:'absent',version:0,meals:[]}})
   try {
@@ -1009,20 +1052,17 @@ test('typed meal intent uses the current profile and a dinner revision preserves
     const revision='晚餐换成清淡一点的，早餐和午餐保持原样'
     p.question.value=revision;await p.sendQuestion()
     const submits = p.calls.filter(call => call.action === 'submit')
-    assert.deepEqual(submits.map(call=>call.text),[first,revision])
-    assert.ok(submits.every(call=>call.taskType==='reference_meal_preview'))
-    assert.deepEqual(submits[1].selection,{...original.selection,meal_types:['dinner'],daily_base_version:1})
+    assert.deepEqual(submits.map(call=>call.text),[first])
     assert.deepEqual(saved.meals.slice(0,2),untouched)
+    assert.equal(p.visibleMessages.value.at(-1).text,'已安排的菜品请在餐单里调整。')
     p.question.value='只改晚餐，其他两餐保持原样';await p.sendQuestion()
-    assert.equal(p.calls.filter(call=>call.action==='submit').at(-1).taskType,'reference_meal_preview')
-    p.question.value='给我的父亲调整今天晚餐';await p.sendQuestion()
-    assert.deepEqual(p.calls.filter(call=>call.action==='submit').at(-1).selection.participant_ids,['father'])
+    assert.deepEqual(p.calls.filter(call=>call.action==='submit').map(call=>call.text),[first])
     assert.equal(p.conversationThreadId.value,initialThread,'meal tasks remain attached to the visible conversation')
     assert.equal(p.calls.some(call=>['startPlan','loadChatMealPlan'].includes(call.action)),false)
   } finally { p.dispose() }
 })
 
-for(const reopen of [false,true])test(`连续换菜沿用上一份午餐且不扩大成员和餐次，重新读取=${reopen}`,async()=>{
+for(const reopen of [false,true])test(`历史重开前后聊天换菜都只提示，重新读取=${reopen}`,async()=>{
   let saved=null
   const p=workflow({readDailyMealPlan:async(_family,date)=>saved||{date,status:'absent',version:0,meals:[]}})
   try{
@@ -1034,12 +1074,8 @@ for(const reopen of [false,true])test(`连续换菜沿用上一份午餐且不�
     if(reopen)await p.load()
     for(const text of ['再换一批菜','再换一批','还有别的吗']){
       p.question.value=text;await p.sendQuestion()
-      const last=p.calls.filter(call=>call.action==='submit').at(-1)
-      assert.equal(last.text,text,p.chatError.value)
-      assert.equal(last.taskType,'reference_meal_preview')
-      assert.deepEqual(last.selection.meal_types,['lunch'])
-      assert.deepEqual(last.selection.participant_ids,['self'])
-      assert.equal(last.selection.plan_date,first.selection.plan_date)
+      assert.deepEqual(p.calls.filter(call=>call.action==='submit').map(call=>call.text),['给我安排明天午餐'])
+      assert.equal(p.visibleMessages.value.at(-1).text,'已安排的菜品请在餐单里调整。')
     }
   }finally{p.dispose()}
 })
@@ -1071,21 +1107,14 @@ test('家庭成员咨询入口的荐菜请求也进入菜品餐单任务', async
   } finally { p.dispose() }
 })
 
-for(const hasPlan of [false,true])test(`explicit tomorrow dinner change uses persisted meal state: ${hasPlan}`,async()=>{
+for(const hasPlan of [false,true])test(`a tomorrow dinner edit stays read-only with or without a plan: ${hasPlan}`,async()=>{
   const p=workflow({readDailyMealPlan:async(_family,date)=>hasPlan?{date,status:'ready',version:1,meals:['breakfast','lunch','dinner'].map(meal_type=>({meal_type,members:[{id:'self'}],meal:{dishes:[{name:meal_type}]},source:{id:'saved-'+meal_type}}))}:{date,status:'absent',version:0,meals:[]}})
   try{
     await p.load()
     p.question.value='配餐验收乙：只换明天晚餐，早餐和午餐不变';await p.sendQuestion()
     const submits=p.calls.filter(call=>call.action==='submit')
-    if(hasPlan){
-      assert.equal(submits.at(-1).taskType,'reference_meal_preview')
-      assert.deepEqual(submits.at(-1).selection.meal_types,['dinner'])
-      assert.equal(submits.at(-1).selection.plan_date,'2026-10-29')
-      assert.equal(submits.at(-1).selection.daily_base_version,1)
-    }else{
-      assert.equal(submits.length,0)
-      assert.match(p.chatError.value,/还没有饮食计划.*先生成/)
-    }
+    assert.equal(submits.length,0)
+    assert.equal(p.visibleMessages.value.at(-1).text,'已安排的菜品请在餐单里调整。')
   }finally{p.dispose()}
 })
 
@@ -1778,7 +1807,7 @@ test('same-version task changes from chat refresh the shared menu while preservi
 
 test('an available lunch is returned in the same conversation while another menu task runs',async()=>{
  const date='2026-10-28'
- const plan={date,status:'ready',version:1,meals:[{meal_type:'lunch',members:[{id:'self'}],meal:{dishes:[{name:'西兰花炒虾仁'}]}}],pending:{status:'running',request_id:uuid(9901)}}
+ const plan={date,status:'ready',version:1,meals:[{meal_type:'lunch',members:[{id:'self'},{id:'father'}],meal:{dishes:[{name:'西兰花炒虾仁'}]}}],pending:{status:'running',request_id:uuid(9901)}}
  const p=workflow({route:{},readDailyMealPlan:async()=>plan})
  try{
   await p.load();const conversation=p.conversationId.value
@@ -1817,7 +1846,7 @@ test('a pending menu is followed in the current conversation and its completed p
  }finally{p.dispose()}
 })
 
-test('a revision blocked by an active menu retains its instructions as a draft',async()=>{
+test('a revision request during active planning only gives guidance',async()=>{
  const date='2026-10-28'
  const plan={date,status:'ready',version:1,meals:[{meal_type:'lunch',members:[{id:'self'}],meal:{dishes:[{name:'原午餐'}]}}],pending:{status:'running',request_id:uuid(9904)}}
  const p=workflow({route:{},readDailyMealPlan:async()=>plan})
@@ -1826,8 +1855,8 @@ test('a revision blocked by an active menu retains its instructions as a draft',
   p.question.value='请替换今天的午餐，清淡一点';await p.sendQuestion()
   assert.equal(p.conversationId.value,conversation)
   assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
-  assert.equal(p.question.value,'请替换今天的午餐，清淡一点')
-  assert.match(p.chatError.value,/完成后再调整/)
+  assert.equal(p.question.value,'')
+  assert.equal(p.visibleMessages.value.at(-1).text,'已安排的菜品请在餐单里调整。')
  }finally{p.dispose()}
 })
 
@@ -1937,12 +1966,59 @@ test('meal entry displays only the selected meal and retains text and image draf
   assert.equal(p.question.value,'稍后再问的问题')
   assert.equal(p.draftImage.value.localPath,'synthetic-draft')
   assert.equal(p.inlineTodayOpen.value,false)
-  assert.equal(p.scrollTarget.value,'message-'+view.id)
+  assert.equal(p.scrollTarget.value,'chat-bottom-anchor')
+  assert.equal(p.reading.value.following,true)
   assert.equal(p.calls.length,calls)
   await p.showTodayMeal(plan.meals[2])
   assert.equal(p.messages.value.filter(message=>message.menuView).length,1)
   await p.showTodayMeal(plan.meals[0])
   assert.equal(p.messages.value.filter(message=>message.menuView).length,2)
+ }finally{p.dispose()}
+})
+
+test('reselecting a meal moves its existing card after later messages and follows the bottom',async()=>{
+ const p=workflow({route:{}})
+ try{
+  await p.load();const plan=verifyMenu(p)
+  await p.showTodayMeal(plan.meals[2]);const dinner=p.messages.value.at(-1)
+  const later={id:'later-question',role:'user',text:'之后的问题',createdAt:new Date().toISOString()}
+  p.messages.value.push(later)
+  await p.showTodayMeal(plan.meals[0]);const breakfast=p.messages.value.at(-1)
+  p.rememberReading({following:false,scrollTop:0})
+  assert.equal(p.reading.value.following,false)
+  await p.showTodayMeal(plan.meals[2])
+  assert.equal(p.messages.value.at(-1),dinner)
+  assert.deepEqual(p.messages.value.slice(-3).map(m=>m.id),[later.id,breakfast.id,dinner.id])
+  assert.equal(p.messages.value.filter(m=>m.menuView).length,2)
+  assert.equal(p.scrollTarget.value,'chat-bottom-anchor')
+  assert.equal(p.reading.value.following,true)
+  assert.equal(p.latestAvailable.value,false)
+  await p.showTodayMeal(plan.meals[2])
+  assert.equal(p.messages.value.at(-1),dinner)
+  assert.equal(p.messages.value.filter(m=>m.menuView).length,2)
+  p.rememberReading({following:false,scrollTop:10})
+  assert.equal(p.reading.value.following,false)
+  assert.equal(p.scrollTarget.value,'')
+ }finally{p.dispose()}
+})
+
+for(const cancel of ['hide','account','conversation','history','manual'])for(const tick of [1,2,3])test(`meal bottom jump is cancelled by ${cancel} at render wait ${tick}`,async()=>{
+ let armed=false,waits=0
+ const p=workflow({route:{},nextTick:async()=>{
+  await nextTick()
+  if(!armed||++waits!==tick)return
+  if(cancel==='hide')p.hooks.hide()
+  if(cancel==='account')p.identity.scope='another-account'
+  if(cancel==='conversation')p.conversationId.value='another-conversation'
+  if(cancel==='history')p.historyOpen.value=true
+  if(cancel==='manual')p.rememberReading({following:false,scrollTop:0})
+ }})
+ try{
+  await p.load();const plan=verifyMenu(p)
+  p.scrollTarget.value='before-meal';armed=true
+  await p.showTodayMeal(plan.meals[2])
+  assert.equal(waits>=tick,true)
+  assert.notEqual(p.scrollTarget.value,'chat-bottom-anchor')
  }finally{p.dispose()}
 })
 
