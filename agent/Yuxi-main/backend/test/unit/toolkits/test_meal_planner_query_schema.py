@@ -102,6 +102,7 @@ def search_services(monkeypatch):
             "tool_payloads": product_reads,
             "current_catalog": AsyncMock(return_value={"version": "synthetic", "items": [{"sku_id": "synthetic-sku"}]}),
             "recent_reference_file_ids": AsyncMock(return_value=set()),
+            "REFERENCE_MEAL_POLICY_VERSION": "test-modern-policy",
             "configured_health_kb_ids": lambda role: ("synthetic-kb",),
             "search_family_nutrition_knowledge": AsyncMock(
                 return_value={"status": "insufficient_material", "sources": []}

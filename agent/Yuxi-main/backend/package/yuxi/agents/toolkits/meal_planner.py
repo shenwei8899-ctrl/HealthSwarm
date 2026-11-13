@@ -14,6 +14,8 @@ from yuxi.services.reference_meal_plan_types import REFERENCE_TOOLS
 from yuxi.services.reference_meal_selection_service import (
     ReferenceOptionSelection,
     ReferenceOptionTranslationCorrection,
+    ReferenceReadSelection,
+    ReferenceTranslationCorrection,
 )
 from yuxi.services.health_vision_types import HealthDTO, HealthVisionError
 
@@ -79,8 +81,8 @@ class ReferenceRecipeInput(HealthReadInput):
 class ReferencePlanToolInput(HealthReadInput):
     """只允许选择本轮已读原谱，原文、商品对应和缺口均由服务端拥有。"""
 
-    read_selection: ReferenceOptionSelection | None = None
-    translation_correction: list[ReferenceOptionTranslationCorrection] | None = Field(
+    read_selection: ReferenceOptionSelection | ReferenceReadSelection | None = None
+    translation_correction: list[ReferenceOptionTranslationCorrection | ReferenceTranslationCorrection] | None = Field(
         default=None, min_length=1, max_length=15
     )
 
@@ -286,7 +288,7 @@ def reference_translation_source(messages, failure_index):
         if len(calls) == 1:
             args = calls[0]["args"]
             selected = args.get("read_selection")
-            if isinstance(selected, ReferenceOptionSelection):
+            if isinstance(selected, ReferenceReadSelection):
                 selected = selected.model_dump(mode="json")
             if isinstance(selected, dict):
                 return {"read_selection": selected}
@@ -411,6 +413,13 @@ def _reference_save_validation_error(error: ValidationError) -> str:
         if isinstance(error, ValidationError)
         else []
     )
+    if details and all(len(item["loc"]) > 1 and item["loc"][0] == "read_selection" for item in details):
+        branches = {item["loc"][1] for item in details}
+        for branch in branches:
+            errors = [item for item in details if item["loc"][1] == branch]
+            if all("display_zh" in item["loc"][2:] for item in errors):
+                details = errors
+                break
     payload = {
         "error_code": "reference_plan_validation_failed",
         "message": "保存参数未通过校验，本次未保存；请停止本轮保存并如实说明失败。",
