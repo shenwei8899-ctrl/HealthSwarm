@@ -185,6 +185,7 @@ class HealthTaskGeneralAnswer(HealthDTO):
     scope: Literal["general_education"] = "general_education"
     answer: str
     citations: list[NutritionCitation]
+    source_titles: list[str] = Field(default_factory=list)
     purchase_offers: list[dict[str, JsonValue]] = Field(default_factory=list)
 
 
@@ -220,9 +221,12 @@ class HealthTaskError(HealthDTO):
         "reference_menu_repeated",
         "reference_variety_exhausted",
         "reference_meal_incomplete",
+        "reference_coverage_unavailable",
+        "reference_search_exhausted",
         "daily_plan_version_changed",
     ]
     retryable: Literal[False] = False
+    message: str | None = None
 
 
 class HealthTaskResult(HealthDTO):

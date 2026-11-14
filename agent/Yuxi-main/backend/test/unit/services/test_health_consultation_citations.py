@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from yuxi.repositories import health_evidence_repository as repository_module
 from yuxi.repositories.health_evidence_repository import HealthEvidenceRepository
 from yuxi.services import health_evidence_service as service
-from yuxi.services.health_evidence_types import NutritionCitationsResult
+from yuxi.services.health_evidence_types import CONSULTATION_CITATIONS_KEY, NutritionCitationsResult
 from yuxi.services.health_vision_types import HealthVisionError
 
 FIRST = "11111111-1111-1111-1111-111111111111"
@@ -45,9 +45,22 @@ async def test_read_returns_only_actual_final_citations_after_current_authorizat
         request_id="request",
         conversation_thread_id=THREAD,
         conversation_id=7,
+        uid="actor",
     )
     binding = SimpleNamespace(conversation_id=7, actor_uid="actor", member_id=MEMBER)
-    answer = SimpleNamespace(id=12, content=f"乙[证据:{SECOND}] 甲[证据:{FIRST}] 重复[证据:{SECOND}]")
+    answer = SimpleNamespace(
+        id=12,
+        content="乙、甲及重复引用的合成说明。",
+        extra_metadata={
+            "additional_kwargs": {
+                CONSULTATION_CITATIONS_KEY: [
+                    {"kind": "reviewed", "id": SECOND},
+                    {"kind": "reviewed", "id": FIRST},
+                    {"kind": "reviewed", "id": SECOND},
+                ]
+            }
+        },
+    )
     current = {
         FIRST: {"citation_id": FIRST, "title": "甲"},
         SECOND: {"citation_id": SECOND, "title": "乙"},
@@ -66,6 +79,9 @@ async def test_read_returns_only_actual_final_citations_after_current_authorizat
     monkeypatch.setattr(service, "AgentRunRepository", lambda _: run_repository)
     monkeypatch.setattr(service, "HealthConsultationRepository", lambda _: binding_repository)
     monkeypatch.setattr(service, "HealthEvidenceRepository", lambda _: evidence_repository)
+    from yuxi.services import health_family_kb_service
+
+    monkeypatch.setattr(health_family_kb_service, "resolve_family_citations", AsyncMock(return_value={}))
     result = await service.read_consultation_citations("actor", "run")
     assert result == {
         "result_type": "nutrition_citations",
@@ -79,7 +95,7 @@ async def test_read_returns_only_actual_final_citations_after_current_authorizat
     }
     binding_repository.authorize.assert_awaited_once_with("actor", THREAD, lock=True, preview_history=True)
     evidence_repository.validate_citations.assert_awaited_once_with(
-        [SECOND, FIRST], binding, "actor", agent_slug="health-consultation", run_id="run"
+        [SECOND, FIRST], binding, "actor", agent_slug="health-consultation", run_id="run", lock=False
     )
 
 

@@ -100,7 +100,7 @@ async def test_public_read_rejects_wrong_run_scope_before_body(monkeypatch, case
 @pytest.mark.parametrize("content", ["请补充问题", f"合成科普[证据:{REFERENCE}][证据:{REFERENCE}]"])
 async def test_read_validates_only_actual_final_refs_without_processing_or_retrieval_query(monkeypatch, content):
     run, binding = run_and_binding()
-    answer = SimpleNamespace(id=42, content=content)
+    answer = SimpleNamespace(id=42, content=content, extra_metadata={})
     final = AsyncMock(return_value=answer)
     proof = AsyncMock()
     session = SimpleNamespace(scalar=AsyncMock(side_effect=AssertionError("不得查询未采用检索回执")))
@@ -157,7 +157,7 @@ async def test_history_hides_only_unpublic_answer(monkeypatch, case):
 async def test_public_read_refuses_revoked_final_source_instead_of_returning_stored_body(monkeypatch):
     """有正确最终指针也不能公开当前已撤回的证据正文。"""
     run, binding = run_and_binding()
-    answer = SimpleNamespace(id=42, content=f"不应公开的旧正文[证据:{REFERENCE}]")
+    answer = SimpleNamespace(id=42, content=f"不应公开的旧正文[证据:{REFERENCE}]", extra_metadata={})
     monkeypatch.setattr(evidence.HealthEvidenceRepository, "final_answer", AsyncMock(return_value=answer))
     proof = AsyncMock(side_effect=HealthVisionError("source_invalidated", "请重新咨询", 410))
     monkeypatch.setattr(evidence.HealthEvidenceRepository, "validate_citations", proof)
@@ -171,7 +171,7 @@ async def test_read_without_binding_rechecks_history_authorization_without_model
     run, binding = run_and_binding()
     authorize = AsyncMock(return_value=binding)
     monkeypatch.setattr(evidence.HealthConsultationRepository, "authorize", authorize)
-    answer = SimpleNamespace(id=42, content="不含检索的补充问题")
+    answer = SimpleNamespace(id=42, content="不含检索的补充问题", extra_metadata={})
     monkeypatch.setattr(evidence.HealthEvidenceRepository, "final_answer", AsyncMock(return_value=answer))
     proof = AsyncMock()
     monkeypatch.setattr(evidence.HealthEvidenceRepository, "validate_citations", proof)

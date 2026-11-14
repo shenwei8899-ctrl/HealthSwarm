@@ -11,11 +11,47 @@ from sqlalchemy import select
 from yuxi.repositories.agent_run_repository import AgentRunRepository
 from yuxi.repositories.health_consultation_repository import EDUCATION_HEALTH_AGENTS, HealthConsultationRepository
 from yuxi.repositories.health_evidence_repository import HealthEvidenceRepository
+from yuxi.services.health_evidence_types import CONSULTATION_CITATIONS_KEY, ConsultationAnswer
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import User
 from yuxi.storage.postgres.models_health import NutritionEvidence, NutritionEvidenceCitation
 from yuxi.utils.datetime_utils import utc_now_naive
+
+
+def stored_consultation_refs(message):
+    metadata = message.extra_metadata or {}
+    return (metadata.get("additional_kwargs") or {}).get(CONSULTATION_CITATIONS_KEY)
+
+
+async def resolve_consultation_citations(session, run, binding, content, refs, *, lock=False):
+    """验证结构化引用并返回展示标题和现有审核证据对象。"""
+    from yuxi.services.health_family_kb_service import resolve_family_citations, validate_family_kb_answer
+
+    if refs is None:
+        ids = answer_citation_ids(content)
+        reviewed = await HealthEvidenceRepository(session).validate_citations(
+            ids, binding, run.uid, agent_slug=run.agent_slug, run_id=run.id, lock=lock
+        )
+        await validate_family_kb_answer(session, run, binding, content)
+        return [], [reviewed[citation_id] for citation_id in ids]
+
+    try:
+        parsed = ConsultationAnswer(answer=content, citations=refs)
+    except ValueError as error:
+        raise HealthVisionError("citation_invalid", "答复引用格式无法核对", 409) from error
+    family_ids = {str(ref.id) for ref in parsed.citations if ref.kind == "family"}
+    reviewed_ids = list(dict.fromkeys(str(ref.id) for ref in parsed.citations if ref.kind == "reviewed"))
+    family = await resolve_family_citations(session, run, family_ids, lock=lock)
+    reviewed = await HealthEvidenceRepository(session).validate_citations(
+        reviewed_ids, binding, run.uid, agent_slug=run.agent_slug, run_id=run.id, lock=lock
+    )
+    titles = list(
+        dict.fromkeys(
+            family[str(ref.id)] if ref.kind == "family" else reviewed[str(ref.id)]["title"] for ref in parsed.citations
+        )
+    )
+    return titles, [reviewed[citation_id] for citation_id in reviewed_ids]
 
 
 async def read_consultation_citations(uid, run_id):
@@ -33,24 +69,22 @@ async def read_consultation_citations(uid, run_id):
             raise HealthVisionError("not_found", "专属咨询运行与成员绑定不符", 404)
         repo = HealthEvidenceRepository(session)
         answer = await repo.final_answer(run)
-        ids = answer_citation_ids(answer.content)
-        citations = await repo.validate_citations(ids, binding, uid, agent_slug=run.agent_slug, run_id=run.id)
-        from yuxi.services.health_family_kb_service import validate_family_kb_answer
-
-        await validate_family_kb_answer(session, run, binding, answer.content)
+        _, citations = await resolve_consultation_citations(
+            session, run, binding, answer.content, stored_consultation_refs(answer)
+        )
         return {
             "result_type": "nutrition_citations",
-            "status": "cited" if ids else "not_cited",
+            "status": "cited" if citations else "not_cited",
             "agent_run_id": run.id,
             "request_id": run.request_id,
             "thread_id": run.conversation_thread_id,
             "member_id": binding.member_id,
             "final_message_id": answer.id,
-            "citations": [citations[citation_id] for citation_id in ids],
+            "citations": citations,
         }
 
 
-async def validate_evidence_publication(session, run, content):
+async def validate_evidence_publication(session, run, content, *, refs=None):
     """最终发布事务锁住实际采用的当前来源，图校验不能替代提交边界。"""
     from yuxi.services.health_consultation_service import require_consultation
 
@@ -63,6 +97,9 @@ async def validate_evidence_publication(session, run, content):
     await offers_for_answer(session, run, binding, content, publication=True)
     if binding.conversation_id != run.conversation_id or binding.actor_uid != run.uid:
         raise HealthVisionError("citation_invalid", "引用与当前咨询线程不符", 409)
+    if refs is not None:
+        await resolve_consultation_citations(session, run, binding, content, refs, lock=True)
+        return
     ids = answer_citation_ids(content)
     from yuxi.services.health_family_kb_service import validate_family_kb_publication
 
@@ -80,7 +117,7 @@ async def validate_evidence_publication(session, run, content):
     await validate_family_kb_publication(session, run, binding, content)
 
 
-async def read_public_consultation_answer(session, run, uid, *, binding=None):
+async def read_public_consultation_answer(session, run, uid, *, binding=None, source_titles=None):
     """正文读取只校验权威最终回答实际采用的同Run来源，不扩大模型用途。"""
     if run.agent_slug not in EDUCATION_HEALTH_AGENTS or run.uid != uid or run.status != "completed":
         raise HealthVisionError("answer_unavailable", "咨询缺少可公开的最终答复", 409)
@@ -92,11 +129,11 @@ async def read_public_consultation_answer(session, run, uid, *, binding=None):
         raise HealthVisionError("not_found", "咨询运行与当前成员绑定不符", 404)
     repo = HealthEvidenceRepository(session)
     answer = await repo.final_answer(run)
-    ids = answer_citation_ids(answer.content)
-    await repo.validate_citations(ids, binding, uid, agent_slug=run.agent_slug, run_id=run.id, lock=True)
-    from yuxi.services.health_family_kb_service import validate_family_kb_answer
-
-    await validate_family_kb_answer(session, run, binding, answer.content)
+    titles, _ = await resolve_consultation_citations(
+        session, run, binding, answer.content, stored_consultation_refs(answer), lock=True
+    )
+    if source_titles is not None:
+        source_titles[answer.id] = titles
     return answer
 
 
@@ -185,9 +222,23 @@ async def search_nutrition_evidence(context, query):
         }
 
 
-async def validate_nutrition_answer(context, content, messages):
+async def validate_nutrition_answer(context, content, messages, *, refs=None):
     """验证最终答复引用；检索有证据时不能省略引用，拒绝历史回执冒充本轮来源。"""
     from yuxi.services.health_consultation_service import require_consultation
+
+    if refs is not None:
+        async with pg_manager.get_async_session_context() as session:
+            run = await HealthConsultationRepository(session).require_attempt(context)
+            snapshot = (run.input_payload or {}).get("health_processing")
+            if not snapshot:
+                raise HealthVisionError("policy_changed", "咨询运行缺少处理审批快照", 409)
+            binding, _ = await require_consultation(
+                session, context.uid, context.thread_id, context.model, expected=snapshot, lock=True
+            )
+            if binding.conversation_id != run.conversation_id or binding.actor_uid != run.uid:
+                raise HealthVisionError("citation_invalid", "引用与当前咨询线程不符", 409)
+            await resolve_consultation_citations(session, run, binding, content, refs)
+        return
 
     start = next((i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)), 0)
     retrieved = False

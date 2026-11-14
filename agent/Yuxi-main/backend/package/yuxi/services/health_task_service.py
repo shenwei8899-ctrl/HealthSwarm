@@ -15,7 +15,6 @@ from yuxi.repositories.health_consultation_repository import (
     PURCHASE_SLUG,
     QUALITY_SLUG,
 )
-from yuxi.repositories.health_evidence_repository import HealthEvidenceRepository
 from yuxi.repositories.health_meal_plan_repository import HealthMealPlanRepository
 from yuxi.repositories.health_quality_repository import HealthQualityRepository
 from yuxi.repositories.health_task_repository import HealthTaskRepository
@@ -23,7 +22,6 @@ from yuxi.repositories.health_vision_repository import HealthVisionRepository
 from yuxi.services.health_consultation_service import create_consultation, require_consultation
 from yuxi.services.health_agent_personal_target_types import TargetAwareAnalystInput
 from yuxi.services.health_diet_analysis_service import validate_analyst_publication
-from yuxi.services.health_evidence_service import answer_citation_ids
 from yuxi.services.health_family_planner_service import validate_family_planner_publication
 from yuxi.services.health_initial_planner_service import validate_initial_planner_publication
 from yuxi.services.health_meal_plan_service import PLANNER_BOUNDARY, calculate_in_session
@@ -220,11 +218,22 @@ async def read_health_task_in_session(session, uid: str, request_id: str) -> Hea
                 "reference_menu_repeated",
                 "reference_variety_exhausted",
                 "reference_meal_incomplete",
+                "reference_coverage_unavailable",
+                "reference_search_exhausted",
                 "daily_plan_version_changed",
             }
             else error_codes[terminal]
         )
-        response.result = HealthTaskError(code=code)
+        message = None
+        if code == "reference_coverage_unavailable":
+            from yuxi.services.reference_meal_plan_service import tool_payloads
+            from yuxi.services.reference_menu_candidates import reference_coverage_message
+
+            receipts = await tool_payloads(session, run, "search_reference_recipes")
+            message = reference_coverage_message(receipts[-1].get("coverage_gaps", []) if receipts else [])
+        elif code == "reference_search_exhausted":
+            message = "本轮未能在允许的检索与原文核对次数内完成所选餐次。"
+        response.result = HealthTaskError(code=code, message=message)
         return response
     if run is None or run.status != "completed":
         return response
@@ -240,18 +249,18 @@ async def read_health_task_in_session(session, uid: str, request_id: str) -> Hea
         raise HealthVisionError("source_invalidated", "健康任务来源绑定已变化", 410)
     response.final_message_id = message.id
     if run.agent_slug in EDUCATION_HEALTH_AGENTS:
-        evidence = HealthEvidenceRepository(session)
-        ids = answer_citation_ids(message.content)
-        citations = await evidence.validate_citations(ids, binding, uid, agent_slug=run.agent_slug, run_id=run.id)
-        from yuxi.services.health_family_kb_service import validate_family_kb_answer
+        from yuxi.services.health_evidence_service import resolve_consultation_citations, stored_consultation_refs
 
-        await validate_family_kb_answer(session, run, current_binding, message.content)
+        titles, citations = await resolve_consultation_citations(
+            session, run, current_binding, message.content, stored_consultation_refs(message)
+        )
         from yuxi.services.conversation_purchase_service import offers_for_answer
 
         answer, offers = await offers_for_answer(session, run, current_binding, message.content)
         response.result = HealthTaskGeneralAnswer(
             answer=answer,
-            citations=[citations[citation_id] for citation_id in ids],
+            citations=citations,
+            source_titles=titles,
             purchase_offers=offers,
         )
         return response

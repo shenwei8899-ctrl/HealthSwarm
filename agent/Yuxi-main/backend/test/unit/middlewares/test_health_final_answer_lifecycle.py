@@ -111,7 +111,7 @@ def lifecycle_oracles(monkeypatch):
         observed["history"].append(persist_uses)
         return messages
 
-    async def validate_answer(context, text, messages):
+    async def validate_answer(context, text, messages, *, refs=None):
         """仅记录本轮实际正文；真实来源与授权仍需独立 PG 验收。"""
         observed["citations"].append(text)
 

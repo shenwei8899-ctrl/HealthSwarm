@@ -522,11 +522,14 @@ async def get_thread_history_view(
                 reference_displays[message.id] = await reference_plan_display(db, verified)
             except HealthVisionError:
                 unverified_reference_runs.add(run.id)
+    source_titles = {}
     if conversation.agent_id in EDUCATION_HEALTH_AGENTS:
         run_map = {run.id: run for run in runs}
         public_messages = []
         for message in messages:
-            if await _consultation_message_is_public(db, message, str(current_uid), run=run_map.get(message.run_id)):
+            if await _consultation_message_is_public(
+                db, message, str(current_uid), run=run_map.get(message.run_id), source_titles=source_titles
+            ):
                 public_messages.append(message)
         messages = public_messages
     run_created_at = {run.id: run.created_at for run in runs}
@@ -605,6 +608,9 @@ async def get_thread_history_view(
             or ([msg.image_content] if msg.image_content else []),
             "feedback": user_feedback,
         }
+
+        if msg.id in source_titles:
+            msg_dict["citations"] = source_titles[msg.id]
 
         if msg.role == "assistant":
             if health_answer or unverified_reference:
@@ -729,7 +735,7 @@ async def _search_with_public_consultations(conv_repo, db, uid, query, *, agent_
     return visible_items[offset : offset + limit], len(visible_items) > offset + limit
 
 
-async def _consultation_message_is_public(db, message, uid, *, run=None):
+async def _consultation_message_is_public(db, message, uid, *, run=None, source_titles=None):
     """公开咨询历史只含用户输入与当前有效的权威最终答复。"""
     if message.message_type in AUDIT_MESSAGE_TYPES:
         return False
@@ -747,7 +753,7 @@ async def _consultation_message_is_public(db, message, uid, *, run=None):
     from yuxi.services.health_evidence_service import read_public_consultation_answer
 
     try:
-        answer = await read_public_consultation_answer(db, run, uid)
+        answer = await read_public_consultation_answer(db, run, uid, source_titles=source_titles)
     except HealthVisionError:
         return False
     return answer.id == message.id

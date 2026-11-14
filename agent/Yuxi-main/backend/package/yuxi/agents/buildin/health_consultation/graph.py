@@ -145,10 +145,16 @@ class HealthCitationMiddleware(AgentMiddleware):
     async def aafter_model(self, state, runtime):
         """工具调用后的最终文本在运行成功前核对引用。"""
         from yuxi.services.health_evidence_service import validate_nutrition_answer
+        from yuxi.services.health_evidence_types import CONSULTATION_CITATIONS_KEY
 
         message = state["messages"][-1]
         if message.type == "ai" and not message.tool_calls:
             from yuxi.services.health_meal_feedback_service import filter_health_history
 
             await filter_health_history(runtime.context, state["messages"], persist_uses=False)
-            await validate_nutrition_answer(runtime.context, message.text, state["messages"])
+            await validate_nutrition_answer(
+                runtime.context,
+                message.text,
+                state["messages"],
+                refs=message.additional_kwargs.get(CONSULTATION_CITATIONS_KEY),
+            )

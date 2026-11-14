@@ -236,7 +236,9 @@ async def test_graph_binds_only_prepared_ai_consultation_tools(monkeypatch):
 async def test_actual_graph_only_binds_fixed_read_tools_and_checks_each_model_turn(monkeypatch):
     """真实 LangChain 构图与工具注入联调，不发起供应商请求。"""
     from yuxi.agents.buildin.health_consultation import graph as graph_module
-    from yuxi.services import health_memory_service, health_meal_feedback_service
+    from yuxi.services import health_evidence_service, health_memory_service, health_meal_feedback_service
+
+    monkeypatch.setattr(health_evidence_service, "validate_nutrition_answer", AsyncMock())
 
     monkeypatch.setattr(
         health_memory_service, "filter_memory_history", AsyncMock(side_effect=lambda _, messages, **kwargs: messages)

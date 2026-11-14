@@ -28,7 +28,10 @@ def test_history_excludes_prior_family_source_and_answer_but_preserves_current_t
         ToolMessage(content="当前家庭资料", name=service.TOOL_NAME, tool_call_id="current"),
     ]
     assert service.filter_family_kb_history([old_question, old_source, old_answer, *regular, *current]) == [
-        old_question, *regular, *current
+        old_question,
+        old_answer,
+        *regular,
+        *current,
     ]
 
 

@@ -72,7 +72,7 @@ class RevocableEvidence:
         self.allowed = True
         self.checked = []
 
-    async def validate(self, prefix):
+    async def validate(self, prefix, *, refs=None):
         """必须引用完整，撤回后在下一次公开边界拒绝。"""
         self.checked.append(prefix)
         if not self.allowed:

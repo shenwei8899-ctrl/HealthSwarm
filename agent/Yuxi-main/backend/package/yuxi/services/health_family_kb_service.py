@@ -7,7 +7,7 @@ import re
 from itertools import zip_longest
 from uuid import UUID, uuid4
 
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import select
 
 from yuxi.knowledge.base import FileStatus
@@ -57,7 +57,7 @@ SOURCE_MARKER = re.compile(r"\[资料:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 
 
 def filter_family_kb_history(messages):
-    """旧家庭库轮次只保留用户问题，当前轮来源保持完整。"""
+    """旧家庭库轮次保留问答并移除工具过程，当前轮来源保持完整。"""
     chunks, chunk = [], []
     for message in messages:
         if isinstance(message, HumanMessage) and chunk:
@@ -74,6 +74,14 @@ def filter_family_kb_history(messages):
         )
         if historical_family_turn:
             filtered.extend(message for message in turn if isinstance(message, HumanMessage))
+            final = turn[-1]
+            if (
+                isinstance(final, AIMessage)
+                and not final.tool_calls
+                and not final.invalid_tool_calls
+                and final.text.strip()
+            ):
+                filtered.append(final)
         else:
             filtered.extend(turn)
     return filtered
@@ -442,6 +450,67 @@ async def _validate_payload(
         if source != _project_source(kb_id, file, chunk, source_id):
             raise HealthVisionError("source_invalidated", "家庭科普资料版本已变化", 410)
     return payload["sources"]
+
+
+async def resolve_family_citations(session, run, ids, *, lock=False):
+    """核对本轮真实回执，仅重验实际采用的资料版本。"""
+    if not ids:
+        return {}
+    selected = set(ids)
+    sources = {}
+    audits = await ToolMessageAuditRepository(session).list_for_run(run.id)
+    for audit in audits:
+        if (audit.extra_metadata or {}).get("tool_name") != TOOL_NAME or (
+            audit.message_type != TOOL_AUDIT_MESSAGE_TYPE
+            or audit.role != "tool"
+            or audit.execution_status != "completed"
+            or audit.conversation_id != run.conversation_id
+            or audit.request_id != run.request_id
+        ):
+            continue
+        try:
+            payload = json.loads(audit.content)
+            matched = [item for item in payload["sources"] if item["source_id"] in selected]
+        except (ValueError, TypeError, KeyError):
+            continue
+        for item in matched:
+            if (
+                not isinstance(item, dict)
+                or set(item) != SOURCE_KEYS
+                or not all(isinstance(item[key], str) for key in ("kb_id", "file_id", "chunk_id"))
+            ):
+                raise HealthVisionError("source_invalidated", "家庭科普来源格式已失效", 410)
+            if item["source_id"] in sources:
+                raise HealthVisionError("source_invalidated", "家庭科普来源标识重复", 410)
+            sources[item["source_id"]] = item
+    if set(sources) != selected:
+        raise HealthVisionError("citation_invalid", "家庭资料引用必须来自本次检索", 409)
+
+    kb_ids = configured_health_kb_ids(run.agent_slug)
+    for kb_id in {item["kb_id"] for item in sources.values()}:
+        if kb_id not in kb_ids:
+            raise HealthVisionError("source_invalidated", "家庭科普知识库绑定已变化", 410)
+        await _require_fixed_kb(session, kb_id)
+    query = (
+        select(KnowledgeFile, KnowledgeChunk)
+        .join(
+            KnowledgeChunk,
+            (KnowledgeChunk.file_id == KnowledgeFile.file_id) & (KnowledgeChunk.kb_id == KnowledgeFile.kb_id),
+        )
+        .where(KnowledgeChunk.chunk_id.in_(item["chunk_id"] for item in sources.values()))
+        .execution_options(populate_existing=True)
+    )
+    if lock:
+        query = query.order_by(KnowledgeChunk.chunk_id).with_for_update(read=True)
+    rows = {chunk.chunk_id: (file, chunk) for file, chunk in await session.execute(query)}
+    for source_id, source in sources.items():
+        row = rows.get(source["chunk_id"])
+        if row is None:
+            raise HealthVisionError("source_invalidated", "家庭科普片段已失效", 410)
+        file, chunk = row
+        if file.status != FileStatus.INDEXED or source != _project_source(file.kb_id, file, chunk, source_id):
+            raise HealthVisionError("source_invalidated", "家庭科普资料版本已变化", 410)
+    return {source_id: item["filename"] for source_id, item in sources.items()}
 
 
 async def _validate_answer_sources(

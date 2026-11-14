@@ -34,6 +34,25 @@ class ReviewedKnowledgeScope(HealthDTO):
         return self
 
 
+CONSULTATION_CITATIONS_KEY = "health_citations_v1"
+
+
+class ConsultationCitationRef(HealthDTO):
+    kind: Literal["family", "reviewed"]
+    id: UUID
+
+
+class ConsultationAnswer(HealthDTO):
+    answer: str = Field(min_length=1)
+    citations: list[ConsultationCitationRef]
+
+    @model_validator(mode="after")
+    def validate_body(self):
+        if not self.answer.strip() or any(marker in self.answer for marker in ("[资料:", "[证据:")):
+            raise ValueError("咨询正文必须为自然语言，引用须使用独立字段")
+        return self
+
+
 class NutritionCitation(HealthDTO):
     """只投影最终答复实际采用的审核科普片段及来源。"""
 

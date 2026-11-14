@@ -68,7 +68,7 @@ from yuxi.utils.question_utils import (
 from yuxi.utils.thread_utils import extract_thread_id as _metadata_thread_id
 
 
-async def validate_health_stream_prefix(context, content: str) -> None:
+async def validate_health_stream_prefix(context, content: str, *, refs=None) -> None:
     """公开完整科普句段前重验当前执行、成员授权及同轮来源。"""
     from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
     from yuxi.services.health_evidence_service import validate_evidence_publication
@@ -79,7 +79,10 @@ async def validate_health_stream_prefix(context, content: str) -> None:
         if run.agent_slug not in EDUCATION_HEALTH_AGENTS:
             raise ValueError("只有科普答复可以公开校验后的消息预览")
         await validate_profile_publication(session, run)
-        await validate_evidence_publication(session, run, content)
+        if refs is None:
+            await validate_evidence_publication(session, run, content)
+        else:
+            await validate_evidence_publication(session, run, content, refs=refs)
 
 
 def _with_attachment_context(message: HumanMessage, attachments: list[dict]) -> HumanMessage:
@@ -861,9 +864,18 @@ async def save_messages_from_langgraph_state(
                     from yuxi.services.health_family_profile_service import validate_profile_publication
 
                     await validate_profile_publication(conv_repo.db, locked_run)
-                    from yuxi.services.health_evidence_service import validate_evidence_publication
+                    from yuxi.services.health_evidence_service import (
+                        stored_consultation_refs,
+                        validate_evidence_publication,
+                    )
 
-                    await validate_evidence_publication(conv_repo.db, locked_run, last_ai_message.content)
+                    refs = stored_consultation_refs(last_ai_message)
+                    if refs is None:
+                        await validate_evidence_publication(conv_repo.db, locked_run, last_ai_message.content)
+                    else:
+                        await validate_evidence_publication(
+                            conv_repo.db, locked_run, last_ai_message.content, refs=refs
+                        )
                 if complete_run and locked_run.agent_slug == PLANNER_SLUG:
                     from yuxi.services.health_evidence_service import validate_evidence_publication
 
@@ -1169,7 +1181,7 @@ async def stream_agent_chat(
     withhold_health_output = agent_item.slug in EDUCATION_HEALTH_AGENTS
     answer_stream = (
         TrustedHealthFinalAnswerStream(
-            lambda content: validate_health_stream_prefix(context, content),
+            lambda content, **kwargs: validate_health_stream_prefix(context, content, **kwargs),
             request_id=context.request_id,
             run_id=context.run_id,
             thread_id=thread_id,
@@ -1278,6 +1290,7 @@ async def stream_agent_chat(
                                 status="health_answer_delta",
                                 delta=delta,
                                 validated_prefix=answer_stream.prefix[: answer_stream.published],
+                                citation_refs=answer_stream.citations,
                             )
                         continue
                     compression = _context_compression_payload(payload)
@@ -1448,6 +1461,8 @@ async def stream_agent_chat(
                 "reference_menu_repeated",
                 "reference_variety_exhausted",
                 "reference_meal_incomplete",
+                "reference_coverage_unavailable",
+                "reference_search_exhausted",
                 "daily_plan_version_changed",
                 "answer_citation_invalid",
             }
@@ -1534,7 +1549,7 @@ async def stream_agent_resume(
     withhold_health_output = agent_item.slug in EDUCATION_HEALTH_AGENTS
     answer_stream = (
         TrustedHealthFinalAnswerStream(
-            lambda content: validate_health_stream_prefix(context, content),
+            lambda content, **kwargs: validate_health_stream_prefix(context, content, **kwargs),
             request_id=context.request_id,
             run_id=context.run_id,
             thread_id=thread_id,
@@ -1635,6 +1650,7 @@ async def stream_agent_resume(
                                 status="health_answer_delta",
                                 delta=delta,
                                 validated_prefix=answer_stream.prefix[: answer_stream.published],
+                                citation_refs=answer_stream.citations,
                             )
                         continue
                     compression = _context_compression_payload(payload)
@@ -1778,6 +1794,8 @@ async def stream_agent_resume(
                 "reference_menu_repeated",
                 "reference_variety_exhausted",
                 "reference_meal_incomplete",
+                "reference_coverage_unavailable",
+                "reference_search_exhausted",
                 "daily_plan_version_changed",
                 "answer_citation_invalid",
             }

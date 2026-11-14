@@ -6,6 +6,7 @@ import importlib.util
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -142,22 +143,26 @@ async def run_graph(model, *, context=None, checkpointer=None, on_custom=None, m
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("request_matches", [True, False])
-async def test_final_graph_provides_only_current_successful_family_citation_labels(request_matches):
-    """实际图最终调用携带完整标签，旧轮与失败回执不贡献来源。"""
+async def test_final_graph_provides_only_current_successful_family_citation_ids(request_matches):
+    """实际图最终调用只允许引用本轮成功回执的标识。"""
     source_id = "11111111-1111-4111-8111-111111111111"
     filename = "合成营养资料 完整版.docx"
-    label = f"[资料:{source_id}]（{filename}）"
 
     @tool
     async def query_family_nutrition_knowledge() -> dict:
         """返回合成的当前成功工具资料，不调用外部知识库。"""
         return {"sources": [{"source_id": source_id, "filename": filename}]}
 
+    final_text = (
+        json.dumps({"answer": "合成正文。", "citations": [{"kind": "family", "id": source_id}]}, ensure_ascii=False)
+        if request_matches
+        else "合成正文。"
+    )
     model = ControlledStreamModel(
         plan=[
             [tool_chunk(query_family_nutrition_knowledge.name)],
             [tool_chunk(production.finalize_health_answer.name)],
-            [AIMessageChunk(content="合成正文。" + label)],
+            [AIMessageChunk(content=final_text)],
         ]
     )
     graph = create_agent(
@@ -187,10 +192,66 @@ async def test_final_graph_provides_only_current_successful_family_citation_labe
         async for _ in events:
             pass
     assert len(model.calls) == 3 and model.calls[-1]["tools"] == []
-    assert (label in model.calls[-1]["system"]) is request_matches
+    assert (source_id in model.calls[-1]["system"]) is request_matches
     assert "old-source" not in model.calls[-1]["system"]
-    assert filename not in model.calls[0]["system"]
+    assert filename not in model.calls[-1]["system"]
     assert "保留原来源校验。" in model.calls[-1]["system"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valid_json", [True, False])
+async def test_cited_final_answer_requests_provider_json_mode_and_keeps_validation(monkeypatch, valid_json):
+    """真实 OpenAI 兼容模型的请求载荷启用 JSON 模式，纯文本仍被拒绝。"""
+    source_id = "11111111-1111-4111-8111-111111111111"
+    model = ChatOpenAI(model="synthetic", api_key="test", base_url="http://example.invalid")
+    events = []
+    monkeypatch.setattr(production, "get_stream_writer", lambda: events.append)
+    request = SimpleNamespace(
+        state={"health_final_request_id": "synthetic-request", "health_answer_phase": "final"},
+        runtime=SimpleNamespace(context=Context()),
+        messages=[
+            HumanMessage("合成问题", additional_kwargs={"health_request_id": "synthetic-request"}),
+            ToolMessage(
+                json.dumps({"sources": [{"source_id": source_id}]}),
+                name="query_family_nutrition_knowledge",
+                tool_call_id="source-call",
+            ),
+        ],
+        model=model,
+        system_message=HumanMessage("原有引用约束"),
+        tools=[],
+        tool_choice=None,
+        response_format=None,
+    )
+    request.override = lambda **changes: SimpleNamespace(**{**vars(request), **changes})
+
+    async def handler(prepared):
+        assert prepared.tools == [] and prepared.response_format is None
+        assert prepared.model.model_kwargs["response_format"] == {"type": "json_object"}
+        wire = prepared.model._get_request_payload([HumanMessage("合成问题")])
+        assert wire["response_format"] == {"type": "json_object"}
+        answer = (
+            json.dumps({"answer": "合成答复。", "citations": [{"kind": "family", "id": source_id}]})
+            if valid_json
+            else "合成答复。"
+        )
+        return SimpleNamespace(result=[AIMessage(content=answer)])
+
+    if not valid_json:
+        with pytest.raises(HealthVisionError, match="citation_invalid"):
+            await production.HealthFinalAnswerMiddleware().awrap_model_call(request, handler)
+        assert [event["type"] for event in events] == ["health_final_answer_start"]
+        return
+    result = await production.HealthFinalAnswerMiddleware().awrap_model_call(request, handler)
+    assert result.result[0].text == "合成答复。"
+    assert result.result[0].additional_kwargs[production.CONSULTATION_CITATIONS_KEY] == [
+        {"kind": "family", "id": source_id}
+    ]
+    assert [event["type"] for event in events] == [
+        "health_final_answer_start",
+        "health_final_answer_delta",
+        "health_final_answer_end",
+    ]
 
 
 @pytest.mark.asyncio

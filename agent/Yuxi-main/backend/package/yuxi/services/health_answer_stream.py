@@ -70,6 +70,7 @@ class TrustedHealthFinalAnswerStream:
         self.published = 0
         self.checked = 0
         self.finished = False
+        self.citations = None
 
     async def consume(self, event: dict) -> dict | None:
         """忽略普通custom和其他执行的事件，禁止偏移缺口与中途换消息。"""
@@ -85,6 +86,7 @@ class TrustedHealthFinalAnswerStream:
             if self.message_id and self.message_id != message_id:
                 raise HealthVisionError("answer_stream_conflict", "答复流发生变化，请重新提交咨询", 409)
             self.message_id = message_id
+            self.citations = event.get("citations")
             return None
         if not self.message_id or message_id != self.message_id or self.finished:
             return None
@@ -102,8 +104,12 @@ class TrustedHealthFinalAnswerStream:
             if len(self.prefix) + len(text) > MAX_PREFIX_CHARS:
                 raise HealthVisionError("answer_stream_limit", "本次咨询答复过长，已停止答复预览", 422)
             self.prefix += text
-            boundary = self._complete_boundary()
-            if boundary - self.checked < 32:
+            if "citations" in event:
+                self.citations = event["citations"]
+                boundary = len(self.prefix)
+            else:
+                boundary = self._complete_boundary()
+            if "citations" not in event and boundary - self.checked < 32:
                 return None
         else:
             if offset != len(self.prefix):
@@ -114,7 +120,10 @@ class TrustedHealthFinalAnswerStream:
             return None
         self.checked = boundary
         try:
-            await self.validate(self.prefix[:boundary])
+            if self.citations is None:
+                await self.validate(self.prefix[:boundary])
+            else:
+                await self.validate(self.prefix[:boundary], refs=self.citations)
         except HealthVisionError as error:
             if error.code == "citation_invalid":
                 return None  # 引用可能在后续句段，等待完整可校验前缀。

@@ -779,13 +779,16 @@ async def get_agent_run_result(*, run_id: str, current_uid: str, db: AsyncSessio
         }
 
     output_message = None
+    source_titles = {}
     if run.agent_slug in EDUCATION_HEALTH_AGENTS:
         if run.status == "completed":
             from yuxi.services.health_evidence_service import read_public_consultation_answer
             from yuxi.services.health_vision_types import HealthVisionError
 
             try:
-                output_message = await read_public_consultation_answer(db, run, str(current_uid))
+                output_message = await read_public_consultation_answer(
+                    db, run, str(current_uid), source_titles=source_titles
+                )
             except HealthVisionError as exc:
                 raise HTTPException(status_code=exc.status, detail={"code": exc.code, "message": exc.message}) from exc
     elif run.conversation_id is not None:
@@ -802,6 +805,11 @@ async def get_agent_run_result(*, run_id: str, current_uid: str, db: AsyncSessio
     payload: dict[str, Any] = {
         "status": run.status,
         "output": output_message.content if output_message else "",
+        **(
+            {"citations": source_titles[output_message.id]}
+            if output_message and output_message.id in source_titles
+            else {}
+        ),
         "agent_slug": run.agent_slug,
         "thread_id": run.conversation_thread_id,
         "conversation_id": run.conversation_id,
@@ -1039,10 +1047,15 @@ async def validate_health_stream_publication(run, envelope: dict) -> None:
     from yuxi.services.health_evidence_service import validate_evidence_publication
     from yuxi.services.health_family_profile_service import validate_profile_publication
 
-    prefix = envelope["payload"]["chunk"]["validated_prefix"]
+    chunk = envelope["payload"]["chunk"]
+    prefix = chunk["validated_prefix"]
+    refs = chunk.get("citation_refs")
     async with pg_manager.get_async_session_context() as session:
         await validate_profile_publication(session, run)
-        await validate_evidence_publication(session, run, prefix)
+        if refs is None:
+            await validate_evidence_publication(session, run, prefix)
+        else:
+            await validate_evidence_publication(session, run, prefix, refs=refs)
 
 
 async def _load_stream_run_for_user(run_id: str, current_uid: str):
