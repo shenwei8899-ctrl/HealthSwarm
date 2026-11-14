@@ -196,24 +196,49 @@ class MealPlanResultMiddleware(AgentMiddleware):
                 and isinstance(response.result[-1], AIMessage)
             ):
                 answer = response.result[-1]
-                if not answer.tool_calls and not answer.invalid_tool_calls:
+                if not answer.tool_calls:
                     try:
                         PlannerAnswer.model_validate_json(answer.text)
                     except ValidationError:
+                        from yuxi.services.health_consultation_service import require_consultation_attempt
+
+                        await require_consultation_attempt(request.runtime.context, request.state.get("messages", []))
+                        prior_update = getattr(getattr(response, "command", None), "update", None)
+                        prior_usage = prior_update.get("token_usage") if isinstance(prior_update, dict) else None
+                        if prior_usage is None:
+                            # 内层 middleware 的 Command 在 handler 边界归一化后不可见；
+                            # 用同一套计量逻辑把首次外呼带入重试，避免少记一次调用。
+                            from yuxi.agents.middlewares.token_usage import TokenUsageMiddleware
+
+                            prior_usage = TokenUsageMiddleware().build_snapshot(request, response)
                         save_tool = next(tool for tool in request.tools if tool.name == "save_reference_meal_plan")
                         original = request.system_message.text if request.system_message else ""
-                        return await handler(
+                        retry = await handler(
                             request.override(
+                                state={**request.state, "token_usage": prior_usage} if prior_usage else request.state,
                                 tools=[save_tool],
                                 tool_choice={"type": "function", "function": {"name": "save_reference_meal_plan"}},
                                 model_settings={**request.model_settings, "parallel_tool_calls": False},
                                 system_message=SystemMessage(
                                     content=f"{original}\n\n已读取本轮档案、商品和原谱，但上一条回复没有提交餐单回执。"
                                     "现在只调用一次save_reference_meal_plan；餐次、菜谱、原料与商品必须来自本轮真实读取，"
-                                    "缺货和无法证明匹配的食材如实保留缺口。不要直接输出餐单正文。"
+                                    "顶层只提交read_selection；其中use_read_recipes和auto_purchase_matches均为true，"
+                                    "meals逐项使用本轮真实recipe_option。缺货和无法证明匹配的食材如实保留缺口。"
+                                    "工具参数必须是合法JSON，不要直接输出餐单正文。"
                                 ),
                             )
                         )
+                        retried = retry.result[-1] if retry.result else None
+                        if (
+                            not isinstance(retried, AIMessage)
+                            or retried.invalid_tool_calls
+                            or len(retried.tool_calls) != 1
+                            or retried.tool_calls[0]["name"] != "save_reference_meal_plan"
+                        ):
+                            raise HealthVisionError(
+                                "reference_tool_parameters_invalid", "餐单保存参数仍无效，本轮已停止，请重新生成", 422
+                            )
+                        return retry
             return response
 
         # 当前 Run 的完成审计、成员权限和菜谱原文仍由原服务重验。
@@ -332,8 +357,11 @@ class MealPlanResultMiddleware(AgentMiddleware):
             return message
         compact = {key: value for key, value in payload.items() if key not in {"catalog", "products"}}
         compact["products"] = [
-            {key: value[:320] if key == "product_description" and isinstance(value, str) else value
-             for key, value in product.items() if key not in {"skus", "image_url"}}
+            {
+                key: value[:320] if key == "product_description" and isinstance(value, str) else value
+                for key, value in product.items()
+                if key not in {"skus", "image_url"}
+            }
             for product in payload["products"]
         ]
         return message.model_copy(update={"content": json.dumps(compact, ensure_ascii=False, separators=(",", ":"))})

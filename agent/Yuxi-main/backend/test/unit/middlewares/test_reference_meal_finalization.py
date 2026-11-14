@@ -99,11 +99,7 @@ class RepeatingSaveModel(ControlledStreamModel):
         index = len(self.calls)
         self.seen_messages.append(messages)
         if kwargs.get("tools"):
-            draft = (
-                {"read_selection": {}}
-                if self.fail_first_save and not index
-                else SAVE_ARGS
-            )
+            draft = {"read_selection": {}} if self.fail_first_save and not index else SAVE_ARGS
             chunk = AIMessageChunk(
                 id=f"{self.identity_prefix}provider-planning-{index}",
                 content="",
@@ -1237,8 +1233,10 @@ async def test_failed_save_alone_keeps_preparation_and_original_question_contrac
 
 
 @pytest.mark.asyncio
-async def test_unstructured_final_after_real_reads_gets_one_forced_save_attempt(services):
+async def test_unstructured_final_after_real_reads_gets_one_forced_save_attempt(services, monkeypatch):
     """已读商品与原谱时，遗漏保存的自由正文只触发一次受限补救调用。"""
+    authorize = AsyncMock()
+    monkeypatch.setattr("yuxi.services.health_consultation_service.require_consultation_attempt", authorize)
     messages = [
         human(),
         receipt(name="get_reference_plan_context", content="{}"),
@@ -1250,28 +1248,185 @@ async def test_unstructured_final_after_real_reads_gets_one_forced_save_attempt(
     save = AIMessage(
         content="", tool_calls=[{"id": "save-once", "name": "save_reference_meal_plan", "args": SAVE_ARGS}]
     )
-    handler = AsyncMock(side_effect=[
-        ModelResponse(result=[AIMessage(content="早餐午餐晚餐已经计划好，但没有保存回执")]),
-        ModelResponse(result=[save]),
-    ])
+    handler = AsyncMock(
+        side_effect=[
+            ModelResponse(result=[AIMessage(content="早餐午餐晚餐已经计划好，但没有保存回执")]),
+            ModelResponse(result=[save]),
+        ]
+    )
     response = await MealPlanResultMiddleware().awrap_model_call(request, handler)
     assert response.result == [save]
     assert handler.await_count == 2
     forced = handler.await_args_list[1].args[0]
     assert [tool.name for tool in forced.tools] == ["save_reference_meal_plan"]
     assert forced.tool_choice == {"type": "function", "function": {"name": "save_reference_meal_plan"}}
+    authorize.assert_awaited_once_with(request.runtime.context, messages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovered", [True, False])
+async def test_invalid_save_tool_json_gets_one_bounded_retry_after_real_reads(services, monkeypatch, recovered):
+    """供应商返回非法保存参数时只重试一次，仍不接受未校验的餐单正文。"""
+    authorize = AsyncMock()
+    monkeypatch.setattr("yuxi.services.health_consultation_service.require_consultation_attempt", authorize)
+    messages = [
+        human(),
+        receipt(name="get_reference_plan_context", content="{}"),
+        receipt(name="find_reference_products", content="{}"),
+        receipt(name="search_reference_recipes", content="{}"),
+        receipt(name="read_reference_recipe", content="{}"),
+    ]
+    request = request_for(messages)
+    invalid = AIMessage(
+        content="",
+        invalid_tool_calls=[
+            {
+                "id": "malformed-save",
+                "name": "save_reference_meal_plan",
+                "args": '{"read_selection":{}}}',
+                "error": "Failed to parse tool call arguments as JSON",
+            }
+        ],
+    )
+    valid = AIMessage(
+        content="", tool_calls=[{"id": "recovered-save", "name": "save_reference_meal_plan", "args": SAVE_ARGS}]
+    )
+    handler = AsyncMock(
+        side_effect=[ModelResponse(result=[invalid]), ModelResponse(result=[valid if recovered else invalid])]
+    )
+    if recovered:
+        response = await MealPlanResultMiddleware().awrap_model_call(request, handler)
+        assert response.result == [valid]
+    else:
+        with pytest.raises(HealthVisionError, match="reference_tool_parameters_invalid"):
+            await MealPlanResultMiddleware().awrap_model_call(request, handler)
+    assert handler.await_count == 2
+    forced = handler.await_args_list[1].args[0]
+    assert [tool.name for tool in forced.tools] == ["save_reference_meal_plan"]
+    assert forced.tool_choice == {"type": "function", "function": {"name": "save_reference_meal_plan"}}
+    assert "顶层只提交read_selection" in forced.system_message.text
+    authorize.assert_awaited_once_with(request.runtime.context, messages)
+    services.saved.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_invalid_save_tool_json_rechecks_authorization_before_retry(services, monkeypatch):
+    """首次畸形工具调用后撤销授权，不再发起第二次模型调用。"""
+    authorize = AsyncMock(side_effect=HealthVisionError("consent_revoked", "授权已撤销", 403))
+    monkeypatch.setattr("yuxi.services.health_consultation_service.require_consultation_attempt", authorize)
+    messages = [
+        human(),
+        receipt(name="get_reference_plan_context", content="{}"),
+        receipt(name="find_reference_products", content="{}"),
+        receipt(name="search_reference_recipes", content="{}"),
+        receipt(name="read_reference_recipe", content="{}"),
+    ]
+    invalid = AIMessage(
+        content="",
+        invalid_tool_calls=[
+            {
+                "id": "malformed-save",
+                "name": "save_reference_meal_plan",
+                "args": '{"read_selection":{}}}',
+                "error": "Failed to parse tool call arguments as JSON",
+            }
+        ],
+    )
+    handler = AsyncMock(return_value=ModelResponse(result=[invalid]))
+
+    with pytest.raises(HealthVisionError, match="consent_revoked"):
+        await MealPlanResultMiddleware().awrap_model_call(request_for(messages), handler)
+
+    handler.assert_awaited_once()
+    authorize.assert_awaited_once()
+    services.saved.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_invalid_save_tool_json_retries_through_graph_and_counts_both_model_calls(services, monkeypatch):
+    """畸形保存参数经真实工具节点重试保存，首次和重试用量都进入本 Run。"""
+    authorize = AsyncMock()
+    monkeypatch.setattr("yuxi.services.health_consultation_service.require_consultation_attempt", authorize)
+    messages = [human()]
+    for number, name in enumerate(
+        ("get_reference_plan_context", "find_reference_products", "search_reference_recipes", "read_reference_recipe")
+    ):
+        identity = f"source-{number}"
+        messages.extend(
+            [
+                AIMessage(content="", tool_calls=[{"id": identity, "name": name, "args": {}}]),
+                ToolMessage(content="{}", name=name, tool_call_id=identity, status="success"),
+            ]
+        )
+    model = ControlledStreamModel(
+        plan=[
+            [
+                AIMessageChunk(
+                    content="",
+                    invalid_tool_calls=[
+                        {
+                            "id": "malformed-save",
+                            "name": "save_reference_meal_plan",
+                            "args": '{"read_selection":{}}}',
+                            "error": "Failed to parse tool call arguments as JSON",
+                        }
+                    ],
+                    usage_metadata={"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+                )
+            ],
+            [
+                AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[
+                        {
+                            "name": "save_reference_meal_plan",
+                            "args": json.dumps(SAVE_ARGS),
+                            "id": "recovered-save",
+                            "index": 0,
+                        }
+                    ],
+                    usage_metadata={"input_tokens": 4, "output_tokens": 3, "total_tokens": 7},
+                )
+            ],
+            [
+                AIMessageChunk(
+                    content='{"preview_id":"00000000-0000-4000-8000-000000000001"}',
+                    usage_metadata={"input_tokens": 6, "output_tokens": 5, "total_tokens": 11},
+                )
+            ],
+        ]
+    )
+    state, observed, _ = await run_graph(model, messages=messages)
+    assert len(model.calls) == len(observed.requests) == 3
+    assert [tool.name for tool in observed.requests[1].tools] == ["save_reference_meal_plan"]
+    assert observed.requests[1].state["token_usage"]["run"]["model_call_count"] == 1, (
+        observed.requests[1].state["token_usage"]["run"],
+        state.values["token_usage"]["run"],
+    )
+    assert state.values["token_usage"]["run"]["model_call_count"] == 3
+    assert state.values["token_usage"]["run"]["total"] == {
+        "input_tokens": 13,
+        "output_tokens": 10,
+        "total_tokens": 23,
+    }
+    assert json.loads(state.values["messages"][-1].text) == snapshot()
+    services.assembled.assert_awaited_once()
+    services.saved.assert_awaited_once()
+    authorize.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_valid_questions_and_unread_recipes_do_not_force_save(services):
     """真实补充问题和缺少原谱回执的自由正文都不能被强迫保存。"""
-    receipt_messages = [human(), receipt(name="get_reference_plan_context", content="{}"),
-                        receipt(name="find_reference_products", content="{}"),
-                        receipt(name="search_reference_recipes", content="{}")]
+    receipt_messages = [
+        human(),
+        receipt(name="get_reference_plan_context", content="{}"),
+        receipt(name="find_reference_products", content="{}"),
+        receipt(name="search_reference_recipes", content="{}"),
+    ]
     for messages, answer in (
         (receipt_messages, "还没有打开食谱"),
-        ([*receipt_messages, receipt(name="read_reference_recipe", content="{}")],
-         '{"questions":["请确认食材限制"]}'),
+        ([*receipt_messages, receipt(name="read_reference_recipe", content="{}")], '{"questions":["请确认食材限制"]}'),
     ):
         handler = AsyncMock(return_value=ModelResponse(result=[AIMessage(content=answer)]))
         await MealPlanResultMiddleware().awrap_model_call(request_for(messages), handler)
@@ -1416,10 +1571,12 @@ async def test_reference_reads_candidates_before_repeated_searches():
     handler = AsyncMock(return_value="observed")
     await middleware.awrap_model_call(request_for(messages), handler)
     assert [t.name for t in handler.call_args.args[0].tools] == ["find_reference_products"]
-    messages.extend([
-        receipt(name="find_reference_products"),
-        receipt(name="search_reference_recipes", content='{"items":[{"file_id":"source"}]}'),
-    ])
+    messages.extend(
+        [
+            receipt(name="find_reference_products"),
+            receipt(name="search_reference_recipes", content='{"items":[{"file_id":"source"}]}'),
+        ]
+    )
     await middleware.awrap_model_call(request_for(messages), handler)
     assert [t.name for t in handler.call_args.args[0].tools] == ["read_reference_recipe"]
     context.content = '{"restriction_verification":{"status":"needs_verification"}}'

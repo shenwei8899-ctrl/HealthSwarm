@@ -152,7 +152,7 @@ class TokenUsageMiddleware(AgentMiddleware[TokenUsageState]):
         response = handler(request)
         return ExtendedModelResponse(
             model_response=response,
-            command=Command(update={"token_usage": self._build_snapshot(request, response)}),
+            command=Command(update={"token_usage": self.build_snapshot(request, response)}),
         )
 
     async def awrap_model_call(
@@ -163,10 +163,10 @@ class TokenUsageMiddleware(AgentMiddleware[TokenUsageState]):
         response = await handler(request)
         return ExtendedModelResponse(
             model_response=response,
-            command=Command(update={"token_usage": self._build_snapshot(request, response)}),
+            command=Command(update={"token_usage": self.build_snapshot(request, response)}),
         )
 
-    def _build_snapshot(self, request: ModelRequest, response: ModelResponse) -> TokenUsagePayload:
+    def build_snapshot(self, request: ModelRequest, response: ModelResponse) -> TokenUsagePayload:
         """根据单次模型请求与响应构建完整用量快照。"""
         state_messages = list(request.state.get("messages") or [])
         llm_messages = list(request.messages or [])
