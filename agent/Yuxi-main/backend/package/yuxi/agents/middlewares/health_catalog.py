@@ -8,6 +8,11 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from yuxi.services.health_vision_types import HealthVisionError
 
 
+NON_PRODUCT_CATALOG_MESSAGE = (
+    "本轮没有商城商品请求，未查询商品。请使用已授权的资料工具核对限制，随后完成普通咨询；不要再次调用商城工具。"
+)
+
+
 class HealthCatalogMiddleware(AgentMiddleware):
     """只约束有商品工具的本轮咨询，重试继续经过原有预算与权限检查。"""
 
@@ -15,12 +20,27 @@ class HealthCatalogMiddleware(AgentMiddleware):
         """恢复或伪造的目录调用也必须核对本轮明确商品意图。"""
         if request.tool_call["name"] in {"get_food_categories", "find_food_packages", "select_food_products"}:
             human = next((m for m in reversed(request.state.get("messages", [])) if isinstance(m, HumanMessage)), None)
-            if (
-                human is None
-                or human.additional_kwargs.get("health_request_id") != request.runtime.context.request_id
-                or not food_product_intent(human.text)
-            ):
-                raise HealthVisionError("catalog_intent_required", "请明确说明要查询的商品或购买需求", 409)
+            if human is None or human.additional_kwargs.get("health_request_id") != request.runtime.context.request_id:
+                raise HealthVisionError("catalog_request_mismatch", "当前商品咨询轮次无法核对", 409)
+            if not food_product_intent(human.text):
+                # 未绑定工具调用不得进入真实商城；把拒绝回执交给模型继续使用本轮授权资料。
+                turn = request.state.get("messages", [])
+                start = next(i for i in range(len(turn) - 1, -1, -1) if turn[i] is human)
+                if any(
+                    isinstance(message, ToolMessage)
+                    and message.status == "error"
+                    and message.content == NON_PRODUCT_CATALOG_MESSAGE
+                    for message in turn[start + 1 :]
+                ):
+                    raise HealthVisionError(
+                        "catalog_intent_required", "本轮未请求商城商品，模型仍重复调用商城工具", 409
+                    )
+                return ToolMessage(
+                    content=NON_PRODUCT_CATALOG_MESSAGE,
+                    name=request.tool_call["name"],
+                    tool_call_id=request.tool_call["id"],
+                    status="error",
+                )
         return await handler(request)
 
     async def awrap_model_call(self, request, handler):

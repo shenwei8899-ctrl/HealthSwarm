@@ -218,6 +218,61 @@ async def test_standalone_ready_selection_enters_one_final_stream_without_an_ext
 
 
 @pytest.mark.asyncio
+async def test_nonproduct_meal_change_recovers_from_unbound_catalog_tool_call():
+    """供应商输出未绑定商城工具时不执行查询，仍先读取限制资料。"""
+
+    @tool
+    async def get_complete_health_profile() -> str:
+        """返回合成的本轮确认限制。"""
+        return json.dumps({"allergies": ["花生"], "avoid_foods": [], "medical_advice": []})
+
+    model = ControlledStreamModel(
+        plan=[
+            [tool_chunk(find_food_packages.name)],
+            [tool_chunk(get_complete_health_profile.name)],
+            [tool_chunk(production.finalize_health_answer.name)],
+            [AIMessageChunk(content="已核对本轮限制，可考虑鱼类搭配，并避开花生。")],
+        ]
+    )
+    graph, custom, budget = await catalog_graph(
+        model,
+        [human("三餐换掉，我不喜欢这些，我想吃鱼")],
+        extra_tools=[get_complete_health_profile],
+        categories=True,
+    )
+    assert budget.calls == len(model.calls) == 4
+    assert not {get_food_categories.name, find_food_packages.name, select_food_products.name} & set(
+        model.calls[0]["tools"]
+    )
+    assert get_complete_health_profile.name in model.calls[1]["tools"]
+    assert model.calls[3]["tools"] == []
+    assert [item["content"] for item in custom if item["type"] == "health_final_answer_delta"] == [
+        "已核对本轮限制，可考虑鱼类搭配，并避开花生。"
+    ]
+    state = await graph.aget_state({"configurable": {"thread_id": Context().thread_id}})
+    receipts = [message for message in state.values["messages"] if isinstance(message, ToolMessage)]
+    assert [(message.name, message.status) for message in receipts] == [
+        (find_food_packages.name, "error"),
+        (get_complete_health_profile.name, "success"),
+        (production.finalize_health_answer.name, "success"),
+    ]
+    assert "未查询商品" in receipts[0].text
+    assert state.values["messages"][-1].text == "已核对本轮限制，可考虑鱼类搭配，并避开花生。"
+
+
+@pytest.mark.asyncio
+async def test_repeated_unbound_catalog_call_stops_without_public_answer():
+    """供应商连续越界时在第二次工具边界明确终止，不循环消耗模型预算。"""
+    model = ControlledStreamModel(plan=[[tool_chunk(find_food_packages.name)], [tool_chunk(find_food_packages.name)]])
+    with pytest.raises(HealthVisionError) as error:
+        await catalog_graph(model, [human("三餐换掉，我想吃鱼")], categories=True)
+    assert error.value.code == "catalog_intent_required"
+    assert len(model.calls) == error.value.budget_calls == 2
+    assert all(find_food_packages.name not in call["tools"] for call in model.calls)
+    assert error.value.seen_custom == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("queries", [1, 3, 4])
 async def test_final_phase_without_successful_selection_rejects_before_model_or_custom(queries):
     messages = [human(), *[receipt(find_food_packages.name) for _ in range(queries)]]

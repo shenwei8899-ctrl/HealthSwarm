@@ -137,13 +137,29 @@ async def test_ordinary_nutrition_cannot_expose_catalog_tools():
 
 @pytest.mark.asyncio
 async def test_direct_catalog_tool_cannot_run_without_purchase_intent():
-    """工具节点恢复不能绕过模型工具过滤。"""
+    """工具节点恢复不能绕过模型工具过滤，当前轮可继续准备。"""
     request = SimpleNamespace(
-        tool_call={"name": "get_food_categories"},
+        tool_call={"name": "get_food_categories", "id": "unbound-catalog"},
         state={"messages": [HumanMessage("后天吃啥", additional_kwargs={"health_request_id": "current"})]},
         runtime=SimpleNamespace(context=SimpleNamespace(request_id="current")),
     )
     handler = AsyncMock()
-    with pytest.raises(HealthVisionError, match="catalog_intent_required"):
+    result = await HealthCatalogMiddleware().awrap_tool_call(request, handler)
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error" and result.tool_call_id == "unbound-catalog"
+    assert "未查询商品" in result.text
+    handler.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_catalog_tool_with_wrong_request_id_still_fails_closed():
+    """旧轮或伪造的商城调用不能伪装成当前普通咨询错误回执。"""
+    request = SimpleNamespace(
+        tool_call={"name": "find_food_packages", "id": "old-catalog"},
+        state={"messages": [HumanMessage("后天吃啥", additional_kwargs={"health_request_id": "old"})]},
+        runtime=SimpleNamespace(context=SimpleNamespace(request_id="current")),
+    )
+    handler = AsyncMock()
+    with pytest.raises(HealthVisionError, match="catalog_request_mismatch"):
         await HealthCatalogMiddleware().awrap_tool_call(request, handler)
     handler.assert_not_awaited()
