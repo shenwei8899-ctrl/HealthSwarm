@@ -134,13 +134,26 @@ async def read_reference_recipe(
     file_id: str | None = None,
     chunk_id: str | None = None,
     recipes: list[ReferenceRecipeRef] | None = None,
-) -> dict:
+) -> dict | ToolMessage:
     """打开完整原文并发放 recipe_option，供本轮保存时选择；逐项返回商品核对状态。"""
     from yuxi.services.reference_meal_plan_service import read_reference_recipe as read
 
-    if recipes is None:
-        return await read(runtime.context, file_id, chunk_id)
-    return {"items": [await read(runtime.context, item.file_id, item.chunk_id) for item in recipes]}
+    try:
+        if recipes is None:
+            return await read(runtime.context, file_id, chunk_id)
+        return {"items": [await read(runtime.context, item.file_id, item.chunk_id) for item in recipes]}
+    except HealthVisionError as error:
+        if error.code != "reference_receipt_invalid" or error.message != "请先检索当前菜谱资料再打开原文":
+            raise
+        return ToolMessage(
+            name="read_reference_recipe",
+            tool_call_id=runtime.tool_call_id,
+            status="error",
+            content=json.dumps(
+                {"error_code": "reference_recipe_not_searched", "message": "该菜谱不在本轮检索结果中"},
+                ensure_ascii=False,
+            ),
+        )
 
 
 @tool(category="health", display_name="保存日常参考餐单", args_schema=ReferencePlanToolInput)

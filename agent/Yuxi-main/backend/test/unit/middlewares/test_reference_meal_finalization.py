@@ -1582,3 +1582,159 @@ async def test_reference_reads_candidates_before_repeated_searches():
     context.content = '{"restriction_verification":{"status":"needs_verification"}}'
     await middleware.awrap_model_call(request_for(messages), handler)
     assert len(handler.call_args.args[0].tools) == len(TOOLS)
+
+
+@pytest.mark.asyncio
+async def test_reference_menu_opens_missing_searched_recipes_without_model_guess():
+    """已审计菜单缺少原谱时由服务端提交批量读取，避免模型猜文件编号。"""
+    from yuxi.agents.buildin.health_meal_planner.graph import ReferenceContextMiddleware
+
+    menu = [
+        {
+            "meal_type": "lunch",
+            "dishes": [
+                {"file_id": "target", "chunk_id": "target-chunk"},
+                {"file_id": "side", "chunk_id": "side-chunk"},
+            ],
+        }
+    ]
+    messages = [
+        human(),
+        receipt(
+            name="get_reference_plan_context",
+            content='{"restriction_verification":{"status":"verified"},"meal_targets":{"lunch":{}}}',
+        ),
+        receipt(name="find_reference_products", content="{}"),
+        receipt(
+            name="search_reference_recipes",
+            content=json.dumps(
+                {
+                    "items": [
+                        {"file_id": "target", "chunk_id": "target-chunk"},
+                        {"file_id": "side", "chunk_id": "side-chunk"},
+                    ],
+                    "menus": [menu],
+                }
+            ),
+        ),
+        receipt(name="read_reference_recipe", content='{"items":[{"file_id":"target","chunk_id":"target-chunk"}]}'),
+    ]
+    handler = AsyncMock()
+
+    response = await ReferenceContextMiddleware().awrap_model_call(request_for(messages), handler)
+
+    handler.assert_not_awaited()
+    assert len(response.result) == 1
+    assert response.result[0].tool_calls[0]["name"] == "read_reference_recipe"
+    assert response.result[0].tool_calls[0]["args"] == {"recipes": [{"file_id": "side", "chunk_id": "side-chunk"}]}
+
+
+@pytest.mark.asyncio
+async def test_reference_menu_missing_read_passes_real_tool_node(services, monkeypatch):
+    """服务端选用检索回执补读原谱，真实工具节点注入当前运行身份。"""
+    from yuxi.agents.buildin.health_meal_planner.graph import ReferenceContextMiddleware
+    from yuxi.agents.middlewares.token_usage import TokenUsageMiddleware
+
+    read = AsyncMock(return_value={"file_id": "side", "chunk_id": "side-chunk"})
+    monkeypatch.setattr(reference_meal_plan_service, "read_reference_recipe", read)
+    services.final.side_effect = None
+    services.final.return_value = {"status": "needs_input", "questions": ["请确认餐单"]}
+    menu = [
+        {
+            "meal_type": "lunch",
+            "dishes": [
+                {"file_id": "target", "chunk_id": "target-chunk"},
+                {"file_id": "side", "chunk_id": "side-chunk"},
+            ],
+        }
+    ]
+    messages = [
+        human(),
+        receipt(
+            name="get_reference_plan_context",
+            content='{"restriction_verification":{"status":"verified"},"meal_targets":{"lunch":{}}}',
+        ),
+        receipt(name="find_reference_products", content="{}"),
+        receipt(
+            name="search_reference_recipes",
+            content=json.dumps(
+                {
+                    "items": [
+                        {"file_id": "target", "chunk_id": "target-chunk"},
+                        {"file_id": "side", "chunk_id": "side-chunk"},
+                    ],
+                    "menus": [menu],
+                }
+            ),
+        ),
+        receipt(name="read_reference_recipe", content='{"items":[{"file_id":"target","chunk_id":"target-chunk"}]}'),
+    ]
+    model = ControlledStreamModel(plan=[[AIMessageChunk(content='{"questions":["请确认餐单"]}')]])
+    graph = create_agent(
+        model,
+        tools=TOOLS,
+        system_prompt="合成来源边界",
+        middleware=[ReferenceContextMiddleware(), MealPlanResultMiddleware(), TokenUsageMiddleware()],
+        context_schema=Context,
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "menu-read-test"}}
+
+    async for _ in graph.astream(
+        {"messages": messages}, context=Context(thread_id="menu-read-test"), config=config, stream_mode="messages"
+    ):
+        pass
+
+    state = await graph.aget_state(config)
+    read.assert_awaited_once_with(Context(thread_id="menu-read-test"), "side", "side-chunk")
+    assert len(model.calls) == 1
+    assert any(
+        isinstance(message, ToolMessage) and message.name == "read_reference_recipe" and message.status == "success"
+        for message in state.values["messages"]
+    )
+    assert json.loads(state.values["messages"][-1].text)["status"] == "needs_input"
+
+
+@pytest.mark.asyncio
+async def test_unsearched_recipe_after_failed_save_returns_question(services):
+    """来源不在本轮检索时保留拒绝回执，并以补充问题结束本轮。"""
+    messages = [
+        human(),
+        AIMessage(
+            content="", tool_calls=[{"id": "synthetic-call", "name": "save_reference_meal_plan", "args": SAVE_ARGS}]
+        ),
+        receipt(
+            name="save_reference_meal_plan",
+            status="error",
+            content='{"error_code":"reference_meal_incomplete","request_id":"synthetic-request"}',
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": "missing-source",
+                    "name": "read_reference_recipe",
+                    "args": {"file_id": "unknown", "chunk_id": "chunk"},
+                }
+            ],
+        ),
+        ToolMessage(
+            content='{"error_code":"reference_recipe_not_searched"}',
+            name="read_reference_recipe",
+            tool_call_id="missing-source",
+            status="error",
+        ),
+    ]
+    handler = AsyncMock()
+    middleware = MealPlanResultMiddleware()
+
+    response = await middleware.awrap_model_call(request_for(messages), handler)
+
+    handler.assert_not_awaited()
+    answer = response.result[0]
+    assert json.loads(answer.text)["questions"]
+    services.final.side_effect = None
+    services.final.return_value = {"status": "needs_input", "questions": json.loads(answer.text)["questions"]}
+    result = await middleware.aafter_model({"messages": [*messages, answer]}, SimpleNamespace(context=Context()))
+    assert json.loads(result["messages"][0].text)["status"] == "needs_input"
+    services.saved.assert_not_awaited()

@@ -2,9 +2,11 @@
 
 import json
 from contextlib import aclosing
+from uuid import uuid4
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from pydantic import ValidationError
 
@@ -83,6 +85,29 @@ class ReferenceContextMiddleware(AgentMiddleware):
             next_tool = None
             if not any(m.name == "find_reference_products" for m in successful):
                 next_tool = "find_reference_products"
+            elif "meal_targets" in context:
+                missing = self._reference_menu_missing(current[start + 1 :], successful)
+                if missing:
+                    return ModelResponse(
+                        result=[
+                            AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "id": f"reference-read-{uuid4().hex}",
+                                        "name": "read_reference_recipe",
+                                        "args": {"recipes": missing},
+                                    }
+                                ],
+                            )
+                        ]
+                    )
+                if (
+                    missing is None
+                    and successful[-1].name == "search_reference_recipes"
+                    and json.loads(successful[-1].content).get("items")
+                ):
+                    next_tool = "read_reference_recipe"
             elif successful[-1].name == "search_reference_recipes" and json.loads(successful[-1].content).get("items"):
                 # 先核对已检索的真实做法，避免只看名字就反复换词检索。
                 next_tool = "read_reference_recipe"
@@ -93,6 +118,41 @@ class ReferenceContextMiddleware(AgentMiddleware):
                     model_settings={**request.model_settings, "parallel_tool_calls": False},
                 )
         return await handler(request)
+
+    @staticmethod
+    def _reference_menu_missing(messages, successful):
+        """从当前检索回执选首个可核对菜单，批量打开尚未读取的原谱。"""
+        saves = [
+            message
+            for message in messages
+            if isinstance(message, ToolMessage) and message.name == "save_reference_meal_plan"
+        ]
+        if saves:
+            return None
+        searches = [json.loads(message.content) for message in successful if message.name == "search_reference_recipes"]
+        if not searches or not isinstance(searches[-1].get("menus"), list):
+            return None
+        hits = {
+            (item.get("file_id"), item.get("chunk_id"))
+            for item in searches[-1].get("items", [])
+            if isinstance(item, dict)
+        }
+        opened = {
+            (item.get("file_id"), item.get("chunk_id"))
+            for message in successful
+            if message.name == "read_reference_recipe"
+            for item in json.loads(message.content).get("items", [json.loads(message.content)])
+            if isinstance(item, dict)
+        }
+        for menu in searches[-1]["menus"]:
+            refs = [(dish.get("file_id"), dish.get("chunk_id")) for meal in menu for dish in meal.get("dishes", [])]
+            if refs and all(file_id and chunk_id and (file_id, chunk_id) in hits for file_id, chunk_id in refs):
+                return [
+                    {"file_id": file_id, "chunk_id": chunk_id}
+                    for file_id, chunk_id in dict.fromkeys(refs)
+                    if (file_id, chunk_id) not in opened
+                ][:3]
+        return None
 
 
 class MealPlanResultMiddleware(AgentMiddleware):
@@ -109,6 +169,21 @@ class MealPlanResultMiddleware(AgentMiddleware):
                 request = request.override(messages=messages)
         preview_id = self._saved_reference_preview(request.state, request.runtime.context)
         if preview_id is None:
+            if tools == REFERENCE_TOOLS and self._reference_read_not_searched(request.state):
+                return ModelResponse(
+                    result=[
+                        AIMessage(
+                            content=json.dumps(
+                                {
+                                    "questions": [
+                                        "有一道待加入的菜没有可核对的本轮来源。请重新提交调整，或提供该菜做法。"
+                                    ]
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
+                    ]
+                )
             tools = tuple(name for name in request.runtime.context.tools if name != "query_family_nutrition_knowledge")
             save_failure = None
             correction_kind = "save"
@@ -274,6 +349,7 @@ class MealPlanResultMiddleware(AgentMiddleware):
         if (
             preview_id is None
             and save_failure is not None
+            and not self._reference_read_not_searched(state)
             and message.type == "ai"
             and (
                 message.invalid_tool_calls
@@ -298,6 +374,22 @@ class MealPlanResultMiddleware(AgentMiddleware):
             answer = json.dumps({"preview_id": preview_id}) if preview_id is not None else message.text
             result = await planner_final_result(runtime.context, answer)
             return {"messages": [message.model_copy(update={"content": json.dumps(result, ensure_ascii=False)})]}
+
+    @staticmethod
+    def _reference_read_not_searched(state):
+        """只识别本轮最近一条已拒绝的原谱读取回执。"""
+        for message in reversed(state.get("messages", [])):
+            if isinstance(message, HumanMessage):
+                return False
+            if not isinstance(message, ToolMessage):
+                continue
+            if message.name != "read_reference_recipe" or message.status != "error":
+                return False
+            try:
+                return json.loads(message.content).get("error_code") == "reference_recipe_not_searched"
+            except (TypeError, ValueError):
+                return False
+        return False
 
     @staticmethod
     def _reference_model_messages(request):

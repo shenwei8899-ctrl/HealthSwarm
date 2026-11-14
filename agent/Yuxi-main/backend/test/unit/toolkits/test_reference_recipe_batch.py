@@ -187,6 +187,51 @@ async def test_batch_tool_calls_existing_authorized_service_for_each_source(monk
 
 
 @pytest.mark.asyncio
+async def test_unsearched_recipe_returns_bounded_tool_feedback_without_weakening_source_check(monkeypatch):
+    """未检索来源仍被服务拒绝，但 ToolNode 收到可核对的错误回执。"""
+    read = AsyncMock(side_effect=HealthVisionError("reference_receipt_invalid", "请先检索当前菜谱资料再打开原文", 409))
+    monkeypatch.setattr(reference_meal_plan_service, "read_reference_recipe", read)
+    result = await meal_planner.read_reference_recipe.coroutine(
+        runtime=runtime(), recipes=[meal_planner.ReferenceRecipeRef(file_id="unknown", chunk_id="chunk")]
+    )
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert json.loads(result.content)["error_code"] == "reference_recipe_not_searched"
+    read.assert_awaited_once()
+
+    read.side_effect = HealthVisionError("forbidden", "无权访问", 403)
+    with pytest.raises(HealthVisionError, match="forbidden"):
+        await meal_planner.read_reference_recipe.coroutine(runtime=runtime(), file_id="unknown", chunk_id="chunk")
+
+
+@pytest.mark.asyncio
+async def test_unsearched_recipe_error_survives_real_tool_node(monkeypatch):
+    """模型误用未检索编号时，真实工具节点写入错误回执而不使图崩溃。"""
+    monkeypatch.setattr(
+        reference_meal_plan_service,
+        "read_reference_recipe",
+        AsyncMock(side_effect=HealthVisionError("reference_receipt_invalid", "请先检索当前菜谱资料再打开原文", 409)),
+    )
+    graph = StateGraph(MessagesState, context_schema=Context)
+    graph.add_node("tools", ToolNode([meal_planner.read_reference_recipe]))
+    graph.add_edge(START, "tools")
+    graph.add_edge("tools", END)
+
+    result = await graph.compile().ainvoke(
+        {"messages": [AIMessage("", tool_calls=[{
+            "name": "read_reference_recipe",
+            "id": "unsearched",
+            "args": {"file_id": "unknown", "chunk_id": "chunk"},
+        }])]},
+        context=Context(),
+    )
+
+    receipt = result["messages"][-1]
+    assert receipt.status == "error"
+    assert json.loads(receipt.content)["error_code"] == "reference_recipe_not_searched"
+
+
+@pytest.mark.asyncio
 async def test_real_tool_node_injects_context_for_batch_read(monkeypatch):
     """真实 ToolNode 解析模型 JSON 并逐份传入同一运行身份。"""
     read = AsyncMock(side_effect=[{"file_id": "file-1"}, {"file_id": "file-2"}])
