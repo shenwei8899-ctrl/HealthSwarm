@@ -2,11 +2,9 @@
 
 import json
 from contextlib import aclosing
-from uuid import uuid4
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from pydantic import ValidationError
 
@@ -88,20 +86,52 @@ class ReferenceContextMiddleware(AgentMiddleware):
             elif "meal_targets" in context:
                 missing = self._reference_menu_missing(current[start + 1 :], successful)
                 if missing:
-                    return ModelResponse(
-                        result=[
-                            AIMessage(
-                                content="",
-                                tool_calls=[
-                                    {
-                                        "id": f"reference-read-{uuid4().hex}",
-                                        "name": "read_reference_recipe",
-                                        "args": {"recipes": missing},
-                                    }
-                                ],
-                            )
-                        ]
+                    if MealPlanResultMiddleware._reference_read_not_searched(request.state):
+                        return await handler(request)
+                    reads = sum(
+                        isinstance(message, ToolMessage) and message.name == "read_reference_recipe"
+                        for message in current[start + 1 :]
                     )
+                    searches = [
+                        json.loads(message.content)
+                        for message in successful
+                        if message.name == "search_reference_recipes"
+                    ]
+                    read_limit = max(2, (len(searches[-1].get("items", [])) + 2) // 3 + 1)
+                    if reads >= read_limit:
+                        return await self._reference_read_question(request, handler, None)
+                    read_tool = next(tool for tool in request.tools if tool.name == "read_reference_recipe")
+                    original = request.system_message.text if request.system_message else ""
+                    instruction = (
+                        "本轮检索回执已给出须打开的菜谱编号。本次只调用read_reference_recipe，"
+                        f"recipes参数必须恰好是{json.dumps(missing, ensure_ascii=False)}。"
+                        "不得改用保存工具或其他编号。"
+                    )
+                    read_request = request.override(
+                        tools=[read_tool],
+                        tool_choice={"type": "function", "function": {"name": "read_reference_recipe"}},
+                        model_settings={**request.model_settings, "parallel_tool_calls": False},
+                        system_message=SystemMessage(content=f"{original}\n\n{instruction}"),
+                    )
+                    response = await handler(read_request)
+                    if self._reference_menu_read_matches(response, missing):
+                        return response
+
+                    from yuxi.services.health_consultation_service import require_consultation_attempt
+
+                    await require_consultation_attempt(request.runtime.context, current)
+                    prior_usage = TokenUsageMiddleware().build_snapshot(read_request, response)
+                    retry_request = read_request.override(
+                        state={**read_request.state, "token_usage": prior_usage},
+                        system_message=SystemMessage(
+                            content=f"{original}\n\n{instruction}上次未按编号调用，只有这一次修正机会。"
+                        ),
+                    )
+                    retry = await handler(retry_request)
+                    if self._reference_menu_read_matches(retry, missing):
+                        return retry
+                    second_usage = TokenUsageMiddleware().build_snapshot(retry_request, retry)
+                    return await self._reference_read_question(request, handler, second_usage)
                 if (
                     missing is None
                     and successful[-1].name == "search_reference_recipes"
@@ -154,6 +184,58 @@ class ReferenceContextMiddleware(AgentMiddleware):
                 ][:3]
         return None
 
+    @staticmethod
+    def _reference_menu_read_matches(response, missing):
+        """只放行真实模型提交且恰好引用本轮检索编号的读取调用。"""
+        message = response.result[-1] if response.result else None
+        if not isinstance(message, AIMessage) or message.invalid_tool_calls or len(message.tool_calls) != 1:
+            return False
+        call = message.tool_calls[0]
+        if (
+            not isinstance(call.get("id"), str)
+            or not call["id"].strip()
+            or call["name"] != "read_reference_recipe"
+            or not isinstance(call["args"], dict)
+        ):
+            return False
+        args = call["args"]
+        if len(missing) == 1 and args == missing[0]:
+            return True
+        recipes = args.get("recipes")
+        if set(args) != {"recipes"} or not isinstance(recipes, list) or len(recipes) != len(missing):
+            return False
+        return all(isinstance(item, dict) and set(item) == {"file_id", "chunk_id"} for item in recipes) and {
+            (item.get("file_id"), item.get("chunk_id")) for item in recipes
+        } == {(item["file_id"], item["chunk_id"]) for item in missing}
+
+    @staticmethod
+    async def _reference_read_question(request, handler, prior_usage):
+        """读取无法完成时由真实模型提出问题，使最终消息保留模型审计身份。"""
+        from yuxi.services.health_consultation_service import require_consultation_attempt
+
+        await require_consultation_attempt(request.runtime.context, request.state.get("messages", []))
+        original = request.system_message.text if request.system_message else ""
+        question_request = request.override(
+            state={**request.state, "token_usage": prior_usage} if prior_usage else request.state,
+            tools=[],
+            tool_choice=None,
+            response_format=None,
+            system_message=SystemMessage(
+                content=f"{original}\n\n菜谱来源读取未能完成。现在不要调用工具，"
+                '只输出合法JSON：{"questions":["请重新提交调整，我会重新核对菜谱来源。"]}。'
+            ),
+        )
+        response = await handler(question_request)
+        answer = response.result[-1] if response.result else None
+        if not isinstance(answer, AIMessage) or answer.tool_calls or answer.invalid_tool_calls:
+            raise HealthVisionError("reference_read_recovery_invalid", "菜谱读取仍无效，本轮已停止", 422)
+        try:
+            if PlannerAnswer.model_validate_json(answer.text).questions:
+                return response
+        except ValidationError:
+            pass
+        raise HealthVisionError("reference_read_recovery_invalid", "菜谱读取仍无效，本轮已停止", 422)
+
 
 class MealPlanResultMiddleware(AgentMiddleware):
     """模型不能自行输出菜谱、营养或审核事实。"""
@@ -170,20 +252,27 @@ class MealPlanResultMiddleware(AgentMiddleware):
         preview_id = self._saved_reference_preview(request.state, request.runtime.context)
         if preview_id is None:
             if tools == REFERENCE_TOOLS and self._reference_read_not_searched(request.state):
-                return ModelResponse(
-                    result=[
-                        AIMessage(
-                            content=json.dumps(
-                                {
-                                    "questions": [
-                                        "有一道待加入的菜没有可核对的本轮来源。请重新提交调整，或提供该菜做法。"
-                                    ]
-                                },
-                                ensure_ascii=False,
-                            )
-                        )
-                    ]
+                original = request.system_message.text if request.system_message else ""
+                response = await handler(
+                    request.override(
+                        tools=[],
+                        tool_choice=None,
+                        response_format=None,
+                        system_message=SystemMessage(
+                            content=f"{original}\n\n刚才选用的菜谱编号不在本轮检索结果中。"
+                            '现在不要调用工具，只输出合法JSON：{"questions":["请重新提交调整，或提供那道菜的做法。"]}。'
+                        ),
+                    )
                 )
+                answer = response.result[-1] if response.result else None
+                if not isinstance(answer, AIMessage) or answer.tool_calls or answer.invalid_tool_calls:
+                    raise HealthVisionError("reference_source_question_invalid", "菜谱来源无法核对，本轮已停止", 422)
+                try:
+                    if PlannerAnswer.model_validate_json(answer.text).questions:
+                        return response
+                except ValidationError:
+                    pass
+                raise HealthVisionError("reference_source_question_invalid", "菜谱来源无法核对，本轮已停止", 422)
             tools = tuple(name for name in request.runtime.context.tools if name != "query_family_nutrition_knowledge")
             save_failure = None
             correction_kind = "save"

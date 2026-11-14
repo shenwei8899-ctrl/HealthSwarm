@@ -1585,8 +1585,9 @@ async def test_reference_reads_candidates_before_repeated_searches():
 
 
 @pytest.mark.asyncio
-async def test_reference_menu_opens_missing_searched_recipes_without_model_guess():
-    """已审计菜单缺少原谱时由服务端提交批量读取，避免模型猜文件编号。"""
+@pytest.mark.parametrize("first_valid", [True, False])
+async def test_reference_menu_opens_missing_searched_recipes_without_model_guess(monkeypatch, first_valid):
+    """已审计菜单缺少原谱时，真实模型只收到来源绑定的读取编号。"""
     from yuxi.agents.buildin.health_meal_planner.graph import ReferenceContextMiddleware
 
     menu = [
@@ -1619,24 +1620,142 @@ async def test_reference_menu_opens_missing_searched_recipes_without_model_guess
         ),
         receipt(name="read_reference_recipe", content='{"items":[{"file_id":"target","chunk_id":"target-chunk"}]}'),
     ]
-    handler = AsyncMock()
+    read_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "model-read",
+                "name": "read_reference_recipe",
+                "args": {"recipes": [{"file_id": "side", "chunk_id": "side-chunk"}]},
+            }
+        ],
+    )
+    authorize = AsyncMock()
+    monkeypatch.setattr("yuxi.services.health_consultation_service.require_consultation_attempt", authorize)
+    wrong_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "wrong-save",
+                "name": "save_reference_meal_plan",
+                "args": SAVE_ARGS,
+            }
+        ],
+    )
+    handler = AsyncMock(
+        side_effect=[
+            ModelResponse(result=[read_call if first_valid else wrong_call]),
+            ModelResponse(result=[read_call]),
+        ]
+    )
 
     response = await ReferenceContextMiddleware().awrap_model_call(request_for(messages), handler)
 
-    handler.assert_not_awaited()
-    assert len(response.result) == 1
-    assert response.result[0].tool_calls[0]["name"] == "read_reference_recipe"
-    assert response.result[0].tool_calls[0]["args"] == {"recipes": [{"file_id": "side", "chunk_id": "side-chunk"}]}
+    assert handler.await_count == (1 if first_valid else 2)
+    sent = handler.await_args.args[0]
+    assert [tool.name for tool in sent.tools] == ["read_reference_recipe"]
+    assert '"file_id": "side"' in sent.system_message.text
+    assert response.result == [read_call]
+    if first_valid:
+        authorize.assert_not_awaited()
+    else:
+        authorize.assert_awaited_once()
+        assert "上次未按编号调用" in sent.system_message.text
 
 
 @pytest.mark.asyncio
-async def test_reference_menu_missing_read_passes_real_tool_node(services, monkeypatch):
+async def test_reference_menu_read_stops_after_two_wrong_model_calls(monkeypatch):
+    """供应商连续忽略来源绑定读取时，由第三次真实模型调用提出补充问题。"""
+    from yuxi.agents.buildin.health_meal_planner.graph import ReferenceContextMiddleware
+
+    monkeypatch.setattr("yuxi.services.health_consultation_service.require_consultation_attempt", AsyncMock())
+    messages = [
+        human(),
+        receipt(
+            name="get_reference_plan_context",
+            content='{"restriction_verification":{"status":"verified"},"meal_targets":{"lunch":{}}}',
+        ),
+        receipt(name="find_reference_products", content="{}"),
+        receipt(
+            name="search_reference_recipes",
+            content=json.dumps(
+                {
+                    "items": [{"file_id": "side", "chunk_id": "side-chunk"}],
+                    "menus": [[{"meal_type": "lunch", "dishes": [{"file_id": "side", "chunk_id": "side-chunk"}]}]],
+                }
+            ),
+        ),
+    ]
+    wrong_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "wrong-save",
+                "name": "save_reference_meal_plan",
+                "args": SAVE_ARGS,
+            }
+        ],
+    )
+    question = AIMessage(content='{"questions":["请重新提交调整"]}')
+    handler = AsyncMock(
+        side_effect=[
+            ModelResponse(result=[wrong_call]),
+            ModelResponse(result=[wrong_call]),
+            ModelResponse(result=[question]),
+        ]
+    )
+
+    response = await ReferenceContextMiddleware().awrap_model_call(request_for(messages), handler)
+
+    assert handler.await_count == 3
+    assert handler.await_args.args[0].tools == []
+    assert response.result == [question]
+    assert not response.result[0].tool_calls
+    assert json.loads(response.result[0].text)["questions"]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        {"id": "", "name": "read_reference_recipe", "args": {"file_id": "side", "chunk_id": "side-chunk"}},
+        {
+            "id": "read",
+            "name": "read_reference_recipe",
+            "args": {
+                "recipes": [{"file_id": "side", "chunk_id": "side-chunk"}],
+                "file_id": "extra",
+            },
+        },
+        {
+            "id": "read",
+            "name": "read_reference_recipe",
+            "args": {
+                "recipes": [{"file_id": "side", "chunk_id": "side-chunk", "other": "extra"}],
+            },
+        },
+    ],
+)
+def test_reference_menu_read_rejects_unauditable_or_extra_arguments(call):
+    """缺少工具调用身份或混入多余参数，均不得进入 ToolNode。"""
+    from yuxi.agents.buildin.health_meal_planner.graph import ReferenceContextMiddleware
+
+    response = ModelResponse(result=[AIMessage(content="", tool_calls=[call])])
+    assert not ReferenceContextMiddleware._reference_menu_read_matches(
+        response, [{"file_id": "side", "chunk_id": "side-chunk"}]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ignore_first", [False, True])
+async def test_reference_menu_missing_read_passes_real_tool_node(services, monkeypatch, ignore_first):
     """服务端选用检索回执补读原谱，真实工具节点注入当前运行身份。"""
     from yuxi.agents.buildin.health_meal_planner.graph import ReferenceContextMiddleware
     from yuxi.agents.middlewares.token_usage import TokenUsageMiddleware
 
     read = AsyncMock(return_value={"file_id": "side", "chunk_id": "side-chunk"})
     monkeypatch.setattr(reference_meal_plan_service, "read_reference_recipe", read)
+    authorize = AsyncMock()
+    monkeypatch.setattr("yuxi.services.health_consultation_service.require_consultation_attempt", authorize)
     services.final.side_effect = None
     services.final.return_value = {"status": "needs_input", "questions": ["请确认餐单"]}
     menu = [
@@ -1669,7 +1788,40 @@ async def test_reference_menu_missing_read_passes_real_tool_node(services, monke
         ),
         receipt(name="read_reference_recipe", content='{"items":[{"file_id":"target","chunk_id":"target-chunk"}]}'),
     ]
-    model = ControlledStreamModel(plan=[[AIMessageChunk(content='{"questions":["请确认餐单"]}')]])
+    planned = [
+        [
+            AIMessageChunk(
+                content="",
+                tool_call_chunks=[
+                    {
+                        "name": "read_reference_recipe",
+                        "args": '{"recipes":[{"file_id":"side","chunk_id":"side-chunk"}]}',
+                        "id": "model-read",
+                        "index": 0,
+                    }
+                ],
+            )
+        ],
+        [AIMessageChunk(content='{"questions":["请确认餐单"]}')],
+    ]
+    if ignore_first:
+        planned.insert(
+            0,
+            [
+                AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[
+                        {
+                            "name": "save_reference_meal_plan",
+                            "args": json.dumps(SAVE_ARGS),
+                            "id": "ignored-choice",
+                            "index": 0,
+                        }
+                    ],
+                )
+            ],
+        )
+    model = ControlledStreamModel(plan=planned)
     graph = create_agent(
         model,
         tools=TOOLS,
@@ -1687,11 +1839,181 @@ async def test_reference_menu_missing_read_passes_real_tool_node(services, monke
 
     state = await graph.aget_state(config)
     read.assert_awaited_once_with(Context(thread_id="menu-read-test"), "side", "side-chunk")
-    assert len(model.calls) == 1
+    assert len(model.calls) == (3 if ignore_first else 2)
+    assert authorize.await_count == int(ignore_first)
     assert any(
         isinstance(message, ToolMessage) and message.name == "read_reference_recipe" and message.status == "success"
         for message in state.values["messages"]
     )
+    assert not any(
+        isinstance(message, ToolMessage) and message.name == "save_reference_meal_plan"
+        for message in state.values["messages"]
+    )
+    assert json.loads(state.values["messages"][-1].text)["status"] == "needs_input"
+
+
+@pytest.mark.asyncio
+async def test_reference_read_two_wrong_model_calls_keep_usage_and_audited_question(services, monkeypatch):
+    """两次读取参数错误后，由第三次真实模型调用追问并累计全部用量。"""
+    from yuxi.agents.buildin.health_meal_planner.graph import ReferenceContextMiddleware
+    from yuxi.agents.middlewares.token_usage import TokenUsageMiddleware
+
+    authorize = AsyncMock()
+    monkeypatch.setattr("yuxi.services.health_consultation_service.require_consultation_attempt", authorize)
+    services.final.side_effect = None
+    services.final.return_value = {"status": "needs_input", "questions": ["请重新提交调整"]}
+    messages = [
+        human(),
+        receipt(
+            name="get_reference_plan_context",
+            content='{"restriction_verification":{"status":"verified"},"meal_targets":{"lunch":{}}}',
+        ),
+        receipt(name="find_reference_products", content="{}"),
+        receipt(
+            name="search_reference_recipes",
+            content=json.dumps(
+                {
+                    "items": [{"file_id": "side", "chunk_id": "side-chunk"}],
+                    "menus": [[{"meal_type": "lunch", "dishes": [{"file_id": "side", "chunk_id": "side-chunk"}]}]],
+                }
+            ),
+        ),
+    ]
+
+    def wrong(identity, usage):
+        return AIMessageChunk(
+            content="",
+            tool_call_chunks=[
+                {
+                    "name": "save_reference_meal_plan",
+                    "args": json.dumps(SAVE_ARGS),
+                    "id": identity,
+                    "index": 0,
+                }
+            ],
+            usage_metadata=usage,
+        )
+
+    model = ControlledStreamModel(
+        plan=[
+            [wrong("wrong-1", {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5})],
+            [wrong("wrong-2", {"input_tokens": 4, "output_tokens": 3, "total_tokens": 7})],
+            [
+                AIMessageChunk(
+                    content='{"questions":["请重新提交调整"]}',
+                    usage_metadata={"input_tokens": 6, "output_tokens": 5, "total_tokens": 11},
+                )
+            ],
+        ]
+    )
+    graph = create_agent(
+        model,
+        tools=TOOLS,
+        system_prompt="合成来源边界",
+        middleware=[ReferenceContextMiddleware(), MealPlanResultMiddleware(), TokenUsageMiddleware()],
+        context_schema=Context,
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "wrong-read-test"}}
+
+    async for _ in graph.astream(
+        {"messages": messages}, context=Context(thread_id="wrong-read-test"), config=config, stream_mode="messages"
+    ):
+        pass
+
+    state = await graph.aget_state(config)
+    assert len(model.calls) == 3
+    assert authorize.await_count == 2
+    assert state.values["token_usage"]["run"]["model_call_count"] == 3
+    assert state.values["token_usage"]["run"]["total"] == {
+        "input_tokens": 13,
+        "output_tokens": 10,
+        "total_tokens": 23,
+    }
+    assert not any(
+        isinstance(message, ToolMessage) and message.name == "save_reference_meal_plan"
+        for message in state.values["messages"]
+    )
+    assert json.loads(state.values["messages"][-1].text)["status"] == "needs_input"
+
+
+@pytest.mark.asyncio
+async def test_reference_read_incomplete_receipts_stop_at_budget(services, monkeypatch):
+    """读取回执未包含目标编号时有界追问，避免重复读取直到图递归失败。"""
+    from yuxi.agents.buildin.health_meal_planner.graph import ReferenceContextMiddleware
+    from yuxi.agents.middlewares.token_usage import TokenUsageMiddleware
+
+    read = AsyncMock(return_value={"file_id": "other", "chunk_id": "other-chunk"})
+    monkeypatch.setattr(reference_meal_plan_service, "read_reference_recipe", read)
+    monkeypatch.setattr("yuxi.services.health_consultation_service.require_consultation_attempt", AsyncMock())
+    services.final.side_effect = None
+    services.final.return_value = {"status": "needs_input", "questions": ["请重新提交调整"]}
+    messages = [
+        human(),
+        receipt(
+            name="get_reference_plan_context",
+            content='{"restriction_verification":{"status":"verified"},"meal_targets":{"lunch":{}}}',
+        ),
+        receipt(name="find_reference_products", content="{}"),
+        receipt(
+            name="search_reference_recipes",
+            content=json.dumps(
+                {
+                    "items": [{"file_id": "side", "chunk_id": "side-chunk"}],
+                    "menus": [[{"meal_type": "lunch", "dishes": [{"file_id": "side", "chunk_id": "side-chunk"}]}]],
+                }
+            ),
+        ),
+    ]
+    model = ControlledStreamModel(
+        plan=[
+            [
+                AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[
+                        {
+                            "name": "read_reference_recipe",
+                            "args": '{"file_id":"side","chunk_id":"side-chunk"}',
+                            "id": "read-1",
+                            "index": 0,
+                        }
+                    ],
+                )
+            ],
+            [
+                AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[
+                        {
+                            "name": "read_reference_recipe",
+                            "args": '{"file_id":"side","chunk_id":"side-chunk"}',
+                            "id": "read-2",
+                            "index": 0,
+                        }
+                    ],
+                )
+            ],
+            [AIMessageChunk(content='{"questions":["请重新提交调整"]}')],
+        ]
+    )
+    graph = create_agent(
+        model,
+        tools=TOOLS,
+        system_prompt="合成来源边界",
+        middleware=[ReferenceContextMiddleware(), MealPlanResultMiddleware(), TokenUsageMiddleware()],
+        context_schema=Context,
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "read-budget-test"}}
+
+    async for _ in graph.astream(
+        {"messages": messages}, context=Context(thread_id="read-budget-test"), config=config, stream_mode="messages"
+    ):
+        pass
+
+    state = await graph.aget_state(config)
+    assert len(model.calls) == 3
+    assert read.await_count == 2
     assert json.loads(state.values["messages"][-1].text)["status"] == "needs_input"
 
 
@@ -1725,12 +2047,14 @@ async def test_unsearched_recipe_after_failed_save_returns_question(services):
             status="error",
         ),
     ]
-    handler = AsyncMock()
+    question = AIMessage(content='{"questions":["请重新提交调整"]}')
+    handler = AsyncMock(return_value=ModelResponse(result=[question]))
     middleware = MealPlanResultMiddleware()
 
     response = await middleware.awrap_model_call(request_for(messages), handler)
 
-    handler.assert_not_awaited()
+    handler.assert_awaited_once()
+    assert handler.await_args.args[0].tools == []
     answer = response.result[0]
     assert json.loads(answer.text)["questions"]
     services.final.side_effect = None
