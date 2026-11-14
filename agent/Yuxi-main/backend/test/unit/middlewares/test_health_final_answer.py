@@ -153,16 +153,26 @@ async def test_final_graph_provides_only_current_successful_family_citation_ids(
         """返回合成的当前成功工具资料，不调用外部知识库。"""
         return {"sources": [{"source_id": source_id, "filename": filename}]}
 
-    final_text = (
-        json.dumps({"answer": "合成正文。", "citations": [{"kind": "family", "id": source_id}]}, ensure_ascii=False)
+    final_chunk = (
+        AIMessageChunk(
+            content="",
+            tool_call_chunks=[
+                {
+                    "name": production.submit_consultation_answer.name,
+                    "args": json.dumps({"answer": "合成正文。", "citations": [{"kind": "family", "id": source_id}]}),
+                    "id": "final-citation-call",
+                    "index": 0,
+                }
+            ],
+        )
         if request_matches
-        else "合成正文。"
+        else AIMessageChunk(content="合成正文。")
     )
     model = ControlledStreamModel(
         plan=[
             [tool_chunk(query_family_nutrition_knowledge.name)],
             [tool_chunk(production.finalize_health_answer.name)],
-            [AIMessageChunk(content=final_text)],
+            [final_chunk],
         ]
     )
     graph = create_agent(
@@ -186,22 +196,31 @@ async def test_final_graph_provides_only_current_successful_family_citation_ids(
         AIMessage("", tool_calls=[{**old_call, "name": "unrelated_tool", "id": "other-call"}]),
         ToolMessage(old, name="unrelated_tool", tool_call_id="other-call"),
     ]
+    custom = []
     async with await graph.astream_events(
         {"messages": incoming}, context=Context(), version="v3", transformers=[CustomTransformer]
     ) as events:
-        async for _ in events:
-            pass
-    assert len(model.calls) == 3 and model.calls[-1]["tools"] == []
+        async for event in events:
+            if event["method"] == "custom":
+                custom.append(event["params"]["data"])
+    assert len(model.calls) == 3
+    assert model.calls[-1]["tools"] == ([production.submit_consultation_answer.name] if request_matches else [])
+    assert model.calls[-1]["tool_choice"] == (production.submit_consultation_answer.name if request_matches else None)
     assert (source_id in model.calls[-1]["system"]) is request_matches
     assert "old-source" not in model.calls[-1]["system"]
     assert filename not in model.calls[-1]["system"]
     assert "保留原来源校验。" in model.calls[-1]["system"]
+    if request_matches:
+        assert [item["content"] for item in custom if item["type"] == "health_final_answer_delta"] == ["合成正文。"]
+        assert next(item for item in custom if item["type"] == "health_final_answer_delta")["citations"] == [
+            {"kind": "family", "id": source_id}
+        ]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("valid_json", [True, False])
-async def test_cited_final_answer_requests_provider_json_mode_and_keeps_validation(monkeypatch, valid_json):
-    """真实 OpenAI 兼容模型的请求载荷启用 JSON 模式，纯文本仍被拒绝。"""
+@pytest.mark.parametrize("case", ["valid", "plain_text", "forged_id"])
+async def test_cited_final_answer_forces_structured_tool_and_keeps_validation(monkeypatch, case):
+    """强制结构化结果工具；普通正文和伪造引用仍拒绝公开。"""
     source_id = "11111111-1111-4111-8111-111111111111"
     model = ChatOpenAI(model="synthetic", api_key="test", base_url="http://example.invalid")
     events = []
@@ -226,18 +245,42 @@ async def test_cited_final_answer_requests_provider_json_mode_and_keeps_validati
     request.override = lambda **changes: SimpleNamespace(**{**vars(request), **changes})
 
     async def handler(prepared):
-        assert prepared.tools == [] and prepared.response_format is None
-        assert prepared.model.model_kwargs["response_format"] == {"type": "json_object"}
-        wire = prepared.model._get_request_payload([HumanMessage("合成问题")])
-        assert wire["response_format"] == {"type": "json_object"}
-        answer = (
-            json.dumps({"answer": "合成答复。", "citations": [{"kind": "family", "id": source_id}]})
-            if valid_json
-            else "合成答复。"
+        assert [item.name for item in prepared.tools] == [production.submit_consultation_answer.name]
+        assert prepared.tool_choice == production.submit_consultation_answer.name
+        assert prepared.response_format is None
+        assert "response_format" not in prepared.model.model_kwargs
+        bound = prepared.model.bind_tools(prepared.tools, tool_choice=prepared.tool_choice)
+        wire = prepared.model._get_request_payload([HumanMessage("合成问题")], **bound.kwargs)
+        assert wire["tools"][0]["function"]["name"] == production.submit_consultation_answer.name
+        assert wire["tool_choice"]["function"]["name"] == production.submit_consultation_answer.name
+        assert "response_format" not in wire
+        message = (
+            AIMessage(content="合成答复。")
+            if case == "plain_text"
+            else (
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": production.submit_consultation_answer.name,
+                            "args": {
+                                "answer": "合成答复。",
+                                "citations": [
+                                    {
+                                        "kind": "family",
+                                        "id": source_id if case == "valid" else "22222222-2222-4222-8222-222222222222",
+                                    }
+                                ],
+                            },
+                            "id": "final-call",
+                        }
+                    ],
+                )
+            )
         )
-        return SimpleNamespace(result=[AIMessage(content=answer)])
+        return SimpleNamespace(result=[message])
 
-    if not valid_json:
+    if case != "valid":
         with pytest.raises(HealthVisionError, match="citation_invalid"):
             await production.HealthFinalAnswerMiddleware().awrap_model_call(request, handler)
         assert [event["type"] for event in events] == ["health_final_answer_start"]
@@ -443,6 +486,124 @@ async def test_real_chat_openai_wire_chunks_do_not_double_publish_provider_token
         event["id"] for event, _ in native if isinstance(event, dict) and event.get("event") == "message-start"
     ]
     assert native_message_ids[-1] == state.values["messages"][-1].id
+
+
+@pytest.mark.asyncio
+async def test_real_chat_openai_wire_stream_submits_cited_final_answer():
+    """真实 ChatOpenAI 将分片工具参数聚合后，图只发布已校验的答复。"""
+    source_id = "11111111-1111-4111-8111-111111111111"
+
+    @tool
+    async def query_family_nutrition_knowledge() -> dict:
+        """返回本轮合成资料。"""
+        return {"sources": [{"source_id": source_id}]}
+
+    class WireStream:
+        """供应商流边界。"""
+
+        def __init__(self, deltas):
+            self.deltas = deltas
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        def __aiter__(self):
+            return self.iterate()
+
+        async def iterate(self):
+            for delta in self.deltas:
+                yield {
+                    "id": "synthetic",
+                    "object": "chat.completion.chunk",
+                    "model": "synthetic",
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+                }
+
+    class Completions:
+        """只替换网络传输，保留模型适配器、图和流解析。"""
+
+        def __init__(self):
+            self.calls = []
+
+        async def create(self, **payload):
+            self.calls.append(payload)
+            step = len(self.calls)
+            if step < 3:
+                name = query_family_nutrition_knowledge.name if step == 1 else production.finalize_health_answer.name
+                return WireStream(
+                    [
+                        {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": f"call-{step}",
+                                    "type": "function",
+                                    "function": {"name": name, "arguments": "{}"},
+                                }
+                            ],
+                        }
+                    ]
+                )
+            args = json.dumps(
+                {"answer": "合成正文。", "citations": [{"kind": "family", "id": source_id}]}, ensure_ascii=False
+            )
+            midpoint = len(args) // 2
+            return WireStream(
+                [
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-final",
+                                "type": "function",
+                                "function": {
+                                    "name": production.submit_consultation_answer.name,
+                                    "arguments": args[:midpoint],
+                                },
+                            }
+                        ],
+                    },
+                    {"tool_calls": [{"index": 0, "function": {"arguments": args[midpoint:]}}]},
+                ]
+            )
+
+    completions = Completions()
+    model = ChatOpenAI(model="synthetic", api_key="synthetic", async_client=completions, max_retries=0)
+    graph = create_agent(
+        model,
+        tools=[query_family_nutrition_knowledge, production.finalize_health_answer],
+        middleware=[production.HealthFinalAnswerMiddleware()],
+        context_schema=Context,
+        checkpointer=InMemorySaver(),
+    )
+    custom = []
+    async with await graph.astream_events(
+        {"messages": [HumanMessage("本轮问题", additional_kwargs={"health_request_id": "synthetic-request"})]},
+        context=Context(),
+        config={"configurable": {"thread_id": "synthetic-thread"}},
+        version="v3",
+        transformers=[CustomTransformer],
+    ) as events:
+        async for event in events:
+            if event["method"] == "custom":
+                custom.append(event["params"]["data"])
+
+    assert len(completions.calls) == 3
+    assert completions.calls[-1]["tool_choice"]["function"]["name"] == production.submit_consultation_answer.name
+    assert [item["content"] for item in custom if item["type"] == "health_final_answer_delta"] == ["合成正文。"]
+    assert next(item for item in custom if item["type"] == "health_final_answer_delta")["citations"] == [
+        {"kind": "family", "id": source_id}
+    ]
+    assert custom[-1]["type"] == "health_final_answer_end"
+    state = await graph.aget_state({"configurable": {"thread_id": "synthetic-thread"}})
+    final = state.values["messages"][-1]
+    assert final.text == "合成正文。" and not final.tool_calls
+    assert final.additional_kwargs["health_citations_v1"] == [{"kind": "family", "id": source_id}]
 
 
 @pytest.mark.asyncio

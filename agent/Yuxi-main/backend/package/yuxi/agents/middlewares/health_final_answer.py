@@ -1,4 +1,4 @@
-"""工具决策结束后，在不携带工具的最终调用中输出可信正文增量。"""
+"""工具决策结束后，在受控最终调用中输出可信正文增量。"""
 
 import json
 from typing import NotRequired
@@ -9,7 +9,6 @@ from langchain.agents.middleware.types import AgentState
 from langchain_core.callbacks import AsyncCallbackHandler, AsyncCallbackManager
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
 from langgraph.config import get_stream_writer
 from langgraph.prebuilt.tool_node import ToolRuntime
 from langgraph.types import Command
@@ -38,8 +37,14 @@ def finalize_health_answer(runtime: ToolRuntime) -> Command:
     )
 
 
+@tool(args_schema=ConsultationAnswer)
+def submit_consultation_answer(answer: str, citations: list[dict]) -> str:
+    """提交带引用的最终答复，由中间件截取校验而不执行。"""
+    raise RuntimeError("Final answer submissions are consumed by HealthFinalAnswerMiddleware")
+
+
 class HealthFinalAnswerMiddleware(AgentMiddleware[HealthFinalAnswerState]):
-    """规划轮保留原工具，最终轮使用同一预算模型但不绑定任何工具。"""
+    """规划轮保留业务工具，最终轮只允许结构化引用结果工具。"""
 
     state_schema = HealthFinalAnswerState
 
@@ -97,7 +102,7 @@ class HealthFinalAnswerMiddleware(AgentMiddleware[HealthFinalAnswerState]):
                     )
             return response
 
-        # 预算已准备本轮模型；继续使用标准 handler，让用量和执行链看到真正的无工具请求。
+        # 预算已准备本轮模型；继续使用标准 handler，让用量和执行链看到最终请求。
         prompt = (
             "资料准备已经结束。当前只生成给用户的最终正文，不再调用工具或输出分析、工具计划。"
             "以最新用户消息为本轮任务，结合历史理解追问；除非本轮明确要求回顾、比较或汇总，否则不重复回答历史问题，也不自动续答旧轮未完成的问题。"
@@ -109,7 +114,8 @@ class HealthFinalAnswerMiddleware(AgentMiddleware[HealthFinalAnswerState]):
         prompt += "正文不要写资料或证据标记。没有直接支持本题的资料时，如实说明缺口。"
         if buffered:
             prompt += (
-                "只返回一个 JSON 对象，不加代码围栏。answer 是自然语言正文；citations 是实际采用的引用数组，"
+                "只调用 submit_consultation_answer 提交最终答复，不输出普通正文或调用其他工具。"
+                "answer 是自然语言正文；citations 是实际采用的引用数组，"
                 "每项仅有 kind 和 id；kind 为 family 或 reviewed。相关背景不必引用，无直接依据时数组为空。"
                 "本轮可选 ID：" + json.dumps({"family": family_ids, "reviewed": evidence_ids})
             )
@@ -121,38 +127,30 @@ class HealthFinalAnswerMiddleware(AgentMiddleware[HealthFinalAnswerState]):
             "message_id": str(uuid4()),
         }
         writer = get_stream_writer()
-        callback = HealthFinalAnswerCallback(writer, route, buffer=buffered)
+        callback = HealthFinalAnswerCallback(writer, route, buffer=buffered, allow_tool_calls=buffered)
         callbacks = AsyncCallbackManager.configure(inheritable_callbacks=request.model.callbacks)
         callbacks.add_handler(callback, inherit=False)
-        model_updates = {"callbacks": callbacks}
-        if buffered and isinstance(request.model, ChatOpenAI):
-            # The final response is parsed as ConsultationAnswer. A prompt alone
-            # does not make OpenAI-compatible providers return a JSON object.
-            model_updates["model_kwargs"] = {
-                **request.model.model_kwargs,
-                "response_format": {"type": "json_object"},
-            }
-        model = request.model.model_copy(update=model_updates)
+        model = request.model.model_copy(update={"callbacks": callbacks})
         writer({"type": "health_final_answer_start", **route, **({} if buffered else {"citations": []})})
         response = await handler(
             request.override(
                 model=model,
-                tools=[],
-                tool_choice=None,
+                tools=[submit_consultation_answer] if buffered else [],
+                tool_choice=submit_consultation_answer.name if buffered else None,
                 response_format=None,
                 system_message=self._system_message(request, prompt),
             )
         )
         message = response.result[0]
-        if not isinstance(message, AIMessage) or not message.text:
+        if not isinstance(message, AIMessage):
             raise HealthVisionError("answer_stream_empty", "本次咨询未生成答复，请重新提交", 422)
-        if message.tool_calls or message.invalid_tool_calls:
-            raise HealthVisionError("answer_stream_tool_call", "最终答复阶段不允许调用工具，请重新提交咨询", 422)
-        answer = message.text
         citations = []
         if buffered:
+            calls = message.tool_calls
+            if message.invalid_tool_calls or len(calls) != 1 or calls[0]["name"] != submit_consultation_answer.name:
+                raise HealthVisionError("citation_invalid", "本次答复未能核对引用，请重新提交问题", 409)
             try:
-                result = ConsultationAnswer.model_validate_json(answer)
+                result = ConsultationAnswer.model_validate(calls[0]["args"])
                 available = {"family": set(family_ids), "reviewed": set(evidence_ids)}
                 if any(str(ref.id) not in available[ref.kind] for ref in result.citations):
                     raise ValueError("引用不属于本轮")
@@ -160,12 +158,25 @@ class HealthFinalAnswerMiddleware(AgentMiddleware[HealthFinalAnswerState]):
                 citations = [ref.model_dump(mode="json") for ref in result.citations]
             except ValueError as error:
                 raise HealthVisionError("citation_invalid", "本次答复未能核对引用，请重新提交问题", 409) from error
-        response.result[0] = message.model_copy(
-            update={
-                "content": answer,
-                "additional_kwargs": {**message.additional_kwargs, CONSULTATION_CITATIONS_KEY: citations},
-            }
-        )
+            response.result[0] = AIMessage(
+                content=answer,
+                id=message.id,
+                response_metadata=message.response_metadata,
+                usage_metadata=message.usage_metadata,
+                additional_kwargs={
+                    **{key: value for key, value in message.additional_kwargs.items() if key != "tool_calls"},
+                    CONSULTATION_CITATIONS_KEY: citations,
+                },
+            )
+        else:
+            if not message.text:
+                raise HealthVisionError("answer_stream_empty", "本次咨询未生成答复，请重新提交", 422)
+            if message.tool_calls or message.invalid_tool_calls:
+                raise HealthVisionError("answer_stream_tool_call", "最终答复阶段不允许调用工具，请重新提交咨询", 422)
+            answer = message.text
+            response.result[0] = message.model_copy(
+                update={"additional_kwargs": {**message.additional_kwargs, CONSULTATION_CITATIONS_KEY: []}}
+            )
         if buffered:
             writer(
                 {"type": "health_final_answer_delta", "content": answer, "offset": 0, "citations": citations, **route}
@@ -205,16 +216,17 @@ class HealthFinalAnswerMiddleware(AgentMiddleware[HealthFinalAnswerState]):
 
 
 class HealthFinalAnswerCallback(AsyncCallbackHandler):
-    """只绑定本轮无工具模型，在模型完成前转发纯文字，不转发推理或工具块。"""
+    """只绑定本轮最终模型；有引用候选时缓冲输出并校验结果工具参数。"""
 
     raise_error = True
 
-    def __init__(self, writer, route, *, buffer=False):
+    def __init__(self, writer, route, *, buffer=False, allow_tool_calls=False):
         """回调状态只存于本次模型调用，不进入 checkpoint 或模型输入。"""
         self.writer = writer
         self.route = dict(route)
         self.offset = 0
         self.buffer = buffer
+        self.allow_tool_calls = allow_tool_calls
 
     async def on_stream_event(self, event, **kwargs):
         """只消费 BaseAgent 的 v3 协议，避免供应商 token 回调和桥接事件重复发布。"""
@@ -222,6 +234,8 @@ class HealthFinalAnswerCallback(AsyncCallbackHandler):
         delta = event.get("delta") or {}
         fields = delta.get("fields") or {}
         if any("tool" in str(value.get("type", "")) for value in (content, delta, fields)):
+            if self.allow_tool_calls:
+                return
             raise HealthVisionError("answer_stream_tool_call", "最终答复阶段不允许调用工具，请重新提交咨询", 422)
         if event.get("event") == "content-block-delta" and delta.get("type") == "text-delta":
             text = delta.get("text")
