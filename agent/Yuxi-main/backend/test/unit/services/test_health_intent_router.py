@@ -26,6 +26,56 @@ def test_ordinary_nutrition_is_consultation():
     assert classify_health_intent("鸡蛋有什么营养", today=date(2026, 11, 9)).route == "nutrition_consultation"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "聚餐能喝点啥？",
+        "聚餐可以喝什么？",
+        "聚餐有什么饮品推荐？",
+        "下周聚餐推荐饮料",
+        "血压正常吗？",
+        "这份报告怎么看？",
+        "鱼和豆腐能一起吃吗？",
+        "帮我写一首诗",
+        "查看餐后血糖",
+        "看看菜的营养成分",
+        "调整我的作息",
+        "给我看看血压记录",
+        "糖尿病怎么吃？",
+        "高血压吃什么好？",
+        "帮我看看晚餐营养",
+    ],
+)
+def test_questions_without_meal_task_default_to_consultation(text):
+    """不同主题的一般问题直接进入咨询，不要求先选择任务类别。"""
+    result = classify_health_intent(
+        text,
+        today=date(2026, 11, 9),
+        previous_date=date(2026, 11, 11),
+        previous_meals=["dinner"],
+        awaiting_meal_details=True,
+    )
+    assert result.route == "nutrition_consultation"
+
+
+def test_explicit_meal_plan_with_drink_still_uses_planner():
+    """明确安排某天餐单时，饮品词不改变配餐入口。"""
+    result = classify_health_intent("安排明天晚餐喝什么", today=date(2026, 11, 9))
+    assert result.route == "single_day_meal"
+    assert result.business_date == date(2026, 11, 10)
+
+
+def test_explicit_gathering_menu_still_uses_plan_entry():
+    """聚餐场景中明确要求多日菜单时仍进入计划入口。"""
+    assert classify_health_intent("安排一周聚餐菜单").route == "exclusive_plan"
+
+
+def test_natural_dish_request_still_uses_meal_plan():
+    """既有的自然语言配菜入口继续生成单日餐单。"""
+    assert classify_health_intent("推荐几道菜").route == "single_day_meal"
+    assert classify_health_intent("今天怎么吃").route == "single_day_meal"
+
+
 def test_ambiguous_text_requires_clarification():
     """模糊规则结果留给分析模型。"""
     result = classify_health_intent("给我安排一下", today=date(2026, 11, 9))
@@ -85,9 +135,10 @@ def test_consultation_is_not_captured_by_pending_meal(text):
     assert result is None or result.route == "nutrition_consultation"
 
 
-def test_unrelated_pending_reply_is_analyzed_instead_of_submitted():
+def test_unrelated_pending_reply_stays_in_consultation():
     """补资料上下文不能把无关陈述直接送进配餐。"""
-    assert classify_health_intent("帮我写一首诗", previous_date=date(2026, 11, 11), awaiting_meal_details=True) is None
+    result = classify_health_intent("帮我写一首诗", previous_date=date(2026, 11, 11), awaiting_meal_details=True)
+    assert result.route == "nutrition_consultation"
 
 
 @pytest.mark.parametrize("text", ["安排今天和明天三餐", "安排明天到后天的餐单", "安排这周三餐"])

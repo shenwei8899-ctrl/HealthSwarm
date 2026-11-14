@@ -94,8 +94,10 @@ async def analyze_health_intent(uid, data, today, snapshot, recent):
                         content=(
                             "你是无工具的健康聊天意图分析Agent，只输出一个JSON对象，不回答问题，不执行任务。"
                             "route只能为nutrition_consultation、single_day_meal、needs_clarification。"
-                            "营养科普、商品咨询、饮食记录属于nutrition_consultation；明确安排/查看/更换某一天餐单属于single_day_meal；"
-                            "无关、模糊、指代不清必须needs_clarification。多日专属计划由服务器明确规则处理，不能默认进入专属计划。"
+                            "一般提问、日常吃喝建议、商品咨询和饮食记录属于nutrition_consultation；"
+                            "明确安排/查看/更换某一天餐单属于single_day_meal；"
+                            "只有用户提出任务却缺少必要对象或日期时才用needs_clarification；不能确认是餐单任务时选择咨询。"
+                            "多日专属计划由服务器明确规则处理，不能默认进入专属计划。"
                             "action在咨询为generate，单日允许generate/change/view，追问为ask。只有awaiting_meal_details为true且"
                             "本条明确回答用餐偏好、人数或现有食材时，才可用continue并沿用previous_date及previous_meals。单日须返回YYYY-MM-DD的business_date及"
                             "meal_types数组（breakfast/lunch/dinner）。不要返回其他字段，不编造档案。"
@@ -183,19 +185,39 @@ def classify_health_intent(
         r"安排|配餐|生成|餐单|食谱|菜谱|更换|换菜", text
     ):
         return HealthIntentResult(route="nutrition_consultation", action="generate")
+    if re.search(r"营养|热量|蛋白质|维生素", text) and not re.search(
+        r"安排|生成|制定|规划|设计|配餐|配菜|换菜|更换|替换|调整", text
+    ):
+        return HealthIntentResult(route="nutrition_consultation", action="generate")
 
-    meal_subject = bool(re.search(r"餐|菜谱|食谱|菜单|吃啥|吃什么|怎么吃|吃点什么|菜", text))
+    dated_meal = bool(
+        re.search(r"今天|今日|明天|明日|后天|大后天|今晚|今早|明早|明晚|早餐|午餐|晚餐|早饭|午饭|晚饭|三餐", text)
+    )
+    meal_subject = bool(
+        re.search(
+            r"早餐|午餐|晚餐|早饭|午饭|晚饭|三餐|加餐|餐单|菜单|菜谱|食谱|配餐|配菜|换菜|"
+            r"(?:今天|明天|后天|大后天)(?:的)?餐(?!后)|这餐|那餐|"
+            r"(?:推荐|挑).{0,10}菜",
+            text,
+        )
+    ) or bool(dated_meal and re.search(r"吃啥|吃什么|怎么吃|吃点什么", text))
     request = bool(
         re.search(
             r"安排|整理|生成|制定|规划|设计|做一份|推荐|搭配|给我|帮我|为我|配餐|配菜|吃啥|吃什么|怎么吃|吃点什么", text
         )
     )
-    change = bool(
-        re.search(
-            r"换(?:几道|一批|一下|菜|成|掉|个|一|餐)|更换|替换|调整|只改|改成|重新(?:生成|安排)|不放|不吃|不含|去掉|加一点|少放",
-            text,
+    contextual_revision = bool(
+        previous_date and re.fullmatch(r"(?:再)?换(?:一下|一批|几道)?[？?。！!]*|还有别的(?:吗|么)?[？?。！!]*", text)
+    )
+    change = (
+        bool(
+            re.search(
+                r"换(?:几道|一批|一下|菜|成|掉|个|一|餐)|更换|替换|调整|只改|改成|重新(?:生成|安排)|不放|不吃|不含|去掉|加一点|少放",
+                text,
+            )
         )
-    ) or bool(previous_date and re.fullmatch(r"还有别的(?:吗|么)?[？?。！!]*", text))
+        or contextual_revision
+    )
     view = bool(re.search(r"看看|查看|看一下|打开|展示|显示|已有|已安排", text))
     duration_text = re.sub(r"(?:20\d{2}[-年/.])?\d{1,2}[-月/.]\d{1,2}[日号]?", "", text)
     multi = re.search(
@@ -226,7 +248,7 @@ def classify_health_intent(
         and (request or view or change)
     ):
         return clarification("请说明要安排的具体日期；多日餐单可进入 AI 专属计划。")
-    if (request and meal_subject) or (view and meal_subject) or (change and (meal_subject or previous_date)):
+    if (request and meal_subject) or (view and meal_subject) or (change and (meal_subject or contextual_revision)):
         plan_date = _requested_date(text, today, previous_date if change or view else None)
         if plan_date is None:
             return clarification("日期无法确认，请使用有效的年月日，例如 2026年11月15日。")
@@ -270,8 +292,6 @@ def classify_health_intent(
             business_date=plan_date,
             meal_types=meals,
         )
-    if re.search(r"营养|热量|蛋白质|维生素|饮食知识|怎么吃更健康|商品|商城|购买|想买|要买|多少钱|库存|价格", text):
-        return HealthIntentResult(route="nutrition_consultation", action="generate")
     if (
         awaiting_meal_details
         and previous_date
@@ -287,7 +307,13 @@ def classify_health_intent(
             business_date=previous_date,
             meal_types=previous_meals or ["breakfast", "lunch", "dinner"],
         )
-    return None
+    if re.fullmatch(
+        r"(?:请|帮我|给我|为我)?(?:安排|配餐|配菜|生成|制定|规划|查看|看看|换菜|更换|调整)"
+        r"(?:一下|吧|吗)?[？?。！!]*",
+        text,
+    ):
+        return None
+    return HealthIntentResult(route="nutrition_consultation", action="generate")
 
 
 def clarification(message="请说明是营养咨询、安排哪一天的餐单，还是制定多日专属计划。") -> HealthIntentResult:
