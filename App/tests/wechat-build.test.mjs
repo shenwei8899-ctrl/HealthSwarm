@@ -173,3 +173,11 @@ test('compiled login policy is evaluated with a restricted local module loader',
   } })
   assert.equal(buildEnvironment(parseArguments(args), root, {}).UNI_PLATFORM, 'mp-weixin')
 })
+
+test('the explicit voice model origin is validated and carried into the production build', () => {
+  const base = 'https://assets.example.test/paraformer'
+  const options = parseArguments([...args, '--voice-model-base-url', base + '/'])
+  assert.equal(options.voiceModelBaseUrl, base)
+  assert.equal(buildEnvironment(options, '.', { VITE_VOICE_MODEL_BASE_URL: api }).VITE_VOICE_MODEL_BASE_URL, base)
+  assert.throws(() => parseArguments([...args, '--voice-model-base-url', 'http://example.test']))
+})

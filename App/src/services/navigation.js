@@ -33,6 +33,8 @@ let forwarding = false, navigationFlight = null, entryCheck = null, installed = 
 let startupReady = null
 // A native navigation that never calls back must not block every later transition.
 const PREVIOUS_FLIGHT_TIMEOUT = 3000
+// Downloading and mounting a cold WeChat subpackage can take longer than 3s.
+const NATIVE_NAVIGATION_TIMEOUT = 45000
 export function guardInitialH5Route(location, history) {
   const route = location.hash.slice(1)
   const match = route.match(/^\/?pages\/invite\/index\?[^#]*\btoken=([^&]+)/)
@@ -116,8 +118,15 @@ function forward(method, options) {
       if(flight.finished || navigationFlight!==flight)return
       if(!current()) {finish(true,{errMsg:method+':fail 账号已变化',code:'SESSION_CHANGED'});return}
       if(['reLaunch','redirectTo','switchTab'].includes(method)&&url===currentRoute()) {finish(false,{errMsg:method+':ok'});return}
-      let outcome
-      const target={...options,url,success:value=>{outcome={failed:false,value}},fail:value=>{outcome={failed:true,value}},complete:value=>finish(outcome?.failed??/:fail/.test(value?.errMsg||''),outcome?.value||value)}
+      clearTimeout(flight.timer)
+      flight.timer=setTimeout(()=>{
+        // Some runtimes drop completion callbacks even though the route opened.
+        // Do not destroy a page's handoff or report failure for a visible page.
+        if(current() && currentRoute()===url)finish(false,{errMsg:method+':ok'})
+        else finish(true,{errMsg:method+':fail 页面未确认打开，请重试',code:'NAVIGATION_TIMEOUT'})
+      },NATIVE_NAVIGATION_TIMEOUT)
+      flight.timer?.unref?.()
+      const target={...options,url,success:value=>finish(false,value),fail:value=>finish(true,value),complete:value=>finish(/:fail/.test(value?.errMsg||''),value)}
       // 静态 API 调用供 H5 编译器识别；锁保留至原生导航回调完成。
       const navigate={navigateTo:()=>uni.navigateTo(target),redirectTo:()=>uni.redirectTo(target),reLaunch:()=>uni.reLaunch(target),switchTab:()=>uni.switchTab(target)}
       forwarding=true

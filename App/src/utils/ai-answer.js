@@ -1,6 +1,7 @@
 // The answer stays plain data: rendering never executes model supplied HTML.
 const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/ig
 const FILE_REFERENCE = /[（(]\s*文件名\s*[:：]\s*([\s\S]*?\.(?:markdown|md|pdf|docx?|txt|html?))\s*[）)]/ig
+const FAMILY_REFERENCE = /\[资料:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\]（([^\r\n\[\]]+?\.(?:markdown|md|pdf|docx?|txt|html?))）/ig
 const INTERNAL_REFERENCE = /\[(?:资料|证据|来源|文档|食材包)\s*[:：][^\]\n]*\]/g
 
 export function sourceTitle(value) {
@@ -8,7 +9,10 @@ export function sourceTitle(value) {
   if (/\.(?:markdown|md|pdf|docx?|txt|html?)$/i.test(title) && !/^https?:\/\//i.test(title)) title = title.split(/[\\/]/).pop()
   title = title.replace(/^文件名\s*[:：]\s*/, '').replace(/\.(?:markdown|md|pdf|docx?|txt|html?)$/i, '')
   // Keep the human title; ingestion often appends an English storage filename.
-  if (/[\u3400-\u9fff]/.test(title)) title = title.replace(/[_]+[a-z][a-z0-9_. -]*$/i, '')
+  if (/[\u3400-\u9fff]/.test(title)) {
+    title = title.replace(/([）)])\s*[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/i, '$1')
+    title = title.replace(/[_]+[a-z][a-z0-9_. -]*$/i, '')
+  }
   title = title.replace(/\*\*|__|`/g, '').replace(/^\[|\]$/g, '').trim()
   // Some imported Chinese filenames append a short storage key without a separator.
   if (/[\u3400-\u9fff]/.test(title)) title = title.replace(/[a-z]{2,12}_\d+(?:_\d+)*$/, '').trim()
@@ -28,6 +32,10 @@ function extractReferences(value, citations, streaming) {
   text = text.replace(/《([^》\n]*\.(?:markdown|md|pdf|docx?|txt|html?))》/ig, (_, name) => {
     const title = sourceTitle(name); add(name); return title ? `《${title}》` : ''
   })
+  const withoutFamilyReferences = text.replace(FAMILY_REFERENCE, (_, name) => { add(name); return '' })
+  if (withoutFamilyReferences !== text) {
+    text = withoutFamilyReferences.replace(/(^|[。！？\n])\s*检索资料\s*[:：]\s*$/, '$1')
+  }
   text = text.replace(FILE_REFERENCE, (_, name) => { add(name); return '' }).replace(INTERNAL_REFERENCE, '').replace(/\[[0-9a-f-]{36}\]/ig, '')
   text = text.replace(/(?:资料|证据|来源|文档)\s*(?:ID|编号)?\s*[:：]\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/ig, '').replace(UUID, '')
   text = text.replace(/(?:资料|证据|来源|文档)\s*(?:ID|编号)\s*[:：]\s*[0-9a-f-]*$/ig, '')

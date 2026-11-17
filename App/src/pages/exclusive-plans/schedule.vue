@@ -17,7 +17,7 @@ function preview() {
     quote.value = null
     if (commerce.pendingOrder()) { pending.value = true; return }
     const s = selection.value
-    const result = await commerce.quotePlan(route.value.sn, route.value.version, s.address_id, s.first_delivery_date, s.delivery_slot_id)
+    const result = await commerce.quotePlan(route.value.sn, route.value.version, s.address_id, s.first_delivery_date, s.delivery_slot_id, s.delivery_frequency)
     if (active()) quote.value = result
   })
 }
@@ -35,13 +35,19 @@ const back = () => uni.navigateBack()
 <template>
   <view class="screen exclusive-screen schedule-screen">
     <AppNavBar title="配送安排"><template #left><button class="icon-button" aria-label="返回" @click="back">‹</button></template></AppNavBar>
-    <view class="plan-heading"><view class="plan-title"><text class="plan-title-line">为接下来的三餐，</text><text class="plan-title-line">做好准备。</text></view><text class="plan-caption">每日一批 · 提前一天送达</text></view>
+    <view class="plan-heading"><text class="plan-title">安排 21 天食材配送</text><text class="plan-caption">每周配送两次或三次</text></view>
     <view v-if="pending" class="plan-surface"><text class="plan-section-title">上次下单结果待确认</text><button class="plan-primary" :disabled="busy" @click="submit(true)">查询原订单</button></view>
     <PlanDeliveryPicker v-if="route && !pending" :sn="route.sn" :version="route.version" :disabled="busy" @change="change"/>
     <view v-if="error" class="plan-notice">{{error}}</view>
     <template v-if="quote && !pending">
-      <view class="plan-surface"><text class="plan-section-title">这一次的费用</text><view class="plan-row"><text>21 批食材</text><text>{{priceText(quote.goods_amount_cent)}}</text></view><view class="plan-row"><text>计划服务费</text><text>{{priceText(quote.service_fee_cent)}}</text></view><view class="plan-row"><text>21 批配送费</text><text>{{priceText(quote.shipping_fee_cent)}}</text></view><view v-if="quote.discount_amount_cent" class="plan-row"><text>优惠</text><text>−{{priceText(quote.discount_amount_cent)}}</text></view><view class="plan-row total-row"><text>一次支付</text><text>{{priceText(quote.payable_amount_cent)}}</text></view></view>
-      <view class="plan-surface"><text class="plan-section-title">21 次配送</text><view v-for="batch in quote.delivery_batches" :key="batch.batch_no" class="batch-row"><text class="batch-number">{{batch.batch_no}}</text><view><text>{{batch.delivery_date}} 送达</text><text class="plan-tiny">{{batch.meal_date}} 食用</text></view><text class="plan-tiny">{{priceText(batch.allocated_pay_amount_cent)}}</text></view></view>
+      <view v-if="quote.delivery_batches[0]" class="plan-surface">
+        <text class="plan-section-title">首批食材清单</text>
+        <view v-for="item in quote.delivery_batches[0].items" :key="item.sku_id" class="plan-row"><text>{{item.snapshot.product_name}} × {{item.quantity}}</text><text>{{priceText(item.line_amount_cent)}}</text></view>
+        <view class="plan-row"><text>首批食材</text><text>{{priceText(quote.delivery_batches[0].goods_amount_cent)}}</text></view>
+        <view class="plan-row"><text>首批配送费</text><text>{{priceText(quote.delivery_batches[0].shipping_fee_cent)}}</text></view>
+      </view>
+      <view class="plan-surface"><text class="plan-section-title">这一次的费用</text><view class="plan-row"><text>21 天食材</text><text>{{priceText(quote.goods_amount_cent)}}</text></view><view class="plan-row"><text>计划服务费</text><text>{{priceText(quote.service_fee_cent)}}</text></view><view class="plan-row"><text>全部配送费</text><text>{{priceText(quote.shipping_fee_cent)}}</text></view><view v-if="quote.discount_amount_cent" class="plan-row"><text>优惠</text><text>−{{priceText(quote.discount_amount_cent)}}</text></view><view class="plan-row total-row"><text>一次支付</text><text>{{priceText(quote.payable_amount_cent)}}</text></view></view>
+      <view class="plan-surface"><text class="plan-section-title">{{quote.delivery_batches.length}} 次配送</text><view v-for="batch in quote.delivery_batches" :key="batch.batch_no" class="batch-row"><text class="batch-number">{{batch.batch_no}}</text><view><text>{{batch.delivery_date}} 送达</text><text class="plan-tiny">第 {{batch.menu_day_start}}–{{batch.menu_day_end}} 天</text></view><text class="plan-tiny">{{priceText(batch.allocated_pay_amount_cent)}}</text></view></view>
       <text class="plan-notice">未截单、未备货的批次可暂停或取消。取消按购买时分摊金额退回，已执行批次的优惠不追回。</text>
     </template>
     <view v-if="route && !pending" class="plan-fixed"><button v-if="!quote" class="plan-primary" :disabled="busy || !selection" @click="preview">{{busy?'正在核对…':'核对配送与金额'}}</button><button v-else class="plan-primary" :disabled="busy" @click="submit(false)">确认下单 · {{priceText(quote.payable_amount_cent)}}</button></view>

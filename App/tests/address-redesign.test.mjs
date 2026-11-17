@@ -156,10 +156,14 @@ test('plan refresh retains a valid delivery slot and date, and removes an unavai
     useCommercePage: () => ({ busy: ref(false), error: ref(''), run: work => work(() => true) }),
   }
   const code = fs.readFileSync(new URL('../src/components/PlanDeliveryPicker.vue', import.meta.url), 'utf8').split('<script setup>')[1].split('</script>')[0].replace(/^import .+$/gm, '')
-  const p = new Function(...Object.keys(deps), code + '\nreturn {load,selectDate,date,slot}')(...Object.values(deps))
-  await p.load(); p.selectDate({ detail: { value: 1 } }); await p.load()
+  const p = new Function(...Object.keys(deps), code + '\nreturn {load,selectDate,selectFrequency,date,slot}')(...Object.values(deps))
+  await p.load()
+  assert.equal(p.date.value, undefined)
+  await p.selectFrequency({ detail: { value: 0 } })
+  p.selectDate({ detail: { value: 1 } }); await p.load()
   assert.equal(p.date.value.delivery_date, '2026-11-01'); assert.equal(p.slot.value.id, 'slot')
   assert.equal(events.at(-1)[1].first_delivery_date, '2026-11-01')
+  assert.equal(events.at(-1)[1].delivery_frequency, 'weekly_2')
   available = false; await p.load(); assert.equal(p.date.value, undefined); assert.equal(events.at(-1)[1], null)
 })
 

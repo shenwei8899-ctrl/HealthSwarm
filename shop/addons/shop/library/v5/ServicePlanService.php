@@ -68,7 +68,7 @@ class ServicePlanService
                 'tier_policy_version'=>$payload['tier_policy_version'], 'basis_hash'=>$payload['basis_hash'],
                 'display_json'=>Json::encode($payload['display'] ?? []),
                 'estimate_valid_until'=>time()+(new PlanPolicyService())->current($payload['tier_policy_version'])['config']['estimate_ttl_seconds'],
-                'plan_name' => $payload['plan_name'], 'plan_days' => 21, 'delivery_frequency' => 'daily',
+                'plan_name' => $payload['plan_name'], 'plan_days' => 21, 'delivery_frequency' => $payload['delivery_frequency'],
                 'delivery_lead_days' => 1, 'current_version' => 1,
                 'requires_professional_review' => $requiresReview ? 1 : 0,
                 'review_gate_status' => $reviewGate, 'nutrition_status' => $nutritionStatus,
@@ -106,7 +106,7 @@ class ServicePlanService
             if (!$plan || $plan['agent_client_id'] !== $clientId) {
                 throw new DomainException('专属计划不存在', 40404, 404);
             }
-            foreach (['recommendation_group_ref','tier_code','tier_policy_version','basis_hash','user_ref','family_ref'] as $field) {
+            foreach (['recommendation_group_ref','tier_code','tier_policy_version','basis_hash','user_ref','family_ref','delivery_frequency'] as $field) {
                 if ($plan[$field]!==$payload[$field]) throw new DomainException('新档案或推荐组必须建立独立计划',40906,409);
             }
             if ((int)$payload['base_version'] !== (int)$plan['current_version']) {
@@ -191,7 +191,7 @@ class ServicePlanService
             'estimate_includes_shipping'=>false, 'estimate_valid_until'=>(int)$plan['estimate_valid_until'],
             'plan_sn' => $plan['plan_sn'], 'plan_name' => $plan['plan_name'],
             'plan_version' => (int)$plan['current_version'], 'plan_days' => 21,
-            'delivery_frequency' => 'daily', 'delivery_lead_days' => 1,
+            'delivery_frequency' => $plan['delivery_frequency'], 'delivery_lead_days' => 1,
             'status' => $plan['status'], 'nutrition_validation_status' => $plan['nutrition_status'],
             'trade_validation_status' => $plan['trade_status'],
             'professional_review_status' => $plan['requires_professional_review'] ? $plan['review_gate_status'] : 'not_required',
@@ -230,8 +230,8 @@ class ServicePlanService
                 throw new DomainException('缺少必填字段: ' . $field, 40001, 400, ['field' => $field]);
             }
         }
-        if ((int)$payload['plan_days'] !== 21 || $payload['delivery_frequency'] !== 'daily') {
-            throw new DomainException('一期专属计划必须为21天且每日配送', 40006, 400);
+        if ((int)$payload['plan_days'] !== 21 || !in_array($payload['delivery_frequency'], ['daily','selectable'], true)) {
+            throw new DomainException('计划天数或配送方式无效', 40006, 400);
         }
         if (!is_array($payload['days']) || count($payload['days']) !== 21) {
             throw new DomainException('专属计划必须包含完整21天菜单', 40007, 400);

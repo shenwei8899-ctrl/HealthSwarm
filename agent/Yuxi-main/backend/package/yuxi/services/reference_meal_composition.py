@@ -1,11 +1,15 @@
 """本餐人数和已核对原谱共同决定参考餐单是否配齐。"""
 
+import re
+from unicodedata import normalize
 from datetime import date
 
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.reference_recipe_matching import ingredient_food, optional_reference_ingredient
 
-REFERENCE_MEAL_POLICY_VERSION = 1
+FOOD_GROUP_MEAL_POLICY_VERSION = 1
+REFERENCE_MEAL_POLICY_VERSION = 2
+BATCH_REFERENCE_MEAL_POLICY_VERSIONS = frozenset({FOOD_GROUP_MEAL_POLICY_VERSION, REFERENCE_MEAL_POLICY_VERSION})
 MAX_REFERENCE_DISHES = 10
 MEAL_NAMES = {"breakfast": "早餐", "lunch": "午餐", "dinner": "晚餐"}
 
@@ -36,7 +40,27 @@ GROUP_NAMES = {"staple": "主食", "protein": "蛋白质类食物", "vegetable":
 SEASONINGS = {"水", "盐", "糖", "橄榄油", "黑胡椒", "姜", "大蒜"}
 
 
-def reference_meal_targets(selection):
+# 这些词用于搭配归类。商品匹配继续核对具体品种、加工形态和原文。
+_CHINESE_STAPLE = re.compile(
+    r"^(?:白米|白[飯饭]|糙米|蓬[萊莱]米|小米(?!辣)|燕[麥麦](?:片)?|"
+    r"[烏乌][龍龙][麵面]|[麵面][條条]|[馬马][鈴铃]薯|地瓜|[紅红]薯|"
+    r"[十五]穀[飯饭]|[十五]谷[飯饭])(?=$|[\s\d（(:：]|適量|适量|少許|少许)"
+)
+_INGREDIENT_PREFIX = re.compile(r"^(?:材料[｜|]\s*|[A-Za-z][.．、]\s*)")
+_PLAIN_STAPLE_NAME = re.compile(
+    r"(?:清水煮|清煮|白煮|蒸|煮)?(?:白米?[飯饭]|米[飯饭]|糙米[飯饭]|"
+    r"[五十][榖穀谷][飯饭]|[雜杂][糧粮][飯饭]|[清白米]粥|小米粥|白(?:米)?稀[飯饭])"
+    r"|(?:清水煮|清煮|白煮|蒸|煮)(?:白米|大米|糙米|[雜杂][糧粮]米?)"
+)
+_PLAIN_GRAIN = re.compile(
+    r"(?:白米|蓬[萊莱]米|糙米|小米|粳米|[糯稻]米|黑米|紫米|"
+    r"(?:[五十][榖穀谷]|[雜杂][糧粮])米?|燕[麥麦])"
+    r"(?:\s*[:：]?\s*[\d./一二兩两三四五六七八九十半]+\s*(?:克|公克|公斤|毫升|杯|碗|[gG]|[kK][gG])?\s*)?"
+    r"|(?:白米|米)及水的比例[為为]?\s*\d+(?:\.\d+)?\s*:\s*\d+(?:\.\d+)?"
+)
+
+
+def reference_meal_targets(selection, *, policy_version=REFERENCE_MEAL_POLICY_VERSION):
     """从授权名单计算每餐共用菜数，显式要求优先。"""
     count = len(selection["participant_ids"])
     requested = selection.get("requested_dish_count")
@@ -55,8 +79,11 @@ def reference_meal_targets(selection):
         result[meal_type] = {
             "shared_min": lower,
             "shared_max": upper,
-            "food_groups": ["staple", "protein"] if breakfast else ["staple", "protein", "vegetable"],
         }
+        if policy_version == FOOD_GROUP_MEAL_POLICY_VERSION:
+            result[meal_type]["food_groups"] = ["staple", "protein"]
+            if not breakfast:
+                result[meal_type]["food_groups"].append("vegetable")
     return result
 
 
@@ -85,9 +112,9 @@ def meal_age_band(birth_date, plan_date):
     )
 
 
-def validate_reference_meal_composition(meals, selection):
-    """拒绝重复、少配及成员实际可吃搭配缺项的整餐。"""
-    targets = reference_meal_targets(selection)
+def validate_reference_meal_composition(meals, selection, *, policy_version=REFERENCE_MEAL_POLICY_VERSION):
+    """按任务绑定的规则核对菜品、道数和替代。"""
+    targets = reference_meal_targets(selection, policy_version=policy_version)
     diners = set(selection["participant_ids"])
     for meal in meals:
         target = targets[meal["meal_type"]]
@@ -100,6 +127,9 @@ def validate_reference_meal_composition(meals, selection):
             raise HealthVisionError("reference_meal_incomplete", f"{name}含重复菜谱，请选择不同的菜品")
         if any(all(ingredient_food(item) in SEASONINGS for item in dish["ingredients"]) for dish in recipes):
             raise HealthVisionError("reference_meal_incomplete", f"{name}的调味料不能单独作为一道菜，请补查菜品")
+        if policy_version == REFERENCE_MEAL_POLICY_VERSION:
+            for dish in recipes:
+                validate_reference_dish(dish.get("name", ""), dish["ingredients"])
         lower, upper = target["shared_min"], target["shared_max"]
         if not lower <= len(shared) <= upper:
             expected = str(lower) if lower == upper else f"{lower}–{upper}"
@@ -123,7 +153,9 @@ def validate_reference_meal_composition(meals, selection):
         if not shared.keys() <= set().union(*(member_dishes.keys() for member_dishes in served.values())):
             raise HealthVisionError("reference_meal_incomplete", f"{name}有共用菜未分配给任何成员，请调整替代菜")
 
-        required = set(target["food_groups"])
+        required = set(target.get("food_groups", ()))
+        if not required:
+            continue
         groups_by_recipe = {dish["file_id"]: recipe_food_groups(dish["ingredients"]) for dish in meal["dishes"]}
         for member_id in selection["participant_ids"]:
             groups = set().union(*(groups_by_recipe[key] for key in served[member_id]))
@@ -134,7 +166,32 @@ def validate_reference_meal_composition(meals, selection):
                 )
 
 
+def validate_reference_dish(name, ingredients):
+    """拦截占用一道菜名额的单独基础主食。"""
+    if is_plain_reference_staple(name, ingredients):
+        raise HealthVisionError("reference_meal_incomplete", f"「{name}」由用户自行准备，请换一道菜谱")
+
+
+def is_plain_reference_staple(name, ingredients):
+    """菜名和原料均指向单独米饭或白粥时才排除。"""
+    title = normalize("NFKC", "".join(name.split()))
+    if not _PLAIN_STAPLE_NAME.fullmatch(title):
+        return False
+    foods = [
+        normalize("NFKC", _INGREDIENT_PREFIX.sub("", item.strip()))
+        for item in ingredients
+        if ingredient_food(item) not in {"水", "盐"}
+    ]
+    if not foods:
+        return False
+    return all(ingredient_food(food) == "大米" or _PLAIN_GRAIN.fullmatch(food) for food in foods)
+
+
 def recipe_food_groups(ingredients):
     """根据可识别的原谱食材归类，未知食材不充当搭配证据。"""
-    foods = {ingredient_food(ingredient) for ingredient in ingredients if not optional_reference_ingredient(ingredient)}
-    return {group for group, supported in FOOD_GROUPS.items() if foods & supported}
+    required = [ingredient for ingredient in ingredients if not optional_reference_ingredient(ingredient)]
+    foods = {ingredient_food(ingredient) for ingredient in required}
+    groups = {group for group, supported in FOOD_GROUPS.items() if foods & supported}
+    if any(_CHINESE_STAPLE.match(_INGREDIENT_PREFIX.sub("", ingredient.strip())) for ingredient in required):
+        groups.add("staple")
+    return groups

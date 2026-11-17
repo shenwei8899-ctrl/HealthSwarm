@@ -16,6 +16,7 @@
   },
   "mp-weixin": {
     "appid": "",
+    "workers": "static/voice-workers",
     "setting": {
       "urlCheck": false,
       "es6": true,

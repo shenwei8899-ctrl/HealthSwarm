@@ -72,6 +72,9 @@ async def attach_chinese_display(session, meal):
     for dish in result["dishes"]:
         # 保存快照之外的展示数据不成为下一次读取的事实依据。
         dish.pop("display_zh", None)
+        if dish.get("recipe_text_source") == "original":
+            dish.pop("translation_status", None)
+            continue
         record = await repository.get(translation_key(dish))
         if record is not None:
             dish["display_zh"] = checked_chinese_display(dish, record.display)
@@ -128,8 +131,7 @@ def quantity_signature(text):
     text = unicodedata.normalize("NFKC", text).lower().replace("⁄", "/")
     # 形状中的 half 不表示原料用量；保留 half cup 等真正的分数量词。
     text = re.sub(r"\bhalf[- ]rings?\b", "semicircles", text)
-    chinese_digits = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
-                      "六": 6, "七": 7, "八": 8, "九": 9}
+    chinese_digits = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 
     def chinese_integer(value):
         """只将可核对的一至九十九转换为整数。"""
@@ -145,8 +147,11 @@ def quantity_signature(text):
     numerals = r"[一二两三四五六七八九十]{1,3}"
     text = re.sub(
         rf"(?<![零一二两三四五六七八九十百千万亿点點半])({numerals})分之({numerals})(?![零一二两三四五六七八九十百千万亿点點半])",
-        lambda match: f"{chinese_integer(match[2])}/{chinese_integer(match[1])}"
-        if chinese_integer(match[1]) and chinese_integer(match[2]) is not None else match[0],
+        lambda match: (
+            f"{chinese_integer(match[2])}/{chinese_integer(match[1])}"
+            if chinese_integer(match[1]) and chinese_integer(match[2]) is not None
+            else match[0]
+        ),
         text,
     )
     text = re.sub(

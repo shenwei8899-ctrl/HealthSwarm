@@ -4,10 +4,14 @@ import { installRouteGuards, guardInitialH5Route } from './services/navigation.j
 import AppNavBar from './components/AppNavBar.vue'
 import AppIcon from './components/AppIcon.vue'
 import { registerApiAdapters } from './services/index.js'
-import { uploadVoice } from './services/voice-upload.js'
+// #ifdef MP-WEIXIN
+import { transcribeLocalVoice } from './services/voice-local.js'
+// #endif
 
 export function createApp() {
-  registerApiAdapters({ transcribeVoice: uploadVoice })
+  // #ifdef MP-WEIXIN
+  registerApiAdapters({ transcribeVoice: transcribeLocalVoice })
+  // #endif
   // #ifdef H5
   guardInitialH5Route(window.location, window.history)
   // #endif

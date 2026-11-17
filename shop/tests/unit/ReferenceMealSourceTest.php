@@ -57,3 +57,10 @@ referenceReject(function () use ($catalogService, $catalogPayload) { $catalogSer
 referenceReject(function () use ($catalogService, $catalogPayload) { $catalogService->validateReferencePayload(array_replace($catalogPayload, ['items'=>[['sku_id'=>'101','quantity'=>2]]])); });
 referenceReject(function () use ($catalogService, $catalogPayload) { $catalogService->validateReferencePayload(array_replace($catalogPayload, ['nutrition_validation'=>['status'=>'passed']])); });
 echo json_encode(['passed'=>true,'rejected_cases'=>count($cases),'real_database_used'=>false]) . "\n";
+
+$exclusiveSource=['kind'=>'exclusive_purchase','uid'=>'synthetic-owner','family_id'=>'family','group_id'=>'group','tier_code'=>'economy','menu_version_ref'=>'exclusive-purchase:hash'];
+$exclusiveProof=['payload'=>Json::encode($exclusiveSource),'signature'=>'synthetic-server-receipt'];
+$exclusivePayload=['user_ref'=>'uid:synthetic-owner','family_ref'=>'exclusive-purchase:family','menu_version_ref'=>'exclusive-purchase:hash','nutrition_validation'=>['status'=>'reference_only'],'ingredient_requirements'=>[],'items'=>[['sku_id'=>'101','quantity'=>2]],'agent_source_proof'=>$exclusiveProof];
+referenceAssert($service->validateReferencePayload($exclusivePayload),'Whole plan uses independently verified reference trade');
+referenceReject(function()use($service,$exclusivePayload){$service->validateReferencePayload(array_replace($exclusivePayload,['family_ref'=>'exclusive-purchase:another']));});
+referenceReject(function()use($service,$exclusivePayload){$service->validateReferencePayload(array_replace($exclusivePayload,['nutrition_validation'=>['status'=>'passed']]));});

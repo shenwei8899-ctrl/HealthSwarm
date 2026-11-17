@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {mealTarget,purchaseGroups,referencePurchaseFor,openMealPage} from '../src/services/meal-workspace.js'
+import {mealTarget,purchaseGroups,referencePurchaseFor,openMealPage,takeMealPageTarget} from '../src/services/meal-workspace.js'
 let scope='A';globalThis.uni={getStorageSync:()=>({accountId:'account',householdId:'family',clientRevision:scope})}
 const item=(type,id='ref',kind='reference')=>({meal_type:type,source:{id,kind,version:kind==='formal'?2:undefined},members:[{id:type,name:type}],meal:{dishes:[{name:type,ingredients:[type+' ingredient']}]}})
 const option={kind:'reference',id:'ref',meal_types:['lunch','dinner'],items:[{sku_id:1,quantity:1,ingredient_refs:['lunch ingredient']},{sku_id:2,quantity:2,ingredient_refs:['dinner ingredient']} ]}
@@ -10,7 +10,31 @@ test('full day review covers every available meal grouped by server package',()=
 test('single reference meal filters by authoritative ingredient references, preserving package counts',()=>{const ref=referencePurchaseFor(mealTarget(plan.meals[2],plan));assert.deepEqual(ref.mealTypes,['dinner']);assert.deepEqual(ref.items.map(i=>[i.sku_id,i.quantity]),[[2,2]])})
 test('missing ingredient mapping keeps scope known while deferring product matching',()=>{const target=mealTarget(plan.meals[1],plan);target.purchaseOption={...option,items:[{sku_id:1,quantity:1}]};const ref=referencePurchaseFor(target);assert.equal(ref.needsMatching,true);assert.deepEqual(ref.items,[]);assert.deepEqual(ref.mealTypes,['lunch'])})
 test('full reference group preserves shared SKU package recommendation once',()=>{const ref=referencePurchaseFor(purchaseGroups(plan)[1]);assert.equal(ref.needsMatching,false);assert.deepEqual(ref.items,option.items)})
-test('navigation carries data through its own event channel and discards a switched session',()=>{const received=[];uni.navigateTo=o=>{o.success({eventChannel:{emit:(name,value)=>received.push({name,value})}})};openMealPage(mealTarget(plan.meals[0],plan));assert.equal(received[0].name,'mealWorkspace');assert.deepEqual(received[0].value.target.purchaseMeals,['breakfast']);received.length=0;uni.navigateTo=o=>{scope='B';o.success({eventChannel:{emit:()=>received.push('leaked')}})};openMealPage({date:plan.date},{all:true});assert.deepEqual(received,[])})
+test('navigation carries data through its own event channel and discards a switched session',()=>{const received=[];uni.navigateTo=o=>{o.success({eventChannel:{emit:(name,value)=>received.push({name,value})}})};openMealPage(mealTarget(plan.meals[0],plan),{all:true});assert.equal(received[0].name,'mealWorkspace');assert.deepEqual(received[0].value.target.purchaseMeals,['breakfast']);received.length=0;uni.navigateTo=o=>{scope='B';o.success({eventChannel:{emit:()=>received.push('leaked')}})};openMealPage({date:plan.date},{all:true});assert.deepEqual(received,[])})
+
+test('detail navigation recovers the exact dish once when WeChat omits the event channel',()=>{
+ uni.navigateTo=options=>{
+  const url=new URL(options.url,'https://miniapp.test')
+  assert.equal(url.pathname,'/pages/meals/detail')
+  const key=url.searchParams.get('mealNavigation')
+  options.success({})
+  assert.deepEqual(takeMealPageTarget(key),{...mealTarget(plan.meals[2],plan),initialView:'dish',dishIndex:0})
+  assert.equal(takeMealPageTarget(key),null)
+ }
+ openMealPage(mealTarget(plan.meals[2],plan),{dishIndex:0})
+})
+
+test('a pending detail cannot cross an account change',()=>{
+ uni.navigateTo=options=>{
+  const key=new URL(options.url,'https://miniapp.test').searchParams.get('mealNavigation')
+  const previous=scope
+  scope='switched'
+  assert.equal(takeMealPageTarget(key),null)
+  scope=previous
+  assert.equal(takeMealPageTarget(key),null)
+ }
+ openMealPage(mealTarget(plan.meals[2],plan))
+})
 
 test('navigation failure is visible only to the account that opened the meal',()=>{
  const notices=[];uni.showToast=value=>notices.push(value)
@@ -20,4 +44,23 @@ test('navigation failure is visible only to the account that opened the meal',()
  uni.navigateTo=options=>{scope='C';options.fail({errMsg:'navigateTo:fail synthetic'})}
  openMealPage(mealTarget(plan.meals[2],plan))
  assert.equal(notices.length,1)
+})
+
+test('full-day navigation also recovers without an event channel',()=>{
+ uni.navigateTo=options=>{
+  const url=new URL(options.url,'https://miniapp.test')
+  assert.equal(url.pathname,'/pages/meals/purchase')
+  assert.deepEqual(takeMealPageTarget(url.searchParams.get('mealNavigation')),{date:plan.date,version:plan.version})
+  options.success({})
+ }
+ openMealPage({date:plan.date,version:plan.version},{all:true})
+})
+
+test('rapid repeated meal taps open one page and retain its target until native loading finishes',()=>{
+ const calls=[];uni.navigateTo=options=>calls.push(options)
+ const chosen=mealTarget(plan.meals[2],plan)
+ openMealPage(chosen);openMealPage(chosen);openMealPage(chosen,{purchase:true})
+ assert.equal(calls.length,1)
+ assert.deepEqual(takeMealPageTarget(new URL(calls[0].url,'https://miniapp.test').searchParams.get('mealNavigation')),chosen)
+ calls[0].success({})
 })

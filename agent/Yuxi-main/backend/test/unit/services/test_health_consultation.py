@@ -325,3 +325,12 @@ async def test_actual_graph_only_binds_fixed_read_tools_and_checks_each_model_tu
     assert budget_calls.await_count == 4
     assert any(message.type == "tool" and message.status == "error" for message in result["messages"])
     assert executor.await_args.args == (context, "report")
+
+
+@pytest.fixture(autouse=True)
+def isolate_account_memory_context(monkeypatch):
+    """本组验证既有图协议；账号记忆在独立真实 PG/HTTP 测试覆盖。"""
+    from unittest.mock import AsyncMock
+    from yuxi.agents.middlewares import health_memory_context
+    monkeypatch.setattr(health_memory_context, "process_memory_for_run", AsyncMock(return_value={}))
+    monkeypatch.setattr(health_memory_context, "memory_context_for_run", AsyncMock(return_value={}))

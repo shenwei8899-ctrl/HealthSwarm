@@ -12,6 +12,7 @@ from sqlalchemy import text
 from yuxi.config import get_legacy_storage_dir
 from yuxi.config.options import ensure_options_in_db
 from yuxi.repositories.agent_run_repository import AgentRunRepository
+from yuxi.storage_migrations.v039_converged_health import upgrade_converged_health
 from yuxi.storage.postgres.manager import (
     BUSINESS_SCHEMA_VERSION,
     HEALTH_SCHEMA_VERSION,
@@ -127,6 +128,8 @@ async def main() -> None:
                     34,
                     35,
                     36,
+                    37,
+                    38,
                 ),
             )
 
@@ -205,7 +208,9 @@ async def main() -> None:
                 await pg_manager.remove_health_ai_monthly_limit()
 
             if health_version != HEALTH_SCHEMA_VERSION:
-                await upgrade_shared_daily_meal_plan(pg_manager)
+                if health_version not in (37, 38):
+                    await upgrade_shared_daily_meal_plan(pg_manager)
+                await upgrade_converged_health(pg_manager)
                 await pg_manager.record_schema_version("health", HEALTH_SCHEMA_VERSION)
 
             await _converge_database_state(fail_nonterminal_runs=requires_quiescence)

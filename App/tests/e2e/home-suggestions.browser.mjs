@@ -73,6 +73,7 @@ try{
    await page.goto('http://127.0.0.1:'+server.address().port+'/#/pages/chat/index')
    await cards.nth(3).waitFor({timeout:5000})
    assert.equal(await cards.count(),4)
+   assert.equal(await page.locator('.composer-wrap .entry-status').count(),0,'initial entry must load silently')
    for(const card of await cards.all())assert.equal((await card.getAttribute('class')).includes('uni-button-disabled'),false)
    assert.equal(await page.locator('.composer .uni-input-placeholder').innerText(),'有问题尽管问我')
    const before=requests.length,old=await cards.allTextContents();await shuffle.click()

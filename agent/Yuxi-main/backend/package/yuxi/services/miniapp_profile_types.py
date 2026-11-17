@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+ActivityLevel = Literal["sedentary", "light", "moderate", "high"]
+
 
 class DietaryDetails(BaseModel):
     """保留自述、未知和明确无，不生成专业诊断。"""
@@ -62,6 +64,7 @@ class MiniappMemberInput(BaseModel):
     sex: Literal["female", "male"]
     height_cm: float = Field(gt=0, le=300, allow_inf_nan=False, strict=True)
     weight_kg: float = Field(gt=0, le=1000, allow_inf_nan=False, strict=True)
+    activity_level: ActivityLevel | None = None
     dietary: DietaryDetails
 
     @model_validator(mode="after")
@@ -108,12 +111,14 @@ class MiniappProfileInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     client_request_id: UUID
+    onboarding_version: Literal[2] | None = None
     scope: Literal["household", "self"] = "household"
     family_version: int = Field(ge=1)
     usage_mode: Literal["个人使用", "家庭使用"]
     default_diners: list[str] = Field(min_length=1, max_length=20)
     members: list[MiniappMemberInput] = Field(min_length=1, max_length=20)
     analysis_consent: dict[str, str] | None = None
+    plan_consent: dict[str, str] | None = None
 
     @model_validator(mode="after")
     def selection(self):
@@ -125,7 +130,25 @@ class MiniappProfileInput(BaseModel):
             or not set(self.default_diners) <= set(refs)
         ):
             raise ValueError("默认就餐成员与建档成员不一致")
+        if self.onboarding_version == 2 and any(member.activity_level is None for member in self.members):
+            raise ValueError("请选择每位建档成员的日常活动量")
         return self
+
+    def submission_dump(self, *, exclude_processing_consents=False):
+        """保留新增字段缺省前的请求指纹，仍纳入显式提交的活动量。"""
+        exclude = {}
+        if exclude_processing_consents:
+            exclude["processing_consents"] = True
+        if "onboarding_version" not in self.model_fields_set:
+            exclude["onboarding_version"] = True
+        if "plan_consent" not in self.model_fields_set:
+            exclude["plan_consent"] = True
+        exclude["members"] = {
+            index: {"activity_level"}
+            for index, member in enumerate(self.members)
+            if "activity_level" not in member.model_fields_set
+        }
+        return self.model_dump(mode="json", exclude=exclude)
 
 
 class MiniappAnalysisInput(BaseModel):
@@ -186,6 +209,7 @@ def saved_miniapp_member(member, profile=None):
             "birth_date": profile.get("birth_date"),
             "sex": profile.get("sex"),
             "height_cm": profile.get("height_cm"),
+            "activity_level": profile.get("activity_level"),
             "weight_kg": dietary.get("statedWeightKg") if isinstance(dietary, dict) else None,
             "dietary": dietary,
         }

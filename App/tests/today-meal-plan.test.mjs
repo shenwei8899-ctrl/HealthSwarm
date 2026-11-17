@@ -69,6 +69,17 @@ test('a failed saved task does not start another generation on the next visit',a
  assert.equal(h.calls.filter(c=>c[0]==='submit').length,1)
 })
 
+test('reopening a failed generation displays the server coverage gap without resubmitting',async()=>{
+ const message='午餐缺少可核对的主食菜谱。'
+ const plan={...absent(),pending:{status:'failed',request_id:'old',failure_message:message}}
+ const h=fixture({read:async()=>plan})
+ await h.client.open(profile)
+ assert.equal(h.state.notice,message)
+ assert.equal(h.state.generationFailed,true)
+ assert.equal(h.state.action,'regenerate')
+ assert.ok(!h.calls.some(c=>c[0]==='submit'))
+})
+
 for(const saved of [false,true])test(`a first-read candidate pending is terminal without an owned flow and ${saved?'preserves the saved menu':'never becomes a saved menu'}`,async()=>{
  const plan={...(saved?ready():absent()),pending:candidatePending()},h=fixture({read:async()=>plan})
  await h.client.open(profile)

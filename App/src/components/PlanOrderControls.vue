@@ -2,7 +2,7 @@
 import { ref, watch } from 'vue'
 import { commerce } from '../services/commerce.js'
 import { useCommercePage } from '../services/commerce-page.js'
-import { priceText, batchNames } from '../services/plan-presentation.js'
+import { priceText, batchNames, batchMealDates } from '../services/plan-presentation.js'
 import PlanDeliveryPicker from './PlanDeliveryPicker.vue'
 const props = defineProps({ order: Object })
 const emit = defineEmits(['changed'])
@@ -40,7 +40,7 @@ function confirm() {
     <view class="plan-surface">
       <text class="plan-section-title">配送计划</text>
       <text class="plan-caption">{{order.plan?.status==='paused'?'已暂停未来配送':order.plan?.status==='completed'?'计划已完成':order.plan?.status==='cancelled'?'计划已取消':'按批次查看进度'}}</text>
-      <view v-for="batch in order.batches" :key="batch.id" class="plan-row"><view><text>第 {{batch.batch_no}} 批 · {{batch.delivery_date}}</text><text class="plan-tiny">{{batch.meal_date}} 食用</text></view><text class="plan-caption">{{batchNames[batch.status] || '处理中'}}</text></view>
+      <view v-for="batch in order.batches" :key="batch.id" class="plan-row"><view><text>第 {{batch.batch_no}} 批 · {{batch.delivery_date}}</text><text class="plan-tiny">{{batchMealDates(batch)}} 食用</text></view><text class="plan-caption">{{batchNames[batch.status] || '处理中'}}</text></view>
       <view v-if="['paid','partially_refunded'].includes(order.paymentStatus) && Number(order.plan?.user_cancellable)===1" class="plan-actions">
         <button v-if="order.plan.status==='active'" class="plan-secondary" :disabled="busy" @click="pause">暂停未来配送</button>
         <button v-if="order.plan.status==='paused'" class="plan-primary" :disabled="busy" @click="mode='resume'; preview=null">重新预约配送</button>
@@ -51,7 +51,7 @@ function confirm() {
     <button v-if="mode==='resume' && !preview" class="plan-primary" :disabled="busy || !selection" @click="prepare('resume')">预览新的配送安排</button>
     <view v-if="preview" class="plan-surface">
       <text class="plan-section-title">{{preview.type==='resume'?'确认恢复配送':'确认取消剩余批次'}}</text>
-      <view v-for="batch in preview.batches" :key="batch.id" class="plan-row"><text>第 {{batch.batch_no}} 批</text><view v-if="batch.schedule"><text>{{batch.schedule.delivery_date}} 送达</text><text class="plan-tiny">{{batch.schedule.meal_date}} 食用</text></view><text v-else>{{priceText(batch.refund_amount_cent)}}</text></view>
+      <view v-for="batch in preview.batches" :key="batch.id" class="plan-row"><text>第 {{batch.batch_no}} 批</text><view v-if="batch.schedule"><text>{{batch.schedule.delivery_date}} 送达</text><text class="plan-tiny">{{batchMealDates(batch.schedule)}} 食用</text></view><text v-else>{{priceText(batch.refund_amount_cent)}}</text></view>
       <view v-if="preview.type==='cancel_remaining'"><view class="plan-row"><text>预计退回</text><text>{{priceText(preview.refund_amount_cent)}}</text></view><text class="plan-caption">包含这些批次分摊的食材、服务及配送费用，扣除原优惠与已退金额。其他批次继续履行。</text></view>
       <button class="plan-primary" :disabled="busy" @click="confirm">{{preview.type==='resume'?'确认恢复配送':'确认取消并申请退款'}}</button>
       <button class="plan-text-link" :disabled="busy" @click="preview=null; mode=''">暂不变更</button>

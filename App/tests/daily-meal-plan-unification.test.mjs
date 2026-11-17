@@ -1,3 +1,4 @@
+import { createDishSwap, dishSwapState } from '../src/services/dish-swap.js'
 import {chatPromptProfileKey} from '../src/services/chat-prompt-profile.js'
 import {syntheticIntent} from './fixtures/health-intent.mjs'
 import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
@@ -43,7 +44,7 @@ function mount({read=async()=>plan()}={}){
   const hooks={},cache=new Map(),calls=[];let notify
   const flow={hide(){},async open(memberId,taskType,selection,options){calls.push({action:'open',memberId,taskType,selection,options});notify({memberId,taskType,available:true,entry:{thread_id:'thread'}})},async submit(text){calls.push({action:'submit',text});return true},async refresh(){calls.push({action:'refresh'});notify({taskType:'reference_meal_preview',requestId:'req',status:'completed',available:true})}}
   const state=()=>({phase:'idle',busy:false})
-  const deps={chatPromptProfileKey,todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),defineOptions:()=>{},mealPairingText,createChatEntryTransition,createChatKeyboardLayout,watch,ref,reactive,computed,nextTick,defineProps:()=>({route:{entry:'conversation'}}),onMounted:fn=>hooks.mounted=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
+  const deps={createDishSwap,dishSwapState,chatPromptProfileKey,todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),defineOptions:()=>{},mealPairingText,createChatEntryTransition,createChatKeyboardLayout,watch,ref,reactive,computed,nextTick,defineProps:()=>({route:{entry:'conversation'}}),onMounted:fn=>hooks.mounted=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
     listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,chatPresentation,chooseReference:referenceSelection,isReferencePlan,readDailyMealPlan:read,mealQuestionAction,canPurchaseAllMeals,
     openMealPage:(target,options)=>calls.push({action:'navigate',target,options}),
     dailyArrangementState:state,createDailyArrangementClient:()=>({reset(){},dispose(){}}),

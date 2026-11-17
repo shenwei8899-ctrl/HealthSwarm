@@ -164,10 +164,49 @@ test('delivery selection quotes the selected plan version without regenerating m
   const source=readFileSync(new URL('../src/pages/exclusive-plans/schedule.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const page=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;\n${source}\nreturn {selection,quote,change,preview,submit}`)(deps)
   load({plan_sn:'real-plan',plan_version:'4'});show()
-  page.change({address_id:7,first_delivery_date:'2026-11-03',delivery_slot_id:2})
-  await page.preview();assert.deepEqual(requests,[['real-plan',4,7,'2026-11-03',2]])
-  page.change({address_id:7,first_delivery_date:'2026-11-04',delivery_slot_id:2});assert.equal(page.quote.value,null)
+  page.change({address_id:7,first_delivery_date:'2026-11-03',delivery_slot_id:2,delivery_frequency:'weekly_2'})
+  await page.preview();assert.deepEqual(requests,[['real-plan',4,7,'2026-11-03',2,'weekly_2']])
+  page.change({address_id:7,first_delivery_date:'2026-11-03',delivery_slot_id:2,delivery_frequency:'weekly_3'});assert.equal(page.quote.value,null)
   await page.preview();await page.submit();assert.deepEqual(navigations,['/pages/orders/detail?id=order-real'])
+  assert.deepEqual(requests[1],['real-plan',4,7,'2026-11-03',2,'weekly_3'])
+})
+
+test('plan detail switches days and meals in the full exclusive menu', async () => {
+  const presentation = await import('../src/services/plan-presentation.js')
+  let loadRoute
+  const requests = []
+  const deps = {
+    ...presentation, ref, computed: fn => ({get value(){ return fn() }}),
+    onLoad(fn){loadRoute=fn}, onShow(){},
+    planTiers: ['economy', 'standard', 'premium'],
+    readExclusivePreview: async (...args) => { requests.push(args); return menu },
+    useCommercePage: () => ({busy: ref(false), error: ref(''), run: fn => fn(() => true)}),
+  }
+  const source = readFileSync(new URL('../src/pages/exclusive-plans/detail.vue', import.meta.url), 'utf8')
+    .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
+  const page = new Function('deps', 'const {' + Object.keys(deps).join(',') + '} = deps;\n' + source +
+    '\nreturn {load, meal, mealType, dayNo, selectDay, jumpToDay}')(deps)
+  const menu = {
+    days: [
+      {day_no: 1, meals: [{meal_type: 'breakfast', recipe_name: '第一天早餐'}]},
+      {day_no: 2, meals: [
+        {meal_type: 'breakfast', recipe_name: '第二天早餐'},
+        {meal_type: 'dinner', recipe_snapshot: {cooking_minutes: 15}},
+        {meal_type: 'dinner', recipe_snapshot: {cooking_minutes: 20}},
+      ]},
+    ],
+    first_day_products: [{sku_id: 'day-one'}],
+  }
+  loadRoute({group_id: 'group', tier: 'economy'})
+  await page.load()
+  assert.deepEqual(requests, [['group', 'economy']])
+  assert.equal(page.meal.value.dishes[0].recipe_name, '第一天早餐')
+  page.jumpToDay({detail: {value: '1'}})
+  page.mealType.value = 'dinner'
+  assert.equal(page.meal.value.dishes.length, 2)
+  assert.equal(page.dayNo.value, 2)
+  page.selectDay(1)
+  assert.equal(page.mealType.value, 'breakfast')
 })
 
 test('late old results cannot overwrite a newer profile result',async()=>{

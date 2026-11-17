@@ -10,12 +10,21 @@ from sqlalchemy import select
 from yuxi.repositories.exclusive_plan_repository import ExclusivePlanRepository
 from yuxi.services.daily_commerce_service import commerce_request, current_catalog
 from yuxi.services.daily_arrangement_projection import ingredient_requirements
-from yuxi.services.exclusive_plan_generation import TIERS, content_hash, generate_exclusive_day
+from yuxi.services.exclusive_plan_generation import (
+    TIERS,
+    content_hash,
+    generate_exclusive_day,
+)
+from yuxi.services.exclusive_reference_plan import (
+    generate_reference_day,
+    optional_exclusive_catalog,
+    validate_reference_days,
+)
 from yuxi.services.exclusive_plan_service import (
+    PREVIEW_POLICY,
     exclusive_context,
     export_payload,
     queue_exclusive_in_session,
-    read_plan_policy,
 )
 from yuxi.services.health_family_safe_plan_service import check_family_trial
 from yuxi.services.health_family_meal_plan_types import FamilyMealPlanSpec
@@ -29,115 +38,49 @@ from yuxi.utils.datetime_utils import utc_now_naive
 async def run_exclusive_plan(context):
     """恢复已有天序和导出回执，不覆盖另一尝试或已购买的商城快照。"""
     uid, fid, gid = (context.payload[key] for key in ("uid", "family_id", "group_id"))
-    policy = await read_plan_policy()
     async with pg_manager.get_async_session_context() as session:
         row = await owned_group(session, context)
+        policy = row.policy
+        preview = policy == PREVIEW_POLICY
+        catalog = row.progress.get("catalog_snapshot") if preview else None
         initial = await exclusive_context(session, uid, fid, policy, allow_interpretation=True)
         assert_basis(row, initial)
-    await prepare_daily_profile_coding(uid, initial["sources"], initial["selection"].model_dump(mode="json"), context)
     try:
-        for tier in TIERS:
-            for _ in range(21):
-                await context.raise_if_cancelled()
-                async with pg_manager.get_async_session_context() as session:
-                    row = await owned_group(session, context)
-                    previous = deepcopy(row.progress.get("tiers", {}).get(tier, []))
-                    if len(previous) == 21:
-                        break
-                    day = date.fromisoformat(row.selection["plan_date"]) + timedelta(days=len(previous))
-                    inputs = await exclusive_context(session, uid, fid, policy, day=day)
-                    assert_basis(row, inputs)
-                    validate_saved_days(inputs, previous)
-                catalog = await current_catalog()
-                generated = await asyncio.to_thread(
-                    generate_exclusive_day,
-                    inputs["selection"],
-                    inputs["current"],
-                    inputs["recipes"],
-                    inputs["foods"],
-                    inputs["refs"],
-                    inputs["mappings"],
-                    catalog,
-                    policy,
-                    tier,
-                    previous,
-                    gid,
-                )
+        if not preview:
+            await prepare_daily_profile_coding(
+                uid, initial["sources"], initial["selection"].model_dump(mode="json"), context
+            )
+        if preview and catalog is None:
+            catalog = await optional_exclusive_catalog()
 
-                async def save_day(session, _record):
-                    """持有任务和推荐组行锁，写入前重验来源。"""
-                    current_row = await owned_group(session, context, lock=True)
-                    fresh = await exclusive_context(session, uid, fid, policy, day=day)
-                    assert_basis(current_row, fresh)
-                    validate_saved_days(fresh, [generated])
-                    progress = deepcopy(current_row.progress)
-                    saved = progress.setdefault("tiers", {}).setdefault(tier, [])
-                    if len(saved) != len(previous):
-                        raise HealthVisionError("exclusive_progress_conflict", "计划进度已变化，请恢复原任务", 409)
-                    saved.append(generated)
-                    current_row.progress, current_row.updated_at = progress, utc_now_naive()
+            async def save_catalog(session, _record):
+                """记录可选采购快照或不可用状态，恢复时沿用相同计价依据。"""
+                row = await owned_group(session, context, lock=True)
+                row.progress = {**row.progress, "catalog_snapshot": catalog}
 
-                await context.run_owned_transaction(save_day)
-                await context.set_progress(
-                    (list(TIERS).index(tier) * 21 + len(previous) + 1) / 63 * 90, "正在准备三档餐单"
-                )
+            await context.run_owned_transaction(save_catalog)
 
-        for tier in TIERS:
-            await context.raise_if_cancelled()
+        if preview:
 
-            async def save_export(session, _record):
-                """先落完整请求，商城回源验证和网络重试读取同一份内容。"""
+            async def finish_preview(session, _record):
+                """菜单完整且来源有效即可发布，不要求采购或价格完整。"""
                 row = await owned_group(session, context, lock=True)
                 fresh = await exclusive_context(session, uid, fid, policy)
                 assert_basis(row, fresh)
-                for entries in row.progress["tiers"].values():
-                    validate_saved_days(fresh, entries)
-                progress = deepcopy(row.progress)
-                progress.setdefault("exports", {}).setdefault(tier, export_payload(row, tier))
-                row.progress = progress
+                tiers = row.progress["tiers"]
+                if set(tiers) != set(TIERS) or any(
+                    [entry["day"]["day_no"] for entry in tiers[tier]] != list(range(1, 22)) for tier in TIERS
+                ):
+                    raise HealthVisionError("exclusive_incomplete", "三档计划尚未完整", 503)
+                for entries in tiers.values():
+                    await validate_saved_days(session, fresh, entries)
+                row.status, row.updated_at = "ready", utc_now_naive()
 
-            await context.run_owned_transaction(save_export)
-            async with pg_manager.get_async_session_context() as session:
-                row = await owned_group(session, context)
-                payload = deepcopy(row.progress["exports"][tier])
-            receipt = await commerce_request(
-                "POST", "/api/v1/integration/ai/service-plans", payload, request_id=f"exclusive:{gid}:{tier}"
-            )
-            if receipt.get("status") != "available":
-                receipt = await commerce_request(
-                    "POST",
-                    f"/api/v1/integration/ai/service-plans/{receipt['plan_sn']}/trade-validate",
-                    {"plan_version": receipt["plan_version"]},
-                    request_id=f"xp:{gid}:{tier}:r:{context.payload['attempt']}",
-                )
-            if receipt.get("status") != "available":
-                raise HealthVisionError(
-                    "exclusive_trade_not_ready", "当前商品或费用尚未核对完成，已保留餐单，可稍后重试", 503
-                )
-
-            async def save_receipt(session, _record):
-                """只记录商城正式返回的计划号和版本。"""
-                row = await owned_group(session, context, lock=True)
-                progress = deepcopy(row.progress)
-                progress.setdefault("receipts", {})[tier] = {
-                    key: receipt[key] for key in ("plan_sn", "plan_version", "tier_code")
-                }
-                row.progress, row.updated_at = progress, utc_now_naive()
-
-            await context.run_owned_transaction(save_receipt)
-
-        async def finish(session, _record):
-            """三档全部可用且来源仍有效时才发布推荐组。"""
-            row = await owned_group(session, context, lock=True)
-            fresh = await exclusive_context(session, uid, fid, policy)
-            assert_basis(row, fresh)
-            for entries in row.progress["tiers"].values():
-                validate_saved_days(fresh, entries)
-            if set(row.progress["receipts"]) != set(TIERS):
-                raise HealthVisionError("exclusive_incomplete", "三档计划尚未完整", 503)
-            row.status, row.updated_at = "ready", utc_now_naive()
-
-        await context.run_owned_transaction(finish)
+            await generate_exclusive_tiers(context, uid, fid, gid, policy, catalog)
+            await context.run_owned_transaction(finish_preview)
+        else:
+            await generate_exclusive_tiers(context, uid, fid, gid, policy, catalog)
+            await publish_legacy_plans(context, uid, fid, gid, policy)
         return {"group_id": gid, "status": "ready"}
     except HealthVisionError as error:
         public_error = {"code": error.code, "message": error.message, "retryable": error.status >= 500}
@@ -146,14 +89,127 @@ async def run_exclusive_plan(context):
             """只保存业务错误投影，完整已生成天序仍用于恢复。"""
             row = await owned_group(session, context, lock=True)
             row.status = "failed"
-            row.progress = {
-                **row.progress,
-                "error": public_error,
-            }
+            row.progress = {**row.progress, "error": public_error}
             row.updated_at = utc_now_naive()
 
         await context.run_owned_transaction(save_error)
         raise
+
+
+async def generate_exclusive_tiers(context, uid, fid, seed, policy, catalog):
+    """逐日保存三档菜单，恢复时沿用原定备选顺序。"""
+    for tier in TIERS:
+        for _ in range(21):
+            await context.raise_if_cancelled()
+            async with pg_manager.get_async_session_context() as session:
+                row = await owned_group(session, context)
+                previous = deepcopy(row.progress.get("tiers", {}).get(tier, []))
+                reference_composition = row.progress.get("composition") == "reference"
+                day_seed = f"{seed}:{row.progress.get('generation', 0)}" if catalog is not None else seed
+                if row.progress.get("price_retry"):
+                    day_seed += ":retry"
+                if len(previous) == 21:
+                    break
+                day = date.fromisoformat(row.selection["plan_date"]) + timedelta(days=len(previous))
+                inputs = await exclusive_context(session, uid, fid, policy, day=day)
+                assert_basis(row, inputs)
+                await validate_saved_days(session, inputs, previous)
+            if policy == PREVIEW_POLICY:
+                generated = await asyncio.to_thread(generate_reference_day, inputs, tier, previous, day_seed, catalog)
+            else:
+                stock = catalog if catalog is not None else await current_catalog()
+                generated = await asyncio.to_thread(
+                    generate_exclusive_day,
+                    inputs["selection"],
+                    inputs["current"],
+                    inputs["recipes"],
+                    inputs["foods"],
+                    inputs["refs"],
+                    inputs["mappings"],
+                    stock,
+                    policy,
+                    tier,
+                    previous,
+                    day_seed,
+                    reference_composition=reference_composition,
+                    preference_members=inputs["preference_members"],
+                )
+
+            async def save_day(session, _record):
+                """持有任务和推荐组行锁，写入前重验来源。"""
+                current_row = await owned_group(session, context, lock=True)
+                fresh = await exclusive_context(session, uid, fid, policy, day=day)
+                assert_basis(current_row, fresh)
+                await validate_saved_days(session, fresh, [generated])
+                tiers = current_row.progress.get("tiers", {})
+                saved = tiers.get(tier, [])
+                if len(saved) != len(previous):
+                    raise HealthVisionError("exclusive_progress_conflict", "计划进度已变化，请恢复原任务", 409)
+                current_row.progress = {**current_row.progress, "tiers": {**tiers, tier: [*saved, generated]}}
+                current_row.updated_at = utc_now_naive()
+
+            await context.run_owned_transaction(save_day)
+            await context.set_progress((list(TIERS).index(tier) * 21 + len(previous) + 1) / 63 * 90, "正在准备三档餐单")
+
+
+async def publish_legacy_plans(context, uid, fid, gid, policy):
+    """继续处理升级前已登记的商城计划。"""
+    for tier in TIERS:
+        await context.raise_if_cancelled()
+
+        async def save_export(session, _record):
+            """先落完整请求，商城回源验证和网络重试读取同一份内容。"""
+            row = await owned_group(session, context, lock=True)
+            fresh = await exclusive_context(session, uid, fid, policy)
+            assert_basis(row, fresh)
+            for entries in row.progress["tiers"].values():
+                await validate_saved_days(session, fresh, entries)
+            progress = deepcopy(row.progress)
+            progress.setdefault("exports", {}).setdefault(tier, export_payload(row, tier))
+            row.progress = progress
+
+        await context.run_owned_transaction(save_export)
+        async with pg_manager.get_async_session_context() as session:
+            row = await owned_group(session, context)
+            payload = deepcopy(row.progress["exports"][tier])
+        receipt = await commerce_request(
+            "POST", "/api/v1/integration/ai/service-plans", payload, request_id=f"exclusive:{gid}:{tier}"
+        )
+        if receipt.get("status") != "available":
+            receipt = await commerce_request(
+                "POST",
+                f"/api/v1/integration/ai/service-plans/{receipt['plan_sn']}/trade-validate",
+                {"plan_version": receipt["plan_version"]},
+                request_id=f"xp:{gid}:{tier}:r:{context.payload['attempt']}",
+            )
+        if receipt.get("status") != "available":
+            raise HealthVisionError(
+                "exclusive_trade_not_ready", "当前商品或费用尚未核对完成，已保留餐单，可稍后重试", 503
+            )
+
+        async def save_receipt(session, _record):
+            """只记录商城正式返回的计划号和版本。"""
+            row = await owned_group(session, context, lock=True)
+            progress = deepcopy(row.progress)
+            progress.setdefault("receipts", {})[tier] = {
+                key: receipt[key] for key in ("plan_sn", "plan_version", "tier_code")
+            }
+            row.progress, row.updated_at = progress, utc_now_naive()
+
+        await context.run_owned_transaction(save_receipt)
+
+    async def finish(session, _record):
+        """三档全部可用且来源仍有效时才发布推荐组。"""
+        row = await owned_group(session, context, lock=True)
+        fresh = await exclusive_context(session, uid, fid, policy)
+        assert_basis(row, fresh)
+        for entries in row.progress["tiers"].values():
+            await validate_saved_days(session, fresh, entries)
+        if set(row.progress["receipts"]) != set(TIERS):
+            raise HealthVisionError("exclusive_incomplete", "三档计划尚未完整", 503)
+        row.status, row.updated_at = "ready", utc_now_naive()
+
+    await context.run_owned_transaction(finish)
 
 
 async def validate_exclusive_source(source):
@@ -177,7 +233,7 @@ async def validate_exclusive_source(source):
         entries = row.progress.get("tiers", {}).get(tier, [])
         if len(entries) != 21:
             raise HealthVisionError("source_invalidated", "计划尚未包含完整21天三餐", 410)
-        validate_saved_days(fresh, entries)
+        await validate_saved_days(session, fresh, entries)
 
 
 async def fail_exclusive_plan(session, task_record, error):
@@ -225,8 +281,11 @@ def assert_basis(row, context):
         raise HealthVisionError("exclusive_sources_changed", "档案或规则已变化，请重新准备专属计划", 409)
 
 
-def validate_saved_days(context, entries):
+async def validate_saved_days(session, context, entries):
     """来源变化后不靠旧 passed 字段放行；重新验证保存菜单。"""
+    if context.get("mode") == "reference":
+        await validate_reference_days(session, context, entries)
+        return
     for entry in entries:
         used = entry["candidate_sources"]["recipes"]
         if any(context["refs"].get(rid) != saved for rid, saved in used.items()):

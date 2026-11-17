@@ -19,28 +19,39 @@ test('disclosure explains health data transfer without exposing internal identif
 })
 
 function harness(){
-  let revision=1,modal,writes=0,submittedConsent
+  let revision=1,modal,writes=0,submittedConsent,submittedPlanConsent
   const ref=value=>({value}),profile=ref({healthConfiguration:configuration()}),fieldError=ref('')
   const deps={cloudSaving:ref(false),cloudLoading:ref(false),cloudLoaded:ref(true),invited:ref(false),
     syncDiners(){},self:ref(null),isMockMode:false,step:ref(2),profile,processingPolicyReady:ref(true),
     processingNotice:{get value(){return processingDisclosure(profile.value.healthConfiguration)}},
     sessionRevision:()=>revision,processingPolicyKey,alive:true,fieldError,
     uni:{showModal:options=>{modal=options},reLaunch(){}},cloudError:ref(''),cloudErrorCode:ref(null),
-    saveOnboardingProfile:async(_profile,_refs,consent)=>{writes++;submittedConsent=consent;return {householdId:'family'}},
+    saveOnboardingProfile:async(_profile,_refs,consent,planConsent)=>{writes++;submittedConsent=consent;submittedPlanConsent=planConsent;return {householdId:'family'}},
     reportSelections:ref(new Map()),retryWithReports:false,
     scopedStorage:{setStorageSync(){}},preserveProgress(){},draftStorageKey:'draft',preparationRoute:()=>'/prepared',completed:false}
   deps.uni.setStorageSync=()=>{}
   const source=readFileSync(new URL('../src/pages/onboarding/index.vue',import.meta.url),'utf8')
   const commitSource=source.slice(source.indexOf('async function commit('),source.indexOf('\nfunction next('))
   const commit=new Function('deps',`let {${Object.keys(deps)}}=deps;${commitSource};return commit`)(deps)
-  return {commit,profile,fieldError,get modal(){return modal},get writes(){return writes},get submittedConsent(){return submittedConsent},switchAccount(){revision++}}
+  return {commit,profile,fieldError,get modal(){return modal},get writes(){return writes},get submittedConsent(){return submittedConsent},get submittedPlanConsent(){return submittedPlanConsent},switchAccount(){revision++}}
 }
 
 test('cancel does not submit; explicit acceptance submits once',async()=>{
   const h=harness();await h.commit()
   h.modal.success({confirm:false});assert.equal(h.writes,0)
+  h.modal.success({confirm:true});assert.equal(h.writes,0)
+  assert.match(h.modal.content,/21 天计划/)
   h.modal.success({confirm:true});assert.equal(h.writes,1)
   assert.deepEqual(h.submittedConsent,{purpose:'consultation',processor:configuration().consultation.processor,policy_version:configuration().policy_version})
+  assert.deepEqual(h.submittedPlanConsent,{purpose:'meal_plan',processor:configuration().meal_plan.processor,policy_version:configuration().policy_version})
+})
+
+test('declining plan analysis still saves the profile without plan authorization',async()=>{
+  const h=harness();await h.commit()
+  h.modal.success({confirm:true})
+  h.modal.success({confirm:false})
+  assert.equal(h.writes,1)
+  assert.equal(h.submittedPlanConsent,null)
 })
 
 test('account or policy changes while the consent dialog is open invalidate acceptance',async()=>{

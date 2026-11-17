@@ -10,10 +10,9 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
 from yuxi.repositories.health_memory_repository import HealthMemoryRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
-from yuxi.services.health_memory_types import validate_memory_statement
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_health import HealthMemoryFact, HealthMemoryRevision
+from yuxi.storage.postgres.models_health import HealthMemoryRevision
 from yuxi.utils.datetime_utils import format_utc_datetime, utc_now_naive
 
 
@@ -33,6 +32,30 @@ def memory_result(fact):
     }
 
 
+async def list_account_memory(uid, *, after=None, limit=50):
+    """账号统一管理本人保存的所有对象，原家庭仅使用保存时标签。"""
+    from yuxi.services.health_memory_context_service import memory_directory, recallable
+
+    async with pg_manager.get_async_session_context() as session:
+        family, directory = await memory_directory(session, uid, None)
+        rows = await HealthMemoryRepository(session).list_account(uid, after=after, limit=limit)
+        items = []
+        for fact in rows[:limit]:
+            provenance = fact.provenance or {}
+            available = recallable(fact, family, directory)
+            editable = available
+            items.append(
+                {
+                    **memory_result(fact),
+                    "subject_label": provenance.get("subject_label", "历史成员"),
+                    "family_label": provenance.get("family_label", "来源未关联"),
+                    "recallable": available,
+                    "editable": editable,
+                }
+            )
+        return {"memories": items, "next_cursor": rows[limit - 1].id if len(rows) > limit else None}
+
+
 async def list_member_memory(uid, member_id):
     """当前授权账号只查看自己维护的成员记忆。"""
     async with pg_manager.get_async_session_context() as session:
@@ -48,7 +71,6 @@ async def memory_history(uid, fact_id):
         fact = await repo.get(uid, fact_id)
         if fact is None:
             raise HealthVisionError("not_found", "记忆不存在或无权访问", 404)
-        await HealthVisionRepository(session).authorize(fact.member_id, uid, "ai_use")
         return {
             **memory_result(fact),
             "revisions": [
@@ -73,9 +95,13 @@ async def change_member_memory(uid, fact_id, data, *, revoke=False):
         fact = await repo.get(uid, fact_id)
         if fact is None:
             raise HealthVisionError("not_found", "记忆不存在或无权访问", 404)
-        await HealthVisionRepository(session).authorize(fact.member_id, uid, "profile_edit", lock=True)
-        await HealthVisionRepository(session).authorize(fact.member_id, uid, "ai_use")
-        await session.refresh(fact)
+        if not revoke:
+            from yuxi.services.health_memory_context_service import memory_directory, recallable
+
+            family, directory = await memory_directory(session, uid, fact.member_id)
+            if not recallable(fact, family, directory):
+                raise HealthVisionError("memory_archived", "原家庭或未关联记录仅可查看和删除", 409)
+        fact = await repo.get(uid, fact_id, lock=True)
         source_hash = hashlib.sha256(f"manage:{fact.id}".encode()).hexdigest()
         request_id = str(data.client_request_id)
         previous = await repo.receipt(uid, request_id, source_hash)
@@ -93,6 +119,8 @@ async def change_member_memory(uid, fact_id, data, *, revoke=False):
             raise HealthVisionError("version_conflict", "记忆版本已变化，请刷新后操作", 409)
         fact.version += 1
         fact.content, fact.kind, fact.status = content, kind, status
+        if not revoke:
+            fact.provenance = {**(fact.provenance or {}), "meaning": content, "entity": None}
         fact.updated_at = utc_now_naive()
         session.add(
             HealthMemoryRevision(
@@ -105,6 +133,7 @@ async def change_member_memory(uid, fact_id, data, *, revoke=False):
                 content=content,
                 kind=kind,
                 status=status,
+                provenance=fact.provenance or {},
             )
         )
         await session.flush()
@@ -125,56 +154,17 @@ async def member_memory_for_run(context, statement=None):
         )
         repo = HealthMemoryRepository(session)
         if statement is None:
-            rows = await repo.list_active(context.uid, binding.member_id)
-            await repo.record_uses(run, [(row.id, row.version) for row in rows[:100]])
-            return {"memories": [memory_result(row) for row in rows[:100]], "truncated": len(rows) > 100}
-        member = await HealthVisionRepository(session).authorize(
-            binding.member_id, context.uid, "profile_edit", lock=True
-        )
-        source = await repo.source_message(run)
-        if source is None:
-            raise HealthVisionError("memory_source_invalid", "当前用户消息无法核对", 409)
-        validate_memory_statement(member, context.uid, statement["subject"], statement["quote"], source.content)
-        source_hash = hashlib.sha256(statement["quote"].encode()).hexdigest()
-        receipt = await repo.receipt(context.uid, context.request_id, source_hash)
-        if receipt:
-            fact = await repo.get(context.uid, receipt.fact_id)
-            if fact.fact_key != statement["fact_key"] or receipt.kind != statement["kind"]:
-                raise HealthVisionError("request_conflict", "同一原文不能重放为不同记忆", 409)
-            return {**memory_result(fact), "written_version": receipt.version, "replayed": True}
-        fact = await repo.slot(context.uid, binding.member_id, statement["fact_key"])
-        if fact is None:
-            fact = HealthMemoryFact(
-                id=str(uuid4()),
-                actor_uid=context.uid,
-                member_id=binding.member_id,
-                fact_key=statement["fact_key"],
-                version=1,
-            )
-            session.add(fact)
-        else:
-            fact.version += 1
-        fact.content, fact.kind, fact.status = statement["quote"], statement["kind"], "active"
-        fact.updated_at = utc_now_naive()
-        await session.flush()
-        session.add(
-            HealthMemoryRevision(
-                id=str(uuid4()),
-                fact_id=fact.id,
-                actor_uid=context.uid,
-                version=fact.version,
-                request_id=context.request_id,
-                source_hash=source_hash,
-                source_message_id=source.id,
-                source_run_id=run.id,
-                content=fact.content,
-                kind=fact.kind,
-                status=fact.status,
-            )
-        )
-        await session.flush()
-        await repo.supersede_run_use(run, fact)
-        return {**memory_result(fact), "written_version": fact.version, "replayed": False}
+            from yuxi.services.health_memory_context_service import memory_directory, recallable
+
+            family, directory = await memory_directory(session, context.uid, binding.member_id)
+            rows = await repo.list_account(context.uid, member_ids=directory, limit=300, recallable_only=True)
+            if len(rows) > 300:
+                raise HealthVisionError("memory_capacity", "有效记忆过多，请先整理", 409)
+            rows = [row for row in rows if recallable(row, family, directory)]
+            await repo.record_uses(run, [(row.id, row.version) for row in rows])
+            return {"memories": [memory_result(row) for row in rows], "truncated": False}
+        # 新运行由统一前置提取负责写入；保留工具标识只供旧 checkpoint 校验。
+        raise HealthVisionError("memory_write_managed", "本轮记忆由服务端统一处理，请读取处理结果", 409)
 
 
 async def filter_memory_history(context, messages, *, session=None, persist_uses=True):
@@ -190,9 +180,23 @@ async def filter_memory_history(context, messages, *, session=None, persist_uses
     async with nullcontext(session) if session is not None else pg_manager.get_async_session_context() as session:
         repo = HealthMemoryRepository(session)
         uses = await repo.history_uses(context.uid, context.thread_id)
+        # 上下文注入没有工具正文，真实依赖也必须逐条核对当前家庭。
+        unavailable = set()
+        if uses:
+            from yuxi.services.health_memory_context_service import memory_directory, recallable
+
+            current_binding = await HealthConsultationRepository(session).authorize(context.uid, context.thread_id)
+            family, directory = await memory_directory(session, context.uid, current_binding.member_id)
+            for request_id, fact_id, version, status, current in uses:
+                if status != "active" or version != current:
+                    continue
+                fact = await repo.get(context.uid, fact_id)
+                if fact is None or not recallable(fact, family, directory):
+                    unavailable.add(request_id)
         invalid_requests = {
             request for request, _, version, status, current in uses if status != "active" or version != current
         }
+        invalid_requests |= unavailable
         references = []
         filtered = []
         binding = None
@@ -256,8 +260,14 @@ async def filter_memory_history(context, messages, *, session=None, persist_uses
                                 binding = await HealthConsultationRepository(session).authorize(
                                     context.uid, context.thread_id
                                 )
-                            if fact.member_id != binding.member_id:
-                                raise HealthVisionError("memory_history_invalid", "历史记忆不属于当前成员", 409)
+                            if fact.member_id != binding.member_id and not getattr(fact, "provenance", None):
+                                raise HealthVisionError("memory_history_invalid", "历史记忆对象来源无法核对", 409)
+                            if fact.member_id != binding.member_id or getattr(fact, "provenance", None):
+                                from yuxi.services.health_memory_context_service import memory_directory, recallable
+
+                                family, directory = await memory_directory(session, context.uid, binding.member_id)
+                                if not recallable(fact, family, directory):
+                                    invalid = True
                         if fact is not None and fact.status == "active" and fact.version != reference["version"]:
                             own = next(iter(requests - {None}), None)
                             if own and await repo.own_revision(context.uid, fact.id, fact.version, own):
@@ -307,8 +317,8 @@ async def filter_memory_history(context, messages, *, session=None, persist_uses
                 lock=True,
             )
             # 获取成员锁之后再次核对，避免校验与提交之间发生撤回。
-            for fact_id, version in set(references):
-                fact = await repo.get(context.uid, fact_id)
+            for fact_id, version in sorted(set(references)):
+                fact = await repo.get(context.uid, fact_id, lock=True)
                 if fact is None or fact.status != "active" or fact.version != version:
                     raise HealthVisionError("memory_changed", "本轮记忆已变化，请重新提交问题", 409)
             await repo.record_uses(run, references)

@@ -3,7 +3,7 @@
 from typing import Literal
 from uuid import UUID
 
-from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
+from yuxi.repositories.health_consultation_repository import CONSULTATION_SLUG, HealthConsultationRepository
 from yuxi.repositories.health_family_profile_repository import HealthFamilyProfileRepository
 from yuxi.services.health_vision_types import HealthDTO, HealthVisionError
 from yuxi.storage.postgres.manager import pg_manager
@@ -50,7 +50,7 @@ async def read_family_profile(uid, member_id, *, link_only=False):
 
 
 async def family_profile_for_run(context):
-    """有效 Worker、模型处理审批及本人授权后读取并记录来源。"""
+    """有效 Worker 和模型处理配置通过后，按当前授权读取档案并记录来源。"""
     from yuxi.services.health_consultation_service import require_consultation
 
     async with pg_manager.get_async_session_context() as session:
@@ -62,7 +62,7 @@ async def family_profile_for_run(context):
             session, context.uid, context.thread_id, context.model, expected=snapshot, lock=True
         )
         repo = HealthFamilyProfileRepository(session)
-        result = await repo.read(context.uid, binding.member_id)
+        result = await repo.read(context.uid, binding.member_id, family_assistant=run.agent_slug == CONSULTATION_SLUG)
         await repo.record_use(run, result)
         return result
 

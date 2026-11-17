@@ -18,6 +18,45 @@ def test_exact_name_cannot_promote_unusable_recipe():
     assert all(item["file_id"] != "鸡蛋蒸熟示例" for item in result)
 
 
+async def test_new_menu_search_excludes_plain_rice_even_when_queried(monkeypatch):
+    """首轮检索即可返回无强制主食的三餐，旧版本仍可召回白飯。"""
+    from asyncio import get_running_loop
+    from unittest.mock import AsyncMock
+
+    from yuxi.services import reference_recipe_index as index
+    from yuxi.services.reference_meal_composition import FOOD_GROUP_MEAL_POLICY_VERSION
+
+    def row(name, ingredients):
+        return (*recipe(name)[:-1], f"# {name}\n## 食材\n{ingredients}\n## 做法\n1. 煮熟。")
+
+    rows = [
+        row("白飯", "- 白米\n- 水\n- 白米及水的比例為1：1.5"),
+        row("法式吐司", "- 吐司\n- 鸡蛋1个"),
+        row("排骨稀飯", "- 大米100克\n- 排骨200克\n- 水"),
+        row("清炒菠菜", "- 菠菜100克"),
+    ]
+    monkeypatch.setattr(index, "reference_recipe_rows", AsyncMock(return_value=rows))
+
+    async def run_search(_executor, search):
+        return search()
+
+    monkeypatch.setattr(get_running_loop(), "run_in_executor", run_search)
+    selection = {
+        "meal_types": ["breakfast", "lunch", "dinner"], "participant_ids": ["person"],
+        "family_id": "family", "plan_date": "2026-11-14",
+    }
+    args = (None, ["白饭", "法式吐司", "排骨", "菠菜"], selection, [], [], "owner", None, [])
+    result = await index.reference_menu_search(*args)
+    assert result["menus"] and not result["coverage_gaps"]
+    assert {dish["name"] for dish in result["items"]} == {"法式吐司", "排骨稀飯", "清炒菠菜"}
+    assert all([meal["meal_type"] for meal in menu] == selection["meal_types"] for menu in result["menus"])
+    legacy = await index.reference_menu_search(
+        None, args[1], {**selection, "meal_types": ["breakfast"]}, [], [], "owner", None, [],
+        policy_version=FOOD_GROUP_MEAL_POLICY_VERSION,
+    )
+    assert "白飯" in {dish["name"] for dish in legacy["items"]}
+
+
 def test_household_and_date_disperse_equal_candidates_without_random_retries():
     rows = [recipe(f"鸡蛋做法{index}") for index in range(12)]
     def first(family, day):
@@ -120,3 +159,14 @@ def test_translation_chinese_count_words_keep_original_quantity_and_fraction():
         with pytest.raises(HealthVisionError, match="recipe_translation_invalid"):
             quantity_signature(unsupported)
     assert quantity_signature("salmon") == quantity_signature("三文鱼")
+
+def test_recipe_search_accepts_simplified_queries_and_uses_verified_food_groups():
+    rows = [
+        ("rice", "kb", "烹饪菜谱_白飯.md", "version", "rice-0",
+         "# 白飯\n## 食材\n- 白米\n## 做法\n1. 将米煮熟。"),
+        ("soup", "kb", "烹饪菜谱_雞蛋湯.md", "version", "soup-0",
+         "# 鸡蛋汤\n## 食材\n- 鸡蛋1个\n## 做法\n1. 将蛋煮熟。"),
+    ]
+    for query in ("米饭", "白飯", "主食"):
+        found = rank_reference_recipes(rows, None, query)
+        assert [(r["file_id"], r["food_groups"]) for r in found] == [("rice", ["staple"])]

@@ -11,18 +11,21 @@ const addresses = ref([]), addressIndex = ref(-1), slots = ref([]), slotIndex = 
 const address = computed(() => addresses.value[addressIndex.value])
 const slot = computed(() => slots.value[slotIndex.value])
 const date = computed(() => dates.value[dateIndex.value])
+const frequencies = ['weekly_2', 'weekly_3']
+const frequencyIndex = ref(-1)
+const frequency = computed(() => frequencies[frequencyIndex.value])
 let preferredAddressId = ''
-const { busy, error, run } = useCommercePage(() => { addresses.value = []; preferredAddressId = ''; clear() })
+const { busy, error, run } = useCommercePage(() => { addresses.value = []; preferredAddressId = ''; frequencyIndex.value = -1; clear() })
 function clear() { dates.value = []; dateIndex.value = -1; emit('change', null) }
 function publish() {
-  if (address.value && slot.value && date.value) emit('change', { address_id: address.value.id, delivery_slot_id: slot.value.id, first_delivery_date: date.value.delivery_date })
+  if (address.value && slot.value && date.value) emit('change', { address_id: address.value.id, delivery_slot_id: slot.value.id, first_delivery_date: date.value.delivery_date, ...(props.resume ? {} : { delivery_frequency: frequency.value }) })
 }
 async function loadDates(active, previousDate = '') {
   clear()
-  if (!address.value || !slot.value) return
+  if (!address.value || !slot.value || (!props.resume && !frequency.value)) return
   const result = props.resume
     ? await commerce.planResumeDates(props.sn, address.value.id, slot.value.id)
-    : await commerce.planDates(props.sn, props.version, address.value.id, slot.value.id)
+    : await commerce.planDates(props.sn, props.version, address.value.id, slot.value.id, frequency.value)
   if (active()) {
     dates.value = result.items || []
     dateIndex.value = dates.value.findIndex(item => item.delivery_date === previousDate)
@@ -57,6 +60,11 @@ function load() {
 }
 function chooseAddress() { if (!busy.value && !props.disabled) openAddressPicker({ selectedId: address.value?.id, onSelected: id => { preferredAddressId = id } }) }
 function selectSlot(event) { if (!busy.value && !props.disabled) { slotIndex.value = Number(event.detail.value); run(loadDates) } }
+function selectFrequency(event) {
+  if (busy.value || props.disabled) return
+  frequencyIndex.value = Number(event.detail.value)
+  return run(loadDates)
+}
 function selectDate(event) {
   if (busy.value || props.disabled) return
   dateIndex.value = Number(event.detail.value) - 1
@@ -72,10 +80,11 @@ onMounted(load); onShow(load)
     </view>
     <view v-if="address" class="plan-surface">
       <text class="plan-section-title">配送安排</text>
+      <picker v-if="!resume" :disabled="busy || disabled" :range="['每周两次', '每周三次']" :value="Math.max(0, frequencyIndex)" @change="selectFrequency"><view class="picker-row"><text>配送频次</text><text>{{ ['每周两次', '每周三次'][frequencyIndex] || '选择频次' }} ›</text></view></picker>
       <picker v-if="slots.length" :disabled="busy || disabled" :range="slots.map(item=>item.start_time+'—'+item.end_time)" :value="slotIndex" @change="selectSlot"><view class="picker-row"><text>配送时段</text><text>{{slot?.start_time}}—{{slot?.end_time}} ›</text></view></picker>
       <picker v-if="dates.length" :disabled="busy || disabled" :range="['选择日期',...dates.map(item=>item.delivery_date)]" :value="dateIndex+1" @change="selectDate"><view class="picker-row"><text>首批送达日</text><text>{{date?.delivery_date || '选择日期'}} ›</text></view></picker>
       <text v-if="date" class="plan-caption">开始食用日 · {{date.first_meal_date}}</text>
-      <text v-else class="plan-caption">{{busy?'正在查询可预约日期…':dates.length?'食材提前一天送达，次日食用。':'暂时没有可预约日期'}}</text>
+      <text v-else class="plan-caption">{{busy?'正在查询可预约日期…':!resume&&!frequency?'请先选择配送频次':dates.length?'食材提前一天送达，次日开始食用。':'暂时没有可预约日期'}}</text>
     </view>
     <view v-if="error" class="plan-notice"><text>{{error}}</text><button class="plan-text-link" :disabled="busy || disabled" @click="load">重新查询</button></view>
   </view>

@@ -258,8 +258,8 @@ async def test_derived_consultation_without_new_tool_and_final_publication_reche
     ):
         monkeypatch.setattr(repository, "validate_history", guard)
     await HealthConsultationRepository(session).authorize("actor", "thread")
-    for guard in guards[:-1]:
-        guard.assert_awaited_once_with("actor", binding, lock=False)
+    for index, guard in enumerate(guards[:-1]):
+        guard.assert_awaited_once_with("actor", binding, lock=False, **({"family_assistant": True} if index == 0 else {}))
 
     @asynccontextmanager
     async def transaction():
@@ -366,7 +366,7 @@ async def test_actual_graph_binds_and_executes_fixed_blood_lipids_tool(monkeypat
         "get_food_categories",
     }
     assert all(set(tools) == expected_tools for tools in tool_lists)
-    assert system_prompts and all('version: "2026.11.06.1"' in prompt for prompt in system_prompts)
+    assert system_prompts and all('version: "2026.11.16.1"' in prompt for prompt in system_prompts)
     tool_result = next(message for message in result["messages"] if message.type == "tool")
     assert tool_result.name == "get_member_blood_lipids_records"
     assert json.loads(tool_result.content) == read.return_value
@@ -380,3 +380,19 @@ def no_unrelated_catalog_history(monkeypatch):
     from yuxi.repositories.conversation_purchase_repository import ConversationPurchaseRepository
 
     monkeypatch.setattr(ConversationPurchaseRepository, "catalog_profile_payloads", AsyncMock(return_value=[]))
+
+
+@pytest.fixture(autouse=True)
+def isolate_account_memory_context(monkeypatch):
+    """本组验证既有图协议；账号记忆在独立真实 PG/HTTP 测试覆盖。"""
+    from unittest.mock import AsyncMock
+    from yuxi.agents.middlewares import health_memory_context
+    monkeypatch.setattr(health_memory_context, "process_memory_for_run", AsyncMock(return_value={}))
+    monkeypatch.setattr(health_memory_context, "memory_context_for_run", AsyncMock(return_value={}))
+
+
+@pytest.fixture(autouse=True)
+def isolate_structured_citation_storage(monkeypatch):
+    """图装配验证隔离引用存储，引用真实校验在独立接口测试覆盖。"""
+    from yuxi.services import health_evidence_service
+    monkeypatch.setattr(health_evidence_service, "validate_nutrition_answer", AsyncMock())

@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from yuxi.agents.base import BaseAgent
 from yuxi.agents.buildin.health_consultation.graph import HealthAuthorizationMiddleware
 from yuxi.agents.middlewares import SteerMiddleware, TokenUsageMiddleware
+from yuxi.agents.middlewares.health_memory_context import HealthMemoryContextMiddleware
 from yuxi.agents.toolkits.meal_planner import (
     search_meal_plan_recipes,
     preview_meal_plan,
@@ -29,6 +30,7 @@ from yuxi.agents.toolkits.meal_planner import (
     reference_save_failure_index,
 )
 from yuxi.agents.toolkits.health import query_family_nutrition_knowledge
+from yuxi.services.reference_menu_candidates import MAX_REFERENCE_SEARCHES
 from yuxi.services.health_family_planner_types import FAMILY_PLANNER_TOOLS
 from yuxi.services.health_initial_meal_plan_types import INITIAL_PLANNER_TOOLS
 from yuxi.services.health_safe_planner_types import SAFE_PLANNER_TOOLS
@@ -139,8 +141,16 @@ class ReferenceContextMiddleware(AgentMiddleware):
                 ):
                     next_tool = "read_reference_recipe"
             elif successful[-1].name == "search_reference_recipes" and json.loads(successful[-1].content).get("items"):
-                # 先核对已检索的真实做法，避免只看名字就反复换词检索。
                 next_tool = "read_reference_recipe"
+            if not next_tool and "meal_targets" in context:
+                attempts = sum(
+                    isinstance(message, ToolMessage) and message.name == "search_reference_recipes"
+                    for message in current[start + 1 :]
+                )
+                if attempts >= MAX_REFERENCE_SEARCHES:
+                    request = request.override(
+                        tools=[tool for tool in request.tools if tool.name != "search_reference_recipes"]
+                    )
             if next_tool:
                 request = request.override(
                     tools=[tool for tool in request.tools if getattr(tool, "name", None) == next_tool],
@@ -714,6 +724,7 @@ class HealthMealPlannerAgent(BaseAgent):
             middleware=[
                 SteerMiddleware(),
                 HealthAuthorizationMiddleware(model_cache.get_model_info(context.model)),
+                *([HealthMemoryContextMiddleware(planner=True)] if tuple(planner_tools) == REFERENCE_TOOLS else []),
                 ReferenceContextMiddleware(),
                 MealPlanResultMiddleware(),
                 TokenUsageMiddleware(),

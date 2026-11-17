@@ -253,10 +253,12 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       var entry = readiness.data.entries.find(row => row.entry_type === taskType)
       state.available = entry?.status === 'available' || (['initial_meal_preview','reference_meal_preview'].includes(taskType) && selection && entry?.status === 'needs_input' && entry?.reason_code === 'selection_required')
       if (!state.available) state.notice = ({budget_price_unavailable:'营养咨询计费配置尚未就绪，请联系管理员。',budget_exceeded:'本月健康 AI 可用额度不足或待核账，请稍后再试。',consent_required:taskType === 'consultation' ? '咨询服务状态异常，请重新连接后再试。' : '请先核对本次数据处理说明，并明确选择是否同意。',missing_scopes:'该成员尚未授权此项健康服务，请核查成员授权。',configuration_unavailable:'此项服务尚未配置，资料仍可查看和修改。',dependency_not_ready:'此项服务所需的运行服务或专业资料尚未就绪。',agent_unavailable:'营养助手尚未就绪，请稍后再试。',skill_unavailable:'营养助手资料尚未就绪。'})[entry?.configuration_reason_code||entry?.reason_code] || '请打开该成员的家庭档案核对资料与授权。'
-      if (entry?.reason_code === 'consent_required' && taskType !== 'consultation') {
+      if (entry?.reason_code === 'consent_required' && taskType === 'reference_meal_preview') {
+        state.notice = '参考配餐服务状态异常，请重新读取后再试。'
+      } else if (entry?.reason_code === 'consent_required' && taskType !== 'consultation') {
         var policy = (await send({ path: '/api/health/v1/configuration' })).data
         if (!current(ticket)) return
-        var purpose = taskType === 'diet_analysis' ? 'diet_analysis' : ['meal_preview','initial_meal_preview','reference_meal_preview'].includes(taskType) ? 'meal_plan' : 'consultation'
+        var purpose = taskType === 'diet_analysis' ? 'diet_analysis' : ['meal_preview','initial_meal_preview'].includes(taskType) ? 'meal_plan' : 'consultation'
         var configured = policy?.[purpose]
         if (configured?.available === true && typeof configured.processor === 'string' &&
           configured.processor && typeof policy.policy_version === 'string' && policy.policy_version) {
@@ -482,14 +484,14 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       if (cancellationActive()) phase('cancelling')
       const known = state.requests.some(row => row.request_id === expectedId)
       state.requests = known ? state.requests.map(row => row.request_id === expectedId ? { ...row, status: state.status } : row) : [...state.requests, { request_id: expectedId, status: state.status }]
-      if (data.result?.result_type === 'error') state.result = { type: 'error', code: data.result.code, retryable: data.result.retryable === true }
+      if (data.result?.result_type === 'error') state.result = { type: 'error', code: data.result.code, ...(typeof data.result.message === 'string' ? {message:data.result.message} : {}), retryable: data.result.retryable === true }
       else if (data.execution_status === 'completed') {
         if (data.result?.result_type === 'general_education_answer' && data.result.scope === 'general_education' &&
           typeof data.result.answer === 'string' && Array.isArray(data.result.citations)) {
           state.result = { type: 'answer', text: data.result.answer,
             purchaseOffers: Array.isArray(data.result.purchase_offers) ? data.result.purchase_offers : [],
             recordedMeals: state.recordedMeals,
-            citations: data.result.citations.map(item => item.title).filter(Boolean) }
+            citations: data.result.source_titles?.length ? data.result.source_titles : data.result.citations.map(item => item.title).filter(Boolean) }
         } else if (data.result?.result_type === 'meal_plan_candidates' ||
             data.result?.data?.status === 'reference_candidates' || data.result?.data?.scope === 'cooking_reference') {
           const candidate = data.result.data

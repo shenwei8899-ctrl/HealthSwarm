@@ -3,7 +3,7 @@
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import select, text
+from sqlalchemy import text
 from yuxi.services.family_service import (
     FamilyService,
     guardian_active,
@@ -71,6 +71,7 @@ async def start_miniapp_analysis(uid, fid, data):
             labels = {
                 "birth_date": "出生日期",
                 "height_cm": "身高",
+                "activity_level": "日常活动量",
                 "sex": "性别",
                 "name": "姓名或称呼",
                 "statedWeightKg": "体重",
@@ -96,10 +97,15 @@ async def start_miniapp_analysis(uid, fid, data):
             health_id = await service.repo.linked_health_member(fid, member.id)
             if health_id and not member.invitation_analysis_pending:
                 grant = await db.get(HealthGrant, (health_id, uid), populate_existing=True)
-                consent = await db.get(HealthProcessingConsent, (health_id, uid, "consultation"), populate_existing=True)
+                consent = await db.get(
+                    HealthProcessingConsent, (health_id, uid, "consultation"), populate_existing=True
+                )
                 if (
-                    grant is not None and grant.revoked_at is None and "ai_use" in grant.scopes
-                    and consent is not None and consent.revoked_at is None
+                    grant is not None
+                    and grant.revoked_at is None
+                    and "ai_use" in grant.scopes
+                    and consent is not None
+                    and consent.revoked_at is None
                     and consent.processor == configured["processor"]
                     and consent.policy_version == config["policy_version"]
                 ):
@@ -143,7 +149,7 @@ async def save_miniapp_profile(uid, fid, data):
 
 async def save_miniapp_profile_in_session(db, uid, fid, data):
     """保存与准备登记共享事务，保留原建档收据及字段授权规则。"""
-    digest = input_fingerprint(data.model_dump(mode="json"))
+    digest = input_fingerprint(data.submission_dump())
     await db.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
         {"key": f"miniapp-profile:{uid}:{data.client_request_id}"},
@@ -207,6 +213,8 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
                 "statedWeightKg": draft.weight_kg,
             },
         }
+        if draft.activity_level is not None:
+            changes["activity_level"] = draft.activity_level
         service.require_fields(family, member, changes, write=True)
         relationship = member.relationship if member_only else draft.relation
         if member.name != draft.name or member.relationship != relationship:
@@ -256,12 +264,18 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
 
     for member in submitted:
         await ensure_member_reports(service, family, member)
-    if data.analysis_consent is not None:
+    if data.analysis_consent is not None or data.plan_consent is not None:
         from yuxi.services.miniapp_planning_source import bind_submitted_profile
+        from yuxi.services.health_vision_types import HealthVisionError
 
         # 建档页的用途复选框只确认本人；监护人分析须从具体儿童档案明确确认。
         analysis_members = [member for member in submitted if member.subject_uid == uid]
-        await bind_submitted_profile(db, uid, family, analysis_members, data.analysis_consent)
+        if data.analysis_consent is not None:
+            await bind_submitted_profile(db, uid, family, analysis_members, data.analysis_consent)
+        if data.plan_consent is not None:
+            if data.plan_consent.get("purpose") != "meal_plan":
+                raise HealthVisionError("invalid_purpose", "请选择餐单分析用途", 422)
+            await bind_submitted_profile(db, uid, family, analysis_members, data.plan_consent)
         for member in analysis_members:
             member.invitation_analysis_pending = False
     if not member_only:
@@ -337,6 +351,7 @@ async def profile_result(service, family):
                 "height": profile.get("height_cm") or "",
                 "weight": dietary.get("statedWeightKg") or "",
                 **dietary,
+                "activityLevel": profile.get("activity_level") or "",
             }
         )
     settings = family.settings or {}

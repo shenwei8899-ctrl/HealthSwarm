@@ -117,7 +117,7 @@ async def start_saved_preparation(uid, fid, data):
 
 async def start_onboarding_preparation(uid, fid, data):
     """保存、收据与后台任务同事务提交，重放不重复保存或启动。"""
-    digest = input_fingerprint(data.model_dump(mode="json"))
+    digest = input_fingerprint(data.submission_dump())
     async with pg_manager.get_async_session_context() as db:
         service = FamilyService(db, uid)
         family, _ = await service.context(fid)
@@ -139,7 +139,7 @@ async def start_onboarding_preparation(uid, fid, data):
         else:
             # 另一设备连点的新键也复用同一份已保存来源；不同资料仍走原版本校验。
             latest = await latest_preparation(db, uid, fid)
-            body = MiniappProfileInput.model_validate(data.model_dump(exclude={"processing_consents"}))
+            body = MiniappProfileInput.model_validate(data.submission_dump(exclude_processing_consents=True))
             if latest is not None and latest.fingerprint == digest:
                 row, task = latest, None
             else:
@@ -399,7 +399,16 @@ async def run_onboarding_preparation(context):
             for member in permitted:
                 hid = await service.repo.linked_health_member(fid, member.id)
                 if hid:
-                    grant = await session.get(HealthGrant, (hid, uid), populate_existing=True)
+                    grant = await session.scalar(
+                        select(HealthGrant)
+                        .where(HealthGrant.member_id == hid, HealthGrant.actor_uid == uid)
+                        .with_for_update()
+                        .execution_options(populate_existing=True)
+                    )
+                    # 报告先行的首次 AI 绑定由 bind_submitted_profile 核对并提升；
+                    # 提前插入用途记录会被它正确识别成曾经授权后撤回。
+                    if grant is not None and grant.revoked_at is None and "ai_use" not in grant.scopes:
+                        continue
                     # 与显式停用串行，检查至绑定期间不让撤回记录被覆盖。
                     await session.execute(
                         insert(HealthProcessingConsent)

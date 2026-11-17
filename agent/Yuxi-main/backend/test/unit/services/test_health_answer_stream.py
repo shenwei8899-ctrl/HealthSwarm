@@ -77,7 +77,7 @@ class RevocableEvidence:
         self.checked.append(prefix)
         if not self.allowed:
             raise HealthVisionError("source_invalidated", "synthetic source withdrawn", 410)
-        if CITATION not in prefix:
+        if refs is None and CITATION not in prefix:
             raise HealthVisionError("citation_invalid", "synthetic citation incomplete", 409)
 
 

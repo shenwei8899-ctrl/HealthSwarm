@@ -15,7 +15,7 @@ const members=ref([]),records=ref([]),scope=ref('all'),date=ref(mealDay(new Date
 const visible=computed(()=>records.value.filter(r=>mealDay(r.snapshot.meal.eaten_at)===date.value&&(scope.value==='all'||r.member_id===scope.value)))
 const recordedMeals=computed(()=>Object.keys(mealLabels).filter(key=>visible.value.some(r=>r.snapshot.meal.meal_type===key)).length)
 const today=computed(()=>date.value===mealDay(new Date().toISOString()))
-function capture(key){uni.navigateTo({url:'/pages/scan/index'+(key?'?meal='+encodeURIComponent(key):'')})}
+function capture(key){uni.navigateTo({url:'/pages/scan/index?date='+encodeURIComponent(date.value)+(key?'&meal='+encodeURIComponent(key):'')+(scope.value!=='all'?'&memberId='+encodeURIComponent(scope.value):'')})}
 let epoch=0
 const name=id=>{const m=members.value.find(m=>m.id===id);return m?.display_name||m?.name||m?.relationship_label||'成员'}
 function hide(){epoch++;members.value=[];records.value=[];detail.value=null;meal.value=null;editing.value=false;busy.value=false;error.value='';pending.value=null;next.value={};recipes.value=[];scope.value='all'}

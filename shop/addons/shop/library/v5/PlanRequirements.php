@@ -53,6 +53,7 @@ class PlanRequirements
     {
         $content = array_intersect_key($payload,array_flip(['family_ref','user_ref','member_refs','profile_version_refs',
             'recommendation_group_ref','tier_code','tier_policy_version','basis_hash','days','nutrition_validation']));
+        if (($payload['delivery_frequency'] ?? '') === 'selectable') $content['delivery_frequency'] = 'selectable';
         $normalize = function ($value) use (&$normalize) {
             if (is_array($value)) return array_map($normalize,$value);
             if (is_int($value)) return (string)$value;
@@ -88,11 +89,11 @@ class PlanRequirements
         }
     }
 
-    public static function matchBatch(array $meals, array $allowedSkus)
+    public static function matchBatch(array $meals, array $allowedSkus, array $lastUse = [])
     {
-        $requirements=self::aggregate($meals);$visits=0;$failure=null;
+        $requirements=self::aggregate($meals);$visits=0;$failure=null;$storageByProduct=[];
         // 每步扣除同批已选库存；无解时回退候选，不把贪心选择当成真实缺货。
-        $search=function ($remaining, $items) use (&$search, &$visits, &$failure, $requirements, $allowedSkus) {
+        $search=function ($remaining, $items) use (&$search, &$visits, &$failure, &$storageByProduct, $requirements, $allowedSkus, $lastUse) {
             if (++$visits>10000) return null;
             $index=null;
             foreach ($remaining as $key=>$requirement) {
@@ -104,6 +105,10 @@ class PlanRequirements
             if ($result['issue']) {$failure=$result['issue'];return null;}
             foreach ($result['candidates'] as $item) {
                 $sid=(string)$item['sku_id'];$quantity=(int)$item['quantity'];
+                if ($lastUse && !self::coversStoragePeriod($item['product_snapshot'], $lastUse, $storageByProduct)) {
+                    $failure=['issue_code'=>'storage_period_unverified','message'=>'食材保质期无法覆盖所选配送批次，请调整配送频次','blocking'=>true];
+                    continue;
+                }
                 if ($quantity+($items[$sid]['quantity'] ?? 0)>(int)$item['product_snapshot']['available_quantity']) continue;
                 $selected=$items;$rest=$remaining;
                 if (!isset($selected[$sid])) $selected[$sid]=$item+['ingredient_codes'=>[],'sources'=>[]];
@@ -135,6 +140,18 @@ class PlanRequirements
             $item['ingredient_codes']=array_values(array_unique($item['ingredient_codes']));
         }
         return ['items'=>array_values($items),'issues'=>[],'requirements'=>$requirements];
+    }
+
+    private static function coversStoragePeriod(array $sku, array $lastUse, array &$storageByProduct)
+    {
+        $lastDay = 0;
+        foreach ($sku['ingredients'] ?? [] as $ingredient) {
+            $lastDay = max($lastDay, $lastUse[$ingredient['ingredient_code']] ?? 0);
+        }
+        if ($lastDay <= 1) return true;
+        $product = $sku['product_id'];
+        $storageByProduct[$product] ??= (int)\think\Db::name('shop_goods_ext')->where('goods_id', $product)->value('shelf_life_days');
+        return $storageByProduct[$product] >= $lastDay;
     }
 
     private static function amount(array $requirement)

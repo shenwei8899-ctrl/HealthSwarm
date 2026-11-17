@@ -25,7 +25,7 @@ from yuxi.utils.singleton import SingletonMeta
 AGENT_RUN_TERMINAL_STATUS_SQL = ", ".join(f"'{status}'" for status in AGENT_RUN_TERMINAL_STATUSES)
 BUSINESS_SCHEMA_VERSION = 16
 KNOWLEDGE_SCHEMA_VERSION = 2
-HEALTH_SCHEMA_VERSION = 37
+HEALTH_SCHEMA_VERSION = 39
 SCHEMA_VERSION_TABLE = "yuxi_schema_migrations"
 AGENT_RUN_LEASE_SCHEMA_STATEMENTS = (
     "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS worker_id VARCHAR(128)",
@@ -644,9 +644,7 @@ class PostgresManager(metaclass=SingletonMeta):
                 await conn.execute(text(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {old_name}"))
                 if new_name != old_name:
                     await conn.execute(text(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {new_name}"))
-                await conn.execute(
-                    text(f"ALTER TABLE {table} ADD CONSTRAINT {new_name} CHECK (occupied_cny >= 0)")
-                )
+                await conn.execute(text(f"ALTER TABLE {table} ADD CONSTRAINT {new_name} CHECK (occupied_cny >= 0)"))
 
     async def upgrade_knowledge_schema_v1_to_v2(self) -> None:
         """为知识文件处理中间态增加 Durable Task attempt owner。"""

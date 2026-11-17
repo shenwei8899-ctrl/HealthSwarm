@@ -6,7 +6,7 @@ const source = file => readFileSync(new URL('../src/'+file, import.meta.url),'ut
 const evaluate = (code, deps, result) => new Function('deps',`const {${Object.keys(deps)}}=deps;${code};return ${result}`)(deps)
 const flush = () => new Promise(resolve=>setImmediate(resolve))
 const deferred = () => {let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}}
-function fixture(h5=false,delayRoute=false,clock={},startup) {
+function fixture(h5=false,delayRoute=false,clock={},startup,native={}) {
   let account={accountId:'a',token:'test-token',householdId:'family-a',clientRevision:1,expiresAt:Date.now()/1000+3600,families:[{id:'family-a',onboardingRequired:false}]}
   let route='/pages/chat/index',invite='',preparing=false
   const hooks={},calls=[],loadings=[],toasts=[],checks=[],hashListeners=new Set()
@@ -19,6 +19,7 @@ function fixture(h5=false,delayRoute=false,clock={},startup) {
   for(const method of ['navigateTo','redirectTo','reLaunch','switchTab']) uni[method]=options=>{
     if(hooks[method]?.invoke(options)===false)return
     calls.push({method,url:options.url})
+    if(native.dispatch){native.dispatch(options,method,value=>{route=value});return}
     if(!delayRoute)route=options.url
     options.success?.({errMsg:method+':ok'});options.complete?.({errMsg:method+':ok'})
   }
@@ -29,6 +30,34 @@ function fixture(h5=false,delayRoute=false,clock={},startup) {
   nav.installRouteGuards(startup)
   return {nav,uni,calls,checks,pending,loadings,toasts,shell,completeRoute(value){route=value;for(const fn of [...hashListeners])fn()},get account(){return account},set account(value){account=value},set route(value){route=value},get route(){return route},set invite(value){invite=value},set preparing(value){preparing=value}}
 }
+
+test('a cold subpackage taking over three seconds does not fail before its native success',async()=>{
+  const timers=new Map(),finished=[],native=[]
+  const h=fixture(false,false,{setTimeout:(fn,ms)=>{timers.set(fn,ms);return fn},clearTimeout:fn=>timers.delete(fn)},undefined,
+    {dispatch:(options,method,setRoute)=>native.push({options,setRoute})})
+  h.uni.navigateTo({url:'/pages/meals/detail?mealNavigation=1',success:value=>finished.push(['success',value]),fail:value=>finished.push(['fail',value])})
+  for(const [fn,ms] of [...timers])if(ms<=4000)fn()
+  assert.deepEqual(finished,[])
+  const channel={emit(){}}
+  native[0].setRoute('/pages/meals/detail?mealNavigation=1')
+  native[0].options.success({errMsg:'navigateTo:ok',eventChannel:channel})
+  assert.deepEqual(finished,[['success',{errMsg:'navigateTo:ok',eventChannel:channel}]])
+  assert.equal(timers.size,0)
+  native[0].options.complete({errMsg:'navigateTo:ok'})
+  assert.equal(finished.length,1)
+})
+
+test('a missing native callback for an already visible page is successful, and a missing page stays retryable',()=>{
+ for(const visible of [true,false]){
+  const timers=new Map(),finished=[]
+  const h=fixture(false,false,{setTimeout:(fn,ms)=>{timers.set(fn,ms);return fn},clearTimeout:fn=>timers.delete(fn)},undefined,
+    {dispatch:(options,_method,setRoute)=>{if(visible)setRoute(options.url)}})
+  h.uni.navigateTo({url:'/pages/meals/detail?mealNavigation=1',success:()=>finished.push('success'),fail:()=>finished.push('fail')})
+  for(const fn of [...timers.keys()])fn()
+  assert.deepEqual(finished,[visible?'success':'fail'])
+  assert.equal(timers.size,0)
+ }
+})
 
 test('a protected cold launch redirects to login after the native page is ready',async()=>{
   const startup=deferred(),h=fixture(false,false,{},startup.promise)

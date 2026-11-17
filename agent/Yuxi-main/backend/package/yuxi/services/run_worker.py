@@ -61,6 +61,7 @@ from yuxi.services.task_queue_service import (
     reconcile_and_publish_tasks,
 )
 from yuxi.services.task_service import TASKER_DEFAULT_TIMEOUT_SECONDS, process_task
+from yuxi.services.exclusive_plan_backfill import prepare_missing_exclusive_plans
 from yuxi.services.health_daily_service import summarize_closed_health_days
 from yuxi.services.workdir_service import (
     AuthorizedWorkdir,
@@ -1643,9 +1644,14 @@ async def process_agent_run(ctx, run_id: str):
 
         public_error_type = (
             e.code
-            if isinstance(e, HealthVisionError) and e.code in {
-                "budget_exceeded", "budget_price_unavailable", "reference_recipe_repeated",
-                "reference_menu_repeated", "reference_variety_exhausted",
+            if isinstance(e, HealthVisionError)
+            and e.code
+            in {
+                "budget_exceeded",
+                "budget_price_unavailable",
+                "reference_recipe_repeated",
+                "reference_menu_repeated",
+                "reference_variety_exhausted",
             }
             else "worker_error"
         )
@@ -1896,7 +1902,10 @@ async def _worker_shutdown(ctx):
 
 
 class WorkerSettings:
-    cron_jobs = [cron(summarize_closed_health_days, minute=set(range(60)), second=5, run_at_startup=True)]
+    cron_jobs = [
+        cron(summarize_closed_health_days, minute=set(range(60)), second=5, run_at_startup=True),
+        cron(prepare_missing_exclusive_plans, minute=set(range(60)), second=25),
+    ]
     functions = [
         process_agent_run,
         func(process_task, timeout=TASKER_DEFAULT_TIMEOUT_SECONDS + 30),

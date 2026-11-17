@@ -44,6 +44,18 @@ test('missing source titles never invent provenance; ordinary parentheses surviv
   assert.equal(visible(answer), '一份水果（以个人耐受为准）。')
 })
 
+test('canonical family citations display readable source titles instead of filenames', () => {
+  const id = '96c82ed8-b878-469e-9110-e893c9bbb6a8'
+  const label = `[资料:${id}]（合成运动指南（2024年版）nhc_example_exercise2024_ocr.md）`
+  const answer = parseAiAnswer(`本次未能核验回答。检索资料：${label}`)
+  assert.equal(visible(answer), '本次未能核验回答。')
+  assert.deepEqual(answer.sources, ['合成运动指南（2024年版）'])
+
+  const inline = parseAiAnswer(`保留正文（含普通括号）。${label}后续说明。${label}`)
+  assert.equal(visible(inline), '保留正文（含普通括号）。后续说明。')
+  assert.deepEqual(inline.sources, answer.sources)
+})
+
 test('bare storage identifiers never appear in paragraphs, tables or code blocks', () => {
   const id='96c82ed8-b878-469e-9110-e893c9bbb6a8'
   for(const text of [`建议规律进餐。来源ID：${id}`,`| 建议 | 依据 |\n| --- | --- |\n| 规律进餐 | 证据编号：${id} |`,`\`\`\`text\n保持数值 30 g。资料：${id}\n\`\`\``]){

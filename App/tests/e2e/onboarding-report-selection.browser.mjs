@@ -23,7 +23,7 @@ const family = '11111111-1111-4111-8111-111111111111'
 const person = '22222222-2222-4222-8222-222222222222'
 const health = '33333333-3333-4333-8333-333333333333'
 const member = {
-  id:person, name:'合成成员', relation:'本人', birthDate:'2000-01-01', gender:'女', height:165, weight:55,
+  id:person, name:'合成成员', relation:'本人', birthDate:'2000-01-01', gender:'女', height:165, weight:55, activityLevel:'moderate',
   version:1, claimed:true, isSelf:true, confirmed:false, healthStatus:'none', conditions:[],
   goals:['饮食均衡'], tastePreferences:['不限口味'], cuisines:['不限菜系'],
   allergyStatus:'none', allergies:[], intoleranceStatus:'none', intolerances:[],

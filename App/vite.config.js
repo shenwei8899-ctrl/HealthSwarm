@@ -41,6 +41,7 @@ export default defineConfig(({ mode }) => {
         const appAsset = bundle['app.json']
         if (appAsset?.type === 'asset') {
           const app = JSON.parse(String(appAsset.source))
+          app.workers = 'static/voice-workers'
           for (const key of ['rpxCalcMaxDeviceWidth', 'rpxCalcBaseDeviceWidth', 'rpxCalcIncludeWidth']) {
             if (app.window) delete app.window[key]
           }

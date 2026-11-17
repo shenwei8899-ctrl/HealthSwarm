@@ -16,7 +16,7 @@ import { scopedStorage, storageContext } from '../services/storage.js'
 
 // 微信原生宿主节点会截断插槽内的 flex 和百分比高度。
 defineOptions({options:{virtualHost:true}})
-const props = defineProps({ meal: Object, route: Object, embedded: Boolean, reference: Object, selection:Object, managed: Boolean, unified: Boolean, visible:{type:Boolean,default:true} })
+const props = defineProps({ meal: Object, route: Object, embedded: Boolean, reference: Object, exclusive: Object, selection:Object, managed: Boolean, unified: Boolean, visible:{type:Boolean,default:true} })
 const emit=defineEmits(['checkout','ordered','scroll'])
 const preview = ref(null), publication = ref(null), selected = ref([]), draftQuantities = ref({})
 const writing=ref(false)
@@ -88,6 +88,7 @@ async function resumeCheckout(scope) {
   await checkout()
 }
 async function verifyReference() {
+  if(props.exclusive){const {data}=await request({path:props.exclusive.path});if(data.scope_hash!==props.exclusive.scopeHash)throw new Error('计划或商品已变化，请返回重新打开购买。');return}
   const ref=props.reference
   if(props.selection){const {data}=await request({path:scopePath()+scopeQuery()});receipt(data);return}
   if(!ref || ref.dailyPlanVersion==null)return
@@ -109,7 +110,7 @@ async function refresh() {
     preview.value = props.reference ? {available:referenceProducts.value.length>0||props.reference.needsMatching,items:[]} : receipt(data)
     if (!initialized) {
       const saved = scopedStorage.getStorageSync(selectionKey()); if(saved?.version===props.route.version&&saved?.dailyPlanVersion===props.route.daily_plan_version)draftQuantities.value=saved.quantities||{}
-      const defaults=props.reference?products.value.filter((item,index,all)=>item.saleStatus==='available'&&item.availableQuantity!==0&&all.findIndex(other=>other.productId===item.productId&&other.saleStatus==='available'&&other.availableQuantity!==0)===index):products.value
+      const defaults=props.reference?products.value.filter((item,index,all)=>item.saleStatus==='available'&&item.availableQuantity!==0&&all.findIndex(other=>(other.productId||other.id)===(item.productId||item.id)&&other.saleStatus==='available'&&other.availableQuantity!==0)===index):products.value
       selected.value = saved?.known ? products.value.filter(item => selectable(item)&&saved.known.includes(item.id)&&saved.selected.includes(item.id)).map(item => item.id) : defaults.map(item=>item.id)
       initialized = true
     }
@@ -165,9 +166,9 @@ async function checkout() {
     const previous = [...picked.value], previousIds = products.value.map(item => item.id)
     const ref=props.reference
     const productChoices=productSpecSelection.value?products.value.filter(item=>item.productId&&previous.includes(item.id)).map(item=>({product_id:item.productId,sku_id:item.id,quantity:item.quantity})):[]
-    const { data } = await request(props.selection?{path:scopePath(),method:'POST',data:{version:props.selection.version,dish_keys:props.selection.dishKeys},timeout:30000}:ref ? {path:ref.dailyPlanVersion!=null?'/api/family/'+encodeURIComponent(getSession().householdId)+'/daily-meal-plans/'+props.route.date+'/purchase':'/api/health/v1/reference-meal-plans/'+encodeURIComponent(ref.previewId)+'/purchase',method:'POST',data:ref.dailyPlanVersion!=null?{preview_id:ref.previewId,version:ref.dailyPlanVersion,meal_types:ref.mealTypes,...(productChoices.length?{product_choices:productChoices}:{})}:{...(productChoices.length?{product_choices:productChoices}:{})},timeout:30000} : { path: path(), method: 'POST', data: version(), timeout: 30000 })
+    const { data } = await request(props.exclusive?{path:props.exclusive.path,method:'POST',data:{scope_hash:props.exclusive.scopeHash},timeout:30000}:props.selection?{path:scopePath(),method:'POST',data:{version:props.selection.version,dish_keys:props.selection.dishKeys},timeout:30000}:ref ? {path:ref.dailyPlanVersion!=null?'/api/family/'+encodeURIComponent(getSession().householdId)+'/daily-meal-plans/'+props.route.date+'/purchase':'/api/health/v1/reference-meal-plans/'+encodeURIComponent(ref.previewId)+'/purchase',method:'POST',data:ref.dailyPlanVersion!=null?{preview_id:ref.previewId,version:ref.dailyPlanVersion,meal_types:ref.mealTypes,...(productChoices.length?{product_choices:productChoices}:{})}:{...(productChoices.length?{product_choices:productChoices}:{})},timeout:30000} : { path: path(), method: 'POST', data: version(), timeout: 30000 })
     if (!active(scope)) return
-    if(props.reference && (data.preview_id!==props.reference.previewId||!data.package?.package_sn))throw new Error('采购来源无法核对，请重试。')
+    if(props.exclusive ? data.scope_hash!==props.exclusive.scopeHash||!data.package?.package_sn : props.reference && (data.preview_id!==props.reference.previewId||!data.package?.package_sn))throw new Error('采购来源无法核对，请重试。')
     publication.value = props.reference ? data.package : receipt(data)
     await page.load()
     if (!active(scope) || !state.ready || state.error) return
@@ -212,17 +213,17 @@ onUnmounted(() => { alive = false; clearTimeout(quoteTimer); page.dispose() })
 </script>
 
 <template>
- <view class="meal-purchase" :class="{'is-embedded':embedded}">
+   <view class="meal-purchase" :class="{'is-embedded':embedded,'is-exclusive':!!exclusive}">
   <MealPurchasePanel v-if="unified" :gaps="purchaseGaps" :products="products" :picked="picked" :address="state.address" :slots="state.slots" :slot-id="state.slotId" :quote="state.quote" :busy="busy||state.busy||submitting" :pricing="quoteWaiting" :ready="unifiedReady" :choices-ready="productSpecSelection" :pending="!!(state.pending||state.orderSn)" :error="error||state.error||state.checkoutError||state.deliveryMessage" :access-required="loginOpen" :can-submit="!!canSubmit" @address="chooseAddress" @slot="selectSlot" @toggle="toggle" @quantity="changeQuantity" @confirm="submit" @recover="recover" @retry="refreshUnified" @scroll="emit('scroll',$event)"><template #access><CommerceAccess entry @ready="refreshUnified"/></template></MealPurchasePanel>
   <template v-else>
   <scroll-view v-show="!embedded||!checkoutOpen" :scroll-y="embedded" :show-scrollbar="false" class="purchase-scroll">
-  <view class="section-head"><text class="section-title">{{route.meal==='daily'&&route.meals?.length>1?'所选餐次食材汇总':'本餐所需食材'}}</text><text>家中已有可取消</text></view>
-  <text v-if="reference?.needsMatching&&!state.ready" class="safe-note">将按本餐核对商品；进入结算后可调整包装数量。</text><text v-if="reference" class="safe-note">参考餐单用量未核算，请核对实际需要；未匹配的食材需自行准备。</text><text v-if="busy||state.busy" class="safe-note">正在核对商品与配送…</text>
+  <view v-if="!exclusive" class="section-head"><text class="section-title">{{route.meal==='daily'&&route.meals?.length>1?'所选餐次食材汇总':'本餐所需食材'}}</text><text>家中已有可取消</text></view>
+  <text v-if="!exclusive&&reference?.needsMatching&&!state.ready" class="safe-note">将按本餐核对商品；进入结算后可调整包装数量。</text><text v-if="reference&&!exclusive" class="safe-note">参考餐单用量未核算，请核对实际需要；未匹配的食材需自行准备。</text><text v-if="busy||state.busy" class="safe-note">正在核对商品与配送…</text>
   <view v-if="error||state.error" class="card status" role="alert"><text>{{error||state.error}}</text><button class="secondary-button" :disabled="busy||state.busy" @click="refresh">重新核对本餐食材</button></view>
-  <text v-if="preview&&!preview.available" class="inline-error">{{preview.message||'当前食材暂不可采购，请重新核对。'}}</text><view v-if="reference?.gaps?.length" class="purchase-gaps"><text>这些食材不进入购物车</text><text v-for="(gap,i) in reference.gaps" :key="i">{{referenceIngredientLabel(reference?.ingredientLabels,gap.ingredient)}}：{{['no_match','needs_confirmation'].includes(gap.reason)?'自行购买 · 暂无价格；':''}}{{referenceGapDetail(gap)}}</text></view>
-  <view class="products"><view v-for="item in products" :key="item.id" class="product"><button class="product-select" :disabled="busy||state.busy||!selectable(item)" :aria-pressed="picked.includes(item.id)" :aria-label="(picked.includes(item.id)?'取消选择':'选择')+item.name" @click="toggle(item.id)"><view class="check" :class="{selected:picked.includes(item.id)}">{{picked.includes(item.id)?'✓':''}}</view></button><FoodImageSlot :src="item.imageUrl" :label="item.name" class="product-image"/><view class="product-copy"><text class="product-name">{{item.name}}</text><text>{{item.needLabel}}</text><text>{{item.packLabel}}</text><view class="quantity-control"><button :aria-label="'减少'+item.name+'数量'" :disabled="busy||state.busy||!selectable(item)||item.quantity<=1" @click="changeQuantity(item,-1)">−</button><text>{{item.quantity}} 包</text><button :aria-label="'增加'+item.name+'数量'" :disabled="busy||state.busy||!selectable(item)||(Number.isFinite(item.availableQuantity)&&item.quantity>=item.availableQuantity)" @click="changeQuantity(item,1)">＋</button></view><text v-if="!selectable(item)" class="stock-alert">暂不可选</text><text v-else-if="Number.isFinite(item.availableQuantity)&&item.availableQuantity<item.quantity" class="stock-alert">库存不足</text></view><text class="product-price">{{Number.isFinite(item.priceCents)?'¥'+money(item.priceCents*item.quantity):'待核价'}}</text></view></view>
+  <text v-if="preview&&!preview.available" class="inline-error">{{preview.message||'当前食材暂不可采购，请重新核对。'}}</text><view v-if="!exclusive&&reference?.gaps?.length" class="purchase-gaps"><text>这些食材不进入购物车</text><text v-for="(gap,i) in reference.gaps" :key="i">{{referenceIngredientLabel(reference?.ingredientLabels,gap.ingredient)}}：{{['no_match','needs_confirmation'].includes(gap.reason)?'自行购买 · 暂无价格；':''}}{{referenceGapDetail(gap)}}</text></view>
+  <view class="products"><view v-for="item in products" :key="item.id" class="product"><button class="product-select" :disabled="busy||state.busy||!selectable(item)" :aria-pressed="picked.includes(item.id)" :aria-label="(picked.includes(item.id)?'取消选择':'选择')+item.name" @click="toggle(item.id)"><view class="check" :class="{selected:picked.includes(item.id)}">{{picked.includes(item.id)?'✓':''}}</view></button><view class="product-image"><FoodImageSlot :src="item.imageUrl" :label="item.name" :width="52" :height="60" :radius="15"/></view><view class="product-copy"><text class="product-name">{{item.name}}</text><text v-if="!exclusive">{{item.needLabel}}</text><text>{{item.packLabel}}</text><view class="quantity-control"><button :aria-label="'减少'+item.name+'数量'" :disabled="busy||state.busy||!selectable(item)||item.quantity<=1" @click="changeQuantity(item,-1)">−</button><text>{{item.quantity}} 包</text><button :aria-label="'增加'+item.name+'数量'" :disabled="busy||state.busy||!selectable(item)||(Number.isFinite(item.availableQuantity)&&item.quantity>=item.availableQuantity)" @click="changeQuantity(item,1)">＋</button></view><text v-if="!selectable(item)" class="stock-alert">暂不可选</text><text v-else-if="Number.isFinite(item.availableQuantity)&&item.availableQuantity<item.quantity" class="stock-alert">库存不足</text></view><text class="product-price">{{Number.isFinite(item.priceCents)?'¥'+money(item.priceCents*item.quantity):'待核价'}}</text></view></view>
   </scroll-view>
-  <view v-show="!embedded||!checkoutOpen" class="meal-bottom-bar"><view class="selection-summary"><text>{{route.meal==='daily'?(route.meals||[]).map(m=>({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}[m])).join('、')+' · 商品小计':'商品小计 · '+picked.length+' 项'}}</text><text class="amount">{{totalKnown?'¥'+money(total):'价格待核对'}}</text></view><button class="checkout-button" :disabled="busy||state.busy||!purchaseReady||(!picked.length&&!reference?.needsMatching)||!!error" @click="checkout">{{preview?.confirmation_pending?'确认上次采购结果':'去结算'}}<text v-if="!preview?.confirmation_pending">→</text></button></view>
+  <view v-show="!embedded||!checkoutOpen" class="meal-bottom-bar"><view class="selection-summary"><text>{{exclusive?'商品小计':route.meal==='daily'?(route.meals||[]).map(m=>({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}[m])).join('、')+' · 商品小计':'商品小计 · '+picked.length+' 项'}}</text><text class="amount">{{totalKnown?'¥'+money(total):'价格待核对'}}</text></view><button class="checkout-button" :disabled="busy||state.busy||!purchaseReady||(!picked.length&&!reference?.needsMatching)||!!error" @click="checkout">{{preview?.confirmation_pending?'确认上次采购结果':'去结算'}}<text v-if="!preview?.confirmation_pending">→</text></button></view>
   <PurchaseCheckoutSheet :embedded="embedded" :open="checkoutOpen" :title="route.meal==='daily'&&route.meals?.length>1?'确认采购订单':'确认本餐订单'" :address="state.address" :slots="state.slots" :slot-id="state.slotId" :products="products.filter(p=>picked.includes(p.id))" :quote="state.quote" :busy="busy||state.busy" :error="error||state.error||state.checkoutError||state.deliveryMessage" :pending="!!(state.pending||state.orderSn)" :access-required="loginOpen" @close="checkoutOpen=false" @address="chooseAddress" @slot="selectSlot" @confirm="submit" @recover="recover" @quote="checkout"><template #access><CommerceAccess entry @ready="checkout"/></template></PurchaseCheckoutSheet>
   </template>
  </view>
@@ -248,3 +249,15 @@ onUnmounted(() => { alive = false; clearTimeout(quoteTimer); page.dispose() })
 </style>
 
 <style scoped>.purchase-gaps{padding:14px 16px;margin:12px 0;border:1px solid #eee4d6;border-radius:20px;background:#fbf8f1;color:#9a805c;font-size:12px;line-height:1.8}.purchase-gaps text{display:block}.purchase-gaps text:first-child{font-weight:500;margin-bottom:4px}</style>
+
+<style scoped>
+.is-exclusive .quantity-control button{background:#eaf2ff;color:#537bb8}.is-exclusive .product-copy .product-name{color:#424b60}.is-exclusive .safe-note{text-align:left}.is-exclusive .meal-bottom-bar{background:#ffffffef}.is-exclusive .checkout-button{background:#6386bb}
+</style>
+
+<style scoped>
+.product{gap:10px;padding:16px 0;align-items:flex-start}.product-select{flex:0 0 24px;min-width:24px;width:24px;margin-top:8px}.product-image{display:block;flex:0 0 52px;width:52px;min-width:52px;height:60px;overflow:hidden;border-radius:15px;margin-top:2px}.product-copy{flex:1;min-width:0;width:0}.product-copy .product-name{white-space:normal;overflow-wrap:anywhere;word-break:break-all;line-height:1.5;margin-bottom:4px}.product-price{flex:0 0 auto;max-width:90px;font-size:13px;line-height:1.6;margin-top:2px;padding:0}.quantity-control{gap:6px;flex-wrap:nowrap;margin-top:8px}.quantity-control button{flex:0 0 28px;min-width:28px;width:28px;min-height:30px}.quantity-control>text{flex:none;white-space:nowrap}
+</style>
+
+<style scoped>
+.is-exclusive .meal-bottom-bar{gap:16px;padding:12px 18px calc(env(safe-area-inset-bottom) + 12px);align-items:center}.is-exclusive .selection-summary{flex-direction:row;align-items:center;justify-content:space-between;gap:10px;line-height:1.5}.is-exclusive .selection-summary>text:first-child{max-width:none;flex:none;white-space:nowrap;font-size:14px;line-height:1.5}.is-exclusive .selection-summary .amount{font-size:14px;font-weight:500;line-height:1.5;color:#424b60}.is-exclusive .checkout-button{flex:none;max-width:none;min-height:42px;padding:10px 16px;gap:6px;font-size:14px;font-weight:500;line-height:1.5;white-space:nowrap}
+</style>

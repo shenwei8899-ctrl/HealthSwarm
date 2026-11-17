@@ -10,14 +10,14 @@ class AgentMealSourceService
     public static function referenceSource(array $proof)
     {
         $source = Json::decode($proof['payload'] ?? '{}', []);
-        return in_array(($source['kind'] ?? ''), ['reference_plan', 'meal_selection'], true) ||
+        return in_array(($source['kind'] ?? ''), ['reference_plan', 'meal_selection', 'exclusive_purchase'], true) ||
             (($source['kind'] ?? '') === 'conversation_catalog' && ($source['trade_policy'] ?? '') === 'catalog_v1') ? $source : null;
     }
 
     /** 采购版本由签名来源绑定，客户端不能借用另一段对话。 */
     private static function referenceVersion(array $source)
     {
-        if (($source['kind'] ?? '') === 'meal_selection') return $source['menu_version_ref'] ?? '';
+        if (in_array(($source['kind'] ?? ''), ['meal_selection', 'exclusive_purchase'], true)) return $source['menu_version_ref'] ?? '';
         return ($source['kind'] ?? '') === 'conversation_catalog'
             ? 'conversation:' . ($source['request_id'] ?? '')
             : 'reference:' . ($source['preview_id'] ?? '');
@@ -46,6 +46,9 @@ class AgentMealSourceService
         }
         if (($source['kind'] ?? '') === 'meal_selection' && (($payload['family_ref'] ?? '') !== 'meal-selection:' . ($source['family_id'] ?? '') || !empty($payload['ingredient_requirements']))) {
             throw new DomainException('菜品采购范围或家庭来源不一致', 40301, 403);
+        }
+        if (($source['kind'] ?? '') === 'exclusive_purchase' && (($payload['family_ref'] ?? '') !== 'exclusive-purchase:' . ($source['family_id'] ?? '') || !empty($payload['ingredient_requirements']))) {
+            throw new DomainException('整份计划采购来源不一致', 40301, 403);
         }
         $this->assertReferenceItems($payload['items'] ?? [], $verified['items'] ?? []);
         return true;
@@ -84,6 +87,9 @@ class AgentMealSourceService
         }
         if (($source['kind'] ?? '') === 'meal_selection' && ($row['family_ref'] ?? '') !== 'meal-selection:' . ($source['family_id'] ?? '')) {
             throw new DomainException('菜品采购家庭来源不一致', 40301, 403);
+        }
+        if (($source['kind'] ?? '') === 'exclusive_purchase' && ($row['family_ref'] ?? '') !== 'exclusive-purchase:' . ($source['family_id'] ?? '')) {
+            throw new DomainException('整份计划采购家庭来源不一致', 40301, 403);
         }
         (new IdentityService())->assertOwner($row['user_id'],
             (new IdentityService())->resolveUserId($row['agent_client_id'], $row['user_ref']));

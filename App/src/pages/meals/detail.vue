@@ -3,6 +3,7 @@ import {ref,watch,getCurrentInstance} from 'vue'
 import {onLoad,onShow,onUnload,onBackPress} from '@dcloudio/uni-app'
 import MealDetailSheet from '../../components/MealDetailSheet.vue'
 import {openerChannel} from '../../services/address-navigation.js'
+import {takeMealPageTarget} from '../../services/meal-workspace.js'
 import {storageContext} from '../../services/storage.js'
 import {request} from '../../services/request.js'
 import {getSession} from '../../services/session.js'
@@ -42,15 +43,22 @@ async function openPending(){
 function retry(){if(!current())return;openedTarget=null;error.value='';waitForDetail();void openPending()}
 // Native refs may arrive after the EventChannel payload, or before it.
 watch([detail,pendingTarget],()=>{void openPending()},{flush:'post'})
-onLoad(()=>{openerChannel(instance)?.on('mealWorkspace',value=>{
- if(!current()||value?.owner!==owner)return
+function receiveTarget(target){
+ if(!current()||received.value)return
  received.value=true
- if(!value.target){error.value='餐单来源不完整，请返回餐单重新打开。';return}
- pendingTarget.value=value.target;waitForDetail()
+ if(!target){error.value='餐单来源不完整，请返回餐单重新打开。';return}
+ pendingTarget.value=target;waitForDetail()
  void request({path:'/api/family/'+encodeURIComponent(getSession().householdId)+'/miniapp-profile'}).then(({data})=>{
   if(current())members.value=data.members||[]
  }).catch(()=>{/* Member refresh must not prevent opening the saved meal. */})
-})})
+}
+onLoad(options=>{
+ const target=takeMealPageTarget(options?.mealNavigation)
+ if(target){receiveTarget(target);return}
+ openerChannel(instance)?.on('mealWorkspace',value=>{
+  if(value?.owner===owner)receiveTarget(value.target)
+ })
+})
 onShow(()=>{if(owner!==storageContext()){clearOpeningTimer();detail.value?.clear();leave()}})
 // Our own navigateBack must not be intercepted again by component state.
 onBackPress(event=>event?.from==='navigateBack'?false:detail.value?.handleBack?.()===true)

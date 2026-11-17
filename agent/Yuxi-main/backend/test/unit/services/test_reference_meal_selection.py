@@ -487,7 +487,7 @@ def assembly(monkeypatch):
         receipt.get(key) == value for key, value in doc.items()
     )
     fake_planner = ModuleType("yuxi.services.health_meal_plan_service")
-    fake_planner.require_planner_run = AsyncMock(return_value=(run, "synthetic-binding"))
+    fake_planner.require_planner_run = AsyncMock(return_value=(run, SimpleNamespace(initial_planner_selection={})))
     fake_manager = ModuleType("yuxi.storage.postgres.manager")
     fake_manager.pg_manager = SimpleNamespace(get_async_session_context=session)
     monkeypatch.setitem(sys.modules, fake_service.__name__, fake_service)

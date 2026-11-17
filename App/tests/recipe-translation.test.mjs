@@ -37,6 +37,19 @@ test('missing or incomplete translations show Chinese status while preserving or
  assert.equal(dishTitle(dish),'菜谱中文译文待补充')
 })
 
+test('new recipes display original Chinese, Latin units and source annotations verbatim', () => {
+ const dish = {
+  file_id: 'file', chunk_id: 'chunk', recipe_text_source: 'original', name: '抹茶拿鐵',
+  ingredients: ['A. 牛奶 150cc'], steps: ['用 200cc 熱水沖開。', '〔來源（Wikipedia）〕'],
+  display_zh: { name: '旧展示稿', ingredients: ['牛奶'], steps: ['冲开', ''] },
+ }
+ assert.equal(dishTitle(dish), '抹茶拿鐵')
+ assert.deepEqual(recipeDisplay(dish).ingredients, dish.ingredients)
+ assert.deepEqual(recipeDisplay(dish).steps, dish.steps)
+ assert.equal(referenceIngredientLabel({}, '牛奶 150cc'), '牛奶 150cc')
+ assert.deepEqual(recipeDisplay({...dish, recipe_text_source: undefined, display_zh: undefined}).steps, dish.steps)
+})
+
 async function guide(dish){
  const source=readFileSync(new URL('../src/components/CookingGuide.vue',import.meta.url),'utf8')
  const script=source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
@@ -122,7 +135,7 @@ test('actual meal overview keeps concise nutrition and Chinese dishes without pr
  const portions=['我','爸爸','妈妈','哥哥','姐姐'].map((name,index)=>({memberId:String(index),name,grams:100+index*10}))
  const html=await renderToString(createSSRApp({render:compile(template),components:{FoodImageSlot:{template:'<view />'},DishMemberPortions},setup:()=>({
   state:{meal:{members:[{name:'我'}],dishes:[translated(),{id:'unknown',name:'蔬菜汤'}]}},nutritionSummary:[{key:'protein',label:'蛋白质',value:32,unit:'克'}],
-  key:'meal',portionRows:[portions,[]],dishKey,dishTitle,recipeCover,showDish:()=>{},
+  key:'meal',swapOptions:()=>[],swappingId:'',portionRows:[portions,[]],dishKey,dishTitle,recipeCover,showDish:()=>{},
  })}))
  assert.match(html,/鸡肉意面/)
  assert.match(html,/蛋白质 32 克/)

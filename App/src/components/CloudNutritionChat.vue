@@ -20,6 +20,8 @@ import DinerPicker from './DinerPicker.vue'
 import HealthChatBusinessCard from './HealthChatBusinessCard.vue'
 import DailyArrangementCard from './DailyArrangementCard.vue'
 import DailyMealPlanCard from './DailyMealPlanCard.vue'
+import DishSwapSheet from './DishSwapSheet.vue'
+import { createDishSwap, dishSwapState } from '../services/dish-swap.js'
 import WeeklyMealPlanCard from './WeeklyMealPlanCard.vue'
 import TodayMealPlanContent from './TodayMealPlanContent.vue'
 import TodayMealPlanSheet from './TodayMealPlanSheet.vue'
@@ -69,12 +71,6 @@ const question=ref(''),chatError=ref(''),messages=ref([]),task=ref({}),consentCh
 const weeklyOpenDate=ref(''),weeklyOpenGroup=ref(''),weeklyDetail=ref(null),weeklyBusy=ref(false)
 let weeklyTimers={},weeklyRetryGeneration=0
 // 跨流式区和最终消息保留已出现餐次；历史读取默认不播放入场动画。
-const mealAppearances=reactive({})
-function rememberMealAppearance({requestId,key}){
-  if(!requestId)return
-  const seen=mealAppearances[requestId]||(mealAppearances[requestId]=[])
-  if(!seen.includes(key))seen.push(key)
-}
 const localSend=ref(null),sendPhase=ref('')
 const voiceMode=ref(false),voiceBusy=ref(false),voiceRef=ref(null),communityOpen=ref(false),scrollTarget=ref(''),inlineTodayOpen=ref(false)
 const draftImage=ref(null),draftSaving=ref(false),draftError=ref('')
@@ -209,6 +205,19 @@ let selectionGeneration=0,historyDenied=false
 const conversationReadOnly=computed(()=>!!task.value.readOnly||!!conversationBusinessDate.value&&conversationBusinessDate.value<localDate())
 const mealViewBlocked = computed(() => historyLoading.value || switchingConversation.value ||
  continuationChecking.value || historyDenied || !!historyError.value || voiceBusy.value || conversationReadOnly.value)
+const dishSwap=reactive(dishSwapState())
+const swapClient=createDishSwap({state:dishSwap,onPlan:plan=>{
+  acceptTodayPlan(plan)
+  todayMenuClient.acceptSavedPlan(plan,profile.value)
+}})
+watch([()=>todayPlan.value?.version,()=>todayPlan.value?.date,mealViewBlocked],()=>{
+  if(mealViewBlocked.value)swapClient.clear()
+  else if(todayPlan.value)void swapClient.load(todayPlan.value)
+},{immediate:true})
+function openDishSwap({item,dish,plan}){
+  if(mealViewBlocked.value||planPurchaseBusy.value||state.busy||planRunning.value)return
+  swapClient.open(item,dish,plan)
+}
 const conversationDrafts=new Map()
 const historyMemberId=computed(()=>selfProfileMember(profile.value)?.healthMemberId||'')
 const mealReplyActions=computed(()=>{
@@ -422,7 +431,7 @@ const flow=createHealthTaskFlow({daily:true,onChange:next=>{
       latestReference.value=result.data
     }
     const message={historyCached:false,threadId:next.entry?.thread_id||conversationThreadId.value,id:messages.value[index]?.id||id,serverMessageId:next.finalMessageId,requestId:next.requestId,role:'assistant',createdAt:messages.value[index]?.createdAt||new Date().toISOString(),citations:result.citations||[],
-      text:result.type==='answer'?result.text:result.type==='needs_input'?result.questions.join('\n'):result.type==='error'?(failureText[result.code]||'这次处理未能完成，请重新读取或编辑问题后再试。'):candidates?'待核对候选已返回，个人适用性尚未确认。':isReferencePlan(result.data)?mealPairingText(result.data):'餐单结果已返回，请核对后决定是否使用。',
+      text:result.type==='answer'?result.text:result.type==='needs_input'?result.questions.join('\n'):result.type==='error'?(result.message||failureText[result.code]||'这次处理未能完成，请重新读取或编辑问题后再试。'):candidates?'待核对候选已返回，个人适用性尚未确认。':isReferencePlan(result.data)?mealPairingText(result.data):'餐单结果已返回，请核对后决定是否使用。',
       memberId:next.memberId,recordedMeals:candidates?[]:continuationChecking.value&&!result.recordedMeals?.length?(messages.value[index]?.recordedMeals||[]):result.recordedMeals||messages.value[index]?.recordedMeals||[],mealEnter:messages.value[index]?.mealEnter??(index<0&&!restoring&&!returning.value&&visible),purchaseOffers:candidates?[]:result.purchaseOffers||[],error:result.type==='error',errorCode:result.code,retryable:result.retryable===true,business:result.type==='business'?result:null,planDate:!candidates&&isReferencePlan(result.data)?result.data.plan_date:'',planMeals:!candidates&&isReferencePlan(result.data)?(result.data.meals||[]).map(meal=>meal.meal_type):undefined}
     if(index<0)messages.value.push(message);else messages.value[index]={...messages.value[index],...message,historyCached:false}
     if(!restoring&&!returning.value&&visible)void scrollLatest()
@@ -549,7 +558,13 @@ async function retryWeeklyPlan(plan){
   catch(error){if(current())chatError.value=error.message||'重试未完成，请稍后再试。'}
   finally{if(ticket===weeklyRetryGeneration)weeklyBusy.value=false}
 }
-function clearPrivate(){cancelHistorySelection();conversationHistory.clear();historyPreview.value=null;deniedHistoryThread.value='';todayMenuClient.clear();clearEntryRetry(false);selectionGeneration++;historyDenied=false;historyLoading.value=false;historyError.value='';historyNotice.value='';continuationChecking.value=false;continuationError.value='';pendingEntrySend.value=null;for(const key of Object.keys(mealAppearances))delete mealAppearances[key];clearReturnRetry();localSend.value=null;sendPhase.value='';scrollRevision++;latestAvailable.value=false;detailRef.value?.clear();resetEntryUI();onboardingPending.value=false;inlineTodayOpen.value=false;historyOpen.value=false;conversationId.value='';conversationThreadId.value='';conversationBusinessDate.value='';conversationDrafts.clear();entryReady.value=false;returnVerified.value=false;returning.value=false;returnError.value='';prompts.value=[];promptDate.value='';promptProfileKey.value='';mealsLoading.value=false;mealReadError.value='';latestReference.value=null;dailyPlans.value={};stopPlanTimers();referenceSelection=null;refreshedTerminal='';newConversationWelcome.value=false;preparedThreadId.value='';epoch++;sendGeneration++;sending.value=false;loading=null;returnFlight=null;profileLoading.value=false;flow.hide();client.reset();familyClient.reset();familyPanel.value=false;familySelection.value=null;messages.value=[];question.value='';chatError.value='';profile.value=null;task.value={};selectedMeal.value=null;removeDraft();pendingUser=null;submittedDraft=null;voiceRef.value?.cancel();voiceBusy.value=false;voiceMode.value=false;cardVisible.value=false}
+const mealAppearances=reactive({})
+function rememberMealAppearance({requestId,key}){
+  if(!requestId)return
+  const seen=mealAppearances[requestId]||(mealAppearances[requestId]=[])
+  if(!seen.includes(key))seen.push(key)
+}
+function clearPrivate(){swapClient.clear();cancelHistorySelection();conversationHistory.clear();historyPreview.value=null;deniedHistoryThread.value='';todayMenuClient.clear();clearEntryRetry(false);selectionGeneration++;historyDenied=false;historyLoading.value=false;historyError.value='';historyNotice.value='';continuationChecking.value=false;continuationError.value='';pendingEntrySend.value=null;for(const key of Object.keys(mealAppearances))delete mealAppearances[key];clearReturnRetry();localSend.value=null;sendPhase.value='';scrollRevision++;latestAvailable.value=false;detailRef.value?.clear();resetEntryUI();onboardingPending.value=false;inlineTodayOpen.value=false;historyOpen.value=false;conversationId.value='';conversationThreadId.value='';conversationBusinessDate.value='';conversationDrafts.clear();entryReady.value=false;returnVerified.value=false;returning.value=false;returnError.value='';prompts.value=[];promptDate.value='';promptProfileKey.value='';mealsLoading.value=false;mealReadError.value='';latestReference.value=null;dailyPlans.value={};stopPlanTimers();referenceSelection=null;refreshedTerminal='';newConversationWelcome.value=false;preparedThreadId.value='';epoch++;sendGeneration++;sending.value=false;loading=null;returnFlight=null;profileLoading.value=false;flow.hide();client.reset();familyClient.reset();familyPanel.value=false;familySelection.value=null;messages.value=[];question.value='';chatError.value='';profile.value=null;task.value={};selectedMeal.value=null;removeDraft();pendingUser=null;submittedDraft=null;voiceRef.value?.cancel();voiceBusy.value=false;voiceMode.value=false;cardVisible.value=false}
 function rememberThread({migrateLegacy=false}={}){
   if(flowScope!==storageContext()||props.route.taskType&&props.route.taskType!=='consultation'||!task.value.entry?.thread_id||!task.value.memberId)return
   const key=`homepage-chat-threads:${task.value.memberId}:${localDate()}`,old=scopedStorage.getStorageSync(key)||[]
@@ -664,9 +679,12 @@ async function restoreChat(type=desiredType,{fresh=false,pending=null,preserveVi
       if(results.some((r,i)=>pointers[i].thread_id===currentThread&&r.status==='rejected'&&[409,410].includes(Number(r.reason?.code))))flow.invalidateThread()
       if(task.value.invalidated)return
       const snapshots=results.filter(r=>r.status==='fulfilled').map(r=>r.value)
-      const saved=snapshots.flatMap(p=>p.messages.filter(m=>visibleConversationMessage(m,!!options?.conversationId)).map(m=>({...m,memberId:p.memberId||id,threadId:p.threadId}))).sort((a,b)=>(Date.parse(a.createdAt)||0)-(Date.parse(b.createdAt)||0))
-      const live=messages.value.filter(m=>m.localOnly||m.requestId===task.value.requestId&&(m.status==='unknown'||m.role==='assistant'&&task.value.result))
-      messages.value=[...saved,...live.filter(m=>!saved.some(row=>row.id===m.id||m.requestId&&row.requestId===m.requestId&&row.role===m.role))]
+      const saved=snapshots.flatMap(p=>p.messages.filter(m=>visibleConversationMessage(m,!!options?.conversationId)).map(m=>({...m,memberId:p.memberId||id,threadId:p.threadId})))
+      const readableThreads=new Set(snapshots.map(snapshot=>snapshot.threadId))
+      const unmatched=messages.value.filter(m=>!saved.some(row=>row.threadId===m.threadId&&(row.id===m.id||m.requestId&&row.requestId===m.requestId&&row.role===m.role)))
+      // A history read can lag behind an answer already shown by the task flow.
+      const live=unmatched.filter(m=>!m.localOnly&&m.historyCached===false&&readableThreads.has(m.threadId)&&visibleConversationMessage(m,!!options?.conversationId))
+      messages.value=[...[...saved,...live].sort((a,b)=>(Date.parse(a.createdAt)||0)-(Date.parse(b.createdAt)||0)),...unmatched.filter(m=>m.localOnly)]
       rememberThread()
       for(const date of new Set(saved.map(message=>message.planDate).filter(Boolean))){
         if(date!==localDate())void loadDailyPlan(profile.value.householdId,date,ticket,scope).catch(e=>{if(!disposed&&visible&&ticket===epoch&&scope===storageContext())mealReadError.value=e.message})
@@ -675,7 +693,7 @@ async function restoreChat(type=desiredType,{fresh=false,pending=null,preserveVi
       if(active?.request_id&&!task.value.submitUnknown&&(!task.value.requestId||task.value.status==='queued'&&active.request_id!==task.value.requestId))await flow.restoreRequest(active.request_id,{preferActive:true})
       if(!preserveView)await scrollLatest()
       void restoreWeeklyPlans()
-    }else if(readHistory&&!task.value.requestId)messages.value=messages.value.filter(m=>m.localOnly)
+    }else if(readHistory&&!task.value.requestId&&!task.value.available)messages.value=messages.value.filter(m=>m.localOnly)
   }catch(e){if(!disposed&&ticket===epoch&&scope===storageContext()){if(verifyEntry)throw e;chatError.value=e.message;if(readHistory&&[401,403,404,409,410].includes(Number(e.code))){messages.value=[];question.value='';removeDraft();submittedDraft=null}}}
   finally{if(ticket===epoch&&scope===storageContext())restoring=false}
 }
@@ -765,7 +783,7 @@ async function loadEntry(recoveries,{skipOptional=false}={}){
       const text=question.value,image=draftImage.value,error=draftError.value
       clearPrivate();question.value=text;draftImage.value=image;draftError.value=error
     }
-    entryError.value=e.message||'咨询资料暂时无法读取，请重试。'
+    entryError.value='暂时无法连接，请重试'
     retryEntryInBackground()
   }
   finally{if(mine===epoch){loading=null;profileLoading.value=false;if(stalledEntry())watchEntryStall()}}})()
@@ -881,7 +899,7 @@ async function refreshReturnState({skipOptional=false}={}){
     if(!next.completeProfile&&!next.onboarded){clearPrivate();uni.redirectTo({url:'/pages/onboarding/index'});return}
     profile.value=next
     syncProfilePrompts()
-    void todayMenuClient.open(next,{readOnly:!!readDinerDraft(next)})
+    if(!skipOptional)void todayMenuClient.open(next,{readOnly:!!readDinerDraft(next)})
     const ok=await flow.resume()
     if(!current())return
     if(task.value.invalidated){return await recoverEntry({resetConversation:true})}
@@ -939,8 +957,8 @@ onMounted(()=>{keyboardLayout.start();uni.onNetworkStatusChange?.(reconnectEntry
   resumeEntryUI()
   if(entryReady.value){void refreshReturn().then(()=>restoreWeeklyPlans())}else void load()
 })
-onHide(()=>{cancelHistorySelection();historyPreview.value=null;todayMenuClient.pause();todayMenu.verified=false;clearEntryRetry();entryRecovery=null;if(historyLoading.value||continuationChecking.value)entryReady.value=false;selectionGeneration++;historyLoading.value=false;continuationChecking.value=false;switchingConversation.value=false;clearReturnRetry();if(pendingEntrySend.value){messages.value=messages.value.filter(message=>message!==pendingEntrySend.value.message);pendingEntrySend.value=null}if(localSend.value?.message.localOnly)failLocalSend();localSend.value=null;sendPhase.value='';scrollRevision++;pauseEntryUI();historyOpen.value=false;if(scrollTimer!==null)clearTimeout(scrollTimer);scrollTimer=null;visible=false;suspended=true;epoch++;sendGeneration++;loading=null;returnFlight=null;profileLoading.value=false;returning.value=false;restoring=false;returnVerified.value=false;mealsLoading.value=false;stopPlanTimers();voiceRef.value?.cancel();flow.pause();pendingUser=null;sending.value=false;client.pause();familyClient.pause();familyPanel.value=false;familySelection.value=null})
-onUnmounted(()=>{todayMenuClient.dispose();uni.offNetworkStatusChange?.(reconnectEntry);clearEntryRetry();entryRecovery=null;selectionGeneration++;clearReturnRetry();scrollRevision++;pauseEntryUI();entryMotion.dispose();if(scrollTimer!==null)clearTimeout(scrollTimer);disposed=true;returnFlight=null;epoch++;draftVersion++;stopPlanTimers();client.dispose();familyClient.dispose();flow.hide()})
+onHide(()=>{swapClient.clear();cancelHistorySelection();historyPreview.value=null;todayMenuClient.pause();todayMenu.verified=false;clearEntryRetry();entryRecovery=null;if(historyLoading.value||continuationChecking.value)entryReady.value=false;selectionGeneration++;historyLoading.value=false;continuationChecking.value=false;switchingConversation.value=false;clearReturnRetry();if(pendingEntrySend.value){messages.value=messages.value.filter(message=>message!==pendingEntrySend.value.message);pendingEntrySend.value=null}if(localSend.value?.message.localOnly)failLocalSend();localSend.value=null;sendPhase.value='';scrollRevision++;pauseEntryUI();historyOpen.value=false;if(scrollTimer!==null)clearTimeout(scrollTimer);scrollTimer=null;visible=false;suspended=true;epoch++;sendGeneration++;loading=null;returnFlight=null;profileLoading.value=false;returning.value=false;restoring=false;returnVerified.value=false;mealsLoading.value=false;stopPlanTimers();voiceRef.value?.cancel();flow.pause();pendingUser=null;sending.value=false;client.pause();familyClient.pause();familyPanel.value=false;familySelection.value=null})
+onUnmounted(()=>{swapClient.clear();todayMenuClient.dispose();uni.offNetworkStatusChange?.(reconnectEntry);clearEntryRetry();entryRecovery=null;selectionGeneration++;clearReturnRetry();scrollRevision++;pauseEntryUI();entryMotion.dispose();if(scrollTimer!==null)clearTimeout(scrollTimer);disposed=true;returnFlight=null;epoch++;draftVersion++;stopPlanTimers();client.dispose();familyClient.dispose();flow.hide()})
 async function openFormalDetail(meal,arrangement,date,extra={}){
  if(voiceBusy.value||!arrangement||!profile.value)return
  const scope=storageContext(),mine=epoch
@@ -1627,7 +1645,7 @@ function messageTime(message,index){
   <view v-for="(message,messageIndex) in visibleMessages" :id="'message-'+message.id" :key="message.id" class="message-turn">
    <view v-if="messageTime(message,messageIndex)" class="message-time"><text>{{messageTime(message,messageIndex)}}</text></view>
    <view v-if="!message.weeklyPlan" class="message-row" :class="message.role"><text v-if="hasMessageIssue(message)||message.role==='user'&&message.status==='unknown'" class="message-issue" :class="{'is-unconfirmed':message.status==='unknown'}" role="button" tabindex="0" :aria-label="message.status==='unknown'?'消息状态待确认':'查看消息失败原因'" @click="messageStatus(message)" @keydown.enter="messageStatus(message)">{{message.status==='unknown'?'?':'!'}}</text><view class="message-content"><view class="bubble"><view v-if="message.role==='assistant'" class="reply-card-head"><AppIcon name="assistant" :size="46" :state="message.business&&isReferencePlan(message.business.data)?'success':'idle'"/><text>家庭营养师</text></view><view class="bubble-body"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><text v-if="message.menuView" selectable>{{mealViewText(message)}}</text><AiAnswer v-else-if="message.role==='assistant'&&message.text" :text="message.text" :citations="message.citations||[]" :message-key="message.requestId" :shown-meals="mealAppearances[message.requestId]||[]" :animate-meals="!!message.mealEnter" @meal-shown="rememberMealAppearance" compact/><text v-else-if="message.text" selectable>{{message.text}}</text>
-   <button v-if="message.exclusivePlanEntry" @click="uni.navigateTo({url:'/pages/exclusive-plans/index'})">查看 AI 专属计划</button></view></view><text v-if="message.role==='user'&&message.status==='cancelled'" class="message-status-note">已停止</text><DailyMealPlanCard :meal-types="message.planMeals" @dish="openDailyDish($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" @detail="openDailyMeal($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" detail-mode v-if="message.planDate&&(message.menuView?verifiedMealView(message):dailyPlans[message.planDate])?.status==='ready'" :plan="message.menuView?verifiedMealView(message):dailyPlans[message.planDate]" :dish-grid="!!message.menuView" :busy="planPurchaseBusy" @open="openDailyMeal($event,message.planDate)" @members="selectDailyMembers($event,message.planDate)"/><HealthChatBusinessCard detail-mode @detail="openReferencePlan" v-else-if="message.business&&!message.planDate" :result="message.business" :member-id="message.memberId||task.memberId"/><ChatMealRecordCard v-for="receipt in message.recordedMeals||[]" :key="receipt.id" :receipt="receipt" @changed="updateMealReceipt"/><ChatReplyActions v-if="message.role==='assistant'&&message.text&&!message.error" :text="message.text" :message-id="message.serverMessageId||message.id" :can-quote="!chatBusy&&!conversationReadOnly" @quote="quoteReply"/></view></view>
+   <button v-if="message.exclusivePlanEntry" @click="uni.navigateTo({url:'/pages/exclusive-plans/index'})">查看 AI 专属计划</button></view></view><text v-if="message.role==='user'&&message.status==='cancelled'" class="message-status-note">已停止</text><DailyMealPlanCard :interactive="!mealViewBlocked" :swap-options="swapClient.candidates" :swap-busy="dishSwap.busy||planRunning" @swap="openDishSwap" :meal-types="message.planMeals" @dish="openDailyDish($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" @detail="openDailyMeal($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" detail-mode v-if="message.planDate&&(message.menuView?verifiedMealView(message):dailyPlans[message.planDate])?.status==='ready'" :plan="message.menuView?verifiedMealView(message):dailyPlans[message.planDate]" :dish-grid="!!message.menuView" :busy="planPurchaseBusy" @open="openDailyMeal($event,message.planDate)" @members="selectDailyMembers($event,message.planDate)"/><HealthChatBusinessCard detail-mode @detail="openReferencePlan" v-else-if="message.business&&!message.planDate" :result="message.business" :member-id="message.memberId||task.memberId"/><ChatMealRecordCard v-for="receipt in message.recordedMeals||[]" :key="receipt.id" :receipt="receipt" @changed="updateMealReceipt"/><ChatReplyActions v-if="message.role==='assistant'&&message.text&&!message.error" :text="message.text" :message-id="message.serverMessageId||message.id" :can-quote="!chatBusy&&!conversationReadOnly" @quote="quoteReply"/></view></view>
    <view v-if="message.weeklyPlan" class="message-row assistant"><view class="message-content"><WeeklyMealPlanCard :plan="message.weeklyPlan" :busy="weeklyBusy" :open-date="weeklyOpenGroup===message.weeklyPlan.group_id?weeklyOpenDate:''" :detail="weeklyOpenGroup===message.weeklyPlan.group_id?weeklyDetail:null" @day="openWeeklyDay($event,message.weeklyPlan.group_id)" @retry="retryWeeklyPlan(message.weeklyPlan)" @exclusive="uni.navigateTo({url:'/pages/exclusive-plans/index'})"/></view></view>
   </view>
   <view v-if="mealReplyActions&&!chatBusy&&!conversationReadOnly" class="reply-actions" aria-label="继续安排饮食">
@@ -1669,6 +1687,8 @@ function messageTime(message,index){
   <MealDetailSheet ref="detailRef" :members="profile?.members||[]" :reload="reloadDetailPlan" @open-change="detailOpen=$event"/>
   <ChatConversationPreview v-if="historyPreview" :row="historyPreview" :member-id="historyMemberId" :replying="replyPending" @close="historyPreview=null" @directory="historyOpen=true" @denied="deniedPreview"/>
   <ChatConversationDrawer :open="historyOpen" :member-id="historyMemberId" :active-thread-id="historyPreview?.thread_id||conversationThreadId" :new-busy="switchingConversation||!entryReady" :busy="conversationChangeBusy||!!pendingEntrySend" :browse-busy="voiceBusy||draftSaving" :denied-thread-id="deniedHistoryThread" :pending-thread-id="pendingHistoryThread" :selection-error="historySelectionError" :display-name="profile?.members.find(m=>m.id===profile.selfMemberId)?.name||'我的'" @close="closeHistoryDirectory" @ready="prefetchHistory" @new="newConversation" @select="browseConversation" @profile="closeHistoryDirectory();uni.navigateTo({url:'/pages/my/index'})"/>
+  <view v-if="dishSwap.error&&!dishSwap.open&&!mealViewBlocked" class="swap-load-notice"><text>{{dishSwap.error}}</text><button @click="swapClient.load(todayPlan)">刷新换菜候选</button></view>
+  <DishSwapSheet :state="dishSwap" @close="swapClient.close" @choose="swapClient.choose"/>
   <TodayMealPlanSheet :open="inlineTodayOpen" :state="todayMenu" :busy="planPurchaseBusy||state.busy||dinerSaving||todayMenuClient.isGenerating()" :interactive="!mealViewBlocked" :members="profile?.members" :default-diners="profile?.defaultDiners" :diner-draft="dinerDraft" @confirm-diners="confirmTodayDiners" @arrange-diners="arrangeTodayDiners()" @close="inlineTodayOpen=false" @action="actTodayMenu" @detail="showTodayMeal" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
   <DinerPicker :open="!!familySelection" :members="profile?.members||[]" :selected="familySelection?.ids||[]" :meal="({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'})[familySelection?.type]" @close="familySelection=null" @confirm="familyMembers"/>
   <DinerPicker :open="!!selectedMeal" :members="profile?.members||[]" :selected="selectedMeal?.members.map(m=>m.id)||[]" :meal="({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'})[selectedMeal?.type]" @close="selectedMeal=null" @confirm="members"/>
@@ -1722,4 +1742,8 @@ function messageTime(message,index){
 .send-button.is-thinking{animation:stop-button-breathe 1.8s ease-in-out infinite;transform-origin:center}
 @keyframes stop-button-breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
 @media(prefers-reduced-motion:reduce){.send-button.is-thinking{animation:none;transform:none}}
+</style>
+
+<style scoped>
+.swap-load-notice{position:fixed;left:20px;right:20px;bottom:220px;z-index:1400;padding:12px 14px;border:1px solid #eee9df;border-radius:12px;background:#fffdf7;font-size:12px;line-height:1.6;color:#786a53}.swap-load-notice button{display:inline-block;margin:6px 0 0;padding:0 10px;min-height:36px;line-height:36px;background:#f2eee4;color:#665a45;font-size:12px}
 </style>

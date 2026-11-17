@@ -533,6 +533,7 @@ class HealthMemoryFact(Base):
     actor_uid = Column(String, ForeignKey("users.uid"), nullable=False)
     member_id = Column(String(36), ForeignKey("family_member.id"), nullable=False, index=True)
     fact_key = Column(String(64), nullable=False)
+    provenance = Column(JSON_VALUE, nullable=False, default=dict, server_default=text("'{}'"))
     kind = Column(String(24), nullable=False)
     content = Column(String(500), nullable=False)
     version = Column(Integer, nullable=False, default=1)
@@ -556,9 +557,22 @@ class HealthMemoryRevision(Base):
     source_hash = Column(String(64), nullable=False)
     source_message_id = Column(Integer, ForeignKey("messages.id", ondelete="SET NULL"))
     source_run_id = Column(String(64), ForeignKey("agent_runs.id", ondelete="SET NULL"))
+    provenance = Column(JSON_VALUE, nullable=False, default=dict, server_default=text("'{}'"))
     content = Column(String(500), nullable=False)
     kind = Column(String(24), nullable=False)
     status = Column(String(16), nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+
+
+class HealthMemoryProcessing(Base):
+    """每个持久化请求的语义处理收据，空结果也不会重复提取。"""
+
+    __tablename__ = "health_memory_processing"
+    request_id = Column(String(64), primary_key=True)
+    actor_uid = Column(String, ForeignKey("users.uid"), primary_key=True)
+    run_id = Column(String(64), ForeignKey("agent_runs.id"), nullable=False)
+    source_hash = Column(String(64), nullable=False)
+    result = Column(JSON_VALUE, nullable=False)
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
@@ -1016,6 +1030,7 @@ class HealthRecipeCommerceSource(Base):
     steps = Column(JSON_VALUE, nullable=False)
     ingredient_codes = Column(JSON_VALUE, nullable=False)
     source_ref = Column(String(500), nullable=False)
+    presentation = Column(JSON_VALUE, nullable=True)
     published_by = Column(String, ForeignKey("users.uid"), nullable=False)
 
 
@@ -1077,6 +1092,7 @@ HEALTH_TABLES = HEALTH_BUDGET_TABLES + [
         HealthFeedbackWrite,
         NutritionEvidence,
         NutritionEvidenceCitation,
+        HealthMemoryProcessing,
         HealthMemoryFact,
         HealthMemoryRevision,
         HealthMemoryUse,

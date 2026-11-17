@@ -5,7 +5,8 @@ import {ref,computed,reactive,effectScope,watch} from 'vue'
 import {referenceIngredientLabel,referenceGapDetail} from '../src/utils/meal-presentation.js'
 import {newMealCommerceState,createMealCommerceController,commerceMealView} from '../src/services/meal-commerce-state.js'
 
-function mount({daily=false,reference=false,productReference=false,unavailableSpec=false,selection,unified=false,gaps=[]}={}){
+function mount({daily=false,reference=false,exclusive=false,productReference=false,unavailableSpec=false,selection,unified=false,gaps=[]}={}){
+  if(exclusive)reference=true
   const calls=[],hooks={},route={date:'2026-10-21',meal:'dinner',arrangement:'saved-1',version:'2'}
   if(daily){route.meal='daily';route.meals=['breakfast','lunch']}
   let scope='A',linked=false,publicationVersion=2,denied=false,referenceVersion=4
@@ -27,6 +28,7 @@ function mount({daily=false,reference=false,productReference=false,unavailableSp
   const send=async input=>{
     calls.push(input)
     if(denied)throw Object.assign(new Error('采购用途授权已撤回'),{code:403})
+    if(exclusive)return {data:{scope_hash:String(referenceVersion),...(input.method==='POST'?{package:{package_sn:'pack-1',package_version:1}}:{})}}
     if(reference){if(input.method==='POST')return {data:{preview_id:'preview',package:{package_sn:'pack-1',package_version:1}}};return {data:{date:route.date,version:referenceVersion,purchase_options:[{kind:'reference',id:'preview',meal_types:['lunch']}]}}}
     return {data:{arrangement_id:route.arrangement,version:input.method==='POST'?publicationVersion:2,
       purchase:input.method==='POST'?{...purchase,package_sn:'pack-1',package_version:1}:structuredClone(purchase)}}
@@ -39,6 +41,7 @@ function mount({daily=false,reference=false,productReference=false,unavailableSp
       ]}]
     : [{sku_id:'tomato',product_id:'tomato-product',product_name:'合成番茄',quantity:1}]
   const uiProps=reactive({unified,visible:true,route,meal:{members:[{id:'member-1'}]},selection,...(reference?{reference:{previewId:'preview',dailyPlanVersion:4,mealTypes:['lunch'],items:referenceItems}}:{})})
+  if(exclusive){uiProps.exclusive={path:'/api/health/v1/families/family/exclusive-plans/group/tiers/standard/purchase',scopeHash:'4'};delete uiProps.reference.dailyPlanVersion}
   const deps={ref,computed,watch,referenceIngredientLabel,referenceGapDetail,defineEmits:()=>()=>{},defineExpose:()=>{},onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
     defineOptions:()=>{},defineProps:()=>uiProps,commerce:api,request:send,
     commerceMealView,getSession:()=>({householdId:'family-1'}),storageContext:()=>scope,
@@ -52,6 +55,18 @@ function mount({daily=false,reference=false,productReference=false,unavailableSp
   return {...component,calls,uiProps,deny(){denied=true},pending(){purchase.available=false;purchase.confirmation_pending=true;items[0].sku.available_quantity=0},unavailable(){purchase.available=false;purchase.confirmation_pending=false},link(){linked=true},wrongVersion(){publicationVersion=3},switch(){scope='B'},
     changeReferenceVersion(){referenceVersion++},dispose(){hooks.unmount();vueScope.stop()}}
 }
+
+test('21-day exclusive purchase binds publication to its tier and scope, then reuses checkout',async()=>{
+ const f=mount({exclusive:true});try{
+  f.link();await f.refresh();await f.checkout()
+  const writes=f.calls.filter(c=>c?.method==='POST')
+  assert.equal(writes.length,1);assert.equal(writes[0].path,f.uiProps.exclusive.path)
+  assert.deepEqual(writes[0].data,{scope_hash:'4'})
+  assert.equal(f.state.ready,true);assert.ok(f.state.quote)
+  f.changeReferenceVersion();await f.checkout();assert.match(f.error.value,/计划或商品已变化/)
+  assert.equal(f.calls.filter(c=>c?.method==='POST').length,1)
+ }finally{f.dispose()}
+})
 
 test('opening unified procurement initializes address, time and quote in one step',async()=>{
  const f=mount({unified:true});try{

@@ -10,18 +10,21 @@ export function canPurchaseAllMeals(plan, visibleTypes = mealTypes) {
 }
 
 export function dishTitle(dish) {
-  const name = String(dish?.display_zh?.name || dish?.display_name || dish?.name || dish?.recipe_name || '').trim()
+  const original = dish?.recipe_text_source === 'original'
+  const name = String((original ? dish?.name : dish?.display_zh?.name || dish?.display_name || dish?.name) || dish?.recipe_name || '').trim()
+  if (original) return name
   const parts = name.split(/\s*[|｜]\s*/)
   return parts.find(part => /[\u3400-\u9fff]/.test(part)) || (dish?.file_id && dish?.chunk_id ? '菜谱中文译文待补充' : name)
 }
 
 export function recipeDisplay(dish) {
   if (!dish) return { ingredients: [], steps: [] }
+  if (dish.recipe_text_source === 'original') return dish
   const zh = dish.display_zh
   const valid = zh && zh.ingredients?.length === dish.ingredients?.length && zh.steps?.length === dish.steps?.length
   if (valid) return { ...dish, ...zh, name: dishTitle(dish) }
   if (!dish.file_id || !dish.chunk_id) return dish
-  const text = value => typeof value === 'string' && /[a-z]{2,}/i.test(value.replace(/\b(?:kg|mg|ml|kcal|kj|cm|mm)\b/ig, '')) ? '中文译文暂未就绪' : value
+  const text = value => typeof value === 'string' && !/[\u3400-\u9fff]/.test(value) && /[a-z]{2,}/i.test(value.replace(/\b(?:kg|mg|ml|kcal|kj|cm|mm)\b/ig, '')) ? '中文译文暂未就绪' : value
   return { ...dish, name: dishTitle(dish), ingredients: (dish.ingredients || []).map(text), steps: (dish.steps || []).map(text),
     portion_quote: text(dish.portion_quote), nutrition_quote: text(dish.nutrition_quote) }
 }
@@ -32,7 +35,7 @@ export function ingredientLabels(dishes = []) {
 }
 
 export function referenceIngredientLabel(labels, original) {
-  return labels?.[original] || (/[a-z]{2,}/i.test(original || '') ? '食材中文译文待补充' : original)
+  return labels?.[original] || (!/[\u3400-\u9fff]/.test(original || '') && /[a-z]{2,}/i.test(original || '') ? '食材中文译文待补充' : original)
 }
 
 export function referenceGapDetail(gap) {

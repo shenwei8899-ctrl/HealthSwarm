@@ -15,17 +15,19 @@ const profile={source:'api',householdId:family,householdName:'合成家庭',fami
 
 const results=[]
 try {
- for(const scenario of ['recover','meal-denied','expired','member-link-pending','member-link-recovers','service-unavailable']){
+ for(const scenario of ['recover','connection-failed','meal-denied','expired','member-link-pending','member-link-recovers','service-unavailable']){
   const context=await browser.newContext({viewport:{width:390,height:844}}),errors=[],requests=[]
-  let profileReads=0,mealReads=0
+  let profileReads=0,mealReads=0,connectionFailed=scenario==='connection-failed'
   await context.addInitScript(({family})=>localStorage.setItem('fn-session-v2:api',JSON.stringify({type:'object',data:{accountId:'1',accountName:'合成测试',householdId:family,token:'synthetic-entry-test',authSource:'wechat',expiresAt:Date.now()/1000+86400,clientRevision:'entry-test',families:[{id:family,name:'合成家庭',isOwner:true,onboardingRequired:false}]}})),{family})
   await context.route('**/api/**',async route=>{
    const req=route.request(),url=new URL(req.url()),p=url.pathname;let data,status=200
    requests.push({path:p,method:req.method()})
-   if(p==='/api/auth/wechat/session')data={wechat_authenticated:true,account:{id:1,name:'合成测试'},families:[{id:family,name:'合成家庭',is_owner:true,onboarding_required:false}]}
+   if(p.endsWith('/session/exchange'))data={code:0,data:{user:{id:1,token:'synthetic-shop'},agent_account_id:'1'}}
+   else if(p==='/api/auth/wechat/session')data={wechat_authenticated:true,account:{id:1,name:'合成测试'},families:[{id:family,name:'合成家庭',is_owner:true,onboarding_required:false}]}
    else if(p.endsWith('/miniapp-profile')){
     if(req.method()==='GET')profileReads++
-    if(scenario==='expired'){status=401;data={detail:'Synthetic expired login'}}
+    if(connectionFailed){status=503;data={message:'Synthetic internal connection failure'}}
+    else if(scenario==='expired'){status=401;data={detail:'Synthetic expired login'}}
     else if(scenario==='recover'&&profileReads===1){status=403;data={code:'synthetic_recheck',message:'Synthetic authorization changed'}}
     else {data=structuredClone(profile);if(scenario==='member-link-pending'||scenario==='member-link-recovers'&&profileReads===1)delete data.members[0].healthMemberId}
    }
@@ -49,12 +51,23 @@ try {
   const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message))
   try{
    const expiredRead=scenario==='expired'?page.waitForResponse(r=>r.url().includes('/miniapp-profile')&&r.status()===401):null
-   const coreRead=!['expired','member-link-pending','service-unavailable'].includes(scenario)?page.waitForResponse(r=>r.url().includes('/readiness')&&r.status()===200):null
+   const coreRead=!['expired','connection-failed','member-link-pending','service-unavailable'].includes(scenario)?page.waitForResponse(r=>r.url().includes('/readiness')&&r.status()===200):null
    await page.goto('http://127.0.0.1:'+server.address().port+'/#/pages/chat/index')
    if(scenario==='expired'){await expiredRead;await page.waitForURL(url=>['#/','#/pages/index/index'].includes(url.hash),{timeout:10000});await page.getByText('微信登录，开始使用',{exact:true}).waitFor()}
+   else if(scenario==='connection-failed'){
+    const alert=page.locator('.composer-wrap .entry-status[role="alert"]')
+    await alert.getByText('暂时无法连接，请重试',{exact:true}).waitFor()
+    assert.equal(await page.getByText('Synthetic internal connection failure',{exact:true}).count(),0)
+    await page.locator('.composer input').fill('保留这条未发送的问题')
+    connectionFailed=false
+    await alert.getByText('重新连接营养师',{exact:true}).click()
+    await page.waitForFunction(()=>document.querySelector('.camera-button')&&!document.querySelector('.camera-button').classList.contains('uni-button-disabled'))
+    assert.equal(await page.locator('.composer input').inputValue(),'保留这条未发送的问题')
+    assert.equal(await page.locator('.composer-wrap .entry-status').count(),0)
+   }
    else if(['member-link-pending','service-unavailable'].includes(scenario)){
     await page.getByText('你好，我是家庭营养师。',{exact:true}).waitFor()
-    await page.waitForFunction(()=>document.querySelector('.composer')?.textContent.includes('连接暂不可用'))
+    await page.getByText('暂时无法连接，请重试',{exact:true}).waitFor()
    }else{
     await page.locator('.composer input').waitFor()
     if(scenario==='recover')await page.locator('.composer input').fill('保留我正在输入的问题')
@@ -63,10 +76,15 @@ try {
     if(scenario==='recover')assert.equal(await page.locator('.composer input').inputValue(),'保留我正在输入的问题')
     if(scenario==='meal-denied'){
      await page.waitForFunction(()=>document.querySelector('.camera-button')&&!document.querySelector('.camera-button').classList.contains('uni-button-disabled'))
-     assert.equal(mealReads,1,'denied optional meal must not cause an immediate request loop')
+     // The today-menu and optional history readers may each finish one initial read.
+     assert.ok(mealReads<=2,'denied optional meal must not be read again during the core recheck')
+     const deniedReads=mealReads
+     await page.waitForTimeout(500)
+     assert.equal(mealReads,deniedReads,'denied optional meal must not cause a request loop')
     }
    }
    const text=await page.locator('body').innerText()
+   assert.equal(/正在读取档案并连接营养师|正在重新连接/.test(text),false)
    assert.equal(/身份或成员授权已变化|重试连接|重新读取咨询资料|查看该成员档案/.test(text),false)
    assert.equal(await page.locator('[aria-label="咨询未完成"]').count(),0)
    assert.deepEqual(errors,[])

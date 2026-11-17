@@ -145,6 +145,39 @@ def test_body_fields_cannot_be_blank_or_invalid(field, value):
         MiniappProfileInput.model_validate(data)
 
 
+@pytest.mark.parametrize("value", ["sedentary", "light", "moderate", "high"])
+def test_version_two_onboarding_accepts_explicit_activity(value):
+    data = complete_profile()
+    data["onboarding_version"] = 2
+    data["members"][0]["activity_level"] = value
+    assert MiniappProfileInput.model_validate(data).submission_dump()["members"][0]["activity_level"] == value
+
+
+@pytest.mark.parametrize("value", [None, "", "unknown", True])
+def test_version_two_onboarding_rejects_invalid_activity_for_any_member(value):
+    data = complete_profile()
+    data["onboarding_version"] = 2
+    data["members"][0]["activity_level"] = "light"
+    relative = deepcopy(data["members"][0])
+    relative.update(client_ref="relative", relation="家人", activity_level=value)
+    data["members"].append(relative)
+    with pytest.raises(ValidationError, match="activity_level|日常活动量"):
+        MiniappProfileInput.model_validate(data)
+
+
+def test_omitted_activity_preserves_legacy_serialization_for_replay():
+    data = complete_profile()
+    parsed = MiniappProfileInput.model_validate(data)
+    replay = parsed.submission_dump()
+    expected = parsed.model_dump(mode="json", exclude={"onboarding_version", "members", "plan_consent"})
+    expected["members"] = [parsed.members[0].model_dump(mode="json", exclude={"activity_level"})]
+    assert replay == expected
+    assert MiniappProfileInput.model_validate(replay).submission_dump() == replay
+    data["onboarding_version"] = 2
+    with pytest.raises(ValidationError, match="日常活动量"):
+        MiniappProfileInput.model_validate(data)
+
+
 def test_partial_dietary_edit_still_preserves_unknown():
     """共享档案字段模型继续表达草稿和局部更新。"""
     assert DietaryDetails().healthStatus == "unknown"
@@ -169,6 +202,9 @@ def test_saved_body_data_is_reused_and_legacy_missing_weight_is_incomplete():
     )
     assert saved_miniapp_member(member).weight_kg == 60
     assert miniapp_onboarding_ready(member, None)
+    assert saved_miniapp_member(member).activity_level is None
+    member.profile["activity_level"] = "moderate"
+    assert saved_miniapp_member(member).activity_level == "moderate"
     del member.profile["dietary_details"]["statedWeightKg"]
     before = deepcopy(member.profile)
     assert not miniapp_onboarding_ready(member, None)

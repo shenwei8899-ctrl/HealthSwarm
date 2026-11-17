@@ -69,8 +69,9 @@ def search_services(monkeypatch):
 
     manager = SimpleNamespace(get_async_session_context=transaction)
     binding = SimpleNamespace(initial_planner_selection={"selection": {"mode": "single"}})
-    authorize = AsyncMock(return_value=(None, binding))
-    sources = AsyncMock()
+    authorize = AsyncMock(return_value=(SimpleNamespace(id="synthetic-run"), binding))
+    sources = AsyncMock(return_value={"selection": {"family_id": "synthetic-family", "plan_date": "2099-01-01", "participant_ids": ["member"], "meal_types": ["breakfast"]}, "members": []})
+    monkeypatch.setattr("yuxi.repositories.reference_variety_repository.reference_history", AsyncMock(return_value=[]))
     kb_guard = AsyncMock()
     retrieve = AsyncMock(return_value={"results": []})
     product_reads = AsyncMock(return_value=[{"catalog": [{"sku_id": "synthetic-sku"}]}])
@@ -102,7 +103,9 @@ def search_services(monkeypatch):
             "tool_payloads": product_reads,
             "current_catalog": AsyncMock(return_value={"version": "synthetic", "items": [{"sku_id": "synthetic-sku"}]}),
             "recent_reference_file_ids": AsyncMock(return_value=set()),
-            "REFERENCE_MEAL_POLICY_VERSION": "test-modern-policy",
+            "reference_member_restrictions": lambda members: [],
+            "BATCH_REFERENCE_MEAL_POLICY_VERSIONS": (1, 2),
+        "REFERENCE_MEAL_POLICY_VERSION": "test-modern-policy",
             "configured_health_kb_ids": lambda role: ("synthetic-kb",),
             "search_family_nutrition_knowledge": AsyncMock(
                 return_value={"status": "insufficient_material", "sources": []}
@@ -227,12 +230,12 @@ async def test_real_agent_corrects_invalid_keyword_before_the_only_service_call(
     payload = json.loads(receipts[1].content)
     if search.name == search_reference_recipes.name:
         assert payload == {"scope": "reference_recipe_search", "status": "ok", "items": []}
-        search_services.product_reads.assert_awaited_once_with(search_services.session, None, "find_reference_products")
+        search_services.product_reads.assert_awaited_once_with(search_services.session, search_services.authorize.return_value[0], "find_reference_products")
         search_services.recipe_matches.assert_awaited_once_with(
             search_services.session,
             [{"sku_id": "synthetic-sku"}],
             "蒸蛋",
-            excluded_file_ids=set(),
+            excluded_file_ids=set(), variety={"excluded": set(), "recent": {}, "popular": {}, "preferences": [], "seed": "synthetic-family:2099-01-01", "restrictions": []},
         )
         search_services.authorize.assert_awaited_once_with(search_services.session, SearchContext())
         search_services.sources.assert_awaited_once_with(

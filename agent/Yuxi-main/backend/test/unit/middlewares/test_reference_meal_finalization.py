@@ -2062,3 +2062,11 @@ async def test_unsearched_recipe_after_failed_save_returns_question(services):
     result = await middleware.aafter_model({"messages": [*messages, answer]}, SimpleNamespace(context=Context()))
     assert json.loads(result["messages"][0].text)["status"] == "needs_input"
     services.saved.assert_not_awaited()
+
+@pytest.fixture(autouse=True)
+def isolate_account_memory_context(monkeypatch):
+    """本组验证既有图协议；账号记忆在独立真实 PG/HTTP 测试覆盖。"""
+    from unittest.mock import AsyncMock
+    from yuxi.agents.middlewares import health_memory_context
+    monkeypatch.setattr(health_memory_context, "process_memory_for_run", AsyncMock(return_value={}))
+    monkeypatch.setattr(health_memory_context, "memory_context_for_run", AsyncMock(return_value={}))

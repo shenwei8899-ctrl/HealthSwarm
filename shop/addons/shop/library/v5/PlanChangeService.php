@@ -56,7 +56,7 @@ class PlanChangeService
         $count=(int)Db::name('shop_plan_delivery_batch')->where('plan_order_id',$order['id'])->where('status','paused')->count();
         if (!$count) return ['items'=>[]];
         $delivery=(new DeliveryService())->validateAddress($userId,$addressId,$slotId);
-        return (new PlanScheduleService())->availableDates((new PlanPolicyService())->current(),$delivery,$count,true,$order['id']);
+        return (new PlanScheduleService())->availableDates((new PlanPolicyService())->current(),$delivery,$count,true,$order['id'],$order['delivery_frequency']);
     }
 
     protected function calculate($userId,array $order,$type,array $payload)
@@ -85,7 +85,7 @@ class PlanChangeService
         (new AgentMealSourceService())->validateProof(Json::decode($version['agent_source_proof_json'],[]));
         $delivery=(new DeliveryService())->validateAddress($userId,$payload['address_id'] ?? 0,$payload['delivery_slot_id'] ?? 0);
         $policy=(new PlanPolicyService())->current();
-        $schedule=(new PlanScheduleService())->preview($policy,$delivery,$payload['first_delivery_date'] ?? '',count($eligible),true,$order['id']);
+        $schedule=(new PlanScheduleService())->preview($policy,$delivery,$payload['first_delivery_date'] ?? '',count($eligible),true,$order['id'],$order['delivery_frequency']);
         $quantities=[];
         foreach ($eligible as $index=>$batch) {
             // 订单金额保持购买快照；新地区的运费若不同须走人工差额处理，不能静默收费。
@@ -108,7 +108,7 @@ class PlanChangeService
         foreach ($preview['batches'] as $batch) {
             $s=$batch['schedule'];
             Db::name('shop_plan_delivery_batch')->where('id',$batch['id'])->update([
-                'delivery_date'=>$s['delivery_date'],'meal_date'=>$s['meal_date'],'cutoff_at'=>$s['cutoff_at'],'inventory_lock_at'=>$s['inventory_lock_at'],
+                'delivery_date'=>$s['delivery_date'],'meal_date'=>$s['meal_date'],'meal_end_date'=>$s['meal_end_date'],'cutoff_at'=>$s['cutoff_at'],'inventory_lock_at'=>$s['inventory_lock_at'],
                 'delivery_area_id'=>$s['delivery_area_id'],'delivery_slot_id'=>$batch['delivery_slot_id'],'address_snapshot_json'=>Json::encode($batch['address']),
                 'status'=>'scheduled','schedule_version'=>(int)$order['schedule_version']+1,'row_version'=>$batch['version']+1,'updatetime'=>time(),
             ]);

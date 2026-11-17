@@ -191,6 +191,10 @@ async def read_origin(session, uid, family_id, origin):
     from yuxi.storage.postgres.models_health import HealthDailyArrangement
 
     ref = origin["source"]
+    if ref["kind"] == "replacement":
+        from yuxi.services.daily_dish_swap_service import read_replacement
+
+        return await read_replacement(session, uid, family_id, origin)
     if ref["kind"] == "reference":
         run, source = await read_published_reference_source(session, family_id, origin["date"], ref["id"])
         owner = run.uid
@@ -222,9 +226,23 @@ async def read_origin(session, uid, family_id, origin):
         raise HealthVisionError("dish_source_changed", "原餐单已没有这道菜，请重新读取", 409)
     members = meal.get("members", source.get("members", []))
     if ref["kind"] == "reference":
-        from yuxi.services.reference_meal_plan_service import reference_meal_media
+        from yuxi.services.reference_meal_plan_service import (
+            reference_meal_media,
+            current_reference_products,
+            current_reference_items,
+            current_reference_display_item,
+        )
+        from yuxi.services.reference_recipe_presentation import attach_recipe_products
 
         decorated = await reference_meal_media(session, {"dishes": [dish]})
+        if source.get("product_matches"):
+            products = await current_reference_products(source["product_matches"])
+        else:
+            current = await current_reference_items(source.get("purchase_items", []))
+            products = [
+                current_reference_display_item(p, current[str(p["sku_id"])]) for p in source.get("purchase_items", [])
+            ]
+        decorated = attach_recipe_products(decorated, products)
         dish = decorated["dishes"][0]
     return copy.deepcopy(dish), meal, members, {**source, "source_owner": owner}
 

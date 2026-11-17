@@ -5,7 +5,6 @@ import AppNavBar from './AppNavBar.vue'
 import AiAnswer from './AiAnswer.vue'
 import HealthChatBusinessCard from './HealthChatBusinessCard.vue'
 import ChatMealRecordCard from './ChatMealRecordCard.vue'
-import ConversationFoodPackages from './ConversationFoodPackages.vue'
 import ChatReplyActions from './ChatReplyActions.vue'
 import { conversationPreviewState, createConversationPreview } from '../services/conversation-preview.js'
 import { storageContext } from '../services/storage.js'
@@ -30,10 +29,9 @@ onUnmounted(client.dispose)
       <view v-for="message in state.messages" :key="message.threadId+':'+message.id" class="preview-message" :class="message.role">
         <text class="preview-role">{{message.role==='user'?'我':'家庭营养师'}}</text>
         <image v-if="message.image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/>
-        <AiAnswer v-if="message.role==='assistant'&&message.text" :text="message.text" :animate-meals="false"/>
+        <AiAnswer v-if="message.role==='assistant'&&message.text" :text="message.text"/>
         <text v-else-if="message.text" class="preview-text" selectable>{{message.text}}</text>
         <HealthChatBusinessCard v-if="message.business" read-only :result="message.business" :member-id="memberId"/>
-        <ConversationFoodPackages v-if="message.purchaseRequestId" read-only :request-id="message.purchaseRequestId"/>
         <ChatMealRecordCard v-for="receipt in message.recordedMeals||[]" :key="receipt.id" read-only :receipt="receipt"/>
         <ChatReplyActions v-if="message.role==='assistant'&&message.text" :text="message.text" :can-quote="false"/>
       </view>
