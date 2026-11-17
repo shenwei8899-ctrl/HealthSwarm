@@ -19,30 +19,22 @@ from yuxi.services.health_memory_types import validate_memory_statement
 from yuxi.services.health_vision_types import HealthVisionError
 
 
-@pytest.mark.parametrize(
-    "quote,subject,owner,relationship,error",
-    [
-        ("我以后不吃香菜", "我", "actor", "本人", None),
-        ("妈妈一直不吃香菜", "妈妈", "actor", "母亲", None),
-        ("我今天觉得有点咸", "我", "actor", "本人", "memory_temporary"),
-        ("我以后不吃香菜", "我", "other", "本人", "memory_subject_unclear"),
-        ("我以后不吃香菜", "我", "actor", "母亲", "memory_subject_unclear"),
-        ("妈妈一直不吃香菜", "我", "actor", "本人", "memory_subject_unclear"),
-        ("我妈妈长期不吃香菜", "我", "actor", "本人", "memory_subject_unclear"),
-        ("我这次觉得有点咸", "我", "actor", "本人", "memory_temporary"),
-        ("我刚才有些恶心", "我", "actor", "本人", "memory_temporary"),
-        ("我今天觉得有点咸，以后再说", "我", "actor", "本人", "memory_temporary"),
-        ("我觉得有点咸", "我", "actor", "本人", "memory_subject_unclear"),
-    ],
-)
-def test_memory_requires_current_member_and_ongoing_statement(quote, subject, owner, relationship, error):
-    """模糊成员和一次体验不会写成长久事实。"""
-    member = SimpleNamespace(owner_uid=owner, relationship_label=relationship, display_name="妈妈")
-    if error:
-        with pytest.raises(HealthVisionError, match=error):
-            validate_memory_statement(member, "actor", subject, quote, quote)
-    else:
-        validate_memory_statement(member, "actor", subject, quote, quote)
+@pytest.fixture(autouse=True)
+def legacy_memory_directory(monkeypatch):
+    """旧 checkpoint 单测只替换家庭目录 IO；真实隔离另有 PG 测试。"""
+    from yuxi.services import health_memory_context_service as context_service
+
+    monkeypatch.setattr(context_service, "memory_directory", AsyncMock(return_value=(None, {})))
+    monkeypatch.setattr(context_service, "recallable", lambda fact, family, directory: fact.member_id == "member")
+    monkeypatch.setattr(service.HealthConsultationRepository, "authorize", AsyncMock(return_value=SimpleNamespace(member_id="member")))
+
+
+@pytest.mark.parametrize("quote", ["我不吃香菜", "我不喜欢香菜", "请记住我不吃香菜", "我以后不吃香菜"])
+def test_source_validation_has_no_fixed_sentence_requirement(quote):
+    """持续性由语义处理负责，来源边界不再用固定句式拒绝自然表达。"""
+    member = SimpleNamespace(owner_uid="actor", relationship_label="本人", display_name="本人")
+    validate_memory_statement(member, "actor", "我", quote, quote)
+
 
 
 def test_memory_cannot_invent_source_or_supply_identity():
@@ -194,6 +186,7 @@ async def test_active_memory_checkpoint_matches_original_projection_and_bound_me
     fact = SimpleNamespace(
         id="fact",
         member_id="other-member" if change == "other_member" else "member",
+        provenance={},
         fact_key="avoid_coriander",
         content="我以后不吃香菜",
         kind="preference",

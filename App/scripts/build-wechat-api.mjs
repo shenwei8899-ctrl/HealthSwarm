@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 
 const projectDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const usage = 'node scripts/build-wechat-api.mjs --api-base-url https://api.example.com --commerce-base-url https://shop.example.com --appid wx0123456789abcdef [--check-only]'
+const usage = 'node scripts/build-wechat-api.mjs --api-base-url https://api.example.com --commerce-base-url https://shop.example.com --appid wx0123456789abcdef [--voice-model-base-url https://assets.example.com/paraformer] [--check-only]'
 
 export function validateBaseUrl(value, label) {
   let url
@@ -22,7 +22,7 @@ export function validateBaseUrl(value, label) {
 }
 
 export function parseArguments(args) {
-  const values = {}, names = { '--api-base-url': 'apiBaseUrl', '--commerce-base-url': 'commerceBaseUrl', '--appid': 'appid' }
+  const values = {}, names = { '--api-base-url': 'apiBaseUrl', '--commerce-base-url': 'commerceBaseUrl', '--appid': 'appid', '--voice-model-base-url': 'voiceModelBaseUrl' }
   let checkOnly = false
   for (let index = 0; index < args.length; index++) {
     const [flag, ...inline] = args[index].split('=')
@@ -34,11 +34,12 @@ export function parseArguments(args) {
     values[name] = value
   }
   for (const [flag, name] of Object.entries(names)) {
-    if (!values[name]) throw new Error(`必须提供 ${flag}；用法：${usage}`)
+    if (name !== 'voiceModelBaseUrl' && !values[name]) throw new Error(`必须提供 ${flag}；用法：${usage}`)
   }
   if (!/^wx[0-9a-f]{16}$/i.test(values.appid)) throw new Error('appid 必须是有效的小程序 AppID')
   return { apiBaseUrl: validateBaseUrl(values.apiBaseUrl, 'Agent 地址'),
-    commerceBaseUrl: validateBaseUrl(values.commerceBaseUrl, 'Shop 地址'), appid: values.appid, checkOnly }
+    commerceBaseUrl: validateBaseUrl(values.commerceBaseUrl, 'Shop 地址'), appid: values.appid, checkOnly,
+    ...(values.voiceModelBaseUrl ? { voiceModelBaseUrl: validateBaseUrl(values.voiceModelBaseUrl, '语音模型下载目录') } : {}) }
 }
 
 async function readEndpoint(url, label, transport) {
@@ -87,6 +88,7 @@ export function buildEnvironment(options, projectRoot, inherited = process.env) 
     UNI_INPUT_DIR: join(projectRoot, 'src'), UNI_OUTPUT_DIR: join(projectRoot, 'dist', 'build', 'mp-weixin'),
     VITE_SERVICE_MODE: 'api', VITE_API_BASE_URL: options.apiBaseUrl,
     VITE_COMMERCE_MODE: 'api', VITE_COMMERCE_API_BASE_URL: options.commerceBaseUrl, VITE_WECHAT_APPID: options.appid,
+    ...(options.voiceModelBaseUrl ? { VITE_VOICE_MODEL_BASE_URL: options.voiceModelBaseUrl } : {}),
     VITE_ALLOW_LOCAL_HEALTH_API: '0', VITE_LOCAL_BUSINESS_LOGIN: '0',
     VITE_H5_TEST_LOGIN: '0', VITE_H5_TEST_ORIGIN: '', VITE_PHONE_BINDING_DEMO: '0' }
 }

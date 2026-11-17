@@ -161,6 +161,17 @@ class MealScopePurchaseInput(BaseModel):
     dish_keys: list[str] = Field(default_factory=list, max_length=10)
 
 
+class MealDishSwapInput(BaseModel):
+    """换菜只接受原菜身份和服务端候选标识。"""
+
+    model_config = ConfigDict(extra="forbid")
+    version: int = Field(ge=0, strict=True)
+    meal_type: Literal["breakfast", "lunch", "dinner"]
+    dish_key: str = Field(min_length=1, max_length=400)
+    candidate_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    client_request_id: UUID
+
+
 class DailySummaryInput(DailyPurchaseInput):
     """汇总仅接受已保存餐次，不能上传采购数量或价格。"""
 
@@ -174,6 +185,8 @@ class RecipeCommerceInput(BaseModel):
     recipe_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_ref: str = Field(min_length=1, max_length=500)
     steps: list[str] = Field(min_length=1, max_length=100)
+    image_url: str | None = Field(default=None, max_length=500, pattern=r"^/minio/public/[^?#]+$")
+    cooking_minutes: int | None = Field(default=None, ge=1, le=1440, strict=True)
     ingredient_codes: dict[UUID, str | RecipeSkuBinding]
     dish_type_code: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_.:-]{1,80}$")
     allowed_meal_types: list[Literal["breakfast", "lunch", "dinner"]] = Field(default_factory=list, max_length=3)
@@ -496,6 +509,31 @@ async def current_daily_meal_plan(family_id: UUID, plan_date: date, user=Depends
     from yuxi.services.daily_meal_plan_service import daily_plan_response, read_current_plan
 
     return daily_plan_response(await read_current_plan(str(user.uid), str(family_id), plan_date))
+
+
+@daily_arrangement.get("/family/{family_id}/daily-meal-plans/{plan_date}/dish-swap-candidates")
+async def daily_dish_candidates(
+    family_id: UUID, plan_date: date, version: int = Query(ge=0), user=Depends(get_required_user)
+):
+    """批量返回公开候选卡，不公开成员授权来源或采购内部快照。"""
+    from yuxi.services.daily_dish_swap_service import swap_candidates
+
+    result = await swap_candidates(str(user.uid), str(family_id), plan_date, version)
+    for meal in result["meals"]:
+        for dish in meal["dishes"]:
+            dish["candidates"] = [{"candidate_id": c["candidate_id"], "dish": c["dish"]} for c in dish["candidates"]]
+    return result
+
+
+@daily_arrangement.post("/family/{family_id}/daily-meal-plans/{plan_date}/dish-swaps")
+async def daily_dish_replace(
+    family_id: UUID, plan_date: date, data: MealDishSwapInput, user=Depends(get_required_user)
+):
+    """只替换当前版本指定位置，响应使用统一餐单投影。"""
+    from yuxi.services.daily_dish_swap_service import replace_dish
+    from yuxi.services.daily_meal_plan_service import daily_plan_response
+
+    return daily_plan_response(await replace_dish(str(user.uid), str(family_id), plan_date, data))
 
 
 @daily_arrangement.post("/family/{family_id}/daily-meal-plans/{plan_date}/dishes")

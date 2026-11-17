@@ -7,6 +7,13 @@ const instance = getCurrentInstance()
 const mounted = ref(false), ready = ref(false), busy = ref(false), error = ref('')
 const device = ref('back'), flash = ref('off'), zoom = ref(1), maxZoom = ref(1), lastImage = ref(null)
 const topPadding = ref(24)
+const cameraIcons = {
+  close: '/static/chat/camera-close.svg',
+  flashOn: '/static/chat/camera-flash.svg',
+  flashOff: '/static/chat/camera-flash-off.svg',
+  album: '/static/chat/camera-album.svg',
+  flip: '/static/chat/camera-flip.svg',
+}
 let nativeCamera = false
 // #ifdef MP-WEIXIN
 nativeCamera = true
@@ -80,8 +87,17 @@ function openCameraSettings(){uni.openSetting({success(){error.value='';mounted.
 
 <template>
   <view class="camera-screen" :style="{paddingTop:topPadding+'px'}">
-    <view class="camera-header"><button class="close-camera" aria-label="关闭相机" @click="close"><view></view><view></view></button><text>AI 相机</text></view>
-    <view class="camera-toolbar"><button class="flash-button" :class="{'flash-on':flash==='on'}" :disabled="busy||device==='front'||!nativeCamera" aria-label="切换闪光灯" @click="toggleFlash"><text class="flash-symbol">ϟ</text><view v-if="flash==='off'" class="flash-slash"></view></button></view>
+    <view class="camera-header">
+      <button class="tool-button close-camera" aria-label="关闭相机" hover-class="tool-pressed" @click="close">
+        <image class="camera-icon" :src="cameraIcons.close" mode="aspectFit" />
+      </button>
+      <text>AI 相机</text>
+    </view>
+    <view class="camera-toolbar">
+      <button class="tool-button flash-button" :class="{'flash-on':flash==='on'}" :disabled="busy||device==='front'||!nativeCamera" :aria-label="flash==='on'?'关闭闪光灯':'开启闪光灯'" hover-class="tool-pressed" @click="toggleFlash">
+        <image class="camera-icon" :src="flash==='on'?cameraIcons.flashOn:cameraIcons.flashOff" mode="aspectFit" />
+      </button>
+    </view>
     <view class="viewfinder">
       <!-- #ifdef MP-WEIXIN -->
       <camera v-if="mounted" class="live-camera" :device-position="device" :flash="flash" mode="normal" @initdone="cameraReady" @error="cameraError" @stop="cameraStopped" />
@@ -89,15 +105,37 @@ function openCameraSettings(){uni.openSetting({success(){error.value='';mounted.
       <!-- #ifndef MP-WEIXIN -->
       <view class="camera-placeholder"><text>请在微信小程序中使用实时相机</text><text>也可以从相册选择照片</text></view>
       <!-- #endif -->
-      <cover-view class="frame-corner top-left"></cover-view><cover-view class="frame-corner top-right"></cover-view><cover-view class="frame-corner bottom-left"></cover-view><cover-view class="frame-corner bottom-right"></cover-view>
+      <cover-view class="frame-corner top-left"></cover-view>
+      <cover-view class="frame-corner top-right"></cover-view>
+      <cover-view class="frame-corner bottom-left"></cover-view>
+      <cover-view class="frame-corner bottom-right"></cover-view>
     </view>
-    <view class="zoom-row"><button v-for="value in zoomChoices" :key="value" :class="{selected:zoom===value}" :disabled="busy||!ready" @click="setZoom(value)">{{value}}{{zoom===value?'x':''}}</button></view>
+    <view class="zoom-row">
+      <view class="zoom-pill">
+        <button v-for="value in zoomChoices" :key="value" class="zoom-button" :class="{selected:zoom===value}" :disabled="busy||!ready" :aria-label="value+'倍变焦'" @click="setZoom(value)">
+          <text>{{value}}{{zoom===value?'×':''}}</text>
+        </button>
+      </view>
+    </view>
     <view class="camera-footer">
       <view v-if="error" class="camera-error"><text>{{error}}</text><button v-if="nativeCamera&&!ready" @click="openCameraSettings">相机权限设置</button></view>
       <view class="capture-controls">
-        <button class="album-button" :disabled="busy" aria-label="从相册选择照片" @click="choosePhoto('album')"><image v-if="lastImage" :src="lastImage.localPath" mode="aspectFill" @error="lastImage=null"/><view v-else class="album-icon"><view></view><text>相册</text></view></button>
-        <button class="shutter-button" :class="{busy}" :disabled="!canTakePhoto" aria-label="拍照" @click="takePhoto"><view></view></button>
-        <button class="switch-button" :disabled="busy||!nativeCamera||!ready" aria-label="切换前后摄像头" @click="switchCamera"><text>⇄</text></button>
+        <view class="capture-side">
+          <button class="tool-button album-button" :disabled="busy" aria-label="从相册选择照片" hover-class="tool-pressed" @click="choosePhoto('album')">
+            <image v-if="lastImage" class="album-preview" :src="lastImage.localPath" mode="aspectFill" @error="lastImage=null" />
+            <image v-else class="camera-icon" :src="cameraIcons.album" mode="aspectFit" />
+          </button>
+          <text class="control-label" aria-hidden="true">相册</text>
+        </view>
+        <button class="shutter-button" :class="{busy}" :disabled="!canTakePhoto" aria-label="拍照" hover-class="shutter-pressed" @click="takePhoto">
+          <view class="shutter-disc"></view>
+        </button>
+        <view class="capture-side">
+          <button class="tool-button switch-button" :disabled="busy||!nativeCamera||!ready" aria-label="切换前后摄像头" hover-class="tool-pressed" @click="switchCamera">
+            <image class="camera-icon" :src="cameraIcons.flip" mode="aspectFit" />
+          </button>
+          <text class="control-label" aria-hidden="true">翻转</text>
+        </view>
       </view>
     </view>
   </view>
@@ -105,13 +143,56 @@ function openCameraSettings(){uni.openSetting({success(){error.value='';mounted.
 
 <style scoped>
 .camera-screen{height:100vh;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;background:#000;color:#fff;padding-bottom:env(safe-area-inset-bottom)}
-.camera-screen button{margin:0;padding:0;line-height:1;background:transparent;color:inherit;border:0}.camera-screen button::after{border:0}.camera-screen button[disabled]{opacity:.35}
-.camera-header{position:relative;display:flex;align-items:center;justify-content:center;min-height:96rpx;flex-shrink:0}.camera-header>text{font-size:36rpx;font-weight:500;letter-spacing:2rpx}
-.close-camera{position:absolute;left:24rpx;top:8rpx;width:80rpx;height:80rpx}.close-camera view{position:absolute;left:20rpx;top:38rpx;width:40rpx;height:4rpx;border-radius:4rpx;background:#fff;transform:rotate(45deg)}.close-camera view:last-child{transform:rotate(-45deg)}
-.camera-toolbar{height:66rpx;display:flex;justify-content:flex-end;padding:0 28rpx;flex-shrink:0}.flash-button{position:relative;width:76rpx;height:64rpx;display:flex;align-items:center;justify-content:center}.flash-symbol{font-size:62rpx;font-weight:500}.flash-slash{position:absolute;width:48rpx;height:4rpx;background:#fff;transform:rotate(45deg)}.flash-on{color:#ffd34f!important}
-.viewfinder{position:relative;flex:1;min-height:180rpx;background:#161616;overflow:hidden}.live-camera{width:100%;height:100%}.camera-placeholder{height:100%;display:flex;flex-direction:column;gap:16rpx;align-items:center;justify-content:center;color:#909090;font-size:25rpx}
-.frame-corner{position:absolute;width:86rpx;height:86rpx;border-color:#fff;border-style:solid;border-width:0;background:transparent;pointer-events:none}.top-left{top:16%;left:10%;border-top-width:3rpx;border-left-width:3rpx;border-top-left-radius:44rpx}.top-right{top:16%;right:10%;border-top-width:3rpx;border-right-width:3rpx;border-top-right-radius:44rpx}.bottom-left{bottom:16%;left:10%;border-bottom-width:3rpx;border-left-width:3rpx;border-bottom-left-radius:44rpx}.bottom-right{bottom:16%;right:10%;border-bottom-width:3rpx;border-right-width:3rpx;border-bottom-right-radius:44rpx}
-.zoom-row{height:86rpx;display:flex;align-items:center;justify-content:center;gap:30rpx;background:#101010;flex-shrink:0}.zoom-row button{width:60rpx;height:60rpx;border-radius:50%;font-size:25rpx;font-weight:500}.zoom-row .selected{color:#ffd34f;background:#262626}
-.camera-footer{padding:32rpx 44rpx 40rpx;flex-shrink:0}.capture-controls{display:flex;align-items:center;justify-content:space-between;gap:28rpx}.album-button,.switch-button{width:100rpx;height:100rpx;border-radius:22rpx!important;background:#1e1e1e!important;overflow:hidden;display:flex;align-items:center;justify-content:center}.album-button image{width:100%;height:100%}.album-icon{display:flex;flex-direction:column;gap:10rpx;align-items:center;font-size:25rpx}.album-icon>view{width:40rpx;height:32rpx;border:3rpx solid #fff;border-radius:6rpx}.switch-button text{font-size:66rpx;line-height:1}
-.shutter-button{width:148rpx;height:148rpx;border:6rpx solid #fff!important;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0}.shutter-button>view{width:122rpx;height:122rpx;border-radius:50%;background:#fff}.shutter-button.busy>view{opacity:.5}.camera-error{text-align:center;padding:0 0 24rpx;font-size:25rpx;line-height:1.6;color:#ddd}.camera-error>text{display:block}.camera-error button{padding:16rpx;color:#ffd34f;font-size:25rpx}
+.camera-screen button{box-sizing:border-box;margin:0;padding:0;line-height:1;background:transparent;color:inherit;border:0}
+.camera-screen button::after{border:0}
+.camera-screen button[disabled]{opacity:.4}
+.camera-header{position:relative;display:flex;align-items:center;justify-content:center;min-height:96rpx;flex-shrink:0}
+.camera-header>text{font-size:34rpx;font-weight:600;letter-spacing:1rpx}
+.camera-screen .tool-button{
+  display:flex;flex:none;align-items:center;justify-content:center;
+  width:88rpx;height:88rpx;min-width:44px;min-height:44px;border-radius:50%;
+  border:1px solid rgba(255,255,255,.13);background:#202021;
+}
+.camera-screen .tool-pressed{background:#353537}
+.camera-icon{display:block;width:42rpx;height:42rpx;flex:none}
+.camera-screen .close-camera{position:absolute;left:24rpx;top:50%;transform:translateY(-50%);border-color:transparent;background:transparent}
+.close-camera .camera-icon{width:46rpx;height:46rpx}
+.camera-screen .close-camera.tool-pressed{background:#252526}
+.camera-toolbar{display:flex;justify-content:flex-end;padding:0 26rpx 12rpx;flex-shrink:0}
+.camera-screen .flash-on{background:#2f2617;border-color:rgba(249,210,119,.3)}
+.viewfinder{position:relative;flex:1;min-height:180rpx;background:#161616;overflow:hidden}
+.live-camera{width:100%;height:100%}
+.camera-placeholder{height:100%;display:flex;flex-direction:column;gap:16rpx;align-items:center;justify-content:center;color:#909090;font-size:24rpx}
+.frame-corner{
+  position:absolute;width:58rpx;height:58rpx;border:0 solid rgba(255,255,255,.82);
+  background:transparent;pointer-events:none;
+}
+.top-left{top:16%;left:10%;border-top-width:3rpx;border-left-width:3rpx;border-top-left-radius:23rpx}
+.top-right{top:16%;right:10%;border-top-width:3rpx;border-right-width:3rpx;border-top-right-radius:23rpx}
+.bottom-left{bottom:16%;left:10%;border-bottom-width:3rpx;border-left-width:3rpx;border-bottom-left-radius:23rpx}
+.bottom-right{bottom:16%;right:10%;border-bottom-width:3rpx;border-right-width:3rpx;border-bottom-right-radius:23rpx}
+.zoom-row{display:flex;align-items:center;justify-content:center;flex:none;padding:14rpx 0 0}
+.zoom-pill{display:flex;align-items:center;gap:4rpx;padding:4rpx;border-radius:999px;border:1px solid #303031;background:#171718}
+.camera-screen .zoom-button{
+  display:flex;align-items:center;justify-content:center;
+  min-width:62rpx;height:54rpx;padding:0 12rpx;border-radius:999px;
+  font-size:24rpx;line-height:1;font-weight:600;color:#e8e8e5;
+}
+.camera-screen .zoom-button.selected{color:#f9d277;background:#302819}
+.camera-footer{padding:24rpx 54rpx 46rpx;flex-shrink:0}
+.capture-controls{display:flex;align-items:center;justify-content:space-between;gap:20rpx}
+.capture-side{position:relative;display:flex;justify-content:center;width:104rpx;flex:none}
+.control-label{position:absolute;top:100%;margin-top:9rpx;font-size:22rpx;line-height:1;color:#c1c1bd;white-space:nowrap}
+.album-button{overflow:hidden}
+.album-preview{display:block;width:100%;height:100%}
+.camera-screen .shutter-button{
+  width:136rpx;height:136rpx;border:4rpx solid #f7f7f5;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+}
+.shutter-disc{width:112rpx;height:112rpx;border-radius:50%;background:#f7f7f5;transition:transform .12s ease}
+.shutter-pressed .shutter-disc{transform:scale(.93)}
+.shutter-button.busy .shutter-disc{opacity:.65}
+.camera-error{text-align:center;padding:0 0 24rpx;font-size:24rpx;line-height:1.6;color:#ddd}
+.camera-error>text{display:block}
+.camera-screen .camera-error button{padding:16rpx;color:#f9d277;font-size:24rpx}
 </style>

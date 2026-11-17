@@ -72,6 +72,46 @@ async def test_parallel_replay_saves_once_and_current_read_is_pure(family_profil
     assert (await client.get(path + "/" + next(iter(ids)), headers=users["other"])).status_code == 404
 
 
+async def test_activity_level_persists_and_legacy_save_preserves_it(family_profile_http):
+    """新版必填，旧版保存省略该字段时保留档案原值。"""
+    client, sessions, users = family_profile_http
+    family, _, preparation, headers = await input_for(client, users["self"])
+    path = f"/api/family/{family['id']}/miniapp-profile"
+    body = {key: value for key, value in preparation.items() if key != "processing_consents"}
+    body["onboarding_version"] = 2
+    body["analysis_consent"] = {"purpose": "consultation", **POLICY}
+    assert (await client.post(path, json=body, headers=headers)).status_code == 422
+    member = body["members"][0]
+    member["activity_level"] = "moderate"
+    saved = await client.post(path, json=body, headers=headers)
+    assert saved.status_code == 200, saved.text
+    result = saved.json()
+    assert result["members"][0]["activityLevel"] == "moderate"
+    assert result["members"][0]["confirmed"] is True
+    assert (await client.post(path, json=body, headers=headers)).status_code == 200
+    member["activity_level"] = "high"
+    assert (await client.post(path, json=body, headers=headers)).status_code == 409
+
+    key = str(uuid4())
+    body.update(client_request_id=key, family_version=result["familyVersion"])
+    body.pop("onboarding_version")
+    member.pop("activity_level")
+    member["version"] = result["members"][0]["version"]
+    legacy = await client.post(path, json=body, headers={**headers, "Idempotency-Key": key})
+    assert legacy.status_code == 200, legacy.text
+    current = await client.get(path, headers=users["self"])
+    assert current.json()["members"][0]["activityLevel"] == "moderate"
+    health_id = current.json()["members"][0]["healthMemberId"]
+    consultation_profile = await client.get(f"/api/health/v1/members/{health_id}/family-profile", headers=users["self"])
+    assert consultation_profile.status_code == 200, consultation_profile.text
+    assert consultation_profile.json()["status"] == "ready"
+    assert consultation_profile.json()["profile"]["activity_level"] == "moderate"
+    async with sessions() as db:
+        stored = await db.get(FamilyMember, member["member_id"])
+        assert stored.profile["activity_level"] == "moderate"
+        assert stored.confirmed_version == stored.version
+
+
 async def test_task_registration_failure_rolls_back_profile_and_receipt(family_profile_http, monkeypatch):
     """登记失败不可留下已建档却无法恢复的半次提交。"""
     client, sessions, users = family_profile_http
@@ -216,7 +256,7 @@ async def test_preparation_table_creation_is_idempotent(family_profile_http):
         assert (await db.get(HealthOnboardingPreparation, created.json()["id"])).request_id == body["client_request_id"]
 
 
-async def test_saved_result_handoff_and_consent_revocation(family_profile_http, monkeypatch):
+async def test_saved_result_handoff_and_access_revocation(family_profile_http, monkeypatch):
     """真实创建每日会话、保存来源与完成回读；只隔离配餐生成及专业校验子系统。"""
     from copy import deepcopy
     from yuxi.repositories.skill_repository import SkillRepository
@@ -287,7 +327,7 @@ async def test_saved_result_handoff_and_consent_revocation(family_profile_http, 
     pid = response.json()["id"]
     await execute_preparation(pid, sessions, monkeypatch)
     progress = (await client.get(path + "/current", headers=users["self"])).json()
-    assert progress["status"] == "preparing" and progress["stage"] == "analyzing", progress
+    assert progress["status"] == "preparing" and progress["stage"] == "analyzing", str(progress)
     assert "arrangement" not in progress
     day = business_date()
     mid = body["members"][0]["member_id"]
@@ -351,10 +391,11 @@ async def test_saved_result_handoff_and_consent_revocation(family_profile_http, 
     async with sessions() as db:
         daily = await db.get(HealthDailyArrangement, rid)
         daily.snapshot = snapshot
-        consent = await db.scalar(
-            select(HealthProcessingConsent).where(HealthProcessingConsent.purpose == "consultation")
-        )
-        consent.revoked_at = utc_now_naive()
+        from yuxi.storage.postgres.models_health import HealthGrant
+
+        grant = await db.scalar(select(HealthGrant).where(HealthGrant.actor_uid == "self"))
+        grant.scopes = []
+        grant.revoked_at = utc_now_naive()
         await db.commit()
     revoked = (await client.get(path + "/current", headers=users["self"])).json()
     assert revoked["status"] == "blocked" and "arrangement" not in revoked

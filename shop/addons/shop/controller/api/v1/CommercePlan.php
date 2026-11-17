@@ -83,7 +83,8 @@ class CommercePlan extends Base
             $plan=(new ServicePlanService())->getBySn($plan_sn,$this->userId());
             $this->assertVersion($plan,$this->request->get('plan_version'));
             $delivery=(new DeliveryService())->validateAddress($this->userId(),$this->request->get('address_id'),$this->request->get('delivery_slot_id',0));
-            return (new \addons\shop\library\v5\PlanScheduleService())->availableDates((new \addons\shop\library\v5\PlanPolicyService())->current(),$delivery);
+            $frequency = \addons\shop\library\v5\PlanScheduleService::purchaseFrequency($plan, $this->request->get('delivery_frequency'));
+            return (new \addons\shop\library\v5\PlanScheduleService())->availableDates((new \addons\shop\library\v5\PlanPolicyService())->current(),$delivery,21,false,0,$frequency);
         });
     }
 
@@ -94,7 +95,8 @@ class CommercePlan extends Base
             $plan=(new ServicePlanService())->getBySn($plan_sn,$this->userId());
             $this->assertVersion($plan,$p['plan_version'] ?? null);
             $delivery=(new DeliveryService())->validateAddress($this->userId(),$p['address_id'] ?? 0,$p['delivery_slot_id'] ?? 0);
-            $schedule=(new \addons\shop\library\v5\PlanScheduleService())->preview((new \addons\shop\library\v5\PlanPolicyService())->current(),$delivery,$p['first_delivery_date'] ?? '');
+            $frequency = \addons\shop\library\v5\PlanScheduleService::purchaseFrequency($plan, $p['delivery_frequency'] ?? null);
+            $schedule=(new \addons\shop\library\v5\PlanScheduleService())->preview((new \addons\shop\library\v5\PlanPolicyService())->current(),$delivery,$p['first_delivery_date'] ?? '',21,false,0,$frequency);
             return ['plan_sn'=>$plan_sn,'plan_version'=>$plan['plan_version']]+$schedule;
         });
     }

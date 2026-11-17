@@ -125,6 +125,17 @@ class HealthAnswerStreamPublicationTests(unittest.IsolatedAsyncioTestCase):
 
         return profile, evidence
 
+    async def test_structured_refs_are_rechecked_on_replay_and_not_exposed(self):
+        refs = [{"kind": "family", "id": "11111111-1111-4111-8111-111111111111"}]
+        value = envelope()
+        value["payload"]["chunk"]["citation_refs"] = refs
+        profile = AsyncMock()
+        evidence = AsyncMock()
+        with patch.dict("sys.modules", dependency_modules(profile, evidence)):
+            await self.scope["validate_health_stream_publication"](self.run, value)
+        evidence.assert_awaited_once_with(self.db, self.run, "已校验正文。", refs=refs)
+        self.assertNotIn(refs[0]["id"], json.dumps(self.project(value)))
+
     def stream(self, values):
         events = [
             {"seq": f"{index}-0", "event_type": event_type, "payload": value}

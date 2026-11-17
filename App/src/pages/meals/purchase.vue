@@ -7,7 +7,7 @@ import {openerChannel} from '../../services/address-navigation.js'
 import {storageContext} from '../../services/storage.js'
 import {getSession} from '../../services/session.js'
 import {request} from '../../services/request.js'
-import {purchaseGroups,referencePurchaseFor,mealLabels,mealOrder} from '../../services/meal-workspace.js'
+import {purchaseGroups,referencePurchaseFor,mealLabels,mealOrder,takeMealPageTarget} from '../../services/meal-workspace.js'
 import {formalRoute} from '../../services/meal-detail-client.js'
 const instance=getCurrentInstance(),owner=storageContext(),plan=ref(null),error=ref(''),index=ref(0),orders=ref({}),checkout=ref(false),purchase=ref(null),loading=ref(false)
 let alive=true,target=null,ticket=0
@@ -17,7 +17,12 @@ async function load(){const mine=++ticket;loading.value=true;error.value='';try{
 function ordered(sn){orders.value={...orders.value,[index.value]:sn};checkout.value=false}
 function viewOrder(sn){uni.navigateTo({url:'/pages/orders/detail?id='+encodeURIComponent(sn)})}
 function select(i){if(purchase.value?.isBusy||i===index.value)return;index.value=i;checkout.value=false}
-onLoad(()=>openerChannel(instance)?.on('mealWorkspace',value=>{if(owner!==storageContext()||value.owner!==owner)return;target=value.target;void load()}))
+function receiveTarget(value){if(!alive||owner!==storageContext()||target||!value)return;target=value;void load()}
+onLoad(options=>{
+ const saved=takeMealPageTarget(options?.mealNavigation)
+ if(saved){receiveTarget(saved);return}
+ openerChannel(instance)?.on('mealWorkspace',value=>{if(value?.owner===owner)receiveTarget(value.target)})
+})
 onShow(()=>{if(owner!==storageContext()){plan.value=null;error.value='账号或家庭已变化，请重新打开';return}if(target&&plan.value){void load();void purchase.value?.refresh()}})
 onUnmounted(()=>{alive=false;ticket++})
 </script>

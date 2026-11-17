@@ -11,9 +11,13 @@ import { createMealPhotoClient,photoState,mealPhotoFailure,mealPhotoUploadMessag
 import { createCloudMealSaver,personalMeal,mealLabels,mealDay,feedbackUrl,readDietRecord } from '../services/cloud-meals.js'
 import { commerce } from '../services/commerce.js'
 import { getSession } from '../services/session.js'
+import { readDailyMealPlan } from '../services/daily-meal-plan.js'
+import { captureMenuDishes } from '../services/capture-menu.js'
 const props=defineProps({route:{type:Object,default:()=>({})}})
 function currentMealContext(){const local=new Date(Date.now()+8*3600000).toISOString(),hour=Number(local.slice(11,13));return {date:local.slice(0,10),time:local.slice(11,16),meal:hour<10?'breakfast':hour<15?'lunch':hour<21?'dinner':'snack'}}
 const initialContext=currentMealContext()
+const routeDate=props.route.date
+if(typeof routeDate==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(routeDate)&&Number.isFinite(Date.parse(routeDate+'T00:00:00Z'))&&new Date(routeDate+'T00:00:00Z').toISOString().slice(0,10)===routeDate)initialContext.date=routeDate
 const members=ref([]),people=ref([]),dishes=ref([]),captureScope=ref('单人餐盘'),mealType=ref(Object.hasOwn(mealLabels,props.route.meal)?props.route.meal:initialContext.meal),date=ref(initialContext.date),time=ref(initialContext.time),oil=ref('不确定'),photo=ref(''),error=ref(''),notice=ref(''),busy=ref(false),editing=ref(false),source=ref('手动填写'),saved=ref(null),pendingGroup=ref(null)
 const membersLoading=ref(false),photoPreparing=ref(false),localPhotoPending=ref(false)
 const supplement=ref(null),editingRecord=ref(null),extraPhotos=ref([]),supplementSaver=createMealSupplementSaver()
@@ -32,7 +36,7 @@ const manualOpen=ref(false),manualText=ref(''),manualError=ref(''),menuNotice=re
 const mealKeys=Object.keys(mealLabels),portions=['少量','一般','较多','不确定'],oils=['少油','一般','偏多','不确定']
 const locked=computed(()=>busy.value||(vision.busy&&!photoPreparing.value)||localPhotoPending.value||!!vision.pending||!!supplementSaver.read()||(!!pendingGroup.value&&!pendingGroup.value.editable&&!saved.value)),selected=computed(()=>people.value.filter(p=>p.selected)),hasDishes=computed(()=>dishes.value.length>0)
 const captureLocked=computed(()=>locked.value||!!saved.value||manualOpen.value||!!supplement.value)
-const canSave=computed(()=>!manualOpen.value&&!supplement.value&&selected.value.length&&selected.value.every(p=>p.noneConfirmed||p.dishes.length)&&selected.value.some(p=>!p.noneConfirmed&&p.dishes.length))
+const canSave=computed(()=>!editing.value&&!manualOpen.value&&!supplement.value&&selected.value.length>0&&selected.value.every(p=>p.noneConfirmed||p.dishes.length)&&selected.value.some(p=>!p.noneConfirmed&&p.dishes.length))
 let epoch=0,opening=false,scope='',loading=false,preparation=null,photoPreparation=null,entryDay=initialContext.date,photoVersion=0,pollTimer=null,nutritionTimer=null
 function queueNutrition(){clearTimeout(nutritionTimer);nutritionClient.invalidate();acceptMissing.value=false;if(!hasDishes.value||manualOpen.value||saved.value)return;const mine=epoch;nutritionTimer=setTimeout(()=>{if(mine===epoch)void refreshNutrition()},350)}
 async function refreshNutrition(){if(saved.value||manualOpen.value)return;const meals=selected.value.filter(p=>!p.noneConfirmed&&p.dishes.length).map(savedMeal);if(meals.length)await nutritionClient.preview(meals)}
@@ -72,6 +76,9 @@ function load(){
   const cached=scopedStorage.getStorageSync('cloud-capture-ui')
   // An uncertain save must be resolved with its original meal and request.
   let ui=cached&&((cached.entryDay||cached.date)===today||pendingGroup.value||supplementSaver.read())?cached:null
+  const frozen=!!supplementSaver.read()||pendingGroup.value&&!pendingGroup.value.editable
+  if(ui&&!frozen&&((props.route.date&&ui.date!==initialContext.date)||(props.route.meal&&ui.mealType!==props.route.meal)||(props.route.memberId&&!(ui.people||[]).some(p=>p.selected&&p.memberId===props.route.memberId))))ui=null
+  if(!ui){const current=currentMealContext();date.value=routeDate&&initialContext.date===routeDate?routeDate:current.date;mealType.value=Object.hasOwn(mealLabels,props.route.meal)?props.route.meal:current.meal}
   if(ui){busy.value=!!ui.saved;people.value=ui.people||[];dishes.value=ui.dishes||[];captureScope.value=ui.captureScope;mealType.value=ui.mealType;date.value=ui.date;time.value=ui.time;oil.value=ui.oil;photo.value=ui.photo||'';source.value=ui.source;origin.value=ui.origin||null;supplement.value=ui.supplement||null;editingRecord.value=ui.editingRecord||null;extraPhotos.value=ui.extraPhotos||[]
    if(typeof ui.manualDraft==='string'&&!ui.saved&&(!pendingGroup.value||pendingGroup.value.editable)){manualText.value=ui.manualDraft;manualOpen.value=true}
    if((ui.entryDay||ui.date)!==today)notice.value='正在核对之前一餐的保存结果。'
@@ -79,11 +86,12 @@ function load(){
   const {data}=await request({path:'/api/health/v1/members'})
   if(mine!==epoch||context!==storageContext())return
   members.value=data.filter(m=>m.scopes?.includes('diet_edit'));membersLoading.value=false
+  if(props.route.memberId&&!members.value.some(m=>m.id===props.route.memberId)){members.value=[];people.value=[];throw new Error('所选成员当前没有记餐权限，请返回重新选择。')}
   const allowed=new Set(members.value.map(m=>m.id))
   if(ui&&((ui.people||[]).some(p=>p.selected&&!allowed.has(p.memberId))||(ui.origin&&!allowed.has(ui.origin.memberId))||(ui.editingRecord&&!allowed.has(ui.editingRecord.row.memberId))||(ui.saved?.rows||[]).some(r=>!allowed.has(r.memberId)))){
    scopedStorage.setStorageSync('cloud-capture-ui',null);hide();notice.value='部分成员授权已变化，请重新核对。';return
   }
-  people.value=members.value.map((m,i)=>({selected:i===0,dishes:[],portion:'不确定',grams:'',noneConfirmed:false,...people.value.find(p=>p.memberId===m.id),memberId:m.id,name:m.display_name||m.name||m.relationship_label}))
+  people.value=members.value.map((m,i)=>({selected:props.route.memberId?m.id===props.route.memberId:i===0,dishes:[],portion:'不确定',grams:'',noneConfirmed:false,...(ui?people.value.find(p=>p.memberId===m.id):null),memberId:m.id,name:m.display_name||m.name||m.relationship_label}))
   if(!members.value.length){error.value='暂无可记餐成员，请检查成员授权。';return}
   if(ui?.saved){busy.value=true;const rows=await Promise.all(ui.saved.rows.map(async row=>({...row,record:await readDietRecord(row.memberId,row.recordId||row.record?.id,request)})));if(mine!==epoch||context!==storageContext())return;saved.value={...ui.saved,rows};busy.value=false}
   if(props.route.commerce==='1'&&props.route.id&&!pendingGroup.value&&!ui){const order=await commerce.cooking(props.route.id);if(mine!==epoch||context!==storageContext())return;if(selection===photoVersion&&!manualOpen.value&&!hasDishes.value){dishes.value=order.meal_snapshot.dishes.map(d=>({name:d.recipe_name}));source.value='订单菜谱选菜';notice.value='订单菜谱仅供选菜，请逐人确认实际吃过的菜，未自动记为已吃。'}}
@@ -94,7 +102,7 @@ function load(){
   const pendingMeal=vision.pending&&(vision.meal||vision.pending.request?.data)
   if(pendingMeal?.eaten_at){date.value=mealDay(pendingMeal.eaten_at);time.value=new Date(Date.parse(pendingMeal.eaten_at)+8*3600000).toISOString().slice(11,16);mealType.value=pendingMeal.meal_type;notice.value='之前的照片请求尚待确认，请先核对原任务。'}
   if(selection===photoVersion&&vision.meal&&(!hasDishes.value||supplement.value?.phase==='upload'))useCandidates()
-  if(hasDishes.value&&captureScope.value==='单人餐盘'&&!saved.value&&(!pendingGroup.value||pendingGroup.value.editable))selected.value.forEach(p=>{p.dishes=dishes.value.map(d=>d.name);p.noneConfirmed=false})
+  if(hasDishes.value&&source.value!=='当天食谱选菜'&&captureScope.value==='单人餐盘'&&!saved.value&&(!pendingGroup.value||pendingGroup.value.editable))selected.value.forEach(p=>{p.dishes=dishes.value.map(d=>d.name);p.noneConfirmed=false})
   pollResult();queueNutrition()
  }catch(e){if(mine===epoch){error.value=e.message;busy.value=false}}finally{if(mine===epoch){loading=false;membersLoading.value=false;photoPreparing.value=false;store()}}})()
  return preparation
@@ -141,7 +149,26 @@ function applyManual(){
  source.value=origin.value&&source.value==='照片识别后核对'?'照片识别后核对':'手动填写'
  menuNotice.value='';uni.hideKeyboard?.();cancelManual();if(captureScope.value==='单人餐盘'){selected.value.forEach(p=>{p.dishes=names;p.noneConfirmed=false})}else openPortions()
 }
-async function fromMenu(){if(captureLocked.value)return;const mine=epoch,context=storageContext();busy.value=true;error.value='';menuNotice.value='';try{const {data}=await request({path:'/api/family/'+encodeURIComponent(getSession()?.householdId)+'/daily-arrangements/'+date.value});if(mine!==epoch||context!==storageContext())return;const arrangement=data.arrangement||data;const m=arrangement.meals?.find(m=>(m.type||m.meal_type)===mealType.value);if(!m?.dishes?.length){menuNotice.value='还没有本餐食谱，可以直接填写吃过的菜。';return}dishes.value=m.dishes.map(d=>({name:d.name}));source.value='当天食谱选菜';if(captureScope.value==='单人餐盘')selected.value.forEach(p=>{p.dishes=dishes.value.map(d=>d.name);p.noneConfirmed=false});else openPortions()}catch(e){if(mine===epoch)error.value=e.message}finally{if(mine===epoch)busy.value=false}}
+async function fromMenu(){
+ if(captureLocked.value)return
+ const mine=epoch,context=storageContext(),family=getSession()?.householdId,day=date.value,type=mealType.value
+ const current=()=>mine===epoch&&context===storageContext()&&family===getSession()?.householdId&&day===date.value&&type===mealType.value
+ busy.value=true;error.value='';menuNotice.value=''
+ try{
+  if(type==='snack'){menuNotice.value='今日餐单暂不包含加餐，请手动填写实际吃过的食物。';return}
+  if(!family)throw new Error('请先选择当前家庭。')
+  await preparation
+  if(!current()||!members.value.length||saved.value||manualOpen.value||hasDishes.value||vision.pending||supplement.value||pendingGroup.value&&!pendingGroup.value.editable)return
+  const plan=await readDailyMealPlan(family,day,request,{fresh:true})
+  if(!current())return
+  const result=captureMenuDishes(plan,type);menuNotice.value=result.notice
+  if(!result.dishes.length)return
+  dishes.value=result.dishes;source.value='当天食谱选菜';origin.value=null;photo.value=''
+  people.value.forEach(p=>{p.dishes=[];p.grams='';p.portion='不确定';p.noneConfirmed=false})
+  openPortions()
+ }catch(e){if(current())error.value=e.message}
+ finally{if(mine===epoch)busy.value=false}
+}
 function chooseImage(which){
  if(locked.value||saved.value||manualOpen.value)return
  if(!loading&&(!members.value.length||!vision.memberId))void load()
@@ -300,6 +327,7 @@ function newMeal(){
   <text v-if="menuNotice" class="menu-notice" role="status">{{menuNotice}}</text>
   <view v-if="manualOpen" class="manual-card"><view class="section-heading"><text>这一餐吃了什么</text><text class="manual-caption">手动填写</text></view><text class="manual-help">多道菜可换行或用顿号分隔。</text><textarea v-model="manualText" class="manual-input" aria-label="本餐菜品" placeholder="例如：杂粮饭、清蒸鱼、炒西兰花" :maxlength="4000" auto-height :focus="manualOpen" :cursor-spacing="100" :adjust-position="true" :disabled="locked" @input="manualError=''"/><text v-if="manualError" class="manual-error" role="alert">{{manualError}}</text><view class="manual-actions"><button class="manual-cancel" :disabled="locked" @click="cancelManual">取消</button><button class="manual-confirm" :disabled="locked||!manualText.trim()" @click="applyManual">确认菜品</button></view></view>
   <view v-else-if="hasDishes" class="dish-list-card"><view class="section-heading"><text class="dish-list-title">这一餐吃了什么</text><button v-if="!saved" :disabled="captureLocked" @click="manual">修改菜品 ›</button></view>
+   <button v-if="source==='当天食谱选菜'&&!saved" class="text-link" :disabled="captureLocked" @click="openPortions">选择实际吃过的菜 ›</button>
    <view v-for="d in dishes" :key="d.item_id||d.name" class="nutrition-dish">
     <view class="dish-overview">
      <view class="dish-identity">

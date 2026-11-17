@@ -119,6 +119,7 @@ async def read_recipe_commerce_source(rid):
             "published": source is not None,
             "source_ref": source.source_ref if source else "",
             "steps": source.steps if source else [],
+            **((source.presentation or {}) if source else {}),
             "ingredient_codes": source.ingredient_codes if source else {},
             "dish_type_code": classification.dish_type_code if classification else None,
             "allowed_meal_types": classification.allowed_meal_types if classification else [],

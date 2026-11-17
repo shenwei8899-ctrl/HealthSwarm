@@ -111,16 +111,44 @@ class CheckoutService
             throw new DomainException('专属计划不可结算或版本已变化', 40906, 409);
         }
         (new AgentMealSourceService())->assertSource($userId,'service_plan',$plan['plan_sn'],$payload['source_version']);
-        $schedule=(new PlanScheduleService())->preview($policy,$delivery,$payload['first_delivery_date']);
+        $frequency = PlanScheduleService::purchaseFrequency($plan, $payload['delivery_frequency'] ?? null);
+        $schedule=(new PlanScheduleService())->preview($policy,$delivery,$payload['first_delivery_date'],21,false,0,$frequency);
         $version = Db::name('shop_service_plan_version')->where('plan_id', $plan['id'])->where('version_no', $plan['current_version'])->find();
         $draft = Json::decode($version['pricing_draft_json'], []);
-        $days = [];
+        if (count($draft['days'] ?? []) !== 21) {
+            throw new DomainException('计划交易草案必须包含完整21天', 40921, 409);
+        }
+        $pricedBatches = [];
         $warnings = isset($draft['issues']) ? $draft['issues'] : [];
+        $source = Json::decode($version['source_payload_json'], []);
+        $sourceDays = array_column($source['days'] ?? [], null, 'day_no');
+        $draftDays = array_column($draft['days'], null, 'day_no');
+        $tierSkus = $policy['config']['tiers'][$plan['tier_code']]['allowed_sku_ids'];
         $goodsTotal = 0;$quantities=[];
-        foreach ((array)$draft['days'] as $day) {
+        foreach ($schedule['items'] as $batch) {
             $dayTotal = 0;
             $items = [];
-            foreach ((array)$day['items'] as $draftItem) {
+            if ($frequency === 'daily') {
+                $matched = $draftDays[$batch['menu_day_start']] ?? null;
+                if ($matched === null) throw new DomainException('计划食材来源不完整',40921,409);
+            } else {
+                $meals = [];
+                $eligibleSkus = [];
+                $lastUse = [];
+                foreach (range($batch['menu_day_start'], $batch['menu_day_end']) as $dayNo) {
+                    if (!isset($sourceDays[$dayNo])) throw new DomainException('计划食材来源不完整',40921,409);
+                    $meals = array_merge($meals, $sourceDays[$dayNo]['meals']);
+                    $eligibleSkus = array_merge($eligibleSkus, $sourceDays[$dayNo]['eligible_sku_ids']);
+                    foreach (PlanRequirements::aggregate($sourceDays[$dayNo]['meals']) as $requirement) {
+                        $lastUse[$requirement['ingredient_code']] = $dayNo - $batch['menu_day_start'] + 1;
+                    }
+                }
+                $matched = PlanRequirements::matchBatch(
+                    $meals, array_values(array_intersect($tierSkus, array_unique($eligibleSkus))), $lastUse
+                );
+                $warnings = array_merge($warnings, $matched['issues']);
+            }
+            foreach ($matched['items'] as $draftItem) {
                 try {
                     $sku = (new CatalogService())->getSku($draftItem['sku_id'], false);
                     $quantity = max(1, (int)$draftItem['quantity']);
@@ -140,30 +168,28 @@ class CheckoutService
                 }
             }
             $goodsTotal += $dayTotal;
-            $days[] = ['day_no' => (int)$day['day_no'], 'goods_amount_cent' => $dayTotal, 'items' => $items];
-        }
-        if (count($days) !== 21) {
-            throw new DomainException('计划交易草案不是完整21天', 40921, 409);
+            $pricedBatches[] = ['goods_amount_cent' => $dayTotal, 'items' => $items];
         }
         $serviceFee = $policy['config']['service_fee_cent'];
         $shippingFee = array_sum(array_column($schedule['items'],'shipping_fee_cent'));
         $discount = 0;
         $payable = $goodsTotal + $shippingFee + $serviceFee - $discount;
-        $goodsAllocation = $this->allocate($goodsTotal, array_column($days, 'goods_amount_cent'));
+        $goodsAllocation = array_column($pricedBatches, 'goods_amount_cent');
         $shippingAllocation = array_column($schedule['items'],'shipping_fee_cent');
-        $serviceAllocation = $this->allocate($serviceFee, array_fill(0, 21, 1));
-        $discountAllocation = $this->allocate($discount, array_column($days, 'goods_amount_cent'));
+        $dayCounts = array_map(static function ($batch) { return $batch['menu_day_end'] - $batch['menu_day_start'] + 1; }, $schedule['items']);
+        $serviceAllocation = $this->allocate($serviceFee, $dayCounts);
+        $discountAllocation = $this->allocate($discount, $goodsAllocation);
         $members=(int)Db::name('shop_service_plan_member')->where('plan_id',$plan['id'])->count();
         PlanPolicyService::assertBudget($policy['config']['tiers'][$plan['tier_code']],$members,$goodsTotal,$serviceFee,$shippingFee);
         $batches = [];
-        foreach ($days as $index => $day) {
+        foreach ($pricedBatches as $index => $batch) {
             $amount = $goodsAllocation[$index] + $shippingAllocation[$index] + $serviceAllocation[$index] - $discountAllocation[$index];
             $batches[] = array_merge($schedule['items'][$index], [
                 'goods_amount_cent' => $goodsAllocation[$index],
                 'shipping_fee_cent' => $shippingAllocation[$index],
                 'service_fee_cent' => $serviceAllocation[$index],
                 'discount_amount_cent' => $discountAllocation[$index],
-                'allocated_pay_amount_cent' => $amount, 'items' => $day['items'],
+                'allocated_pay_amount_cent' => $amount, 'items' => $batch['items'],
             ]);
         }
         foreach ($warnings as $warning) {
@@ -176,7 +202,7 @@ class CheckoutService
             'source_version' => (int)$plan['current_version'], 'items' => [],
             'goods_amount_cent' => $goodsTotal, 'discount_amount_cent' => $discount,
             'shipping_fee_cent' => $shippingFee, 'service_fee_cent' => $serviceFee,
-            'payable_amount_cent' => $payable, 'delivery_batches' => $batches,
+            'payable_amount_cent' => $payable, 'delivery_batches' => $batches, 'delivery_frequency' => $frequency,
             'policy_snapshot' => $policy, 'warnings' => $warnings,
         ];
     }
@@ -270,7 +296,14 @@ class CheckoutService
             $fresh=$this->pricePlan($session['user_id'],[
                 'source_ref'=>$session['source_ref'],'source_version'=>$session['source_version'],
                 'first_delivery_date'=>$pricing['delivery_batches'][0]['delivery_date'],
+                'delivery_frequency'=>$pricing['delivery_frequency'] ?? 'daily',
             ],$delivery);
+            if (!isset($pricing['delivery_frequency'])) {
+                foreach ($fresh['delivery_batches'] as &$batch) {
+                    unset($batch['meal_end_date'], $batch['menu_day_start'], $batch['menu_day_end']);
+                }
+                unset($batch);
+            }
             foreach (['fresh','pricing'] as $name) { foreach (${$name}['delivery_batches'] as &$batch) { foreach ($batch['items'] as &$item) unset($item['snapshot']); unset($item); } unset($batch); }
             foreach (['policy_snapshot','delivery_batches','payable_amount_cent'] as $key) {
                 if (Json::canonical($fresh[$key])!==Json::canonical($pricing[$key])) throw new DomainException('价格、供货或配送规则已变化，请重新确认报价',40922,409);
@@ -377,7 +410,7 @@ class CheckoutService
             'plan_order_sn' => $planOrderSn, 'order_id' => $orderId, 'order_sn' => $orderSn,
             'plan_id' => $plan['id'], 'plan_version_id' => $version['id'], 'user_id' => $session['user_id'],
             'schedule_version' => 1, 'first_delivery_date' => $pricing['delivery_batches'][0]['delivery_date'],
-            'delivery_frequency' => 'daily', 'total_batches' => 21, 'completed_batches' => 0,
+            'delivery_frequency' => $pricing['delivery_frequency'] ?? 'daily', 'total_batches' => count($pricing['delivery_batches']), 'completed_batches' => 0,
             'total_amount_cent' => $pricing['payable_amount_cent'], 'goods_amount_cent' => $pricing['goods_amount_cent'],
             'shipping_fee_cent' => $pricing['shipping_fee_cent'], 'service_fee_cent' => $pricing['service_fee_cent'],
             'discount_amount_cent' => $pricing['discount_amount_cent'], 'fulfilled_amount_cent' => 0,
@@ -391,6 +424,9 @@ class CheckoutService
                 'batch_no' => $batch['batch_no'], 'schedule_version' => 1,
                 'delivery_area_id'=>$batch['delivery_area_id'],
                 'meal_date' => $batch['meal_date'], 'delivery_date' => $batch['delivery_date'],
+                'meal_end_date' => $batch['meal_end_date'] ?? $batch['meal_date'],
+                'menu_day_start' => $batch['menu_day_start'] ?? $batch['batch_no'],
+                'menu_day_end' => $batch['menu_day_end'] ?? $batch['batch_no'],
                 'inventory_lock_at' => $batch['inventory_lock_at'], 'delivery_slot_id' => $pricing['delivery_slot_id'],
                 'cutoff_at' => $batch['inventory_lock_at'], 'address_snapshot_json' => Json::encode($pricing['address_snapshot']),
                 'goods_amount_cent' => $batch['goods_amount_cent'], 'shipping_fee_cent' => $batch['shipping_fee_cent'],

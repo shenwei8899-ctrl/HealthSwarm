@@ -9,7 +9,7 @@ const levels = ref(Array(44).fill(0))
 const busy = computed(() => ['authorizing', 'starting', 'recording', 'stopping', 'transcribing'].includes(state.value.phase))
 const overlay = computed(() => ['starting', 'recording', 'stopping'].includes(state.value.phase))
 const prompt = computed(() => state.value.canceling ? '松手取消' : state.value.phase === 'starting' ? '正在打开麦克风…' : '松手发送，上移取消')
-const label = computed(() => state.value.phase === 'transcribing' ? '正在识别…' : state.value.phase === 'authorizing' ? '正在打开麦克风…' : '按住说话')
+const label = computed(() => state.value.phase === 'transcribing' ? (state.value.modelDownloading ? '正在下载语音模型…' : '正在本地识别…') : state.value.phase === 'authorizing' ? '正在打开麦克风…' : '按住说话')
 let nativeRecording = false
 // #ifdef MP-WEIXIN
 nativeRecording = true

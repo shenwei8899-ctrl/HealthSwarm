@@ -129,7 +129,18 @@ async def read_current_plan(uid, family_id, day, session=None):
                 source = arrangement.snapshot
                 source_owners[key] = arrangement.actor_uid
             elif ref["kind"] == "selection":
-                source = await selected_source(session, uid, family_id, ref, kind)
+                try:
+                    source = await selected_source(session, uid, family_id, ref, kind)
+                except HealthVisionError as error:
+                    if not isinstance(error, ReferencePlanSourceChanged) and error.code not in stale_codes | {
+                        "dish_members_changed",
+                        "dish_source_changed",
+                        "swap_recipe_changed",
+                    }:
+                        raise
+                    needs_regeneration.append(kind)
+                    regeneration_participants[kind] = ref["member_ids"]
+                    continue
                 source_owners[key] = source.get("source_owner")
             else:
                 raise HealthVisionError("daily_plan_source_invalid", "今日计划来源无法核对", 409)
@@ -332,6 +343,15 @@ async def pending_request(session, row, *, viewer_uid=None):
             return {"status": status}
         return None
     result = {"request_id": request.request_id, "thread_id": request.conversation_thread_id, "status": status}
+    if (
+        status == "failed"
+        and run
+        and run.error_type in {"reference_coverage_unavailable", "reference_search_exhausted"}
+    ):
+        from yuxi.services.health_task_service import read_health_task_in_session
+
+        task = await read_health_task_in_session(session, actor_uid, request.request_id)
+        result["failure_message"] = task.result.message
     if status == "completed":
         from yuxi.services.health_task_service import read_health_task_in_session
 

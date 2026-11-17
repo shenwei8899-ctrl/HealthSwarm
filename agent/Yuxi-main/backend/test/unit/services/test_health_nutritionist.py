@@ -39,7 +39,7 @@ def test_fixed_skills_and_roles_do_not_publish_unimplemented_agents():
     """角色目录对未完成能力作出可观察说明。"""
     text = consultation_skill_prompt()
     assert "红阳" not in text and "刘潇" not in text
-    assert "营养安全档案仍未就绪" in text and "[证据:" in text and "通用科普" in text
+    assert "营养安全档案仍未就绪" in text and "独立引用字段" in text and "通用科普" in text
     catalog = health_agent_roles()
     assert catalog["full_health_profile_available"] is False
     roles = {role["role"]: role for role in catalog["roles"]}
@@ -89,7 +89,7 @@ def test_fixed_skill_snapshot_records_published_identity_and_exact_content(monke
     assert build_skill_manifest_entries({"skills": ["family-nutritionist"]}, snapshot) == [
         {
             "slug": "family-nutritionist",
-            "version": "2026.11.06.1",
+            "version": "2026.11.16.1",
             "content_hash": spec["content_hash"],
             "preload_content_hash": hashlib.sha256(content.encode()).hexdigest(),
         }

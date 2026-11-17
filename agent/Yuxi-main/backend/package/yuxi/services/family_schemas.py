@@ -7,7 +7,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from yuxi.services.miniapp_profile_types import DietaryDetails
+from yuxi.services.miniapp_profile_types import ActivityLevel, DietaryDetails
 
 
 PROFILE_FIELDS = {
@@ -211,7 +211,7 @@ class ProfileInput(BaseModel):
     sex: Literal["female", "male", "unspecified"] | None = None
     birth_date: date | None = None
     height_cm: float | None = Field(default=None, gt=0, le=300, allow_inf_nan=False)
-    activity_level: Literal["sedentary", "light", "moderate", "high"] | None = None
+    activity_level: ActivityLevel | None = None
     goal: str | None = Field(default=None, max_length=200)
     medical_history: str | None = Field(default=None, max_length=2000)
     medications: str | None = Field(default=None, max_length=2000)

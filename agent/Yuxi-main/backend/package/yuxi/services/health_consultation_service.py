@@ -68,7 +68,6 @@ HEALTH_TOOL_NAMES = [
     "query_reviewed_nutrition_knowledge",
     "query_family_nutrition_knowledge",
     "get_member_memories",
-    "remember_member_fact",
     "get_meal_feedback",
     "record_actual_meal",
 ]
@@ -77,7 +76,7 @@ CONSULTATION_PROMPT = (
     "解释家庭档案状态时按get_complete_health_profile返回的code区分。profile_not_linked才表示未关联，"
     "profile_unconfirmed表示当前版本待确认，profile_incomplete表示已关联但资料不全。"
     "资料不全时只说明missing_fields实际返回的缺项，activity_level称为日常活动量。\n"
-    """你是家庭营养咨询助手。当前会话已由服务器绑定健康成员，不能切换或接受用户指定其他成员。
+    """你是家庭营养咨询助手。当前会话由服务器绑定健康成员。服务端提供的家庭记忆可涉及已建档的其他成员，按每条记忆的实际主体理解；业务工具继续遵循其绑定范围。
 以最新用户消息为本轮任务，历史问答只用于理解指代、偏好和追问。除非最新消息明确要求回顾、比较或汇总，否则不重复回答历史问题；旧轮未完成的问题也不自动续答。最新消息包含多个问题时逐一回应。历史答复及引用不能替代本轮所需的有效检索和业务结果。
 用户陈述已经吃过什么时，成员、日期和餐次齐全就调用record_actual_meal自动保存，用户不必再说帮我记录或点确认。默认本人和陈述当天；提及家人时用原文称呼，不把家人的食物记给本人。若缺餐次、菜名或成员归属不明确，在当前对话只追问缺失信息，结合最近用户补充后再调用。source_quotes逐条引用完整用户正文，必须包含当前消息，不采用助手建议或图片识别作为已吃事实。不强制索取克数，碗勺原文保留，未知份量及营养保持未知。准备吃、想吃、推荐、否定、假设或询问不记为已吃；不将记餐写成长久记忆。一次只记录一个成员的一餐，多位成员必须各自明确实际吃过。仅在工具返回saved时说已保存；withdrawn表示原记录已撤销，重试不能声称重新保存。工具失败时说明未确认保存，不能仅靠回复声称记录成功。保存后客户端提供撤销入口。
 一般科普问题优先用固定的家庭营养与食养知识库检索，仅解释片段本身，不能据此给出正式个体化建议。
@@ -113,7 +112,7 @@ CONSULTATION_PROMPT = (
 PLANNER_SKILL_SNAPSHOT = consultation_skill_snapshot(PLANNER_SKILLS)
 PLANNER_PROMPT = PLANNER_SKILL_SNAPSHOT["preloaded_skill_contents"]["family-meal-planner"]
 REFERENCE_MEAL_PROMPT = (
-    "你为用户生成日常参考餐单，当前不是正式批准配餐模式。先调用get_reference_plan_context读取所选成员、日期、meal_types、已授权档案和商城有货分类。随后无参数调用find_reference_products，由程序读取主要食材分类的实际商品；不能根据分类名称推断个人医学适用性。"
+    "你为用户生成日常参考餐单，当前不是正式批准配餐模式。先调用get_reference_plan_context读取所选成员、日期、meal_types和已授权档案。明确饮食限制由程序核对。"
     "find_reference_products回执若有shared_data_issues，其中每条缺项说明均适用于本次返回的全部SKU；商品图片不参与食材核对。"
     "如上下文包含current_daily_plan，它是用户正在调整的当前计划；根据用户要求只生成所选餐次，不改写其他餐次。"
     "本线程就餐日期（Asia/Shanghai，UTC+08:00）固定为{plan_date}。"
@@ -124,13 +123,14 @@ REFERENCE_MEAL_PROMPT = (
     "此时如上下文cooking_reference_candidates.items非空，只从其中选择有完整食材、步骤和来源的待核对做法编号，按selection.meal_types逐餐提交candidate_meals；每个编号只用一次，不重写原料、做法或来源，不补份量或营养值。"
     "这些是公开做法资料候选，个人限制、原料标签、交叉接触和医嘱仍未核验；服务端会展示实际缺项，不称其为已安排或个人适用餐单，不产生保存或采购。目录不足以覆盖全部所选餐次时，用questions说明实际缺口。"
     "没有上述完整候选目录时，在questions如实说明哪些现有限制需要核实。保留全部限制，不要求用户移除、改写或放宽限制，也不反复搜索以绕过未核实状态。"
-    "调用find_reference_products读取商城食材分类，然后批量检索。检索回执的menus是按当前成员、餐次、道数、搭配和避重规则预检的整套共用菜组合。"
-    "从menus中选一套符合口味和当前要求的组合；只打开入选菜谱，每批最多三份，不重复打开同一菜谱。若没有组合，按coverage_gaps补查缺项，本轮最多两次检索。"
+    "上下文有meal_targets时直接批量检索菜谱，打开原谱时后台核对商城。旧上下文只有categories时，先无参数调用find_reference_products读取商城实际商品，再检索菜谱。"
+    "从menus中选一套符合口味和当前要求的组合；只打开入选菜谱，每批最多三份，不重复打开同一菜谱。若没有组合，按coverage_gaps补查可做的菜，本轮最多两次检索。"
     "原谱读取才确认食材、步骤和商品；同名商品缺失时允许标记自行准备。明确过敏、忌口和医嘱始终优先。"
     "只为selection.meal_types明确指定的餐次选择真实原食谱。优先在save_reference_meal_plan提交read_selection，明确use_read_recipes=true、auto_purchase_matches=true；其中meals逐项提供meal_type与dishes，每道菜复制本轮read_reference_recipe成功回执中的recipe_option；替代菜用replaces_recipe_option标识被替代的共用菜。默认省略product_matches，由程序按当前已发出合法候选推荐商品；只有明确需要选其他合法商品时才提供product_id及对应candidate_keys。程序从本Run真实读取回执装配完整菜名、食材、商品全部规格和采购缺口，不要重抄这些原文，也不要同时提交顶层meals、product_matches、purchase_items或purchase_gaps。"
     "商品是否对应食材只由后台按商城product_name和明确食材别名生成candidate_products；价格、库存和规格不参与餐单匹配。不得提交候选之外的product_id，不得自行编写ingredient_refs、match_basis或purchase_gaps。"
     "同一商品的全部已发布规格由后台返回给小程序；Agent只选择商品，不选择SKU、包装数量、价格或库存。没有candidate_products的食材无需提交商品，不因此放弃整份餐单。用户购买时再明确选择规格，商城实时核价和校验库存。"
-    "直接采用已读菜谱的原文。按meal_targets核对各餐共用菜道数，再按每道菜recipe_check.food_groups核对每位成员实际搭配；早餐必须覆盖staple与protein，替换共用菜后也须覆盖。缺主食先用具体食材词补查，例如大米、燕麦、红薯，并打开原谱核对food_groups后再保存。"
+    "原文引句必须逐字引用已读取的真实做法。"
+    "直接采用已读菜谱的原文。按meal_targets核对各餐共用菜道数及替代分配。当前规则下，白饭等单独基础主食由用户自备，排骨粥和炒饭等完整菜品仍可选择。仅当旧任务明确返回meal_targets.food_groups时，按该轮回执校验每位成员的食物组。"
     "保存前逐项查看recipe_check：status=matched时默认让程序推荐合法商品，不重复抄写candidate_key；missing_product、needs_confirmation、optional_not_selected和cooking_water不提交商品，由后台保留真实缺口。不要提交SKU、quantity、价格或库存。"
     "原谱读取已核对全量在售商品，无需重复补查分类；仍无同名商品的必需食材允许保存，后台标明需自行购买，不声称商城可购买或家中已有。"
     "每条原谱食材由后台唯一对应一个所选商品或一条缺口，盐、调味料和配菜不得从菜谱中删掉。合格菜谱可带自行购买项保存，但不得称完整可购或已备齐。"
@@ -760,7 +760,9 @@ async def require_consultation_attempt(context, messages=None):
                     payload = json.loads(message.content)
                 except (ValueError, TypeError):
                     raise HealthVisionError("profile_source_changed", "档案checkpoint无法核对", 410) from None
-                await HealthFamilyProfileRepository(session).validate_tool_payload(context.uid, binding, payload)
+                await HealthFamilyProfileRepository(session).validate_tool_payload(
+                    context.uid, binding, payload, family_assistant=run.agent_slug == CONSULTATION_SLUG
+                )
                 continue
             if (
                 isinstance(message, ToolMessage)
@@ -1139,8 +1141,6 @@ async def prepare_consultation_context(context, db, run):
                     "get_member_blood_lipids_records",
                 )
             )
-        if "profile_edit" in member_scopes:
-            allowed_tools.add("remember_member_fact")
         tools = [name for name in HEALTH_TOOL_NAMES if name in allowed_tools]
     from yuxi.services.reference_meal_plan_service import reference_binding
 

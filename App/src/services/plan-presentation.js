@@ -5,6 +5,19 @@ export function selectedDay(plan, number) { return plan?.days?.find(day => Numbe
 export function dayMeals(day) { return Object.entries(mealNames).map(([type, name]) => ({ type, name, dishes: (day?.meals || []).filter(meal => meal.meal_type === type) })) }
 export function memberName(plan, ref) { return plan?.members?.find(member => String(member.member_ref) === String(ref))?.display_alias || '家庭成员' }
 export function selectedProducts(plan, number) { return plan?.trade_draft?.days?.find(day => Number(day.day_no) === Number(number))?.items || [] }
+export function planDayProcurement(plan, number) { return selectedDay(plan, number)?.procurement || null }
+export function matchedSubtotalText(pricing) {
+  return Number.isSafeInteger(pricing?.matched_subtotal_cent) && pricing.matched_subtotal_cent >= 0
+    ? priceText(pricing.matched_subtotal_cent) : '暂无可核算小计'
+}
+export function estimatedGoods(plan) {
+  return plan?.trade_validation_status === 'passed' && Number(plan.estimate_valid_until) > Date.now() / 1000
+    ? plan.estimated_goods_cent : null
+}
+export function batchMealDates(batch) {
+  return batch.meal_end_date && batch.meal_end_date !== batch.meal_date
+    ? batch.meal_date + ' 至 ' + batch.meal_end_date : batch.meal_date
+}
 export function validPlanRoute(options) {
   const version = Number(options.plan_version)
   if (!options.plan_sn || !Number.isSafeInteger(version) || version < 1) throw new Error('请从专属计划页重新选择方案')

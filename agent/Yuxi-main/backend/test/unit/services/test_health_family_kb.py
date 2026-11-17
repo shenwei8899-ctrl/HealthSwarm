@@ -301,3 +301,41 @@ def test_missing_fixed_kb_configuration_is_explicit(monkeypatch):
     monkeypatch.delenv(service.KB_ID_ENV, raising=False)
     with pytest.raises(HealthVisionError, match="knowledge_unavailable"):
         service.configured_family_kb_id()
+
+@pytest.mark.asyncio
+async def test_structured_citations_validate_only_selected_current_fragments(monkeypatch):
+    monkeypatch.setenv(service.KB_ID_ENV, KB_ID)
+    file, chunk = _source_records()
+    file.kb_id = KB_ID
+    file.filename = "合成资料（2024年版）.md"
+    source_id = "11111111-1111-4111-8111-111111111111"
+    unused_id = "22222222-2222-4222-8222-222222222222"
+    source = service._project_source(KB_ID, file, chunk, source_id)
+    payload = _payload(source)
+    payload["sources"].append({**source, "source_id": unused_id, "chunk_id": "deleted-fragment"})
+    run = SimpleNamespace(id="run-1", request_id="request-1", conversation_id=7, agent_slug="health-consultation")
+    audit = SimpleNamespace(
+        message_type=service.TOOL_AUDIT_MESSAGE_TYPE,
+        role="tool",
+        execution_status="completed",
+        conversation_id=7,
+        request_id=run.request_id,
+        extra_metadata={"tool_name": service.TOOL_NAME},
+        content=json.dumps(payload),
+    )
+    list_for_run = AsyncMock(return_value=[audit])
+    monkeypatch.setattr(service, "ToolMessageAuditRepository", lambda _: SimpleNamespace(list_for_run=list_for_run))
+    monkeypatch.setattr(service, "_require_fixed_kb", AsyncMock())
+    session = SimpleNamespace(execute=AsyncMock(return_value=[(file, chunk)]))
+
+    assert await service.resolve_family_citations(session, run, []) == {}
+    list_for_run.assert_not_awaited()
+    assert await service.resolve_family_citations(session, run, [source_id], lock=True) == {source_id: file.filename}
+    list_for_run.assert_awaited_once_with(run.id)
+    session.execute.assert_awaited_once()
+
+    with pytest.raises(HealthVisionError, match="citation_invalid"):
+        await service.resolve_family_citations(session, run, ["33333333-3333-4333-8333-333333333333"])
+    chunk.content = "当前片段已经发生变化。"
+    with pytest.raises(HealthVisionError, match="source_invalidated"):
+        await service.resolve_family_citations(session, run, [source_id])

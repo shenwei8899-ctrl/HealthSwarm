@@ -404,7 +404,7 @@ def test_production_graph_retains_catalog_selection_and_callback_safe_order():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "create_agent"
     )
     middleware = next(item.value for item in build.keywords if item.arg == "middleware")
-    names = [item.func.id for item in middleware.elts]
+    names = [item.func.id for item in middleware.elts if isinstance(item, ast.Call)]
     assert (
         names.index("HealthCatalogMiddleware")
         < names.index("HealthAiBudgetMiddleware")

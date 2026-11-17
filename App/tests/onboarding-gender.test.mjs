@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { memberProfileChanges } from '../src/services/member-profile.js'
+import { activityLevelOptions } from '../src/utils/onboarding-validation.js'
 
 const require = createRequire(import.meta.url)
 const wechatRequire = createRequire(require.resolve('@dcloudio/uni-mp-weixin/package.json'))
@@ -34,6 +35,19 @@ for (const [label, sourcePermissions, readOnly, enabled] of [
   assert.equal(member.gender, enabled ? '男' : '未填写')
   selectGender({detail:{value:'invalid'}})
   assert.equal(member.gender, enabled ? '男' : '未填写')
+})
+
+test('activity level radio writes only an explicit valid choice for the current member', () => {
+  assert.match(source, /id="field-activity"/)
+  const member = { activityLevel: '' }, props = { member, onboarding: true }
+  const { selectActivityLevel } = new Function('defineProps', 'activityLevelOptions', script + ';return {selectActivityLevel}')(() => props, activityLevelOptions)
+  selectActivityLevel({detail:{value:'invalid'}})
+  assert.equal(member.activityLevel, '')
+  selectActivityLevel({detail:{value:'light'}})
+  assert.equal(member.activityLevel, 'light')
+  props.readOnly = true
+  selectActivityLevel({detail:{value:'high'}})
+  assert.equal(member.activityLevel, 'light')
 })
 
 test('archive gender changes produce the corresponding saved sex field', () => {

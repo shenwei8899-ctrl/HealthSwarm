@@ -20,8 +20,8 @@ from yuxi.storage.postgres.models_health import HealthObservation, DietLog
 
 
 @pytest.mark.asyncio
-async def test_model_wrapper_drops_previous_family_knowledge_turn(monkeypatch):
-    """第二轮模型不能读取或复述上一 Run 的家庭库片段，必须重新调用工具。"""
+async def test_model_wrapper_compacts_previous_family_knowledge_turn(monkeypatch):
+    """模型历史保留已发布答复，移除上一轮工具原始片段。"""
     from yuxi.services import health_meal_feedback_service
 
     poison = "上一轮家庭知识库片段不得进入下一轮模型输入"
@@ -49,8 +49,8 @@ async def test_model_wrapper_drops_previous_family_knowledge_turn(monkeypatch):
     )
 
     async def handler(filtered_request):
-        assert filtered_request.messages == [previous, current]
-        assert poison not in str(filtered_request.messages)
+        assert filtered_request.messages == [previous, AIMessage(content=poison), current]
+        assert all(not isinstance(message, ToolMessage) for message in filtered_request.messages)
         return "called"
 
     assert await HealthAuthorizationMiddleware(None).awrap_model_call(request, handler) == "called"
@@ -274,3 +274,12 @@ async def test_actual_memory_model_wrapper_rejects_extra_body_and_error_bypass(m
     with pytest.raises(HealthVisionError, match="memory_history_invalid"):
         await model_wrapper(forged, "error" if injection == "error_status" else "success")
     handler.assert_not_awaited()
+
+
+@pytest.fixture(autouse=True)
+def isolate_account_memory_context(monkeypatch):
+    """本组验证既有图协议；账号记忆在独立真实 PG/HTTP 测试覆盖。"""
+    from unittest.mock import AsyncMock
+    from yuxi.agents.middlewares import health_memory_context
+    monkeypatch.setattr(health_memory_context, "process_memory_for_run", AsyncMock(return_value={}))
+    monkeypatch.setattr(health_memory_context, "memory_context_for_run", AsyncMock(return_value={}))

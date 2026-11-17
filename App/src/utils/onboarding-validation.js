@@ -1,12 +1,22 @@
 import { birthDateError } from './member-age.js'
 import { restrictionFields } from './health.js'
 
+export const activityLevelOptions = [
+  { value: 'sedentary', label: '久坐' },
+  { value: 'light', label: '轻度' },
+  { value: 'moderate', label: '中等' },
+  { value: 'high', label: '较高' },
+]
+
 const answered = values => Array.isArray(values) && values.length > 0 && values.every(value =>
   typeof value === 'string' && value.trim() && !['其他', '自定义'].includes(value.trim()))
 
 export function onboardingIssue(member, throughStep = 2) {
   const basics = basicProfileIssue(member)
   if (basics) return basics
+  if (!activityLevelOptions.some(option => option.value === member.activityLevel)) {
+    return { step: 0, field: 'activity', message: '请选择日常活动量' }
+  }
   if (throughStep < 1) return null
   if (!['none', 'set'].includes(member.healthStatus)) return { step: 1, message: '请选择是否有已知基础病' }
   if (member.healthStatus === 'set' && (!member.conditions?.length || member.conditions.some(value => !value.trim()) ||

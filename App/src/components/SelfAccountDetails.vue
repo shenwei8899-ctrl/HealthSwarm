@@ -1,4 +1,5 @@
 <script setup>
+import { activityLevelOptions } from '../utils/onboarding-validation.js'
 import { ref, computed, onMounted } from 'vue'
 import { onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import AppNavBar from '../components/AppNavBar.vue'
@@ -230,7 +231,7 @@ onMounted(showLoad); onShow(showLoad); onHide(discard); onUnload(discard)
         <text class="label">性别</text><view class="choices"><button v-for="item in [{v:'female',n:'女'},{v:'male',n:'男'},{v:'unspecified',n:'暂不说明'}]" :key="item.v" :class="{ selected: form.sex === item.v }" :disabled="busy || uncertain" @click="form.sex=item.v">{{ item.n }}</button></view>
         <input v-model="form.birth_date" class="field-input" maxlength="10" placeholder="生日 YYYY-MM-DD" :disabled="busy || uncertain"/>
         <input v-model="form.height_cm" class="field-input" type="digit" placeholder="身高（厘米，可稍后补充）" :disabled="busy || uncertain"/>
-        <text class="label">日常活动量</text><view class="choices"><button v-for="item in [{v:'sedentary',n:'久坐'},{v:'light',n:'轻度'},{v:'moderate',n:'中等'},{v:'high',n:'较高'}]" :key="item.v" :class="{ selected: form.activity_level === item.v }" :disabled="busy || uncertain" @click="form.activity_level=item.v">{{ item.n }}</button></view>
+        <text class="label">日常活动量</text><view class="choices"><button v-for="item in activityLevelOptions" :key="item.value" :class="{ selected: form.activity_level === item.value }" :disabled="busy || uncertain" @click="form.activity_level=item.value">{{ item.label }}</button></view>
         <input v-model="form.goal" class="field-input" maxlength="200" placeholder="你的饮食目标（可稍后补充）" :disabled="busy || uncertain"/>
         <button class="primary-button" :disabled="busy || uncertain" @click="save">保存本人资料</button>
         <text class="helper">服务端档案版本：{{ member.version }} · {{ member.confirmed ? '已确认' : '待本人确认' }}</text>

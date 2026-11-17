@@ -224,8 +224,8 @@ class HealthFamilyProfileRepository:
         reference = {key: value for key, value in facts.items() if key not in {"kind", "weight_kg"}}
         return weight, {**reference, "source_hash": input_fingerprint(facts)}
 
-    async def read(self, uid, member_id, *, lock=True, audit=True):
-        """只返回本人已确认的原始档案；临床编码与独立测量不继承确认。"""
+    async def read(self, uid, member_id, *, lock=True, audit=True, family_assistant=False):
+        """返回已确认且在当前用途中可见的原始档案。"""
         await HealthVisionRepository(self.session).authorize(member_id, uid, "profile_view", lock=lock)
         link = await self.session.get(HealthFamilyProfileLink, member_id, populate_existing=True)
         result = {
@@ -240,7 +240,7 @@ class HealthFamilyProfileRepository:
         }
         if link is None:
             return result
-        family, source = await self.source(uid, link, lock=lock)
+        family, source = await self.source(uid, link, lock=lock, family_assistant=family_assistant)
         allowed = authorized_fields(family, source, uid) & PROFILE_FIELDS
         allowed -= STRUCTURED_PROFILE_FIELDS - (source.profile or {}).keys()
         missing = sorted(key for key in REQUIRED_PROFILE_FIELDS if (source.profile or {}).get(key) in (None, "", []))
@@ -284,7 +284,7 @@ class HealthFamilyProfileRepository:
             .on_conflict_do_nothing()
         )
 
-    async def validate_history(self, uid, binding, *, lock=False):
+    async def validate_history(self, uid, binding, *, lock=False, family_assistant=False):
         """真实 Run 依赖重验所有派生轮次；改版后建立新咨询。"""
         uses = list(
             (
@@ -300,16 +300,18 @@ class HealthFamilyProfileRepository:
         )
         if not uses:
             return
-        current = await self.read(uid, binding.member_id, lock=lock, audit=False)
-        if any(
-            current.get("source_hash") != use.payload_hash
-            or use.member_id != binding.member_id
-            or current.get("source", {}).get("source_member_id") != use.source_member_id
-            for use in uses
-        ):
-            raise HealthVisionError("profile_source_changed", "档案来源已变化，请建立新咨询读取当前版本", 410)
+        for use in uses:
+            link = await self.session.scalar(
+                select(HealthFamilyProfileLink).where(HealthFamilyProfileLink.source_member_id == use.source_member_id)
+            )
+            if link is None or use.member_id != binding.member_id:
+                raise HealthVisionError("profile_source_changed", "档案来源已变化，请建立新咨询", 410)
+            await HealthVisionRepository(self.session).authorize(link.member_id, uid, "ai_use", lock=lock)
+            current = await self.read(uid, link.member_id, lock=lock, audit=False, family_assistant=family_assistant)
+            if current.get("source_hash") != use.payload_hash:
+                raise HealthVisionError("profile_source_changed", "档案来源已变化，请建立新咨询读取当前版本", 410)
 
-    async def validate_tool_payload(self, uid, binding, payload):
+    async def validate_tool_payload(self, uid, binding, payload, *, family_assistant=False):
         """checkpoint 只接受真实线程读取过且仍有效的档案正文。"""
         if not isinstance(payload, dict):
             raise HealthVisionError("profile_source_changed", "档案checkpoint无法核对", 410)
@@ -322,10 +324,12 @@ class HealthFamilyProfileRepository:
                 "profile": None,
                 "confirmed_version": None,
             }
-            if payload != legacy and payload != await self.read(uid, binding.member_id):
+            if payload != legacy and payload != await self.read(
+                uid, binding.member_id, family_assistant=family_assistant
+            ):
                 raise HealthVisionError("profile_source_changed", "未确认档案checkpoint无法核对", 410)
             return
-        current = await self.read(uid, binding.member_id)
+        current = await self.read(uid, binding.member_id, family_assistant=family_assistant)
         if payload != current or self.payload_hash(payload) != current.get("source_hash"):
             raise HealthVisionError("profile_source_changed", "档案checkpoint来源已失效", 410)
         use = await self.session.scalar(
@@ -341,7 +345,7 @@ class HealthFamilyProfileRepository:
         if use is None:
             raise HealthVisionError("profile_source_changed", "档案checkpoint来源已失效", 410)
 
-    async def source(self, uid, link, *, lock=True):
+    async def source(self, uid, link, *, lock=True, family_assistant=False):
         """持家庭锁后刷新身份；管理员自己的处理同意不能代替本人。"""
         family_repo = FamilyRepository(self.session)
         if lock:
@@ -355,7 +359,12 @@ class HealthFamilyProfileRepository:
         source = await family_repo.member(link.family_id, link.source_member_id) if family else None
         if source is not None:
             await self.session.refresh(source)
-        if source is None or not source.is_active or source.subject_uid != uid or link.actor_uid != uid:
+        if (
+            source is None
+            or not source.is_active
+            or not family_assistant
+            and (source.subject_uid != uid or link.actor_uid != uid)
+        ):
             raise HealthVisionError("not_found", "正式档案不存在或无本人处理授权", 404)
         return family, source
 

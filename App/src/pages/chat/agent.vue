@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { onLoad, onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import { scopedStorage } from '../../services/storage.js'
 import AppNavBar from '../../components/AppNavBar.vue'
+import AiAnswer from '../../components/AiAnswer.vue'
 import { createHealthTaskFlow } from '../../services/health-task-flow.js'
 import { readFamilyHealthBinding } from '../../services/member-profile.js'
 import { sessionRevision } from '../../services/session.js'
@@ -65,8 +66,8 @@ function consent() { if (consentChecked.value) { consentChecked.value = false; v
       <template v-if="view.entry?.thread_id">
         <view v-if="view.requests?.length>1" class="request-list"><button v-for="(item,index) in view.requests" :key="item.request_id" :disabled="view.busy||view.submitUnknown" :class="{selected:item.request_id===view.requestId}" @click="flow.selectRequest(item.request_id)">问题 {{index+1}} · {{({queued:'排队中',running:'处理中',completed:'已完成',cancelled:'已取消',rejected:'已拒绝'})[item.status]||item.status}}</button></view>
         <text v-if="view.requestId" class="helper">当前请求：{{ statusText || '待核对' }}</text>
-        <text v-if="view.result?.type === 'answer'" class="answer">{{ view.result.text }}</text>
-        <view v-if="view.result?.citations?.length" class="citation"><text>本次引用：</text><text v-for="(title,index) in view.result.citations" :key="index">{{ title }}</text></view>
+        <AiAnswer v-if="view.result?.type === 'answer'" :text="view.result.text"
+          :citations="view.result.citations || []" :message-key="view.requestId" />
         <view v-if="view.result?.type === 'needs_input'" class="answer"><text>请补充：</text><text v-for="(item,index) in view.result.questions" :key="index">{{ item }}</text></view>
         <text v-if="view.result?.type === 'error'" class="error-note">任务未完成（{{ view.result.code }}）。如需继续，请明确提交新问题。</text>
         <button v-if="view.requestId" class="secondary-button" :disabled="view.busy || view.loading" @click="refresh">重新读取同一任务</button>
@@ -81,6 +82,6 @@ function consent() { if (consentChecked.value) { consentChecked.value = false; v
 </template>
 
 <style scoped>
-.task-screen{padding-bottom:48rpx}.task-card{padding:28rpx;margin:24rpx 0}.section-title{display:block;font-size:34rpx;font-weight:500}.task-card button{margin-top:18rpx}.helper{display:block;font-size:25rpx;color:#63636b;line-height:1.7;margin:18rpx 0}.error-note{display:block;color:#a13a30;line-height:1.6;margin:18rpx 0}.answer{display:block;white-space:pre-line;font-size:29rpx;line-height:1.75;margin:24rpx 0}.answer text,.citation text{display:block}.citation{font-size:25rpx;color:#63636b;margin:18rpx 0}.consent-box{padding:18rpx;background:#f1f6f2;border-radius:16rpx;font-size:25rpx}.question-input{width:100%;min-height:190rpx;padding:20rpx;border:1px solid #ddd;border-radius:16rpx;box-sizing:border-box;margin-top:24rpx}.text-button{background:transparent;color:#292a2e;font-size:26rpx}
+.task-screen{padding-bottom:48rpx}.task-card{padding:28rpx;margin:24rpx 0}.section-title{display:block;font-size:34rpx;font-weight:500}.task-card button{margin-top:18rpx}.helper{display:block;font-size:25rpx;color:#63636b;line-height:1.7;margin:18rpx 0}.error-note{display:block;color:#a13a30;line-height:1.6;margin:18rpx 0}.answer{display:block;white-space:pre-line;font-size:29rpx;line-height:1.75;margin:24rpx 0}.answer text{display:block}.consent-box{padding:18rpx;background:#f1f6f2;border-radius:16rpx;font-size:25rpx}.question-input{width:100%;min-height:190rpx;padding:20rpx;border:1px solid #ddd;border-radius:16rpx;box-sizing:border-box;margin-top:24rpx}.text-button{background:transparent;color:#292a2e;font-size:26rpx}
 </style>
 <style scoped>.request-list{display:flex;gap:12rpx;flex-wrap:wrap}.request-list button{font-size:25rpx;padding:12rpx 18rpx;background:#f5f5f7}.request-list .selected{background:#292a2e;color:#fff}</style>

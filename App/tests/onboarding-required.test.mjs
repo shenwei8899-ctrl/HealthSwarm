@@ -12,7 +12,7 @@ import { resolveOnboardingReports } from '../src/services/report-entry.js'
 
 function completeMember(id = 'self') {
   return { ...newMember(0), id, name: id, relation: id === 'self' ? '本人' : '家人', birthDate: '1995-01-01',
-    gender: '女', height: 165, weight: 60,
+    gender: '女', height: 165, weight: 60, activityLevel: 'moderate',
     healthStatus: 'none', goals: ['饮食均衡'], tastePreferences: ['不限口味'], cuisines: ['不限菜系'],
     allergyStatus: 'none', intoleranceStatus: 'none', avoidanceStatus: 'none', doctorStatus: 'none' }
 }
@@ -30,7 +30,7 @@ function page(members = [completeMember()], extras = {}) {
     saveCloudProfile: async value => { calls.saves.push(JSON.parse(JSON.stringify(value))); return { ...value, onboarded: true } },
     saveOnboardingProfile: value => deps.saveCloudProfile(value),
     uni: { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, structuredClone(value)), pageScrollTo() {}, showToast: value => calls.toasts.push(value.title),
-      showModal(options) { if(options.title!==processingDisclosure().title)throw new Error('Required fields must not be bypassable through a warning modal');options.success({confirm:true}) },
+      showModal(options) { if(![processingDisclosure().title,'同意使用档案生成餐单？'].includes(options.title))throw new Error('Required fields must not be bypassable through a warning modal');options.success({confirm:true}) },
       navigateTo: value => { calls.redirects.push(value.url); calls.navigation = value; value.complete?.() },
       reLaunch: value => calls.redirects.push(value.url) }, ...extras }
   const script = readFileSync(new URL('../src/pages/onboarding/index.vue', import.meta.url), 'utf8')
@@ -85,6 +85,7 @@ const missing = [
   ['性别', m => m.gender = '未填写', 0],
   ['身高', m => m.height = '', 0],
   ['体重', m => m.weight = '', 0],
+  ['日常活动量', m => m.activityLevel = '', 0],
   ['已知基础病', m => m.healthStatus = 'unknown', 1],
   ['口味偏好', m => m.tastePreferences = [], 1],
   ['饮食目标', m => m.goals = [], 1],
@@ -109,6 +110,7 @@ test('a complete explicit no-restriction profile finishes with body measurements
   assert.equal(p.calls.saves.length, 1); assert.deepEqual(p.calls.redirects, ['/pages/chat/index'])
   assert.equal(p.calls.saves[0].members[0].height, 165)
   assert.equal(p.calls.saves[0].members[0].weight, 60)
+  assert.equal(p.calls.saves[0].members[0].activityLevel, 'moderate')
   assert.equal(p.calls.saves[0].members[0].gender, '女'); p.dispose()
 })
 
@@ -269,6 +271,8 @@ test('a lost profile response forwards the recovered member mapping from the ori
   await h.save(profile,{reviewOnly:true,onMemberRefs:refs=>{mapping=refs}})
   const [first,retry] = h.requests.filter(request=>request.method==='POST')
   assert.deepEqual(first,retry)
+  assert.equal(first.data.onboarding_version,2)
+  assert.equal(first.data.members[0].activity_level,'moderate')
   assert.deepEqual(mapping,memberRefs)
 })
 

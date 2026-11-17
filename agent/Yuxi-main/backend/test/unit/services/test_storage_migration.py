@@ -26,6 +26,7 @@ def family_schema_upgrade(monkeypatch):
     monkeypatch.setattr(storage_migration, "upgrade_product_feedback", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_family_membership", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_shared_daily_meal_plan", upgrade)
+    monkeypatch.setattr(storage_migration, "upgrade_converged_health", upgrade)
 
 
 class _Session:
@@ -209,6 +210,8 @@ async def test_storage_migration_rejects_v071_schema_without_quiescence_proof(mo
         34,
         35,
         36,
+        37,
+        38,
         storage_migration.HEALTH_SCHEMA_VERSION,
     ],
 )

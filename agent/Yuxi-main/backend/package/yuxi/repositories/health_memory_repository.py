@@ -2,13 +2,14 @@
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import aliased
 
-from yuxi.storage.postgres.models_business import AgentRun, AgentRunRequest, Message
+from yuxi.storage.postgres.models_business import AgentRun, AgentRunRequest, Message, FamilyMember, FamilyArchive
 from yuxi.storage.postgres.models_health import (
     HealthMemoryFact,
     HealthMemoryRevision,
     HealthMemoryUse,
-    HealthConsultation,
+    HealthFamilyProfileLink,
 )
 
 
@@ -35,16 +36,27 @@ class HealthMemoryRepository:
             ).all()
         )
 
-    async def get(self, uid, fact_id):
+    async def list_account(self, uid, *, after=None, limit=50, member_ids=None, recallable_only=False):
+        """稳定 ID 游标管理全部主体；召回范围由服务端成员目录限制。"""
+        query = select(HealthMemoryFact).where(HealthMemoryFact.actor_uid == uid, HealthMemoryFact.status == "active")
+        if recallable_only:
+            query = query.where(HealthMemoryFact.id.in_(self.current_recall_ids(uid)))
+        if after:
+            query = query.where(HealthMemoryFact.id > after)
+        if member_ids is not None:
+            query = query.where(HealthMemoryFact.member_id.in_(member_ids))
+        return list((await self.session.scalars(query.order_by(HealthMemoryFact.id).limit(limit + 1))).all())
+
+    async def get(self, uid, fact_id, *, lock=False):
         """不允许知道标识的其他账号访问记忆。"""
-        return await self.session.scalar(
+        query = (
             select(HealthMemoryFact)
-            .where(
-                HealthMemoryFact.id == fact_id,
-                HealthMemoryFact.actor_uid == uid,
-            )
+            .where(HealthMemoryFact.id == fact_id, HealthMemoryFact.actor_uid == uid)
             .execution_options(populate_existing=True)
         )
+        if lock:
+            query = query.with_for_update()
+        return await self.session.scalar(query)
 
     async def slot(self, uid, member_id, key):
         """调用方已持有成员锁，串行处理同一语义槽位。"""
@@ -135,8 +147,32 @@ class HealthMemoryRepository:
             .where(
                 AgentRun.uid == uid,
                 HealthMemoryFact.actor_uid == uid,
-                HealthMemoryFact.member_id == member_id,
-                or_(HealthMemoryFact.status != "active", HealthMemoryUse.version != HealthMemoryFact.version),
+                or_(
+                    HealthMemoryFact.status != "active",
+                    HealthMemoryUse.version != HealthMemoryFact.version,
+                    HealthMemoryFact.id.not_in(self.current_recall_ids(uid)),
+                ),
+            )
+        )
+
+    def current_recall_ids(self, uid):
+        """日终摘要同样排除退出家庭后失效的真实来源，避免复活旧自述。"""
+        actor = aliased(FamilyMember)
+        return (
+            select(HealthMemoryFact.id)
+            .join(HealthFamilyProfileLink, HealthFamilyProfileLink.member_id == HealthMemoryFact.member_id)
+            .join(FamilyMember, FamilyMember.id == HealthFamilyProfileLink.source_member_id)
+            .join(FamilyArchive, FamilyArchive.id == HealthFamilyProfileLink.family_id)
+            .join(actor, actor.family_id == FamilyArchive.id)
+            .where(
+                actor.subject_uid == uid,
+                actor.is_active.is_(True),
+                FamilyMember.is_active.is_(True),
+                FamilyArchive.archived_at.is_(None),
+                FamilyMember.family_id == FamilyArchive.id,
+                HealthMemoryFact.actor_uid == uid,
+                HealthMemoryFact.provenance["family_id"].as_string() == FamilyArchive.id,
+                HealthMemoryFact.provenance["source_member_id"].as_string() == FamilyMember.id,
             )
         )
 
@@ -154,12 +190,10 @@ class HealthMemoryRepository:
                     )
                     .join(HealthMemoryUse, HealthMemoryUse.run_id == AgentRun.id)
                     .join(HealthMemoryFact, HealthMemoryFact.id == HealthMemoryUse.fact_id)
-                    .join(HealthConsultation, HealthConsultation.conversation_id == AgentRun.conversation_id)
                     .where(
                         AgentRun.uid == uid,
                         AgentRun.conversation_thread_id == thread_id,
                         HealthMemoryFact.actor_uid == uid,
-                        HealthMemoryFact.member_id == HealthConsultation.member_id,
                     )
                 )
             ).all()

@@ -8,7 +8,11 @@ from pydantic import Field, TypeAdapter, field_validator, model_validator
 
 from yuxi.services.health_vision_types import HealthDTO, HealthVisionError
 from yuxi.services.recipe_translation_types import RecipeChineseDisplay
-from yuxi.services.reference_meal_composition import MAX_REFERENCE_DISHES
+from yuxi.services.reference_meal_composition import (
+    MAX_REFERENCE_DISHES,
+    REFERENCE_MEAL_POLICY_VERSION,
+    validate_reference_dish,
+)
 from yuxi.services.reference_meal_plan_types import ReferenceDishAssignment, ReferencePlanDraft
 
 
@@ -161,6 +165,7 @@ async def assemble_reference_selection(context, payload, *, allow_purchase_fallb
     async with pg_manager.get_async_session_context() as session:
         run, binding = await require_planner_run(session, context)
         current = await bound_reference_context(session, context.uid, binding)
+        policy_version = (binding.initial_planner_selection or {}).get("meal_policy_version")
         if {meal.meal_type for meal in selected.meals} != set(current["selection"]["meal_types"]):
             raise HealthVisionError("reference_meals_mismatch", "餐次须与用户明确选择一致", 422)
         receipts = await tool_payloads(session, run, "read_reference_recipe")
@@ -221,6 +226,8 @@ async def assemble_reference_selection(context, payload, *, allow_purchase_fallb
                     parsed = parse_reference_recipe(fresh["content"])
                     if parsed is None or parsed.review_sections:
                         raise HealthVisionError("reference_quote_invalid", "菜谱完整食材或步骤仍需核对", 422)
+                    if policy_version == REFERENCE_MEAL_POLICY_VERSION:
+                        validate_reference_dish(parsed.name, parsed.ingredients)
                     documents[key] = fresh, parsed
                 fresh, parsed = documents[key]
                 dish = {

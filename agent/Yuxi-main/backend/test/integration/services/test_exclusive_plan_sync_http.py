@@ -43,13 +43,9 @@ async def test_read_keeps_exact_owner_and_hides_partial_exports(family_profile_h
     client, sessions, users = family_profile_http
     fid, gid = await seeded_group(client, sessions, users)
 
-    async def policy():
-        return {'version': 'synthetic'}
-
     async def context(*args, **kwargs):
         return {'basis_hash': 'a'*64, 'sources': {'members': {'synthetic': {'name': '合成成员'}}}}
 
-    monkeypatch.setattr(service, 'read_plan_policy', policy)
     monkeypatch.setattr(service, 'exclusive_context', context)
     path = f'/api/health/v1/families/{fid}/exclusive-plans/{gid}'
     response = await client.get(path, headers=users['self'])
@@ -65,8 +61,47 @@ async def test_read_keeps_exact_owner_and_hides_partial_exports(family_profile_h
         assert await db.scalar(select(func.count()).select_from(HealthExclusivePlanGroup)) == 1
 
 
+async def test_preview_is_owned_and_exposes_partial_pricing(family_profile_http, monkeypatch):
+    """三档预览直接读取 Agent 记录，无需商城回执。"""
+    from yuxi.services import exclusive_plan_tasks
+    from unittest.mock import AsyncMock
+
+    client, sessions, users = family_profile_http
+    fid, gid = await seeded_group(client, sessions, users)
+    async with sessions() as db:
+        row = await db.get(HealthExclusivePlanGroup, gid)
+        row.policy = service.PREVIEW_POLICY
+        row.status = "ready"
+        row.progress = {
+            "tiers": {
+                tier: [{"day": {"day_no": day, "plan_date": f"2099-01-{day:02d}"}, "meals": [],
+                        "procurement": {"purchase_gaps": [], "pricing": {"matched_subtotal_cent": None}}}
+                       for day in range(1, 22)]
+                for tier in service.TIERS
+            },
+        }
+        await db.commit()
+
+    async def context(*args, **kwargs):
+        return {"basis_hash": "a" * 64, "sources": {"members": {"synthetic": {"name": "合成成员"}}}}
+
+    monkeypatch.setattr(service, "exclusive_context", context)
+    monkeypatch.setattr(exclusive_plan_tasks, "validate_saved_days", AsyncMock())
+    path = f"/api/health/v1/families/{fid}/exclusive-plans/{gid}"
+    group = await client.get(path, headers=users["self"])
+    assert group.json()["preview_only"] is True
+    assert len(group.json()["plans"]) == 3
+    detail = await client.get(path + "/tiers/economy", headers=users["self"])
+    assert detail.status_code == 200
+    assert len(detail.json()["days"]) == 21
+    assert "tier_costs_cent" not in detail.text + group.text
+    assert detail.json()["pricing"]["matched_subtotal_cent"] is None
+    assert detail.json()["pricing"]["complete_estimate"] is False
+    assert (await client.get(path + "/tiers/economy", headers=users["other"])).status_code == 404
+
+
 async def test_multi_day_capability_and_task_entry_contract(family_profile_http, monkeypatch):
-    """真实授权与缺输入保持只读；生成服务替身只核对入口委派，不代替计划生成验收。"""
+    """通用入口提示前往专属计划页，已授权请求也不触发后台生成。"""
     client, sessions, users = family_profile_http
     member = await create_health_member(client, users['self'])
 
@@ -83,7 +118,9 @@ async def test_multi_day_capability_and_task_entry_contract(family_profile_http,
     path = f'/api/health/v1/members/{member}/task-entries'
     request_id = str(uuid4())
     headers = {**users['self'], 'Idempotency-Key': request_id}
-    missing = await client.post(path, headers=headers, json={'task_type': 'multi_day_plan', 'client_request_id': request_id})
+    missing = await client.post(
+        path, headers=headers, json={'task_type': 'multi_day_plan', 'client_request_id': request_id}
+    )
     assert missing.status_code == 200, missing.text
     assert missing.json()['entry_status'] == 'needs_input'
     assert missing.json()['reason_code'] == 'selection_required'
@@ -103,12 +140,12 @@ async def test_multi_day_capability_and_task_entry_contract(family_profile_http,
     monkeypatch.setattr(service, 'start_exclusive_plan', start)
     fid = str(uuid4())
     body = {'task_type': 'multi_day_plan', 'client_request_id': request_id, 'selection': {'family_id': fid}}
-    ready = await client.post(path, headers=headers, json=body)
-    assert ready.status_code == 200, ready.text
-    assert ready.json()['entry_status'] == 'ready' and ready.json()['exclusive_plan']['status'] == 'generating'
-    assert calls == [('self', fid, request_id, member)]
+    redirect = await client.post(path, headers=headers, json=body)
+    assert redirect.status_code == 409, redirect.text
+    assert 'exclusive_plan_page_required' in redirect.text
+    assert calls == []
     denied = await client.post(path, headers={**users['other'], 'Idempotency-Key': request_id}, json=body)
-    assert denied.status_code == 404 and len(calls) == 1
+    assert denied.status_code == 404 and not calls
     async with sessions() as db:
         assert await db.scalar(select(func.count()).select_from(HealthExclusivePlanGroup)) == 0
 
@@ -118,13 +155,9 @@ async def test_changed_basis_is_stale_and_read_does_not_rewrite_group(family_pro
     client, sessions, users = family_profile_http
     fid, gid = await seeded_group(client, sessions, users)
 
-    async def policy():
-        return {'version': 'synthetic'}
-
     async def context(*args, **kwargs):
         return {'basis_hash': 'b'*64}
 
-    monkeypatch.setattr(service, 'read_plan_policy', policy)
     monkeypatch.setattr(service, 'exclusive_context', context)
     response = await client.get(f'/api/health/v1/families/{fid}/exclusive-plans/{gid}', headers=users['self'])
     assert response.status_code == 200, response.text

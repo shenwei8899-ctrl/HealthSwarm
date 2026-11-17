@@ -99,6 +99,7 @@ def selected_tool():
         "ReferenceOptionSelection": ReferenceOptionSelection,
         "ReferenceOptionTranslationCorrection": ReferenceOptionTranslationCorrection,
         "REFERENCE_TOOLS": REFERENCE_TOOLS,
+        "BATCH_REFERENCE_MEAL_POLICY_VERSIONS": (1, 2),
         "AIMessage": AIMessage,
         "HumanMessage": HumanMessage,
         "ToolMessage": ToolMessage,
@@ -434,6 +435,7 @@ def save_owner(monkeypatch):
         "NUTRIENTS": NUTRIENTS,
         "REFERENCE_CATALOG_CHAIN_VERSION": REFERENCE_CATALOG_CHAIN_VERSION,
         "REFERENCE_MEAL_POLICY_VERSION": REFERENCE_MEAL_POLICY_VERSION,
+        "BATCH_REFERENCE_MEAL_POLICY_VERSIONS": (1, 2),
         "parse_reference_recipe": parse_reference_recipe,
         "checked_chinese_display": checked_chinese_display,
         "ingredient_food": ingredient_food,
@@ -556,3 +558,12 @@ async def test_restoring_original_image_wait_reproduces_post_commit_completion_b
         save_owner.image_release.set()
         result = await asyncio.wait_for(pending, timeout=1)
     assert result["preview_id"] in save_owner.rows
+
+
+@pytest.fixture(autouse=True)
+def isolate_account_memory_publication(monkeypatch):
+    """本组验证既有业务 Owner；账号记忆发布边界由真实 PG/HTTP 测试覆盖。"""
+    from unittest.mock import AsyncMock
+    from yuxi.services import health_memory_context_service
+    monkeypatch.setattr(health_memory_context_service, "validate_memory_publication", AsyncMock())
+    monkeypatch.setattr(health_memory_context_service, "memory_restrictions_for_plan", AsyncMock(return_value=[]))

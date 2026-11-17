@@ -20,7 +20,10 @@ class PlanOrderService
         $address=Json::decode($batches[0]['address_snapshot_json'],[]);
         $delivery=(new DeliveryService())->validateAddress($order['user_id'],$address['address_id'],$batches[0]['delivery_slot_id']);
         if (Json::canonical($address)!==Json::canonical($delivery['snapshot'])) throw new DomainException('配送地址已变化，请重新下单',40906,409);
-        (new PlanScheduleService())->preview($current,$delivery,$batches[0]['delivery_date'],count($batches),false,$plan['id']);
+        $schedule=(new PlanScheduleService())->preview($current,$delivery,$batches[0]['delivery_date'],21,false,$plan['id'],$plan['delivery_frequency']);
+        if (array_column($schedule['items'],'delivery_date') !== array_column($batches,'delivery_date')) {
+            throw new DomainException('配送批次已变化，请重新下单',40906,409);
+        }
         $quantities=[];
         foreach ($batches as $batch) foreach (Db::name('shop_plan_delivery_batch_item')->where('batch_id',$batch['id'])->select() as $item) {
             $sku=(new CatalogService())->getSku($item['sku_id'],false);

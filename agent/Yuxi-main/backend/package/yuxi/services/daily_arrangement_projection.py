@@ -39,6 +39,7 @@ async def save_recipe_commerce_source(uid, rid, data):
         ):
             raise HealthVisionError("recipe_source_invalid", "步骤、配料映射或配方版本不一致", 422)
         row = await db.get(HealthRecipeCommerceSource, rid)
+        presentation = data.model_dump(exclude_none=True, include={"image_url", "cooking_minutes"})
         if row is not None:
             if (
                 row.recipe_hash != data.recipe_hash
@@ -49,6 +50,10 @@ async def save_recipe_commerce_source(uid, rid, data):
                 raise HealthVisionError(
                     "recipe_source_immutable", "已发布做法和食材映射不能覆盖，请创建新的菜谱版本", 409
                 )
+            if presentation:
+                if row.presentation and row.presentation != presentation:
+                    raise HealthVisionError("recipe_source_immutable", "已发布的菜谱图片和用时不能覆盖", 409)
+                row.presentation = presentation
             await publish_recipe_classification(db, uid, rid, data)
             return {"saved": True, "recipe_version_id": rid}
         if row is None:
@@ -61,6 +66,7 @@ async def save_recipe_commerce_source(uid, rid, data):
             data.source_ref,
             uid,
         )
+        row.presentation = presentation or None
         await publish_recipe_classification(db, uid, rid, data)
         return {"saved": True, "recipe_version_id": rid}
 

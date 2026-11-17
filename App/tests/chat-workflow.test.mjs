@@ -1,3 +1,4 @@
+import { createDishSwap, dishSwapState } from '../src/services/dish-swap.js'
 import {createConversationHistoryCache} from '../src/services/conversation-history.js'
 import {syntheticIntent} from './fixtures/health-intent.mjs'
 import {dishTitle,mealLabels} from '../src/utils/meal-presentation.js'
@@ -122,7 +123,7 @@ function workflow(options = {}) {
     }
     return flow
   }
-  const deps = {setTimeout:options.schedule||setTimeout,clearTimeout:options.cancel||clearTimeout,todayMealPlanState,createTodayMealPlan:config=>options.todayMenu?createTodayMealPlan({...config,...options.todayMenu}):({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}), defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatPromptProfileKey,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
+  const deps = {createDishSwap,dishSwapState,setTimeout:options.schedule||setTimeout,clearTimeout:options.cancel||clearTimeout,todayMealPlanState,createTodayMealPlan:config=>options.todayMenu?createTodayMealPlan({...config,...options.todayMenu}):({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}), defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatPromptProfileKey,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
     onMounted: fn => { hooks.mount = fn }, onUnmounted: fn => { hooks.unmount = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn },
     dishTitle,mealLabels,mealPairingText,chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,
     newHealthRequestId: id, storageContext: () => identity.scope, getSession: () => ({ ...identity }), scopedStorage,
@@ -294,11 +295,13 @@ test('reconnecting after entry failure keeps the question and image without subm
   } finally { p.dispose() }
 })
 
-test('entry failure offers reconnection next to the draft while consent retains its own controls', () => {
+test('entry shows connection and failure status while retaining consent controls', () => {
   const source = readFileSync(new URL('../src/components/CloudNutritionChat.vue', import.meta.url), 'utf8')
   const composer = source.split('<template #composer>')[1].split('<template #overlays>')[0]
   assert.match(composer, /v-if="!entryReady&&entryError&&!profileLoading&&!task\.consentOption"/)
+  assert.match(composer, /task\.notice\|\|entryError\|\|profile\?\.consultationError/)
   assert.match(composer, /@click="load">重新连接营养师/)
+  assert.match(composer, /confirmConsultation/)
 })
 
 test('home renders four interactive local suggestions before any entry request completes',async()=>{
@@ -1091,6 +1094,33 @@ test('今日菜谱请求进入菜品餐单任务而不是商城商品咨询', as
     assert.equal(submitted.taskType, 'reference_meal_preview')
     assert.deepEqual(submitted.selection.meal_types, ['breakfast', 'lunch', 'dinner'])
     assert.deepEqual(submitted.selection.participant_ids, ['self'])
+  } finally { p.dispose() }
+})
+
+for(const denied of [false,true])test(`切到餐单任务时保留尚未同步的问答，并处理${denied?'权限失效':'之后同步'}`, async () => {
+  const first='我想吃荷塘月色',second='给我推荐今日午餐菜谱'
+  const p=workflow({intentResponse:({text})=>text===first?{route:'nutrition_consultation'}:
+    {route:'single_day_meal',action:'generate',business_date:'2026-10-28',meal_types:['lunch']}})
+  try {
+    await p.load();await p.newConversation()
+    p.question.value=first;await p.sendQuestion()
+    const root=p.conversationThreadId.value
+    assert.equal(p.calls.filter(call=>call.action==='submit').at(-1)?.taskType,'consultation')
+    assert.ok(p.visibleMessages.value.some(message=>message.text===first))
+    p.setSnapshot(async threadId=>{
+      const row=p.threads.get(threadId)
+      return {messages:threadId===root?row.messages.filter(message=>!message.requestId):clone(row.messages),runs:[]}
+    })
+    p.question.value=second;await p.sendQuestion()
+    assert.equal(p.calls.filter(call=>call.action==='submit').at(-1)?.taskType,'reference_meal_preview')
+    const turns=()=>p.visibleMessages.value.filter(message=>[first,'合成回复 1',second,'合成回复 2'].includes(message.text))
+    assert.deepEqual(turns().map(message=>message.text),[first,'合成回复 1',second,'合成回复 2'])
+    p.setSnapshot(denied?async threadId=>{
+      if(threadId===root)throw Object.assign(new Error('来源已失效'),{code:403})
+      return {messages:clone(p.threads.get(threadId).messages),runs:[]}
+    }:null)
+    await p.restoreChat('reference_meal_preview')
+    assert.deepEqual(turns().map(message=>message.text).sort(),(denied?[second,'合成回复 2']:[first,'合成回复 1',second,'合成回复 2']).sort())
   } finally { p.dispose() }
 })
 

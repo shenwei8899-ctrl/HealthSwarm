@@ -84,7 +84,7 @@ def preparation_start():
             self.processing_consents = []
             self.revision = revision
 
-        def model_dump(self, **_kwargs):
+        def submission_dump(self, **_kwargs):
             """为指纹保留请求键与表单版本。"""
             return {"client_request_id": self.client_request_id, "revision": self.revision}
 

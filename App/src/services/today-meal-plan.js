@@ -11,7 +11,7 @@ const mealTypes = ['breakfast','lunch','dinner']
 const requiredMeals = plan => [...new Set([...(plan.needs_regeneration || []),
   ...mealTypes.filter(type => !plan.meals.some(meal => meal.meal_type === type))])]
 export function todayMealPlanState() {
-  return { phase:'idle',date:'',plan:null,verified:false,displayable:false,checking:false,issue:false,label:'正在读取今日餐单',notice:'',action:'',pending:null,consentOption:null }
+  return { phase:'idle',date:'',plan:null,verified:false,displayable:false,checking:false,issue:false, generationFailed:false,label:'正在读取今日餐单',notice:'',action:'',pending:null,consentOption:null }
 }
 
 // The menu owns its task. It never reads or writes the chat composer, history,
@@ -72,11 +72,12 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
         notice:'请核对本次配餐的数据处理方和政策版本，再选择是否同意。'})
       return true
     }
-    const fail = (privateData = false, notice = '', canRetry = false) => {
+    const fail = (privateData = false, notice = '', canRetry = false, generationFailed = false) => {
       if (!current()) return
       state.checking = false
       if (privateData) { state.plan = null; state.pending = null; state.verified = false; state.displayable = false; verifiedScope = ''; menuCache.clear() }
       state.issue = true; state.phase = state.plan ? 'ready' : 'error'
+      state.generationFailed = generationFailed
       state.notice = notice || (privateData ? '餐单资料已变化，请刷新后重新核对。' : state.plan ? state.verified ? '暂未获取更新结果，已有餐单仍可查看。' : '暂未完成核对，已有餐单仅供预览，请刷新后查看详情。' : '暂未获取餐单结果，请稍后刷新。')
       state.action = canRetry && !privateData ? 'regenerate' : 'refresh'
       if (!privateData && !notice && !canRetry && state.displayable) { state.notice = ''; state.action = ''; state.issue = false }
@@ -125,7 +126,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       if (plan.pending?.status === 'reference_candidates') showCandidatePending(plan.pending)
       if (state.plan) { state.phase = 'ready'; onPlan(plan) }
     }
-    const taskNotice = task => task?.error || task?.notice || ({
+    const taskNotice = task => task?.result?.message || task?.error || task?.notice || ({
       budget_price_unavailable:'营养咨询计费配置尚未就绪，请联系管理员。',
       budget_exceeded:'本月健康 AI 可用额度不足或待核账，请稍后再试。',
       reference_translation_correction_invalid:'餐单译文修正未通过，请重新生成餐单。',
@@ -177,7 +178,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
           if (plan.pending?.status === 'needs_input') { state.phase = state.plan?'ready':'error'; flow?.pause(); return }
           if (followUp(task) || showCandidates(task)) return
           if (stopped(plan.pending?.status) || stopped(task?.status) || task?.invalidated || task?.result?.type === 'error') {
-            fail(!!task?.invalidated,taskNotice(task) || (state.plan ? '本次更新已停止，已有餐单仍可查看。' : ''),true)
+            fail(!!task?.invalidated,taskNotice(task) || plan.pending?.failure_message || (state.plan ? '本次更新已停止，已有餐单仍可查看。' : '本次餐单未生成，请重新安排。'),true,true)
             return
           }
           if (active(plan.pending?.status)) { poll(); return }
@@ -261,7 +262,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       if (plan.pending?.status === 'needs_input') { state.phase = state.plan?'ready':'error'; return }
       if (!revision && state.plan && !requiredMeals(plan).length) return
       if (stopped(plan.pending?.status) && !retryFailed) {
-        fail(false, state.plan ? '上次更新餐单失败，已有餐次仍可查看。' : '上次生成餐单失败，请点击重新安排。',true)
+        fail(false, plan.pending?.failure_message || (state.plan ? '上次更新餐单失败，已有餐次仍可查看。' : '上次生成餐单失败，请点击重新安排。'),true,true)
         return
       }
       // Refresh only reads the original task; it must never repeat a generation POST.
@@ -313,7 +314,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       if (!current()) return
       task = owned.getState()
       if (followUp(task) || showCandidates(task)) return
-      if (stopped(task.status) || task.result?.type === 'error') { fail(!!task.invalidated,taskNotice(task),true); return }
+      if (stopped(task.status) || task.result?.type === 'error') { fail(!!task.invalidated,taskNotice(task) || '本次餐单未生成，请重新安排。',true,true); return }
       if (!accepted && !task.submitUnknown && !active(task.status)) {
         // Another device may have won the version/dispatch race.
         plan = await read(family,date)
@@ -333,5 +334,12 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
     return !!flow && !state.action &&
       (state.checking || state.phase==='generating' || !!state.plan && requiredMeals(state.plan).length>0)
   }
-  return {open,acceptConsent,isGenerating,pause:stop,clear,dispose(){stop();disposed=true;Object.assign(state,todayMealPlanState())}}
+  function acceptSavedPlan(plan, profile) {
+    if(disposed||plan.date!==day()||state.plan?.version>plan.version)return
+    stop()
+    Object.assign(state,{plan,date:plan.date,verified:true,displayable:true,checking:false,phase:'ready',pending:plan.pending||null})
+    menuCache.write(context(),profile,plan.date,plan)
+    onPlan(plan)
+  }
+  return {open,acceptSavedPlan,isGenerating,pause:stop,clear,dispose(){stop();disposed=true;Object.assign(state,todayMealPlanState())}}
 }

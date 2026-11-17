@@ -57,7 +57,7 @@ function onboardingPage(extras = {}) {
 }
 
 function completeOnboardingMember(member) {
-  Object.assign(member, { birthDate: '1995-01-01', gender: '女', height: 165, weight: 60, healthStatus: 'none', goals: ['饮食均衡'],
+  Object.assign(member, { birthDate: '1995-01-01', gender: '女', height: 165, weight: 60, activityLevel: 'moderate', healthStatus: 'none', goals: ['饮食均衡'],
     tastePreferences: ['不限口味'], cuisines: ['不限菜系'], allergyStatus: 'none',
     intoleranceStatus: 'none', avoidanceStatus: 'none', doctorStatus: 'none' })
 }

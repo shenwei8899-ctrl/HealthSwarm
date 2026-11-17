@@ -11,13 +11,13 @@ export const DEMO_MEMBERS = [
 ]
 
 export function newMember(index) {
-  return { id: Date.now() + index, name: `成员 ${index + 1}`, age: null, birthDate: '', gender: '未填写', relation: '家人', height: '', weight: '', health: '未填写', healthStatus: 'unknown', doctorStatus: 'unknown', conditions: [], focus: '均衡饮食', flavors: [], goals: [], cuisines: [], tastePreferences: [], allergyStatus: 'unknown', allergies: [], avoidanceStatus: 'unknown', avoidances: [], reportStatus: 'empty', color: '#a9c8dd', clinicianGuidance: '', hypoglycemiaRisk: '未填写', kidneyCondition: '未填写', recentNote: '' }
+  return { id: Date.now() + index, name: `成员 ${index + 1}`, age: null, birthDate: '', gender: '未填写', relation: '家人', height: '', weight: '', activityLevel: '', health: '未填写', healthStatus: 'unknown', doctorStatus: 'unknown', conditions: [], focus: '均衡饮食', flavors: [], goals: [], cuisines: [], tastePreferences: [], allergyStatus: 'unknown', allergies: [], avoidanceStatus: 'unknown', avoidances: [], reportStatus: 'empty', color: '#a9c8dd', clinicianGuidance: '', hypoglycemiaRisk: '未填写', kidneyCondition: '未填写', recentNote: '' }
 }
 
 export function normalizeMember(member) {
   const legacyDisease=member.healthStatus===undefined?['糖尿病','高血压','高血脂','肾脏疾病'].find(c=>(member.health||'').includes(c)):null
   return {
-    birthDate: '', gender: '未填写', relation: '家人', clinicianGuidance: '', hypoglycemiaRisk: '未填写', kidneyCondition: '未填写', recentNote: '',
+    birthDate: '', gender: '未填写', relation: '家人', activityLevel: '', clinicianGuidance: '', hypoglycemiaRisk: '未填写', kidneyCondition: '未填写', recentNote: '',
     healthStatus: 'unknown', doctorStatus: 'unknown', conditions: [], flavors: [], goals: [], cuisines: [], tastePreferences: [],
     allergyStatus: 'unknown', allergies: [], intoleranceStatus: 'unknown', intolerances: [], otherCondition: '', avoidanceStatus: 'unknown', avoidances: [], reportStatus: 'empty',
     ...member,

@@ -13,6 +13,7 @@ from yuxi.services.reference_meal_plan_service import (
     checked_reference_meals,
     product_facts,
     reference_binding,
+    reference_recipe_check,
     reference_restriction_conflict,
     save_reference_plan,
     select_reference_purchase_items,
@@ -21,6 +22,21 @@ from yuxi.services.reference_meal_plan_service import (
 from yuxi.services.reference_meal_plan_types import ReferencePlanDraft, ReferencePurchaseGap, ReferenceSelection
 from yuxi.services.reference_meal_selection_service import ReferenceReadSelection
 from yuxi.services.health_vision_types import HealthVisionError
+
+
+def test_new_recipe_read_rejects_plain_rice_and_matches_rice_in_pork_porridge():
+    """原谱读取用同一规则排除单独白饭，完整菜品保留商城食材。"""
+    from yuxi.services.reference_meal_composition import FOOD_GROUP_MEAL_POLICY_VERSION, REFERENCE_MEAL_POLICY_VERSION
+
+    rice = "# 白飯\n## 食材\n- 大米100克\n- 水\n## 做法\n1. 煮熟。"
+    porridge = "# 排骨粥\n## 食材\n- 大米100克\n- 水\n- 排骨200克\n## 做法\n1. 同煮。"
+    products = [{"sku_id": "rice", "product_id": "rice", "product_name": "大米", "sale_status": "available"}]
+    assert reference_recipe_check(rice, products, policy_version=FOOD_GROUP_MEAL_POLICY_VERSION)["name"] == "白飯"
+    with pytest.raises(HealthVisionError, match="白飯.*自行准备"):
+        reference_recipe_check(rice, products, policy_version=REFERENCE_MEAL_POLICY_VERSION)
+    result = reference_recipe_check(porridge, products, policy_version=REFERENCE_MEAL_POLICY_VERSION)
+    rice_match = next(group for group in result["ingredient_matches"] if group["ingredient"] == "大米100克")
+    assert [item["product_id"] for item in rice_match["candidate_products"]] == ["rice"]
 
 
 def draft(**dish_updates):
@@ -789,3 +805,12 @@ async def test_purchase_stage_allows_buying_only_selected_products(monkeypatch):
 
     assert version == "v3"
     assert [(item["sku_id"], item["quantity"]) for item in items] == [("rice-500", 1)]
+
+
+@pytest.fixture(autouse=True)
+def isolate_account_memory_publication(monkeypatch):
+    """本组验证既有业务 Owner；账号记忆发布边界由真实 PG/HTTP 测试覆盖。"""
+    from unittest.mock import AsyncMock
+    from yuxi.services import health_memory_context_service
+    monkeypatch.setattr(health_memory_context_service, "validate_memory_publication", AsyncMock())
+    monkeypatch.setattr(health_memory_context_service, "memory_restrictions_for_plan", AsyncMock(return_value=[]))

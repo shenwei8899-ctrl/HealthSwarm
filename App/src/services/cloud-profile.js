@@ -86,23 +86,25 @@ async function fetchCloudProfile({openConsultation=true, readConfiguration=true}
 }
 
 const dietaryKeys = ['healthStatus', 'conditions', 'otherCondition', 'allergyStatus', 'allergies', 'intoleranceStatus', 'intolerances', 'avoidanceStatus', 'avoidances', 'doctorStatus', 'clinicianGuidance', 'goals', 'cuisines', 'tastePreferences', 'flavors', 'recentNote', 'hypoglycemiaRisk', 'kidneyCondition']
-export function cloudProfileInput(profile, id = newHealthRequestId(), consent = null) {
+export function cloudProfileInput(profile, id = newHealthRequestId(), consent = null, planConsent = null) {
   const uuid = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i
   const selfOnly = profile.isOwner === false
   const members = selfOnly ? profile.members.filter(member => String(member.id) === profile.selfMemberId) : profile.members
   // 家庭建档使用服务端默认范围；仅本人编辑明确提交 self，避免将其扩为全家写入。
-  return { client_request_id: id, ...(selfOnly ? { scope: 'self' } : {}), family_version: profile.familyVersion, usage_mode: profile.usageMode, analysis_consent:consent,
+  return { client_request_id: id, ...(selfOnly ? { scope: 'self' } : {}), family_version: profile.familyVersion, onboarding_version: 2, usage_mode: profile.usageMode, analysis_consent:consent,
+    ...(planConsent ? { plan_consent: planConsent } : {}),
     default_diners: (selfOnly ? members.map(member => member.id) : profile.defaultDiners).map(String), members: members.map(member => ({
       client_ref: String(member.id), member_id: uuid.test(String(member.id)) ? String(member.id) : null,
       version: member.version || null, name: member.name, relation: member.relation,
       birth_date: member.birthDate || null, sex: member.gender === '女' ? 'female' : member.gender === '男' ? 'male' : 'unspecified',
       height_cm: member.height === '' || member.height == null ? null : Number(member.height),
       weight_kg: member.weight === '' || member.weight == null ? null : Number(member.weight),
+      activity_level: member.activityLevel || null,
       dietary: Object.fromEntries(dietaryKeys.filter(key => member[key] !== undefined).map(key => [key, member[key]])),
     })) }
 }
 
-export async function saveCloudProfile(profile, { analysisConsent = null, reviewOnly = false, onMemberRefs } = {}) {
+export async function saveCloudProfile(profile, { analysisConsent = null, planConsent = null, reviewOnly = false, onMemberRefs } = {}) {
   const session = getSession()
   if (!session?.token) throw Object.assign(new Error('登录状态已失效，填写内容已保留，请重新登录后继续。'), { code: 401 })
   if (!session.householdId) throw Object.assign(new Error('请先选择当前家庭。'), { code: 'FAMILY_SELECTION_REQUIRED' })
@@ -111,11 +113,12 @@ export async function saveCloudProfile(profile, { analysisConsent = null, review
   const current = () => { if (scope !== sessionRevision()) throw Object.assign(new Error('账号已变化，请重新进入。'), {code:'SESSION_CHANGED'}) }
   const path = '/api/family/' + encodeURIComponent(session.householdId) + '/miniapp-profile'
   let pending = scopedStorage.getStorageSync('cloud-onboarding-pending')
-  const submitted = cloudProfileInput(profile, pending?.data?.client_request_id, analysisConsent)
+  const submitted = cloudProfileInput(profile, pending?.data?.client_request_id, analysisConsent, planConsent)
   const changed = !!pending && JSON.stringify(pending.data) !== JSON.stringify(submitted)
   if (!pending) { pending = { path, data: submitted }; scopedStorage.setStorageSync('cloud-onboarding-pending', pending) }
   if (pending.path !== path) throw new Error('家庭已变化，请重新读取档案。')
   if (pending.data.analysis_consent && !analysisConsent) throw new Error('上次保存结果尚未确认，请先恢复原操作；普通保存不会重放分析同意。')
+  if (pending.data.plan_consent && !planConsent) throw new Error('上次保存结果尚未确认，请先恢复原操作；普通保存不会重放配餐同意。')
   const write = () => request({ path, method: 'POST', data: pending.data, headers: { 'Idempotency-Key': pending.data.client_request_id }, timeout: 30000 })
   let receipt
   try {

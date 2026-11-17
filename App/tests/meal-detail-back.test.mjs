@@ -5,6 +5,8 @@ import {reactive,ref,computed,nextTick,watch,effectScope} from 'vue'
 import {detailState,createMealDetailClient,mealNames,formalRoute,detailKey} from '../src/services/meal-detail-client.js'
 
 import {createTodayMealPlan,todayMealPlanState} from '../src/services/today-meal-plan.js'
+import {dishSwapState,createDishSwap} from '../src/services/dish-swap.js'
+import {localDate} from '../src/utils/meal-state.js'
 
 const sheetSource=readFileSync(new URL('../src/components/MealDetailSheet.vue',import.meta.url),'utf8')
 const routeSource=readFileSync(new URL('../src/pages/meals/detail.vue',import.meta.url),'utf8')
@@ -12,7 +14,7 @@ const script=source=>source.split('<script setup>')[1].split('</script>')[0].rep
 const target={kind:'formal',familyId:'family',date:'2026-11-03',mealType:'dinner',sourceId:'saved',version:2,dailyPlanVersion:4}
 const meal={type:'dinner',members:[],dishes:[{name:'合成测试菜品'}]}
 
-function harness({stack=2,backThrows=false,fallbackThrows=false}={}){
+function harness({stack=2,backThrows=false,fallbackThrows=false,initialTarget=null}={}){
  const scope=effectScope(),calls=[],events=[],hooks={},timers=new Map(),props=reactive({standalone:true,members:[],leaving:false,returnError:''})
  let page,exposed,timerId=0
  const uni={
@@ -22,12 +24,13 @@ function harness({stack=2,backThrows=false,fallbackThrows=false}={}){
   showToast:options=>calls.push({method:'toast',options}),
  }
  const routeDeps={ref,watch,getCurrentInstance:()=>({}),storageContext:()=> 'A',
-  onLoad:fn=>fn(),onShow:fn=>{hooks.show=fn},onUnload:fn=>{hooks.unload=fn},onBackPress:fn=>{hooks.back=fn},
+  onLoad:fn=>fn({mealNavigation:'1'}),onShow:fn=>{hooks.show=fn},onUnload:fn=>{hooks.unload=fn},onBackPress:fn=>{hooks.back=fn},
+  takeMealPageTarget:key=>key==='1'?initialTarget:null,
   openerChannel:()=>({on(){}}),getSession:()=>({householdId:'family'}),request:async()=>({data:{members:[]}}),
   getCurrentPages:()=>Array.from({length:stack},()=>({})),uni,
   setTimeout:fn=>{timers.set(++timerId,fn);return timerId},clearTimeout:id=>timers.delete(id)}
- page=scope.run(()=>new Function('deps',`const {${Object.keys(routeDeps)}}=deps;${script(routeSource)};return {leave,detail,leaving,returnError}`)(routeDeps))
- const deps={reactive,ref,computed,nextTick,onMounted(){},onUnmounted(){},onShow(){},
+ page=scope.run(()=>new Function('deps',`const {${Object.keys(routeDeps)}}=deps;${script(routeSource)};return {leave,detail,leaving,returnError,opened}`)(routeDeps))
+ const deps={localDate,dishSwapState,createDishSwap,reactive,ref,computed,nextTick,onMounted(){},onUnmounted(){},onShow(){},
   defineProps:()=>props,defineEmits:()=>((event,...args)=>{events.push(event);if(event==='leave')page.leave(...args)}),defineExpose:value=>{exposed=value},
   detailState,createMealDetailClient,mealNames,formalRoute,detailKey,createTodayMealPlan,todayMealPlanState,
   request:async()=>({data:{arrangement_id:'saved',version:2,meal}}),storageContext:()=> 'A',scopedStorage:{},newHealthRequestId:()=> 'test-request',
@@ -43,6 +46,12 @@ function harness({stack=2,backThrows=false,fallbackThrows=false}={}){
  return {sheet,page,calls,events,click,nativeBack:event=>hooks.back(event),open:extra=>exposed.open({...target,...extra}),
   dispose:()=>{hooks.unload();scope.stop()}}
 }
+
+test('the detail page opens a route handoff when its native component becomes ready',async()=>{
+ const h=harness({initialTarget:{...target,initialView:'dish',dishIndex:0}})
+ try{await nextTick();assert.equal(h.page.opened.value,true)}
+ finally{h.dispose()}
+})
 
 test('header tap leaves a meal page once and uses an explicit one-page return',async()=>{
  const h=harness();try{

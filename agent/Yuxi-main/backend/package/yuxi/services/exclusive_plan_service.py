@@ -1,4 +1,4 @@
-"""专属计划的首开复用、来源授权与真实商城结果引用。"""
+"""专属计划的首开复用、来源授权、菜单预览和历史商城引用。"""
 
 from datetime import datetime
 from uuid import uuid4
@@ -8,9 +8,14 @@ from sqlalchemy import select
 
 from yuxi.repositories.exclusive_plan_repository import ExclusivePlanRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
-from yuxi.services.daily_arrangement_service import daily_selection
-from yuxi.services.daily_commerce_service import commerce_request
 from yuxi.services.exclusive_plan_generation import TIERS, content_hash
+from yuxi.services.exclusive_reference_plan import (
+    CAPABILITY_NOTICE,
+    REFERENCE_POLICY,
+    TIER_TARGETS,
+    exclusive_reference_context,
+    summarize_reference_prices,
+)
 from yuxi.services.family_service import FamilyService
 from yuxi.services.health_initial_meal_plan_service import initial_catalog_in_session
 from yuxi.services.health_nutrition_service import input_fingerprint
@@ -21,13 +26,23 @@ from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_health import HealthExclusivePlanGroup, HealthRecipeCommerceSource
 
 
-async def start_exclusive_plan(uid, fid, data, *, required_member=None):
+PREVIEW_POLICY = REFERENCE_POLICY
+
+
+async def start_exclusive_plan(uid, fid, data, *, only_missing=False, required_member=None):
     """首开按语义依据复用；只有明确换一套才创建新推荐组。"""
-    policy = await read_plan_policy()
+    policy = PREVIEW_POLICY
     task = None
     async with pg_manager.get_async_session_context() as session:
         repo = ExclusivePlanRepository(session, uid, fid)
         await repo.context(lock=True)
+        if only_missing:
+            latest = await repo.find(lock=True)
+            if latest is not None and (
+                latest.policy == PREVIEW_POLICY
+                or (latest.policy.get("version") != "agent-preview-v1" and latest.status not in {"failed", "stale"})
+            ):
+                return None
         context = await exclusive_context(session, uid, fid, policy, allow_interpretation=True)
         if required_member and required_member not in context["sources"]["members"]:
             raise HealthVisionError("not_found", "该成员不属于本次家庭就餐成员", 404)
@@ -35,6 +50,8 @@ async def start_exclusive_plan(uid, fid, data, *, required_member=None):
         if previous and previous.basis_hash != context["basis_hash"]:
             raise HealthVisionError("source_version_conflict", "档案已变化，请重新发起计划请求", 409)
         row = previous or (await repo.find(group_id=str(data.group_id), lock=True) if data.group_id else None)
+        if row and row.policy.get("version") == "agent-preview-v1" and previous is None:
+            row = None
         if row and row.basis_hash != context["basis_hash"]:
             raise HealthVisionError("source_version_conflict", "档案或计划规则已变化，请重新准备", 409)
         if row is None and data.action != "regenerate":
@@ -44,9 +61,9 @@ async def start_exclusive_plan(uid, fid, data, *, required_member=None):
 
             try:
                 for entries in row.progress.get("tiers", {}).values():
-                    validate_saved_days(context, entries)
+                    await validate_saved_days(session, context, entries)
             except HealthVisionError as error:
-                if error.code != "source_invalidated":
+                if error.code not in {"source_invalidated", "reference_source_unavailable"}:
                     raise
                 row.status = "stale"
                 if previous:
@@ -66,7 +83,7 @@ async def start_exclusive_plan(uid, fid, data, *, required_member=None):
                 selection=context["selection"].model_dump(mode="json"),
                 sources=context["sources"],
                 policy=policy,
-                progress={"tiers": {}, "exports": {}, "receipts": {}},
+                progress={"tiers": {}, "composition": "reference"},
             )
             session.add(row)
             await session.flush()
@@ -82,41 +99,54 @@ async def start_exclusive_plan(uid, fid, data, *, required_member=None):
     return result
 
 
-async def read_exclusive_plan(uid, fid, group_id=None):
+async def read_exclusive_plan(uid, fid, group_id=None, *, tier=None):
     """读回同一任务；不因刷新、切档或返回重新生成。"""
-    policy = await read_plan_policy()
     async with pg_manager.get_async_session_context() as session:
         repo = ExclusivePlanRepository(session, uid, fid)
         await repo.context()
         row = await repo.find(group_id=group_id)
         if row is None:
             return {"status": "empty", "group_id": None, "plans": []}
-        context = await exclusive_context(session, uid, fid, policy, allow_interpretation=True)
+        if row.policy.get("version") == "agent-preview-v1":
+            if tier is not None:
+                raise HealthVisionError("source_invalidated", "计划口径已更新，请重新准备", 410)
+            return {"status": "stale", "group_id": row.id, "plans": [], "message": "计划口径已更新，请重新准备"}
+        if tier is None and row.policy != PREVIEW_POLICY and row.status in {"failed", "stale"}:
+            return {"status": "stale", "group_id": row.id, "plans": [], "message": "可重新生成专属计划"}
+        if tier is not None and (tier not in TIERS or row.policy != PREVIEW_POLICY or row.status != "ready"):
+            raise HealthVisionError("exclusive_preview_unavailable", "计划预览尚未就绪，请返回计划页", 404)
+        context = await exclusive_context(session, uid, fid, row.policy, allow_interpretation=True)
         if row.basis_hash != context["basis_hash"]:
+            if tier is not None:
+                raise HealthVisionError("source_invalidated", "档案或计划规则已更新，请重新准备", 410)
             return {"status": "stale", "group_id": row.id, "plans": [], "message": "档案或计划规则已更新"}
         if row.status == "ready":
             from yuxi.services.exclusive_plan_tasks import validate_saved_days
 
             try:
-                for entries in row.progress.get("tiers", {}).values():
-                    validate_saved_days(context, entries)
+                tiers = row.progress.get("tiers", {})
+                for entries in [tiers.get(tier, [])] if tier else tiers.values():
+                    await validate_saved_days(session, context, entries)
             except HealthVisionError as error:
-                if error.code != "source_invalidated":
+                if error.code not in {"source_invalidated", "reference_source_unavailable"} or tier is not None:
                     raise
                 return {"status": "stale", "group_id": row.id, "plans": [], "message": error.message}
+        if tier is not None:
+            return project_preview(row, tier, context["sources"])
         return project_group(row, context["sources"])
 
 
-async def read_plan_policy():
-    """没有真实商城规则时明确未就绪，不填演示金额。"""
-    result = await commerce_request("GET", "/api/v1/integration/ai/plan-policy")
-    if result.get("status") != "ready":
-        raise HealthVisionError("exclusive_plan_policy_missing", "专属计划暂未开放", 503)
-    return result["policy"]
-
-
 async def exclusive_context(session, uid, fid, policy, *, allow_interpretation=False, day=None):
-    """用授权字段及批准规则形成依据，名字或头像变化不重做餐单。"""
+    """新版复用今日餐单依据，历史正式计划继续核对批准规则。"""
+    if policy == PREVIEW_POLICY:
+        return await exclusive_reference_context(
+            session,
+            uid,
+            fid,
+            day=day or datetime.now(ZoneInfo("Asia/Shanghai")).date(),
+        )
+    from yuxi.services.daily_arrangement_service import daily_selection
+
     family, _ = await FamilyService(session, uid).context(fid)
     day = day or datetime.now(ZoneInfo("Asia/Shanghai")).date()
     selection, sources = await daily_selection(session, uid, family, day, allow_interpretation=allow_interpretation)
@@ -176,6 +206,7 @@ async def exclusive_context(session, uid, fid, policy, *, allow_interpretation=F
         "foods": foods,
         "refs": refs,
         "mappings": mappings,
+        "preference_members": [value["profile"] for value in profiles.values()],
     }
 
 
@@ -194,18 +225,79 @@ async def queue_exclusive_in_session(session, row):
 
 
 def project_group(row, sources):
-    """只暴露状态与当前组商城引用，不把尚未完整校验的菜单当作结果。"""
+    """只返回状态，以及已发布的三档摘要或历史商城引用。"""
     progress = row.progress
     completed = sum(len(days) for days in progress.get("tiers", {}).values())
+    plans = []
+    if row.status == "ready":
+        plans = (
+            [
+                {
+                    "tier_code": tier,
+                    "tier_name": name,
+                    "difference": TIER_TARGETS[tier],
+                    "pricing": summarize_reference_prices(progress["tiers"][tier]),
+                    "tier_cost_status": "unverified",
+                }
+                for tier, name in TIERS.items()
+            ]
+            if row.policy == PREVIEW_POLICY
+            else list(progress.get("receipts", {}).values())
+        )
     return {
         "group_id": row.id,
         "status": row.status,
         "completed_days": completed,
         "total_days": 63,
         "members": [{"member_ref": hid, "name": source["name"]} for hid, source in sources["members"].items()],
-        "plans": list(progress.get("receipts", {}).values()) if row.status == "ready" else [],
+        "plans": plans,
+        "preview_only": row.policy == PREVIEW_POLICY,
+        "professional_status": "not_reviewed" if row.policy == PREVIEW_POLICY else None,
+        "nutrition_status": "not_calculated" if row.policy == PREVIEW_POLICY else None,
+        "notice": CAPABILITY_NOTICE if row.policy == PREVIEW_POLICY else None,
         "error": progress.get("error"),
         "updated_at": row.updated_at.isoformat() + "Z",
+    }
+
+
+def project_preview(row, tier, sources):
+    """返回完整每日原谱、食材、采购缺口和部分小计。"""
+    entries = row.progress.get("tiers", {}).get(tier, [])
+    if [entry["day"]["day_no"] for entry in entries] != list(range(1, 22)):
+        raise HealthVisionError("exclusive_preview_unavailable", "计划预览尚未就绪，请返回计划页", 404)
+    return {
+        "group_id": row.id,
+        "tier_code": tier,
+        "tier_name": TIERS[tier],
+        "difference": TIER_TARGETS[tier] + "；实际完整费用尚未核定",
+        "professional_status": "not_reviewed",
+        "nutrition_status": "not_calculated",
+        "notice": CAPABILITY_NOTICE,
+        "pricing": summarize_reference_prices(entries),
+        "tier_cost_status": "unverified",
+        "members": [{"display_alias": member["name"]} for member in sources["members"].values()],
+        "days": [
+            {
+                "day_no": entry["day"]["day_no"],
+                "plan_date": entry["day"]["plan_date"],
+                "procurement": entry["procurement"],
+                "meals": [
+                    {
+                        "id": meal["meal_type"] + ":" + dish["file_id"],
+                        "meal_type": meal["meal_type"],
+                        "recipe_name": dish["name"],
+                        "ingredients": dish["ingredients"],
+                        "steps": dish["steps"],
+                        "source": dish["source"],
+                        "portion_note": dish.get("portion_note"),
+                        "recipe_snapshot": {key: dish.get(key) for key in ("image_url", "cooking_minutes")},
+                    }
+                    for meal in entry["meals"]
+                    for dish in meal["dishes"]
+                ],
+            }
+            for entry in entries
+        ],
     }
 
 
@@ -227,7 +319,7 @@ def export_payload(row, tier):
         "basis_hash": row.basis_hash,
         "plan_name": TIERS[tier] + " · 21 天家庭计划",
         "plan_days": 21,
-        "delivery_frequency": "daily",
+        "delivery_frequency": "selectable" if row.progress.get("composition") == "reference" else "daily",
         "display": {"image_url": None},
         "days": [entry["day"] for entry in row.progress["tiers"][tier]],
         "nutrition_validation": {

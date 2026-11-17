@@ -221,7 +221,7 @@ function openNextReport() {
     complete() { if (alive && owner === storageContext()) reportOpening.value = false },
   })
 }
-async function commit(analysisConsent = null, withReports = false) {
+async function commit(analysisConsent = null, withReports = false, planConsent = undefined) {
   if(completed||cloudSaving.value||cloudLoading.value||!cloudLoaded.value)return
   if (!invited.value) syncDiners()
   if(self.value)self.value.relation='本人'
@@ -240,12 +240,35 @@ async function commit(analysisConsent = null, withReports = false) {
       }})
       return
     }
+    const config = profile.value.healthConfiguration || {}
+    if (!invited.value && !profile.value.onboarded && planConsent === undefined &&
+        config.policy_version && config.meal_plan?.available && config.meal_plan.processor) {
+      const revision = sessionRevision()
+      const consent = { purpose: 'meal_plan', processor: config.meal_plan.processor, policy_version: config.policy_version }
+      uni.showModal({
+        title: '同意使用档案生成餐单？',
+        content: '将把本人的健康情况、饮食偏好及限制发送给 AI 服务，用于安排三餐和 21 天计划。家庭成员按各自授权处理。',
+        cancelText: '仅保存',
+        confirmText: '同意配餐',
+        success: ({confirm}) => {
+          if (!alive || revision !== sessionRevision()) return
+          const current = profile.value.healthConfiguration
+          if (confirm && (!current?.meal_plan?.available || current.meal_plan.processor !== consent.processor ||
+              current.policy_version !== consent.policy_version)) {
+            fieldError.value = '配餐服务信息已更新，请重新确认。'
+            return
+          }
+          void commit(analysisConsent, withReports, confirm ? consent : null)
+        },
+      })
+      return
+    }
     const revision=sessionRevision()
     retryWithReports = withReports
     cloudSaving.value=true;cloudError.value=''
     try {
       let memberRefs
-      const saved=await saveOnboardingProfile(profile.value, withReports ? refs => { memberRefs = refs } : undefined, analysisConsent)
+      const saved=await saveOnboardingProfile(profile.value, withReports ? refs => { memberRefs = refs } : undefined, analysisConsent, planConsent)
       if(!alive)return
       if(revision!==sessionRevision()){clearPrivate();cloudError.value='账号或家庭已变化，请重新读取档案。';return}
       if (withReports) {
@@ -279,7 +302,7 @@ async function commit(analysisConsent = null, withReports = false) {
   uni.reLaunch({ url: '/pages/chat/index' })
 }
 function revealIssue(issue){
- const key=issue.message.includes('姓名')?'name':issue.message.includes('出生日期')?'birth':issue.message.includes('性别')?'gender':issue.message.includes('身高')?'height':issue.message.includes('体重')?'weight':issue.message.includes('基础病')?'health':issue.message.includes('饮食目标')?'goals':issue.message.includes('口味')?'taste':issue.message.includes('过敏')?'allergy':issue.message.includes('不耐受')?'intolerance':issue.message.includes('忌口')?'avoidance':issue.message.includes('医生')?'doctor':null
+ const key=issue.field||(issue.message.includes('姓名')?'name':issue.message.includes('出生日期')?'birth':issue.message.includes('性别')?'gender':issue.message.includes('身高')?'height':issue.message.includes('体重')?'weight':issue.message.includes('基础病')?'health':issue.message.includes('饮食目标')?'goals':issue.message.includes('口味')?'taste':issue.message.includes('过敏')?'allergy':issue.message.includes('不耐受')?'intolerance':issue.message.includes('忌口')?'avoidance':issue.message.includes('医生')?'doctor':null)
  const selector=key?(issue.step===2?'#restriction-':'#field-')+key:'#onboarding-fields'
  const scroll=rect=>{if(rect){const status=uni.getWindowInfo?.().statusBarHeight||0;uni.pageScrollTo?.({scrollTop:Math.max(0,pageScroll.value+rect.top-(status+130)),duration:180})}}
  // #ifdef H5

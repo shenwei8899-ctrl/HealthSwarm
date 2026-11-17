@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage
 from yuxi.agents.base import BaseAgent
 from yuxi.agents.middlewares import SteerMiddleware, TokenUsageMiddleware
 from yuxi.agents.middlewares.health_budget import HealthAiBudgetMiddleware
+from yuxi.agents.middlewares.health_memory_context import HealthMemoryContextMiddleware
 from yuxi.agents.middlewares.health_catalog import HealthCatalogMiddleware
 from yuxi.agents.middlewares.health_catalog_context import HealthCatalogContextMiddleware
 from yuxi.agents.middlewares.health_final_answer import HealthFinalAnswerMiddleware, finalize_health_answer
@@ -111,7 +112,7 @@ class HealthConsultationAgent(BaseAgent):
         tools = list(self.consultation_tools)
         if self.prompt_name == "CONSULTATION_PROMPT":
             allowed = set(context.tools)
-            tools = [tool for tool in tools if tool.name in allowed]
+            tools = [tool for tool in tools if tool.name in allowed and tool.name != "remember_member_fact"]
         prompt = getattr(health_consultation_service, self.prompt_name)
         if isinstance(handoff, dict):
             prompt += (
@@ -125,6 +126,7 @@ class HealthConsultationAgent(BaseAgent):
             middleware=[
                 SteerMiddleware(),
                 HealthAuthorizationMiddleware(model_info),
+                *([HealthMemoryContextMiddleware()] if self.prompt_name == "CONSULTATION_PROMPT" else []),
                 HealthCatalogContextMiddleware(),
                 HealthCatalogMiddleware(),
                 HealthAiBudgetMiddleware(

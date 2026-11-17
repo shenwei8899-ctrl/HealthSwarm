@@ -1,11 +1,16 @@
 <script setup>
 import { ageLabel, memberAge, shanghaiDate } from '../utils/member-age.js'
+import { activityLevelOptions } from '../utils/onboarding-validation.js'
 const props=defineProps({member:{type:Object,required:true},showRelationship:{type:Boolean,default:true},readOnly:Boolean,source:Object,archive:Boolean,onboarding:Boolean})
 const editable=field=>!props.readOnly&&(!props.source||(field==='identity'?props.source.is_self||props.source.is_guardian||props.source.editable_fields?.length:props.source.editable_fields?.includes(field)))
 const genderOptions=['女','男']
 function selectGender(event){
   const value=event.detail?.value
   if(editable('sex')&&genderOptions.includes(value))props.member.gender=value
+}
+function selectActivityLevel(event){
+  const value=event.detail?.value
+  if(editable('activity_level')&&activityLevelOptions.some(option=>option.value===value))props.member.activityLevel=value
 }
 </script>
 <template>
@@ -20,10 +25,21 @@ function selectGender(event){
   <view class="measure-fields">
   <view v-if="onboarding" class="basic-card-heading"><text>身体数据</text><text class="heading-note">用于计算个人饮食目标</text></view>
   <view class="measurements"><label class="measure" id="field-height"><text>身高<text v-if="onboarding" class="required-mark"> *</text> <text class="unit">cm</text></text><input v-model="member.height" :disabled="!editable('height_cm')" type="digit" aria-label="身高厘米，必填" placeholder="请输入身高"/></label><label class="measure" id="field-weight"><text>体重<text v-if="onboarding" class="required-mark"> *</text> <text class="unit">kg</text></text><input v-model="member.weight" :disabled="!editable('dietary_details')" type="digit" aria-label="体重公斤，必填" placeholder="请输入体重"/></label></view>
+  <view v-if="onboarding" class="basic-row activity-level" id="field-activity">
+   <text>日常活动量<text class="required-mark"> *</text></text>
+   <text class="heading-note">请选择平时大多数日子的活动程度，用于估算个人能量需求</text>
+   <radio-group class="gender-options" aria-label="日常活动量，必填" @change="selectActivityLevel">
+    <label v-for="option in activityLevelOptions" :key="option.value" :class="{selected:member.activityLevel===option.value,disabled:!editable('activity_level')}">
+     <radio :value="option.value" :checked="member.activityLevel===option.value" :disabled="!editable('activity_level')" color="#7964b2"/>
+     <text>{{option.label}}</text>
+    </label>
+   </radio-group>
+  </view>
   </view>
  </view>
 </template>
 <style scoped>
+.activity-level{margin-top:17px}.activity-level .gender-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
 .basic-fields{color:#3e3449}.basic-row{display:block;margin-bottom:21px;font-size:13px;color:#8d8098;font-weight:500}.basic-row>text,.field-label-line{display:block;margin-bottom:10px}.basic-row input,.picker-value{box-sizing:border-box;width:100%;min-height:48px;padding:0 15px;border:1px solid transparent;border-radius:12px;background:#f6f5f8;color:#42374e;font-size:15px;font-weight:500}.basic-row input:focus{border-color:#c8b4df}.field-label-line{display:flex;justify-content:space-between;align-items:center}.age-label{font-size:12px;color:#9a82b5}.picker-value{display:flex;align-items:center;justify-content:space-between}.placeholder{color:#b0a7b8}.chevron{font-size:24px;color:#a899b5}.gender-options{display:flex;gap:10px}.gender-options button{flex:1;min-height:45px;padding:10px 8px;border:1px solid #efedf3;border-radius:12px;background:#f7f6f9;color:#94879f;font-size:14px;font-weight:500}.gender-options button.selected{border-color:#c8b4df;background:#f0eaf8;color:#7b5ba3}.measurements{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:3px 0 12px}.measure{min-width:0;font-size:13px;color:#8d8098}.unit{font-size:11px;margin-left:3px;color:#aaa0b2}.measure input{box-sizing:border-box;width:100%;height:48px;margin-top:10px;padding:0 15px;border-radius:12px;background:#f6f5f8;color:#42374e;font-size:15px;font-weight:500}.basic-fields input[disabled]{color:#93889d}
 
 .archive-basics .basic-row,.archive-basics .measure,.archive-basics .field-label-line{font-size:14px;font-weight:600;color:#494658}.archive-basics .basic-row input,.archive-basics .measure input,.archive-basics .picker-value{font-size:16px;font-weight:500;color:#373447;background:#f7f7fc;border:1px solid #eeedf5}.archive-basics .gender-options button.selected{color:#7544e0;background:#f0eaff;border-color:#bda5f0;font-weight:600}

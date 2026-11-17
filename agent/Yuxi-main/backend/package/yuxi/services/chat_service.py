@@ -859,6 +859,10 @@ async def save_messages_from_langgraph_state(
                 if complete_run and terminal_ai_message is None:
                     raise ValueError("最终 State AIMessage 无法与当前 Run 的 Model lifecycle 事实关联")
                 last_ai_message = terminal_ai_message
+            if complete_run and locked_run.agent_slug in ("health-consultation", "health-meal-planner"):
+                from yuxi.services.health_memory_context_service import validate_memory_publication
+
+                await validate_memory_publication(conv_repo.db, locked_run)
             if last_ai_message is not None:
                 if complete_run and locked_run.agent_slug in EDUCATION_HEALTH_AGENTS:
                     from yuxi.services.health_family_profile_service import validate_profile_publication

@@ -359,7 +359,9 @@ class HealthConsultationRepository:
             from yuxi.repositories.health_blood_glucose_repository import HealthBloodGlucoseRepository
             from yuxi.repositories.health_blood_lipids_repository import HealthBloodLipidsRepository
 
-            await HealthFamilyProfileRepository(self.session).validate_history(uid, binding, lock=lock)
+            await HealthFamilyProfileRepository(self.session).validate_history(
+                uid, binding, lock=lock, family_assistant=conversation.agent_id == CONSULTATION_SLUG
+            )
             from yuxi.services.conversation_purchase_service import validate_catalog_profile_history
 
             await validate_catalog_profile_history(self.session, binding, lock=lock)

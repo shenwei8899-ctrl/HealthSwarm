@@ -88,16 +88,7 @@ async def create_health_task_entry(uid: str, member_id: str, data: HealthTaskEnt
         )
 
     if chosen.task_type == "multi_day_plan":
-        from yuxi.services.exclusive_plan_service import start_exclusive_plan
-        from yuxi.services.exclusive_plan_types import ExclusivePlanInput
-
-        group = await start_exclusive_plan(
-            uid,
-            str(chosen.selection.family_id),
-            ExclusivePlanInput(client_request_id=chosen.client_request_id),
-            required_member=member_id,
-        )
-        return HealthTaskEntryResult(**base, entry_status="ready", exclusive_plan=group)
+        raise HealthVisionError("exclusive_plan_page_required", "请前往 AI 专属计划查看 21 天餐单", 409)
     if chosen.task_type == "purchase_requirements":
         selected = PurchaseInput(client_request_id=chosen.client_request_id, **chosen.selection.model_dump(mode="json"))
         entry = await create_consultation(

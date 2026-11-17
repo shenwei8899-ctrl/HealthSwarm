@@ -11,8 +11,22 @@ from sqlalchemy import or_, select
 
 from yuxi.services.health_family_kb_service import configured_health_kb_ids
 from yuxi.services.health_nutrition_service import input_fingerprint
+from yuxi.services.reference_meal_composition import (
+    FOOD_GROUP_MEAL_POLICY_VERSION,
+    GROUP_NAMES,
+    REFERENCE_MEAL_POLICY_VERSION,
+    SEASONINGS,
+    is_plain_reference_staple,
+    recipe_food_groups,
+    reference_meal_targets,
+)
 from yuxi.services.reference_recipe_matching import (
-    ReferenceProductIndex, parse_reference_recipe, product_foods, reference_food_mentions, reference_ingredient_matches,
+    ReferenceProductIndex,
+    ingredient_food,
+    parse_reference_recipe,
+    product_foods,
+    reference_food_mentions,
+    reference_ingredient_matches,
 )
 from yuxi.storage.postgres.models_knowledge import KnowledgeChunk, KnowledgeFile
 
@@ -20,27 +34,44 @@ _SEARCH_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="referen
 
 
 async def purchasable_reference_recipes(
-    session, products: list[dict] | None, query: str, limit: int = 9, excluded_file_ids: set[str] | None = None,
-    *, variety=None,
+    session,
+    products: list[dict] | None,
+    query: str,
+    limit: int = 9,
+    excluded_file_ids: set[str] | None = None,
+    *,
+    variety=None,
 ) -> list[dict]:
     """召回可完整解析的相关菜谱；原文读取与保存仍需独立验证。"""
     rows = await reference_recipe_rows(session)
     return await asyncio.get_running_loop().run_in_executor(
         _SEARCH_EXECUTOR,
-        partial(rank_reference_recipes, rows, products, query, limit,
-                excluded_file_ids=excluded_file_ids, variety=variety),
+        partial(
+            rank_reference_recipes, rows, products, query, limit, excluded_file_ids=excluded_file_ids, variety=variety
+        ),
     )
 
 
 async def purchasable_reference_recipes_batch(
-    session, products: list[dict] | None, queries: list[str], excluded_file_ids: set[str] | None = None,
-    *, variety=None,
+    session,
+    products: list[dict] | None,
+    queries: list[str],
+    excluded_file_ids: set[str] | None = None,
+    *,
+    variety=None,
 ) -> list[list[dict]]:
     """批量关键词共用菜谱正文和商品匹配，逐词独立排序。"""
     rows = await reference_recipe_rows(session)
     return await asyncio.get_running_loop().run_in_executor(
-        _SEARCH_EXECUTOR, partial(rank_reference_recipe_batch, rows, products, queries, excluded_file_ids,
-                                 **({"variety": variety} if variety else {}))
+        _SEARCH_EXECUTOR,
+        partial(
+            rank_reference_recipe_batch,
+            rows,
+            products,
+            queries,
+            excluded_file_ids,
+            **({"variety": variety} if variety else {}),
+        ),
     )
 
 
@@ -52,11 +83,69 @@ def rank_reference_recipe_batch(rows, products, queries, excluded_file_ids=None,
     catalog_key = json.dumps(products, ensure_ascii=False, sort_keys=True)
     return [
         rank_prepared_reference_recipes(
-            documents, products, available, query, 8, analyzed, excluded_file_ids=excluded_file_ids,
-            catalog_key=catalog_key, variety=variety,
+            documents,
+            products,
+            available,
+            query,
+            8,
+            analyzed,
+            excluded_file_ids=excluded_file_ids,
+            catalog_key=catalog_key,
+            variety=variety,
         )
         for query in queries
     ]
+
+
+async def reference_menu_search(
+    session,
+    queries,
+    selection,
+    history,
+    current_menus,
+    actor_uid,
+    variety,
+    previous,
+    *,
+    policy_version=REFERENCE_MEAL_POLICY_VERSION,
+):
+    """共用一次原谱扫描，按任务规则计算可行组合。"""
+    from yuxi.services.reference_menu_candidates import reference_menu_options
+
+    rows = await reference_recipe_rows(session)
+
+    def search():
+        documents = prepare_reference_documents(rows)
+        if policy_version == REFERENCE_MEAL_POLICY_VERSION:
+            documents = [
+                document
+                for document in documents
+                if (parsed := document["parsed"]) and not is_plain_reference_staple(parsed.name, parsed.ingredients)
+            ]
+        analyzed = {}
+
+        def rank(query, limit):
+            return rank_prepared_reference_recipes(documents, None, set(), query, limit, analyzed, variety=variety)
+
+        ranked = [rank(query, 8) for query in queries]
+        if policy_version == FOOD_GROUP_MEAL_POLICY_VERSION:
+            targets = reference_meal_targets(selection, policy_version=policy_version)
+            groups = {group for target in targets.values() for group in target["food_groups"]}
+            gaps = previous[-1].get("coverage_gaps", []) if previous else []
+            missing = {group for gap in gaps for group in gap["missing_groups"]}
+            groups = sorted(groups, key=lambda group: (group not in missing, group))
+            ranked.extend(rank(group, len(documents) if previous else 8) for group in groups)
+        ranked.append(rank("", len(documents) if previous else 24))
+        return reference_menu_options(
+            ranked,
+            selection,
+            history,
+            current_menus,
+            actor_uid,
+            policy_version=policy_version,
+        )
+
+    return await asyncio.get_running_loop().run_in_executor(_SEARCH_EXECUTOR, search)
 
 
 async def reference_recipe_rows(session):
@@ -64,14 +153,19 @@ async def reference_recipe_rows(session):
     rows = (
         await session.execute(
             select(
-                KnowledgeFile.file_id, KnowledgeFile.kb_id, KnowledgeFile.filename,
-                KnowledgeFile.content_hash, KnowledgeChunk.chunk_id, KnowledgeChunk.content,
+                KnowledgeFile.file_id,
+                KnowledgeFile.kb_id,
+                KnowledgeFile.filename,
+                KnowledgeFile.content_hash,
+                KnowledgeChunk.chunk_id,
+                KnowledgeChunk.content,
             )
             .join(KnowledgeChunk, KnowledgeChunk.file_id == KnowledgeFile.file_id)
             .where(
                 KnowledgeFile.kb_id.in_(configured_health_kb_ids("health-meal-planner")),
                 KnowledgeChunk.kb_id == KnowledgeFile.kb_id,
-                KnowledgeFile.is_folder.is_(False), KnowledgeFile.status == "indexed",
+                KnowledgeFile.is_folder.is_(False),
+                KnowledgeFile.status == "indexed",
                 or_(
                     KnowledgeFile.filename.startswith("家常菜谱_", autoescape=True),
                     KnowledgeFile.filename.startswith("烹饪菜谱"),
@@ -85,13 +179,24 @@ async def reference_recipe_rows(session):
 
 
 def rank_reference_recipes(
-    rows, products: list[dict] | None, query: str, limit: int = 9, excluded_file_ids: set[str] | None = None,
-    *, variety=None,
+    rows,
+    products: list[dict] | None,
+    query: str,
+    limit: int = 9,
+    excluded_file_ids: set[str] | None = None,
+    *,
+    variety=None,
 ) -> list[dict]:
     """先满足食材相关性，再优先可解析、采购覆盖较高的简单做法。"""
     return rank_prepared_reference_recipes(
-        prepare_reference_documents(rows), products, available_reference_foods(products or []), query, limit, {},
-        excluded_file_ids=excluded_file_ids, variety=variety,
+        prepare_reference_documents(rows),
+        products,
+        available_reference_foods(products or []),
+        query,
+        limit,
+        {},
+        excluded_file_ids=excluded_file_ids,
+        variety=variety,
     )
 
 
@@ -99,13 +204,19 @@ def prepare_reference_documents(rows):
     """同批查询只拼接一次原谱分片并提取查询无关的召回信息。"""
     documents = {}
     for file_id, kb_id, filename, file_hash, chunk_id, content in rows:
-        document = documents.setdefault(file_id, {
-            "source": {
-                "file_id": file_id, "kb_id": kb_id, "filename": filename,
-                "file_hash": file_hash, "chunk_id": chunk_id,
+        document = documents.setdefault(
+            file_id,
+            {
+                "source": {
+                    "file_id": file_id,
+                    "kb_id": kb_id,
+                    "filename": filename,
+                    "file_hash": file_hash,
+                    "chunk_id": chunk_id,
+                },
+                "chunks": [],
             },
-            "chunks": [],
-        })
+        )
         document["chunks"].append((chunk_id, content))
     prepared = []
     for document in documents.values():
@@ -119,9 +230,18 @@ def prepared_content(filename, chunks):
     content = "\n".join(value for _, value in chunks)
     title = re.sub(r"__[0-9a-f]+\.md$", "", filename, flags=re.I)
     title = title.removesuffix(".md").replace("_", " ").casefold()
-    return {"content": content, "body": content.casefold(), "title": title,
-            "title_foods": recall_foods(title), "foods": recall_foods(content),
-            "parsed": parse_reference_recipe(content), "chunks_hash": input_fingerprint(chunks)}
+    parsed = parse_reference_recipe(content)
+    return {
+        "content": content,
+        "body": content.casefold().translate(_SEARCH_ALIASES),
+        "title": title.translate(_SEARCH_ALIASES),
+        "title_foods": recall_foods(title),
+        "foods": recall_foods(content),
+        "parsed": parsed,
+        "chunks_hash": input_fingerprint(chunks),
+        "food_groups": frozenset(recipe_food_groups(parsed.ingredients) if parsed else ()),
+        "seasoning_only": bool(parsed and all(ingredient_food(line) in SEASONINGS for line in parsed.ingredients)),
+    }
 
 
 @lru_cache(maxsize=4)
@@ -141,11 +261,19 @@ def available_reference_foods(products):
     available = {
         food
         for product in products
-        if product.get("sale_status", "available") == "available"
-        and int(product.get("available_quantity", 0)) > 0
+        if product.get("sale_status", "available") == "available" and int(product.get("available_quantity", 0)) > 0
         for food in product_foods(product)
     }
     return available
+
+
+_SEARCH_ALIASES = str.maketrans("飯烏龍麵條麥", "饭乌龙面条麦")
+
+
+def normalize_reference_query(value):
+    """统一已知简繁写法，仅用于检索和本轮关键词去重。"""
+    value = " ".join(value.casefold().translate(_SEARCH_ALIASES).split())
+    return {"白饭": "米饭", "主食品": "主食"}.get(value, value)
 
 
 def recall_foods(text):
@@ -162,18 +290,38 @@ def recall_foods(text):
 
 
 def rank_prepared_reference_recipes(
-    documents, products, available, query, limit, analyzed, excluded_file_ids: set[str] | None = None,
-    *, catalog_key=None, variety=None,
+    documents,
+    products,
+    available,
+    query,
+    limit,
+    analyzed,
+    excluded_file_ids: set[str] | None = None,
+    *,
+    catalog_key=None,
+    variety=None,
 ):
     """每个关键词独立评分，复用本次调用已解析的候选原谱。"""
-    terms = [term.casefold() for term in re.findall(r"[\w\u4e00-\u9fff]+", query) if len(term) > 1]
+    query = normalize_reference_query(query)
+    terms = [term for term in re.findall(r"[\w\u4e00-\u9fff]+", query) if len(term) > 1]
+    if query == "米饭":
+        terms.extend(("白饭", "白米"))
+    group_query = next((key for key, label in GROUP_NAMES.items() if query in {key, label}), None)
+    if query in {"蛋白质", "蛋白"}:
+        group_query = "protein"
     catalog_key = catalog_key or json.dumps(products, ensure_ascii=False, sort_keys=True)
     query_foods = recall_foods(query) - {"水", "盐", "糖"}
-    methods = [pattern for pattern in (
-        r"\b(?:boil\w*|poach\w*)\b|煮", r"\bsteam\w*\b|蒸",
-        r"\b(?:bak\w*|roast\w*)\b|烤", r"\b(?:porridge|congee)\b|粥",
-        r"\bstir[- ]fr(?:y|ied)\b|炒",
-    ) if re.search(pattern, query, re.I)]
+    methods = [
+        pattern
+        for pattern in (
+            r"\b(?:boil\w*|poach\w*)\b|煮",
+            r"\bsteam\w*\b|蒸",
+            r"\b(?:bak\w*|roast\w*)\b|烤",
+            r"\b(?:porridge|congee)\b|粥",
+            r"\bstir[- ]fr(?:y|ied)\b|炒",
+        )
+        if re.search(pattern, query, re.I)
+    ]
     candidates = []
     excluded_file_ids = excluded_file_ids or set()
     for document in documents:
@@ -198,16 +346,19 @@ def rank_prepared_reference_recipes(
         title_food_hits = len(document["title_foods"] & query_foods)
         query_hits = len(foods & query_foods)
         stock_hits = len(foods & available)
-        if not (title_hits or body_hits or title_food_hits or query_hits):
+        if query and not group_query and not (title_hits or body_hits or title_food_hits or query_hits):
             continue
         file_id = document["source"]["file_id"]
         parsed = document["parsed"]
         if parsed is None or parsed.review_sections:
             continue
+        groups = document["food_groups"]
+        if group_query and group_query not in groups:
+            continue
         if file_id not in analyzed:
             analyzed[file_id] = (
                 parsed,
-                deepcopy(cached_ingredient_matches(parsed.ingredients, catalog_key)) if parsed and products is not None else [],
+                deepcopy(cached_ingredient_matches(parsed.ingredients, catalog_key)) if products is not None else [],
                 document["chunks_hash"],
             )
         parsed, matches, chunks_hash = analyzed[file_id]
@@ -223,18 +374,37 @@ def rank_prepared_reference_recipes(
         relevant_title = title_food_hits if query_foods else title_hits
         method_hits = sum(bool(re.search(pattern, title, re.I)) for pattern in methods)
         coverage = covered / max(required, 1)
-        score = (exact_name, bool(relevant_title), method_hits,
-                 *candidate_priority(keys, content, variety), coverage >= 0.5, candidate_rotation(keys, variety),
-                 coverage, -gaps, relevant_title, query_hits, body_hits, stock_hits)
-        candidates.append((score, {
-            **document["source"], "chunks_hash": chunks_hash,
-            "name": parsed.name,
-            "excerpt": content[:320],
-            "parse_status": "parsed",
-            "ingredient_matches": matches,
-            "review_sections": [],
-            "purchase_status": "unchecked" if products is None else "has_gaps" if gaps else "matched_in_index",
-            "notice": "打开完整原文后逐项核对。缺商品先补查，仍缺项可明确列为需自行准备，不冒充商城商品。",
-        }))
+        score = (
+            exact_name,
+            bool(relevant_title),
+            method_hits,
+            *candidate_priority(keys, content, variety),
+            coverage >= 0.5,
+            candidate_rotation(keys, variety),
+            coverage,
+            -gaps,
+            relevant_title,
+            query_hits,
+            body_hits,
+            stock_hits,
+        )
+        candidates.append(
+            (
+                score,
+                {
+                    **document["source"],
+                    "chunks_hash": chunks_hash,
+                    "name": parsed.name,
+                    "excerpt": content[:320],
+                    "parse_status": "parsed",
+                    "food_groups": sorted(groups),
+                    "seasoning_only": document["seasoning_only"],
+                    "ingredient_matches": matches,
+                    "review_sections": [],
+                    "purchase_status": "unchecked" if products is None else "has_gaps" if gaps else "matched_in_index",
+                    "notice": "打开完整原文后逐项核对。缺商品先补查，仍缺项可明确列为需自行准备，不冒充商城商品。",
+                },
+            )
+        )
     candidates.sort(key=lambda pair: (tuple(-value for value in pair[0]), pair[1]["filename"]))
     return [item for _, item in candidates[:limit]]

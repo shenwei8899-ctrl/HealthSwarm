@@ -12,7 +12,7 @@ function routeHarness({profileFails=false}={}){
  const source=readFileSync(new URL('../src/pages/meals/detail.vue',import.meta.url),'utf8').split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm,'')
  const scope=effectScope(),timers=new Map(),hooks={},calls=[]
  let owner='A',timerId=0
- const deps={ref,watch,getCurrentInstance:()=>({}),storageContext:()=>owner,
+ const deps={ref,watch,getCurrentInstance:()=>({}),storageContext:()=>owner,takeMealPageTarget:()=>null,
   onLoad:fn=>fn(),onShow:fn=>{hooks.show=fn},onUnload:fn=>{hooks.unload=fn},onBackPress:fn=>{hooks.back=fn},
   openerChannel:()=>({on:(_name,fn)=>{hooks.receive=fn}}),getSession:()=>({householdId:'family'}),
   request:async()=>{if(profileFails)throw Error('profile unavailable');return{data:{members:[]}}},

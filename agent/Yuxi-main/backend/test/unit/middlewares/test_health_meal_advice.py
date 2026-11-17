@@ -365,3 +365,12 @@ async def test_reference_save_owner_still_rejects_an_unselected_breakfast():
     with pytest.raises(HealthVisionError) as failure:
         await namespace["save_reference_plan"](SimpleNamespace(uid="synthetic-user"), draft)
     assert failure.value.code == "reference_meals_mismatch"
+
+
+@pytest.fixture(autouse=True)
+def isolate_account_memory_publication(monkeypatch):
+    """本组验证既有业务 Owner；账号记忆发布边界由真实 PG/HTTP 测试覆盖。"""
+    from unittest.mock import AsyncMock
+    from yuxi.services import health_memory_context_service
+    monkeypatch.setattr(health_memory_context_service, "validate_memory_publication", AsyncMock())
+    monkeypatch.setattr(health_memory_context_service, "memory_restrictions_for_plan", AsyncMock(return_value=[]))

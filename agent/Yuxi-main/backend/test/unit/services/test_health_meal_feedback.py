@@ -90,6 +90,10 @@ async def test_joint_filter_only_records_dependencies_of_final_visible_turns(mon
         health_consultation_service,
     )
 
+    from yuxi.services import health_memory_context_service
+    monkeypatch.setattr(memory.HealthConsultationRepository, "authorize", AsyncMock(return_value=SimpleNamespace(member_id="member")))
+    monkeypatch.setattr(health_memory_context_service, "memory_directory", AsyncMock(return_value=(None, {})))
+    monkeypatch.setattr(memory.HealthMemoryRepository, "get", AsyncMock(return_value=None))
     owner_session = object()
 
     @asynccontextmanager
@@ -147,3 +151,12 @@ async def test_joint_filter_only_records_dependencies_of_final_visible_turns(mon
     assert await feedback.filter_health_history(context, messages, persist_uses=False) == [current]
     writes_feedback.assert_not_awaited()
     writes_memory.assert_not_awaited()
+
+
+@pytest.fixture(autouse=True)
+def isolate_account_memory_publication(monkeypatch):
+    """本组验证既有业务 Owner；账号记忆发布边界由真实 PG/HTTP 测试覆盖。"""
+    from unittest.mock import AsyncMock
+    from yuxi.services import health_memory_context_service
+    monkeypatch.setattr(health_memory_context_service, "validate_memory_publication", AsyncMock())
+    monkeypatch.setattr(health_memory_context_service, "memory_restrictions_for_plan", AsyncMock(return_value=[]))

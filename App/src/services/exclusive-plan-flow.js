@@ -2,7 +2,7 @@
 export const planTiers = ['economy', 'standard', 'premium']
 export const planTierNames = { economy: '经济型', standard: '标准型', premium: '品质型' }
 export const planMoney = value => Number.isSafeInteger(value) && value >= 0 ? (value / 100).toFixed(2) : '待报价'
-export const exclusivePlanState = () => ({ status: 'empty', busy: false, error: '', errorCode: '', group: null, plans: [], tier: 'standard' })
+export const exclusivePlanState = () => ({ status: 'empty', busy: false, error: '', errorCode: '', traceId: '', group: null, plans: [], tier: 'standard' })
 
 export function createExclusivePlanFlow({ state, send, commerce, family, revision, storage, newId,
   later = setTimeout, cancelLater = clearTimeout }) {
@@ -13,13 +13,17 @@ export function createExclusivePlanFlow({ state, send, commerce, family, revisio
     if (state.busy) return
     const token = epoch, scope = revision(), fid = family()
     const active = () => token === epoch && scope === revision() && fid === family()
-    state.busy = true; state.error = ''; state.errorCode = ''
+    state.busy = true; state.error = ''; state.errorCode = ''; state.traceId = ''
     try {
       if (!fid) throw new Error('请先选择家庭并完成建档')
       await work(active, fid)
     } catch (error) {
       if (!active()) return
       state.error = error.message || '计划暂未准备好'; state.errorCode = error.businessCode || ''
+      state.traceId = error.traceId || ''
+      if ([502, 504].includes(Number(error.code)) && !state.errorCode) {
+        state.error = '计划服务暂时无法连接，请稍后重试。'
+      }
       if (error.businessCode === 'exclusive_plan_policy_missing') state.status = 'unavailable'
       if ([401, 403, 404, 410].includes(Number(error.code)) || error.code === 'SESSION_CHANGED') {
         state.plans = []; state.group = null
@@ -37,6 +41,14 @@ export function createExclusivePlanFlow({ state, send, commerce, family, revisio
     if (!active()) return
     state.group = group; state.status = group.status; state.plans = []
     if (group.status === 'ready') {
+      if (group.preview_only) {
+        const items = planTiers.map(tier => group.plans?.find(plan => plan.tier_code === tier))
+        if (!group.group_id || group.plans?.length !== 3 || items.some(item => !item)) {
+          throw new Error('三档计划尚未完整，请重新读取')
+        }
+        state.plans = items
+        return
+      }
       const result = await commerce.servicePlans(group.group_id)
       if (!active()) return
       const items = result.items || []
@@ -77,6 +89,7 @@ export function createExclusivePlanFlow({ state, send, commerce, family, revisio
     open() {
       stop(); Object.assign(state, exclusivePlanState())
       return run(async (active, fid) => {
+        state.status = 'reading'
         const { data } = await send({ path: `/api/health/v1/families/${encodeURIComponent(fid)}/exclusive-plans` })
         if (!active()) return
         await accept(data, active)

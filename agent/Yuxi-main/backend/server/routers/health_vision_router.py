@@ -931,6 +931,18 @@ async def member_memories(member_id: UUID, user: User = Depends(get_required_use
     return await list_member_memory(user.uid, str(member_id))
 
 
+@health_vision.get("/memory")
+async def account_memories(
+    after: UUID | None = None,
+    limit: int = Query(default=50, ge=1, le=100),
+    user: User = Depends(get_required_user),
+):
+    """按当前账号展示全部主体及原家庭的私有记忆。"""
+    from yuxi.services.health_memory_service import list_account_memory
+
+    return await list_account_memory(user.uid, after=str(after) if after else None, limit=limit)
+
+
 @health_vision.get("/memory/{memory_id}")
 async def read_memory_history(memory_id: UUID, user: User = Depends(get_required_user)):
     """查看记忆修订及来源。"""

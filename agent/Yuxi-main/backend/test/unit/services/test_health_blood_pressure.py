@@ -320,8 +320,8 @@ async def test_consultation_and_final_publication_recheck_both_measurement_depen
     monkeypatch.setattr(HealthBloodGlucoseRepository, "validate_history", AsyncMock())
     monkeypatch.setattr(HealthBloodLipidsRepository, "validate_history", AsyncMock())
     await HealthConsultationRepository(session).authorize("actor", "thread")
-    for guard in (profile, weight, bp):
-        guard.assert_awaited_once_with("actor", binding, lock=False)
+    for index, guard in enumerate((profile, weight, bp)):
+        guard.assert_awaited_once_with("actor", binding, lock=False, **({"family_assistant": True} if index == 0 else {}))
 
     async def require(session, uid, thread_id, *, expected, lock):
         """保留来源授权编排，隔离本测试无关的配置与Skill读取。"""
@@ -386,3 +386,12 @@ def no_unrelated_catalog_history(monkeypatch):
     from yuxi.repositories.conversation_purchase_repository import ConversationPurchaseRepository
 
     monkeypatch.setattr(ConversationPurchaseRepository, "catalog_profile_payloads", AsyncMock(return_value=[]))
+
+
+@pytest.fixture(autouse=True)
+def isolate_account_memory_context(monkeypatch):
+    """本组验证既有图协议；账号记忆在独立真实 PG/HTTP 测试覆盖。"""
+    from unittest.mock import AsyncMock
+    from yuxi.agents.middlewares import health_memory_context
+    monkeypatch.setattr(health_memory_context, "process_memory_for_run", AsyncMock(return_value={}))
+    monkeypatch.setattr(health_memory_context, "memory_context_for_run", AsyncMock(return_value={}))
