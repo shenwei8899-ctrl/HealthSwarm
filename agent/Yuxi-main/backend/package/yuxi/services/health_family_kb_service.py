@@ -32,6 +32,7 @@ from yuxi.utils.datetime_utils import format_utc_datetime
 TOOL_NAME = "query_family_nutrition_knowledge"
 KB_ID_ENV = "HEALTH_FAMILY_NUTRITION_KB_ID"
 RECIPE_KB_ID_ENV = "HEALTH_RECIPE_KB_ID"
+RECIPE_EXTRA_KB_IDS_ENV = "HEALTH_RECIPE_EXTRA_KB_IDS"
 KNOWLEDGE_HEALTH_AGENTS = EDUCATION_HEALTH_AGENTS | {PLANNER_SLUG}
 INDICATOR_KB_ENVS = {
     GLUCOSE_SLUG: "HEALTH_BLOOD_GLUCOSE_KB_IDS",
@@ -234,7 +235,11 @@ def configured_health_kb_ids(agent_slug: str) -> tuple[str, ...]:
     kb_id = os.getenv(RECIPE_KB_ID_ENV, "").strip()
     if not kb_id or "," in kb_id:
         raise HealthVisionError("knowledge_unavailable", "菜谱资料库尚未正确配置", 503)
-    return (kb_id,)
+    extra = os.getenv(RECIPE_EXTRA_KB_IDS_ENV, "").strip()
+    ids = (kb_id, *(value.strip() for value in extra.split(","))) if extra else (kb_id,)
+    if len(ids) > 5 or any(not value for value in ids) or len(set(ids)) != len(ids):
+        raise HealthVisionError("knowledge_unavailable", "菜谱资料库尚未正确配置", 503)
+    return ids
 
 
 def configured_family_kb_id() -> str:

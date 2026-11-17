@@ -71,6 +71,25 @@ async def test_candidate_sources_use_matching_fixed_library_and_validate(knowled
     )
 
 
+async def test_recipe_candidate_reads_both_libraries_and_rejects_old_scope(knowledge_scope, monkeypatch):
+    """附加库真实参与检索，解绑后旧来源回执失效。"""
+    monkeypatch.setenv(sources.RECIPE_EXTRA_KB_IDS_ENV, "synthetic-additional")
+
+    material = await sources.retrieve_family_nutrition_knowledge("合成资料", kind="recipe")
+
+    assert [call.args[0] for call in knowledge_scope.retrieve.await_args_list] == [
+        "synthetic-recipes",
+        "synthetic-additional",
+    ]
+    assert material["kb_ids"] == ["synthetic-recipes", "synthetic-additional"]
+    assert [source["kb_id"] for source in material["sources"]] == material["kb_ids"]
+    assert await sources.validate_nutrition_knowledge_sources(knowledge_scope.session, material, kind="recipe")
+
+    monkeypatch.delenv(sources.RECIPE_EXTRA_KB_IDS_ENV)
+    with pytest.raises(HealthVisionError, match="source_invalidated"):
+        await sources.validate_nutrition_knowledge_sources(knowledge_scope.session, material, kind="recipe")
+
+
 @pytest.mark.parametrize("kind", ["rules", "", None])
 async def test_unknown_candidate_kind_never_falls_back_to_a_library(knowledge_scope, kind):
     """非法类型在检索或来源读取前失败。"""

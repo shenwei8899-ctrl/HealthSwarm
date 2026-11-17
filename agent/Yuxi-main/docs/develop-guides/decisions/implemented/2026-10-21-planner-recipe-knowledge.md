@@ -10,7 +10,7 @@ Owner：backend/package/yuxi/services/health_family_kb_service.py
 
 ## 决策
 
-配餐师复用受控知识检索工具，通过独立的 `HEALTH_RECIPE_KB_ID` 绑定单个库，结果标记为 `recipe_reference`。四种配餐模式在原固定业务工具外增加参考检索；成员身份、处理政策、同意及有效 Run 由服务端校验。采用现有只读 BM25、当前 PG 分片重验、工具审计和历史失效机制。
+配餐师复用受控知识检索工具，通过独立的 `HEALTH_RECIPE_KB_ID` 绑定主库；[附加菜谱库决定](2026-11-17-planner-additional-recipe-kb.md)扩展固定清单。结果标记为 `recipe_reference`。四种配餐模式在原固定业务工具外增加参考检索；成员身份、处理政策、同意及有效 Run 由服务端校验。采用现有只读 BM25、当前 PG 分片重验、工具审计和历史失效机制。
 
 工具片段仅供烹饪和食材搭配参考。计划 DTO 仍要求已发布菜谱版本，所有数值由程序计算；最终输出只接受本 Run 预览回执或补充问题。参考文件不转换为批准目录，不修改专业规则。后台编辑页读取实际绑定并说明用途。
 

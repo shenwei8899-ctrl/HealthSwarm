@@ -7,7 +7,13 @@ import pytest
 
 from yuxi.repositories.health_consultation_repository import HEALTH_AGENT_BACKENDS
 from yuxi.services import health_agent_config_service as service
-from yuxi.services.health_family_kb_service import INDICATOR_KB_ENVS, KB_ID_ENV, RECIPE_KB_ID_ENV
+from yuxi.services.health_family_kb_service import (
+    INDICATOR_KB_ENVS,
+    KB_ID_ENV,
+    RECIPE_EXTRA_KB_IDS_ENV,
+    RECIPE_KB_ID_ENV,
+    configured_health_kb_ids,
+)
 
 
 def agent(slug="health-consultation"):
@@ -48,6 +54,39 @@ async def test_restricted_library_name_and_id_never_disclosed(monkeypatch):
     result = await service.get_managed_knowledge(None, agent(), SimpleNamespace(uid="other", role="user"))
     assert result["items"] == [{"status": "restricted", "name": "已绑定知识库（当前账号无权查看详情）"}]
     assert "private-id" not in str(result) and "机密名称" not in str(result)
+
+
+async def test_planner_shows_primary_and_additional_recipe_libraries(monkeypatch):
+    monkeypatch.setenv(RECIPE_KB_ID_ENV, "primary")
+    monkeypatch.setenv(RECIPE_EXTRA_KB_IDS_ENV, "additional")
+    rows = AsyncMock(return_value=[kb("primary", "现有资料库"), kb("additional", "菜谱")])
+    monkeypatch.setattr(service.KnowledgeBaseRepository, "get_by_ids", rows)
+
+    user = SimpleNamespace(uid="admin", role="superadmin")
+    result = await service.get_managed_knowledge(None, agent("health-meal-planner"), user)
+
+    assert [item["id"] for item in result["items"]] == ["primary", "additional"]
+    rows.assert_awaited_once_with(None, ("primary", "additional"))
+
+
+def test_planner_keeps_primary_recipe_library_without_additional_binding(monkeypatch):
+    monkeypatch.setenv(RECIPE_KB_ID_ENV, "primary")
+    monkeypatch.delenv(RECIPE_EXTRA_KB_IDS_ENV, raising=False)
+
+    assert configured_health_kb_ids("health-meal-planner") == ("primary",)
+
+
+@pytest.mark.parametrize("extra", ["primary", "additional,", ",additional", "a,b,c,d,e"])
+async def test_planner_rejects_invalid_additional_recipe_binding(monkeypatch, extra):
+    monkeypatch.setenv(RECIPE_KB_ID_ENV, "primary")
+    monkeypatch.setenv(RECIPE_EXTRA_KB_IDS_ENV, extra)
+    rows = AsyncMock()
+    monkeypatch.setattr(service.KnowledgeBaseRepository, "get_by_ids", rows)
+
+    result = await service.get_managed_knowledge(None, agent("health-meal-planner"), None)
+
+    assert result["status"] == "unconfigured"
+    rows.assert_not_called()
 
 
 @pytest.mark.parametrize("rows,status", [([], "unavailable"), ([kb("fixed", kb_type="other")], "unsupported")])

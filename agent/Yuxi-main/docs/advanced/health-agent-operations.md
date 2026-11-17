@@ -48,12 +48,14 @@ Worker 的 `YUXI_HEALTH_RUN_TIMEOUT_SECONDS` 默认值为 `300` 秒，适用于�
 | 角色 | 环境变量 | 资料范围 |
 |---|---|---|
 | 成员专属营养咨询 | `HEALTH_FAMILY_NUTRITION_KB_ID` | 原有单个家庭营养与食养库 |
-| 基础配餐师 | `HEALTH_RECIPE_KB_ID` | 单个菜谱文档库，仅作烹饪与食材搭配参考 |
+| 基础配餐师 | `HEALTH_RECIPE_KB_ID`、可选的 `HEALTH_RECIPE_EXTRA_KB_IDS` | 主库与最多四个附加菜谱文档库，仅作烹饪与食材搭配参考 |
 | 血糖记录助手 | `HEALTH_BLOOD_GLUCOSE_KB_IDS` | 血糖食养、高血糖、糖尿病一般科普 |
 | 血脂记录助手 | `HEALTH_BLOOD_LIPIDS_KB_IDS` | 血脂食养与高血脂一般科普，按业务范围补充体重代谢资料 |
 | 血压记录助手 | `HEALTH_BLOOD_PRESSURE_KB_IDS` | 血压食养、高血压与心血管一般科普 |
 
 例如 `HEALTH_BLOOD_GLUCOSE_KB_IDS=kb_example_glucose_food,kb_example_glucose_education`。部署时用实际 ID 替换示例并重建 API 和 Worker，使两端读取相同配置。一般 Agent 的知识库选择项不会修改健康角色的固定清单。
+
+配餐师的主库变量只接受一个 ID；附加变量用逗号分隔。总数最多五个，不允许空项或重复。固定清单变更后，按旧清单绑定的参考餐单线程会返回 `source_invalidated`，需要重新生成。
 
 工具 `query_family_nutrition_knowledge` 按真实运行角色选择清单，对已存在的 Milvus 库执行只读 BM25，关闭外部 embedding、rerank 和图检索，合计最多返回四个当前片段。返回片段还须对应 PostgreSQL 中已索引文件及当前分片；管理页面显示的文件数量包括尚未索引的资料，须分别核对。
 
