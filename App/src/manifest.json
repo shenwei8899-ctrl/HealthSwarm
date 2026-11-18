@@ -99,6 +99,10 @@
         },
         {
           "type": "file",
+          "value": "static/chat/nutrition-boy-v2-poster.png"
+        },
+        {
+          "type": "file",
           "value": "static/chat/today-menu-plate.svg"
         },
         {

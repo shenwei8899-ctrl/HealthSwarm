@@ -23,7 +23,7 @@ const steps = ['基本资料', '健康偏好', '饮食限制']
           <text class="onboarding-heading">{{ heading }}</text>
           <text class="onboarding-description">{{ description }}</text>
         </view>
-        <image class="onboarding-assistant" src="/static/chat/nutrition-boy-v2-poster.png" mode="aspectFit" aria-hidden="true" />
+        <image class="onboarding-assistant" src="/static/chat/nutrition-boy-v3-poster.png" mode="aspectFit" aria-hidden="true" />
       </view>
 
       <view class="onboarding-steps" aria-label="建档进度">
