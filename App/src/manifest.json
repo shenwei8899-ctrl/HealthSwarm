@@ -95,6 +95,10 @@
         },
         {
           "type": "file",
+          "value": "static/chat/nutrition-boy-v2-sprite.webp"
+        },
+        {
+          "type": "file",
           "value": "static/chat/today-menu-plate.svg"
         },
         {
