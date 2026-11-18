@@ -2,6 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { authorizeVoice, createVoiceCapture, pcmVoiceLevel, VOICE_OPTIONS, transcribeVoice } from '../src/services/chat-voice.js'
 import { registerApiAdapters } from '../src/services/index.js'
+import { readFileSync } from 'node:fs'
+import { computed, ref, reactive, watch, effectScope, proxyRefs, toRefs, compile } from 'vue'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
 test('first microphone request invokes native scope.record authorization', async () => {
@@ -138,4 +140,84 @@ test('transcription adapter explicitly rejects missing service and blank content
   assert.equal(received.clientRequestId,'request-1'); assert.equal(received.format,'PCM')
   registerApiAdapters({transcribeVoice:async()=>({text:' '})}); await assert.rejects(transcribeVoice({}),/没有识别/)
   registerApiAdapters({transcribeVoice:undefined})
+})
+
+const voiceSource=readFileSync(new URL('../src/components/VoiceInput.vue',import.meta.url),'utf8')
+const voiceScript=voiceSource.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
+const voiceRender=compile(voiceSource.match(/<template>([\s\S]*?)<\/template>/)[1],{isCustomElement:tag=>['view','text'].includes(tag)})
+function voiceComponent(extra={}) {
+  const props=reactive({disabled:false,embedded:true}),events=[],nativeEvents={},cleanup=[],calls={start:0,stop:0}
+  const native={start(){calls.start++},stop(){calls.stop++}}
+  for(const name of ['Start','Stop','Error','FrameRecorded','InterruptionBegin','Pause'])native['on'+name]=fn=>{nativeEvents[name]=fn}
+  const deps={computed,ref,watch,defineProps:()=>props,defineEmits:()=>((name,value)=>events.push({name,value})),defineExpose(){},onBeforeUnmount:fn=>cleanup.push(fn),
+    createVoiceCapture:options=>createVoiceCapture({...options,getRecorder:()=>native,authorize:async()=>{},save:async audio=>({...audio,filePath:'/saved.pcm'}),transcribe:async()=> '正常语音',discard(){},getScope:()=> 'synthetic-voice-scope',...extra})}
+  const scope=effectScope()
+  const page=scope.run(()=>new Function('deps',`const {${Object.keys(deps)}}=deps;${voiceScript};return {state,levels,busy,overlay,prompt,label,progressVisible,canCancel,progressLabel,cancelLabel,recorder,start,end,touchY,cancel,openSettings}`)(deps))
+  const context=proxyRefs({...toRefs(props),...page})
+  function cancelButton() {
+    function find(node) {
+      if(!node||typeof node!=='object')return null
+      if(node.type==='button'&&node.props?.class==='voice-progress-cancel')return node
+      return Array.isArray(node.children)?node.children.map(find).find(Boolean)||null:null
+    }
+    return find(voiceRender.call(context,context,[]))
+  }
+  return {page,events,nativeEvents,calls,cancelButton,
+    cancel(){const button=cancelButton();assert.ok(button,'a visible cancel button must be available');button.props.onClick({stopPropagation(){}})},
+    async record(){page.start({touches:[{clientY:200}]});await tick();nativeEvents.Start()},
+    stop(){page.end({changedTouches:[{clientY:200}]})},
+    finish(){nativeEvents.Stop({duration:1000,tempFilePath:'/temp.pcm'})},
+    dispose(){cleanup.forEach(fn=>fn());scope.stop()}}
+}
+
+test('visible cancel control releases microphone authorization and ignores a late grant',async t=>{
+  const permission=deferred(),c=voiceComponent({authorize:()=>permission.promise});t.after(()=>c.dispose())
+  c.page.start({touches:[{clientY:200}]})
+  assert.equal(c.page.state.value.phase,'authorizing');assert.equal(c.page.cancelLabel.value,'取消录音')
+  c.cancel()
+  assert.equal(c.page.state.value.phase,'idle');assert.equal(c.cancelButton(),null)
+  assert.deepEqual(c.events.at(-1),{name:'busy',value:false})
+  permission.resolve();await tick()
+  assert.equal(c.calls.start,0);assert.equal(c.events.filter(e=>e.name==='send').length,0)
+})
+
+test('visible cancel control stops a late native start without sending or releasing ownership early',async t=>{
+  const c=voiceComponent();t.after(()=>c.dispose())
+  c.page.start({touches:[{clientY:200}]});await tick()
+  assert.equal(c.page.state.value.phase,'starting');c.cancel()
+  assert.equal(c.page.state.value.phase,'stopping');assert.equal(c.page.prompt.value,'正在取消录音…')
+  assert.equal(c.cancelButton(),null);assert.equal(c.calls.stop,0)
+  c.nativeEvents.Start();assert.equal(c.calls.stop,1)
+  c.finish();await tick()
+  assert.deepEqual(c.events.at(-1),{name:'busy',value:false})
+  assert.equal(c.events.filter(e=>e.name==='send').length,0)
+})
+
+test('cancel send during native stopping suppresses the impending transcription',async t=>{
+  let transcriptions=0
+  const c=voiceComponent({transcribe:async()=>{transcriptions++;return '不应发送'}});t.after(()=>c.dispose())
+  await c.record();c.stop()
+  assert.equal(c.page.state.value.phase,'stopping');assert.equal(c.page.cancelLabel.value,'取消发送')
+  c.cancel();c.finish();await tick()
+  assert.equal(transcriptions,0);assert.equal(c.page.state.value.phase,'idle')
+  assert.deepEqual(c.events.at(-1),{name:'busy',value:false})
+  assert.equal(c.events.filter(e=>e.name==='send').length,0)
+})
+
+test('cancel recognition aborts model work, releases busy and ignores late text before a fresh recording',async t=>{
+  const pending=deferred();let transcriptions=0,aborts=0
+  const c=voiceComponent({transcribe:audio=>{
+    if(++transcriptions>1)return Promise.resolve('正常语音')
+    audio.onModelDownload(true);audio.onCancelReady(()=>{aborts++});return pending.promise
+  }});t.after(()=>c.dispose())
+  await c.record();c.stop();c.finish();await tick()
+  assert.equal(c.page.progressLabel.value,'正在下载语音模型…');assert.equal(c.page.cancelLabel.value,'取消识别')
+  c.cancel()
+  assert.equal(aborts,1);assert.equal(c.page.state.value.phase,'idle');assert.equal(c.cancelButton(),null)
+  assert.deepEqual(c.events.at(-1),{name:'busy',value:false})
+  pending.resolve('迟到语音');await tick()
+  assert.equal(c.events.filter(e=>e.name==='send').length,0)
+  await c.record();c.stop();c.finish();await tick()
+  assert.deepEqual(c.events.filter(e=>e.name==='send'),[{name:'send',value:'正常语音'}])
+  assert.equal(c.page.busy.value,false)
 })

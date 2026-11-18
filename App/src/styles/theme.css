@@ -1,5 +1,5 @@
 /* Shared light surfaces. Component styles inherit these tokens in H5 and WeChat. */
-page,uni-page-body,body{--ui-text:#35343f;--ui-muted:#74717f;--ui-line:#eae8f0;--ui-surface:#fff;--ui-canvas:#f6f7fa;--ui-accent:#303739;--ui-accent-pressed:#202628;--ui-canvas-gradient:linear-gradient(180deg,#eff1fb,var(--ui-canvas) 32%,var(--ui-canvas) 64%,#e8ebf7);--ui-bubble:linear-gradient(180deg,rgba(255,255,255,.72),rgba(255,255,255,.98));--ui-bubble-line:rgba(255,255,255,.88);--ui-bubble-shadow:inset 0 1px 0 #fff,0 4px 18px rgba(48,55,75,.035);--ui-accent-soft:#eef0f2;--ui-warning:#946200;--ui-user:#eeeaf7;--ui-user-text:#514568;--ui-radius:20px;--ui-soft:#f5f4f8;--ui-overlay:rgba(37,31,55,.24);min-height:100%;background:var(--ui-canvas);color:var(--ui-text);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;font-size:30rpx;font-weight:400;line-height:1.6;letter-spacing:0}
+page,uni-page-body,body{--ui-text:#35343f;--ui-muted:#6b6775;--ui-line:#eae8f0;--ui-surface:#fff;--ui-canvas:#f6f7fa;--ui-accent:#303739;--ui-accent-pressed:#202628;--ui-canvas-gradient:linear-gradient(180deg,#eff1fb,var(--ui-canvas) 32%,var(--ui-canvas) 64%,#e8ebf7);--ui-bubble:linear-gradient(180deg,rgba(255,255,255,.72),rgba(255,255,255,.98));--ui-bubble-line:rgba(255,255,255,.88);--ui-bubble-shadow:inset 0 1px 0 #fff,0 4px 18px rgba(48,55,75,.035);--ui-accent-soft:#eef0f2;--ui-warning:#946200;--ui-user:#eeeaf7;--ui-user-text:#514568;--ui-radius:20px;--ui-soft:#f5f4f8;--ui-overlay:rgba(37,31,55,.24);min-height:100%;background:var(--ui-canvas);color:var(--ui-text);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;font-size:30rpx;font-weight:400;line-height:1.6;letter-spacing:0}
 view,text,button,input,textarea,image{box-sizing:border-box}
 button,uni-button{margin:0;padding:0;background:none;border-radius:0;line-height:1.5;font-family:inherit;font-size:inherit;color:inherit;font-weight:400}
 button::after,uni-button::after{border:0;pointer-events:none}
@@ -18,6 +18,6 @@ button[disabled]{opacity:.45}.pill{display:inline-flex;align-items:center;min-he
 /* #ifdef H5 */
 .screen{max-width:480px;margin-left:auto;margin-right:auto;width:100%}.uni-page-body{background:var(--ui-canvas)}
 .sheet-mask .sheet{max-width:480px;margin-left:auto;margin-right:auto}
-button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--ui-accent);outline-offset:3px}
+button:focus-visible,uni-button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--ui-accent);outline-offset:3px}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 /* #endif */

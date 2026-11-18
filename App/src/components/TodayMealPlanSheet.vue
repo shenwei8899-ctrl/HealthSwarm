@@ -72,7 +72,7 @@ watch([()=>props.open,()=>props.state.date,()=>props.members],cancelEditing)
      <view class="tm-diner-tabs"><button v-for="item in meals" :key="item.type" :aria-pressed="mealType===item.type" :class="{'tm-selected':mealType===item.type}" @click="selectMeal(item.type)">{{item.name}}</button></view>
      <view v-if="mealType">
       <text>{{mealName}}谁来吃？</text>
-      <button v-for="member in members" :key="member.id" class="tm-diner-member" role="checkbox" :aria-checked="selected.includes(member.id)" @click="toggleMember(member.id)"><text>{{member.name}}</text><text>{{selected.includes(member.id)?'✓':'○'}}</text></button>
+      <button v-for="member in members" :key="member.id" class="tm-diner-member" role="checkbox" :aria-checked="selected.includes(member.id)" @click="toggleMember(member.id)"><text class="tm-diner-name">{{member.name}}</text><text class="tm-diner-check" aria-hidden="true">{{selected.includes(member.id)?'✓':'○'}}</text></button>
      </view>
     </view>
     <view v-else>
@@ -98,10 +98,11 @@ watch([()=>props.open,()=>props.state.date,()=>props.members],cancelEditing)
 .tm-header{display:flex;align-items:center;gap:10px;padding:4px 16px 16px 20px;flex-shrink:0}.tm-heading{flex:1;min-width:0}.tm-title{display:block;font-size:21px;font-weight:600;line-height:1.4}.tm-date{display:block;margin-top:4px;color:#74717f;font-size:12px;line-height:1.6}
 .tm-controls{display:flex;align-items:center;gap:2px}.tm-close{display:flex;align-items:center;justify-content:center;width:44px;height:44px;min-width:44px;margin:0;padding:0;background:transparent;color:#74717f}.tm-close>text{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:50%;background:rgba(229,230,239,.6);font-size:24px;line-height:1}.tm-sheet button:after{border:0}
 .tm-content{height:auto;max-height:50vh;min-height:0}.tm-expanded .tm-content{height:0;max-height:none;flex:1}
-.tm-heading-wrap{flex:1;min-width:0}.tm-date-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.tm-edit{min-height:32px;padding:0 10px;margin:0;border-radius:12px;background:#e9e8f2;color:#51496b;font-size:12px;line-height:32px}
+.tm-heading-wrap{flex:1;min-width:0}.tm-date-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.tm-edit{min-height:44px;padding:6px 10px;margin:0;border-radius:12px;background:#e9e8f2;color:#51496b;font-size:12px;line-height:32px}
 .tm-diners,.tm-diner-summary{padding:0 20px 12px;font-size:14px}.tm-diner-tabs,.tm-diner-actions{display:flex;gap:8px;margin:8px 0 12px}
 .tm-diner-tabs button,.tm-diner-actions button{flex:1;min-height:44px;margin:0;border-radius:14px;background:#eeedf3;font-size:14px;line-height:44px}.tm-diner-tabs .tm-selected,.tm-diner-actions button:last-child{background:#343442;color:#fff}
-.tm-diner-member{display:flex;align-items:center;justify-content:space-between;min-height:44px;padding:0 8px;margin:0;border-radius:0;border-bottom:1px solid #e8e6ee;background:transparent;font-size:14px}
+.tm-diner-member{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-width:0;min-height:44px;padding:8px;white-space:normal;margin:0;border-radius:0;border-bottom:1px solid #e8e6ee;background:transparent;font-size:14px}
+.tm-diner-name{flex:1;min-width:0;text-align:left;white-space:normal;overflow-wrap:anywhere;word-break:break-word}.tm-diner-check{flex:none}
 .tm-diner-footer{flex-shrink:0;padding:10px 20px 0;background:#fafafc;font-size:13px}.tm-diner-summary{color:#51496b}
 @media(max-width:350px){.tm-header{padding-left:16px;padding-right:12px}}
 @media(max-height:480px){.tm-sheet{max-height:calc(100vh - 44px)}.tm-content{max-height:calc(100vh - 150px)}.tm-header{padding-bottom:10px}}

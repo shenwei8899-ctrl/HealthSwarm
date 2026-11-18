@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { ref, computed } from 'vue'
+import { ref, computed, compile, createSSRApp } from 'vue'
+import { renderToString } from 'vue/server-renderer'
 import { createFamilyCardTransition, restrictionProgress, memberHealthSummary } from '../src/utils/family-card-transition.js'
 
 const people = () => [{ id: 'self', name: '我', weight: 58, goals: ['饮食均衡'] }, { id: 'mother', name: '妈妈', weight: 56 }, { id: 'father', name: '爸爸', weight: 70 }]
@@ -73,12 +74,37 @@ test('unknown and incomplete restrictions never become a no-restrictions claim',
 function overview() {
  const hooks = {}, pending = [], options = [], navigations = []
  let context = 'account-a/family-a/revision-1'
- const code = readFileSync(new URL('../src/components/CloudFamilyOverview.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
- const dependencies = { defineProps:()=>({}),defineEmits:()=>()=>{}, ref, computed, onMounted: fn => { hooks.mounted = fn }, onUnmounted: fn => { hooks.unmounted = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn }, onBackPress(){}, storageContext: () => context, getSession: () => ({ householdId: 'family-a' }), uni: { navigateTo: value => navigations.push(value) }, loadCloudProfile: value => { options.push(value); return new Promise((resolve, reject) => pending.push({ resolve, reject })) } }
- const exposed = new Function('deps', `const {${Object.keys(dependencies)}}=deps;${code};return {load,select,detail,profile,profileContext,selectedId,error,sheetId,sheetSection,updateSaved}`)(dependencies)
+ const source = readFileSync(new URL('../src/components/CloudFamilyOverview.vue', import.meta.url), 'utf8')
+ const code = source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
+ const dependencies = { defineProps:()=>({}),defineEmits:()=>()=>{}, ref, computed, onMounted: fn => { hooks.mounted = fn }, onUnmounted: fn => { hooks.unmounted = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn }, onBackPress(){}, storageContext: () => context, getSession: () => ({ householdId: 'family-a' }), request:async()=>({data:{}}), uni: { navigateTo: value => navigations.push(value) }, loadCloudProfile: value => { options.push(value); return new Promise((resolve, reject) => pending.push({ resolve, reject })) } }
+ const exposed = new Function('deps', `const {${Object.keys(dependencies)}}=deps;${code};return {props,load,select,detail,manage,profile,profileContext,selectedId,error,sheetId,sheetSection,updateSaved,owner,busy,transfer,transferError,transferBusy,inviteOpen,sheetClosing,sheetExpanded,sheetName,sheetMember,openInvites,confirmTransfer,prepareInvite,requestSheetClose,beginDrag,endDrag,closeSheet,emit}`)(dependencies)
  const data = () => ({ householdId: 'family-a', selfMemberId: 'self', isOwner: true, members: people() })
- return { ...exposed, hooks, pending, options, navigations, data, changeContext: value => { context = value } }
+ const stub = {render:()=>null}
+ let render
+ const html = () => {
+  render ||= compile(source.slice(source.indexOf('<template>')+10,source.lastIndexOf('</template>')),{isCustomElement:tag=>['view','text','image'].includes(tag)})
+  return renderToString(createSSRApp({render,components:{AppNavBar:stub,FamilyMemberDeck:stub,FamilyInviteSheet:stub,CloudMemberDetail:stub},setup:()=>({...exposed,uni:dependencies.uni})}))
+ }
+ return { ...exposed, hooks, pending, options, navigations, data, html, changeContext: value => { context = value } }
 }
+
+test('an empty family offers the existing add-member path only to its current administrator', async () => {
+ for(const isOwner of [true,false]){
+  const f=overview(),flight=f.load()
+  f.pending[0].resolve({...f.data(),isOwner,members:[]});await flight
+  const html=await f.html()
+  assert.match(html,/先为家人留一个位置/)
+  if(isOwner){
+   assert.match(html,/<button[^>]*>添加家庭成员<\/button>/)
+   f.manage();assert.deepEqual(f.navigations,[{url:'/pages/onboarding/index'}])
+   f.changeContext('account-b/family-b/revision-2');f.manage();assert.equal(f.navigations.length,1)
+  }else{
+   assert.doesNotMatch(html,/<button[^>]*>添加家庭成员<\/button>/)
+   assert.match(html,/请家庭管理员添加成员/)
+   f.manage();assert.deepEqual(f.navigations,[])
+  }
+ }
+})
 test('returning to the same family restores selection after reading fresh facts', async () => {
  const f = overview(); const first = f.load(); f.pending[0].resolve(f.data()); await first
  f.select('mother'); f.hooks.hide(); assert.equal(f.profile.value, null)

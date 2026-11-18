@@ -62,9 +62,18 @@ test('failed and interrupted messages keep only the message marker without a rec
  assert.equal(elements.some(n=>attribute(n,'class')==='recovery-card'),false)
  assert.equal(elements.some(n=>n.tag==='button'&&['editFailedQuestion','restartChat'].includes(directive(n,'on','click'))),false)
  assert.equal(directive(marker,'on','click'),'messageStatus(message)')
+ assert.equal(marker.tag,'button')
  assert.equal(attribute(marker,'role'),'button')
  assert.equal(attribute(marker,'tabindex'),'0')
- assert.match(source,/\.message-issue\{[^}]*background:#d83a3a/)
+ for(const key of ['enter','space']){
+  const handler=marker.props.find(p=>p.type===7&&p.name==='on'&&p.arg?.content==='keyup'&&p.modifiers.includes(key))
+  assert.equal(handler?.exp?.content,'messageStatus(message)')
+  assert.ok(handler.modifiers.includes('prevent'))
+  assert.ok(handler.modifiers.includes('stop'))
+  const press=marker.props.find(p=>p.type===7&&p.name==='on'&&p.arg?.content==='keydown'&&p.modifiers.includes(key))
+  assert.ok(press?.modifiers.includes('prevent'))
+ }
+ assert.match(directive(marker,'bind','aria-label'),/查看消息失败原因/)
 })
 
 test('submission and reconciliation always render a visible non-error control',()=>{
@@ -77,8 +86,8 @@ test('submission and reconciliation always render a visible non-error control',(
  assert.equal(directive(check,'bind','disabled'),'!canCheckTask')
  assert.ok(check.children.some(n=>n.type===1&&attribute(n,'class')==='check-task-icon'))
  assert.equal(check.children.some(n=>n.type===1&&attribute(n,'class')==='message-issue'),false)
- assert.match(source,/\.send-button\[disabled\]\{[^}]*background:var\(--ui-accent,#303739\);color:#fff;opacity:1/)
- assert.match(source,/\.message-issue\.is-unconfirmed\{[^}]*background:#eef0f2/)
+ assert.equal(attribute(submitting,'aria-busy'),'true')
+ assert.match(attribute(submitting,'class'),/is-processing/)
  const stopped=elements.find(n=>attribute(n,'class')==='message-status-note')
  assert.equal(directive(stopped,'if'),"message.role==='user'&&message.status==='cancelled'")
 })
