@@ -59,8 +59,6 @@ async def prepare_daily_profile_coding(uid, sources, selection, context):
             ):
                 raise HealthVisionError("source_invalidated", "成员档案或授权已更新", 410)
             if link.source_kind != "miniapp_reported":
-                if link.actor_uid != uid:
-                    raise HealthVisionError("source_invalidated", "成员档案或授权已更新", 410)
                 continue
             quality = HealthQualityRepository(session)
             projection = await quality.profile_projection(hid)
@@ -70,8 +68,6 @@ async def prepare_daily_profile_coding(uid, sources, selection, context):
                 if projection.get("id") != member.id or projection.get("version") != member.version:
                     raise HealthVisionError("source_invalidated", "成员档案或授权已更新", 410)
                 continue
-            if link.actor_uid != uid:
-                raise HealthVisionError("source_invalidated", "成员档案或授权已更新", 410)
             record = await quality.rules(selection["rule_code"])
             rules = external_projection(record, "rules", selection["rule_code"])
             if rules["status"] != "ready" or rules["version"] != selection["rule_version"]:

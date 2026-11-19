@@ -36,8 +36,11 @@ class HealthMeasurementRepository:
 
     async def read(self, uid, member_id, period=None, *, lock=True, audit=True, selection=None):
         """只投影本人必要实测字段，不继承基础档案确认或营养安全状态。"""
-        member = await HealthVisionRepository(self.session).authorize(member_id, uid, "profile_view", lock=lock)
-        if member.owner_uid != uid or member.relationship_label != "本人":
+        health = HealthVisionRepository(self.session)
+        member = await health.authorize(member_id, uid, "profile_view", lock=lock)
+        if (
+            member.owner_uid != uid or member.relationship_label != "本人"
+        ) and not await health.authorize_family_link(member_id, uid, lock=lock):
             raise HealthVisionError("not_found", f"仅能读取自己的本人实测{self.label}", 404)
         chosen = IndicatorSelection.model_validate(selection) if selection is not None else None
         if chosen is not None:
@@ -64,7 +67,7 @@ class HealthMeasurementRepository:
         link = await self.session.get(HealthFamilyProfileLink, member_id, populate_existing=True)
         if link is not None:
             family, source = await HealthFamilyProfileRepository(self.session).source(uid, link, lock=lock)
-            if self.kind not in authorized_fields(family, source, uid):
+            if self.kind not in authorized_fields(family, source, uid, family_sharing=True):
                 raise HealthVisionError("not_found", f"无本人实测{self.label}字段访问授权", 403)
             family_repo = FamilyRepository(self.session)
             rows, total = await family_repo.measurement_page(

@@ -15,23 +15,22 @@ function overview(errorCode = 'consent_required') {
   }
   const source = readFileSync(new URL('../src/components/CloudExclusivePlans.vue', import.meta.url), 'utf8')
   const script = source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
-  const page = new Function('deps', `const {${Object.keys(deps)}}=deps;${script};return {open,confirmConsent,active}`)(deps)
+  const page = new Function('deps', `const {${Object.keys(deps)}}=deps;${script};return {open,startPlan,active}`)(deps)
   return { ...page, calls, hooks, source }
 }
 
 for (const code of ['consent_required', 'daily_member_consent_required', 'daily_member_sources_unavailable']) {
-  test(`plan overview exposes explicit consent after ${code}`, async () => {
+  test(`family plans do not create a per-member consent form after ${code}`, async () => {
     const page = overview(code)
     page.active.value = true
     await page.open()
-    assert.deepEqual(page.calls, ['open', 'load'])
-    assert.match(page.source, /@click="confirmConsent"/)
-    assert.match(page.source, /member\.checked=\$event\.detail\.value\.includes\(member\.id\)/)
-    await page.confirmConsent()
-    assert.deepEqual(page.calls, ['open', 'load', 'accept', 'ensure', 'load'])
+    assert.deepEqual(page.calls, ['open'])
+    assert.doesNotMatch(page.source, /@click="confirmConsent"|member\.checked|已验证监护人/)
+    await page.startPlan()
+    assert.deepEqual(page.calls, ['open', 'ensure'])
     page.hooks.hide()
     assert.equal(page.active.value, false)
-    assert.deepEqual(page.calls.slice(-2), ['stop', 'consent-stop'])
+    assert.equal(page.calls.at(-1), 'stop')
   })
 }
 

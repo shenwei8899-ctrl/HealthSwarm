@@ -6,7 +6,6 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from yuxi.services.family_service import (
     FamilyService,
-    guardian_active,
     is_adult,
     member_view,
 )
@@ -19,9 +18,7 @@ from yuxi.services.miniapp_profile_types import (
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import FamilyMember, FamilyProfileRevision
 from yuxi.storage.postgres.models_health import (
-    HealthGrant,
     HealthMiniappProfileReceipt,
-    HealthProcessingConsent,
 )
 from yuxi.utils.datetime_utils import utc_now_naive
 
@@ -48,22 +45,12 @@ async def start_miniapp_analysis(uid, fid, data):
         )
         service = FamilyService(db, uid)
         family, member = await service.context(fid, str(data.member_id))
-        if member.subject_uid != uid and not guardian_active(member, uid):
-            raise HealthVisionError(
-                "member_consent_required",
-                "请由成员本人或已验证的监护人确认分析同意",
-                403,
-            )
-        if member.invitation_review_pending:
-            raise HealthVisionError("invitation_review_required", "请先核对并保存本人资料", 409)
         receipt = await db.get(HealthMiniappProfileReceipt, (uid, str(data.client_request_id)))
         if receipt:
             if receipt.family_id != fid or receipt.fingerprint != digest:
                 raise HealthVisionError("request_conflict", "同一确认请求不能改变成员、版本或用途", 409)
             return await profile_result(service, family)
         automatic = data.action == "open_consultation"
-        if automatic and member.subject_uid != uid:
-            raise HealthVisionError("member_unavailable", "只能自动衔接当前账号本人的营养咨询", 403)
         service.require_version(member, data.expected_version)
         try:
             saved_miniapp_member(member)
@@ -94,25 +81,12 @@ async def start_miniapp_analysis(uid, fid, data):
             configured = config["consultation"]
             if not configured["available"]:
                 raise HealthVisionError("configuration_unavailable", "营养咨询服务暂未就绪，档案已保存", 503)
-            health_id = await service.repo.linked_health_member(fid, member.id)
-            if health_id and not member.invitation_analysis_pending:
-                grant = await db.get(HealthGrant, (health_id, uid), populate_existing=True)
-                consent = await db.get(
-                    HealthProcessingConsent, (health_id, uid, "consultation"), populate_existing=True
-                )
-                if (
-                    grant is not None
-                    and grant.revoked_at is None
-                    and "ai_use" in grant.scopes
-                    and consent is not None
-                    and consent.revoked_at is None
-                    and consent.processor == configured["processor"]
-                    and consent.policy_version == config["policy_version"]
-                ):
-                    if member.confirmed_version != member.version:
-                        member.confirmed_version, member.confirmed_at = member.version, utc_now_naive()
-                    return await profile_result(service, family)
-            raise HealthVisionError("consultation_consent_required", "请确认当前营养咨询的数据处理说明。", 409)
+            from yuxi.services.miniapp_report_service import ensure_member_reports
+            from yuxi.repositories.health_vision_repository import HealthVisionRepository
+
+            link = await ensure_member_reports(service, family, member)
+            await HealthVisionRepository(db).authorize(link.member_id, uid, "ai_use")
+            return await profile_result(service, family)
         processing = {
             "purpose": data.purpose,
             "processor": data.processor,
@@ -258,8 +232,8 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
         submitted.append(member)
         if member.subject_uid == uid:
             member.invitation_review_pending = False
-            member.confirmed_version = member.version
-            member.confirmed_at = utc_now_naive()
+        member.confirmed_version = member.version
+        member.confirmed_at = utc_now_naive()
     from yuxi.services.miniapp_report_service import ensure_member_reports
 
     for member in submitted:
@@ -268,8 +242,8 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
         from yuxi.services.miniapp_planning_source import bind_submitted_profile
         from yuxi.services.health_vision_types import HealthVisionError
 
-        # 建档页的用途复选框只确认本人；监护人分析须从具体儿童档案明确确认。
-        analysis_members = [member for member in submitted if member.subject_uid == uid]
+        # 当前家庭成员可使用所有已提交的共享档案。
+        analysis_members = submitted
         if data.analysis_consent is not None:
             await bind_submitted_profile(db, uid, family, analysis_members, data.analysis_consent)
         if data.plan_consent is not None:
@@ -311,6 +285,11 @@ async def profile_result(service, family):
             continue
         if member.subject_uid == service.uid:
             actor = member
+        health_id = await service.repo.linked_health_member(family.id, member.id)
+        if not health_id:
+            from yuxi.services.miniapp_report_service import ensure_member_reports
+
+            health_id = (await ensure_member_reports(service, family, member)).member_id
         view = member_view(family, member, service.uid)
         profile = view.get("profile") or {}
         dietary = {
@@ -336,11 +315,11 @@ async def profile_result(service, family):
             {
                 "id": member.id,
                 "memberId": member.person_id or member.id,
-                "healthMemberId": await service.repo.linked_health_member(family.id, member.id),
+                "healthMemberId": health_id,
                 "version": member.version,
                 "relationshipVersion": member.relationship_version,
                 "isSelf": member.subject_uid == service.uid,
-                "canConfirmAnalysis": member.subject_uid == service.uid or guardian_active(member, service.uid),
+                "canConfirmAnalysis": member.is_active,
                 "confirmed": member.confirmed_version == member.version,
                 "editableFields": view["editable_fields"],
                 "claimed": member.subject_uid is not None,

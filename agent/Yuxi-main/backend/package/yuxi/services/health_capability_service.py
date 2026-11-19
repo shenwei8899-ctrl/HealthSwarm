@@ -102,7 +102,9 @@ async def member_capabilities(uid: str, member_id: str) -> MemberCapabilities:
 
             if slug in INDICATOR_AGENT_SKILLS:
                 member = await health.authorize(member_id, uid, "profile_view")
-                if member.owner_uid != uid or member.relationship_label != "本人":
+                if (
+                    member.owner_uid != uid or member.relationship_label != "本人"
+                ) and not await health.authorize_family_link(member_id, uid, lock=False):
                     capability.reason_code = "self_member_required"
                     tasks.append(capability)
                     continue

@@ -45,10 +45,13 @@ def weight_repo(monkeypatch):
     source_read = AsyncMock(return_value=(SimpleNamespace(owner_uid="actor"), source))
     measurements, audit = AsyncMock(return_value=([], 0)), AsyncMock()
     monkeypatch.setattr(measurement_boundary.HealthVisionRepository, "authorize", authorize)
+    monkeypatch.setattr(
+        measurement_boundary.HealthVisionRepository, "authorize_family_link", AsyncMock(return_value=False)
+    )
     monkeypatch.setattr(measurement_boundary.HealthFamilyProfileRepository, "source", source_read)
     monkeypatch.setattr(measurement_boundary.FamilyRepository, "measurement_page", measurements)
     monkeypatch.setattr(measurement_boundary.FamilyRepository, "audit", audit)
-    monkeypatch.setattr(measurement_boundary, "authorized_fields", lambda family, member, uid: {"weight"})
+    monkeypatch.setattr(measurement_boundary, "authorized_fields", lambda family, member, uid, **kwargs: {"weight"})
     state = SimpleNamespace(
         repo=repository.HealthWeightRepository(session),
         session=session,
@@ -238,7 +241,7 @@ async def test_health_access_does_not_allow_nonself_weight(weight_repo, field, v
 async def test_missing_formal_weight_field_fails_before_measurements(weight_repo, monkeypatch):
     """正式家庭字段授权也须覆盖weight，不能因本人健康授权省略校验。"""
     state = weight_repo
-    monkeypatch.setattr(measurement_boundary, "authorized_fields", lambda family, member, uid: {"height_cm"})
+    monkeypatch.setattr(measurement_boundary, "authorized_fields", lambda family, member, uid, **kwargs: {"height_cm"})
     with pytest.raises(HealthVisionError) as error:
         await state.repo.read("actor", "health-self", PERIOD)
     assert error.value.status == 403

@@ -94,9 +94,14 @@ class ConfirmedMiniappSourceTest(unittest.IsolatedAsyncioTestCase):
             actor_uid="owner",
         )
         member = SimpleNamespace(
-            id="member", is_active=True, subject_uid="owner", version=3, profile={"dietary_details": {"cuisines": []}}
+            id="member",
+            family_id="family",
+            is_active=True,
+            subject_uid="owner",
+            version=3,
+            profile={"dietary_details": {"cuisines": []}},
         )
-        session = SimpleNamespace(scalar=AsyncMock(return_value=None))
+        session = SimpleNamespace(scalar=AsyncMock(side_effect=[SimpleNamespace(id="family"), None]))
         with (
             patch(
                 "yuxi.repositories.health_family_profile_repository.HealthFamilyProfileRepository.confirmed_source",
@@ -119,7 +124,7 @@ class ConfirmedMiniappSourceTest(unittest.IsolatedAsyncioTestCase):
                 result["reason"], "profile_coding_rules_unavailable" if complete else "family_profile_incomplete"
             )
             if not complete:
-                session.scalar.assert_not_awaited()
+                self.assertEqual(session.scalar.await_count, 1)
             self.assertEqual(result["status"], "not_ready")
             self.assertIsNone(result["payload"])
             self.assertIsNone(result["attestation"])

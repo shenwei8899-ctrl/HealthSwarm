@@ -177,11 +177,7 @@ class MiniappConsultationOpenInput(BaseModel):
 
 def miniapp_onboarding_ready(member, family):
     """保留建档完成标记，咨询自动衔接只使用完整的服务端档案。"""
-    return (
-        miniapp_profile_complete(member)
-        and member.confirmed_version == member.version
-        and not getattr(member, "invitation_review_pending", False)
-    )
+    return miniapp_profile_complete(member)
 
 
 def miniapp_profile_complete(member):
@@ -193,6 +189,22 @@ def miniapp_profile_complete(member):
     except ValidationError:
         return False
     return True
+
+
+def require_miniapp_profile(member):
+    """按成员名称和缺失字段解释资料错误，不要求档案主体本人确认。"""
+    from yuxi.services.health_vision_types import HealthVisionError
+
+    labels = {
+        "birth_date": "出生日期", "sex": "性别", "height_cm": "身高",
+        "weight_kg": "体重", "activity_level": "日常活动量", "name": "姓名或称呼",
+        "dietary": "饮食与健康资料",
+    }
+    try:
+        saved_miniapp_member(member)
+    except ValidationError as exc:
+        fields = list(dict.fromkeys(labels.get(str(error["loc"][0]), "饮食与健康资料") for error in exc.errors()))
+        raise HealthVisionError("profile_incomplete", f"请补充{member.name}的资料：" + "、".join(fields), 422) from None
 
 
 def saved_miniapp_member(member, profile=None):

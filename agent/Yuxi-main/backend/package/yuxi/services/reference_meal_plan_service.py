@@ -17,7 +17,7 @@ from yuxi.services.health_meal_plan_service import require_planner_run
 from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.health_vision_service import health_vision_service
 from yuxi.services.health_vision_types import HealthVisionError, NUTRIENTS
-from yuxi.services.miniapp_profile_types import miniapp_onboarding_ready
+from yuxi.services.miniapp_profile_types import require_miniapp_profile
 from yuxi.services.reference_cooking_water import cooking_water
 from yuxi.services.reference_recipe_matching import (
     ingredient_food_for_products,
@@ -81,8 +81,7 @@ async def reference_context_in_session(session, uid, anchor, selection, *, inclu
         allowed_fields = authorized_fields(family, member, uid, family_sharing=True)
         if "dietary_details" not in allowed_fields:
             raise HealthVisionError("not_authorized", "所选成员的饮食资料尚未授权", 403)
-        if not miniapp_onboarding_ready(member, family):
-            raise HealthVisionError("reference_profile_unconfirmed", "请先核对并确认所选成员的完整档案", 409)
+        require_miniapp_profile(member)
         for scope in ("ai_use", "profile_view", "diet_edit"):
             await health.authorize(hid, uid, scope)
         await health.require_consent(hid, uid, "meal_plan", processing)

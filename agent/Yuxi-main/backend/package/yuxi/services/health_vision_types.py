@@ -19,6 +19,10 @@ HEALTH_SCOPES = {
     "professional_review",
 }
 FAMILY_REPORT_SCOPES = frozenset({"report_view", "report_upload", "profile_edit"})
+FAMILY_SHARED_SCOPES = FAMILY_REPORT_SCOPES | {"ai_use", "profile_view", "diet_edit"}
+FAMILY_AI_PURPOSES = frozenset(
+    {"consultation", "meal_plan", "diet_analysis", "report", "meal", "quality_review", "purchase"}
+)
 NUTRIENTS = {"energy_kcal": "kcal", "protein_g": "g", "fat_g": "g", "carbohydrate_g": "g", "sodium_mg": "mg"}
 HEALTH_TASK_TYPES = {
     "onboarding_preparation_v1",

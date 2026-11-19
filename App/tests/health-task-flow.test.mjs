@@ -334,6 +334,21 @@ test('initial meal planning retains explicit consent using the current processor
   } finally { h.flow.hide() }
 })
 
+test('a family member can open and resume another member indicator task without owning the archive', async () => {
+  const h = fixture({ send: async options => {
+    if (options.path === '/api/health/v1/members') return { data: [{ id: memberId, is_owner: false }] }
+    return fixtureBase(options)
+  } })
+  try {
+    await h.flow.open(memberId, taskType)
+    assert.equal(h.flow.getState().available, true)
+    h.flow.pause()
+    assert.equal(await h.flow.resume(), true)
+    assert.notEqual(h.flow.getState().invalidated, true)
+    assert.equal(h.calls.some(call => call.path.endsWith('/processing-consents')), false)
+  } finally { h.flow.hide() }
+})
+
 test('reference meals open directly with family readiness', async () => {
   const h = fixture({ send: async options => {
     if (options.path.endsWith('/readiness')) return { data: { capabilities: { member_id: memberId }, entries: [

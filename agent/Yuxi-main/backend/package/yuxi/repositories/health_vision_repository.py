@@ -3,7 +3,9 @@
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import aliased
 
-from yuxi.services.health_vision_types import FAMILY_REPORT_SCOPES, HEALTH_SCOPES, HealthVisionError
+from yuxi.services.health_vision_types import (
+    FAMILY_AI_PURPOSES, FAMILY_SHARED_SCOPES, FAMILY_REPORT_SCOPES, HEALTH_SCOPES, HealthVisionError,
+)
 from yuxi.services.health_family_meal_plan_types import plan_member_ids
 from yuxi.storage.postgres.models_business import TaskRecord, User, FamilyArchive, FamilyMember as SourceMember
 from yuxi.storage.postgres.models_health import (
@@ -26,7 +28,7 @@ from yuxi.storage.postgres.models_health_budget import HealthAiCall
 
 
 class HealthVisionRepository:
-    """家庭报告随有效家庭关系共享，独立健康用途仍读取原有授权。"""
+    """家庭共享档案的 AI 权限来自有效家庭关系，独立档案沿用原授权。"""
 
     def __init__(self, session):
         self.session = session
@@ -34,8 +36,8 @@ class HealthVisionRepository:
     async def authorize(self, member_id: str, uid: str, scope: str, *, lock: bool = False):
         """写用例先锁成员，使撤回和写入按同一边界排序。"""
         shared = False
-        if scope in FAMILY_REPORT_SCOPES:
-            shared = await self._authorize_report_link(member_id, uid, lock=lock)
+        if scope in FAMILY_SHARED_SCOPES:
+            shared = await self.authorize_family_link(member_id, uid, lock=lock)
         elif lock:
             link = await self.session.get(HealthFamilyProfileLink, member_id, populate_existing=True)
             if link is not None:
@@ -50,7 +52,7 @@ class HealthVisionRepository:
         user = await self.session.scalar(select(User).where(User.uid == uid, User.is_deleted == 0))
         if member is None or user is None:
             raise HealthVisionError("not_found", "资源不存在或无权访问", 404)
-        if scope not in FAMILY_REPORT_SCOPES:
+        if not shared and scope not in FAMILY_REPORT_SCOPES:
             await self._require_processing_owner(member)
         if not shared and (grant is None or grant.revoked_at is not None or scope not in grant.scopes):
             raise HealthVisionError("not_found", "资源不存在或无权访问", 404)
@@ -93,7 +95,7 @@ class HealthVisionRepository:
         )
         result = []
         for member, grant, shared_access in records:
-            scopes = set(FAMILY_REPORT_SCOPES) if shared_access else set()
+            scopes = set(FAMILY_SHARED_SCOPES) if shared_access else set()
             if grant is not None and grant.revoked_at is None:
                 scopes.update(scope for scope in grant.scopes if scope in HEALTH_SCOPES)
             result.append((member, scopes))
@@ -105,9 +107,9 @@ class HealthVisionRepository:
         member = await self.session.get(FamilyMember, member_id)
         if user is None or member is None:
             raise HealthVisionError("not_found", "资源不存在或无权访问", 404)
-        shared = await self._authorize_report_link(member_id, uid, lock=False)
+        shared = await self.authorize_family_link(member_id, uid, lock=False)
         grant = await self.session.get(HealthGrant, (member_id, uid), populate_existing=True)
-        scopes = set(FAMILY_REPORT_SCOPES) if shared else set()
+        scopes = set(FAMILY_SHARED_SCOPES) if shared else set()
         if grant is not None and grant.revoked_at is None:
             scopes.update(scope for scope in grant.scopes if scope in HEALTH_SCOPES)
         if scopes:
@@ -138,8 +140,11 @@ class HealthVisionRepository:
         grant.revoked_at = None if scopes else utc_now_naive()
 
     async def require_consent(self, member_id: str, uid: str, purpose: str, snapshot: dict):
-        """咨询沿用成员访问权限，其他处理用途仍核对当前同意。"""
+        """家庭 AI 用途使用共享权限；独立健康档案保留原用途同意。"""
         if purpose == "consultation":
+            return
+        if purpose in FAMILY_AI_PURPOSES and await self.authorize_family_link(member_id, uid, lock=False):
+            await self.authorize(member_id, uid, "ai_use")
             return
         consent = await self.session.get(HealthProcessingConsent, (member_id, uid, purpose), populate_existing=True)
         if (
@@ -477,8 +482,8 @@ class HealthVisionRepository:
         ):
             raise HealthVisionError("not_found", "资源不存在或无权访问", 404)
 
-    async def _authorize_report_link(self, member_id: str, uid: str, *, lock: bool):
-        """报告沿用有效家庭成员关系；家庭锁先于健康成员锁。"""
+    async def authorize_family_link(self, member_id: str, uid: str, *, lock: bool):
+        """验证档案与调用账号属于同一有效家庭；目标成员无需认领或监护验证。"""
         link = await self.session.get(HealthFamilyProfileLink, member_id, populate_existing=True)
         if link is None:
             return False

@@ -449,7 +449,6 @@ function requirePlanningReady(){
   const capability=profile.value?.healthConfiguration?.meal_plan
   if(capability?.available===false)throw Object.assign(new Error('营养服务暂未就绪：'+(capability.reason||'请先完成服务配置')+'。配置完成后重新读取即可。'),{businessCode:'daily_dependencies_not_ready',retryable:false})
   const diners=profile.value?.defaultDiners
-  if(diners?.some(id=>profile.value.members.some(member=>member.id===id && !member.healthMemberId && member.claimed===true && member.relation!=='本人')))throw Object.assign(new Error('有已认领的家人尚未完成健康资料关联，请让该成员登录后确认自己的资料和分析授权，或在家庭档案中调整默认就餐成员。'),{businessCode:'daily_member_consent_required',retryable:false})
   if(diners?.length && diners.some(id=>!profile.value.members.find(member=>member.id===id)?.healthMemberId))throw Object.assign(new Error('有就餐成员的健康资料尚未就绪，请在家庭档案中核对。'),{businessCode:'daily_member_sources_unavailable',retryable:false})
 }
 async function familyPlan(text,retry=false){

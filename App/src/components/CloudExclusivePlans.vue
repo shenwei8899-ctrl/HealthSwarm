@@ -5,27 +5,20 @@ import AppNavBar from './AppNavBar.vue'
 import ExclusivePlanDeck from './ExclusivePlanDeck.vue'
 import { createExclusivePlanClient, exclusivePlanState, planTiers } from '../services/exclusive-planning.js'
 
-import { createPlanConsent } from '../services/exclusive-plan-consent.js'
-import { request } from '../services/request.js'
-import { getSession, sessionRevision } from '../services/session.js'
-import { startMemberAnalysis } from '../services/member-profile.js'
-const consent = reactive({loading:false,busy:false,members:[],error:'',processor:'',policyVersion:''})
-const consentClient = createPlanConsent({state:consent,send:request,family:()=>getSession()?.householdId,revision:sessionRevision,startAnalysis:startMemberAnalysis})
-async function open() { await client.open(); if(active.value&&['consent_required','daily_member_sources_unavailable','daily_member_consent_required'].includes(state.errorCode)) await consentClient.load() }
-async function startPlan() { await client.act('ensure'); if(active.value&&['consent_required','daily_member_sources_unavailable','daily_member_consent_required'].includes(state.errorCode)) await consentClient.load() }
-async function confirmConsent() { if(await consentClient.accept()) await startPlan() }
+async function open() { await client.open() }
+async function startPlan() { await client.act('ensure') }
 const active = ref(false)
 const state = reactive(exclusivePlanState()), client = createExclusivePlanClient(state)
 const ready = computed(() => state.status === 'ready' && state.plans.length === 3)
 const cards = computed(() => planTiers.map(tier => state.plans.find(plan => plan.tier_code === tier) || { tier_code: tier }))
-const quietPreparation = computed(() => ['daily_member_sources_unavailable', 'daily_profile_source_unavailable', 'profile_coding_unavailable'].includes(state.errorCode))
-const preparing = computed(() => state.status === 'generating' || quietPreparation.value)
+const preparing = computed(() => state.status === 'generating' && !!state.group?.group_id && !state.error)
 const reading = computed(() => state.busy || (state.status === 'reading' && !state.error))
-const cardAction = computed(() => ready.value ? '查看计划' : preparing.value ? '正在生成' : reading.value ? '正在读取' : state.error ? '待重试' : '待准备')
+const cardAction = computed(() => ready.value ? '查看计划' : preparing.value ? '正在生成' : reading.value ? '正在读取' : canStart.value ? '生成计划' : state.error ? '待重试' : '待准备')
 const canStart = computed(() => !state.busy && ['empty', 'stale'].includes(state.status))
 const back = () => uni.navigateBack()
-function stop() { active.value = false; client.stop(); consentClient.stop() }
+function stop() { active.value = false; client.stop() }
 function detail(plan) {
+  if (active.value && canStart.value) return startPlan()
   if (!active.value || state.busy || !ready.value) return
   const current = state.plans.find(item => item.tier_code === plan.tier_code && item.plan_sn === plan.plan_sn && item.plan_version === plan.plan_version)
   if (!current) return
@@ -45,18 +38,12 @@ onUnload(stop)
     <view class="overview-hero"><text class="hero-eyebrow">为家人的每一餐，多想一点</text><view class="hero-title"><text>接下来 </text><text class="hero-number">21</text><text> 天，</text><text class="hero-line">好好吃饭。</text></view><text class="hero-caption">根据家庭档案，安排全家的三餐。</text><view class="calendar-stack" aria-hidden="true"><view class="calendar-page"><view class="calendar-header"><text>三餐计划</text></view><view class="calendar-date"><text class="calendar-number">21</text><text class="calendar-unit">天</text></view><view class="calendar-grid"/></view><view class="calendar-ring ring-left"/><view class="calendar-ring ring-right"/></view></view>
     <view class="overview-family"><text>♧ &nbsp;为全家安排</text><text>21 天 · 每日三餐</text></view>
     <view class="overview-heading"><text>选一份适合家的计划</text><text>三种选择</text></view>
-    <ExclusivePlanDeck :plans="cards" :action-label="cardAction" :disabled="!ready || state.busy || !active" @detail="detail"/>
+    <ExclusivePlanDeck :plans="cards" :action-label="cardAction" :disabled="(!ready && !canStart) || state.busy || !active" @detail="detail"/>
     <text v-if="ready && state.group.preview_only" class="overview-notice">{{ state.group.notice || '当前沿用今日餐单口径规划，未作专业审核，个人营养量和家庭份量尚未核定。' }}</text>
-    <view v-else-if="canStart" class="overview-error"><text class="error-title">{{state.error?'计划暂时无法生成':state.status==='stale'?'原计划依据已变化':'还没有专属计划'}}</text><text class="error-copy" :role="state.error ? 'alert' : undefined">{{state.error || '确认后将准备 21 天、每日三餐的三档计划。'}}</text><button class="overview-retry" @click="startPlan">{{state.error?'重试生成':'生成 21 天专属计划'}}</button></view>
     <text v-else-if="preparing" class="overview-notice" role="status">正在为家人准备计划，可以离开页面，稍后回来查看。</text>
     <text v-else-if="reading" class="overview-notice" role="status">正在读取已保存的计划…</text>
-    <view v-else-if="!ready" class="overview-error"><text class="error-title">{{ state.status === 'unavailable' ? '专属计划暂未开放' : '计划暂时无法读取' }}</text><text v-if="state.error && state.error !== '专属计划暂未开放'" class="error-copy">{{ state.error }}</text><button v-if="state.status !== 'unavailable'" class="overview-retry" :disabled="state.busy" @click="state.status === 'failed' ? client.act('retry') : open()">重新读取</button></view>
+    <view v-else-if="!ready && (!canStart || state.error)" class="overview-error"><text class="error-title">{{ state.status === 'unavailable' ? '专属计划暂未开放' : '计划暂时无法读取' }}</text><text v-if="state.error && state.error !== '专属计划暂未开放'" class="error-copy">{{ state.error }}</text><button v-if="state.status !== 'unavailable'" class="overview-retry" :disabled="state.busy" @click="canStart ? startPlan() : state.status === 'failed' ? client.act('retry') : open()">重新读取</button></view>
     <text v-if="state.error && state.traceId" class="overview-notice" selectable>请求编号 {{state.traceId}}</text>
-    <view v-if="consent.loading||consent.members.length||consent.error" class="overview-consent">
-      <text class="error-title">确认餐单分析用途</text><text class="error-copy">处理方：{{consent.processor}}；政策版本：{{consent.policyVersion}}。</text>
-      <view v-for="member in consent.members" :key="member.id"><checkbox-group v-if="member.canConfirm" @change="member.checked=$event.detail.value.includes(member.id)"><label><checkbox :value="member.id" :checked="member.checked" :disabled="consent.busy"/>同意为{{member.name}}生成餐单</label></checkbox-group><text v-else>{{member.name}}的餐单授权须由本人或已验证监护人确认。</text></view>
-      <text v-if="consent.error" class="error-copy" role="alert">{{consent.error}}</text><button v-if="consent.members.some(m=>m.canConfirm)" class="overview-retry" :disabled="consent.busy||consent.loading" @click="confirmConsent">确认所选成员并继续</button><button class="overview-text-button" :disabled="consent.busy||consent.loading" @click="consentClient.load()">重新读取授权</button>
-    </view>
     <template v-if="ready"><text v-if="state.error" class="overview-notice">{{ state.error }}</text><button class="overview-text-button" :disabled="state.busy" @click="client.act('regenerate')">↻ &nbsp;换一套计划</button></template>
   </view>
 </template>

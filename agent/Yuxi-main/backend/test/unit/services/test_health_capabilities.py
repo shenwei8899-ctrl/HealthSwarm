@@ -19,6 +19,7 @@ def capability_sources(monkeypatch):
     """固定合成来源，能力逻辑仍实际执行并产生公开DTO。"""
     user = object()
     health = SimpleNamespace(
+        authorize_family_link=AsyncMock(return_value=False),
         visible_member_scopes=AsyncMock(return_value=(user, HEALTH_SCOPES)),
         require_consent=AsyncMock(),
         authorize=AsyncMock(return_value=SimpleNamespace(owner_uid="synthetic-actor", relationship_label="本人")),

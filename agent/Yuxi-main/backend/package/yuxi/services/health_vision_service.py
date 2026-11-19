@@ -322,6 +322,14 @@ class HealthVisionService:
                 and record.processor == processor
                 and record.policy_version == config["policy_version"]
             )
+            from yuxi.services.health_vision_types import FAMILY_AI_PURPOSES
+
+            if (
+                purpose in FAMILY_AI_PURPOSES
+                and config[purpose]["available"]
+                and await repo.authorize_family_link(member_id, uid, lock=False)
+            ):
+                accepted = True
             return {
                 "purpose": purpose,
                 "accepted": accepted,

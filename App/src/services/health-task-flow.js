@@ -125,8 +125,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
         if (!current(ticket)) return false
         if (source.id !== indicatorSelection.record_id || source.source_version !== indicatorSelection.source_version) throw mismatch()
       }
-      const indicator = taskType.startsWith('blood_')
-      if (!Array.isArray(members.data) || !members.data.some(row => row.id === memberId && (!indicator || row.is_owner === true)) ||
+      if (!Array.isArray(members.data) || !members.data.some(row => row.id === memberId) ||
           readiness.data?.capabilities?.member_id !== memberId || !Array.isArray(readiness.data?.entries)) throw mismatch()
       const entry = readiness.data.entries.find(row => row.entry_type === taskType)
       const available = entry?.status === 'available' || (['initial_meal_preview','reference_meal_preview'].includes(taskType) && indicatorSelection && entry?.status === 'needs_input' && entry?.reason_code === 'selection_required')
@@ -273,8 +272,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
         if (!current(ticket)) return
         if (source.id !== selection.record_id || source.source_version !== selection.source_version) throw mismatch()
       }
-      var indicatorTask = taskType.startsWith('blood_')
-      if (!Array.isArray(members.data) || !members.data.some(row => row.id === memberId && (!indicatorTask || row.is_owner === true)) ||
+      if (!Array.isArray(members.data) || !members.data.some(row => row.id === memberId) ||
         readiness.data?.capabilities?.member_id !== memberId || !Array.isArray(readiness.data?.entries)) throw mismatch()
       var entry = readiness.data.entries.find(row => row.entry_type === taskType)
       state.available = entry?.status === 'available' || (['initial_meal_preview','reference_meal_preview'].includes(taskType) && selection && entry?.status === 'needs_input' && entry?.reason_code === 'selection_required')

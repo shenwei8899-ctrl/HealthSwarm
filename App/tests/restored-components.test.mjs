@@ -820,10 +820,10 @@ test('both daily entry clients check configuration before starting, while readin
  assert.equal(clients.length,2);for(const client of clients)assert.throws(client.beforeStart,e=>e.businessCode==='daily_dependencies_not_ready'&&e.retryable===false);p.dispose()
 })
 
-test('a claimed member without linked health data cannot start planning',async()=>{
+test('a missing health link is a source issue and does not require the member to log in or consent',async()=>{
  const h=chat();h.deps.loadCloudProfile=async()=>({onboarded:true,selfMemberId:'self',members:[{id:'self',relation:'本人',healthMemberId:member},{id:'parent',relation:'母亲',claimed:true}],defaultDiners:['self','parent'],healthConfiguration:{meal_plan:{available:true}}})
  const p=mount('CloudNutritionChat.vue','load,requirePlanningReady',h.deps);await p.load()
- assert.throws(()=>p.requirePlanningReady(),e=>e.businessCode==='daily_member_consent_required'&&/健康资料关联/.test(e.message));p.dispose()
+ assert.throws(()=>p.requirePlanningReady(),e=>e.businessCode==='daily_member_sources_unavailable'&&!/授权|登录|监护/.test(e.message));p.dispose()
 })
 
 test('chat shows the question immediately and sends once the profile becomes ready',async()=>{

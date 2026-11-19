@@ -167,7 +167,9 @@ class HealthConsultationRepository:
         health = HealthVisionRepository(self.session)
         await health.authorize(member_id, uid, "ai_use", lock=lock)
         member = await health.authorize(member_id, uid, "profile_view")
-        if member.owner_uid != uid or member.relationship_label != "本人":
+        if (
+            member.owner_uid != uid or member.relationship_label != "本人"
+        ) and not await health.authorize_family_link(member_id, uid, lock=lock):
             raise HealthVisionError("not_found", "指标记录助手仅支持自己的本人记录", 404)
         return member
 

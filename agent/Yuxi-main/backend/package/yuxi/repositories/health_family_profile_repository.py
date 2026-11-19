@@ -97,10 +97,10 @@ class HealthFamilyProfileRepository:
         source = await family_repo.member(link.family_id, link.source_member_id)
         if source is not None:
             await self.session.refresh(source)
-        if source is None or not source.is_active or source.subject_uid != link.actor_uid:
+        if source is None or not source.is_active:
             formal["reason"] = weights["reason"] = "family_profile_source_unavailable"
             return result
-        allowed = authorized_fields(family, source, uid)
+        allowed = authorized_fields(family, source, uid, family_sharing=True)
         basic_fields = set(REQUIRED_PROFILE_FIELDS) & allowed
         formal.update(
             reason="family_profile_fields_required",
@@ -108,9 +108,7 @@ class HealthFamilyProfileRepository:
             allowed_fields=sorted(basic_fields),
         )
         if set(REQUIRED_PROFILE_FIELDS) <= allowed:
-            if source.confirmed_version != source.version:
-                formal["reason"] = "family_profile_unconfirmed"
-            elif any((source.profile or {}).get(key) in (None, "", []) for key in REQUIRED_PROFILE_FIELDS):
+            if any((source.profile or {}).get(key) in (None, "", []) for key in REQUIRED_PROFILE_FIELDS):
                 formal["reason"] = "family_profile_incomplete"
             else:
                 formal.update(
@@ -170,9 +168,7 @@ class HealthFamilyProfileRepository:
         link = await self.session.get(HealthFamilyProfileLink, member_id, populate_existing=True)
         if link is None:
             return None
-        _, source = await self.source(link.actor_uid, link, lock=True)
-        if source.confirmed_version != source.version:
-            raise HealthVisionError("family_profile_unconfirmed", "正式档案当前版本尚未由本人确认", 409)
+        _, source = await self.source(None, link, lock=True)
         facts = {
             "family_id": link.family_id,
             "source_member_id": source.id,
@@ -189,7 +185,7 @@ class HealthFamilyProfileRepository:
         link = await self.session.get(HealthFamilyProfileLink, member_id, populate_existing=True)
         if link is None:
             raise HealthVisionError("not_found", "没有对应的本人正式档案关联", 404)
-        _, source = await self.source(link.actor_uid, link, lock=True)
+        _, source = await self.source(None, link, lock=True)
         record = await FamilyRepository(self.session).measurement(record_id)
         if record is not None:
             await self.session.refresh(record)
@@ -241,11 +237,9 @@ class HealthFamilyProfileRepository:
         if link is None:
             return result
         family, source = await self.source(uid, link, lock=lock, family_assistant=family_assistant)
-        allowed = authorized_fields(family, source, uid) & PROFILE_FIELDS
+        allowed = authorized_fields(family, source, uid, family_sharing=True) & PROFILE_FIELDS
         allowed -= STRUCTURED_PROFILE_FIELDS - (source.profile or {}).keys()
         missing = sorted(key for key in REQUIRED_PROFILE_FIELDS if (source.profile or {}).get(key) in (None, "", []))
-        if source.confirmed_version != source.version:
-            return {**result, "code": "profile_unconfirmed"}
         if missing:
             return {**result, "code": "profile_incomplete", "missing_fields": missing}
         profile = {key: (source.profile or {}).get(key) for key in sorted(allowed)}
@@ -346,9 +340,17 @@ class HealthFamilyProfileRepository:
             raise HealthVisionError("profile_source_changed", "档案checkpoint来源已失效", 410)
 
     async def source(self, uid, link, *, lock=True, family_assistant=False):
-        """持家庭锁后刷新身份；管理员自己的处理同意不能代替本人。"""
+        """核对当前家庭及档案来源，内部投影不依赖创建人身份。"""
         family_repo = FamilyRepository(self.session)
-        if lock:
+        if uid is None:
+            # 内部投影已由调用方授权；来源有效性不依赖最初建档人仍在家庭。
+            from yuxi.storage.postgres.models_business import FamilyArchive
+
+            statement = select(FamilyArchive).where(
+                FamilyArchive.id == link.family_id, FamilyArchive.archived_at.is_(None)
+            )
+            family = await self.session.scalar(statement.with_for_update() if lock else statement)
+        elif lock:
             family = await family_repo.get_family(link.family_id, uid)
         else:
             from yuxi.storage.postgres.models_business import FamilyArchive
@@ -359,13 +361,8 @@ class HealthFamilyProfileRepository:
         source = await family_repo.member(link.family_id, link.source_member_id) if family else None
         if source is not None:
             await self.session.refresh(source)
-        if (
-            source is None
-            or not source.is_active
-            or not family_assistant
-            and (source.subject_uid != uid or link.actor_uid != uid)
-        ):
-            raise HealthVisionError("not_found", "正式档案不存在或无本人处理授权", 404)
+        if source is None or not source.is_active or source.family_id != link.family_id:
+            raise HealthVisionError("not_found", "家庭档案不存在或无权访问", 404)
         return family, source
 
     async def run_member(self, run):

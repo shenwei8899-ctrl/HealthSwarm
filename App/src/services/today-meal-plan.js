@@ -283,7 +283,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       selection.participant_ids = [...firstDiners].sort()
       selection.daily_base_version = plan.version
       const anchor = profile.members.find(member => selection.participant_ids.includes(member.id) && member.healthMemberId)
-      if (!anchor) { fail(true); return }
+      if (!anchor) { fail(false,'所选就餐成员的档案关联尚未就绪，请重新读取家庭档案。',false,true); return }
       ownSelection = selection; ownMemberId = anchor.healthMemberId
       const owned = createFlow({storage:taskStorage,onChange: next => {
         if (current() && flow === owned && next.invalidated) fail(true)
@@ -293,7 +293,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       if (!current()) return
       let task = owned.getState()
       if (showConsent(task)) return
-      if (task.invalidated || !task.available) { fail(!!task.invalidated,taskNotice(task),!!dinerChange); return }
+      if (task.invalidated || !task.available) { fail(!!task.invalidated,taskNotice(task),!!dinerChange,!task.invalidated); return }
       if (followUp(task) || showCandidates(task)) return
       if (task.submitUnknown || active(task.status)) { poll(); return }
       if (stopped(task.status)) {
@@ -301,7 +301,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
         if (!current()) return
         task = owned.getState()
         if (showConsent(task)) return
-        if (task.invalidated || !task.available) { fail(!!task.invalidated,taskNotice(task),!!dinerChange); return }
+        if (task.invalidated || !task.available) { fail(!!task.invalidated,taskNotice(task),!!dinerChange,!task.invalidated); return }
       }
       if (task.requestId) { poll(); return }
       if (!task.entry?.thread_id) await owned.createEntry()

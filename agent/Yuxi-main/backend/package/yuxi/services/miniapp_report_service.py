@@ -10,7 +10,6 @@ from yuxi.storage.postgres.models_health import (
     FamilyMember,
     HealthFamilyProfileLink,
     HealthGrant,
-    HealthProfileSnapshot,
 )
 
 
@@ -30,41 +29,19 @@ async def ensure_member_reports(service, family, member):
         select(HealthFamilyProfileLink).where(HealthFamilyProfileLink.source_member_id == member.id).with_for_update()
     )
     if link is None:
-        candidates = (
-            list(
-                (
-                    await db.scalars(
-                        select(FamilyMember).where(
-                            FamilyMember.owner_uid == service.uid,
-                            FamilyMember.relationship_label == "本人",
-                            FamilyMember.id.not_in(select(HealthFamilyProfileLink.member_id)),
-                            FamilyMember.id.not_in(select(HealthProfileSnapshot.member_id)),
-                        )
-                    )
-                ).all()
-            )
-            if member.subject_uid == service.uid
-            else []
-        )
-        # 独立专业来源和多个不明确对象保留原样，普通家庭档案使用自己的唯一关联。
-        reuse = len(candidates) == 1
         preferred_id = member.person_id
-        if not reuse and preferred_id and await db.get(FamilyMember, preferred_id) is not None:
+        if preferred_id and await db.get(FamilyMember, preferred_id) is not None:
             # 人员编号可延续，旧家庭的健康记录仍使用原有存储键。
             preferred_id = None
-        health = (
-            candidates[0]
-            if reuse
-            else FamilyMember(
-                id=preferred_id or str(uuid4()),
-                owner_uid=service.uid,
-                display_name=member.name,
-                relationship_label="本人" if member.subject_uid == service.uid else member.relationship,
-            )
+        # 自动补关联只建立家庭对象，不吸收独立健康对象的私有数据或授权。
+        health = FamilyMember(
+            id=preferred_id or str(uuid4()),
+            owner_uid=service.uid,
+            display_name=member.name,
+            relationship_label="本人" if member.subject_uid == service.uid else member.relationship,
         )
-        if not reuse:
-            db.add(health)
-            await db.flush()
+        db.add(health)
+        await db.flush()
         link = HealthFamilyProfileLink(
             member_id=health.id,
             source_member_id=member.id,
