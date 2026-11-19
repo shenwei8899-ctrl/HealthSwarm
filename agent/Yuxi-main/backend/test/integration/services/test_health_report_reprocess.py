@@ -166,8 +166,9 @@ async def test_report_reprocess_versions_permissions_and_receipts(durable_task_s
             ]
         }
 
-    async def field_response(spec, prompt, content, context, *, authorize=None):
+    async def field_response(spec, prompt, content, context, *, authorize=None, report_fields=False):
         """独立验证文本页归属，所有返回指标都是合成数据。"""
+        assert report_fields
         if authorize is not None:
             await authorize()
         blocks = json.loads(content[0]["text"])

@@ -159,7 +159,8 @@ async def member_readiness(uid: str, member_id: str) -> HealthMemberReadiness:
                 from yuxi.services.health_vision_service import current_health_model_info
 
                 info = await current_health_model_info(session, configuration["consultation"]["model"])
-                budget = await model_budget_readiness(session, info, purpose="consultation")
+                billing_purpose = "consultation" if task.task_type == "consultation" else "indicator_review"
+                budget = await model_budget_readiness(session, info, purpose=billing_purpose)
                 if not budget["available"]:
                     entry.status = "unavailable"
                     entry.reason_code = "configuration_unavailable"

@@ -221,6 +221,7 @@ async def run_health_vision(context):
                             [{"type": "text", "text": json.dumps(safe_blocks, ensure_ascii=False)}],
                             context,
                             authorize=authorize_external_call,
+                            report_fields=True,
                         )
                         usages.append(metadata)
                         token_usages[-1] = metadata.get("usage")

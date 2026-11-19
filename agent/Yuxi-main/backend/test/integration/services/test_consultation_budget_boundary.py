@@ -150,7 +150,7 @@ async def test_budget_does_not_reauthorize_reserved_call_or_hide_saved_answer(bu
         graph = create_agent(
             model=load_chat_model(info.spec),
             tools=[],
-            middleware=[HealthAiBudgetMiddleware("consultation")],
+            middleware=[HealthAiBudgetMiddleware("indicator_review")],
             context_schema=Context,
         )
         result = await graph.ainvoke({"messages": [HumanMessage(content="合成问题")]}, context=Context())
@@ -162,7 +162,7 @@ async def test_budget_does_not_reauthorize_reserved_call_or_hide_saved_answer(bu
     request = SimpleNamespace(
         request_id="request", agent_slug="health-consultation", conversation_thread_id=thread, status="dispatched"
     )
-    message = SimpleNamespace(id=12, content="已保存的合成回复")
+    message = SimpleNamespace(id=12, content="已保存的合成回复", extra_metadata={})
     monkeypatch.setattr(
         tasks,
         "HealthTaskRepository",
@@ -171,10 +171,10 @@ async def test_budget_does_not_reauthorize_reserved_call_or_hide_saved_answer(bu
             final_message=AsyncMock(return_value=message),
         ),
     )
-    monkeypatch.setattr(
-        tasks, "HealthEvidenceRepository", lambda _: SimpleNamespace(validate_citations=AsyncMock(return_value={}))
-    )
     monkeypatch.setattr("yuxi.services.health_family_kb_service.validate_family_kb_answer", AsyncMock())
+    monkeypatch.setattr(
+        "yuxi.services.health_evidence_service.resolve_consultation_citations", AsyncMock(return_value=([], []))
+    )
     monkeypatch.setattr(
         "yuxi.services.conversation_purchase_service.offers_for_answer", AsyncMock(return_value=(message.content, []))
     )

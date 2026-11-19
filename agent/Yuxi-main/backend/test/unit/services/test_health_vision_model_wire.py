@@ -15,10 +15,10 @@ from yuxi.services.health_vision_types import HealthVisionError
 pytestmark = pytest.mark.usefixtures("synthetic_budget")
 
 
-def configured_model(monkeypatch, model_id):
+def configured_model(monkeypatch, model_id, *, provider_id="synthetic"):
     """只替代配置查询，保留实际聊天 SDK 和 HTTP 编码。"""
     info = ModelInfo(
-        provider_id="synthetic",
+        provider_id=provider_id,
         model_id=model_id,
         model_type="chat",
         display_name="synthetic",
@@ -98,11 +98,12 @@ async def test_frozen_meal_snapshot_omits_json_mode_but_validates_json(httpx_moc
 @pytest.mark.asyncio
 async def test_report_field_model_keeps_json_object_mode(httpx_mock, monkeypatch):
     """报告字段抽取不随饮食快照修复取消 JSON 对象请求。"""
-    spec = configured_model(monkeypatch, "report-fixed")
+    monkeypatch.setenv("HEALTH_AI_BUDGET_MODE", "strict")
+    spec = configured_model(monkeypatch, "deepseek-flash", provider_id="deepseek")
     httpx_mock.add_response(
         method="POST",
         url="https://synthetic.invalid/v1/chat/completions",
-        json=completion('{"fields":[]}', "report-fixed"),
+        json=completion('{"fields":[]}', "deepseek-flash"),
     )
     result, metadata = await call_json_model(
         spec,
@@ -110,11 +111,13 @@ async def test_report_field_model_keeps_json_object_mode(httpx_mock, monkeypatch
         [{"type": "text", "text": "合成指标"}],
         SimpleNamespace(task_id="synthetic-task", raise_if_cancelled=AsyncMock()),
         authorize=AsyncMock(),
+        report_fields=True,
     )
     wire = json.loads(httpx_mock.get_request().content)
     assert wire.get("response_format") == {"type": "json_object"}
     assert wire["enable_thinking"] is False
-    assert result == {"fields": []} and metadata["model"] == "report-fixed"
+    assert wire.get("max_tokens", wire.get("max_completion_tokens")) == 8192
+    assert result == {"fields": []} and metadata["model"] == "deepseek-flash"
 
 
 @pytest.mark.asyncio

@@ -58,11 +58,72 @@ async def test_advisory_missing_price_never_creates_fake_reservation(monkeypatch
 
 @pytest.mark.asyncio
 async def test_strict_missing_price_still_refuses(monkeypatch, model_info):
-    monkeypatch.delenv("HEALTH_AI_BUDGET_MODE", raising=False)
+    monkeypatch.setenv("HEALTH_AI_BUDGET_MODE", "strict")
     repo = SimpleNamespace(now=AsyncMock(return_value=datetime(2026, 10, 26)), price=AsyncMock(return_value=None))
     monkeypatch.setattr(budget, "HealthAiBudgetRepository", lambda _: repo)
-    result = await budget.model_budget_readiness(None, model_info, purpose="consultation")
+    result = await budget.model_budget_readiness(None, model_info, purpose="indicator_review")
     assert not result["available"] and result["reason_code"] == "budget_price_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_default_mode_skips_ledger_for_all_health_purposes(monkeypatch, model_info):
+    """就绪检查、实际模型和 OCR 调用均不读取审批表。"""
+    monkeypatch.delenv("HEALTH_AI_BUDGET_MODE", raising=False)
+    monkeypatch.setattr(budget.model_cache, "get_model_info", lambda _: model_info)
+    ledger = AsyncMock(side_effect=AssertionError("关闭模式不访问人民币账本"))
+    monkeypatch.setattr(budget.pg_manager, "get_async_session_context", ledger)
+    monkeypatch.setattr(budget, "HealthAiBudgetRepository", ledger)
+
+    assert budget.budget_mode() == "off"
+    model_info.request_body_overrides = {"enable_thinking": False}
+    for purpose in budget.HEALTH_BUDGET_PURPOSES:
+        assert (await budget.model_budget_readiness(None, model_info, purpose=purpose))["available"]
+        reservation = await budget.reserve_model(purpose, "synthetic-task", model_info.spec)
+        assert reservation.call_id is None and reservation.price is None and reservation.model_info is model_info
+        await budget.settle(reservation, {"input_tokens": 12, "output_tokens": 7})
+
+    report = await budget.reserve_report_field_model("synthetic-report", model_info.spec)
+    meal = await budget.reserve_meal_photo_model("synthetic-meal", model_info.spec)
+    assert report.unpriced_output_limit == 8192 and meal.unpriced_output_limit == 2048
+    for reservation in (report, meal, await budget.reserve("report", "synthetic-ocr", "synthetic-target")):
+        assert reservation.call_id is None and reservation.price is None
+        await budget.settle(reservation, fixed_charge=True)
+
+    assert (await budget.report_budget_readiness(None, model_info, {"api_token": "synthetic"}))["available"]
+    assert (await budget.report_budget_readiness(None, model_info, {}))["reason_code"] == "ocr_credentials_missing"
+    model_info.request_body_overrides = {"max_tokens": 100_000}
+    with pytest.raises(HealthVisionError, match="model_unavailable"):
+        await budget.reserve_model("meal", "synthetic-menu", model_info.spec)
+    model_info.request_body_overrides = {}
+    model_info.api_key = ""
+    assert (await budget.model_budget_readiness(None, model_info, purpose="meal"))["reason_code"] == "model_unavailable"
+    with pytest.raises(HealthVisionError, match="model_unavailable"):
+        await budget.reserve_meal_photo_model("synthetic-meal", model_info.spec)
+    ledger.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_strict_consultation_skips_approval_without_freezing_the_ledger(monkeypatch, model_info):
+    monkeypatch.setenv("HEALTH_AI_BUDGET_MODE", "strict")
+    monkeypatch.setattr(budget.model_cache, "get_model_info", lambda _: model_info)
+    reserve = AsyncMock(side_effect=HealthVisionError("budget_price_unavailable", "缺少价格", 503))
+    monkeypatch.setattr(budget, "reserve", reserve)
+
+    assert (await budget.model_budget_readiness(None, model_info, purpose="consultation"))["available"]
+    reservation = await budget.reserve_model("consultation", "synthetic-run", model_info.spec)
+    assert reservation.call_id is None and reservation.price is None
+    assert reservation.model_info is model_info and reservation.unpriced_output_limit == 4096
+    reserve.assert_not_awaited()
+
+    with pytest.raises(HealthVisionError, match="budget_price_unavailable"):
+        await budget.reserve_model("indicator_review", "synthetic-run", model_info.spec)
+    reserve.assert_awaited_once()
+
+    with pytest.raises(HealthVisionError, match="budget_context_invalid"):
+        await budget.reserve_model("consultation", "", model_info.spec)
+    model_info.api_key = ""
+    with pytest.raises(HealthVisionError, match="budget_price_unavailable"):
+        await budget.reserve_model("consultation", "synthetic-run", model_info.spec)
 
 
 @pytest.mark.asyncio

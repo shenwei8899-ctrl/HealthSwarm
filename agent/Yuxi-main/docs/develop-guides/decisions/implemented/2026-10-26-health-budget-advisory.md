@@ -4,6 +4,10 @@
 类型：feature
 Owner：backend/package/yuxi/services/health_ai_budget_service.py
 
+后续变更：指定视觉模型的拍照记餐计费要求见 [拍照记餐使用 DeepSeek V4.1 Flash](2026-11-18-deepseek-meal-photo.md)。
+
+普通营养咨询现可在严格模式下运行，见 [营养咨询免计费审批](2026-11-19-consultation-price-exemption.md)。
+
 ## 问题
 
 用户在2026-10-26明确接受超过每月40元，并要求继续验证成员专属营养咨询。动态供应商价格和历史账单未核实，严格预留模式会在API或Worker阻止所有调用。不能为放行伪造价格批准、期初金额或免费调用。

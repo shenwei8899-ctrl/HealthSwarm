@@ -321,8 +321,9 @@ async def test_executor_result_binding_and_orphan_cleanup(
             ]
         }
 
-    async def field_response(spec, prompt, content, context, *, authorize=None):
+    async def field_response(spec, prompt, content, context, *, authorize=None, report_fields=False):
         """独立断言外发指标文本和真实证据绑定，不伪造云识别效果。"""
+        assert report_fields
         if authorize is not None:
             await authorize()
         blocks = json.loads(content[0]["text"])

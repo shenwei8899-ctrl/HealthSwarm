@@ -1,6 +1,7 @@
 """独立真实 PostgreSQL 与合成供应商验证项目人民币预算。"""
 
 import asyncio
+import json
 from dataclasses import replace
 import os
 from datetime import datetime, timedelta, UTC
@@ -44,6 +45,7 @@ def cleanup_test_sandboxes():
 @pytest.fixture
 async def budget_db(monkeypatch):
     """只创建预算表，独立连接回读提交事实。"""
+    monkeypatch.setenv("HEALTH_AI_BUDGET_MODE", "strict")
     schema = "budget_" + uuid4().hex
     admin = create_async_engine(os.environ["POSTGRES_URL"])
     async with admin.begin() as connection:
@@ -192,18 +194,18 @@ async def test_missing_price_expiry_and_changed_credentials_fail_closed(budget_d
     )
     monkeypatch.setattr(model_cache, "get_model_info", lambda _: info)
     with pytest.raises(HealthVisionError, match="budget_price_unavailable"):
-        await budget.reserve_model("consultation", "run", info.spec)
+        await budget.reserve_model("indicator_review", "run", info.spec)
     await seed_price(
         budget_db,
         budget.model_target(info),
         synthetic_price(valid_until=datetime.now(UTC) - timedelta(seconds=1)),
     )
     with pytest.raises(HealthVisionError, match="budget_price_unavailable"):
-        await budget.reserve_model("consultation", "run", info.spec)
+        await budget.reserve_model("indicator_review", "run", info.spec)
     await seed_price(budget_db, budget.model_target(info))
     info = replace(info, api_key="changed-synthetic")
     with pytest.raises(HealthVisionError, match="budget_price_unavailable"):
-        await budget.reserve_model("consultation", "run", info.spec)
+        await budget.reserve_model("indicator_review", "run", info.spec)
 
 
 async def test_out_of_contract_usage_freezes_month_and_price(budget_db):
@@ -291,8 +293,9 @@ async def test_real_sdk_wire_obeys_cap_and_no_retry_on_503(budget_db, monkeypatc
 
 
 @pytest.mark.parametrize("purpose", ["consultation", "indicator_review", "diet_analysis"])
-async def test_compiled_agent_records_real_sdk_usage(budget_db, monkeypatch, purpose):
-    """真实 LangGraph middleware 与 SDK 连接合成传输，最终账本回读结算金额。"""
+@pytest.mark.parametrize("mode", ["strict", "off"])
+async def test_compiled_agent_records_real_sdk_usage(budget_db, monkeypatch, purpose, mode):
+    """真实中间件与 SDK 保留用量，只有需审批用途写入金额账本。"""
     from unittest.mock import AsyncMock
     from dataclasses import dataclass
     from langchain.agents import create_agent
@@ -312,7 +315,14 @@ async def test_compiled_agent_records_real_sdk_usage(budget_db, monkeypatch, pur
     )
     monkeypatch.setattr(model_cache, "get_model_info", lambda _: info)
     monkeypatch.setattr(health_consultation_service, "require_consultation_attempt", AsyncMock())
-    await seed_price(budget_db, budget.model_target(info))
+    monkeypatch.setenv("HEALTH_AI_BUDGET_MODE", mode)
+    uses_ledger = mode == "strict" and purpose != "consultation"
+    if uses_ledger:
+        await seed_price(budget_db, budget.model_target(info))
+    if mode == "off":
+        async with budget_db.get_async_session_context() as session:
+            account = (await session.scalars(select(HealthAiMonth))).one()
+            account.blocked = True
 
     @dataclass
     class Context:
@@ -323,6 +333,11 @@ async def test_compiled_agent_records_real_sdk_usage(budget_db, monkeypatch, pur
         run_id: str = "synthetic-run"
 
     async def send(client, request, **kwargs):
+        if not uses_ledger:
+            wire = json.loads(request.content)
+            assert wire.get("max_tokens", wire.get("max_completion_tokens")) == (
+                4096 if purpose == "consultation" else 2048
+            )
         return httpx.Response(
             200,
             request=request,
@@ -347,10 +362,15 @@ async def test_compiled_agent_records_real_sdk_usage(budget_db, monkeypatch, pur
     )
     result = await graph.ainvoke({"messages": [HumanMessage(content="合成问题")]}, context=Context())
     assert result["messages"][-1].content == "合成解释"
+    assert result["messages"][-1].usage_metadata["total_tokens"] == 18
     async with budget_db.get_async_session_context() as session:
-        call = (await session.scalars(select(HealthAiCall))).one()
-        assert call.purpose == purpose and call.owner_id == "synthetic-run"
-        assert call.charged_cny == Decimal("0.09") and call.status == "settled"
+        calls = await session.scalars(select(HealthAiCall))
+        if not uses_ledger:
+            assert calls.all() == []
+        else:
+            call = calls.one()
+            assert call.purpose == purpose and call.owner_id == "synthetic-run"
+            assert call.charged_cny == Decimal("0.09") and call.status == "settled"
 
 
 @pytest.mark.parametrize("change", ["credentials", "permission"])

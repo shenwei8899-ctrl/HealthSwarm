@@ -21,6 +21,8 @@ from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_health_budget import HealthAiCall, HealthAiMonth, HealthAiOpening, HealthAiPrice
 
 ADVISORY_PURPOSES = frozenset({"consultation", "indicator_review", "diet_analysis"})
+_UNPRICED_VISION_MODEL = "deepseek:deepseek-flash"
+_CONSULTATION_OUTPUT_LIMIT = 4096
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,7 @@ class BudgetReservation:
     call_id: str | None
     price: HealthAiPriceInput | None
     model_info: object = field(default=None, repr=False)
+    unpriced_output_limit: int = 2048
 
 
 async def approve_price(uid: str, data: HealthAiPriceInput):
@@ -78,10 +81,13 @@ async def approve_price(uid: str, data: HealthAiPriceInput):
 
 
 async def reserve(purpose: str, owner_id: str, target: str, *, call_id: str | None = None) -> BudgetReservation:
-    """提交全项目预留后才允许外呼，数据库不可用时不降级。"""
+    """按部署模式跳过计费审批或提交原有价格预留。"""
     if purpose not in HEALTH_BUDGET_PURPOSES or not owner_id or len(owner_id) > 64:
         raise HealthVisionError("budget_context_invalid", "健康预算调用归属无效", 422)
-    advisory = budget_mode() == "advisory" and purpose in ADVISORY_PURPOSES
+    mode = budget_mode()
+    if mode == "off":
+        return BudgetReservation(None, None)
+    advisory = mode == "advisory" and purpose in ADVISORY_PURPOSES
     call_id = call_id or str(uuid4())
     async with pg_manager.get_async_session_context() as session:
         repo = HealthAiBudgetRepository(session)
@@ -174,7 +180,7 @@ async def settle(reservation: BudgetReservation, usage=None, *, fixed_charge: bo
 
 
 async def budget_status():
-    """管理员读取完整月占用与最近调用，不暴露健康正文或凭据。"""
+    """管理员读取已审批价格账本的月占用与最近调用。"""
     mode = budget_mode()
     async with pg_manager.get_async_session_context() as session:
         repo = HealthAiBudgetRepository(session)
@@ -193,6 +199,7 @@ async def budget_status():
             "reference_budget_cny": None,
             "limit_cny": None,
             "occupied_cny": str(occupied) if amounts_known else None,
+            "occupied_cny_scope": "price_approved_ledger",
             "remaining_cny": None,
             "blocked": mode == "strict" and bool(account and account.blocked),
             "usage_source": "agent_run_model_audit_and_vision_task_receipts",
@@ -253,6 +260,19 @@ def model_target(info) -> str:
     return hashlib.sha256((processor_identity("meal", info) + ":" + info.api_key).encode()).hexdigest()
 
 
+def require_health_model(info):
+    """核对实际调用配置，允许受支持的推理参数。"""
+    from yuxi.models.providers.service import ALLOWED_EXTRA_BODY_FIELDS, OPENAI_COMPATIBLE_REQUEST_BODY_PROVIDER_TYPES
+
+    if (
+        info is None
+        or not info.api_key
+        or info.provider_type not in OPENAI_COMPATIBLE_REQUEST_BODY_PROVIDER_TYPES
+        or set(info.request_body_overrides or {}) - ALLOWED_EXTRA_BODY_FIELDS
+    ):
+        raise HealthVisionError("model_unavailable", "模型配置尚未就绪，请联系管理员", 503)
+
+
 def ocr_target(endpoint: str, token: str) -> str:
     """OCR 单页价格绑定端点和实际计费账号。"""
     return hashlib.sha256(("ocr:" + endpoint.rstrip("/") + ":" + token).encode()).hexdigest()
@@ -263,19 +283,28 @@ def budget_month(utc_time):
     return utc_time.replace(tzinfo=UTC).astimezone(ZoneInfo("Asia/Shanghai")).date().replace(day=1)
 
 
-async def model_budget_readiness(session, info, *, purpose: str):
-    """只读核对模型目标、有效价格、期初与当前月余量，不创建预留。"""
+async def model_budget_readiness(session, info, *, purpose: str, report_fields: bool = False):
+    """只读核对模型配置与适用的计费要求，不创建预留。"""
     if purpose not in HEALTH_BUDGET_PURPOSES:
         raise HealthVisionError("budget_context_invalid", "健康预算用途无效", 422)
+    mode = budget_mode()
     try:
+        if mode == "off":
+            require_health_model(info)
+            return {"available": True, "reason_code": None, "reason": None}
         target = model_target(info)
-    except HealthVisionError:
+    except HealthVisionError as exc:
         return {
             "available": False,
-            "reason_code": "budget_price_unavailable",
-            "reason": "模型计费参数尚未就绪，请联系管理员",
+            "reason_code": exc.code,
+            "reason": "模型配置尚未就绪，请联系管理员",
         }
-    if budget_mode() == "advisory" and purpose in ADVISORY_PURPOSES:
+    uses_unpriced_model = info.spec == _UNPRICED_VISION_MODEL and (
+        purpose == "meal" or (purpose == "report" and report_fields)
+    )
+    if uses_unpriced_model:
+        return {"available": True, "reason_code": None, "reason": None}
+    if purpose == "consultation" or (mode == "advisory" and purpose in ADVISORY_PURPOSES):
         return {"available": True, "reason_code": None, "reason": None}
     repo = HealthAiBudgetRepository(session)
     now = await repo.now()
@@ -308,8 +337,12 @@ async def report_budget_readiness(session, info, ocr_kwargs):
     """提交前同时核对字段模型和当前 OCR 账户，不消耗额度。"""
     from yuxi.knowledge.parser.paddleocr_api import DEFAULT_PADDLEOCR_API_URL
 
-    readiness = await model_budget_readiness(session, info, purpose="report")
+    readiness = await model_budget_readiness(session, info, purpose="report", report_fields=True)
     if not readiness["available"]:
+        return readiness
+    if budget_mode() == "off":
+        if not ocr_kwargs.get("api_token"):
+            return {"available": False, "reason_code": "ocr_credentials_missing", "reason": "PaddleOCR 凭据未配置"}
         return readiness
     repo = HealthAiBudgetRepository(session)
     endpoint = ocr_kwargs.get("api_url") or DEFAULT_PADDLEOCR_API_URL
@@ -334,10 +367,31 @@ async def report_budget_readiness(session, info, ocr_kwargs):
 
 
 async def reserve_model(purpose: str, owner_id: str, spec: str) -> BudgetReservation:
-    """绑定模型快照，严格模式在外呼前核对价格与额度。"""
+    """绑定模型快照，按用途核对外呼前置条件。"""
     info = model_cache.get_model_info(spec)
-    reservation = await reserve(purpose, owner_id, model_target(info))
+    mode = budget_mode()
+    if mode == "off":
+        require_health_model(info)
+        reservation = await reserve(purpose, owner_id, "")
+        limit = _CONSULTATION_OUTPUT_LIMIT if purpose == "consultation" else reservation.unpriced_output_limit
+        return replace(reservation, model_info=info, unpriced_output_limit=limit)
+    target = model_target(info)
+    if purpose == "consultation" and mode == "strict":
+        if not owner_id or len(owner_id) > 64:
+            raise HealthVisionError("budget_context_invalid", "健康预算调用归属无效", 422)
+        return BudgetReservation(None, None, model_info=info, unpriced_output_limit=_CONSULTATION_OUTPUT_LIMIT)
+    reservation = await reserve(purpose, owner_id, target)
     return replace(reservation, model_info=info)
+
+
+async def reserve_meal_photo_model(owner_id: str, spec: str) -> BudgetReservation:
+    """仅拍照识别的指定模型免计费审批，保留固定模型配置。"""
+    return await _reserve_vision_model("meal", owner_id, spec)
+
+
+async def reserve_report_field_model(owner_id: str, spec: str) -> BudgetReservation:
+    """仅报告指标提取的指定模型免计费审批，OCR 保留独立用量检查。"""
+    return await _reserve_vision_model("report", owner_id, spec)
 
 
 def reserved_chat_model(reservation: BudgetReservation, **kwargs):
@@ -347,13 +401,28 @@ def reserved_chat_model(reservation: BudgetReservation, **kwargs):
     info = reservation.model_info
     if info is None or model_cache.get_model_info(info.spec) != info:
         raise HealthVisionError("policy_changed", "预算等待期间模型配置已变化，请重新提交", 409)
-    max_tokens = reservation.price.max_output_tokens if reservation.price is not None else 2048
+    max_tokens = (
+        reservation.price.max_output_tokens if reservation.price is not None else reservation.unpriced_output_limit
+    )
     return load_chat_model_from_info(info, **kwargs, max_retries=0, max_tokens=max_tokens)
 
 
+async def _reserve_vision_model(purpose: str, owner_id: str, spec: str) -> BudgetReservation:
+    """固定识图模型的豁免保留凭据和调用配置校验。"""
+    if budget_mode() == "off":
+        reservation = await reserve_model(purpose, owner_id, spec)
+        return replace(reservation, unpriced_output_limit=8192 if purpose == "report" else 2048)
+    if spec != _UNPRICED_VISION_MODEL:
+        return await reserve_model(purpose, owner_id, spec)
+    info = model_cache.get_model_info(spec)
+    model_target(info)
+    output_limit = 8192 if purpose == "report" else 2048
+    return BudgetReservation(None, None, model_info=info, unpriced_output_limit=output_limit)
+
+
 def budget_mode() -> str:
-    """只有显式参考模式可放宽金额门槛，配置错误不得自动放行。"""
-    mode = os.getenv("HEALTH_AI_BUDGET_MODE", "strict")
-    if mode not in {"strict", "advisory"}:
-        raise ValueError("HEALTH_AI_BUDGET_MODE 必须为 strict 或 advisory")
+    """默认关闭计费审批，兼容显式启用的旧模式。"""
+    mode = os.getenv("HEALTH_AI_BUDGET_MODE", "off")
+    if mode not in {"off", "strict", "advisory"}:
+        raise ValueError("HEALTH_AI_BUDGET_MODE 必须为 off、strict 或 advisory")
     return mode

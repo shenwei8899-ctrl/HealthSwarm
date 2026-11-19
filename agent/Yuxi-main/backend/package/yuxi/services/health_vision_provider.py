@@ -509,11 +509,23 @@ def check_ocr_quota_response(response: httpx.Response):
 
 
 async def call_json_model(
-    spec: str, prompt: str, content: list[dict], context, *, authorize, json_mode: bool = True
+    spec: str,
+    prompt: str,
+    content: list[dict],
+    context,
+    *,
+    authorize,
+    json_mode: bool = True,
+    report_fields: bool = False,
 ) -> tuple[dict, dict]:
     """固定模型只做一次结构化调用，不注册任何工具。"""
     await context.raise_if_cancelled()
-    reservation = await budget.reserve_model("report" if json_mode else "meal", context.task_id, spec)
+    if report_fields:
+        reservation = await budget.reserve_report_field_model(context.task_id, spec)
+    elif json_mode:
+        reservation = await budget.reserve_model("report", context.task_id, spec)
+    else:
+        reservation = await budget.reserve_meal_photo_model(context.task_id, spec)
     try:
         await context.raise_if_cancelled()
         await authorize()

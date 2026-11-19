@@ -70,6 +70,25 @@ async def test_missing_catalogue_only_blocks_its_consumers(readiness_sources):
     assert "must-not-leak" not in public and "synthetic-private" not in public
 
 
+async def test_consultation_exemption_does_not_exempt_indicator_reviews(readiness_sources, monkeypatch):
+    """普通咨询和三种指标解读分别使用自己的计费用途。"""
+    from yuxi.services import health_ai_budget_service
+
+    async def budget_readiness(session, info, *, purpose, **kwargs):
+        if purpose == "indicator_review":
+            return {"available": False, "reason_code": "budget_price_unavailable", "reason": "缺少审批价格"}
+        return {"available": True, "reason_code": None, "reason": None}
+
+    monkeypatch.setattr(health_ai_budget_service, "model_budget_readiness", budget_readiness)
+    result = await service.member_readiness(readiness_sources.uid, readiness_sources.member_id)
+    entries = {entry.entry_type: entry for entry in result.entries}
+    assert entries["consultation"].status == "available"
+    for task_type in ("blood_glucose_review", "blood_lipids_review", "blood_pressure_review"):
+        assert entries[task_type].status == "unavailable"
+        assert entries[task_type].reason_code == "configuration_unavailable"
+        assert entries[task_type].configuration_reason_code == "budget_price_unavailable"
+
+
 @pytest.mark.parametrize("failed", ["object_storage", "redis", "worker", "postgres"])
 async def test_runtime_failure_keeps_only_independent_entries(readiness_sources, failed):
     """对象存储不影响文本；队列故障不取消合法人工路径。"""
