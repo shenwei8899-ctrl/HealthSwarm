@@ -38,9 +38,12 @@ test('entry-only profile read does not wait for model configuration or start con
 test('account switch during automatic opening cannot cache the prior private profile',async()=>{
  const c=client({switchDuringOpen:true});await assert.rejects(c.load(),/账号已变化/);assert.equal(c.saved.length,0)
 })
-test('completed invited profile also opens consultation without another consent step',async()=>{
- const c=client({invitationAnalysisPending:true});await c.load()
- assert.equal(c.calls.filter(o=>o.method==='POST').length,1)
+test('a reviewed invitation waiting for AI consent exposes confirmation without opening consultation',async()=>{
+ const c=client({invitationAnalysisPending:true})
+ const result=await c.load()
+ assert.equal(result.consultationConsentRequired,true)
+ assert.match(result.consultationError,/本人.*确认/)
+ assert.equal(c.calls.filter(o=>o.method==='POST').length,0)
 })
 test('onboarding and profile detail have no separate consultation consent or revocation step',()=>{
  const onboarding=readFileSync(new URL('../src/pages/onboarding/index.vue',import.meta.url),'utf8')
@@ -56,6 +59,8 @@ test('complete profile opens chat without requiring meal preparation or another 
  const resolve=createEntryResolver({auth:{restore:async()=>session},session:()=>session,readProfile:async()=>({householdId:'family',completeProfile:true,onboarded:false})})
  assert.equal(await resolve(),'/pages/chat/index')
  const chat=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
- const check=chat.match(/if\((!next\.completeProfile&&!next\.onboarded)\)\{uni\.redirectTo/)[1]
- assert.equal(new Function('next',`return ${check}`)({completeProfile:true,onboarded:false}),false)
+ const check=chat.match(/if\(([^\n]+)\)\{uni\.redirectTo\(\{url:'\/pages\/onboarding\/index'\}\);return\}/)[1]
+ const needsReview=new Function('next',`return ${check}`)
+ assert.equal(needsReview({completeProfile:true,onboarded:false}),false)
+ assert.equal(needsReview({completeProfile:true,onboarded:false,invitationReviewPending:true}),true)
 })

@@ -742,7 +742,7 @@ async function loadEntry(recoveries,{skipOptional=false}={}){
     chatError.value=''
     if(props.route.question&&!question.value)question.value=String(props.route.question).slice(0,4000)
     if(props.route.indicatorChoice==='1'&&!question.value)question.value='请回顾我选择的实测记录，说明还需要补充哪些测量信息。'
-    if(!next.completeProfile&&!next.onboarded){uni.redirectTo({url:'/pages/onboarding/index'});return}
+    if(next.invitationReviewPending||!next.completeProfile&&!next.onboarded){uni.redirectTo({url:'/pages/onboarding/index'});return}
     syncProfilePrompts()
     void todayMenuClient.open(next,{readOnly:!!next.consultationConsentRequired||!!readDinerDraft(next)})
     if(next.consultationConsentRequired){entryError.value=next.consultationError;return}

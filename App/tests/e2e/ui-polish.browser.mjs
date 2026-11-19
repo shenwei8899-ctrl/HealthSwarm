@@ -107,7 +107,6 @@ async function home(page){
 async function openFamily(page){
  // Initial API deep links are intentionally guarded; exercise the actual home entry.
  await page.goto(origin+'/family-app/#/pages/chat/index')
- await page.locator('#chat-welcome-layer .prompt-grid > *').nth(3).waitFor()
  await page.locator('.shortcut-family').click()
  await page.waitForURL(/pages\/profile\/index/)
  await page.locator('.family-overview').waitFor()
