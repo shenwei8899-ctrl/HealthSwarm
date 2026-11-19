@@ -29,6 +29,15 @@ def dish():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("suffix", ["", "/images/generations"])
 async def test_seedream_protocol_and_uploaded_webp(monkeypatch, dish, suffix):
+    from yuxi.storage.postgres.manager import pg_manager
+    db = SimpleNamespace(execute=AsyncMock())
+
+    @asynccontextmanager
+    async def transaction():
+        """协议单测隔离连接，仍验证发布锁与实际上传字节。"""
+        yield db
+
+    monkeypatch.setattr(pg_manager, "get_async_session_context", transaction)
     monkeypatch.setenv("RECIPE_IMAGE_API_KEY", "test-credential")
     monkeypatch.setenv("RECIPE_IMAGE_BASE_URL", "https://image.example/api/v3" + suffix)
     monkeypatch.setenv("RECIPE_IMAGE_MODEL", "doubao-seedream-5-0-flash-260915")
@@ -50,6 +59,7 @@ async def test_seedream_protocol_and_uploaded_webp(monkeypatch, dish, suffix):
     factory = httpx.AsyncClient
     monkeypatch.setattr(images.httpx, "AsyncClient", lambda **kw: factory(transport=httpx.MockTransport(respond), **kw))
     await images.generate_recipe_image(dish)
+    assert "pg_advisory_xact_lock" in str(db.execute.await_args.args[0])
     args = upload.await_args.args
     assert args[:2] == ("public", images.recipe_image_key(dish)) and args[3] == "image/webp"
     with Image.open(io.BytesIO(args[2])) as result:

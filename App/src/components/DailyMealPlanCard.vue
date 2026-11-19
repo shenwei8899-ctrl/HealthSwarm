@@ -6,12 +6,16 @@ import { computed } from 'vue'
 import { dishTitle, dishKey, mealTypes as allTypes } from '../utils/meal-presentation.js'
 import { recipeCover } from '../utils/recipe-cover.js'
 import { localDate } from '../utils/meal-state.js'
-const props=defineProps({plan:{type:Object,required:true},busy:Boolean,detailMode:Boolean,workspace:Boolean,compact:Boolean,dishGrid:Boolean,interactive:{type:Boolean,default:true},mealTypes:Array,swapOptions:{type:Function,default:()=>[]},swapBusy:Boolean})
+const props=defineProps({plan:{type:Object,required:true},busy:Boolean,detailMode:Boolean,workspace:Boolean,compact:Boolean,dishGrid:Boolean,interactive:{type:Boolean,default:true},mealTypes:Array,swapEntries:{type:Array,default:()=>[]},swapVersion:Number,swapDate:String,swapBusy:Boolean})
 const emit=defineEmits(['open','members','shop','detail','all','dish','swap'])
 const visibleTypes=computed(()=>allTypes.filter(type=>!props.mealTypes?.length||props.mealTypes.includes(type)))
 const names={breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}
 function openDetail(item){if(props.interactive)emit('detail',item)}
 function openDish(item,dishIndex){if(props.interactive)emit('dish',{item,dishIndex})}
+function swapOptions(item,dish){
+ if(!props.interactive||props.plan.date!==localDate()||props.plan.date!==props.swapDate||props.plan.version!==props.swapVersion)return []
+ return props.swapEntries.find(entry=>entry.mealType===item.meal_type&&entry.dishKey===dishKey(dish))?.candidates||[]
+}
 </script>
 <template>
  <view class="menu-cards" :class="{'in-chat':!workspace,'is-compact':compact,'is-dish-grid':dishGrid}">
@@ -26,20 +30,17 @@ function openDish(item,dishIndex){if(props.interactive)emit('dish',{item,dishInd
        <FoodImageSlot :src="recipeCover(dish)?.image_url" :label="dishTitle(dish)" width="100%" height="96px" :radius="12"/>
        <text class="dish-tile-name">{{dishTitle(dish)}}</text>
       </button>
-      <button v-if="interactive&&swapOptions(item,dish,plan).length" class="dish-swap tile-swap" :disabled="busy||swapBusy" :aria-label="'替换'+dishTitle(dish)" @click="$emit('swap',{item,dish,plan})"><text>换一换</text></button>
+      <button v-if="swapOptions(item,dish).length" class="dish-swap" :disabled="busy||swapBusy" :aria-label="'替换'+dishTitle(dish)" @click="$emit('swap',{item,dish,plan})">换一换</button>
       </view>
      </view>
      <button class="meal-ingredients" :disabled="!interactive" @click="openDetail(item)">查看全部{{names[type]}}食材 <text aria-hidden="true">→</text></button>
     </template>
     <template v-else>
     <view class="meal-head"><AppIcon :name="type==='dinner'?'moon':'sun'" :size="compact?24:32"/><text class="meal-name">{{names[type]}}</text><button role="button" tabindex="0" class="meal-detail" :disabled="!interactive" @click="openDetail(item)" :aria-label="'查看'+names[type]+'详情'">查看详情 <text>›</text></button></view>
-    <view v-for="(dish,index) in item.meal.dishes" :key="dishKey(dish)" class="meal-dish-row">
-    <button role="button" tabindex="0" class="meal-dish" :disabled="!interactive" @click="openDish(item,index)" :aria-label="'查看'+dishTitle(dish)">
+    <button role="button" tabindex="0" v-for="(dish,index) in item.meal.dishes" :key="dishKey(dish)" class="meal-dish" :disabled="!interactive" @click="openDish(item,index)" :aria-label="'查看'+dishTitle(dish)">
      <view class="meal-image"><FoodImageSlot :src="recipeCover(dish)?.image_url" :label="dishTitle(dish)" :width="compact?56:72" :height="compact?56:72" :radius="compact?14:18"/></view>
      <view class="dish-copy"><text class="dish-name">{{dishTitle(dish)}}</text><text class="dish-time">{{recipeTime(dish)}}</text></view>
     </button>
-    <button v-if="interactive&&swapOptions(item,dish,plan).length" class="dish-swap" :disabled="busy||swapBusy" :aria-label="'替换'+dishTitle(dish)" @click="$emit('swap',{item,dish,plan})"><text>换一换</text></button>
-    </view>
     </template>
    </view>
    <view v-if="workspace&&!plan.meals.some(i=>i.meal_type===type)" class="meal-card"><view class="meal-head"><text class="meal-name">{{names[type]}}</text><text class="meal-empty">尚未安排</text></view></view>
@@ -47,11 +48,13 @@ function openDish(item,dishIndex){if(props.interactive)emit('dish',{item,dishInd
  </view>
 </template>
 <style scoped>
+
 .menu-cards{display:flex;flex-direction:column;padding:0 20px 22px;color:var(--ui-text)}
 .in-chat.menu-cards{padding:0;margin:14px 0}
 .heading{display:flex;justify-content:space-between;align-items:baseline;margin:0 3px 14px;font-size:18px;font-weight:500}
 .date{font-size:12px;color:var(--ui-muted);font-weight:400}
 .meal-card{margin-bottom:16px;padding:16px 18px;border-radius:26px;border:1px solid rgba(255,255,255,.92);background:linear-gradient(180deg,rgba(255,255,255,.32),rgba(255,255,255,.94));box-shadow:inset 0 1px 0 #fff,0 6px 22px rgba(48,55,75,.045)}
+.in-chat .meal-card{background:#fff;border:1px solid #eeebf6;box-shadow:0 3px 12px rgba(117,96,155,.025)}
 .meal-card:last-child{margin-bottom:0}
 .meal-head{display:flex;align-items:center;margin-bottom:12px;min-height:44px}
 .meal-name{margin-left:8px;font-size:18px;line-height:1.5;font-weight:600;white-space:nowrap}
@@ -79,14 +82,19 @@ function openDish(item,dishIndex){if(props.interactive)emit('dish',{item,dishInd
 .tile-swap{align-self:flex-start;margin:8px 0 0}
 .dish-tile-wrap{display:flex;flex-direction:column;align-items:stretch;min-width:0}
 .is-compact .meal-dish-row+.meal-dish-row{margin-top:4px}
+
 </style>
 <style scoped>
 .is-dish-grid .meal-card{padding:18px;border:1px solid var(--ui-line,#eae8f0);border-radius:20px;background:var(--ui-surface,#fff);box-shadow:none}
 .dish-grid-heading{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:16px;font-size:16px;font-weight:600}
 .dish-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-.dish-tile{flex:1;width:100%;min-width:0;margin:0;padding:0;background:transparent;text-align:left}
+.dish-tile{width:100%;min-width:0;margin:0;padding:0;background:transparent;text-align:left}
 .dish-tile-name{display:block;margin-top:9px;font-size:14px;font-weight:500;line-height:1.6;overflow-wrap:anywhere}
 .meal-ingredients{display:flex;align-items:center;justify-content:center;gap:12px;min-height:46px;margin:20px 0 0;padding:10px 12px;border-radius:13px;background:var(--ui-accent,#303739);color:#fff;font-size:14px;line-height:1.6}
 .meal-ingredients:active{background:var(--ui-accent-pressed,#202628)}
 @media(max-width:350px){.is-dish-grid .meal-card{padding:14px}.dish-grid{gap:8px}.dish-tile-name{font-size:13px}}
+</style>
+
+<style scoped>
+.dish-tile-wrap{display:flex;flex-direction:column;align-items:stretch;min-width:0}.dish-tile-wrap .dish-tile{flex:1}.dish-swap{box-sizing:border-box;display:flex;align-items:center;justify-content:center;flex-shrink:0;width:64px;min-height:32px;margin:8px 0 0;padding:5px 10px;border:1px solid var(--ui-line,#eae8f0);border-radius:8px;background:var(--ui-surface,#fff);color:var(--ui-muted,#74717f);font-size:12px;line-height:20px;white-space:nowrap}.dish-swap:active{background:var(--ui-soft,#f5f4f8)}
 </style>

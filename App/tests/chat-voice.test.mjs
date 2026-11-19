@@ -152,7 +152,7 @@ function voiceComponent(extra={}) {
   const deps={computed,ref,watch,defineProps:()=>props,defineEmits:()=>((name,value)=>events.push({name,value})),defineExpose(){},onBeforeUnmount:fn=>cleanup.push(fn),
     createVoiceCapture:options=>createVoiceCapture({...options,getRecorder:()=>native,authorize:async()=>{},save:async audio=>({...audio,filePath:'/saved.pcm'}),transcribe:async()=> '正常语音',discard(){},getScope:()=> 'synthetic-voice-scope',...extra})}
   const scope=effectScope()
-  const page=scope.run(()=>new Function('deps',`const {${Object.keys(deps)}}=deps;${voiceScript};return {state,levels,busy,overlay,prompt,label,progressVisible,canCancel,progressLabel,cancelLabel,recorder,start,end,touchY,cancel,openSettings}`)(deps))
+  const page=scope.run(()=>new Function('deps',`const {${Object.keys(deps)}}=deps;let serverVoiceAccepted=true;${voiceScript};return {state,levels,busy,overlay,prompt,label,progressVisible,canCancel,progressLabel,cancelLabel,recorder,start,end,touchY,cancel,openSettings}`)(deps))
   const context=proxyRefs({...toRefs(props),...page})
   function cancelButton() {
     function find(node) {
@@ -208,10 +208,10 @@ test('cancel recognition aborts model work, releases busy and ignores late text 
   const pending=deferred();let transcriptions=0,aborts=0
   const c=voiceComponent({transcribe:audio=>{
     if(++transcriptions>1)return Promise.resolve('正常语音')
-    audio.onModelDownload(true);audio.onCancelReady(()=>{aborts++});return pending.promise
+    audio.onCancelReady(()=>{aborts++});return pending.promise
   }});t.after(()=>c.dispose())
   await c.record();c.stop();c.finish();await tick()
-  assert.equal(c.page.progressLabel.value,'正在下载语音模型…');assert.equal(c.page.cancelLabel.value,'取消识别')
+  assert.equal(c.page.progressLabel.value,'正在识别…');assert.equal(c.page.cancelLabel.value,'取消识别')
   c.cancel()
   assert.equal(aborts,1);assert.equal(c.page.state.value.phase,'idle');assert.equal(c.cancelButton(),null)
   assert.deepEqual(c.events.at(-1),{name:'busy',value:false})

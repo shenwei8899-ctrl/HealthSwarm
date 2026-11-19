@@ -1,16 +1,10 @@
 """明确商品请求查询真实商城，已查询的本轮必须提交结构化选品结果。"""
 
-import re
-
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage, ToolMessage
 
+from yuxi.services.health_catalog_policy import NON_PRODUCT_CATALOG_MESSAGE, food_product_intent
 from yuxi.services.health_vision_types import HealthVisionError
-
-
-NON_PRODUCT_CATALOG_MESSAGE = (
-    "本轮没有商城商品请求，未查询商品。请使用已授权的资料工具核对限制，随后完成普通咨询；不要再次调用商城工具。"
-)
 
 
 class HealthCatalogMiddleware(AgentMiddleware):
@@ -40,6 +34,12 @@ class HealthCatalogMiddleware(AgentMiddleware):
                     name=request.tool_call["name"],
                     tool_call_id=request.tool_call["id"],
                     status="error",
+                    additional_kwargs={
+                        "catalog_guard": {
+                            "reason": "no_product_intent",
+                            "request_id": request.runtime.context.request_id,
+                        }
+                    },
                 )
         return await handler(request)
 
@@ -121,43 +121,6 @@ class HealthCatalogMiddleware(AgentMiddleware):
             ):
                 raise HealthVisionError("catalog_selection_required", "本轮商品选择未完成，请重试", 409)
         return response
-
-
-def food_product_intent(text):
-    """明确商品请求和下午加餐选品查询真实目录。"""
-    purchase_action = r"(?:买|购买|选购|采购|下单|加购|购物)"
-    reject_catalog = bool(
-        re.search(
-            r"(?:不要|不用|不需要|不想|别)(?:再|给我|为我|向我|帮我|去)*"
-            r"(?:推荐|查询|查|展示|显示|购买|选购)?(?:商品|商城|食材包)",
-            text,
-        )
-    )
-    for clause in re.split(r"[，,。！？!?；;\n]|但是|不过|但", text):
-        if re.search(r"(?:不想|不需要|不用|不要|别|不)(?:再|给我|为我|向我|帮我|去)*" + purchase_action, clause):
-            continue
-        clause = re.sub(
-            r"(?:不要|不用|不需要|不想|别|不买)(?:再|给我|为我|向我|帮我)?"
-            r"(?:(?:推荐|查询|查|展示|显示|购买|选购)?(?:商品|商城|食材包)|"
-            r"推荐食材|推荐食物|商品推荐|商城推荐|食材推荐|配菜|推荐|购物|购买)(?:[、\s]|$)",
-            " ",
-            clause,
-        )
-        if re.search(
-            r"商品|食材包|\bsku\b|商城|商店|价格|售价|库存|多少钱|哪里有卖|"
-            rf"(?:想|要|准备|帮我|给我).{{0,8}}{purchase_action}(?![了过的])|"
-            rf"(?:可以|能|哪里|怎么|如何){purchase_action}|"
-            rf"^(?:请)?{purchase_action}(?![了过的])|{purchase_action}(?:什么|哪些|几|点|些|一|这|那)",
-            clause,
-            re.IGNORECASE,
-        ):
-            return True
-        if not reject_catalog and re.search(
-            r"(?:下午|午后)(?:的)?(?:加餐|茶|点心).{0,12}(?:吃|喝|选|推荐|买|有什么|啥|什么)",
-            clause,
-        ):
-            return True
-    return False
 
 
 def tool_choice(name):

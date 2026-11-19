@@ -57,7 +57,6 @@ export async function transcribeVoice(audio) {
       filePath: audio.filePath, format: 'PCM', sampleRate: 16000, numberOfChannels: 1,
       duration: audio.duration, clientRequestId: audio.id,
       onCancelReady: audio.onCancelReady,
-      onModelDownload: audio.onModelDownload,
     })
     if (typeof result?.text !== 'string' || !result.text.trim()) throw new Error('没有识别到内容，请重新录音')
     return result.text.trim()
@@ -92,13 +91,12 @@ export function createVoiceCapture({ getRecorder = () => uni.getRecorderManager(
   let phase = 'idle', error = '', permissionDenied = false, holding = false, canceling = false
   let alive = true, version = 0, scope, startY = 0, startedAt = 0, started = false, stopping = false
   let audio = null, manager, slot, owner
-  let modelDownloading = false
   let cancelTranscription = null, expiryTimer = null
   function clearAudio() {
     clearTimeout(expiryTimer); expiryTimer = null
     discard(audio); audio = null
   }
-  const emit = () => { if (alive) onState({ phase, error, permissionDenied, canceling, modelDownloading, hasAudio: Boolean(audio) }) }
+  const emit = () => { if (alive) onState({ phase, error, permissionDenied, canceling, hasAudio: Boolean(audio) }) }
   const valid = ticket => alive && ticket === version && scope === getScope()
   const releaseSlot = () => { if (slot?.owner === owner) slot.owner = null; started = false; stopping = false }
   function fail(message, denied = false) { phase = 'error'; error = message; permissionDenied = denied; emit() }
@@ -114,15 +112,13 @@ export function createVoiceCapture({ getRecorder = () => uni.getRecorderManager(
         if (!valid(ticket)) { discard(saved); return }
         audio = saved
       }
-      const text = await transcribe({ ...audio, onModelDownload: downloading => {
-        if (valid(ticket)) { modelDownloading = downloading; emit() }
-      }, onCancelReady: abort => {
+      const text = await transcribe({ ...audio, onCancelReady: abort => {
         if (!valid(ticket)) abort()
         else cancelTranscription = abort
       } })
       if (!valid(ticket)) return
-      modelDownloading = false; cancelTranscription = null; clearAudio(); phase = 'idle'; emit(); onText(text)
-    } catch (e) { if (valid(ticket)) { modelDownloading = false; cancelTranscription = null; fail(e.message || '语音识别失败，录音已保留，可重试') } }
+      cancelTranscription = null; clearAudio(); phase = 'idle'; emit(); onText(text)
+    } catch (e) { if (valid(ticket)) { cancelTranscription = null; fail(e.message || '语音识别失败，录音已保留，可重试') } }
     finally {
       if (alive && ticket === version && scope !== getScope()) {
         cancel(); fail('登录状态已变更，请重新登录后录音')
@@ -192,7 +188,7 @@ export function createVoiceCapture({ getRecorder = () => uni.getRecorderManager(
   }
   function cancel() {
     if (!alive) return
-    holding = false; canceling = true; modelDownloading = false; version++
+    holding = false; canceling = true; version++
     cancelTranscription?.(); cancelTranscription = null
     if (owner && slot?.owner === owner) { stopNative(); phase = 'stopping' }
     else { phase = 'idle'; canceling = false }

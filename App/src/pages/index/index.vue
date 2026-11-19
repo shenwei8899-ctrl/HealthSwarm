@@ -86,7 +86,7 @@ async function continueLogin() {
 }
 </script>
 <template>
-<view class="screen welcome-screen"><image class="welcome-backdrop" src="/static/food/welcome-family-dining-20261111.webp" mode="aspectFill" aria-hidden="true"/><view class="welcome-shade" aria-hidden="true"/><AppNavBar><view class="nav-row"><text class="brand">家庭营养师</text></view></AppNavBar><view class="hero-copy"><text class="display-title">{{ '好好吃饭\n照顾全家' }}</text><text class="hero-description">{{ '让每个家庭，\n拥有自己的 AI 营养师。' }}</text></view><view class="login-panel">
+<view class="screen welcome-screen"><image class="welcome-backdrop" src="/static/food/welcome-family-dining-20261111.jpg" mode="aspectFill" aria-hidden="true"/><view class="welcome-shade" aria-hidden="true"/><AppNavBar><view class="nav-row"><text class="brand">家庭营养师</text></view></AppNavBar><view class="hero-copy"><text class="display-title">{{ '好好吃饭\n照顾全家' }}</text><text class="hero-description">{{ '让每个家庭，\n拥有自己的 AI 营养师。' }}</text></view><view class="login-panel">
 <!-- #ifdef MP-WEIXIN -->
 <button v-if="isPhoneLogin && needsPhoneAuthorization" class="primary-button" open-type="getPhoneNumber" :disabled="loggingIn || phoneUncertain" :loading="loggingIn" @click="beginPhoneAuthorization" @getphonenumber="authorizePhone">{{loggingIn?'正在登录…':awaitingPhoneAuthorization?'请在微信弹窗中授权手机号':'微信登录，开始使用'}}</button>
 <button v-if="isPhoneLogin && !needsPhoneAuthorization" class="primary-button" :disabled="loggingIn || phoneUncertain" :loading="loggingIn" @click="loginWechatAccount">{{loggingIn?'正在登录…':'微信登录，开始使用'}}</button>

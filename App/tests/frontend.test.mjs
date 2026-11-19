@@ -105,7 +105,7 @@ function scanPage(members = '1') {
     redirectTo(options) { calls.redirects.push(options); options.fail() },
   })
   const deps = {
-    ref, computed, getProfile, saveRecord, backHome() {}, photoEstimate,storageScope,mockDelay:async()=>{},onUnload() {},
+    ref, computed, isMockMode:()=>true, getProfile, saveRecord, backHome() {}, photoEstimate,storageScope,mockDelay:async()=>{},onUnload() {},
     DIABETES_CASE_ID, getActiveHealthCaseId, todayPlan, mealProfile,
     ingredientConflicts, memberNotes, mealFromRoute,
     portionOptions, oilOptions, createPortionDraft, confirmPortionDraft, intakeSummary,

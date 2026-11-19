@@ -21,7 +21,7 @@ import HealthChatBusinessCard from './HealthChatBusinessCard.vue'
 import DailyArrangementCard from './DailyArrangementCard.vue'
 import DailyMealPlanCard from './DailyMealPlanCard.vue'
 import DishSwapSheet from './DishSwapSheet.vue'
-import { createDishSwap, dishSwapState } from '../services/dish-swap.js'
+import { createDishSwap, dishSwapState, watchDishSwap } from '../services/dish-swap.js'
 import WeeklyMealPlanCard from './WeeklyMealPlanCard.vue'
 import TodayMealPlanContent from './TodayMealPlanContent.vue'
 import TodayMealPlanSheet from './TodayMealPlanSheet.vue'
@@ -205,18 +205,11 @@ let selectionGeneration=0,historyDenied=false
 const conversationReadOnly=computed(()=>!!task.value.readOnly||!!conversationBusinessDate.value&&conversationBusinessDate.value<localDate())
 const mealViewBlocked = computed(() => historyLoading.value || switchingConversation.value ||
  continuationChecking.value || historyDenied || !!historyError.value || voiceBusy.value || conversationReadOnly.value)
-const dishSwap=reactive(dishSwapState())
-const swapClient=createDishSwap({state:dishSwap,onPlan:plan=>{
-  acceptTodayPlan(plan)
-  todayMenuClient.acceptSavedPlan(plan,profile.value)
-}})
-watch([()=>todayPlan.value?.version,()=>todayPlan.value?.date,mealViewBlocked],()=>{
-  if(mealViewBlocked.value)swapClient.clear()
-  else if(todayPlan.value)void swapClient.load(todayPlan.value)
-},{immediate:true})
+const dishSwap=reactive(dishSwapState()),swapVisible=ref(true)
+const swapClient=createDishSwap({state:dishSwap,onPlan:plan=>todayMenuClient.acceptSavedPlan(plan,profile.value)})
 function openDishSwap({item,dish,plan}){
-  if(mealViewBlocked.value||planPurchaseBusy.value||state.busy||planRunning.value)return
-  swapClient.open(item,dish,plan)
+ if(!swapEnabled.value||planPurchaseBusy.value||state.busy||planRunning.value)return
+ swapClient.open(item,dish,plan)
 }
 const conversationDrafts=new Map()
 const historyMemberId=computed(()=>selfProfileMember(profile.value)?.healthMemberId||'')
@@ -321,6 +314,8 @@ function messageStatus(message){
   }})
 }
 let disposed=false,visible=true,loading=null,returnFlight=null,epoch=0,pageScope=storageContext(),flowScope=pageScope,draftVersion=0,sendGeneration=0,openingCamera=false,pendingUser=null,submittedDraft=null,desiredType='consultation',restoring=false,suspended=false,loadedDate='',startNewHandled=false
+const swapEnabled=computed(()=>swapVisible.value&&entryReady.value&&returnVerified.value&&todayMenu.verified&&!mealViewBlocked.value&&!planRunning.value)
+const stopDishSwap=watchDishSwap({client:swapClient,plan:()=>todayMenu.plan,enabled:()=>swapEnabled.value})
 // UI lifecycle is independent from request epochs and session restoration.
 const entryView=ref({phase:'home',engaged:false,generation:0})
 const textFocusRequested=ref(false),inputFocused=ref(false),composerIntent=ref(false),cameraPending=ref(false)
@@ -345,8 +340,8 @@ const keyboardLayout=createChatKeyboardLayout({platform:keyboardPlatform,api:uni
 const viewportStyle=computed(()=>keyboardView.value.height>0?{height:keyboardView.value.height+'px',...(keyboardPlatform==='h5'?{position:'fixed',top:keyboardView.value.offsetTop+'px',left:'0',right:'0'}:{})}:{})
 const welcomeMounted=computed(()=>entryView.value.phase==='leaving'||entryView.value.phase==='home'&&entryContext.value.eligible)
 const showConversationMealMenu=computed(()=>!welcomeMounted.value&&(
-  props.route.taskType||presentation.value.initialResults||entryReady.value&&entryView.value.engaged||
-  visibleMessages.value.some(message=>message.id!==pendingEntrySend.value?.message.id)
+  entryView.value.engaged||props.route.entry==='conversation'||props.route.taskType||
+  presentation.value.initialResults||visibleMessages.value.length>0
 ))
 const welcomeDensity=computed(()=>keyboardView.value.homeHeight>0?(keyboardView.value.homeHeight<=660?'small':keyboardView.value.homeHeight<=720?'medium':'large'):'')
 watch(entryContext,()=>entryMotion.reconcile())
@@ -375,7 +370,7 @@ function settleComposerPress(){
   const ticket=++intentGeneration
   intentTimer=setTimeout(()=>{if(ticket===intentGeneration)composerIntent.value=false},120)
 }
-function resumeEntryUI(){cameraPending.value=false;keyboardLayout.start();entryMotion.resume()}
+function resumeEntryUI(){cameraPending.value=false;keyboardLayout.start();entryMotion.resume();keyboardLayout.refresh()}
 function pauseEntryUI(){clearTimeout(blurTimer);releaseComposerIntent();entryMotion.pause();inputFocused.value=false;textFocusRequested.value=false;keyboardLayout.stop()}
 function resetEntryUI(){clearTimeout(blurTimer);releaseComposerIntent();inputFocused.value=false;textFocusRequested.value=false;cameraPending.value=false;entryMotion.reset()}
 const flow=createHealthTaskFlow({daily:true,onChange:next=>{
@@ -947,6 +942,7 @@ async function refreshReturnState({skipOptional=false}={}){
 onMounted(()=>{keyboardLayout.start();uni.onNetworkStatusChange?.(reconnectEntry);void load()});onShow(()=>{
   if(disposed)return
   visible=true
+  swapVisible.value=true
   if(!suspended){resumeEntryUI();if(!entryReady.value)void load();return}
   suspended=false
   if(pageScope!==storageContext()){clearPrivate();pageScope=storageContext();flowScope=pageScope;void load();return}
@@ -957,8 +953,8 @@ onMounted(()=>{keyboardLayout.start();uni.onNetworkStatusChange?.(reconnectEntry
   resumeEntryUI()
   if(entryReady.value){void refreshReturn().then(()=>restoreWeeklyPlans())}else void load()
 })
-onHide(()=>{swapClient.clear();cancelHistorySelection();historyPreview.value=null;todayMenuClient.pause();todayMenu.verified=false;clearEntryRetry();entryRecovery=null;if(historyLoading.value||continuationChecking.value)entryReady.value=false;selectionGeneration++;historyLoading.value=false;continuationChecking.value=false;switchingConversation.value=false;clearReturnRetry();if(pendingEntrySend.value){messages.value=messages.value.filter(message=>message!==pendingEntrySend.value.message);pendingEntrySend.value=null}if(localSend.value?.message.localOnly)failLocalSend();localSend.value=null;sendPhase.value='';scrollRevision++;pauseEntryUI();historyOpen.value=false;if(scrollTimer!==null)clearTimeout(scrollTimer);scrollTimer=null;visible=false;suspended=true;epoch++;sendGeneration++;loading=null;returnFlight=null;profileLoading.value=false;returning.value=false;restoring=false;returnVerified.value=false;mealsLoading.value=false;stopPlanTimers();voiceRef.value?.cancel();flow.pause();pendingUser=null;sending.value=false;client.pause();familyClient.pause();familyPanel.value=false;familySelection.value=null})
-onUnmounted(()=>{swapClient.clear();todayMenuClient.dispose();uni.offNetworkStatusChange?.(reconnectEntry);clearEntryRetry();entryRecovery=null;selectionGeneration++;clearReturnRetry();scrollRevision++;pauseEntryUI();entryMotion.dispose();if(scrollTimer!==null)clearTimeout(scrollTimer);disposed=true;returnFlight=null;epoch++;draftVersion++;stopPlanTimers();client.dispose();familyClient.dispose();flow.hide()})
+onHide(()=>{swapVisible.value=false;swapClient.clear();cancelHistorySelection();historyPreview.value=null;todayMenuClient.pause();todayMenu.verified=false;clearEntryRetry();entryRecovery=null;if(historyLoading.value||continuationChecking.value)entryReady.value=false;selectionGeneration++;historyLoading.value=false;continuationChecking.value=false;switchingConversation.value=false;clearReturnRetry();if(pendingEntrySend.value){messages.value=messages.value.filter(message=>message!==pendingEntrySend.value.message);pendingEntrySend.value=null}if(localSend.value?.message.localOnly)failLocalSend();localSend.value=null;sendPhase.value='';scrollRevision++;pauseEntryUI();historyOpen.value=false;if(scrollTimer!==null)clearTimeout(scrollTimer);scrollTimer=null;visible=false;suspended=true;epoch++;sendGeneration++;loading=null;returnFlight=null;profileLoading.value=false;returning.value=false;restoring=false;returnVerified.value=false;mealsLoading.value=false;stopPlanTimers();voiceRef.value?.cancel();flow.pause();pendingUser=null;sending.value=false;client.pause();familyClient.pause();familyPanel.value=false;familySelection.value=null})
+onUnmounted(()=>{stopDishSwap();swapClient.clear();todayMenuClient.dispose();uni.offNetworkStatusChange?.(reconnectEntry);clearEntryRetry();entryRecovery=null;selectionGeneration++;clearReturnRetry();scrollRevision++;pauseEntryUI();entryMotion.dispose();if(scrollTimer!==null)clearTimeout(scrollTimer);disposed=true;returnFlight=null;epoch++;draftVersion++;stopPlanTimers();client.dispose();familyClient.dispose();flow.hide()})
 async function openFormalDetail(meal,arrangement,date,extra={}){
  if(voiceBusy.value||!arrangement||!profile.value)return
  const scope=storageContext(),mine=epoch
@@ -966,6 +962,7 @@ async function openFormalDetail(meal,arrangement,date,extra={}){
  const item=plan.meals.find(item=>item.meal_type===meal.type&&item.source.kind==='formal'&&item.source.id===arrangement.id)
  if(!item)throw new Error('这餐已经更新，请从今日餐单重新打开。')
  if(extra.purchaseMeals?.length>1)return openMealPage({date:plan.date,version:plan.version},{all:true})
+ if(item.purchase_ready===false)return openMealPage(mealTarget(item,plan))
  return detailRef.value?.open({...mealTarget(item,plan),...extra})
  }catch(e){if(scope===storageContext())chatError.value=e.message}
 }
@@ -1038,6 +1035,7 @@ async function openReferencePlan(value){
  try{const plan=await loadDailyPlan(profile.value.householdId,source.plan_date,mine,scope);if(!plan||scope!==storageContext()||mine!==epoch)return
  const item=plan.meals.find(item=>item.meal_type===meal.meal_type&&item.source.id===source.preview_id)
  if(!item)throw new Error('这餐已经更新，请从今日餐单重新打开。')
+ if(item.purchase_ready===false)return openMealPage(mealTarget(item,plan))
  return detailRef.value?.open(mealTarget(item,plan))
  }catch(e){if(scope===storageContext())chatError.value=e.message}
 }
@@ -1126,10 +1124,10 @@ async function sendQuestion(promptAction=''){
       if(!['nutrition_consultation','single_day_meal','exclusive_plan','needs_clarification'].includes(data?.route))throw new Error('问题分类结果无法读取，原问题已保留。')
       intent=data
       if(intent.route==='single_day_meal'&&(!/^\d{4}-\d{2}-\d{2}$/.test(intent.business_date||'')||!Array.isArray(intent.meal_types)||!intent.meal_types.length||intent.meal_types.some(meal=>!['breakfast','lunch','dinner'].includes(meal))||!['generate','view','change','continue'].includes(intent.action)))throw new Error('餐单日期或餐次无法确认，原问题已保留。')
-      if(intent.route==='exclusive_plan'||intent.route==='needs_clarification'||intent.action==='change'){
+      if(intent.route==='exclusive_plan'||intent.route==='needs_clarification'){
         const now=new Date().toISOString()
         user.status='completed';user.requestId=String(user.id);snapshot.conversation=conversationId.value
-        messages.value.push({id:newHealthRequestId(),requestId:user.id,role:'assistant',text:intent.action==='change'?'已安排的菜品请在餐单里调整。':intent.message||'请说明想咨询营养，还是安排哪一天的餐单。',createdAt:now,localOnly:true,exclusivePlanEntry:intent.route==='exclusive_plan'})
+        messages.value.push({id:newHealthRequestId(),requestId:user.id,role:'assistant',text:intent.message||'请说明想咨询营养，还是安排哪一天的餐单。',createdAt:now,localOnly:true,exclusivePlanEntry:intent.route==='exclusive_plan'})
         user.localOnly=true;settleDraft(snapshot);await scrollLatest({force:true});return
       }
     }
@@ -1179,7 +1177,7 @@ async function sendQuestion(promptAction=''){
       if(!plan)throw new Error('暂时无法读取餐单，请重试。')
       const explicitMembers=/全家|一家|家人|我们|家庭(?:三餐|配餐|餐单|菜单|用餐|饮食计划)|为我|给我|帮我|本人|自己|一个人|一人|只(?:有|给)?我/.test(text)||profile.value.members.some(member=>[member.name,member.relation].some(label=>typeof label==='string'&&label.length>1&&['给','为','帮'].some(prefix=>['','我','我的'].some(owner=>text.includes(prefix+owner+label)))))
       rebuildReference=referenceSelection.meal_types.some(meal=>plan.needs_regeneration?.includes(meal))&&!activePlanStatus(plan.pending?.status)
-      if(rebuildReference&&!explicitMembers){
+      if((rebuildReference||action==='change'&&!continuing)&&!explicitMembers){
         const groups=referenceSelection.meal_types.map(meal=>plan.regeneration_participants?.[meal]||plan.meals.find(item=>item.meal_type===meal)?.members?.map(member=>member.id)).filter(ids=>ids?.length)
         const diners=groups[0]&&[...groups[0]].sort()
         if(groups.some(ids=>JSON.stringify([...ids].sort())!==JSON.stringify(diners)))throw new Error('这些餐次的就餐成员不同，请分别重新安排。')
@@ -1189,14 +1187,14 @@ async function sendQuestion(promptAction=''){
       if(continuing&&referenceSelection.daily_base_version!==plan.version)throw new Error('饮食计划已有更新，请重新核对后继续。')
       if(referenceFollowUp&&previousVersion!==plan.version)referenceFollowUp=false
       const covered=type=>!hasMealRequirements&&plan.meals.some(item=>item.meal_type===type&&JSON.stringify((item.members||[]).map(m=>m.id).sort())===JSON.stringify(referenceSelection.participant_ids))
-      if(action==='generate'&&plan.status==='ready'&&referenceSelection.meal_types.every(covered)){
+      if(action==='generate'&&!rebuildReference&&plan.status==='ready'&&referenceSelection.meal_types.every(covered)){
         await replyWithDailyPlan(user,plan,referenceSelection.meal_types,snapshot,'这是已安排的餐单。');return
       }
       if(activePlanStatus(plan.pending?.status)){
         if(action==='change')throw new Error('餐单正在生成，完成后再调整。原问题已保留。')
         await replyWithDailyPlan(user,plan,referenceSelection.meal_types,snapshot,'餐单正在生成，完成后会在这里更新。',true);return
       }
-      if(action==='generate'&&plan.status==='ready')referenceSelection.meal_types=referenceSelection.meal_types.filter(type=>!covered(type))
+      if(action==='generate'&&!rebuildReference&&plan.status==='ready')referenceSelection.meal_types=referenceSelection.meal_types.filter(type=>!covered(type))
       if(action==='change'&&!continuing&&plan.status!=='ready')throw new Error('这一天还没有饮食计划，请先生成餐单。')
       if(action==='change'&&!continuing&&!referenceAdjustment&&!explicitMembers){
         const existing=plan.meals.find(item=>item.meal_type===referenceSelection.meal_types[0])
@@ -1204,7 +1202,7 @@ async function sendQuestion(promptAction=''){
       }
       referenceSelection.daily_base_version=plan.version
     }
-    if(type==='reference_meal_preview'&&!referenceFollowUp||!task.value.memberId||task.value.taskType!==type)await restoreChat(type,{fresh:rebuildReference||newConversationWelcome.value&&(task.value.taskType!==type||!task.value.entry?.thread_id)})
+    if(type==='reference_meal_preview'&&(!referenceFollowUp||intent?.action==='change')||!task.value.memberId||task.value.taskType!==type)await restoreChat(type,{fresh:intent?.action==='change'||rebuildReference||newConversationWelcome.value&&(task.value.taskType!==type||!task.value.entry?.thread_id)})
     if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration)return
     if(task.value.canRetry)return
     if(!task.value.available){chatError.value=task.value.error||task.value.notice||chatError.value||'请先在该成员的家庭档案中完成资料和咨询同意。';return}
@@ -1316,8 +1314,8 @@ function confirmConsultation(){
 function sendVoice(text){
   const draft=question.value.trim()
   question.value=draft?draft+'\n'+text:text
+  voiceMode.value=false
   voiceBusy.value=false
-  return sendQuestion()
 }
 function switchInputMode(){
   if(chatBusy.value||voiceBusy.value||draftSaving.value)return
@@ -1631,7 +1629,7 @@ function messageTime(message,index){
 <template>
 <NutritionistLayout :history-open="historyOpen" :scroll-locked="readingSuspended" :follow-bottom="reading.following" :latest-available="latestAvailable" @reading-change="rememberReading" @latest="scrollLatest({force:true})" entry-transition :welcome-mounted="welcomeMounted" :welcome-leaving="entryView.phase==='leaving'" :transition-ticket="entryView.generation" :keyboard-open="keyboardView.keyboardOpen" :viewport-style="viewportStyle" @welcome-finished="entryMotion.finish" :voice-busy="voiceBusy" :scroll-target="scrollTarget" @history="history" @profile="uni.navigateTo({url:'/pages/my/index'})" @shortcut="shortcut">
  <template #welcome>
-  <ChatWelcome :density="welcomeDensity" :prompts="prompts" :disabled="promptAskBusy" :shuffle-disabled="promptShuffleBusy" @ask="askPrompt" @shuffle="shufflePrompts"/>
+  <ChatWelcome refined :density="welcomeDensity" :prompts="prompts" :disabled="promptAskBusy" :shuffle-disabled="promptShuffleBusy" @ask="askPrompt" @shuffle="shufflePrompts"/>
  </template>
  <template #default>
   <TodayMealPlanContent v-if="showConversationMealMenu" heading :state="todayMenu" :busy="planPurchaseBusy||state.busy" :interactive="!mealViewBlocked" @action="actTodayMenu" @detail="showTodayMeal" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
@@ -1641,11 +1639,11 @@ function messageTime(message,index){
   <view v-if="onboardingPending" class="dialogue-status"><text>上次资料保存结果尚未确认，可以继续核对原提交。</text><button @click="uni.navigateTo({url:'/pages/onboarding/index'})">核对保存结果</button></view>
   <view v-if="presentation.initialResults" class="analysis-message"><AiAnswer :text="state.arrangement.analysis.text" compact/></view>
   <DailyArrangementCard v-if="cardVisible && presentation.initialResults" :arrangement="state.arrangement" :disabled="state.busy" @open="openMeal" @members="openFormalDetail($event,state.arrangement,state.date,{initialView:'members'})"/>
-   <ChatWelcome v-if="!welcomeMounted&&presentation.welcome&&(failedTask||!entryReady)&&(!entryView.engaged||!entryReady)" :compact="failedTask" :prompts="prompts" :disabled="promptAskBusy" :shuffle-disabled="promptShuffleBusy" @ask="askPrompt" @shuffle="shufflePrompts"/>
+   <ChatWelcome v-if="!welcomeMounted&&presentation.welcome&&(failedTask||!entryReady)&&!entryView.engaged" :compact="failedTask" :prompts="prompts" :disabled="promptAskBusy" :shuffle-disabled="promptShuffleBusy" @ask="askPrompt" @shuffle="shufflePrompts"/>
   <view v-for="(message,messageIndex) in visibleMessages" :id="'message-'+message.id" :key="message.id" class="message-turn">
    <view v-if="messageTime(message,messageIndex)" class="message-time"><text>{{messageTime(message,messageIndex)}}</text></view>
    <view v-if="!message.weeklyPlan" class="message-row" :class="message.role"><button v-if="hasMessageIssue(message)||message.role==='user'&&message.status==='unknown'" class="message-issue" :class="{'is-unconfirmed':message.status==='unknown'}" role="button" tabindex="0" :aria-label="message.status==='unknown'?'消息状态待确认':'查看消息失败原因'" @click="messageStatus(message)" @keydown.enter.prevent.stop @keyup.enter.prevent.stop="messageStatus(message)" @keydown.space.prevent.stop @keyup.space.prevent.stop="messageStatus(message)"><text class="issue-mark" aria-hidden="true">{{message.status==='unknown'?'?':'!'}}</text></button><view class="message-content"><view class="bubble"><view v-if="message.role==='assistant'" class="reply-card-head"><AppIcon name="assistant" :size="46" :state="message.business&&isReferencePlan(message.business.data)?'success':'idle'"/><text>家庭营养师</text></view><view class="bubble-body"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><text v-if="message.menuView" selectable>{{mealViewText(message)}}</text><AiAnswer v-else-if="message.role==='assistant'&&message.text" :text="message.text" :citations="message.citations||[]" :message-key="message.requestId" :shown-meals="mealAppearances[message.requestId]||[]" :animate-meals="!!message.mealEnter" @meal-shown="rememberMealAppearance" compact/><text v-else-if="message.text" selectable>{{message.text}}</text>
-   <button v-if="message.exclusivePlanEntry" @click="uni.navigateTo({url:'/pages/exclusive-plans/index'})">查看 AI 专属计划</button></view></view><text v-if="message.role==='user'&&message.status==='cancelled'" class="message-status-note">已停止</text><DailyMealPlanCard :interactive="!mealViewBlocked" :swap-options="swapClient.candidates" :swap-busy="dishSwap.busy||planRunning" @swap="openDishSwap" :meal-types="message.planMeals" @dish="openDailyDish($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" @detail="openDailyMeal($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" detail-mode v-if="message.planDate&&(message.menuView?verifiedMealView(message):dailyPlans[message.planDate])?.status==='ready'" :plan="message.menuView?verifiedMealView(message):dailyPlans[message.planDate]" :dish-grid="!!message.menuView" :busy="planPurchaseBusy" @open="openDailyMeal($event,message.planDate)" @members="selectDailyMembers($event,message.planDate)"/><HealthChatBusinessCard detail-mode @detail="openReferencePlan" v-else-if="message.business&&!message.planDate" :result="message.business" :member-id="message.memberId||task.memberId"/><ChatMealRecordCard v-for="receipt in message.recordedMeals||[]" :key="receipt.id" :receipt="receipt" @changed="updateMealReceipt"/><ChatReplyActions v-if="message.role==='assistant'&&message.text&&!message.error" :text="message.text" :message-id="message.serverMessageId||message.id" :can-quote="!chatBusy&&!conversationReadOnly" @quote="quoteReply"/></view></view>
+   <button v-if="message.exclusivePlanEntry" @click="uni.navigateTo({url:'/pages/exclusive-plans/index'})">查看 AI 专属计划</button></view></view><text v-if="message.role==='user'&&message.status==='cancelled'" class="message-status-note">已停止</text><DailyMealPlanCard :interactive="!mealViewBlocked" :swap-entries="swapEnabled?dishSwap.entries:[]" :swap-version="dishSwap.version" :swap-date="dishSwap.date" :swap-busy="dishSwap.busy" @swap="openDishSwap" :meal-types="message.planMeals" @dish="openDailyDish($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" @detail="openDailyMeal($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" detail-mode v-if="message.planDate&&(message.menuView?verifiedMealView(message):dailyPlans[message.planDate])?.status==='ready'" :plan="message.menuView?verifiedMealView(message):dailyPlans[message.planDate]" :dish-grid="!!message.menuView" :busy="planPurchaseBusy" @open="openDailyMeal($event,message.planDate)" @members="selectDailyMembers($event,message.planDate)"/><HealthChatBusinessCard detail-mode @detail="openReferencePlan" v-else-if="message.business&&!message.planDate" :result="message.business" :member-id="message.memberId||task.memberId"/><ChatMealRecordCard v-for="receipt in message.recordedMeals||[]" :key="receipt.id" :receipt="receipt" @changed="updateMealReceipt"/><ChatReplyActions v-if="message.role==='assistant'&&message.text&&!message.error" :text="message.text" :message-id="message.serverMessageId||message.id" :can-quote="!chatBusy&&!conversationReadOnly" @quote="quoteReply"/></view></view>
    <view v-if="message.weeklyPlan" class="message-row assistant"><view class="message-content"><WeeklyMealPlanCard :plan="message.weeklyPlan" :busy="weeklyBusy" :open-date="weeklyOpenGroup===message.weeklyPlan.group_id?weeklyOpenDate:''" :detail="weeklyOpenGroup===message.weeklyPlan.group_id?weeklyDetail:null" @day="openWeeklyDay($event,message.weeklyPlan.group_id)" @retry="retryWeeklyPlan(message.weeklyPlan)" @exclusive="uni.navigateTo({url:'/pages/exclusive-plans/index'})"/></view></view>
   </view>
   <view v-if="mealReplyActions&&!chatBusy&&!conversationReadOnly" class="reply-actions" aria-label="继续安排饮食">
@@ -1684,6 +1682,8 @@ function messageTime(message,index){
   <text class="ai-content-note">内容由 AI 生成，请结合自身情况核对</text>
  </template>
  <template #overlays>
+  <DishSwapSheet :state="dishSwap" @close="swapClient.close" @choose="swapClient.choose"/>
+  <view v-if="swapEnabled&&dishSwap.error&&!dishSwap.open" class="swap-load-notice" role="alert"><text>{{dishSwap.error}}</text><button :disabled="dishSwap.loading" @click="swapClient.load(todayMenu.plan)">重新读取换菜候选</button></view>
   <MealDetailSheet ref="detailRef" :members="profile?.members||[]" :reload="reloadDetailPlan" @open-change="detailOpen=$event"/>
   <ChatConversationPreview v-if="historyPreview" :row="historyPreview" :member-id="historyMemberId" :replying="replyPending" @close="historyPreview=null" @directory="historyOpen=true" @denied="deniedPreview"/>
   <ChatConversationDrawer :open="historyOpen" :member-id="historyMemberId" :active-thread-id="historyPreview?.thread_id||conversationThreadId" :new-busy="switchingConversation||!entryReady" :busy="conversationChangeBusy||!!pendingEntrySend" :browse-busy="voiceBusy||draftSaving" :denied-thread-id="deniedHistoryThread" :pending-thread-id="pendingHistoryThread" :selection-error="historySelectionError" :display-name="profile?.members.find(m=>m.id===profile.selfMemberId)?.name||'我的'" @close="closeHistoryDirectory" @ready="prefetchHistory" @new="newConversation" @select="browseConversation" @profile="closeHistoryDirectory();uni.navigateTo({url:'/pages/my/index'})"/>
@@ -1697,21 +1697,22 @@ function messageTime(message,index){
 </NutritionistLayout>
 </template>
 <style scoped>
-.entry-greeting{display:block;margin-top:24px;font-size:16px;line-height:1.8;color:#555}
-.message-issue{display:flex;align-items:center;justify-content:center;align-self:center;flex:0 0 44px;width:44px;min-width:44px;height:44px;min-height:44px;margin:0;padding:0;border:0;border-radius:50%;background:transparent}.issue-mark{display:block;width:18px;height:18px;border-radius:50%;background:#d83a3a;color:#fff;font-size:13px;font-weight:700;line-height:18px}.message-issue.is-unconfirmed .issue-mark{background:#eef0f2;color:#687078}.message-status-note{display:block;margin-top:6px;text-align:right;color:var(--ui-muted);font-size:12px;line-height:1.5}
 
-.entry-status{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:12px 0;color:var(--ui-muted);font-size:13px;line-height:1.7}.entry-status>text{flex:1 1 100%}.entry-status button{min-height:44px;margin:0;padding:0 12px;border:1px solid #e5e5e5;border-radius:8px;background:var(--ui-surface);color:#555;font-size:13px;display:flex;align-items:center;justify-content:center}.entry-status button:after{border:0}
+.entry-greeting{display:block;margin-top:24px;font-size:16px;line-height:1.8;color:#555}
+.message-issue{display:flex;align-items:center;justify-content:center;align-self:center;flex:0 0 18px;width:18px;height:18px;margin-right:10px;border-radius:50%;background:#d83a3a;color:#fff;font-size:13px;font-weight:700;line-height:18px}.message-issue.is-unconfirmed{background:#eef0f2;color:#687078}.message-status-note{display:block;margin-top:6px;text-align:right;color:var(--ui-muted);font-size:12px;line-height:1.5}
+
+.entry-status{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:12px 0;color:#858585;font-size:13px;line-height:1.7}.entry-status>text{flex:1 1 100%}.entry-status button{min-height:44px;margin:0;padding:0 12px;border:1px solid #e5e5e5;border-radius:8px;background:var(--ui-surface);color:#555;font-size:13px;display:flex;align-items:center;justify-content:center}.entry-status button:after{border:0}
 .message-row{display:flex;width:100%;gap:0;margin:28px 0;color:#202020}.message-content{width:100%;min-width:0;max-width:100%}.message-row.user{justify-content:flex-end;padding-left:40px;box-sizing:border-box}.user .message-content{width:auto;max-width:100%;flex:0 1 auto}.bubble{font-size:16px;line-height:1.8;white-space:pre-line;overflow-wrap:anywhere;word-break:break-word;padding:0;border:0;background:transparent;color:var(--ui-text);max-width:100%;border-radius:0}.user .bubble{display:block;width:auto;box-sizing:border-box;padding:12px 16px;border-radius:20px 20px 6px 20px;background:var(--ui-user);color:var(--ui-user-text);font-size:16px;line-height:1.6;font-weight:500}.analysis-message{margin:24px 0 22px}
 .dialogue-status{padding:14px 0;margin:18px 0;border-bottom:1px solid #ededed;background:transparent;font-size:14px;line-height:1.8;color:#666}.dialogue-status>text{display:block}.dialogue-status button,.secondary-button{display:inline-flex;align-items:center;justify-content:center;min-height:44px;font-size:14px;color:#333;background:transparent;border:1px solid #ddd;border-radius:8px;margin:10px 10px 0 0;padding:7px 12px;line-height:1.5}.dialogue-status button:after,.secondary-button:after{border:0}.reply-progress{display:flex;align-items:center;gap:9px;min-height:28px;margin:22px 0;font-size:14px;line-height:1.6;color:#888}.chat-error{display:block;margin-top:12px;font-size:13px;line-height:1.7;color:#8d4c40}
-.composer{position:relative;display:flex;align-items:center;gap:4px;width:100%;min-height:58px;box-sizing:border-box;padding:6px;background:linear-gradient(180deg,rgba(255,255,255,.30),rgba(255,255,255,.96));border:1px solid rgba(255,255,255,.88);border-radius:19px;box-shadow:inset 0 1px 0 #fff}
+.composer{position:relative;display:flex;align-items:center;gap:4px;width:100%;min-height:58px;box-sizing:border-box;padding:6px;background:var(--chat-composer-background,linear-gradient(180deg,rgba(255,255,255,.30),rgba(255,255,255,.96)));border:1px solid var(--chat-composer-border,rgba(255,255,255,.88));border-radius:19px;box-shadow:var(--chat-composer-shadow,inset 0 1px 0 #fff)}
 .composer:focus-within{border-color:#fff;box-shadow:inset 0 1px 0 #fff,0 0 0 1px rgba(121,100,200,.10)}
 .composer input{flex:1;min-width:0;width:0;height:44px;box-sizing:border-box;padding:0 6px;border:0;border-radius:0;background:transparent;color:var(--ui-text);font-size:16px;line-height:1.5;outline:none}
 .input-icon,.send-button{display:flex;flex-shrink:0;align-items:center;justify-content:center;min-width:44px;width:44px;min-height:44px;height:44px;box-sizing:border-box;margin:0;padding:0;border:0;border-radius:50%;background:transparent;color:#303739}
 .input-icon{position:relative}.camera-button:before,.mode-button:before{content:"";position:absolute;top:12px;bottom:12px;width:1px;background:linear-gradient(transparent,rgba(91,99,122,.18),transparent);pointer-events:none}.camera-button:before{right:-2px}.mode-button:before{left:-2px}.input-icon:after,.send-button:after{border:0}.input-icon:active{background:#eceef1}.input-icon[disabled],.send-button[disabled]{opacity:.4}
-.send-button{color:#fff;background:var(--ui-accent,#303739);border-radius:50%}.send-button:active{background:var(--ui-accent-pressed,#202628)}.send-button.is-processing[disabled]{opacity:1}
+.send-button{color:#fff;background:var(--ui-accent,#303739);border-radius:50%}.send-button:active{background:var(--ui-accent-pressed,#202628)}.send-button[disabled]{background:var(--ui-accent,#303739);color:#fff;opacity:1}
 .voice-input-slot{display:flex;align-items:center;flex:1;min-width:0;height:44px}
 .keyboard-icon{width:22px;height:17px;border:2px solid currentColor;border-radius:4px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:3px}.keyboard-icon>view{width:14px;border-top:2px dotted currentColor}.keyboard-icon>view:last-child{width:10px;border-top-style:solid}
-.chat-message-image{display:block;width:210px;max-width:100%;height:auto;border-radius:8px;margin-bottom:8px}.image-draft{display:flex;align-items:center;gap:12px;padding:8px 0 14px;font-size:13px;line-height:1.6;color:#777}.draft-thumbnail{position:relative;flex-shrink:0}.draft-thumbnail image{width:56px;height:56px;border-radius:8px}.draft-thumbnail button{position:absolute;top:-14px;right:-14px;width:44px;height:44px;min-width:44px;min-height:44px;display:flex;align-items:center;justify-content:center;padding:0;border-radius:50%;background:transparent;color:#444}.draft-thumbnail button>text{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:#fff;font-size:18px;line-height:1;box-shadow:0 1px 4px rgba(37,31,55,.14)}.image-draft>view+view{flex:1}.image-draft button{font-size:13px;min-height:24px}@media(max-width:350px){.bubble{font-size:15px}.message-row{margin:24px 0}.message-row.user{padding-left:30px}.user .bubble{padding:11px 14px;font-size:15px}.composer input{font-size:15px}}
+.chat-message-image{display:block;width:210px;max-width:100%;height:auto;border-radius:8px;margin-bottom:8px}.image-draft{display:flex;align-items:center;gap:12px;padding:8px 0 14px;font-size:13px;line-height:1.6;color:#777}.draft-thumbnail{position:relative;flex-shrink:0}.draft-thumbnail image{width:56px;height:56px;border-radius:8px}.draft-thumbnail button{position:absolute;top:-7px;right:-7px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:#fff;color:#444}.image-draft>view+view{flex:1}.image-draft button{font-size:13px;min-height:24px}@media(max-width:350px){.bubble{font-size:15px}.message-row{margin:24px 0}.message-row.user{padding-left:30px}.user .bubble{padding:11px 14px;font-size:15px}.composer input{font-size:15px}}
 
 
 .message-turn{margin:22px 0}.message-time{display:flex;justify-content:center;margin:18px 0}.message-time text{padding:2px 7px;background:transparent;border-radius:12px;font-size:11px;line-height:1.5;color:var(--ui-muted)}.reply-actions{display:flex;flex-direction:column;align-items:flex-start;gap:9px;margin:0 0 20px}.reply-actions button{display:flex;align-items:center;justify-content:space-between;gap:16px;max-width:100%;min-height:44px;margin:0;padding:10px 14px;border:0;border-radius:16px;background:var(--ui-surface);color:var(--ui-text);font-size:14px;line-height:1.5;text-align:left}.reply-actions button:after{border:0}.reply-actions button :deep(.app-icon){color:#7e7693}.progress-dot{width:6px;height:6px;flex-shrink:0;border-radius:50%;background:var(--ui-accent)}.live-answer{padding-bottom:3px}.ai-content-note{display:block;padding-top:9px;text-align:center;font-size:10px;line-height:1.4;color:var(--ui-muted)}.archived-conversation{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px;color:#81778f;line-height:1.6}.archived-conversation button{flex-shrink:0;padding:7px 10px;min-height:40px;border-radius:9px;background:var(--ui-accent);color:#fff;font-size:12px}.archived-conversation button:after{border:0}
@@ -1722,14 +1723,14 @@ function messageTime(message,index){
 .composer-note{display:block;font-size:12px;color:var(--ui-muted);line-height:1.7;margin-top:8px}.section-title{font-size:18px}.sheet-mask .sheet{color:var(--ui-text)}.sheet-mask .composer-note{text-align:left}
 
 
-.composer-primary-slot{display:flex;flex:0 0 44px;width:44px;height:44px}.composer-primary-slot .send-button>text{font-size:12px}.primary-spinner{width:17px;height:17px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:primary-spin 800ms linear infinite}.message-issue{cursor:pointer}@keyframes primary-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.primary-spinner{animation:none}}
+.composer-primary-slot{display:flex;flex:0 0 44px;width:44px;height:44px}.composer-primary-slot .send-button>text{font-size:12px}.primary-spinner{width:17px;height:17px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:primary-spin 800ms linear infinite}.message-issue[role="button"]{cursor:pointer}@keyframes primary-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.primary-spinner{animation:none}}
 
-/* A single white surface per answer; semantic blocks use spacing inside it. */
-.assistant .bubble,.analysis-message{padding:20px 18px;background:rgba(255,255,255,.9);border-radius:var(--ui-radius);box-shadow:inset 0 0 0 1px rgba(255,255,255,.72)}.message-row.assistant{margin-top:22px}.message-turn>.message-row.assistant{margin:0}.live-answer .bubble{min-height:70px}.reply-actions{margin-left:4px}.ai-content-note{padding-top:10px;font-size:11px;line-height:1.5}.image-draft{padding-left:6px}.sheet-mask .sheet{background:var(--ui-surface);border-radius:28px 28px 0 0}.message-content>.answer-tools{padding-left:4px}
-@media(max-width:350px){.assistant .bubble,.analysis-message{padding:18px 15px}}
+/* Plain replies sit on the page; structured meal content owns its white card. */
+.assistant .bubble,.analysis-message{padding:4px 2px;background:transparent;border-radius:0;box-shadow:none;color:#575268}.message-row.assistant{margin-top:22px}.message-turn>.message-row.assistant{margin:0}.live-answer .bubble{min-height:70px}.reply-actions{margin-left:4px}.ai-content-note{padding-top:10px;font-size:11px;line-height:1.5}.image-draft{padding-left:6px}.sheet-mask .sheet{background:var(--ui-surface);border-radius:28px 28px 0 0}.message-content>.answer-tools{padding-left:4px}
+@media(max-width:350px){.assistant .bubble,.analysis-message{padding:4px 1px}}
 
 /* Before the first public text arrives, the progress bubble follows its content. */
-.live-answer.is-pending .message-content{width:auto;max-width:90%;flex:0 1 auto}.live-answer.is-pending .bubble{min-height:0;padding:12px 16px;border-radius:18px;white-space:normal}.live-answer.is-pending .reply-progress{margin:0;min-height:22px}.live-answer.is-pending .reply-progress text{min-width:0;overflow-wrap:anywhere}
+.live-answer.is-pending .message-content{width:auto;max-width:90%;flex:0 1 auto}.live-answer.is-pending .bubble{min-height:0;padding:12px 2px;border-radius:0;white-space:normal}.live-answer.is-pending .reply-progress{margin:0;min-height:22px}.live-answer.is-pending .reply-progress text{min-width:0;overflow-wrap:anywhere}
 
 /* Keep progress motion local to the waiting state and leave the bubble still. */
 .live-answer.is-pending .progress-dot{animation:chat-progress-dot 1.4s ease-in-out infinite}
@@ -1741,9 +1742,18 @@ function messageTime(message,index){
 /* A quiet breath while waiting for the first public text; transforms do not move the input. */
 .send-button.is-thinking{animation:stop-button-breathe 1.8s ease-in-out infinite;transform-origin:center}
 @keyframes stop-button-breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
-@media(prefers-reduced-motion:reduce){.send-button.is-thinking{animation:none;transform:none}}
+@media(prefers-reduced-motion:reduce){.send-button.is-thinking{animation:none;transform:none}}.issue-mark{display:block;width:18px;height:18px;border-radius:50%;background:#d83a3a;color:#fff;font-size:13px;font-weight:700;line-height:18px}.message-issue.is-unconfirmed .issue-mark{background:#eef0f2;color:#687078}.send-button.is-processing[disabled]{opacity:1}.draft-thumbnail button>text{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:#fff;font-size:18px;line-height:1;box-shadow:0 1px 4px rgba(37,31,55,.14)}
+
+
+.message-issue{display:flex;align-items:center;justify-content:center;align-self:center;flex:0 0 44px;width:44px;min-width:44px;height:44px;min-height:44px;margin:0;padding:0;border:0;border-radius:50%;background:transparent}
+.message-issue.is-unconfirmed .issue-mark{background:#eef0f2;color:#687078}
+.message-issue{cursor:pointer}
 </style>
 
 <style scoped>
-.swap-load-notice{position:fixed;left:20px;right:20px;bottom:220px;z-index:1400;padding:12px 14px;border:1px solid #eee9df;border-radius:12px;background:#fffdf7;font-size:12px;line-height:1.6;color:#786a53}.swap-load-notice button{display:inline-block;margin:6px 0 0;padding:0 10px;min-height:36px;line-height:36px;background:#f2eee4;color:#665a45;font-size:12px}
+.swap-load-notice{position:fixed;bottom:180px;left:20px;right:20px;z-index:100;padding:12px;border-radius:12px;background:var(--ui-surface,#fff);font-size:13px;color:var(--ui-muted)}.swap-load-notice button{min-height:44px;font-size:13px}
+
+.message-issue{display:flex;align-items:center;justify-content:center;align-self:center;flex:0 0 44px;width:44px;min-width:44px;height:44px;min-height:44px;margin:0;padding:0;border:0;border-radius:50%;background:transparent}
+.message-issue.is-unconfirmed .issue-mark{background:#eef0f2;color:#687078}
+.message-issue{cursor:pointer}
 </style>

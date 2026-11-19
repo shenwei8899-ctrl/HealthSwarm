@@ -22,8 +22,8 @@ import { ingredientConflicts,memberNotes } from '../../utils/health.js'
 import { mealFromRoute } from '../../utils/meal-flow.js'
 import { portionOptions, oilOptions, createPortionDraft, confirmPortionDraft, intakeSummary } from '../../utils/scan-portions.js'
 const profile = getProfile()
-const memberId = ref(profile.members[0].id)
-const memberIds = ref(profile.defaultDiners?.length ? [...profile.defaultDiners] : [profile.members[0].id])
+const memberId = ref(profile.members[0]?.id || '')
+const memberIds = ref(profile.defaultDiners?.length ? [...profile.defaultDiners] : profile.members.slice(0, 1).map(member => member.id))
 const captureScope = ref('单人餐盘')
 const sourceMode = ref('拍照分析')
 const caseId = ref('')
@@ -75,6 +75,7 @@ const confirmedIntake = computed(() => captureScope.value === '家庭共享桌�
 }])
 const emptyEstimate = { kcal: null, low: null, high: null, protein: null, carbs: null, fat: null, sugars: null }
 onLoad(options => {
+  if (!isMockMode) return
   meal.value = mealFromRoute(options.meal)
   const ids=(options.members?options.members.split(',').map(id=>profile.members.find(m=>String(m.id)===id)?.id):mealProfile(profile,meal.value).defaultDiners).filter(id=>profile.members.some(m=>m.id===id))
   if(ids.length){memberIds.value=ids;memberId.value=ids[0];if(ids.length>1)captureScope.value='家庭共享桌菜'}

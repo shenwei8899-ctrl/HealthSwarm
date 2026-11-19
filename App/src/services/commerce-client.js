@@ -90,10 +90,11 @@ export function createCommerceClient({
       current(scope);
       const networkDetail = String(error?.errMsg || error?.message || "unknown");
       console.warn("[commerce request failed]", options.method || "GET", prefix + path, networkDetail);
+      const timedOut = /timeout|timed out/i.test(networkDetail);
       throw failure(
-        "网络暂不可用，操作结果尚未确认，请重试原操作",
+        timedOut ? "请求超时，操作结果尚未确认，请重试原操作" : "网络暂不可用，操作结果尚未确认，请重试原操作",
         "NETWORK_ERROR",
-        { path: prefix + path, networkDetail },
+        { path: prefix + path, networkDetail, timedOut },
       );
     }
     if (revision !== read().session?.revision) throw failure("商城账号已切换，请重新操作", "SESSION_CHANGED");
@@ -403,9 +404,10 @@ export function createCommerceClient({
           })),
       });
     },
-    quoteRecommendation: (sn, version, addressId, slotId) => mutate('/checkout/preview', 'POST', {
+    quoteRecommendation: (sn, version, addressId, slotId, items) => mutate('/checkout/preview', 'POST', {
       source_type:'recommendation_package', source_ref:sn, source_version:version,
       address_id:addressId, delivery_slot_id:slotId,
+      ...(items === undefined ? {} : { items }),
     }),
     createOrder: (token) =>
       mutate("/orders", "POST", { checkout_token: token }),

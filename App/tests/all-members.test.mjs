@@ -177,7 +177,8 @@ test('plan detail switches days and meals in the full exclusive menu', async () 
   const requests = []
   const deps = {
     ...presentation, ref, computed: fn => ({get value(){ return fn() }}),
-    onLoad(fn){loadRoute=fn}, onShow(){},
+    onLoad(fn){loadRoute=fn}, onShow(){}, onHide(){}, onUnload(){},
+    createExclusiveImageFlow:()=>({stop(){},open(){}}),exclusiveImages(){},
     planTiers: ['economy', 'standard', 'premium'],
     readExclusivePreview: async (...args) => { requests.push(args); return menu },
     useCommercePage: () => ({busy: ref(false), error: ref(''), run: fn => fn(() => true)}),
@@ -195,7 +196,6 @@ test('plan detail switches days and meals in the full exclusive menu', async () 
         {meal_type: 'dinner', recipe_snapshot: {cooking_minutes: 20}},
       ]},
     ],
-    first_day_products: [{sku_id: 'day-one'}],
   }
   loadRoute({group_id: 'group', tier: 'economy'})
   await page.load()

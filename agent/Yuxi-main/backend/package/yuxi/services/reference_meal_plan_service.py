@@ -714,6 +714,7 @@ def reference_recipe_media(content, steps, source=None):
 async def reference_meal_media(session, meal):
     """给已授权且哈希一致的历史菜谱补充展示媒体，不改保存回执。"""
     import copy
+    from yuxi.services.reference_recipe_presentation import generated_recipe_image
 
     result = copy.deepcopy(meal)
     for dish in result["dishes"]:
@@ -721,10 +722,7 @@ async def reference_meal_media(session, meal):
         if any(doc[k] != dish["source"][k] for k in ("kb_id", "file_hash", "chunks_hash")):
             raise HealthVisionError("source_invalidated", "菜谱来源已变化，请重新读取", 410)
         dish.update(reference_recipe_media(doc["content"], dish["steps"], doc))
-        if dish.get("cooking_minutes"):
-            from yuxi.services.reference_recipe_presentation import generated_recipe_image
-
-            dish.update(await generated_recipe_image(dish))
+        dish.update(await generated_recipe_image(dish))
     from yuxi.services.recipe_translation_service import attach_chinese_display
 
     return await attach_chinese_display(session, result)

@@ -4,10 +4,13 @@ const MODEL_FILES = {
   'config.json': [23381, '467031d9cdc3296a4b2bf84f11110cd505081ffa4417facaaff1e9b95194131b'],
   'vocab.txt': [75352, '4b2d964e18b9cf139b473003b6698fb2ed9a2a5ec55b93daa677b28f578897aa'],
 }
-const DEFAULT_MODEL_BASE = 'https://hf-mirror.com/OpenVoiceOS/paraformer-zh-small-onnx/resolve/' + MODEL_REVISION
+const DEFAULT_MODEL_BASE = 'https://health.openswarm.run/uploads/voice-models/paraformer-' + MODEL_REVISION
 const messages = {
   VOICE_UNSUPPORTED: '当前微信或设备暂不支持本地语音识别，请使用键盘输入',
   VOICE_MODEL_DOWNLOAD: '语音模型下载失败，请联网后重试识别',
+  VOICE_MODEL_DOMAIN: '语音下载域名配置异常，请联系管理员或使用键盘输入',
+  VOICE_MODEL_TIMEOUT: '语音模型下载超时，请在稳定网络下重试',
+  VOICE_MODEL_STORAGE: '语音模型保存失败，请检查微信存储空间后重试',
   VOICE_MODEL_LOAD: '本地语音模型无法加载，请重试或使用键盘输入',
   VOICE_WORKER_FAILED: '本地语音处理失败，请重试识别',
   VOICE_BAD_MODEL: '本地语音模型验证失败，请重试识别',
@@ -19,6 +22,14 @@ const messages = {
 
 function voiceError(code) {
   return Object.assign(new Error(messages[code] || messages.VOICE_WORKER_FAILED), { code })
+}
+
+function downloadError(error) {
+  const message = String(error?.errMsg || error?.message || '')
+  if (/domain|域名/i.test(message)) return voiceError('VOICE_MODEL_DOMAIN')
+  if (/timeout|timed out|超时/i.test(message)) return voiceError('VOICE_MODEL_TIMEOUT')
+  if (/no space|storage|quota|disk|空间|存储/i.test(message)) return voiceError('VOICE_MODEL_STORAGE')
+  return voiceError('VOICE_MODEL_DOWNLOAD')
 }
 
 function invoke(target, method, options) {
@@ -94,9 +105,9 @@ export function createLocalVoiceTranscriber({
 } = {}) {
   let modelFlight, sessionFlight, assetFlight, active
 
-  async function verify(fs, filePath, [expectedSize, sha256]) {
+  async function verify(platform, filePath, [expectedSize, sha256]) {
     try {
-      const { size, digest } = await invoke(fs, 'getFileInfo', { filePath, digestAlgorithm: 'sha256' })
+      const { size, digest } = await invoke(platform, 'getFileInfo', { filePath, digestAlgorithm: 'sha256' })
       return size === expectedSize && typeof digest === 'string' && digest.toLowerCase() === sha256
     } catch {
       return false
@@ -106,22 +117,22 @@ export function createLocalVoiceTranscriber({
   async function prepareFile(platform, fs, filename, onProgress) {
     const signature = MODEL_FILES[filename]
     const path = platform.env.USER_DATA_PATH + '/paraformer-' + MODEL_REVISION + '-' + filename
-    if (await verify(fs, path, signature)) return path
-    if (!/^https:\/\/[^\s?#]+$/i.test(modelBase)) throw voiceError('VOICE_MODEL_DOWNLOAD')
+    if (await verify(platform, path, signature)) return path
+    if (!/^https:\/\/[^\s?#]+$/i.test(modelBase)) throw voiceError('VOICE_MODEL_DOMAIN')
     onProgress?.(true)
     const staging = path + '.pending'
     try {
       const response = await invoke(platform, 'downloadFile', {
         url: modelBase.replace(/\/+$/, '') + '/' + filename,
         filePath: staging,
-        timeout: 120000,
-      }).catch(() => { throw voiceError('VOICE_MODEL_DOWNLOAD') })
+        timeout: 600000,
+      }).catch(error => { throw downloadError(error) })
       if (response.statusCode !== 200) throw voiceError('VOICE_MODEL_DOWNLOAD')
-      if (!await verify(fs, staging, signature)) throw voiceError('VOICE_BAD_MODEL')
+      if (!await verify(platform, staging, signature)) throw voiceError('VOICE_BAD_MODEL')
       // Keep the valid cache path separate from incomplete downloads.
       await invoke(fs, 'unlink', { filePath: path }).catch(() => {})
       await invoke(fs, 'rename', { oldPath: staging, newPath: path }).catch(() => {
-        throw voiceError('VOICE_MODEL_DOWNLOAD')
+        throw voiceError('VOICE_MODEL_STORAGE')
       })
       return path
     } finally {
@@ -151,7 +162,7 @@ export function createLocalVoiceTranscriber({
   return async function transcribeLocal(audio) {
     const platform = getPlatform()
     if (!platform?.createInferenceSession || !platform?.createWorker || !platform?.getFileSystemManager ||
-        !platform?.env?.USER_DATA_PATH) throw voiceError('VOICE_UNSUPPORTED')
+        !platform?.getFileInfo || !platform?.env?.USER_DATA_PATH) throw voiceError('VOICE_UNSUPPORTED')
     if (audio.format !== 'PCM' || audio.sampleRate !== 16000 || audio.numberOfChannels !== 1 || !audio.filePath) {
       throw voiceError('VOICE_BAD_AUDIO')
     }
@@ -179,7 +190,6 @@ export function createLocalVoiceTranscriber({
     async function recognize() {
       checkActive()
       const fs = platform.getFileSystemManager()
-      if (!fs?.getFileInfo) throw voiceError('VOICE_UNSUPPORTED')
       const pcm = await invoke(fs, 'readFile', { filePath: audio.filePath }).catch(() => { throw voiceError('VOICE_BAD_AUDIO') })
       checkActive()
       const assets = await (assetFlight ||= loadAssets(platform, fs, onDownload).catch(error => {
@@ -230,7 +240,7 @@ export function createLocalVoiceTranscriber({
       // Register the race before the caller can immediately cancel a stale request.
       const result = Promise.race([cancelled, Promise.resolve().then(recognize)])
       audio.onCancelReady?.(() => cancel())
-      timer = setTimeout(() => cancel(voiceError('VOICE_WORKER_FAILED')), 240000)
+      timer = setTimeout(() => cancel(voiceError('VOICE_WORKER_FAILED')), 720000)
       return await result
     } finally {
       clearTimeout(timer)

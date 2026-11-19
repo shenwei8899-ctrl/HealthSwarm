@@ -60,6 +60,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   let conversationOptions = null
   let epoch = 0, readVersion = 0, timer = null, polls = 0, pendingQuery = '', storageKey = '', activeRead = null
   let streams = [], streamKey = '', streamAttempts = 0, streamEpoch = 0, cursors = {}, pendingImages = []
+  let pendingImageKeys = []
   let state = { memberId: '', taskType: '', title: '', loading: false, busy: false, refreshing: false, available: false, readOnly: false, finalMessageId: null,
     consentOption: null, entry: null, requestId: '', runId: '', requests: [], submitUnknown: false, status: '', result: null, recordedMeals: [], error: '', notice: '', ...streamState() }
   let readFailures = 0, resultFailures = 0, pollingNotice = '', stopNetwork = null
@@ -89,7 +90,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   function forgetPrivate(message, error = null) {
     state.invalidatedThreadId = state.entry?.thread_id || ''
     epoch++; readVersion++; activeRead = null; state.busy = false; state.loading = false; state.refreshing = false; state.finalMessageId = null
-    stop(); pendingQuery = ''; pendingImages = []; state.entry = null; state.requestId = ''; state.submitUnknown = false
+    stop(); pendingQuery = ''; pendingImages = []; clearPendingImages(); state.entry = null; state.requestId = ''; state.submitUnknown = false
     state.result = null; state.recordedMeals = []; state.requests = []; state.runId = ''; state.available = false; state.consentOption = null; state.status = ''; state.error = message;state.invalidated=true
     state.failureStatus = error?.code || null; state.failureCode = error?.businessCode || ''
     clearStream()
@@ -99,7 +100,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   function hide() {
     forceNewEntry = false
     epoch++; readVersion++; activeRead = null; stop(); pendingQuery = ''; pendingImages = []; storageKey = ''; cursors = {}
-    conversationOptions = null; resultFailures = 0
+    pendingImageKeys = []; conversationOptions = null; resultFailures = 0
     state = { memberId: '', taskType: '', title: '', loading: false, busy: false, refreshing: false, available: false, readOnly: false, finalMessageId: null,
       consentOption: null, entry: null, requestId: '', runId: '', requests: [], submitUnknown: false, status: '', result: null, recordedMeals: [], error: '', notice: '', ...streamState() }
     emit()
@@ -141,10 +142,35 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
     finally { if (current(ticket)) { state.loading=false; emit() } }
   }
   function save() {
-    storage.setStorageSync(storageKey, { memberId: state.memberId, taskType: state.taskType,
+    try {
+      storage.setStorageSync(storageKey, { memberId: state.memberId, taskType: state.taskType,
       entry: state.entry, requestId: state.submitRejected ? '' : state.requestId, requests: state.requests, cursors, cancelPhase: state.cancelPhase, cancelRequestId: state.requestId, submitUnknown: state.submitUnknown,
-      // 仅结果未知时保留原提交；回读确认后立即清除，不缓存模型正文。
-      pendingQuery: state.submitUnknown ? pendingQuery : '', pendingImages: state.submitUnknown ? pendingImages : [] })
+      // 图片分片各自低于小程序单键上限，任务回执只保存当前账号下的引用。
+      pendingQuery: state.submitUnknown ? pendingQuery : '', pendingImageKeys: state.submitUnknown ? pendingImageKeys : [] })
+      if (!state.submitUnknown) clearPendingImages()
+      return true
+    } catch {
+      state.error = '本地缓存写入失败，请释放空间后重试；已发送的请求请先核对结果。'
+      return false
+    }
+  }
+  function clearPendingImages() {
+    pendingImageKeys.forEach(key => { try { storage.setStorageSync(key, null) } catch {} })
+    pendingImageKeys = []
+  }
+  function cachePendingImages(images, id) {
+    const keys = []
+    try {
+      const image = images[0] || ''
+      for (let offset = 0; offset < image.length; offset += 256 * 1024) {
+        const key = 'health-task-image:' + id + ':' + keys.length
+        keys.push(key); storage.setStorageSync(key, image.slice(offset, offset + 256 * 1024))
+      }
+      return keys
+    } catch (error) {
+      keys.forEach(key => { try { storage.setStorageSync(key, null) } catch {} })
+      throw error
+    }
   }
   function handle(error, ticket) {
     const identity = session()
@@ -288,6 +314,14 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
         cursors = saved.cursors && typeof saved.cursors === 'object' ? Object.fromEntries(Object.entries(saved.cursors).filter(([id, value]) => uuidPattern.test(id) && /^\d+-\d+$/.test(value))) : {}
         pendingQuery = state.submitUnknown && typeof saved.pendingQuery === 'string' && saved.pendingQuery.length <= 4000 ? saved.pendingQuery : ''
         pendingImages = state.submitUnknown && Array.isArray(saved.pendingImages) ? saved.pendingImages.filter(validImage).slice(0, 1) : []
+        pendingImageKeys = state.submitUnknown && Array.isArray(saved.pendingImageKeys)
+          ? saved.pendingImageKeys.filter((key, index) => key === 'health-task-image:' + state.requestId + ':' + index).slice(0, 12) : []
+        if (pendingImageKeys.length) {
+          const parts = pendingImageKeys.map(key => storage.getStorageSync(key))
+          const image = parts.every(part => typeof part === 'string' && part.length <= 256 * 1024) ? parts.join('') : ''
+          pendingImages = validImage(image) ? [image] : []
+          if (!pendingImages.length) pendingQuery = ''
+        }
         if (state.requestId) await refresh(ticket)
         if (!current(ticket)) return
       } else if (verifiedEntry) {
@@ -396,10 +430,18 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
     if ((!text && !selectedImages.length) || text.length > 4000 || selectedImages.length > 1 || !selectedImages.every(validImage) || (retry && !state.submitUnknown)) return
     const ticket = token()
     if (!retry) {
-      stop(); readVersion++; state.requestId = newId(); state.runId = ''; state.finalMessageId = null; pendingQuery = text; pendingImages = [...selectedImages]
+      const previous = { ...state }, previousQuery = pendingQuery, previousImages = pendingImages, previousKeys = pendingImageKeys
+      const id = newId()
+      try { pendingImageKeys = cachePendingImages(selectedImages, id) }
+      catch { state.error = '照片缓存失败，请释放本地空间后重新发送；本次尚未提交。'; emit(); return false }
+      stop(); readVersion++; state.requestId = id; state.runId = ''; state.finalMessageId = null; pendingQuery = text; pendingImages = [...selectedImages]
       resultFailures = 0; state.readUnavailable = false; state.submitRejected = false; clearStream(); phase('queued')
       state.requests = [...state.requests, { request_id: state.requestId, status: '提交中' }].slice(-50)
-      state.submitUnknown = true; state.status = '提交中'; state.result = null; state.recordedMeals = []; save()
+      state.submitUnknown = true; state.status = '提交中'; state.result = null; state.recordedMeals = []
+      if (!save()) {
+        clearPendingImages(); pendingImageKeys = previousKeys; pendingQuery = previousQuery; pendingImages = previousImages
+        state = { ...previous, error: '本地缓存写入失败，请释放空间后重试；本次尚未提交。' }; emit(); return false
+      }
     }
     state.busy = true; state.error = ''; emit()
     try {

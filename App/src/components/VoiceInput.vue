@@ -1,3 +1,7 @@
+<script>
+let serverVoiceAccepted = false
+</script>
+
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { createVoiceCapture } from '../services/chat-voice.js'
@@ -8,12 +12,13 @@ const state = ref({ phase: 'idle', error: '', canceling: false, hasAudio: false,
 const levels = ref(Array(44).fill(0))
 const busy = computed(() => ['authorizing', 'starting', 'recording', 'stopping', 'transcribing'].includes(state.value.phase))
 const overlay = computed(() => ['starting', 'recording', 'stopping'].includes(state.value.phase))
-const prompt = computed(() => state.value.phase === 'stopping' ? (state.value.canceling ? '正在取消录音…' : '正在结束录音…') : state.value.canceling ? '松手取消' : state.value.phase === 'starting' ? '正在打开麦克风…' : '松手发送，上移取消')
-const label = computed(() => state.value.phase === 'transcribing' ? (state.value.modelDownloading ? '正在下载语音模型…' : '正在本地识别…') : state.value.phase === 'authorizing' ? '正在打开麦克风…' : '按住说话')
+const prompt = computed(() => state.value.phase === 'stopping' ? (state.value.canceling ? '正在取消录音…' : '正在结束录音…') : state.value.canceling ? '松手取消' : state.value.phase === 'starting' ? '正在打开麦克风…' : '松手识别，上移取消')
+const label = computed(() => state.value.phase === 'transcribing' ? '正在识别…' : state.value.phase === 'authorizing' ? '正在打开麦克风…' : '按住说话')
 const progressVisible = computed(() => ['authorizing', 'starting', 'stopping', 'transcribing'].includes(state.value.phase))
 const canCancel = computed(() => progressVisible.value && !state.value.canceling)
 const progressLabel = computed(() => ['starting', 'stopping'].includes(state.value.phase) ? prompt.value : label.value)
 const cancelLabel = computed(() => state.value.phase === 'transcribing' ? '取消识别' : state.value.phase === 'stopping' ? '取消发送' : '取消录音')
+let voiceNoticeOpen = false
 let nativeRecording = false
 // #ifdef MP-WEIXIN
 nativeRecording = true
@@ -30,6 +35,23 @@ const recorder = createVoiceCapture({
 function touchY(event) { const point=event.touches?.[0]||event.changedTouches?.[0]; return point?.clientY ?? point?.pageY }
 function start(event) {
   if (props.disabled || busy.value) return
+  if (nativeRecording && !serverVoiceAccepted) {
+    if (voiceNoticeOpen) return
+    voiceNoticeOpen = true
+    uni.showModal({
+      title: '语音转文字',
+      content: '录音会上传到本小程序的服务器用于转写，识别后的文字可编辑后发送。',
+      confirmText: '同意使用',
+      success(result) {
+        if (result.confirm) {
+          serverVoiceAccepted = true
+          uni.showToast({ title: '请再次按住说话', icon: 'none' })
+        }
+      },
+      complete() { voiceNoticeOpen = false },
+    })
+    return
+  }
   levels.value=Array(44).fill(0);recorder.begin(touchY(event)||0)
 }
 function end(event) { recorder.end(touchY(event)) }

@@ -42,12 +42,22 @@ test('keyboard height is accounted for once with full, partial or absent native 
   for(const windowHeight of [800,650,500])assert.equal(chatAvailableHeight({baseline:800,windowHeight,keyboardHeight:300}),500)
   assert.equal(chatAvailableHeight({baseline:800,windowHeight:800}),800)
 })
-function nativeKeyboard() {
-  const listeners={},info={windowHeight:800,windowWidth:390};let view
+function nativeKeyboard({height=800,focus=true}={}) {
+  const listeners={},info={windowHeight:height,windowWidth:390},jobs=new Map();let view,now=0,serial=0,changes=0
   const api={getWindowInfo:()=>info,onWindowResize:fn=>listeners.resize=fn,offWindowResize:()=>delete listeners.resize,onKeyboardHeightChange:fn=>listeners.keyboard=fn,offKeyboardHeightChange:()=>delete listeners.keyboard}
-  const layout=createChatKeyboardLayout({platform:'native',api,onChange:v=>view=v})
-  layout.start();layout.focus(true)
-  return {layout,listeners,info,get view(){return view}}
+  const schedule=(fn,delay)=>{const id=++serial;jobs.set(id,{fn,at:now+delay});return id}
+  function advance(ms) {
+    const end=now+ms
+    while(true){
+      const next=[...jobs].filter(([,job])=>job.at<=end).sort((a,b)=>a[1].at-b[1].at)[0]
+      if(!next)break
+      now=next[1].at;jobs.delete(next[0]);next[1].fn()
+    }
+    now=end
+  }
+  const layout=createChatKeyboardLayout({platform:'native',api,onChange:v=>{view=v;changes++},schedule,cancel:id=>jobs.delete(id)})
+  layout.start();if(focus)layout.focus(true)
+  return {layout,listeners,info,jobs,advance,get view(){return view},get changes(){return changes}}
 }
 test('native resize arriving before keyboard height preserves the keyboard-closed baseline',()=>{
   const k=nativeKeyboard();k.info.windowHeight=500;k.listeners.resize({size:{windowHeight:500}})
@@ -62,6 +72,71 @@ test('native keyboard-first order and listener cleanup work across repeated page
   assert.deepEqual(Object.keys(k.listeners),[]);assert.equal(k.view.height,0)
   k.info.windowHeight=800;k.layout.start();assert.equal(k.view.height,800)
   k.layout.stop()
+})
+
+test('a late small resize after keyboard close cannot permanently pin the home height',()=>{
+  const k=nativeKeyboard();k.listeners.keyboard({height:300})
+  k.layout.focus(false);k.listeners.keyboard({height:0});k.layout.freeze(false)
+  k.listeners.resize({size:{windowHeight:700}});assert.equal(k.view.height,700)
+  k.advance(80)
+  assert.equal(k.view.height,800);assert.equal(k.view.homeHeight,800);assert.equal(k.view.keyboardOpen,false)
+  k.advance(1000);assert.equal(k.jobs.size,0)
+})
+
+test('close rechecks the native window after its animation without requiring another event',()=>{
+  const k=nativeKeyboard();k.info.windowHeight=500;k.listeners.keyboard({height:300})
+  k.layout.focus(false);k.listeners.keyboard({height:0});assert.equal(k.view.height,500)
+  k.advance(80);assert.equal(k.view.height,500)
+  k.info.windowHeight=800;k.advance(320);assert.equal(k.view.height,800)
+  assert.equal(k.view.keyboardOpen,false);assert.equal(k.jobs.size,0)
+})
+
+test('a real resize can precede the synchronous API and is confirmed after it catches up',()=>{
+  const k=nativeKeyboard({focus:false})
+  k.listeners.resize({size:{windowWidth:600,windowHeight:620}})
+  assert.equal(k.view.height,620);assert.equal(k.view.homeHeight,620)
+  k.info.windowWidth=600;k.info.windowHeight=620;k.advance(400)
+  assert.equal(k.view.height,620);assert.equal(k.view.homeHeight,620)
+})
+
+test('initial display and an already-active page refresh recover a transient window height',()=>{
+  const k=nativeKeyboard({height:700,focus:false})
+  k.info.windowHeight=800;k.advance(400);assert.equal(k.view.height,800)
+  const keyboard=k.listeners.keyboard,resize=k.listeners.resize
+  k.info.windowHeight=700;k.layout.start();k.layout.refresh();assert.equal(k.view.height,700)
+  assert.equal(k.listeners.keyboard,keyboard);assert.equal(k.listeners.resize,resize)
+  k.info.windowHeight=800;k.advance(400);assert.equal(k.view.height,800)
+})
+
+test('blur does not close the keyboard and an old recovery cannot undo a rapid reopen',()=>{
+  const k=nativeKeyboard();k.listeners.keyboard({height:300});k.layout.focus(false)
+  assert.equal(k.view.keyboardOpen,true);assert.equal(k.view.height,500)
+  k.listeners.keyboard({height:0});const old=[...k.jobs.values()].map(job=>job.fn)
+  k.layout.focus(true);k.listeners.keyboard({height:260})
+  const changes=k.changes;old.forEach(fn=>fn());assert.equal(k.changes,changes)
+  k.advance(400);assert.equal(k.view.height,540);assert.equal(k.view.keyboardOpen,true)
+  assert.equal(k.view.homeHeight,800)
+})
+
+test('hide cancels recovery work and stale callbacks cannot write into a later page lifecycle',()=>{
+  const k=nativeKeyboard();const old=[...k.jobs.values()].map(job=>job.fn)
+  const resize=k.listeners.resize,keyboard=k.listeners.keyboard
+  k.layout.stop();assert.equal(k.jobs.size,0)
+  const stopped=k.changes;old.forEach(fn=>fn());resize({size:{windowHeight:100}});keyboard({height:300})
+  assert.equal(k.changes,stopped);assert.equal(k.view.height,0)
+  k.info.windowHeight=900;k.layout.start();const restarted=k.changes
+  old.forEach(fn=>fn());resize({size:{windowHeight:100}});keyboard({height:300})
+  assert.equal(k.changes,restarted);assert.equal(k.view.height,900)
+  k.layout.stop();assert.equal(k.jobs.size,0)
+})
+
+test('resize bursts keep bounded recovery work and ignore invalid event dimensions',()=>{
+  const k=nativeKeyboard({focus:false});k.advance(400);const changes=k.changes
+  for(const height of [0,-1,NaN,Infinity])k.listeners.resize({size:{windowHeight:height}})
+  assert.equal(k.view.height,800);assert.equal(k.changes,changes);assert.equal(k.jobs.size,2)
+  for(let i=0;i<100;i++)k.listeners.resize({size:{windowHeight:700}})
+  assert.equal(k.jobs.size,2);k.advance(400);assert.equal(k.jobs.size,0)
+  assert.equal(k.view.height,800)
 })
 test('H5 follows visualViewport and retains frozen welcome dimensions without double avoidance',()=>{
   const events=new Map(),viewportEvents=new Map();let view

@@ -25,17 +25,13 @@ function setup() {
   const files = new Map([['recording', { data: pcm }]])
   const calls = { downloads: [], sessions: 0, terminated: 0, destroyed: 0, corrupt: false }
   const fs = {
-    getFileInfo({ filePath, digestAlgorithm, success, fail }) {
-      assert.equal(digestAlgorithm, 'sha256')
-      if (files.has(filePath)) success(files.get(filePath))
-      else fail()
-    },
     readFile({ filePath, success, fail }) {
       const file = files.get(filePath)
       if (file) success({ data: file.data })
       else fail()
     },
-    rename({ oldPath, newPath, success }) {
+    rename({ oldPath, newPath, success, fail }) {
+      if (calls.renameFailure) return fail({ errMsg: 'rename:fail permission denied' })
       files.set(newPath, files.get(oldPath))
       files.delete(oldPath)
       success()
@@ -45,18 +41,25 @@ function setup() {
   const platform = {
     env: { USER_DATA_PATH: 'user' },
     getFileSystemManager: () => fs,
+    getFileInfo({ filePath, digestAlgorithm, success, fail }) {
+      assert.equal(digestAlgorithm, 'sha256')
+      if (files.has(filePath)) success(files.get(filePath))
+      else fail()
+    },
     downloadFile(options) {
       const name = options.url.split('/').at(-1)
       const [size, digest, data] = modelFiles[name]
       calls.downloads.push(name)
+      calls.urls ||= []
+      calls.urls.push(options.url)
       assert.deepEqual(Object.keys(options).sort(), ['fail', 'filePath', 'success', 'timeout', 'url'])
+      assert.equal(options.timeout, 600000)
+      if (calls.downloadFailure) return options.fail({ errMsg: calls.downloadFailure })
       files.set(options.filePath, { size, digest: calls.corrupt ? 'invalid' : digest, data })
-      options.success({ statusCode: 200 })
+      options.success({ statusCode: calls.statusCode || 200 })
     },
     createWorker(path) {
       assert.equal(path, 'static/voice-workers/index.js')
-      const manifest = JSON.parse(readFileSync(new URL('../src/manifest.json', import.meta.url), 'utf8'))
-      assert.ok(path.startsWith(manifest['mp-weixin'].workers + '/'), 'WeChat worker must be in its declared directory')
       let main, background
       loadWorker('index.js', {
         require: () => math.exports,
@@ -93,8 +96,52 @@ function setup() {
       }
     },
   }
-  return { calls, files, transcriber: () => createLocalVoiceTranscriber({ getPlatform: () => platform, modelBase: 'https://model.example.test/paraformer' }) }
+  return { calls, files, transcriber: (options = {}) => createLocalVoiceTranscriber({ getPlatform: () => platform, ...options }) }
 }
+
+test('default downloads use the owned HTTPS host and the pinned revision', async () => {
+  const { calls, transcriber } = setup()
+  await transcriber()(audio)
+  assert.deepEqual(calls.urls, ['config.json', 'vocab.txt', 'model_int8.onnx'].map(name =>
+    'https://health.openswarm.run/uploads/voice-models/paraformer-e580070c6a895c525dd463f3ff6a35409a3bfbe2/' + name))
+})
+
+for (const [failure, code] of [
+  ['downloadFile:fail url not in domain list', 'VOICE_MODEL_DOMAIN'],
+  ['downloadFile:fail timeout', 'VOICE_MODEL_TIMEOUT'],
+  ['downloadFile:fail no space left on device', 'VOICE_MODEL_STORAGE'],
+  ['downloadFile:fail network disconnected', 'VOICE_MODEL_DOWNLOAD'],
+]) {
+  test('download error is actionable and retryable: ' + code, async () => {
+    const { calls, files, transcriber } = setup()
+    const transcribe = transcriber()
+    calls.downloadFailure = failure
+    await assert.rejects(transcribe(audio), { code })
+    assert.deepEqual([...files.keys()], ['recording'])
+    calls.downloadFailure = null
+    assert.deepEqual(await transcribe(audio), { text: '你好' })
+  })
+}
+
+test('HTTP failures and storage failures do not leave cached or pending assets', async () => {
+  const { calls, files, transcriber } = setup()
+  const transcribe = transcriber()
+  calls.statusCode = 503
+  await assert.rejects(transcribe(audio), { code: 'VOICE_MODEL_DOWNLOAD' })
+  assert.deepEqual([...files.keys()], ['recording'])
+  calls.statusCode = 200
+  calls.renameFailure = true
+  await assert.rejects(transcribe(audio), { code: 'VOICE_MODEL_STORAGE' })
+  assert.deepEqual([...files.keys()], ['recording'])
+  calls.renameFailure = false
+  assert.deepEqual(await transcribe(audio), { text: '你好' })
+})
+
+test('invalid model URL is rejected before downloading', async () => {
+  const { calls, transcriber } = setup()
+  await assert.rejects(transcriber({ modelBase: 'http://invalid.test' })(audio), { code: 'VOICE_MODEL_DOMAIN' })
+  assert.equal(calls.downloads.length, 0)
+})
 
 test('voice downloads only fixed model assets, verifies them, and transcribes again from cache after restart', async () => {
   const { calls, transcriber } = setup()

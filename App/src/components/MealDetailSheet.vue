@@ -12,9 +12,6 @@ import DishMemberPortions from './DishMemberPortions.vue'
 import CookingGuide from './CookingGuide.vue'
 import CloudMealPurchase from './CloudMealPurchase.vue'
 import MealPurchaseSheet from './MealPurchaseSheet.vue'
-import DishSwapSheet from './DishSwapSheet.vue'
-import {createDishSwap,dishSwapState} from '../services/dish-swap.js'
-import {readDailyMealPlan} from '../services/daily-meal-plan.js'
 import {detailState,createMealDetailClient,mealNames,formalRoute,detailKey,detailGesture} from '../services/meal-detail-client.js'
 import {createDailyArrangementClient,dailyArrangementState} from '../services/daily-arrangement-client.js'
 import {request} from '../services/request.js'
@@ -42,7 +39,7 @@ const dish=computed(()=>state.meal?.dishes?.[state.dishIndex])
 const title=computed(()=>state.view==='dish'?'菜品详情':state.view==='members'?'调整就餐成员':mealNames[target.value.mealType]+'安排')
 const height=computed(()=>Math.round(state.expanded?viewport.value-safeTop.value:Math.min(viewport.value*.82,viewport.value-safeTop.value)))
 const revisingReference=computed(()=>referenceRevisionState.checking)
-const busy=computed(()=>Boolean(props.leaving||memberBusy.value||revisingReference.value||cookingBusy.value||dishSwap.busy||purchaseRef.value?.isBusy))
+const busy=computed(()=>Boolean(props.leaving||memberBusy.value||revisingReference.value||cookingBusy.value||purchaseRef.value?.isBusy))
 const purchaseScope=computed(()=>savedPurchaseScope(target.value,purchaseDish.value?[purchaseDish.value]:undefined))
 const nutritionSummary=computed(()=>mealNutrition(state.meal))
 const portionRows = computed(() => (state.meal?.dishes || []).map(item => dishMemberPortions(state.meal, item)))
@@ -50,36 +47,19 @@ const portionRows = computed(() => (state.meal?.dishes || []).map(item => dishMe
 const referencePurchase=computed(()=>target.value.purchaseOption?referencePurchaseFor(target.value):reference.value?{previewId:target.value.sourceId,mealTypes:target.value.purchaseMeals||[target.value.mealType],items:target.value.referencePlan?.product_matches||target.value.referencePlan?.purchase_items||[]}:null)
 const canPurchase=computed(()=>state.phase==='ready'&&target.value.purchaseReady!==false&&(!reference.value||target.value.purchaseReady===true||!!referencePurchase.value?.items.length))
 const purchaseRoute=computed(()=>formalRoute(target.value))
-const dishSwap=reactive(dishSwapState()),swapPlan=ref(null)
-const swapClient=createDishSwap({state:dishSwap,onPlan:async plan=>{
- const item=plan.meals.find(m=>m.meal_type===target.value.mealType)
- if(!item)return
- swapPlan.value=plan;purchaseOpen.value=false;purchaseMounted.value=false;purchaseDish.value=null
- await client.open({...mealTarget(item,plan),initialView:'meal'})
- await props.reload?.()
-}})
-function swapOptions(item){const meal=swapPlan.value?.meals.find(m=>m.meal_type===target.value.mealType);return meal?swapClient.candidates(meal,item,swapPlan.value):[]}
-function openSwap(item){if(busy.value||dishSwap.busy)return;const meal=swapPlan.value?.meals.find(m=>m.meal_type===target.value.mealType);if(meal)swapClient.open(meal,item,swapPlan.value)}
-async function loadSwaps(){
- const chosen=state.target,scope=storageContext(),revision=openRevision
- if(!chosen||chosen.date!==localDate()||chosen.dailyPlanVersion==null)return
- try{const plan=await readDailyMealPlan(chosen.familyId,chosen.date);if(scope!==storageContext()||revision!==openRevision||!shown.value||plan.version!==chosen.dailyPlanVersion)return;swapPlan.value=plan;await swapClient.load(plan)}
- catch(error){if(scope===storageContext()&&revision===openRevision)dishSwap.error=error.message}
-}
 const key=computed(()=>detailKey(target.value,owner))
 
 
 
 function measure(){try{const info=uni.getWindowInfo?uni.getWindowInfo():uni.getSystemInfoSync();viewport.value=info.windowHeight||800;safeTop.value=(info.statusBarHeight||24)+44;try{safeTop.value=Math.max(safeTop.value,uni.getMenuButtonBoundingClientRect().bottom+8)}catch{}}catch{}}
-function open(value){if(disposed)return;swapClient.clear();swapPlan.value=null;resetReferenceRevision();const revision=++openRevision;purchaseOpen.value=false;purchaseMounted.value=false;dishOpened.value=value.initialView==='dish';owner=storageContext();measure();Object.keys(scrollPositions).forEach(k=>delete scrollPositions[k]);bodyTop.value=0;bodyRestore.value=0;memberError.value='';cookingOpen.value=false;cookingError.value='';purchaseDish.value=null;shown.value=true;emit('open-change',true);uni.hideKeyboard?.();return client.open({...value,initialView:value.initialView==='purchase'?'meal':value.initialView}).then(()=>{if(revision!==openRevision||!shown.value)return;if(state.view==='members')memberIds.value=(state.meal?.members||[]).map(m=>m.id);if(value.initialView==='purchase'&&state.phase==='ready')showPurchase();void loadSwaps()}).catch(e=>{if(revision!==openRevision||!shown.value)return;state.open=true;state.target={...value};state.view='meal';state.phase='error';state.error=e.message})}
+function open(value){if(disposed)return;resetReferenceRevision();const revision=++openRevision;purchaseOpen.value=false;purchaseMounted.value=false;dishOpened.value=value.initialView==='dish';owner=storageContext();measure();Object.keys(scrollPositions).forEach(k=>delete scrollPositions[k]);bodyTop.value=0;bodyRestore.value=0;memberError.value='';cookingOpen.value=false;cookingError.value='';purchaseDish.value=null;shown.value=true;emit('open-change',true);uni.hideKeyboard?.();return client.open({...value,initialView:value.initialView==='purchase'?'meal':value.initialView}).then(()=>{if(revision!==openRevision||!shown.value)return;if(state.view==='members')memberIds.value=(state.meal?.members||[]).map(m=>m.id);if(value.initialView==='purchase'&&state.phase==='ready')showPurchase()}).catch(e=>{if(revision!==openRevision||!shown.value)return;state.open=true;state.target={...value};state.view='meal';state.phase='error';state.error=e.message})}
 function close(force=false){if(busy.value&&force!==true)return;if(purchaseOpen.value&&force!==true){closePurchase();return}purchaseOpen.value=false;if(props.standalone){emit('leave');return}shown.value=false}
-function closed(){if(shown.value)return;swapClient.clear();swapPlan.value=null;resetReferenceRevision();client.close();memberClient.reset();emit('open-change',false)}
-function clear(){swapClient.clear();swapPlan.value=null;resetReferenceRevision();openRevision++;shown.value=false;purchaseOpen.value=false;purchaseMounted.value=false;client.clear();memberClient.reset();emit('open-change',false)}
+function closed(){if(shown.value)return;resetReferenceRevision();client.close();memberClient.reset();emit('open-change',false)}
+function clear(){resetReferenceRevision();openRevision++;shown.value=false;purchaseOpen.value=false;purchaseMounted.value=false;client.clear();memberClient.reset();emit('open-change',false)}
 function scrollKey(){return state.view==='dish'?'dish:'+state.dishIndex:state.view}
 async function switchView(view,index=state.dishIndex){scrollPositions[scrollKey()]=bodyTop.value;state.dishIndex=index;state.view=view;bodyTop.value=scrollPositions[scrollKey()]||0;bodyRestore.value=-1;await nextTick();bodyRestore.value=bodyTop.value}
 // Native back may leave the page itself; button back must explicitly request it.
 function requestBack(native=false){
- if(dishSwap.open){swapClient.close();return true}
  if(busy.value&&!revisingReference.value)return true
  if(purchaseOpen.value){closePurchase();return true}
  if(cookingOpen.value){cookingOpen.value=false;return true}
@@ -159,17 +139,16 @@ onShow(()=>{if(!state.open)return;if(owner!==storageContext()){clear();return}vo
 onMounted(()=>{measure();uni.onWindowResize?.(measure);/* #ifdef H5 */
  if(typeof window!=='undefined'){window.addEventListener('resize',measure);window.addEventListener('keydown',keydown)}
  /* #endif */})
-onUnmounted(()=>{swapClient.clear();uni.offWindowResize?.(measure);disposed=true;client.dispose();memberClient.dispose();referenceRevisionClient.dispose();/* #ifdef H5 */
+onUnmounted(()=>{uni.offWindowResize?.(measure);disposed=true;client.dispose();memberClient.dispose();referenceRevisionClient.dispose();/* #ifdef H5 */
  if(typeof window!=='undefined'){window.removeEventListener('resize',measure);window.removeEventListener('keydown',keydown)}
  /* #endif */})
 defineExpose({open,close,clear,handleBack:()=>requestBack(true)})
 </script>
 <template>
- <DishSwapSheet :state="dishSwap" @close="swapClient.close" @choose="swapClient.choose"/>
  <DetailOverlay :standalone="standalone" :open="shown" @close="close" @closed="closed">
   <view v-if="state.open" class="meal-detail-panel" :class="{'is-page':standalone}" :style="standalone?{'--detail-safe-top':Math.max(0,safeTop-44)+'px'}:{height:height+'px'}" role="dialog" aria-modal="true" :aria-label="title">
    <view v-if="!standalone" class="detail-grip" @touchstart="touchStart" @touchend="touchEnd"><view/></view>
-   <view class="detail-header" @touchstart="touchStart" @touchend="touchEnd"><button tabindex="0" role="button" v-if="state.view!=='meal'||standalone" class="detail-back" :disabled="busy" aria-label="返回本餐" @click="requestBack()">‹</button><view><text class="detail-title">{{title}}</text><text class="detail-subtitle">{{target.date}} · {{reference?'日常参考餐单':'已保存餐单'}}</text></view><button tabindex="0" role="button" v-if="!standalone" class="detail-expand" :disabled="busy" :aria-label="state.expanded?'收拢详情':'展开详情'" @click="state.expanded=!state.expanded">{{state.expanded?'收拢':'展开'}}</button><button tabindex="0" role="button" v-if="!standalone" class="detail-close" :disabled="busy" aria-label="关闭餐单详情" @click="close">×</button></view>
+   <view class="detail-header" @touchstart="touchStart" @touchend="touchEnd"><button tabindex="0" role="button" v-if="state.view!=='meal'||standalone" class="detail-back" :disabled="busy" aria-label="返回本餐" @click="requestBack()">‹</button><view><text class="detail-title">{{title}}</text><text class="detail-subtitle">{{target.date}} · 餐单</text></view><button tabindex="0" role="button" v-if="!standalone" class="detail-expand" :disabled="busy" :aria-label="state.expanded?'收拢详情':'展开详情'" @click="state.expanded=!state.expanded">{{state.expanded?'收拢':'展开'}}</button><button tabindex="0" role="button" v-if="!standalone" class="detail-close" :disabled="busy" aria-label="关闭餐单详情" @click="close">×</button></view>
    <scroll-view class="detail-body" :scroll-y="!purchaseOpen&&(standalone||state.expanded)" :scroll-top="bodyRestore" :show-scrollbar="false" @scroll="bodyTop=$event.detail.scrollTop" @touchstart="touchStart" @touchend="touchEnd">
     <text v-if="returnError" class="detail-error" role="alert">{{returnError}}</text>
     <view v-if="state.phase==='loading'" class="detail-status" role="status">正在核对本餐来源…</view>
@@ -183,22 +162,20 @@ defineExpose({open,close,clear,handleBack:()=>requestBack(true)})
       <view class="detail-section-heading"><text>本餐菜品</text><text>共 {{state.meal.dishes.length}} 道</text></view>
       <text v-if="portionRows.some(rows => rows.length)" class="portion-basis">建议食用量按成品可食重量计</text>
       <view v-for="(item,index) in state.meal.dishes" :key="key+':'+dishKey(item)" class="detail-dish-card">
-       <view class="detail-dish-actions"><button tabindex="0" role="button" class="detail-dish-row" :aria-label="dishTitle(item)" @click="showDish(index)"><FoodImageSlot :src="recipeCover(item)?.image_url" :label="dishTitle(item)" :width="72" :height="72" :radius="18" fallback-icon class="detail-thumb"/><view><text class="detail-dish-name">{{dishTitle(item)}}</text></view></button>
-       <button v-if="swapOptions(item).length" class="detail-swap" :disabled="busy||dishSwap.busy" @click="openSwap(item)">换一换</button></view>
+       <button tabindex="0" role="button" class="detail-dish-row" :aria-label="dishTitle(item)" @click="showDish(index)"><FoodImageSlot :src="recipeCover(item)?.image_url" :label="dishTitle(item)" :width="72" :height="72" :radius="18" fallback-icon class="detail-thumb"/><view><text class="detail-dish-name">{{dishTitle(item)}}</text></view></button>
        <DishMemberPortions class="detail-dish-portions" :portions="portionRows[index]"/>
       </view>
 
 
      </template>
-     <text v-if="dishSwap.error&&!dishSwap.open" class="detail-error">{{dishSwap.error}}</text>
-     <view v-if="dishOpened&&dish" v-show="state.view==='dish'"><button v-if="swapOptions(dish).length" class="detail-swap single-swap" :disabled="busy||dishSwap.busy" @click="openSwap(dish)">换一换</button><CookingGuide :dishes="[dish]" continuous action=""/></view>
+     <view v-if="dishOpened&&dish" v-show="state.view==='dish'"><CookingGuide :dishes="[dish]" continuous action=""/></view>
      <template v-if="state.view==='members'"><text class="detail-copy">只调整本餐，确认后重新核对餐单与采购。</text><button tabindex="0" role="button" v-for="member in members" :key="member.id" class="detail-member-choice" :aria-pressed="memberIds.includes(member.id)" :disabled="busy" @click="toggleMember(member.id)"><text class="detail-member-name">{{member.name}}</text><text class="detail-member-check" aria-hidden="true">{{memberIds.includes(member.id)?'✓':'○'}}</text></button><text v-if="memberError||referenceRevisionState.notice" class="detail-error">{{memberError||referenceRevisionState.notice}}</text><text v-if="referenceRevisionState.consentOption" class="detail-copy">处理方：{{referenceRevisionState.consentOption.processor}}。政策版本：{{referenceRevisionState.consentOption.policyVersion}}。</text><text v-for="(question,index) in referenceRevisionState.pending?.questions||[]" :key="index" class="detail-copy">{{question}}</text></template>
     </template>
     <view class="detail-bottom-space"/>
    </scroll-view>
-   <view v-if="state.view==='dish'||state.view==='members'" class="detail-footer" :class="{'dish-actions':state.view==='dish'}">
+   <view v-if="state.view==='dish'||state.view==='members'||state.view==='meal'&&canPurchase" class="detail-footer" :class="{'dish-actions':state.view==='dish'}">
     <template v-if="state.view==='members'"><button tabindex="0" role="button" class="detail-secondary" :disabled="busy" @click="requestBack()">取消调整</button><button tabindex="0" role="button" class="detail-primary" :disabled="busy||!memberIds.length||state.phase!=='ready'" @click="saveMembers">{{memberBusy||revisingReference?'正在核对…':referenceRevisionState.consentOption?'同意并继续配餐':'确认成员'}}</button></template>
-    <button v-else role="button" tabindex="0" class="detail-primary" :disabled="busy||state.phase!=='ready'||target.dailyPlanVersion==null||target.date!==localDate()" @click="startCooking">烹饪</button>
+    <template v-else><button v-if="state.view==='dish'" role="button" tabindex="0" class="detail-primary" :disabled="busy||state.phase!=='ready'||target.dailyPlanVersion==null||target.date!==localDate()" @click="startCooking">烹饪</button><button v-if="canPurchase" role="button" tabindex="0" class="detail-secondary" :disabled="busy" @click="showPurchase">购买</button></template>
    </view>
    <view v-if="cookingOpen" class="cook-mask" @click.self="!cookingBusy&&(cookingOpen=false)"><view class="cook-sheet" role="dialog" aria-modal="true" aria-label="选择烹饪餐段"><view class="cook-heading"><text>加入今日哪一餐？</text><button role="button" tabindex="0" :disabled="cookingBusy" @click="cookingOpen=false">×</button></view><view class="cook-choices"><button role="button" tabindex="0" v-for="(label,type) in {breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}" :key="type" :aria-pressed="cookingMeal===type" :class="{selected:cookingMeal===type}" :disabled="cookingBusy" @click="cookingMeal=type">{{label}}</button></view><text v-if="cookingError" class="detail-error" role="alert">{{cookingError}}</text><button role="button" tabindex="0" class="detail-primary" :disabled="cookingBusy" @click="confirmCooking">{{cookingBusy?'正在加入…':'确认加入'}}</button></view></view>
    <MealPurchaseSheet v-if="purchaseMounted&&state.phase==='ready'&&canPurchase" ref="purchaseSheet" :open="purchaseOpen" :busy="!!purchaseRef?.isBusy" @close="closePurchase"><CloudMealPurchase :key="key+':'+(purchaseDish?dishKey(purchaseDish):'meal')" ref="purchaseRef" embedded unified :visible="purchaseOpen" :meal="target.purchaseMembers?{...state.meal,members:target.purchaseMembers}:state.meal" :route="purchaseRoute" :reference="purchaseScope?null:referencePurchase" :selection="purchaseScope" @scroll="purchaseSheet?.setScrollTop($event)"/></MealPurchaseSheet>
@@ -223,8 +200,4 @@ defineExpose({open,close,clear,handleBack:()=>requestBack(true)})
 .detail-dish-card { margin-bottom: 14px; border: 1px solid var(--ui-bubble-line); border-radius: 26px; background: var(--ui-bubble); box-shadow: var(--ui-bubble-shadow); }
 .detail-dish-card .detail-dish-row { margin: 0; border: 0; background: transparent; box-shadow: none; }
 .detail-dish-portions { padding: 0 18px 15px; }
-</style>
-
-<style scoped>
-.detail-dish-actions{display:flex;align-items:center;gap:10px}.detail-dish-actions .detail-dish-row{flex:1;min-width:0}.detail-swap{flex-shrink:0;margin:0;padding:0 10px;min-height:44px;line-height:44px;border-radius:12px;background:#f2f3ef;color:#53604e;font-size:13px}.detail-swap:after{border:0}.single-swap{margin:0 0 16px auto;width:max-content}
 </style>

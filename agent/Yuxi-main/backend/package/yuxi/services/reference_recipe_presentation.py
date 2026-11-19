@@ -119,7 +119,7 @@ async def prepare_recipe_images(meals):
         return [False]
 
 
-async def generated_recipe_image(dish):
+async def generated_recipe_image(dish, *, strict=False):
     """只读查询已存在的成品图；不存在时由调用方保留原谱图或无图状态。"""
     client = get_minio_client()
     key = recipe_image_key(dish)
@@ -133,11 +133,15 @@ async def generated_recipe_image(dish):
         )
         await asyncio.to_thread(probe.stat_object, "public", key)
     except S3Error as error:
-        if error.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
+        if error.code in {"NoSuchKey", "NoSuchObject"}:
             return {}
+        if strict:
+            raise StorageError("Recipe image storage unavailable") from error
         logger.warning("Recipe image read unavailable: {}", type(error).__name__)
         return {}
     except (StorageError, StorageHTTPError, OSError) as error:
+        if strict:
+            raise StorageError("Recipe image storage unavailable") from error
         logger.warning("Recipe image read unavailable: {}", type(error).__name__)
         return {}
     return {
@@ -148,7 +152,7 @@ async def generated_recipe_image(dish):
 
 async def generate_recipe_image(dish):
     """使用现有图片供应商生成成品菜，压缩后保存在公共菜谱图片目录。"""
-    if await generated_recipe_image(dish):
+    if await generated_recipe_image(dish, strict=True):
         return
     key = os.getenv("RECIPE_IMAGE_API_KEY")
     base_url = os.getenv("RECIPE_IMAGE_BASE_URL", "").rstrip("/")
@@ -188,7 +192,20 @@ async def generate_recipe_image(dish):
         data = base64.b64decode(encoded, validate=True)
         content = await asyncio.to_thread(compress_recipe_image, data)
     async with asyncio.timeout(12):
-        await get_minio_client().aupload_file("public", recipe_image_key(dish), content, "image/webp")
+        await publish_recipe_image(dish, content)
+
+
+async def publish_recipe_image(dish, content):
+    """按图片键串行复核再发布，保留并发任务已经生成的图片。"""
+    from sqlalchemy import text
+    from yuxi.storage.postgres.manager import pg_manager
+
+    key = recipe_image_key(dish)
+    async with pg_manager.get_async_session_context() as session:
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": key})
+        if await generated_recipe_image(dish, strict=True):
+            return
+        await get_minio_client().aupload_file("public", key, content, "image/webp")
 
 
 def recipe_image_key(dish):

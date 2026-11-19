@@ -4,6 +4,15 @@ import { onLoad, onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import AppNavBar from '../../components/AppNavBar.vue'
 import { createHealthPlanClient, healthPlanState } from '../../services/health-plan-client.js'
 import { archiveCard, archiveDate, plannedGrams } from '../../services/meal-archive-presentation.js'
+import { createMealArchiveClient, mealArchiveState } from '../../services/meal-archive-client.js'
+const archiveMode = ref(false), archiveDay = ref(''), archive = reactive(mealArchiveState())
+const archiveClient = createMealArchiveClient({ state: archive })
+function readArchive() { return archiveDay.value ? archiveClient.detail(archiveDay.value) : archiveClient.list() }
+function selectArchive(day) { archiveDay.value = day; return readArchive() }
+function backArchive() {
+  if (archiveDay.value) { archiveDay.value = ''; archiveClient.discard(); return archiveClient.list() }
+  uni.navigateBack()
+}
 const selectedPlanId = ref(''), view = ref('list'), reviewExpanded = ref(false)
 const state = reactive(healthPlanState()), memberId = ref(''), replace = ref(false), reason = ref('')
 const client = createHealthPlanClient({ state })
@@ -18,6 +27,7 @@ const locked = computed(() => state.busy || !!state.pending)
 let visibility = 0
 function resetActions() { replace.value = false; reason.value = ''; reviewExpanded.value = false }
 async function load() {
+  if (archiveMode.value) return readArchive()
   const current = ++visibility
   resetActions()
   await client.open(memberId.value)
@@ -26,11 +36,13 @@ async function load() {
   if (selectedPlanId.value && !state.pending && state.memberId) await client.detail(selectedPlanId.value)
 }
 onLoad(options => {
+  archiveMode.value = options.archive === '1' || !!options.date
+  archiveDay.value = options.date || ''
   memberId.value = options.memberId || ''; selectedPlanId.value = options.planId || ''
   view.value = selectedPlanId.value ? 'detail' : 'list'
 })
 onShow(load)
-function clear() { visibility++; client.discard(); resetActions() }
+function clear() { visibility++; client.discard(); archiveClient.discard(); resetActions() }
 onHide(clear); onUnload(clear)
 function top() { uni.pageScrollTo({ scrollTop: 0, duration: 0 }) }
 function select(plan) {
@@ -56,7 +68,29 @@ async function retry() {
 function chat() { if (!locked.value) uni.navigateTo({ url: '/pages/chat/index' }) }
 </script>
 <template>
-  <view class="screen meal-archive">
+  <view v-if="archiveMode" class="screen meal-archive">
+    <AppNavBar :title="archiveDay?'餐单详情':'我的餐单'"><template #left><button class="mra-back" aria-label="返回" @click="backArchive">‹</button></template></AppNavBar>
+    <text class="mra-caption">家庭已生成餐单 · 只读记录</text>
+    <text v-if="archive.busy" role="status">正在读取餐单…</text>
+    <view v-if="archive.error" class="mra-alert" role="alert"><text>{{archive.error}}</text><button @click="readArchive">重新读取</button></view>
+    <template v-if="archiveDay && archive.plan">
+      <text class="mra-card-title">{{archiveDate(archive.plan.plan_date).title}}的餐单</text>
+      <view v-for="meal in archive.plan.meals" :key="meal.meal_type" class="mra-card">
+        <text class="mra-section-title">{{meals[meal.meal_type]}}</text>
+        <view v-for="(dish,index) in meal.dishes" :key="index" class="mra-meal-row"><text>{{dish.name}}</text><text class="mra-caption">{{(dish.ingredients||[]).join('、')}}</text></view>
+      </view>
+    </template>
+    <template v-else-if="!archiveDay">
+      <view v-for="plan in archive.plans" :key="plan.plan_date" class="mra-card">
+        <text class="mra-card-title">{{archiveDate(plan.plan_date).title}}的餐单</text>
+        <view v-for="meal in plan.meals" :key="meal.meal_type" class="mra-meal-row"><text>{{meals[meal.meal_type]}}</text><text>{{meal.dishes.map(d=>d.name).join(' · ')}}</text></view>
+        <button class="mra-link" :disabled="archive.busy" @click="selectArchive(plan.plan_date)">查看餐单 →</button>
+      </view>
+      <text v-if="!archive.busy&&!archive.error&&!archive.plans.length" class="mra-caption">还没有已生成的家庭餐单。</text>
+      <button v-if="archive.nextBefore" :disabled="archive.busy" @click="archiveClient.list(true)">读取更早餐单</button>
+    </template>
+  </view>
+  <view v-else class="screen meal-archive">
     <AppNavBar :title="(view==='detail'?'餐单详情':'我的餐单')"><template #left><button class="mra-back" :aria-label="view==='detail'?'返回餐单列表':'返回'" @click="back">‹</button></template></AppNavBar>
     <view v-if="view==='list'" class="mra-heading">
       <text>好好吃饭，</text><text>每一餐都有迹可循。</text>

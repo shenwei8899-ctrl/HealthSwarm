@@ -335,11 +335,12 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       (state.checking || state.phase==='generating' || !!state.plan && requiredMeals(state.plan).length>0)
   }
   function acceptSavedPlan(plan, profile) {
-    if(disposed||plan.date!==day()||state.plan?.version>plan.version)return
+    if (disposed || plan?.date !== day() || plan.status !== 'ready' || !Number.isInteger(plan.version) ||
+        state.plan?.version > plan.version) return
     stop()
-    Object.assign(state,{plan,date:plan.date,verified:true,displayable:true,checking:false,phase:'ready',pending:plan.pending||null})
+    Object.assign(state,todayMealPlanState(),{plan,date:plan.date,verified:true,displayable:true,phase:'ready',pending:plan.pending||null})
     menuCache.write(context(),profile,plan.date,plan)
     onPlan(plan)
   }
-  return {open,acceptSavedPlan,isGenerating,pause:stop,clear,dispose(){stop();disposed=true;Object.assign(state,todayMealPlanState())}}
+  return {open,acceptSavedPlan,acceptConsent,isGenerating,pause:stop,clear,dispose(){stop();disposed=true;Object.assign(state,todayMealPlanState())}}
 }

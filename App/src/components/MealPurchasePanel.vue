@@ -3,7 +3,9 @@ import { computed, ref } from 'vue'
 import FoodImageSlot from './FoodImageSlot.vue'
 const props = defineProps({ gaps: { type: Array, default: () => [] }, products: Array, picked: Array, address: Object, slots: Array, slotId: [String,Number], quote: Object,
   title: { type: String, default: '本餐食材' }, fixed: Boolean,
-  busy: Boolean, pricing: Boolean, ready: Boolean, choicesReady: Boolean, pending: Boolean, error: String, accessRequired: Boolean, canSubmit: Boolean, retryLabel: { type: String, default: '重新核对' } })
+  busy: Boolean, pricing: Boolean, ready: Boolean, choicesReady: Boolean, independent: Boolean,
+  productsLoading: Boolean, addressReady: Boolean, addressLoading: Boolean, slotsLoading: Boolean, addressError: String,
+  pending: Boolean, error: String, accessRequired: Boolean, canSubmit: Boolean, retryLabel: { type: String, default: '重新核对' } })
 defineEmits(['address','slot','toggle','quantity','confirm','recover','retry','scroll'])
 const timesOpen = ref(false)
 const slot = computed(() => props.slots?.find(item => String(item.id) === String(props.slotId)))
@@ -13,9 +15,12 @@ const total = computed(() => !props.ready ? '—' : props.picked?.length ? money
 const preparationGaps = computed(() => props.gaps.filter(gap => gap.reason !== 'optional_not_selected'))
 const optionalGaps = computed(() => props.gaps.filter(gap => gap.reason === 'optional_not_selected'))
 const optionalText = computed(() => optionalGaps.value.map(gap => gap.label || gap.ingredient).join('、'))
-const deliveryText = computed(() => slot.value ? slotName(slot.value) : !props.ready
+const deliveryText = computed(() => props.independent && props.slotsLoading ? '正在读取配送时段…' : slot.value ? slotName(slot.value) : !props.ready
   ? props.error ? '暂不可用' : props.busy ? '正在读取…' : '待核对'
   : props.address ? '暂无可用时段' : '添加地址后选择')
+function showPaymentNotice() {
+  uni.showToast({ title: '尚未接入微信支付', icon: 'none' })
+}
 </script>
 <template>
   <view class="mp-order">
@@ -23,11 +28,11 @@ const deliveryText = computed(() => slot.value ? slotName(slot.value) : !props.r
       <slot v-if="accessRequired" name="access"/>
       <template v-else>
         <view class="mp-delivery mp-surface">
-          <button class="mp-address" :disabled="busy||!ready" @click="$emit('address')"><view><text class="mp-row-title">{{address?(address.name||address.receiver)+' · '+(address.phone||address.mobile):'添加配送地址'}}</text><text v-if="address" class="mp-support">{{address.region}} {{address.detail}}</text></view><text class="mp-chevron">›</text></button>
+          <button class="mp-address" :disabled="busy||(independent?!addressReady:!ready)" @click="$emit('address')"><view><text class="mp-row-title">{{address?(address.name||address.receiver)+' · '+(address.phone||address.mobile):'添加配送地址'}}</text><text v-if="address" class="mp-support">{{address.region}} {{address.detail}}</text><text v-if="addressError" class="mp-support">{{addressError}}</text></view><text class="mp-chevron">›</text></button>
           <button class="mp-delivery-time" :disabled="busy||!slots?.length" @click="timesOpen=!timesOpen"><text>配送时间</text><text class="mp-time-value">{{deliveryText}}</text><text class="mp-chevron">›</text></button>
           <view v-if="timesOpen&&slots?.length" class="mp-times"><button v-for="item in slots" :key="item.id" :class="{chosen:String(item.id)===String(slotId)}" :disabled="busy" @click="$emit('slot',item.id);timesOpen=false"><text>{{slotName(item)}}</text><text v-if="String(item.id)===String(slotId)">✓</text></button></view>
         </view>
-        <view v-if="busy&&!ready&&!choicesReady" class="mp-loading" role="status">{{fixed?'正在准备商品与价格…':'正在准备本餐商品与价格…'}}</view>
+        <view v-if="(independent?productsLoading:busy)&&!ready&&!choicesReady" class="mp-loading" role="status">{{independent?'正在读取所选菜品的食材…':fixed?'正在准备商品与价格…':'正在准备本餐商品与价格…'}}</view>
         <view v-if="error" class="mp-error" role="alert"><text>{{error}}</text><button :disabled="busy" @click="$emit('retry')">{{retryLabel}}</button></view>
         <view v-if="preparationGaps.length" class="mp-preparation mp-surface">
           <text class="mp-preparation-title">自行购买 / 自行准备</text>
@@ -50,13 +55,17 @@ const deliveryText = computed(() => slot.value ? slotName(slot.value) : !props.r
       </template>
       <view class="mp-scroll-space"/>
     </scroll-view>
-    <view v-if="!accessRequired" class="mp-order-footer"><view class="mp-total"><text>合计</text><text>{{(busy||pricing)&&ready?'核算中…':total}}</text></view><button :disabled="busy||(!pending&&!canSubmit)" @click="pending?$emit('recover'):$emit('confirm')">{{pending?'确认原订单':busy?'正在核对…':choicesReady&&!ready?'确认规格并核价':'确认下单'}}</button></view>
+    <view v-if="!accessRequired" class="mp-order-footer"><view class="mp-total"><text>合计</text><text>{{(busy||pricing)&&ready?'核算中…':total}}</text></view><button @click="showPaymentNotice">确认下单</button></view>
   </view>
 </template>
 <style>
 /* #ifdef MP-WEIXIN */
 :host{display:flex;flex-direction:column;flex:1;height:100%;min-height:0}
 /* #endif */
+</style>
+
+<style scoped>
+.mp-order .mp-address[disabled]{opacity:1}
 </style>
 <style scoped>
 .mp-order{display:flex;flex:1;flex-direction:column;height:100%;min-height:0;color:var(--ui-text)}.mp-order-scroll{height:0;flex:1;min-height:0;padding:0 18px;box-sizing:border-box}.mp-surface{border:1px solid var(--ui-bubble-line);border-radius:22px;background:var(--ui-bubble);box-shadow:var(--ui-bubble-shadow)}

@@ -200,7 +200,7 @@ def rank_reference_recipes(
     )
 
 
-def prepare_reference_documents(rows):
+def prepare_reference_documents(rows, *, include_recall=True):
     """同批查询只拼接一次原谱分片并提取查询无关的召回信息。"""
     documents = {}
     for file_id, kb_id, filename, file_hash, chunk_id, content in rows:
@@ -220,25 +220,29 @@ def prepare_reference_documents(rows):
         document["chunks"].append((chunk_id, content))
     prepared = []
     for document in documents.values():
-        prepared.append({**document, **prepared_content(document["source"]["filename"], tuple(document["chunks"]))})
+        prepared.append({
+            **document,
+            **prepared_content(document["source"]["filename"], tuple(document["chunks"]), include_recall),
+        })
     return prepared
 
 
 @lru_cache(maxsize=8192)
-def prepared_content(filename, chunks):
+def prepared_content(filename, chunks, include_recall=True):
     """以实际分片内容缓存解析；文件删除仍由每次目录查询排除。"""
     content = "\n".join(value for _, value in chunks)
+    parsed = parse_reference_recipe(content)
+    source = {"content": content, "parsed": parsed, "chunks_hash": input_fingerprint(chunks)}
+    if not include_recall:
+        return source
     title = re.sub(r"__[0-9a-f]+\.md$", "", filename, flags=re.I)
     title = title.removesuffix(".md").replace("_", " ").casefold()
-    parsed = parse_reference_recipe(content)
     return {
-        "content": content,
+        **source,
         "body": content.casefold().translate(_SEARCH_ALIASES),
         "title": title.translate(_SEARCH_ALIASES),
         "title_foods": recall_foods(title),
         "foods": recall_foods(content),
-        "parsed": parsed,
-        "chunks_hash": input_fingerprint(chunks),
         "food_groups": frozenset(recipe_food_groups(parsed.ingredients) if parsed else ()),
         "seasoning_only": bool(parsed and all(ingredient_food(line) in SEASONINGS for line in parsed.ingredients)),
     }

@@ -34,7 +34,6 @@ watch(()=>props.scrollLocked,async locked=>{
 watch(()=>props.followBottom,value=>{following=value!==false;if(following)userScrolling=false})
 watch(()=>props.scrollTarget,target=>{if(target&&props.followBottom!==false)userScrolling=false})
 watch(()=>props.viewportStyle?.height,()=>{userScrolling=false;measure()},{flush:'post'})
-watch(()=>props.keyboardOpen,()=>{userScrolling=false;measure()},{flush:'post'})
 function beginRead(event){layoutGeneration++;userScrolling=true;if(event?.deltaY<0){following=false;publish()}}
 function rememberScroll(event){
  if(props.scrollLocked)return
@@ -47,10 +46,10 @@ onMounted(()=>measure())
 onUnmounted(()=>{alive=false;layoutGeneration++;clearTimeout(measureTimer)})
 
 const shortcuts = [
-  { key: 'plans', icon: 'calendar', name: 'AI专属计划' },
-  { key: 'family', icon: 'family', name: '家庭档案' },
-  { key: 'camera', icon: 'camera', name: '拍照记餐' },
-  { key: 'today', icon: 'record', name: '今日餐单' },
+  { key: 'plans', icon: 'calendar', artwork: '/static/chat/shortcut-plan.svg', name: 'AI专属计划' },
+  { key: 'family', icon: 'family', artwork: '/static/chat/shortcut-family.svg', name: '家庭档案' },
+  { key: 'camera', icon: 'camera', artwork: '/static/chat/shortcut-camera.svg', name: '拍照记餐' },
+  { key: 'today', icon: 'record', artwork: '/static/chat/shortcut-menu.svg', name: '今日餐单' },
   { key: 'community', icon: 'chat', name: '加入社群' },
 ]
 function choose(key){emit('shortcut',key)}
@@ -62,7 +61,7 @@ function finishWelcome(event){
 }
 </script>
 <template>
- <view class="screen nutritionist-layout chat-screen" :class="{'voice-is-busy':voiceBusy,'entry-transition':entryTransition,'keyboard-open':entryTransition&&keyboardOpen}" :style="entryTransition?viewportStyle:null">
+ <view class="screen nutritionist-layout chat-screen" :class="{'voice-is-busy':voiceBusy,'entry-transition':entryTransition,'home-surface':entryTransition&&welcomeMounted,'conversation-surface':entryTransition&&!welcomeMounted,'keyboard-open':entryTransition&&keyboardOpen}" :style="entryTransition?viewportStyle:null">
   <AppNavBar capsule-aligned><view class="nav-row chat-nav">
    <button class="history-button" aria-label="打开对话列表" :aria-expanded="historyOpen" :disabled="voiceBusy" @click="$emit('history')"><view class="header-entry-icon" aria-hidden="true"><image class="history-entry-icon" src="/static/chat/history.png" mode="aspectFit"/></view></button>
    <view class="assistant-title"><text>家庭营养师</text></view>
@@ -77,7 +76,7 @@ function finishWelcome(event){
    <view class="shortcut-reveal">
    <scroll-view class="shortcut-scroll" scroll-x :show-scrollbar="false">
    <view class="bottom-shortcuts" role="group" aria-label="常用功能">
-    <button v-for="item in shortcuts" :key="item.key" class="shortcut-button" :class="'shortcut-'+item.key" :hover-class="voiceBusy?'none':'shortcut-pressed'" :hover-start-time="0" :hover-stay-time="50" :aria-label="item.name" :disabled="voiceBusy" @click="choose(item.key)"><view class="shortcut-symbol" aria-hidden="true"><AppIcon :name="item.icon" :size="46"/></view><text>{{item.name}}</text></button>
+    <button v-for="item in shortcuts" :key="item.key" class="shortcut-button" :class="'shortcut-'+item.key" :hover-class="voiceBusy?'none':'shortcut-pressed'" :hover-start-time="0" :hover-stay-time="50" :aria-label="item.name" :disabled="voiceBusy" @click="choose(item.key)"><view class="shortcut-symbol" aria-hidden="true"><image v-if="item.artwork" class="shortcut-artwork" :src="item.artwork" mode="aspectFit"/><AppIcon v-else :name="item.icon" :size="46"/></view><text>{{item.name}}</text></button>
    </view>
    </scroll-view>
    </view>
@@ -96,11 +95,12 @@ function finishWelcome(event){
 .edge-fades.has-scrolled:before{top:0;height:28px;background:linear-gradient(180deg,#f1f3fb,rgba(241,243,251,0))}
 .edge-fades:after{bottom:0;height:28px;background:linear-gradient(0deg,#eef0f8,rgba(238,240,248,0))}
 .conversation{height:100%;width:100%}.conversation :deep(.uni-scroll-view),.shortcut-scroll :deep(.uni-scroll-view){scrollbar-width:none}.conversation :deep(.uni-scroll-view::-webkit-scrollbar),.shortcut-scroll :deep(.uni-scroll-view::-webkit-scrollbar){display:none}.conversation-spacer{height:40px}.composer-wrap{flex-shrink:0;padding-top:10px;border:0}.voice-is-busy .conversation{opacity:.35;pointer-events:none}
-.welcome-layer{position:absolute;inset:0;z-index:1;background:transparent;animation:welcome-appear 180ms ease-out both}.welcome-layer.is-leaving{pointer-events:none;animation:welcome-leave 260ms ease-out both}.awaiting-welcome{visibility:hidden}.shortcut-reveal{height:90px;opacity:1;overflow:hidden}.nutritionist-layout.entry-transition{min-height:0}.nutritionist-layout.keyboard-open{padding-bottom:10px}.keyboard-open .shortcut-reveal{height:0;opacity:0;visibility:hidden;pointer-events:none}
+.welcome-layer{position:absolute;inset:0;z-index:1;background:transparent;animation:welcome-appear 180ms ease-out both}.welcome-layer.is-leaving{pointer-events:none;animation:welcome-leave 260ms ease-out both}.awaiting-welcome{visibility:hidden}.shortcut-reveal{height:90px;opacity:1;overflow:hidden}.nutritionist-layout.entry-transition{min-height:0}.nutritionist-layout.keyboard-open{padding-bottom:10px}
 .shortcut-scroll{width:100%;height:82px;margin-bottom:8px;white-space:nowrap}.shortcut-scroll :deep(.uni-scroll-view){scrollbar-width:none}.shortcut-scroll :deep(.uni-scroll-view::-webkit-scrollbar){display:none}.bottom-shortcuts{display:inline-flex;align-items:center;gap:9px;min-width:100%;height:80px;vertical-align:top;white-space:nowrap;padding-right:3px}
 .shortcut-button{display:inline-flex;flex:0 0 auto;flex-direction:column;align-items:center;justify-content:center;gap:5px;width:70px;min-width:70px;height:72px;min-height:72px;box-sizing:border-box;margin:0;padding:6px 2px;border:1px solid rgba(255,255,255,.8);border-radius:14px;background:linear-gradient(155deg,rgba(255,255,255,.4),rgba(255,255,255,.82));color:#454252;font-size:11px;font-weight:400;line-height:1.4;text-align:center;white-space:nowrap;box-shadow:0 2px 6px rgba(164,161,207,.03)}.shortcut-button:after{border:0}.shortcut-button>text{display:block;flex-shrink:0;white-space:nowrap}
-.shortcut-symbol{display:flex;align-items:center;justify-content:center;flex-shrink:0;width:33px;height:33px;border-radius:10px;color:#fff;background:linear-gradient(140deg,#c3a4ff,#8557ed);box-shadow:inset 1px 1px 1px rgba(255,255,255,.7),0 4px 7px rgba(123,84,216,.2);transform:rotate(-7deg)}.shortcut-symbol :deep(.app-icon){width:22px!important;height:22px!important;transform:rotate(7deg)}
-.shortcut-family .shortcut-symbol{background:linear-gradient(140deg,#ffcb91,#f27350);box-shadow:inset 1px 1px 1px rgba(255,255,255,.7),0 4px 7px rgba(232,136,76,.18);transform:rotate(7deg)}.shortcut-camera .shortcut-symbol{background:linear-gradient(140deg,#ffdc85,#ed9e35);box-shadow:inset 1px 1px 1px rgba(255,255,255,.7),0 4px 7px rgba(226,160,62,.18)}.shortcut-today .shortcut-symbol{background:linear-gradient(140deg,#a0e5d1,#46b69f);box-shadow:inset 1px 1px 1px rgba(255,255,255,.7),0 4px 7px rgba(66,167,144,.18);transform:rotate(7deg)}.shortcut-community .shortcut-symbol{background:linear-gradient(140deg,#c8bbff,#8d6ce9)}
+/* Keep the original palette; share one upright silhouette and soft lighting. */
+.shortcut-symbol{--shortcut-shadow:123,84,216;position:relative;display:flex;align-items:center;justify-content:center;flex-shrink:0;width:33px;height:33px;border-radius:10px;color:#fff;background:linear-gradient(140deg,#c3a4ff,#8557ed);box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 -1px 0 rgba(0,0,0,.04),0 2px 4px rgba(var(--shortcut-shadow),.13)}.shortcut-symbol:after{content:'';position:absolute;inset:0;border:1px solid rgba(255,255,255,.18);border-radius:inherit;pointer-events:none}.shortcut-artwork{display:block;width:25px;height:25px;flex-shrink:0}.shortcut-symbol :deep(.app-icon){width:22px!important;height:22px!important}
+.shortcut-family .shortcut-symbol{--shortcut-shadow:232,136,76;background:linear-gradient(140deg,#ffcb91,#f27350)}.shortcut-camera .shortcut-symbol{--shortcut-shadow:226,160,62;background:linear-gradient(140deg,#ffdc85,#ed9e35)}.shortcut-today .shortcut-symbol{--shortcut-shadow:66,167,144;background:linear-gradient(140deg,#a0e5d1,#46b69f)}.shortcut-community .shortcut-symbol{background:linear-gradient(140deg,#c8bbff,#8d6ce9)}
 .shortcut-button:active{background:rgba(255,255,255,.9)}.shortcut-button[disabled]{opacity:.45;color:#777}.profile-button:active,.history-button:active{background:var(--ui-accent-soft)}
 .latest-reply-button{position:absolute;right:4px;bottom:10px;display:flex;align-items:center;gap:7px;min-height:44px;margin:0;padding:0 15px;border:0;border-radius:999px;background:var(--ui-surface);color:var(--ui-accent);box-shadow:0 3px 16px rgba(45,36,72,.06);font-size:13px;z-index:3}.latest-reply-button:after{border:0}.latest-reply-button>text{font-size:19px}
 @keyframes welcome-leave{from{opacity:1}to{opacity:0}}@keyframes welcome-appear{from{opacity:0}to{opacity:1}}@media(prefers-reduced-motion:reduce){.welcome-layer,.welcome-layer.is-leaving{animation-duration:1ms}}
@@ -109,9 +109,27 @@ function finishWelcome(event){
 @media(max-width:350px){.nutritionist-layout.chat-screen{padding-left:16px;padding-right:16px}}
 /* #endif */
 
-/* Native hover owns the press lifecycle; animate the card without replacing icon rotations. */
+/* Native hover owns the press lifecycle; animate the whole card. */
 .shortcut-button{transform:translateY(0) scale(1);transform-origin:center;transition:transform 180ms cubic-bezier(.2,.9,.3,1.25)}
 .shortcut-button.shortcut-pressed{transform:translateY(1px) scale(.96);transition:transform 70ms ease-out;background:rgba(255,255,255,.9)}
 .shortcut-button[disabled]{transform:none;transition:none}
 @media(prefers-reduced-motion:reduce){.shortcut-button,.shortcut-button.shortcut-pressed{transform:none;transition:none}}
+
+/* Home and conversation share the approved white-centered edge colors. */
+.nutritionist-layout.chat-screen.home-surface,.nutritionist-layout.chat-screen.conversation-surface{
+ --chat-composer-background:rgba(255,255,255,.96);
+ --chat-composer-border:#eeebf6;
+ --chat-composer-shadow:0 4px 20px rgba(111,92,153,.035),inset 0 1px 0 #fff;
+ background:
+ linear-gradient(90deg,#ffffff00 0%,#ffffff66 13%,#fffffff2 34%,#fff 44%,#fff 56%,#fffffff2 66%,#ffffff66 87%,#ffffff00 100%),
+ radial-gradient(ellipse 94% 46% at -15% 3%,#bdddf8 0%,#d7eafa 40%,transparent 86%),
+ radial-gradient(ellipse 91% 47% at 114% 11%,#ddc7f0 0%,#eadbf5 40%,transparent 86%),
+ radial-gradient(ellipse 94% 48% at -14% 90%,#d2c9f3 0%,#e5ddf9 40%,transparent 86%),
+ radial-gradient(ellipse 94% 48% at 114% 92%,#f3cde4 0%,#f8e1ee 40%,transparent 86%),#fff;
+}
+.nutritionist-layout.conversation-surface{--ui-text:#575268}
+.conversation-surface .edge-fades:before,.conversation-surface .edge-fades:after{display:none}
+.home-surface .welcome-layer :deep(.uni-scroll-view-content){min-height:100%;display:block}
+.home-surface .composer-wrap{padding-top:8px}
+.keyboard-open .shortcut-reveal{height:0;opacity:0;visibility:hidden;pointer-events:none}
 </style>

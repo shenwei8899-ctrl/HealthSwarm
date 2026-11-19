@@ -5,10 +5,15 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from importlib.util import find_spec
+from pathlib import Path
+from threading import BoundedSemaphore
 from uuid import uuid4
 
 import httpx
@@ -18,6 +23,9 @@ from yuxi.storage.redis import get_async_redis_client
 
 MAX_AUDIO_BYTES = 16000 * 2 * 60
 RESULT_TTL = 300
+logger = logging.getLogger(__name__)
+local_slot = BoundedSemaphore(1)
+local_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voice-paraformer")
 
 
 class VoiceError(Exception):
@@ -30,7 +38,15 @@ class VoiceError(Exception):
 
 def configuration() -> dict:
     """只公开能力状态和处理方，不公开凭据。"""
-    available = os.getenv("HEALTH_ASR_ENABLED") == "1" and all(
+    enabled = os.getenv("HEALTH_ASR_ENABLED") == "1"
+    provider = os.getenv("HEALTH_ASR_PROVIDER", "tencent")
+    if provider == "paraformer":
+        directory = os.getenv("HEALTH_ASR_MODEL_DIR")
+        available = enabled and bool(directory) and bool(find_spec("onnxruntime")) and all(
+            (Path(directory) / name).is_file() for name in ("model_int8.onnx", "config.json", "vocab.txt")
+        )
+        return {"available": available, "processor": "自有服务器语音识别", "max_seconds": 60}
+    available = enabled and provider == "tencent" and all(
         os.getenv(name, "").strip() for name in ("HEALTH_ASR_SECRET_ID", "HEALTH_ASR_SECRET_KEY")
     )
     return {"available": available, "processor": "腾讯云语音识别", "max_seconds": 60}
@@ -97,6 +113,40 @@ def read_cached(cached: str, digest: str) -> dict:
 
 
 async def recognize_pcm(data: bytes) -> str:
+    """按明确配置选择语音引擎。"""
+    if os.getenv("HEALTH_ASR_PROVIDER") == "paraformer":
+        return await recognize_local_pcm(data)
+    return await recognize_tencent_pcm(data)
+
+
+async def recognize_local_pcm(data: bytes) -> str:
+    """限制推理并发，取消或超时后保留槽位直至计算退出。"""
+    if not local_slot.acquire(blocking=False):
+        raise VoiceError("VOICE_BUSY", "语音服务繁忙，请稍后重试", 503)
+    try:
+        from yuxi.services.health_voice_paraformer import NoSpeech, recognize
+
+        future = local_executor.submit(recognize, Path(os.environ["HEALTH_ASR_MODEL_DIR"]), data)
+    except Exception as error:
+        local_slot.release()
+        logger.warning("Paraformer setup failed: %s", type(error).__name__)
+        raise VoiceError("VOICE_NOT_READY", "语音识别暂不可用，请稍后重试", 503) from error
+    future.add_done_callback(lambda _: local_slot.release())
+    pending = asyncio.wrap_future(future)
+    # A cancelled HTTP request no longer awaits this future.
+    pending.add_done_callback(lambda result: result.exception() if not result.cancelled() else None)
+    try:
+        return await asyncio.wait_for(asyncio.shield(pending), timeout=30)
+    except NoSpeech as error:
+        raise VoiceError("VOICE_EMPTY", "没有识别到内容，请重新录音", 422) from error
+    except TimeoutError as error:
+        raise VoiceError("VOICE_TIMEOUT", "语音识别超时，请稍后重试", 504) from error
+    except Exception as error:
+        logger.warning("Paraformer inference failed: %s", type(error).__name__)
+        raise VoiceError("VOICE_PROVIDER_FAILED", "语音识别暂不可用，请稍后重试", 503) from error
+
+
+async def recognize_tencent_pcm(data: bytes) -> str:
     """调用固定腾讯云端点，限制整次调用时长并拒绝空识别。"""
     body = json.dumps(
         {

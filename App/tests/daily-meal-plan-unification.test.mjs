@@ -1,4 +1,4 @@
-import { createDishSwap, dishSwapState } from '../src/services/dish-swap.js'
+import { createDishSwap, dishSwapState, watchDishSwap } from '../src/services/dish-swap.js'
 import {chatPromptProfileKey} from '../src/services/chat-prompt-profile.js'
 import {syntheticIntent} from './fixtures/health-intent.mjs'
 import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
@@ -44,7 +44,7 @@ function mount({read=async()=>plan()}={}){
   const hooks={},cache=new Map(),calls=[];let notify
   const flow={hide(){},async open(memberId,taskType,selection,options){calls.push({action:'open',memberId,taskType,selection,options});notify({memberId,taskType,available:true,entry:{thread_id:'thread'}})},async submit(text){calls.push({action:'submit',text});return true},async refresh(){calls.push({action:'refresh'});notify({taskType:'reference_meal_preview',requestId:'req',status:'completed',available:true})}}
   const state=()=>({phase:'idle',busy:false})
-  const deps={createDishSwap,dishSwapState,chatPromptProfileKey,todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),defineOptions:()=>{},mealPairingText,createChatEntryTransition,createChatKeyboardLayout,watch,ref,reactive,computed,nextTick,defineProps:()=>({route:{entry:'conversation'}}),onMounted:fn=>hooks.mounted=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
+  const deps={createDishSwap,dishSwapState,watchDishSwap,chatPromptProfileKey,todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),defineOptions:()=>{},mealPairingText,createChatEntryTransition,createChatKeyboardLayout,watch,ref,reactive,computed,nextTick,defineProps:()=>({route:{entry:'conversation'}}),onMounted:fn=>hooks.mounted=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
     listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,chatPresentation,chooseReference:referenceSelection,isReferencePlan,readDailyMealPlan:read,mealQuestionAction,canPurchaseAllMeals,
     openMealPage:(target,options)=>calls.push({action:'navigate',target,options}),
     dailyArrangementState:state,createDailyArrangementClient:()=>({reset(){},dispose(){}}),
@@ -99,12 +99,15 @@ test('view and repeated generation read the existing plan without submitting ano
   assert.equal(h.page.messages.value.at(-1).planDate,today);assert.equal(h.calls.length,0);h.dispose()
 })
 
-test('a chat request to change dinner gives guidance without submitting',async()=>{
+test('a dinner regeneration submits only dinner at the current version',async()=>{
   const h=mount()
   try{
     h.page.question.value='把晚餐换成蒸鱼';await h.page.sendQuestion()
-    assert.equal(h.page.messages.value.at(-1).text,'已安排的菜品请在餐单里调整。')
-    assert.equal(h.calls.some(call=>call.action==='submit'),false)
+    const opened=h.calls.find(call=>call.action==='open')
+    assert.equal(opened.options.fresh,true)
+    assert.deepEqual(opened.selection.meal_types,['dinner'])
+    assert.equal(opened.selection.daily_base_version,1)
+    assert.equal(h.calls.filter(call=>call.action==='submit').length,1)
   }finally{h.dispose()}
 })
 
@@ -150,22 +153,24 @@ test('rebuilding meals with different diners retains the question for separate r
   }finally{h.dispose()}
 })
 
-test('a completed plan stays read-only when asked to change it in chat',async()=>{
+test('a completed plan can be replaced from a fresh chat request',async()=>{
   const h=mount({read:async()=>plan(3)})
   try{
     h.page.setReference({mode:'reference',family_id:'family',plan_date:today,participant_ids:['self'],meal_types:['dinner'],daily_base_version:2})
     h.page.task.value={taskType:'reference_meal_preview',status:'completed',available:true,memberId:member,entry:{thread_id:'old-thread'}}
     h.page.question.value='把晚餐换成蒸鱼';await h.page.sendQuestion()
-    assert.equal(h.calls.some(call=>call.action==='submit'),false)
+    assert.equal(h.calls.some(call=>call.action==='submit'),true)
+    assert.equal(h.calls.find(call=>call.action==='open').options.fresh,true)
   }finally{h.dispose()}
 })
 
-test('a breakfast revision request does not reopen a completed three-meal plan',async()=>{
+test('a breakfast revision replaces only breakfast from a completed three-meal plan',async()=>{
   const h=mount({read:async()=>plan(3)})
   try{
     h.page.setReference({mode:'reference',family_id:'family',plan_date:today,participant_ids:['self'],meal_types:['breakfast','lunch','dinner'],daily_base_version:2})
     h.page.question.value='把早餐改成粥';await h.page.sendQuestion()
-    assert.equal(h.calls.some(call=>call.action==='open'),false)
+    assert.deepEqual(h.calls.find(call=>call.action==='open').selection.meal_types,['breakfast'])
+    assert.equal(h.calls.some(call=>call.action==='submit'),true)
   }finally{h.dispose()}
 })
 

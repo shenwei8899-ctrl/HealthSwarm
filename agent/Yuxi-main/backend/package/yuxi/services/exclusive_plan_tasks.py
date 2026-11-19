@@ -16,9 +16,7 @@ from yuxi.services.exclusive_plan_generation import (
     generate_exclusive_day,
 )
 from yuxi.services.exclusive_reference_plan import (
-    generate_reference_day,
-    optional_exclusive_catalog,
-    validate_reference_days,
+    generate_reference_day, optional_exclusive_catalog, prepare_reference_day, validate_reference_days,
 )
 from yuxi.services.exclusive_plan_service import (
     PREVIEW_POLICY,
@@ -61,6 +59,7 @@ async def run_exclusive_plan(context):
             await context.run_owned_transaction(save_catalog)
 
         if preview:
+            image_tasks = []
 
             async def finish_preview(session, _record):
                 """菜单完整且来源有效即可发布，不要求采购或价格完整。"""
@@ -75,9 +74,18 @@ async def run_exclusive_plan(context):
                 for entries in tiers.values():
                     await validate_saved_days(session, fresh, entries)
                 row.status, row.updated_at = "ready", utc_now_naive()
+                from yuxi.services.exclusive_plan_images import queue_plan_images
+
+                task, created = await queue_plan_images(session, row)
+                if created:
+                    image_tasks.append(task)
 
             await generate_exclusive_tiers(context, uid, fid, gid, policy, catalog)
             await context.run_owned_transaction(finish_preview)
+            from yuxi.services.task_service import tasker
+
+            for task in image_tasks:
+                await tasker.publish(task)
         else:
             await generate_exclusive_tiers(context, uid, fid, gid, policy, catalog)
             await publish_legacy_plans(context, uid, fid, gid, policy)
@@ -98,6 +106,7 @@ async def run_exclusive_plan(context):
 
 async def generate_exclusive_tiers(context, uid, fid, seed, policy, catalog):
     """逐日保存三档菜单，恢复时沿用原定备选顺序。"""
+    cost_cache = {}
     for tier in TIERS:
         for _ in range(21):
             await context.raise_if_cancelled()
@@ -115,7 +124,9 @@ async def generate_exclusive_tiers(context, uid, fid, seed, policy, catalog):
                 assert_basis(row, inputs)
                 await validate_saved_days(session, inputs, previous)
             if policy == PREVIEW_POLICY:
-                generated = await asyncio.to_thread(generate_reference_day, inputs, tier, previous, day_seed, catalog)
+                generated = await asyncio.to_thread(
+                    generate_reference_day, inputs, tier, previous, day_seed, catalog, cost_cache=cost_cache,
+                )
             else:
                 stock = catalog if catalog is not None else await current_catalog()
                 generated = await asyncio.to_thread(
@@ -140,7 +151,10 @@ async def generate_exclusive_tiers(context, uid, fid, seed, policy, catalog):
                 current_row = await owned_group(session, context, lock=True)
                 fresh = await exclusive_context(session, uid, fid, policy, day=day)
                 assert_basis(current_row, fresh)
-                await validate_saved_days(session, fresh, [generated])
+                if policy == PREVIEW_POLICY:
+                    await prepare_reference_day(session, fresh, generated, catalog)
+                else:
+                    await validate_saved_days(session, fresh, [generated])
                 tiers = current_row.progress.get("tiers", {})
                 saved = tiers.get(tier, [])
                 if len(saved) != len(previous):

@@ -62,8 +62,8 @@ async function run(name,options,verify){
  await context.addInitScript(({family,owner})=>localStorage.setItem('fn-session-v2:api',JSON.stringify({type:'object',data:{accountId:'1',accountName:'合成界面验收',householdId:family,token:'synthetic-ui-polish',authSource:'wechat',expiresAt:Date.now()/1000+86400,clientRevision:'ui-polish',families:[{id:family,name:'合成家庭',isOwner:owner,onboardingRequired:false}]}})),{family,owner:options.owner!==false})
  await context.route('**/*',async route=>{
   const request=route.request(),url=new URL(request.url()),p=url.pathname,method=request.method()
-  if(url.hostname!=='127.0.0.1'){external.push({origin:url.origin,blocked:true});await route.abort();return}
-  if(!p.startsWith('/api/')&&!p.startsWith('/commerce-api/')){await route.continue();return}
+  if(url.hostname!=='127.0.0.1'&&url.hostname!=='health.openswarm.run'){external.push({origin:url.origin,blocked:true});await route.abort();return}
+  if(!p.startsWith('/api/')&&!p.startsWith('/commerce-api/')){if(url.hostname==='127.0.0.1')await route.continue();else await route.abort();return}
   requests.push({path:p,method})
   let data,status=200
   if(p.endsWith('/session/exchange'))data={code:0,data:{user:{id:1,token:'synthetic-shop'},agent_account_id:'1'}}
@@ -99,7 +99,6 @@ async function run(name,options,verify){
 }
 async function home(page){
  await page.goto(origin+'/family-app/#/pages/chat/index')
- await page.locator('#chat-welcome-layer .prompt-grid > *').nth(3).waitFor()
  await page.waitForFunction(()=>document.querySelector('.camera-button')&&!document.querySelector('.camera-button').classList.contains('uni-button-disabled'))
  await page.locator('#chat-welcome-layer .character-rig.is-ready').waitFor()
  await page.waitForFunction(()=>getComputedStyle(document.querySelector('#chat-welcome-layer')).opacity==='1')
@@ -107,6 +106,7 @@ async function home(page){
 async function openFamily(page){
  // Initial API deep links are intentionally guarded; exercise the actual home entry.
  await page.goto(origin+'/family-app/#/pages/chat/index')
+ await page.locator('.shortcut-family').waitFor()
  await page.locator('.shortcut-family').click()
  await page.waitForURL(/pages\/profile\/index/)
  await page.locator('.family-overview').waitFor()

@@ -30,6 +30,7 @@ from yuxi.services.reference_recipe_matching import (
     ReferenceProductIndex,
     ingredient_food_for_products,
     optional_reference_ingredient,
+    parse_reference_recipe,
     product_foods,
 )
 from yuxi.services.reference_recipe_variety import validate_variety, variety_context
@@ -44,7 +45,7 @@ CAPABILITY_NOTICE = "当前沿用今日餐单口径生成21天参考菜单，未
 PRICE_NOTICE = "小计仅按已核对原谱用量计算所需包装，未核定家庭份量，不代表完整计划预算，不用于比较三档总费用。"
 
 
-async def exclusive_reference_context(session, uid, fid, *, day=None):
+async def exclusive_reference_context(session, uid, fid, *, day=None, load_documents=True):
     """复用今日餐单授权边界，来源不依赖审核配方或采购目录。"""
     family, _ = await FamilyService(session, uid).context(fid)
     diners = sorted((family.settings or {}).get("default_diners", []))
@@ -70,7 +71,10 @@ async def exclusive_reference_context(session, uid, fid, *, day=None):
         },
         "reference": current["sources"],
     }
-    documents = await asyncio.to_thread(prepare_reference_documents, await reference_recipe_rows(session))
+    documents = (
+        await asyncio.to_thread(prepare_reference_documents, await reference_recipe_rows(session))
+        if load_documents else []
+    )
     return {
         "mode": "reference",
         "selection": selection,
@@ -92,7 +96,7 @@ async def optional_exclusive_catalog():
         return {"items": [], "version": None, "status": "unavailable", "error_code": error.code}
 
 
-def generate_reference_day(context, tier, previous, seed, catalog):
+def generate_reference_day(context, tier, previous, seed, catalog, *, cost_cache=None):
     """共用今日选菜和跨日去重；只有可靠费用资料参与三档排序。"""
     selection = context["selection"].model_dump(mode="json")
     history = [(selection["family_id"], entry["day"]["plan_date"], entry["meals"]) for entry in previous[-14:]]
@@ -121,10 +125,15 @@ def generate_reference_day(context, tier, previous, seed, catalog):
             documents[item["file_id"]]["parsed"].ingredients,
         )
     ]
-    costs = {
-        item["file_id"]: recipe_cost_evidence(documents[item["file_id"]]["parsed"].ingredients, catalog)
-        for item in ranked
-    }
+    # 缓存仅属于单次任务及其固定商品快照；原谱分片变化后重新计价。
+    cost_cache = {} if cost_cache is None else cost_cache
+    costs = {}
+    for item in ranked:
+        document = documents[item["file_id"]]
+        key = item["file_id"], document["chunks_hash"]
+        if key not in cost_cache:
+            cost_cache[key] = recipe_cost_evidence(document["parsed"].ingredients, catalog)
+        costs[item["file_id"]] = cost_cache[key]
     known = sorted({value for value in costs.values() if value is not None})
     if known:
         target = known[0] if tier == "economy" else known[-1] if tier == "premium" else known[len(known) // 2]
@@ -170,10 +179,24 @@ def generate_reference_day(context, tier, previous, seed, catalog):
     }
 
 
+async def prepare_reference_day(session, context, entry, catalog):
+    """新菜单从摘要一致的完整原谱取内容，再严格核验并重算采购。"""
+    for meal in entry["meals"]:
+        for dish in meal["dishes"]:
+            document = await verified_reference_document(session, context, dish)
+            parsed = parse_reference_recipe(document["content"])
+            if parsed is None or parsed.review_sections:
+                raise HealthVisionError("reference_quote_invalid", "菜谱完整原文暂时无法完整解析", 422)
+            dish.update(name=parsed.name, ingredients=list(parsed.ingredients), steps=list(parsed.steps))
+    await validate_reference_days(session, context, [entry])
+    entry["procurement"] = reference_procurement(
+        entry["meals"], catalog, reference_member_restrictions(context["current"]["members"]) + context["current"].get("memory_restrictions", []),
+    )
+
+
 async def validate_reference_days(session, context, entries):
     """保存、发布和读取均重验原谱及限制；不读取商品或采购映射。"""
     history = []
-    restrictions = context["current"].get("memory_restrictions", [])
     for entry in entries:
         if entry.get("mode") != "reference":
             raise HealthVisionError("source_invalidated", "旧版计划需重新准备", 410)
@@ -184,24 +207,7 @@ async def validate_reference_days(session, context, entries):
         for meal in entry["meals"]:
             dishes = []
             for dish in meal["dishes"]:
-                key = dish["file_id"], dish["chunk_id"]
-                if key not in documents:
-                    documents[key] = await recipe_document(session, *key)
-                document = documents[key]
-                if reference_restriction_conflict(document["content"], restrictions):
-                    raise HealthVisionError("reference_restriction_conflict", "计划菜谱不符合当前记忆限制", 422)
-                if any(
-                    document.get(field) != dish["source"].get(field)
-                    for field in (
-                        "file_id",
-                        "chunk_id",
-                        "kb_id",
-                        "filename",
-                        "file_hash",
-                        "chunks_hash",
-                    )
-                ):
-                    raise HealthVisionError("source_invalidated", "计划菜谱来源已变化，请重新准备", 410)
+                await verified_reference_document(session, context, dish)
                 dishes.append({key: dish[key] for key in ("file_id", "chunk_id", "name", "ingredients", "steps")})
             meals.append(ReferenceMeal.model_validate({"meal_type": meal["meal_type"], "dishes": dishes}))
         from types import SimpleNamespace
@@ -217,6 +223,23 @@ async def validate_reference_days(session, context, entries):
         validate_variety(history[-14:], selection, checked)
         history.append((selection["family_id"], selection["plan_date"], checked))
         entry["meals"] = checked
+
+
+async def verified_reference_document(session, context, dish):
+    """回读原谱并比对选菜时的完整来源，缓存仅用于本次验证。"""
+    key = dish["file_id"], dish["chunk_id"]
+    documents = context["verified_documents"]
+    if key not in documents:
+        documents[key] = await recipe_document(session, *key)
+    document = documents[key]
+    if reference_restriction_conflict(document["content"], context["current"].get("memory_restrictions", [])):
+        raise HealthVisionError("reference_restriction_conflict", "计划菜谱不符合当前记忆限制", 422)
+    if any(
+        document.get(field) != dish["source"].get(field)
+        for field in ("file_id", "chunk_id", "kb_id", "filename", "file_hash", "chunks_hash")
+    ):
+        raise HealthVisionError("source_invalidated", "计划菜谱来源已变化，请重新准备", 410)
+    return document
 
 
 def reference_procurement(meals, catalog, restrictions=()):
@@ -277,7 +300,7 @@ def reference_procurement(meals, catalog, restrictions=()):
     }
 
 
-def summarize_reference_prices(entries):
+def summarize_reference_prices(entries, *, include_gaps=True):
     """仅合计已匹配小计，未知日不补零，不计算档间价格顺序。"""
     values = [entry["procurement"]["pricing"]["matched_subtotal_cent"] for entry in entries]
     gaps = [
@@ -286,7 +309,7 @@ def summarize_reference_prices(entries):
     known = [value for value in values if value is not None]
     return {
         "matched_subtotal_cent": sum(known) if known else None,
-        "unpriced_ingredients": gaps,
+        **({"unpriced_ingredients": gaps} if include_gaps else {"unpriced_ingredient_count": len(gaps)}),
         "status": "partial" if known and gaps else "matched_only" if known else "unavailable",
         "complete_estimate": False,
         "notice": PRICE_NOTICE,

@@ -12,7 +12,7 @@ const server=http.createServer(async(req,res)=>{
  try{
   const name=decodeURIComponent(new URL(req.url,'http://local').pathname),file=path.resolve(root,'.'+(name==='/'?'/index.html':name))
   assert.ok(file.startsWith(root+path.sep))
-  res.setHeader('Content-Type',({'.html':'text/html','.js':'application/javascript','.css':'text/css','.png':'image/png','.webp':'image/webp'})[path.extname(file)]||'application/octet-stream')
+  res.setHeader('Content-Type',({'.html':'text/html','.js':'application/javascript','.css':'text/css','.png':'image/png','.webp':'image/webp','.svg':'image/svg+xml'})[path.extname(file)]||'application/octet-stream')
   res.end(await fs.readFile(file))
  }catch{res.writeHead(404);res.end()}
 })
@@ -23,7 +23,7 @@ const profile={source:'api',householdId:family,householdName:'合成家庭',fami
 const row={thread_id:thread,member_id:member,agent_slug:'health-consultation',business_date:null,feedback_selection:null}
 const results=[]
 try{
- for(const scenario of ['stable-home','initial-click','return-click','personalized-family','personalized-send','personalized-goals']){
+ for(const scenario of ['stable-home','initial-focus','initial-type-send','initial-click','return-click','personalized-family','personalized-send','personalized-goals']){
   const context=await browser.newContext({viewport:{width:390,height:844}}),requests=[],errors=[]
   const scenarioProfile=structuredClone(profile)
   const personalizedLabels=new Set(PERSONALIZED_CHAT_PROMPT_POOL.filter(p=>scenario==='personalized-goals'?['salt','sugar','fat'].includes(p.topic):p.topic==='hypertension').map(p=>p.text))
@@ -133,7 +133,30 @@ try{
      await page.goBack();await returnRead;await cards.nth(3).waitFor()
     }
     const reads=requests.filter(r=>r.path.endsWith('/miniapp-profile')&&r.method==='GET').length
-    await clickQuestion();hold=false;release()
+    const input=page.locator('uni-input input')
+    if(scenario==='initial-focus'||scenario==='initial-type-send'){
+     await input.click()
+     await page.locator('#chat-welcome-layer').waitFor({state:'hidden'})
+     await page.locator('.conversation .tm-inline').waitFor()
+     assert.equal(await page.locator('.conversation-header').count(),0)
+     await page.screenshot({path:path.join(evidence,scenario+'-focused.png')})
+     if(scenario==='initial-type-send'){
+      await input.fill('晚上吃什么合适？');await page.getByLabel('发送',{exact:true}).click()
+      await page.locator('.message-row.user').waitFor()
+     }
+    }else await clickQuestion()
+    await page.locator('#chat-welcome-layer').waitFor({state:'hidden'})
+    await page.locator('.conversation .tm-inline').waitFor()
+    const menu=await page.locator('.conversation .tm-inline').boundingBox()
+    const scroll=await page.locator('.conversation').boundingBox()
+    assert.ok(menu.y+menu.height>scroll.y&&menu.y<scroll.y+scroll.height,'menu is visible when entering conversation')
+    await page.screenshot({path:path.join(evidence,scenario+'-before-network-ready.png')})
+    hold=false;release()
+    if(scenario==='initial-focus'){
+     await page.waitForFunction(()=>document.querySelector('.camera-button')&&!document.querySelector('.camera-button').classList.contains('uni-button-disabled'))
+     assert.equal(requests.filter(r=>r.path.endsWith('/chat-intent')).length,0)
+     results.push({scenario,passed:true,pageErrors:errors});continue
+    }
     await page.getByText('合成确认：问题已经收到。',{exact:true}).waitFor({timeout:10000})
     assert.equal(requests.filter(r=>r.path.endsWith('/chat-intent')).length,1)
     assert.equal(requests.filter(r=>r.path.endsWith('/miniapp-profile')&&r.method==='GET').length,reads)

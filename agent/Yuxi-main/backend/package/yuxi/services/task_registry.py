@@ -71,6 +71,11 @@ _TASK_DEFINITIONS = {
             "run_reference_recipe_images",
         ),
         TaskDefinition(
+            "exclusive_recipe_images_v1",
+            "yuxi.services.exclusive_plan_images",
+            "run_plan_images",
+        ),
+        TaskDefinition(
             "report_extract_v1",
             "yuxi.services.health_vision_tasks",
             "run_health_vision",

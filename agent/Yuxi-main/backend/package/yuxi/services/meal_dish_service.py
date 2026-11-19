@@ -3,6 +3,7 @@
 import copy
 import re
 import time
+import logging
 from datetime import date, datetime, timedelta, time as day_time
 from decimal import Decimal, ROUND_CEILING
 from uuid import uuid4, uuid5, NAMESPACE_URL
@@ -53,6 +54,11 @@ async def add_saved_dish(uid, family_id, day, data):
         row.meal_sources, row.version, row.updated_at = refs, plan["version"] + 1, utc_now_naive()
         await session.flush()
         result = await read_current_plan(uid, family_id, day, session=session)
+        from yuxi.services.meal_archive_projection import merge_archive
+
+        for item in result["meals"]:
+            if item["meal_type"] == data.meal_type:
+                merge_archive(row, [item["meal"]], item["members"])
         await session.commit()
         return result
 
@@ -60,20 +66,19 @@ async def add_saved_dish(uid, family_id, day, data):
 async def scoped_purchase(uid, family_id, day, meal_type, version, keys, *, publish=False):
     """服务端限定菜品范围后装配采购，读取不会发布商品包。"""
     from yuxi.storage.postgres.manager import pg_manager
-    from yuxi.services.daily_meal_plan_service import read_current_plan
+    from yuxi.services.meal_purchase_source import selected_purchase_origins
     from yuxi.services.daily_commerce_service import current_catalog, commerce_request
     from yuxi.services.health_commerce_service import sign_commerce_source
 
+    started = time.perf_counter()
     async with pg_manager.get_async_session_context() as session:
-        plan = await read_current_plan(uid, family_id, day, session=session)
-        if plan["version"] != version:
-            raise HealthVisionError("daily_plan_version_changed", "餐单已更新，请重新打开采购", 409)
-        meal = next((m["meal"] for m in plan["meals"] if m["meal_type"] == meal_type), None)
-        if not meal or len(keys) != len(set(keys)) or any(k not in {dish_key(d) for d in meal["dishes"]} for k in keys):
-            raise HealthVisionError("dish_scope_invalid", "采购菜品不属于本餐，请重新读取", 422)
-        dishes = [d for d in meal["dishes"] if not keys or dish_key(d) in keys]
+        resolved = await selected_purchase_origins(session, uid, family_id, day, meal_type, version, keys)
+        source_ms = round((time.perf_counter() - started) * 1000)
+        dishes = [r[0] for r in resolved]
+        catalog_started = time.perf_counter()
         catalog = await current_catalog()
-        items, requirements, gaps = await purchase_items(session, uid, family_id, dishes, catalog)
+        catalog_ms = round((time.perf_counter() - catalog_started) * 1000)
+        items, requirements, gaps = await purchase_items(session, uid, family_id, dishes, catalog, resolved=resolved)
         source = {
             "kind": "meal_selection",
             "uid": uid,
@@ -82,13 +87,22 @@ async def scoped_purchase(uid, family_id, day, meal_type, version, keys, *, publ
             "meal_type": meal_type,
             "version": version,
             "dish_keys": sorted(keys),
-            "scope_hash": purchase_scope_hash(dishes),
+            "scope_hash": procurement_hash(resolved),
+            "scope_hash_version": 2,
             "items": [
                 {"sku_id": i["sku_id"], "quantity": i["quantity"], "identity": merchant_facts(i["sku"])} for i in items
             ],
         }
         purchase = {"available": bool(items), "items": items, "ingredient_requirements": requirements, "gaps": gaps}
         result = {"version": version, "purchase": purchase}
+    logging.getLogger(__name__).info(
+        "meal_purchase_prepared source_ms=%s catalog_ms=%s total_ms=%s dishes=%s publish=%s",
+        source_ms,
+        catalog_ms,
+        round((time.perf_counter() - started) * 1000),
+        len(dishes),
+        publish,
+    )
     if not publish:
         return result
     expiry = datetime.combine(day + timedelta(days=1), day_time.min, ZoneInfo("Asia/Shanghai"))
@@ -115,9 +129,56 @@ async def scoped_purchase(uid, family_id, day, meal_type, version, keys, *, publ
         },
         "agent_source_proof": sign_commerce_source(source),
     }
+    publish_started = time.perf_counter()
     package = await commerce_request("POST", "/api/v1/integration/ai/recommendation-packages", payload, request_id=task)
-    result["purchase"] = {**purchase, **package}
+    logging.getLogger(__name__).info(
+        "meal_purchase_published publish_ms=%s total_ms=%s dishes=%s",
+        round((time.perf_counter() - publish_started) * 1000),
+        round((time.perf_counter() - started) * 1000),
+        len(dishes),
+    )
+    result["purchase"] = {
+        **purchase,
+        **package,
+        "items": items,
+        "available": bool(items)
+        and package.get("status") == "available"
+        and package.get("trade_validation_status") == "passed",
+    }
     return result
+
+
+def procurement_hash(resolved):
+    """仅绑定菜品来源、食材和保存的采购映射，嵌套展示字段不参与。"""
+    presentation = {
+        "display_zh",
+        "translation_status",
+        "image_url",
+        "image_source",
+        "step_images",
+        "image",
+        "imageUrl",
+        "stepImages",
+        "pairing_summary",
+    }
+
+    def strip(value):
+        if isinstance(value, dict):
+            return {k: strip(v) for k, v in value.items() if k not in presentation}
+        return [strip(v) for v in value] if isinstance(value, list) else value
+
+    procurement = []
+    for dish, _, _, source in resolved:
+        ingredients = set(dish.get("ingredients", []))
+        mapping = {
+            k: [v for v in source.get(k, []) if ingredients.intersection(v.get("ingredient_refs", []))]
+            for k in ("purchase_items", "product_matches")
+        }
+        mapping["purchase_gaps"] = [v for v in source.get("purchase_gaps", []) if v.get("ingredient") in ingredients]
+        if source.get("procurement_mapping"):
+            mapping["formal"] = source["procurement_mapping"]
+        procurement.append(strip({"dish": dish, "mapping": mapping}))
+    return input_fingerprint(procurement)
 
 
 def purchase_scope_hash(dishes):
@@ -132,6 +193,36 @@ async def validate_selection_purchase(source):
     """商城回源核对当前餐单、所选菜品和商品包装。"""
     if source["expires_at"] <= time.time():
         raise HealthVisionError("source_invalidated", "餐单采购已过期", 410)
+    if source.get("scope_hash_version") == 2:
+        from yuxi.storage.postgres.manager import pg_manager
+        from yuxi.services.meal_purchase_source import selected_purchase_origins
+        from yuxi.services.daily_commerce_service import current_catalog
+
+        async with pg_manager.get_async_session_context() as session:
+            resolved = await selected_purchase_origins(
+                session,
+                source["uid"],
+                source["family_id"],
+                date.fromisoformat(source["date"]),
+                source["meal_type"],
+                source["version"],
+                source["dish_keys"],
+            )
+            if procurement_hash(resolved) != source["scope_hash"]:
+                raise HealthVisionError("source_invalidated", "菜品食材对应已变化，请重新采购", 410)
+        # 已签名的选包保持固定，不因价格、库存变化重新选择最便宜包装。
+        catalog = {str(s["sku_id"]): s for s in (await current_catalog())["items"]}
+        if any(
+            str(i["sku_id"]) not in catalog or merchant_facts(catalog[str(i["sku_id"])]) != i["identity"]
+            for i in source["items"]
+        ):
+            raise HealthVisionError("source_invalidated", "食材商品或包装已变化，请重新采购", 410)
+        validate_purchase_restrictions(resolved, [catalog[str(i["sku_id"])] for i in source["items"]])
+        return {
+            "available": True,
+            "selection_mode": "reference",
+            "items": [{"sku_id": i["sku_id"], "quantity": i["quantity"]} for i in source["items"]],
+        }
     result = await scoped_purchase(
         source["uid"],
         source["family_id"],
@@ -272,7 +363,7 @@ async def freeze_origin(session, origin):
     return result
 
 
-async def purchase_items(session, uid, family_id, dishes, catalog):
+async def purchase_items(session, uid, family_id, dishes, catalog, *, resolved=None):
     """正式菜谱按已发布映射凑包，参考菜谱只采用原文对应的商品。"""
     from yuxi.services.daily_arrangement_projection import ingredient_requirements
     from yuxi.services.reference_meal_plan_service import product_facts
@@ -280,8 +371,9 @@ async def purchase_items(session, uid, family_id, dishes, catalog):
 
     requirements, reference_items, gaps = [], {}, []
     current = {str(s["sku_id"]): s for s in catalog["items"]}
-    for dish in dishes:
-        original, original_meal, _, source = await read_origin(session, uid, family_id, dish["origin"])
+    for index, dish in enumerate(dishes):
+        original, original_meal, _, source = (resolved[index] if resolved is not None
+                                            else await read_origin(session, uid, family_id, dish["origin"]))
         if dish["origin"]["source"]["kind"] == "formal":
             rid = original["recipeVersion"]
             mapping = await session.get(HealthRecipeCommerceSource, rid)
@@ -361,7 +453,22 @@ async def purchase_items(session, uid, family_id, dishes, catalog):
     items = selection_packages(requirements, catalog, fractions)
     if not items:
         raise HealthVisionError("dish_stock_missing", "所选菜品的食材暂时无法配齐，请稍后再试", 409)
+    if resolved is not None:
+        validate_purchase_restrictions(resolved, [item["sku"] for item in items])
     return items, requirements, gaps
+
+
+def validate_purchase_restrictions(resolved, skus):
+    """首次选包与商城回源均核对当前成员和记忆限制。"""
+    from yuxi.services.reference_meal_plan_service import (
+        reference_member_restrictions, reference_product_composition, reference_restriction_conflict,
+    )
+
+    restrictions = [restriction for _, _, members, source in resolved
+                    for restriction in reference_member_restrictions(members) + source.get("purchase_restrictions", [])]
+    for sku in skus:
+        if reference_restriction_conflict(reference_product_composition(sku), restrictions):
+            raise HealthVisionError("reference_restriction_conflict", "采购商品含当前明确限制的成分", 422)
 
 
 def reference_product_packages(original, source, catalog):
@@ -377,7 +484,7 @@ def reference_product_packages(original, source, catalog):
 
     ingredients = set(original["ingredients"])
     current = {str(p["product_id"]): p for p in group_catalog_products(catalog["items"])}
-    restrictions = reference_member_restrictions(source.get("members", []))
+    restrictions = reference_member_restrictions(source.get("members", [])) + source.get("purchase_restrictions", [])
     result = []
     for saved in source.get("product_matches", []):
         refs = [ref for ref in saved["ingredient_refs"] if ref in ingredients]

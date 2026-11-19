@@ -27,6 +27,7 @@ def family_schema_upgrade(monkeypatch):
     monkeypatch.setattr(storage_migration, "upgrade_family_membership", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_shared_daily_meal_plan", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_converged_health", upgrade)
+    monkeypatch.setattr(storage_migration, "upgrade_meal_archive", upgrade)
 
 
 class _Session:

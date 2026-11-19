@@ -1,23 +1,38 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { onLoad, onShow } from '@dcloudio/uni-app'
+import { onLoad, onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import AppNavBar from '../../components/AppNavBar.vue'
 import FoodImageSlot from '../../components/FoodImageSlot.vue'
 import CloudMealPurchase from '../../components/CloudMealPurchase.vue'
 import { request } from '../../services/request.js'
-import { getSession } from '../../services/session.js'
+import { getSession, sessionRevision } from '../../services/session.js'
 import { commerce } from '../../services/commerce.js'
 import { useCommercePage } from '../../services/commerce-page.js'
 import { selectedDay, dayMeals, validPlanRoute } from '../../services/plan-presentation.js'
 import { recipeCover } from '../../utils/recipe-cover.js'
-import { planTiers, readExclusivePreview } from '../../services/exclusive-planning.js'
+import { planTiers, readExclusivePreview, exclusiveImages } from '../../services/exclusive-planning.js'
+import { createExclusiveImageFlow } from '../../services/exclusive-image-flow.js'
 const route = ref(null), plan = ref(null), dayNo = ref(1), mealType = ref('breakfast')
 const purchasing = ref(false), purchaseData = ref(null)
+const visible = ref(false)
+const imageFlow = createExclusiveImageFlow({send:exclusiveImages,
+  scope:()=>String(sessionRevision())+':'+getSession()?.householdId,
+  status:()=>{},
+  apply:images=>{
+    if(!visible.value)return
+    const found=new Map(images.map(image=>[image.file_id,image]))
+    for(const item of day.value?.meals||[]){
+      const image=found.get(item.source?.file_id)
+      if(image?.image_url)item.recipe_snapshot={...item.recipe_snapshot,...image}
+    }
+  },
+})
 const { busy, error, run } = useCommercePage(() => { plan.value = null; purchaseData.value = null; selectDay(1) })
 const purchasePath = computed(() => '/api/health/v1/families/' + encodeURIComponent(getSession()?.householdId) + '/exclusive-plans/' + encodeURIComponent(route.value?.groupId) + '/tiers/' + encodeURIComponent(route.value?.tier) + '/purchase')
 const purchaseReference = computed(() => purchaseData.value ? {
   previewId: route.value.groupId, gaps: purchaseData.value.gaps,
-  items: purchaseData.value.items.map(item=>({sku_id:item.sku_id,product_name:item.sku.product_name,sku_name:item.sku.sku_name,quantity:item.quantity,image_url:item.sku.image_url})),
+  items: purchaseData.value.items.map(item=>({sku_id:item.sku_id,product_id:item.sku.product_id,product_name:item.sku.product_name,sku_name:item.sku.sku_name,quantity:item.quantity,image_url:item.sku.image_url,
+    price_cent:item.sku.price_cent,available_quantity:item.sku.available_quantity,sale_status:item.sku.sale_status})),
 } : null)
 const purchaseRoute = computed(() => ({arrangement:route.value.groupId+':'+route.value.tier,version:purchaseData.value.scope_hash,date:'',meal:'daily',meals:['breakfast','lunch','dinner']}))
 const day = computed(() => selectedDay(plan.value, dayNo.value))
@@ -33,10 +48,17 @@ onLoad(options => {
     } else route.value = validPlanRoute(options)
   } catch (e) { error.value = e.message }
 })
-onShow(load)
+onShow(()=>{visible.value=true;load()})
+onHide(()=>{visible.value=false;imageFlow.stop()})
+onUnload(()=>{visible.value=false;imageFlow.stop()})
+function refreshImages(start=false){
+  if(!visible.value||!route.value?.groupId||purchasing.value||!plan.value)return
+  void imageFlow.open({groupId:route.value.groupId,tier:route.value.tier,dayNo:dayNo.value},{start})
+}
 function selectDay(number) {
   dayNo.value = Number(number)
   mealType.value = 'breakfast'
+  refreshImages()
 }
 function jumpToDay(event) {
   const selected = plan.value?.days?.[Number(event.detail.value)]
@@ -44,16 +66,21 @@ function jumpToDay(event) {
 }
 function load() {
   if (!route.value) return
+  imageFlow.stop()
   return run(async active => {
     plan.value = null
     purchaseData.value = null
     const {groupId, tier, sn, version} = route.value
-    const result = groupId ? await readExclusivePreview(groupId, tier) : await commerce.servicePlan(sn, version)
-    if (active()) plan.value = result
-    if (purchasing.value && groupId && active()) {
+    if (purchasing.value && groupId) {
       const {data} = await request({path:purchasePath.value})
-      if(active()) purchaseData.value = data
+      if (active()) {
+        plan.value = {tier_name:data.tier_name,members:data.members}
+        purchaseData.value = data
+      }
+      return
     }
+    const result = groupId ? await readExclusivePreview(groupId, tier) : await commerce.servicePlan(sn, version)
+    if (active()) {plan.value = result;refreshImages(true)}
   })
 }
 function next() { if (plan.value?.status === 'available') uni.navigateTo({url:'/pages/exclusive-plans/schedule?plan_sn='+encodeURIComponent(route.value.sn)+'&plan_version='+route.value.version}) }
@@ -75,7 +102,7 @@ const back = () => uni.navigateBack()
         <text class="plan-notice purchase-coverage">{{purchaseData.notice}}</text>
         <text v-if="purchaseData.items.some(item=>item.quantity_confirmed===false)" class="plan-notice quantity-warning">部分商品包装数量待确认，请按家庭实际需要调整，当前数量不能视为足够 21 天。</text>
         <view v-if="purchaseData.gaps?.length" class="plan-surface purchase-coverage-gaps"><text class="plan-notice">以下食材未加入购物车，需自行准备或确认：</text><text v-for="(gap,index) in purchaseData.gaps" :key="index" class="plan-notice">{{gap.label||gap.ingredient}}：{{gap.detail}}</text></view>
-        <CloudMealPurchase v-if="purchaseData.available" :key="purchaseData.scope_hash" :meal="{members:plan.members}" :route="purchaseRoute" :reference="purchaseReference" :exclusive="{path:purchasePath,scopeHash:purchaseData.scope_hash}"/>
+        <CloudMealPurchase v-if="purchaseData.available" :key="purchaseData.scope_hash" :meal="{members:plan.members}" :route="purchaseRoute" :reference="purchaseReference" :exclusive="{path:purchasePath,scopeHash:purchaseData.scope_hash,initialPurchase:purchaseData}"/>
         <view v-else class="plan-surface plan-empty"><text class="plan-caption">暂无可购买商品</text><button class="plan-secondary" :disabled="busy" @click="load">重新核对</button></view>
       </template>
     </template>

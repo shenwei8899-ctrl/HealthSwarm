@@ -1,4 +1,4 @@
-import { createDishSwap, dishSwapState } from '../src/services/dish-swap.js'
+import { createDishSwap, dishSwapState, watchDishSwap } from '../src/services/dish-swap.js'
 import {createConversationHistoryCache} from '../src/services/conversation-history.js'
 import {syntheticIntent} from './fixtures/health-intent.mjs'
 import {dishTitle,mealLabels} from '../src/utils/meal-presentation.js'
@@ -123,7 +123,7 @@ function workflow(options = {}) {
     }
     return flow
   }
-  const deps = {createDishSwap,dishSwapState,setTimeout:options.schedule||setTimeout,clearTimeout:options.cancel||clearTimeout,todayMealPlanState,createTodayMealPlan:config=>options.todayMenu?createTodayMealPlan({...config,...options.todayMenu}):({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}), defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatPromptProfileKey,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
+  const deps = {createDishSwap,dishSwapState,watchDishSwap,setTimeout:options.schedule||setTimeout,clearTimeout:options.cancel||clearTimeout,todayMealPlanState,createTodayMealPlan:config=>options.todayMenu?createTodayMealPlan({...config,...options.todayMenu}):({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}), defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatPromptProfileKey,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
     onMounted: fn => { hooks.mount = fn }, onUnmounted: fn => { hooks.unmount = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn },
     dishTitle,mealLabels,mealPairingText,chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,
     newHealthRequestId: id, storageContext: () => identity.scope, getSession: () => ({ ...identity }), scopedStorage,
@@ -1038,7 +1038,7 @@ for(const returnImmediately of [false,true])test(`leaving during the pre-submit 
   }finally{scroll.resolve();await pending;p.dispose()}
 })
 
-test('typed meal intent uses the current profile and a chat revision leaves the saved plan alone', async () => {
+test('typed regeneration uses the current version and preserves meals until completion', async () => {
   let saved=null
   const p = workflow({readDailyMealPlan:async(_family,date)=>saved||{date,status:'absent',version:0,meals:[]}})
   try {
@@ -1055,17 +1055,18 @@ test('typed meal intent uses the current profile and a chat revision leaves the 
     const revision='晚餐换成清淡一点的，早餐和午餐保持原样'
     p.question.value=revision;await p.sendQuestion()
     const submits = p.calls.filter(call => call.action === 'submit')
-    assert.deepEqual(submits.map(call=>call.text),[first])
+    assert.deepEqual(submits.map(call=>call.text),[first,revision])
+    assert.deepEqual(submits.at(-1).selection.meal_types,['dinner'])
+    assert.equal(submits.at(-1).selection.daily_base_version,1)
     assert.deepEqual(saved.meals.slice(0,2),untouched)
-    assert.equal(p.visibleMessages.value.at(-1).text,'已安排的菜品请在餐单里调整。')
     p.question.value='只改晚餐，其他两餐保持原样';await p.sendQuestion()
-    assert.deepEqual(p.calls.filter(call=>call.action==='submit').map(call=>call.text),[first])
+    assert.deepEqual(p.calls.filter(call=>call.action==='submit').map(call=>call.text),[first,revision,'只改晚餐，其他两餐保持原样'])
     assert.equal(p.conversationThreadId.value,initialThread,'meal tasks remain attached to the visible conversation')
     assert.equal(p.calls.some(call=>['startPlan','loadChatMealPlan'].includes(call.action)),false)
   } finally { p.dispose() }
 })
 
-for(const reopen of [false,true])test(`历史重开前后聊天换菜都只提示，重新读取=${reopen}`,async()=>{
+for(const reopen of [false,true])test(`历史重开前后重新生成保留原日期和餐次，重新读取=${reopen}`,async()=>{
   let saved=null
   const p=workflow({readDailyMealPlan:async(_family,date)=>saved||{date,status:'absent',version:0,meals:[]}})
   try{
@@ -1075,10 +1076,14 @@ for(const reopen of [false,true])test(`历史重开前后聊天换菜都只提�
     saved={date:data.plan_date,status:'ready',version:1,meals:[{meal_type:'lunch',members:[{id:'self'}],meal:data.meals[0],source:{id:data.preview_id}}]}
     p.publish({status:'completed',result:{type:'business',kind:'meal_plan_preview',data}})
     if(reopen)await p.load()
+    const expected=['给我安排明天午餐']
     for(const text of ['再换一批菜','再换一批','还有别的吗']){
       p.question.value=text;await p.sendQuestion()
-      assert.deepEqual(p.calls.filter(call=>call.action==='submit').map(call=>call.text),['给我安排明天午餐'])
-      assert.equal(p.visibleMessages.value.at(-1).text,'已安排的菜品请在餐单里调整。')
+      expected.push(text)
+      const submits=p.calls.filter(call=>call.action==='submit')
+      assert.deepEqual(submits.map(call=>call.text),expected)
+      assert.equal(submits.at(-1).selection.plan_date,data.plan_date)
+      assert.deepEqual(submits.at(-1).selection.meal_types,['lunch'])
     }
   }finally{p.dispose()}
 })
@@ -1137,14 +1142,15 @@ test('家庭成员咨询入口的荐菜请求也进入菜品餐单任务', async
   } finally { p.dispose() }
 })
 
-for(const hasPlan of [false,true])test(`a tomorrow dinner edit stays read-only with or without a plan: ${hasPlan}`,async()=>{
+for(const hasPlan of [false,true])test(`tomorrow dinner regeneration requires a saved plan: ${hasPlan}`,async()=>{
   const p=workflow({readDailyMealPlan:async(_family,date)=>hasPlan?{date,status:'ready',version:1,meals:['breakfast','lunch','dinner'].map(meal_type=>({meal_type,members:[{id:'self'}],meal:{dishes:[{name:meal_type}]},source:{id:'saved-'+meal_type}}))}:{date,status:'absent',version:0,meals:[]}})
   try{
     await p.load()
     p.question.value='配餐验收乙：只换明天晚餐，早餐和午餐不变';await p.sendQuestion()
     const submits=p.calls.filter(call=>call.action==='submit')
-    assert.equal(submits.length,0)
-    assert.equal(p.visibleMessages.value.at(-1).text,'已安排的菜品请在餐单里调整。')
+    assert.equal(submits.length,hasPlan?1:0)
+    if(hasPlan){assert.deepEqual(submits[0].selection.meal_types,['dinner']);assert.equal(submits[0].selection.daily_base_version,1)}
+    else assert.match(p.chatError.value,/还没有饮食计划/)
   }finally{p.dispose()}
 })
 
@@ -1876,7 +1882,7 @@ test('a pending menu is followed in the current conversation and its completed p
  }finally{p.dispose()}
 })
 
-test('a revision request during active planning only gives guidance',async()=>{
+test('a revision request during active planning preserves its question without another submit',async()=>{
  const date='2026-10-28'
  const plan={date,status:'ready',version:1,meals:[{meal_type:'lunch',members:[{id:'self'}],meal:{dishes:[{name:'原午餐'}]}}],pending:{status:'running',request_id:uuid(9904)}}
  const p=workflow({route:{},readDailyMealPlan:async()=>plan})
@@ -1885,8 +1891,8 @@ test('a revision request during active planning only gives guidance',async()=>{
   p.question.value='请替换今天的午餐，清淡一点';await p.sendQuestion()
   assert.equal(p.conversationId.value,conversation)
   assert.equal(p.calls.filter(c=>c.action==='submit').length,0)
-  assert.equal(p.question.value,'')
-  assert.equal(p.visibleMessages.value.at(-1).text,'已安排的菜品请在餐单里调整。')
+  assert.equal(p.question.value,'请替换今天的午餐，清淡一点')
+  assert.match(p.chatError.value,/正在生成/)
  }finally{p.dispose()}
 })
 

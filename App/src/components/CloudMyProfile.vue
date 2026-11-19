@@ -25,7 +25,7 @@ const dietItems = [
 ]
 const planItems = [
   { icon: 'plan', name: 'AI专属计划', desc: '查看当前可用计划与安排', url: '/pages/exclusive-plans/index' },
-  { icon: 'menu', name: '我的餐单', desc: '', url: '/pages/health/plans' },
+  { icon: 'menu', name: '我的餐单', desc: '', url: '/pages/health/plans?archive=1' },
   ...(isCommerceEnabled ? [
     { icon: 'receipt', name: '我的订单', desc: '', url: '/pages/orders/index' },
   ] : []),

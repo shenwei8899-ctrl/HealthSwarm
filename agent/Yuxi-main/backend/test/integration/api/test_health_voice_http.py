@@ -43,11 +43,14 @@ def cleanup_test_knowledge_resources():
 
 
 @pytest_asyncio.fixture
-async def environment(monkeypatch):
+async def environment(monkeypatch, request):
     """装配生产路由、认证和存储，仅替换付费ASR调用。"""
     database_url = os.getenv("VOICE_TEST_DATABASE_URL")
     if not database_url:
         pytest.skip("需要显式配置 VOICE_TEST_DATABASE_URL 指向隔离 PostgreSQL")
+    use_paraformer = getattr(request, "param", False)
+    if use_paraformer and not (os.getenv("HEALTH_ASR_MODEL_DIR") and os.getenv("VOICE_TEST_PCM")):
+        pytest.skip("需要固定 Paraformer 模型和普通话测试音频")
     schema = "voice_" + uuid4().hex
     engine = create_async_engine(database_url, connect_args={"server_settings": {"search_path": f"{schema},public"}})
     async with engine.begin() as connection:
@@ -80,6 +83,7 @@ async def environment(monkeypatch):
     app.include_router(module.health_voice, prefix="/api")
     app.dependency_overrides[get_db] = database
     monkeypatch.setenv("HEALTH_ASR_ENABLED", "1")
+    monkeypatch.setenv("HEALTH_ASR_PROVIDER", "paraformer" if use_paraformer else "tencent")
     monkeypatch.setenv("HEALTH_ASR_SECRET_ID", "synthetic-id")
     monkeypatch.setenv("HEALTH_ASR_SECRET_KEY", "synthetic-key")
     calls = []
@@ -93,7 +97,8 @@ async def environment(monkeypatch):
         await release.wait()
         return "今天晚饭吃什么"
 
-    monkeypatch.setattr(service, "recognize_pcm", provider)
+    if not use_paraformer:
+        monkeypatch.setattr(service, "recognize_pcm", provider)
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     server = uvicorn.Server(uvicorn.Config(app, log_level="error", lifespan="off"))
@@ -104,7 +109,7 @@ async def environment(monkeypatch):
         await asyncio.sleep(0.02)
     assert server.started
     tokens = {user_id: AuthUtils.create_access_token({"sub": str(user_id)}) for user_id in (1, 2)}
-    async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{listener.getsockname()[1]}") as client:
+    async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{listener.getsockname()[1]}", timeout=40) as client:
         yield client, tokens, calls, entered, release, schema, engine
     release.set()
     server.should_exit = True
@@ -154,6 +159,26 @@ async def test_auth_replay_conflict_and_account_isolation(environment):
         await connection.execute(update(User).where(User.id == 1).values(is_deleted=1))
     assert (await upload(client, tokens[1])).status_code == 401
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("environment", [True], indirect=True)
+async def test_paraformer_recognizes_real_speech_over_authenticated_tcp(environment):
+    """用真实模型校验普通话、最大长度、重试和静音。"""
+    client, tokens, *_ = environment
+    pcm = Path(os.environ["VOICE_TEST_PCM"]).read_bytes()
+    expected = "欢迎大家来体验达摩院推出的语音识别模型"
+    auth = {"Authorization": "Bearer " + tokens[1]}
+    configuration = await client.get("/api/health/v1/voice/configuration", headers=auth)
+    assert configuration.json() == {"available": True, "processor": "自有服务器语音识别", "max_seconds": 60}
+    result = await upload(client, tokens[1], data=pcm)
+    assert result.status_code == 200, result.text
+    assert result.json()["text"].replace(" ", "") == expected
+    assert (await upload(client, tokens[1], data=pcm)).json() == result.json()
+    long_pcm = (pcm * (service.MAX_AUDIO_BYTES // len(pcm) + 1))[:service.MAX_AUDIO_BYTES]
+    long = await upload(client, tokens[1], request_id="voice-http-long", data=long_pcm)
+    assert long.status_code == 200 and long.json()["text"].replace(" ", "").startswith(expected), long.text
+    silence = await upload(client, tokens[1], request_id="voice-http-silent", data=bytes(16000))
+    assert silence.status_code == 422 and silence.json()["detail"]["code"] == "VOICE_EMPTY"
 
 
 async def test_concurrent_request_upload_bounds_and_rate_limit(environment):

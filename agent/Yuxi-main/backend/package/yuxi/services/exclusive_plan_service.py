@@ -115,7 +115,9 @@ async def read_exclusive_plan(uid, fid, group_id=None, *, tier=None):
             return {"status": "stale", "group_id": row.id, "plans": [], "message": "可重新生成专属计划"}
         if tier is not None and (tier not in TIERS or row.policy != PREVIEW_POLICY or row.status != "ready"):
             raise HealthVisionError("exclusive_preview_unavailable", "计划预览尚未就绪，请返回计划页", 404)
-        context = await exclusive_context(session, uid, fid, row.policy, allow_interpretation=True)
+        context = await exclusive_context(
+            session, uid, fid, row.policy, allow_interpretation=True, load_documents=False,
+        )
         if row.basis_hash != context["basis_hash"]:
             if tier is not None:
                 raise HealthVisionError("source_invalidated", "档案或计划规则已更新，请重新准备", 410)
@@ -136,14 +138,11 @@ async def read_exclusive_plan(uid, fid, group_id=None, *, tier=None):
         return project_group(row, context["sources"])
 
 
-async def exclusive_context(session, uid, fid, policy, *, allow_interpretation=False, day=None):
+async def exclusive_context(session, uid, fid, policy, *, allow_interpretation=False, day=None, load_documents=True):
     """新版复用今日餐单依据，历史正式计划继续核对批准规则。"""
     if policy == PREVIEW_POLICY:
         return await exclusive_reference_context(
-            session,
-            uid,
-            fid,
-            day=day or datetime.now(ZoneInfo("Asia/Shanghai")).date(),
+            session, uid, fid, day=day or datetime.now(ZoneInfo("Asia/Shanghai")).date(), load_documents=load_documents,
         )
     from yuxi.services.daily_arrangement_service import daily_selection
 
@@ -231,18 +230,10 @@ def project_group(row, sources):
     plans = []
     if row.status == "ready":
         plans = (
-            [
-                {
-                    "tier_code": tier,
-                    "tier_name": name,
-                    "difference": TIER_TARGETS[tier],
-                    "pricing": summarize_reference_prices(progress["tiers"][tier]),
-                    "tier_cost_status": "unverified",
-                }
-                for tier, name in TIERS.items()
-            ]
-            if row.policy == PREVIEW_POLICY
-            else list(progress.get("receipts", {}).values())
+            [{"tier_code": tier, "tier_name": name, "difference": TIER_TARGETS[tier],
+              "pricing": summarize_reference_prices(progress["tiers"][tier], include_gaps=False),
+              "tier_cost_status": "unverified"} for tier, name in TIERS.items()]
+            if row.policy == PREVIEW_POLICY else list(progress.get("receipts", {}).values())
         )
     return {
         "group_id": row.id,
@@ -286,11 +277,9 @@ def project_preview(row, tier, sources):
                         "id": meal["meal_type"] + ":" + dish["file_id"],
                         "meal_type": meal["meal_type"],
                         "recipe_name": dish["name"],
-                        "ingredients": dish["ingredients"],
-                        "steps": dish["steps"],
-                        "source": dish["source"],
-                        "portion_note": dish.get("portion_note"),
-                        "recipe_snapshot": {key: dish.get(key) for key in ("image_url", "cooking_minutes")},
+                        "ingredients": dish["ingredients"], "steps": dish["steps"],
+                        "source": dish["source"], "portion_note": dish.get("portion_note"),
+                        "recipe_snapshot": {key: dish.get(key) for key in ("image_url", "cooking_minutes", "source")},
                     }
                     for meal in entry["meals"]
                     for dish in meal["dishes"]

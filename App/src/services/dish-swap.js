@@ -4,8 +4,17 @@ import { getSession } from './session.js'
 import { newHealthRequestId } from './health-task-flow.js'
 import { dishKey } from '../utils/meal-presentation.js'
 import { localDate } from '../utils/meal-state.js'
+import { watch } from 'vue'
 
-export const dishSwapState = () => ({ loading:false, busy:false, open:false, error:'', entries:[], target:null, selected:'' })
+// Visibility is an input: returning to the same plan version must reload candidates.
+export function watchDishSwap({ client, plan, enabled }) {
+  return watch([plan, enabled], ([value, active]) => {
+    if (active && value) void client.load(value)
+    else client.clear()
+  }, { immediate:true })
+}
+
+export const dishSwapState = () => ({ loading:false, busy:false, open:false, error:'', entries:[], version:null, date:'', target:null, selected:'' })
 
 export function createDishSwap({ state, send=request, context=storageContext, family=()=>getSession().householdId,
   day=localDate, newId=newHealthRequestId, onPlan=()=>{} }) {
@@ -23,6 +32,7 @@ export function createDishSwap({ state, send=request, context=storageContext, fa
       if(!current())return
       if(data.date!==value.date||data.version!==value.version||!Array.isArray(data.meals))throw Error('候选版本不一致，请刷新餐单。')
       state.entries=data.meals.flatMap(m=>(m.dishes||[]).map(d=>({mealType:m.meal_type,dishKey:d.dish_key,candidates:(d.candidates||[]).slice(0,3)})))
+      state.version=data.version;state.date=data.date
     } catch(error) { if(current())state.error=error.message||'换菜候选暂时无法读取，请刷新。' }
     finally { if(current())state.loading=false }
   }

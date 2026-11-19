@@ -35,6 +35,7 @@ class CheckoutService
         $now = time();
         $expiresAt = $now + ($payload['source_type'] === 'service_plan' ? $pricing['policy_snapshot']['config']['quote_ttl_seconds'] : 900);
         $mealSnapshot = (new MealCommerceService())->quoteSnapshot($userId, $payload, $pricing);
+        unset($pricing['_validated_package']);
         if ($mealSnapshot) $pricing['meal_snapshot'] = $mealSnapshot;
         $pricing['address_snapshot'] = $delivery['snapshot'];
         $pricing['delivery_area_id'] = (string)$delivery['area']['id'];
@@ -84,8 +85,10 @@ class CheckoutService
             if (!empty($pricing['meal_snapshot'])) {
                 $meal = $pricing['meal_snapshot'];
                 Db::name('shop_recommendation_package')->where('package_sn',$meal['package_sn'])->where('user_id',$userId)->lock(true)->find();
-                $currentMenu=(new MealCommerceService())->package($userId, $meal['package_sn'], $meal['package_version']);
-                if (!$currentMenu['available']) throw new DomainException('菜单已不可购买，请重新确认',40917,409);
+                if ($session['source_type'] !== 'recommendation_package') {
+                    $currentMenu=(new MealCommerceService())->package($userId, $meal['package_sn'], $meal['package_version']);
+                    if (!$currentMenu['available']) throw new DomainException('菜单已不可购买，请重新确认',40917,409);
+                }
             }
             $this->revalidatePricing($locked, $pricing);
             $result = $session['source_type'] === 'service_plan'
@@ -233,10 +236,7 @@ class CheckoutService
             if ((int)$package['package_version'] !== (int)$payload['source_version'] || !in_array($package['status'], ['available', 'confirmed'], true)) {
                 throw new DomainException('推荐包不可结算或版本已变化', 40906, 409);
             }
-            $sourceItems = [];
-            foreach ($package['items'] as $item) {
-                $sourceItems[] = ['sku_id' => $item['sku_id'], 'quantity' => $item['quantity']];
-            }
+            $sourceItems = self::recommendationItems($package['items'], $payload['items'] ?? null);
         }
         if (!$sourceItems) {
             throw new DomainException('结算商品不能为空', 40012, 400);
@@ -265,7 +265,32 @@ class CheckoutService
             'payable_amount_cent' => $goodsTotal + $shipping, 'delivery_batches' => [],
             'non_refund_policy' => null, 'warnings' => $warnings,
             'cart_items' => $payload['source_type'] === 'cart' ? $sourceItems : [],
+            '_validated_package' => $payload['source_type'] === 'recommendation_package' ? $package : null,
         ];
+    }
+
+    /** 客户端只能从本人已校验商品包中减选并调整包装数；省略 items 沿用整包。 */
+    public static function recommendationItems(array $packageItems, $selected = null)
+    {
+        $defaults = array_map(static function ($item) {
+            return ['sku_id'=>(string)$item['sku_id'], 'quantity'=>(int)$item['quantity']];
+        }, $packageItems);
+        if ($selected === null) return $defaults;
+        if (!is_array($selected) || !$selected || count($selected) > count($defaults)) {
+            throw new DomainException('请选择本餐食材', 40012, 400);
+        }
+        $allowed = array_column($defaults, 'sku_id');
+        $seen = []; $result = [];
+        foreach ($selected as $item) {
+            $sid = is_array($item) && isset($item['sku_id']) ? (string)$item['sku_id'] : '';
+            $quantity = is_array($item) ? ($item['quantity'] ?? null) : null;
+            if (!in_array($sid, $allowed, true) || isset($seen[$sid]) || !is_int($quantity) || $quantity < 1 || $quantity > 100000) {
+                throw new DomainException('所选食材或数量无效，请重新核对', 40012, 400);
+            }
+            $seen[$sid] = true;
+            $result[] = ['sku_id'=>$sid, 'quantity'=>$quantity];
+        }
+        return $result;
     }
 
     protected function revalidatePricing(array $session, array $pricing)

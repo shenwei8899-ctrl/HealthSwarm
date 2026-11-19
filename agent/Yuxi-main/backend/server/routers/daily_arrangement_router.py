@@ -503,6 +503,25 @@ async def current_reference_meal_plan(
     return await current_reference_plan(user.uid, str(family_id), plan_date)
 
 
+@daily_arrangement.get("/family/{family_id}/daily-meal-plans")
+async def meal_archive_list(
+    family_id: UUID, before: date | None = None, limit: int = Query(default=20, ge=1, le=50),
+    user=Depends(get_required_user),
+):
+    """按日期读取家庭的最新成功餐单。"""
+    from yuxi.services.meal_archive_service import list_meal_archive
+
+    return await list_meal_archive(str(user.uid), str(family_id), before=before, limit=limit)
+
+
+@daily_arrangement.get("/family/{family_id}/daily-meal-plans/{plan_date}/archive")
+async def meal_archive_get(family_id: UUID, plan_date: date, user=Depends(get_required_user)):
+    """查看保存的菜谱，不触发生成和采购。"""
+    from yuxi.services.meal_archive_service import read_meal_archive
+
+    return await read_meal_archive(str(user.uid), str(family_id), plan_date)
+
+
 @daily_arrangement.get("/family/{family_id}/daily-meal-plans/{plan_date}")
 async def current_daily_meal_plan(family_id: UUID, plan_date: date, user=Depends(get_required_user)):
     """聊天和快捷入口读取同一当前计划。"""

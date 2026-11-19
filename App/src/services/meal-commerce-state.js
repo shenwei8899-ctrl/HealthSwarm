@@ -5,6 +5,24 @@ const same = (a, b) => String(a) === String(b)
 const memberKey = members => JSON.stringify((members || []).map(m => String(m.id)).sort())
 const textIngredient = item => typeof item === 'string' ? item : [item?.name, item?.amount ?? item?.required_value, units[item?.unit ?? item?.required_unit] || item?.unit || item?.required_unit].filter(v => v !== undefined && v !== '').join(' ')
 
+// Trade amounts stay in integer cents; missing values must never become free goods.
+export const nonnegativeInteger = value => Number.isSafeInteger(value) && value >= 0 ? value : null
+export function productAmountCents(item) {
+  if (nonnegativeInteger(item?.priceCents) === null || !Number.isSafeInteger(item.quantity) || item.quantity < 1) return null
+  return nonnegativeInteger(item.priceCents * item.quantity)
+}
+export function selectedSubtotalCents(products, selected) {
+  const ids = new Set(selected), rows = products.filter(item => ids.has(item.id))
+  if (rows.length !== ids.size) return null
+  let total = 0
+  for (const row of rows) {
+    const amount = productAmountCents(row)
+    if (amount === null || nonnegativeInteger(total + amount) === null) return null
+    total += amount
+  }
+  return total
+}
+
 export function emptyCommerceMeal(members = [], meal = 'dinner') {
   return { meal: mealNames[meal] || meal, members, count: members.length, dishes: [], products: [], memberNotes: [], nutrition: null, blocked: [], sourceType: 'api', paid: false, safetyText: '个体化营养与个人份量尚未接入，请核对实际食材与已知饮食限制。' }
 }
@@ -40,24 +58,26 @@ export function commerceMealView(menu, { members = [], meal = 'dinner', quantiti
       ? requirements.reduce((sum, r) => sum + Number(r.required_value), 0) : null
     const unit = units[sku.net_content?.unit] || sku.net_content?.unit || ''
     const id = String(sku.sku_id), quantity = Number(quantities[id] ?? item.quantity)
+    const priceCents = nonnegativeInteger(sku.price_cent), availableQuantity = nonnegativeInteger(sku.available_quantity)
     return {
       id, skuId: id, name: sku.product_name, skuName: sku.sku_name || '', icon: '食材', imageUrl: sku.image_url || '',
       need: required, needLabel: required === null ? '用量待确认' : required + (units[requirements[0].required_unit] || requirements[0].required_unit),
       pack: Number(sku.net_content?.value) || null, unit, packLabel: sku.net_content?.value ? Number(sku.net_content.value) + unit + '/包' : sku.sku_name || '规格待确认',
-      quantity, priceCents: Number(sku.price_cent), availableQuantity: Number(sku.available_quantity),
-      valid: Number.isInteger(quantity) && quantity > 0 && quantity <= Number(sku.available_quantity),
+      quantity, priceCents, availableQuantity,
+      valid: productAmountCents({priceCents,quantity}) !== null && availableQuantity !== null && quantity <= availableQuantity,
     }
   })
   return plan
 }
 
 export function newMealCommerceState() {
-  return { menu: null, cart: [], address: null, preferredAddressId: '', slots: [], slotId: 0, quote: null, selected: [], quantities: {}, ready: false, busy: false, error: '', checkoutError: '', deliveryMessage: '', deliverySupported: null, contextIssue: '', baselineMembers: '', baselineProfile: '', pending: null, orderSn: '' }
+  return { menu: null, cart: [], address: null, preferredAddressId: '', slots: [], slotId: 0, quote: null, selected: [], quantities: {}, ready: false, busy: false, loading: false, productsLoading: false, addressLoading: false, addressReady: false, slotsLoading: false, pricing: false, addressError: '', timings: {}, error: '', checkoutError: '', sourceExpired: false, deliveryMessage: '', deliverySupported: null, contextIssue: '', baselineMembers: '', baselineProfile: '', pending: null, orderSn: '' }
 }
 
 export function createMealCommerceController({ state, api, scope, context }) {
-  let epoch = 0, disposed = false, currentScope = scope(), quoteRevision = 0, preparedSource = ''
+  let epoch = 0, disposed = false, currentScope = scope(), quoteRevision = 0, preparedSource = '', loadRevision = 0, pricingRevision = 0
   function reset() { epoch++; quoteRevision++; preparedSource=''; Object.assign(state, newMealCommerceState()); currentScope = scope() }
+  function suspend() { epoch++; invalidateQuote(); state.busy=false; state.loading=false; state.productsLoading=false;state.addressLoading=false;state.slotsLoading=false;state.pricing=false }
   function sync() { if (currentScope !== scope()) reset() }
   function invalidateQuote() { quoteRevision++; state.quote = null; state.checkoutError = '' }
   function membersChanged(invalidate = true) {
@@ -74,17 +94,87 @@ export function createMealCommerceController({ state, api, scope, context }) {
     const ticket = epoch, account = scope()
     const active = () => !disposed && ticket === epoch && account === scope()
     state.busy = true
-    if (checkout) state.checkoutError = ''; else state.error = ''
+    if (checkout) { state.checkoutError = ''; state.sourceExpired = false } else state.error = ''
     try { return await work(active) }
     catch (error) { if (active()) {
       if([401,403,404,410].includes(Number(error.status??error.code)))reset()
-      else if(Number(error.status??error.code)===409){state.ready=false;invalidateQuote()}
+      else if(Number(error.status??error.code)===409){
+        invalidateQuote()
+        state.sourceExpired = error.details?.reason === 'source_expired'
+        if (!state.sourceExpired) state.ready=false
+      }
       if (checkout) state.checkoutError = error.message; else state.error = error.message
     } return null }
     finally { sync(); if (active()) state.busy = false }
   }
   const sameMenu = (a, b) => a?.package_sn && a.package_sn === b?.package_sn && a.package_version === b?.package_version
   const ownsLine = line => line.source_type === 'recommendation_package' && same(line.source_ref, state.menu?.package_sn) && same(line.source_version, state.menu?.package_version)
+  async function loadDirect() {
+    sync()
+    const ticket = ++loadRevision, generation = epoch, account = scope(), input = context()
+    const active = () => !disposed && ticket === loadRevision && generation === epoch && account === scope()
+    const previousAddress = state.address?.id, previousSlot = state.slotId
+    invalidateQuote(); state.loading = true; state.productsLoading = true; state.addressLoading = !state.address
+    state.addressReady = Boolean(state.address); state.slotsLoading = false; state.error = ''; state.addressError = ''
+    state.deliverySupported = null; state.deliveryMessage = ''; state.slots = []; state.slotId = 0
+    state.pending = api.pendingOrder()
+    const timed = async (stage, work) => {
+      const start = Date.now()
+      try { return await work() } finally { if (active()) state.timings = { ...state.timings, [stage]: Date.now() - start } }
+    }
+    const fail = (error, field) => {
+      if (!active()) return
+      if ([401,403].includes(Number(error.status ?? error.code)) || error.code === 'SESSION_CHANGED') {
+        reset(); state[field] = error.message
+      } else {
+        if (field === 'error') { state.ready=false; state.menu=null; invalidateQuote() }
+        state[field] = error.message
+      }
+    }
+    // Each branch publishes immediately; a slow or failed product request cannot hide an address.
+    const menu = (async () => {
+      try {
+        const menu = await timed('products', () => input.loadMenu())
+        if (!active()) return
+        const unchanged = sameMenu(state.menu, menu)
+        state.menu = menu; state.ready = true
+        if (!unchanged) {
+          state.quantities = Object.fromEntries((menu.items || []).map(i => [String(i.sku.sku_id), i.quantity]))
+          state.selected = (menu.items || []).map(i => String(i.sku.sku_id))
+          const saved = input.initialChoices?.(menu)
+          if (saved) {
+            state.quantities = { ...state.quantities, ...saved.quantities }
+            state.selected = state.selected.filter(id => saved.selected.includes(id))
+          }
+        }
+        if (!state.baselineMembers || !unchanged) {
+          state.baselineMembers = memberKey(input.members); state.baselineProfile = JSON.stringify(input.members || [])
+        }
+        membersChanged()
+      } catch (error) { fail(error, 'error') }
+      finally { if (active()) state.productsLoading = false }
+    })()
+    const address = (async () => {
+      try {
+        const addresses = await timed('address', () => api.addresses())
+        if (!active()) return
+        state.address = resolveCheckoutAddress(addresses, state.preferredAddressId || previousAddress)
+        state.addressReady = true; state.addressLoading = false
+        if (!state.address) return
+        const addressId = state.address.id
+        state.slotsLoading = true
+        const result = await timed('delivery', () => api.slots(addressId))
+        if (!active() || !same(state.address?.id, addressId)) return
+        state.deliverySupported = result.supported !== false
+        state.deliveryMessage = state.deliverySupported ? '' : (result.message || '当前地址暂不支持配送，请更换收货地址')
+        state.slots = state.deliverySupported ? result.items.filter(s => s.available) : []
+        state.slotId = same(previousAddress, addressId) && state.slots.some(s => same(s.id, previousSlot)) ? previousSlot : state.slots[0]?.id || 0
+      } catch (error) { fail(error, 'addressError') }
+      finally { if (active()) { state.addressLoading = false; state.slotsLoading = false } }
+    })()
+    await Promise.all([menu, address])
+    if (active()) state.loading = false
+  }
   function guard() {
     const input = context()
     if (input.unsupported) throw new Error('当前按单餐采购；三餐合并和周期计划的交易契约尚未接入。')
@@ -96,6 +186,7 @@ export function createMealCommerceController({ state, api, scope, context }) {
     if (state.selected.some(id => !products.some(p => same(p.id, id) && p.valid))) throw new Error('所选食材已不可购买，请核对库存与数量。')
   }
   async function load() {
+    if (context().direct) return loadDirect()
     return run(async active => {
       const input = context()
       if (!input.enabled) return
@@ -146,7 +237,37 @@ export function createMealCommerceController({ state, api, scope, context }) {
     if (!item || !Number.isInteger(value) || value < 1 || value > Number(item.sku.available_quantity)) return
     invalidateQuote(); state.quantities = { ...state.quantities, [String(id)]: value }
   }
+  async function prepareDirect({ requireSlot = false } = {}) {
+    sync()
+    const generation = epoch, account = scope(), revision = quoteRevision, ticket = ++pricingRevision
+    const active = () => !disposed && generation === epoch && account === scope() && ticket === pricingRevision && revision === quoteRevision
+    const start = Date.now()
+    state.pricing = true; state.checkoutError = ''; state.sourceExpired = false
+    try {
+      guard()
+      if (state.pending || api.pendingOrder()) throw new Error('上次下单结果尚未确认，请先确认原订单。')
+      if (!state.address || !state.addressReady) throw new Error('请选择配送地址，再核对订单金额。')
+      if (state.deliverySupported !== true) throw new Error(state.deliveryMessage || '请先确认配送状态。')
+      if (requireSlot && !state.slots.some(s => same(s.id, state.slotId))) throw new Error('请选择可用的配送时段。')
+      const items = state.selected.map(id => ({ sku_id: String(id), quantity: state.quantities[String(id)] }))
+      const result = await api.quoteRecommendation(state.menu.package_sn, state.menu.package_version, state.address.id, state.slotId, items)
+      if (active()) { state.quote = result; state.orderSn = ''; return result }
+    } catch (error) {
+      if (active()) {
+        if (Number(error.status ?? error.code) === 409 && error.details?.reason === 'source_expired') {
+          state.quote = null; state.sourceExpired = true
+        } else if ([401,403,404,409,410].includes(Number(error.status ?? error.code)) || error.code === 'SESSION_CHANGED') reset()
+        state.checkoutError = error.message
+      }
+    } finally {
+      if (!disposed && generation === epoch && ticket === pricingRevision) {
+        state.pricing = false; state.timings = { ...state.timings, quote: Date.now() - start }
+      }
+    }
+    return null
+  }
   async function prepare({reuseCart=false,requireSlot=false}={}) {
+    if (context().direct) return prepareDirect({ requireSlot })
     return run(async active => {
       guard()
       const revision = quoteRevision
@@ -160,9 +281,7 @@ export function createMealCommerceController({ state, api, scope, context }) {
       let basket = reuseCart && preparedSource === source ? await api.cart() : null
       if (!active()) return null
       if (!basket || state.menu.items.some(item => !basket.items.some(line => ownsLine(line) && same(line.sku_id,item.sku.sku_id)))) {
-        await api.addMeal(state.menu)
-        if (!active()) return null
-        basket = await api.cart()
+        basket = await api.addMeal(state.menu)
         if (!active()) return null
         preparedSource = source
       }
@@ -208,5 +327,5 @@ export function createMealCommerceController({ state, api, scope, context }) {
       } finally { if (active()) state.pending = api.pendingOrder() }
     }, true)
   }
-  return { load, prepare, submit, recover, toggle, quantity, membersChanged, invalidateQuote, sync, reset, dispose() { disposed = true; reset() } }
+  return { load, prepare, submit, recover, toggle, quantity, membersChanged, invalidateQuote, sync, reset, suspend, dispose() { disposed = true; reset() } }
 }

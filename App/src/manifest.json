@@ -27,12 +27,30 @@
         "desc": "用于拍摄照片并在聊天中提问"
       },
       "scope.record": {
-        "desc": "用于按住说话，转成文字向家庭营养师提问"
+        "desc": "用于按住说话，录音上传至本小程序服务器转成文字"
       }
     },
     "usingComponents": true,
     "packOptions": {
+      "include": [
+        {
+          "type": "file",
+          "value": "static/food/welcome-family-dining-20261111.jpg"
+        }
+      ],
       "ignore": [
+        {
+          "type": "file",
+          "value": "static/food/welcome-family-dining-20261111.webp"
+        },
+        {
+          "type": "file",
+          "value": "static/voice-workers/index.js"
+        },
+        {
+          "type": "file",
+          "value": "static/voice-workers/paraformer.js"
+        },
         {
           "type": "file",
           "value": "project.config.json"

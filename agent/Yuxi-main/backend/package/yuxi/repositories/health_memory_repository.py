@@ -45,7 +45,13 @@ class HealthMemoryRepository:
             query = query.where(HealthMemoryFact.id > after)
         if member_ids is not None:
             query = query.where(HealthMemoryFact.member_id.in_(member_ids))
-        return list((await self.session.scalars(query.order_by(HealthMemoryFact.id).limit(limit + 1))).all())
+        return list(
+            (
+                await self.session.scalars(
+                    query.order_by(HealthMemoryFact.id).limit(limit + 1).execution_options(populate_existing=True)
+                )
+            ).all()
+        )
 
     async def get(self, uid, fact_id, *, lock=False):
         """不允许知道标识的其他账号访问记忆。"""

@@ -9,6 +9,7 @@ import CloudMealDetail from '../../components/CloudMealDetail.vue'
 import CloudDailyPurchase from '../../components/CloudDailyPurchase.vue'
 import ConversationPackagePurchase from '../../components/ConversationPackagePurchase.vue'
 import { request } from '../../services/request.js'
+import { newHealthRequestId } from '../../services/health-request-id.js'
 const commerceRoute=ref({}), commercePage=ref(false)
 
 import AppNavBar from '../../components/AppNavBar.vue'
@@ -192,7 +193,6 @@ async function confirmDiners(ids){
    if(menuUpdating.value)return
    menuUpdating.value=true;menuError.value=''
    try{
-    const {newHealthRequestId}=await import('../../services/health-task-flow.js')
     const r=commerceRoute.value,key='daily-arrangement-change:'+r.arrangement,scope=storageScope()
     let pending=scopedStorage.getStorageSync(key)
     if(!pending){const id=newHealthRequestId();pending={client_request_id:id,version:Number(r.version),meal:r.meal,member_ids:ids};scopedStorage.setStorageSync(key,pending)}

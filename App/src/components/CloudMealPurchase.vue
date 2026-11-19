@@ -9,7 +9,7 @@ import { onShow, onHide } from '@dcloudio/uni-app'
 import CommerceAccess from './CommerceAccess.vue'
 import { commerce } from '../services/commerce.js'
 import { useMealCommercePage } from '../services/meal-commerce-page.js'
-import { commerceMealView } from '../services/meal-commerce-state.js'
+import { commerceMealView, nonnegativeInteger, productAmountCents, selectedSubtotalCents } from '../services/meal-commerce-state.js'
 import { request } from '../services/request.js'
 import { getSession } from '../services/session.js'
 import { scopedStorage, storageContext } from '../services/storage.js'
@@ -25,10 +25,17 @@ let quoteTimer=null
 let refreshRequested=false
 const busy = ref(false), error = ref(''), checkoutOpen = ref(false), loginOpen = ref(false)
 let alive = true, initialized = false, ownerScope = storageContext()
+let directRevision = 0
+const direct = computed(() => Boolean(props.unified && props.selection))
 const page = useMealCommercePage(() => ({
   enabled: Boolean(publication.value), meal: props.route.meal, date: props.route.date,
   packageSn: publication.value?.package_sn, packageVersion: publication.value?.package_version,
   members: props.meal.members || [],
+  direct: direct.value, loadMenu: loadSelectedMenu,
+  initialChoices: () => {
+    const saved = scopedStorage.getStorageSync(selectionKey())
+    return saved?.known ? { selected: saved.selected || [], quantities: saved.quantities || {} } : null
+  },
 }))
 const state = page.state
 const selectable = item => Boolean(item) && (!(props.reference && !state.ready) || item.saleStatus === 'available' && item.availableQuantity !== 0)
@@ -37,8 +44,8 @@ const purchaseGaps = computed(() => (props.selection ? preview.value?.gaps || []
   ...gap, label: gap.ingredient_label || referenceIngredientLabel(props.reference?.ingredientLabels, gap.ingredient), detail: referenceGapDetail(gap),
 })))
 const referenceProducts = computed(() => (props.reference?.items || []).flatMap(item => Array.isArray(item.skus)&&item.skus.length
-  ? item.skus.map(sku=>({id:String(sku.sku_id),productId:String(item.product_id),name:item.product_name,packLabel:sku.sku_name||'规格待核对',quantity:draftQuantities.value[String(sku.sku_id)]??1,imageUrl:sku.image_url||item.image_url||'',needLabel:'参考用量未核算',priceCents:Number.isSafeInteger(sku.price_cent)?sku.price_cent:null,availableQuantity:Number.isSafeInteger(sku.available_quantity)?sku.available_quantity:null,saleStatus:sku.sale_status,ingredientRefs:item.ingredient_refs||[]}))
-  : item.sku_id!=null?[{id:String(item.sku_id),productId:item.product_id!=null?String(item.product_id):null,name:item.product_name,packLabel:item.sku_name||'规格待核对',quantity:draftQuantities.value[String(item.sku_id)]??item.quantity,imageUrl:item.image_url||'',needLabel:'参考用量未核算',priceCents:null,availableQuantity:null,saleStatus:'available',ingredientRefs:item.ingredient_refs||[]}]:[]))
+  ? item.skus.map(sku=>({id:String(sku.sku_id),productId:String(item.product_id),name:item.product_name,packLabel:sku.sku_name||'规格待核对',quantity:draftQuantities.value[String(sku.sku_id)]??1,imageUrl:sku.image_url||item.image_url||'',needLabel:'参考用量未核算',priceCents:nonnegativeInteger(sku.price_cent),availableQuantity:nonnegativeInteger(sku.available_quantity),saleStatus:sku.sale_status,ingredientRefs:item.ingredient_refs||[]}))
+  : item.sku_id!=null?[{id:String(item.sku_id),productId:item.product_id!=null?String(item.product_id):null,name:item.product_name,packLabel:item.sku_name||'规格待核对',quantity:draftQuantities.value[String(item.sku_id)]??item.quantity,imageUrl:item.image_url||'',needLabel:'参考用量未核算',priceCents:nonnegativeInteger(item.price_cent),availableQuantity:nonnegativeInteger(item.available_quantity),saleStatus:item.sale_status??'available',ingredientRefs:item.ingredient_refs||[]}]:[]))
 const products = computed(() => props.reference && !state.ready ? (preview.value?referenceProducts.value:[]) : state.ready ? page.plan.value.products : commerceMealView({
   items: (preview.value?.items || []).filter(item => item.sku?.sku_id),
   ingredient_requirements: preview.value?.ingredient_requirements || [],
@@ -46,8 +53,8 @@ const products = computed(() => props.reference && !state.ready ? (preview.value
 }).products.map(item=>({...item,quantity:draftQuantities.value[item.id]??item.quantity})))
 const productSpecSelection = computed(() => Boolean(props.reference?.items?.some(item => item?.product_id != null && Array.isArray(item.skus)) && preview.value && !state.ready))
 const picked = computed(() => state.ready ? state.selected : selected.value)
-const total = computed(() => products.value.filter(item => picked.value.includes(item.id)).reduce((sum, item) => sum + item.priceCents * item.quantity, 0))
-const totalKnown=computed(()=>!busy.value&&!state.busy&&!error.value&&!state.error&&purchaseReady.value&&products.value.length>0&&!(props.reference?.needsMatching&&!state.ready)&&products.value.filter(item=>picked.value.includes(item.id)).every(item=>Number.isFinite(item.priceCents)))
+const total = computed(() => selectedSubtotalCents(products.value,picked.value))
+const totalKnown=computed(()=>!busy.value&&!state.busy&&!error.value&&!state.error&&purchaseReady.value&&products.value.length>0&&!(props.reference?.needsMatching&&!state.ready)&&total.value!==null)
 const money = cents => (Number(cents || 0) / 100).toFixed(2)
 const active = scope => alive && scope === storageContext()
 function failure(e,scope){
@@ -62,7 +69,7 @@ const scopeQuery=()=>'?version='+props.selection.version+(props.selection.dishKe
 const path = () => '/api/family/' + encodeURIComponent(getSession().householdId) + '/daily-arrangements/' + props.route.date + (props.route.meal === 'daily' ? '' : '/meals/' + props.route.meal) + '/purchase'
 const version = () => ({ arrangement_id: props.route.arrangement, version: Number(props.route.version), ...(props.route.daily_plan_version!=null?{daily_plan_version:Number(props.route.daily_plan_version)}:{}), ...(props.route.meal === 'daily' ? { meals: props.route.meals } : {}) })
 const selectionKey = () => (props.selection?'saved:'+props.selection.version+':'+(props.selection.dishKeys||[]).join(',')+':':'')+'meal-purchase-selection:' + props.route.arrangement + ':' + props.route.meal + ':' + (props.route.meals || []).join(',')
-function rememberSelection() { scopedStorage.setStorageSync(selectionKey(), { known: products.value.map(item => item.id), selected: [...picked.value], quantities: {...draftQuantities.value}, version: props.route.version, dailyPlanVersion: props.route.daily_plan_version }) }
+function rememberSelection() { scopedStorage.setStorageSync(selectionKey(), { known: products.value.map(item => item.id), selected: [...picked.value], quantities: {...draftQuantities.value,...(state.ready?state.quantities:{})}, version: props.route.version, dailyPlanVersion: props.route.daily_plan_version }) }
 function receipt(data) {
   if(props.selection){if(data.version!==props.selection.version||!Array.isArray(data.purchase?.items))throw new Error('餐单采购已变化，请重新读取。');return data.purchase}
   if (data.arrangement_id !== props.route.arrangement || data.version !== Number(props.route.version)) throw new Error('本餐已更新，请返回今日安排重新读取。')
@@ -73,11 +80,67 @@ const returnKey = () => 'meal-checkout-address-return:' + (props.selection
   ? ['selection',props.selection.familyId,props.selection.date,props.selection.mealType,props.selection.version,[...(props.selection.dishKeys||[])].sort().join(',')]
   : [props.route.arrangement, props.route.version, props.route.date, props.route.meal, (props.route.meals || []).join(',')]).join(':')
 function chooseAddress() {
-  if (busy.value || state.busy) return
+  if (direct.value ? submitting.value || !state.addressReady : busy.value || state.busy) return
   const key = returnKey(), scope = storageContext()
   page.invalidateQuote()
   scopedStorage.setStorageSync(key, { at: Date.now(), scope })
   openAddressPicker({ selectedId: state.address?.id, onSelected: id => { state.preferredAddressId = id; page.invalidateQuote() }, onCancel: () => { if (active(scope)) scopedStorage.setStorageSync(key, null) } })
+}
+async function loadSelectedMenu() {
+  if (publication.value && preview.value?.available && !purchaseExpired()) return {...preview.value,dishes:[]}
+  const scope = storageContext(), revision = directRevision
+  const selectedScope = {...props.selection,dishKeys:[...(props.selection.dishKeys||[])]}
+  const selectedPath = scopePath()
+  const {data} = await request({path:selectedPath,method:'POST',data:{version:selectedScope.version,dish_keys:selectedScope.dishKeys},timeout:30000})
+  if (!active(scope) || revision !== directRevision || !props.visible) throw new Error('采购选择已变化，请重新打开。')
+  const purchase = receipt(data)
+  preview.value = purchase; publication.value = purchase
+  // Publication already returns current authoritative SKUs. Reading the package again adds no UI data.
+  return {...purchase,available:purchase.available===true,items:purchase.items||[],dishes:[]}
+}
+function purchaseExpired() {
+  const expiry = Date.parse(state.menu?.expires_at || publication.value?.expires_at || '')
+  return state.sourceExpired || Number.isFinite(expiry) && expiry <= Date.now()
+}
+function clearExpiredPurchase() {
+  const choices = { selected: [...picked.value], ids: products.value.map(item => item.id) }
+  draftQuantities.value = {...draftQuantities.value, ...state.quantities}
+  selected.value = [...picked.value]
+  rememberSelection()
+  publication.value = null
+  state.ready = false
+  state.sourceExpired = false
+  page.invalidateQuote()
+  return choices
+}
+async function loadSelectedPurchase(retryExpired = true) {
+  if (!props.visible) return
+  if (submitting.value) { refreshRequested=true; return }
+  state.pending = commerce.pendingOrder() || state.pending
+  if (state.pending || state.orderSn) { state.checkoutError='上次下单结果尚未确认，请先确认原订单。'; return }
+  refreshRequested=false
+  const revision = ++directRevision, scope = storageContext()
+  if(ownerScope!==scope){ownerScope=scope;page.reset();preview.value=null;publication.value=null}
+  const renewing = purchaseExpired(), previousIds = products.value.map(item => item.id)
+  if (renewing) clearExpiredPurchase()
+  page.invalidateQuote();error.value=''
+  try {
+    await commerce.connect()
+    if (!active(scope) || revision!==directRevision || !props.visible) return
+    loginOpen.value=false
+    await page.load()
+    if (!active(scope) || revision!==directRevision || !props.visible) return
+    if(!state.ready&&state.error){preview.value=null;publication.value=null;return}
+    if (renewing && (previousIds.length !== products.value.length || products.value.some(item => !previousIds.includes(item.id)))) {
+      error.value = '商品范围已变化，请核对食材列表后重新结算。'
+      return
+    }
+    await prepareQuote(false)
+    if (state.sourceExpired && retryExpired && !state.pending && !state.orderSn) {
+      return loadSelectedPurchase(false)
+    }
+    if(!state.ready&&state.checkoutError){preview.value=null;publication.value=null}
+  } catch (e) { if(active(scope)&&revision===directRevision){loginOpen.value=!commerce.session()?.token;failure(e,scope)} }
 }
 async function resumeCheckout(scope) {
   if (!active(scope)) return
@@ -90,14 +153,14 @@ async function resumeCheckout(scope) {
 async function verifyReference() {
   if(props.exclusive){const {data}=await request({path:props.exclusive.path});if(data.scope_hash!==props.exclusive.scopeHash)throw new Error('计划或商品已变化，请返回重新打开购买。');return}
   const ref=props.reference
-  if(props.selection){const {data}=await request({path:scopePath()+scopeQuery()});receipt(data);return}
+  if(props.selection)return // Publication, quotation and order each validate the source server-side.
   if(!ref || ref.dailyPlanVersion==null)return
   const scope=storageContext()
   const {data}=await request({path:'/api/family/'+encodeURIComponent(getSession().householdId)+'/daily-meal-plans/'+props.route.date})
   if(!active(scope))throw new Error('账号或家庭已变化，请重新读取。')
   if(data.date!==props.route.date || data.version!==ref.dailyPlanVersion || !data.purchase_options?.some(o=>o.kind==='reference'&&o.id===ref.previewId&&ref.mealTypes.length>0&&new Set(ref.mealTypes).size===ref.mealTypes.length&&ref.mealTypes.every(t=>o.meal_types.includes(t))))throw new Error('参考餐单已更新，请关闭详情后重新核对。')
 }
-async function refresh() {
+async function refresh(initial = false) {
   if (ownerScope !== storageContext()) {
     ownerScope = storageContext(); preview.value = null; publication.value = null; selected.value = []; draftQuantities.value={}
     initialized = false; checkoutOpen.value = false; loginOpen.value = false; busy.value = false; page.reset()
@@ -105,7 +168,10 @@ async function refresh() {
   if (busy.value) return
   const scope = storageContext(); busy.value = true; error.value = ''; page.invalidateQuote()
   try {
-    const { data } = props.selection ? await request({path:scopePath()+scopeQuery()}) : props.reference ? (await verifyReference(), {data:null}) : await request({ path: path() + '?arrangement_id=' + encodeURIComponent(props.route.arrangement) + '&version=' + Number(props.route.version) + (props.route.daily_plan_version!=null?'&daily_plan_version='+Number(props.route.daily_plan_version):'') + (props.route.meals || []).map(meal => '&meals=' + meal).join('') })
+    // The parent has just read this receipt; checkout still revalidates it server-side.
+    const initialReceipt = initial === true && props.exclusive?.initialPurchase
+    const seeded = initialReceipt && initialReceipt.scope_hash === props.exclusive.scopeHash
+    const { data } = seeded ? {data:null} : props.selection ? await request({path:scopePath()+scopeQuery()}) : props.reference ? (await verifyReference(), {data:null}) : await request({ path: path() + '?arrangement_id=' + encodeURIComponent(props.route.arrangement) + '&version=' + Number(props.route.version) + (props.route.daily_plan_version!=null?'&daily_plan_version='+Number(props.route.daily_plan_version):'') + (props.route.meals || []).map(meal => '&meals=' + meal).join('') })
     if (!active(scope)) return
     preview.value = props.reference ? {available:referenceProducts.value.length>0||props.reference.needsMatching,items:[]} : receipt(data)
     if (!initialized) {
@@ -125,9 +191,13 @@ async function refresh() {
   if (!props.unified) await resumeCheckout(scope)
 }
 function toggle(id) { if (busy.value || state.busy) return; const target=products.value.find(item=>item.id===id);if(!target||!selectable(target))return;if (state.ready) page.toggle(id); else {selected.value = selected.value.includes(id) ? selected.value.filter(value => value !== id) : [...selected.value.filter(value=>!target.productId||products.value.find(item=>item.id===value)?.productId!==target.productId), id]}; rememberSelection();scheduleQuote() }
-async function prepareQuote() {
+async function prepareQuote(retryExpired = true) {
   if (props.unified && (!props.visible || !state.ready || !state.address || !state.selected.length || !state.slots.some(slot=>String(slot.id)===String(state.slotId)) || state.pending || state.orderSn)) return
   await page.prepare(props.unified?{reuseCart:true,requireSlot:true}:undefined)
+  if (retryExpired && state.sourceExpired && !busy.value && !state.pending && !state.orderSn) {
+    if (direct.value) return loadSelectedPurchase()
+    return checkout()
+  }
 }
 function scheduleQuote() {
   if (!props.unified) return
@@ -139,6 +209,7 @@ function scheduleQuote() {
   },250)
 }
 async function refreshUnified() {
+  if (direct.value) return loadSelectedPurchase()
   if (!props.visible) return
   if (busy.value || state.busy || submitting.value) { refreshRequested=true; return }
   refreshRequested=false
@@ -149,8 +220,9 @@ async function refreshUnified() {
   await checkout()
 }
 const unifiedReady=computed(()=>state.ready&&state.menu?.available===true)
-const canSubmit=computed(()=>productSpecSelection.value?picked.value.length>0&&!busy.value&&!state.busy&&!error.value:unifiedReady.value&&picked.value.length>0&&state.address&&state.deliverySupported===true&&state.slots.some(slot=>String(slot.id)===String(state.slotId))&&state.quote?.checkout_token&&['goods_amount_cent','shipping_fee_cent','payable_amount_cent'].every(key=>Number.isSafeInteger(state.quote[key])&&state.quote[key]>=0)&&!quoteWaiting.value&&!busy.value&&!state.busy&&!error.value&&!state.error&&!state.checkoutError)
+const canSubmit=computed(()=>productSpecSelection.value?picked.value.length>0&&!busy.value&&!state.busy&&!error.value:unifiedReady.value&&picked.value.length>0&&state.address&&state.deliverySupported===true&&state.slots.some(slot=>String(slot.id)===String(state.slotId))&&state.quote?.checkout_token&&['goods_amount_cent','shipping_fee_cent','payable_amount_cent'].every(key=>Number.isSafeInteger(state.quote[key])&&state.quote[key]>=0)&&!quoteWaiting.value&&!state.pricing&&!state.loading&&!busy.value&&!state.busy&&!error.value&&!state.error&&!state.checkoutError)
 async function checkout() {
+  if (direct.value) return loadSelectedPurchase()
   if (busy.value || state.busy) return
   const scope = storageContext(); busy.value = true; writing.value=true; error.value = ''; checkoutOpen.value = !props.unified
   try {
@@ -158,43 +230,54 @@ async function checkout() {
     catch (e) { if (active(scope)) loginOpen.value = true; throw e }
     if (!active(scope)) return
     loginOpen.value = false
+    state.pending = commerce.pendingOrder() || state.pending
+    if (state.pending || state.orderSn) throw new Error('上次下单结果尚未确认，请先确认原订单。')
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const renewing = purchaseExpired()
+      const previousChoices = renewing ? clearExpiredPurchase() : null
+      await checkoutAttempt(scope, previousChoices)
+      if (!active(scope) || !state.sourceExpired || state.pending || state.orderSn) return
+    }
+  } catch (e) { failure(e,scope) }
+  finally { writing.value=false; if (active(scope)) busy.value = false }
+}
+async function checkoutAttempt(scope, previousChoices) {
     await verifyReference()
     if (publication.value && state.ready) {
-      await prepareQuote()
+      await prepareQuote(false)
       return
     }
-    const previous = [...picked.value], previousIds = products.value.map(item => item.id)
+    const previous = previousChoices?.selected || [...picked.value], previousIds = previousChoices?.ids || products.value.map(item => item.id)
     const ref=props.reference
     const productChoices=productSpecSelection.value?products.value.filter(item=>item.productId&&previous.includes(item.id)).map(item=>({product_id:item.productId,sku_id:item.id,quantity:item.quantity})):[]
     const { data } = await request(props.exclusive?{path:props.exclusive.path,method:'POST',data:{scope_hash:props.exclusive.scopeHash},timeout:30000}:props.selection?{path:scopePath(),method:'POST',data:{version:props.selection.version,dish_keys:props.selection.dishKeys},timeout:30000}:ref ? {path:ref.dailyPlanVersion!=null?'/api/family/'+encodeURIComponent(getSession().householdId)+'/daily-meal-plans/'+props.route.date+'/purchase':'/api/health/v1/reference-meal-plans/'+encodeURIComponent(ref.previewId)+'/purchase',method:'POST',data:ref.dailyPlanVersion!=null?{preview_id:ref.previewId,version:ref.dailyPlanVersion,meal_types:ref.mealTypes,...(productChoices.length?{product_choices:productChoices}:{})}:{...(productChoices.length?{product_choices:productChoices}:{})},timeout:30000} : { path: path(), method: 'POST', data: version(), timeout: 30000 })
     if (!active(scope)) return
     if(props.exclusive ? data.scope_hash!==props.exclusive.scopeHash||!data.package?.package_sn : props.reference && (data.preview_id!==props.reference.previewId||!data.package?.package_sn))throw new Error('采购来源无法核对，请重试。')
     publication.value = props.reference ? data.package : receipt(data)
+    const previousAddress = state.address?.id, previousSlot = state.slotId
     await page.load()
     if (!active(scope) || !state.ready || state.error) return
+    if (String(state.address?.id) === String(previousAddress) && state.slots.some(slot => String(slot.id) === String(previousSlot))) state.slotId = previousSlot
     if(props.reference && state.menu?.scope!=='daily_reference')throw new Error('参考采购来源已变化，请重新核对。')
     await verifyReference()
+    if (previousChoices && (previousIds.length !== page.plan.value.products.length || page.plan.value.products.some(item => !previousIds.includes(item.id)))) {
+      state.selected = page.plan.value.products.filter(item => previous.includes(item.id)).map(item => item.id)
+      throw new Error('商品范围已变化，请核对食材列表后重新结算。')
+    }
     state.selected = page.plan.value.products.filter(item => previous.includes(item.id) || !previousIds.includes(item.id)).map(item => item.id)
     const quantityChanges=page.plan.value.products.filter(item=>draftQuantities.value[item.id]!=null)
     if(quantityChanges.some(item=>draftQuantities.value[item.id]>item.availableQuantity))throw new Error('库存已有变化，请返回食材列表重新确认包装数量。')
     for(const item of quantityChanges)page.quantity(item.id,draftQuantities.value[item.id])
     rememberSelection()
-    await prepareQuote()
-  } catch (e) { failure(e,scope) }
-  finally { writing.value=false; if (active(scope)) busy.value = false }
+    await prepareQuote(false)
 }
 async function submit() {
-  if(writing.value||props.unified&&!canSubmit.value)return
-  if(props.unified&&productSpecSelection.value){await checkout();return}
-  writing.value=true;submitting.value=true
-  try{await verifyReference();await page.submit();if(alive&&state.orderSn){if(props.managed)emit('ordered',state.orderSn);else uni.navigateTo({url:'/pages/orders/detail?id='+encodeURIComponent(state.orderSn)})}}
-  catch(e){error.value=e.message;page.invalidateQuote()}
-  finally{writing.value=false;submitting.value=false}
+  uni.showToast({ title: '尚未接入微信支付', icon: 'none' })
 }
 async function recover() {
   if(writing.value)return
   writing.value=true;submitting.value=true
-  try{await page.recover();if(alive&&state.orderSn){if(props.managed)emit('ordered',state.orderSn);else uni.navigateTo({url:'/pages/orders/detail?id='+encodeURIComponent(state.orderSn)})}}
+  try{await page.recover();if(alive&&state.orderSn)uni.showToast({ title: '尚未接入微信支付', icon: 'none' })}
   finally{writing.value=false;submitting.value=false}
 }
 
@@ -203,25 +286,27 @@ async function selectSlot(id){if(busy.value||state.busy||String(state.slotId)===
 
 watch(checkoutOpen,value=>emit('checkout',value))
 defineExpose({refresh:()=>props.unified?refreshUnified():refresh(),closeCheckout:()=>{if(!writing.value)checkoutOpen.value=false},isBusy:computed(()=>props.unified?submitting.value:writing.value)})
-watch(()=>props.visible,(visible,previous)=>{if(!props.unified)return;if(!visible){clearTimeout(quoteTimer);quoteWaiting.value=false;page.invalidateQuote()}else if(previous===false)void refreshUnified()})
+watch(()=>props.visible,(visible,previous)=>{if(!props.unified)return;if(!visible){clearTimeout(quoteTimer);quoteWaiting.value=false;if(direct.value){directRevision++;page.reset();preview.value=null;publication.value=null}else page.invalidateQuote()}else if(previous===false)void refreshUnified()})
+watch(()=>JSON.stringify(props.selection),()=>{if(direct.value){directRevision++;page.reset();preview.value=null;publication.value=null;if(props.visible)void refreshUnified()}},{flush:'sync'})
 watch(()=>[busy.value,state.busy,submitting.value],()=>{if(props.unified&&props.visible&&refreshRequested&&!busy.value&&!state.busy&&!submitting.value)void refreshUnified()})
-onMounted(()=>props.unified?refreshUnified():refresh())
-onShow(()=>{if(!props.embedded)void refresh()})
-onHide(()=>{if(props.unified){clearTimeout(quoteTimer);quoteWaiting.value=false;page.invalidateQuote()}})
+onMounted(()=>props.unified?refreshUnified():refresh(true))
+// Exclusive procurement is reloaded by its parent page on every show.
+onShow(()=>{if(!props.embedded&&!props.exclusive)void(props.unified?refreshUnified():refresh())})
+onHide(()=>{if(props.unified){clearTimeout(quoteTimer);quoteWaiting.value=false;if(direct.value){directRevision++;page.suspend()}else page.invalidateQuote()}})
 onUnmounted(() => { alive = false; clearTimeout(quoteTimer); page.dispose() })
 
 </script>
 
 <template>
    <view class="meal-purchase" :class="{'is-embedded':embedded,'is-exclusive':!!exclusive}">
-  <MealPurchasePanel v-if="unified" :gaps="purchaseGaps" :products="products" :picked="picked" :address="state.address" :slots="state.slots" :slot-id="state.slotId" :quote="state.quote" :busy="busy||state.busy||submitting" :pricing="quoteWaiting" :ready="unifiedReady" :choices-ready="productSpecSelection" :pending="!!(state.pending||state.orderSn)" :error="error||state.error||state.checkoutError||state.deliveryMessage" :access-required="loginOpen" :can-submit="!!canSubmit" @address="chooseAddress" @slot="selectSlot" @toggle="toggle" @quantity="changeQuantity" @confirm="submit" @recover="recover" @retry="refreshUnified" @scroll="emit('scroll',$event)"><template #access><CommerceAccess entry @ready="refreshUnified"/></template></MealPurchasePanel>
+  <MealPurchasePanel v-if="unified" :gaps="purchaseGaps" :products="products" :picked="picked" :address="state.address" :slots="state.slots" :slot-id="state.slotId" :quote="state.quote" :busy="busy||state.busy||submitting" :pricing="quoteWaiting||state.pricing" :independent="direct" :products-loading="state.productsLoading" :address-ready="state.addressReady" :address-loading="state.addressLoading" :slots-loading="state.slotsLoading" :address-error="state.addressError" :ready="unifiedReady" :choices-ready="productSpecSelection" :pending="!!(state.pending||state.orderSn)" :error="error||state.error||state.addressError||state.checkoutError||state.deliveryMessage" :access-required="loginOpen" :can-submit="!!canSubmit" @address="chooseAddress" @slot="selectSlot" @toggle="toggle" @quantity="changeQuantity" @confirm="submit" @recover="recover" @retry="refreshUnified" @scroll="emit('scroll',$event)"><template #access><CommerceAccess entry @ready="refreshUnified"/></template></MealPurchasePanel>
   <template v-else>
   <scroll-view v-show="!embedded||!checkoutOpen" :scroll-y="embedded" :show-scrollbar="false" class="purchase-scroll">
   <view v-if="!exclusive" class="section-head"><text class="section-title">{{route.meal==='daily'&&route.meals?.length>1?'所选餐次食材汇总':'本餐所需食材'}}</text><text>家中已有可取消</text></view>
   <text v-if="!exclusive&&reference?.needsMatching&&!state.ready" class="safe-note">将按本餐核对商品；进入结算后可调整包装数量。</text><text v-if="reference&&!exclusive" class="safe-note">参考餐单用量未核算，请核对实际需要；未匹配的食材需自行准备。</text><text v-if="busy||state.busy" class="safe-note">正在核对商品与配送…</text>
   <view v-if="error||state.error" class="card status" role="alert"><text>{{error||state.error}}</text><button class="secondary-button" :disabled="busy||state.busy" @click="refresh">重新核对本餐食材</button></view>
   <text v-if="preview&&!preview.available" class="inline-error">{{preview.message||'当前食材暂不可采购，请重新核对。'}}</text><view v-if="!exclusive&&reference?.gaps?.length" class="purchase-gaps"><text>这些食材不进入购物车</text><text v-for="(gap,i) in reference.gaps" :key="i">{{referenceIngredientLabel(reference?.ingredientLabels,gap.ingredient)}}：{{['no_match','needs_confirmation'].includes(gap.reason)?'自行购买 · 暂无价格；':''}}{{referenceGapDetail(gap)}}</text></view>
-  <view class="products"><view v-for="item in products" :key="item.id" class="product"><button class="product-select" :disabled="busy||state.busy||!selectable(item)" :aria-pressed="picked.includes(item.id)" :aria-label="(picked.includes(item.id)?'取消选择':'选择')+item.name" @click="toggle(item.id)"><view class="check" :class="{selected:picked.includes(item.id)}">{{picked.includes(item.id)?'✓':''}}</view></button><view class="product-image"><FoodImageSlot :src="item.imageUrl" :label="item.name" :width="52" :height="60" :radius="15"/></view><view class="product-copy"><text class="product-name">{{item.name}}</text><text v-if="!exclusive">{{item.needLabel}}</text><text>{{item.packLabel}}</text><view class="quantity-control"><button :aria-label="'减少'+item.name+'数量'" :disabled="busy||state.busy||!selectable(item)||item.quantity<=1" @click="changeQuantity(item,-1)">−</button><text>{{item.quantity}} 包</text><button :aria-label="'增加'+item.name+'数量'" :disabled="busy||state.busy||!selectable(item)||(Number.isFinite(item.availableQuantity)&&item.quantity>=item.availableQuantity)" @click="changeQuantity(item,1)">＋</button></view><text v-if="!selectable(item)" class="stock-alert">暂不可选</text><text v-else-if="Number.isFinite(item.availableQuantity)&&item.availableQuantity<item.quantity" class="stock-alert">库存不足</text></view><text class="product-price">{{Number.isFinite(item.priceCents)?'¥'+money(item.priceCents*item.quantity):'待核价'}}</text></view></view>
+  <view class="products"><view v-for="item in products" :key="item.id" class="product"><button class="product-select" :disabled="busy||state.busy||!selectable(item)" :aria-pressed="picked.includes(item.id)" :aria-label="(picked.includes(item.id)?'取消选择':'选择')+item.name" @click="toggle(item.id)"><view class="check" :class="{selected:picked.includes(item.id)}">{{picked.includes(item.id)?'✓':''}}</view></button><view class="product-image"><FoodImageSlot :src="item.imageUrl" :label="item.name" :width="52" :height="60" :radius="15"/></view><view class="product-copy"><text class="product-name">{{item.name}}</text><text v-if="!exclusive">{{item.needLabel}}</text><text>{{item.packLabel}}</text><view class="quantity-control"><button :aria-label="'减少'+item.name+'数量'" :disabled="busy||state.busy||!selectable(item)||item.quantity<=1" @click="changeQuantity(item,-1)">−</button><text>{{item.quantity}} 包</text><button :aria-label="'增加'+item.name+'数量'" :disabled="busy||state.busy||!selectable(item)||(Number.isFinite(item.availableQuantity)&&item.quantity>=item.availableQuantity)" @click="changeQuantity(item,1)">＋</button></view><text v-if="!selectable(item)" class="stock-alert">暂不可选</text><text v-else-if="Number.isFinite(item.availableQuantity)&&item.availableQuantity<item.quantity" class="stock-alert">库存不足</text></view><text class="product-price">{{productAmountCents(item)!==null?'¥'+money(productAmountCents(item)):'待核价'}}</text></view></view>
   </scroll-view>
   <view v-show="!embedded||!checkoutOpen" class="meal-bottom-bar"><view class="selection-summary"><text>{{exclusive?'商品小计':route.meal==='daily'?(route.meals||[]).map(m=>({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}[m])).join('、')+' · 商品小计':'商品小计 · '+picked.length+' 项'}}</text><text class="amount">{{totalKnown?'¥'+money(total):'价格待核对'}}</text></view><button class="checkout-button" :disabled="busy||state.busy||!purchaseReady||(!picked.length&&!reference?.needsMatching)||!!error" @click="checkout">{{preview?.confirmation_pending?'确认上次采购结果':'去结算'}}<text v-if="!preview?.confirmation_pending">→</text></button></view>
   <PurchaseCheckoutSheet :embedded="embedded" :open="checkoutOpen" :title="route.meal==='daily'&&route.meals?.length>1?'确认采购订单':'确认本餐订单'" :address="state.address" :slots="state.slots" :slot-id="state.slotId" :products="products.filter(p=>picked.includes(p.id))" :quote="state.quote" :busy="busy||state.busy" :error="error||state.error||state.checkoutError||state.deliveryMessage" :pending="!!(state.pending||state.orderSn)" :access-required="loginOpen" @close="checkoutOpen=false" @address="chooseAddress" @slot="selectSlot" @confirm="submit" @recover="recover" @quote="checkout"><template #access><CommerceAccess entry @ready="checkout"/></template></PurchaseCheckoutSheet>

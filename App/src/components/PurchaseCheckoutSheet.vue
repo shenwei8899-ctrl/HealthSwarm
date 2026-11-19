@@ -45,7 +45,6 @@ const lines = computed(() => (props.quote?.items || props.products.map(p=>({sku_
         <button v-else-if="!address" class="checkout-submit" :disabled="busy" @click="$emit('address')">添加收货地址</button>
         <button v-else-if="quote" class="checkout-submit" :disabled="busy" @click="$emit('confirm')">{{busy?'正在核对…':'确认下单'}} <text>¥{{money(quote.payable_amount_cent)}}</text></button>
         <button v-else class="checkout-submit" :disabled="busy" @click="$emit('quote')">{{busy?'正在核对…':'核对商品与价格'}}</button>
-        <text class="payment-note">下单后进入订单详情支付</text>
       </view>
     </view>
   </view>
@@ -64,6 +63,10 @@ const lines = computed(() => (props.quote?.items || props.products.map(p=>({sku_
 /* #ifdef H5 */
 .checkout-panel{max-width:480px;margin:0 auto}
 /* #endif */
+</style>
+
+<style scoped>
+.address-row[disabled]{opacity:1}
 </style>
 
 <style scoped>

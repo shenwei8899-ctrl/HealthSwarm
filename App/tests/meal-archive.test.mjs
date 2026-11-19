@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { computed, reactive, ref } from 'vue'
 import { archiveDate, archiveMeals, archiveCard, plannedGrams } from '../src/services/meal-archive-presentation.js'
 import { createHealthPlanClient, healthPlanState } from '../src/services/health-plan-client.js'
+import { createMealArchiveClient, mealArchiveState } from '../src/services/meal-archive-client.js'
 
 const a = '11111111-1111-4111-8111-111111111111', b = '22222222-2222-4222-8222-222222222222'
 const planId = '33333333-3333-4333-8333-333333333333'
@@ -48,6 +49,8 @@ function mount(override = async () => null) {
   }
   function currentMember() { return page.state.memberId }
   const deps = { computed, reactive, ref, archiveCard, archiveDate, plannedGrams, healthPlanState,
+    mealArchiveState, createMealArchiveClient: ({state}) => createMealArchiveClient({state,send,
+      session:()=>({householdId:'family'}),context:()=>String(epoch)}),
     onLoad: fn => hooks.load = fn, onShow: fn => hooks.show = fn, onHide: fn => hooks.hide = fn, onUnload: fn => hooks.unload = fn,
     createHealthPlanClient: ({ state }) => createHealthPlanClient({ state, send, revision: () => epoch, newId: () => 'fixed-request',
       storage: { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, structuredClone(value)) } }),
@@ -55,11 +58,24 @@ function mount(override = async () => null) {
   }
   const script = readFileSync(new URL('../src/pages/health/plans.vue', import.meta.url), 'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
-  const fields = 'state,memberId,selectedPlanId,view,replace,reason,reviewExpanded,client,select,back,changeMember,retry,chat'
+  const fields = 'state,memberId,selectedPlanId,view,replace,reason,reviewExpanded,client,select,back,changeMember,retry,chat,archive,archiveClient,selectArchive,backArchive'
   const page = new Function('deps', `const {${Object.keys(deps)}}=deps;${script};return {${fields}}`)(deps)
   hooks.load({})
   return { ...page, hooks, calls, navigation, switchAccount: () => epoch++ }
 }
+
+test('family archive links read the chosen day and paginate without querying professional plans', async () => {
+  const saved = {family_id:'family',version:1,plan_date:'2026-11-19',meals:[{meal_type:'dinner',dishes:[{name:'米饭'}]}]}
+  const p = mount(async options => options.path.endsWith('/archive') ? {data:saved}
+    : {data:{plans:[saved],next_before:options.path.includes('before=')?null:'2026-11-19'}})
+  p.hooks.load({date:'2026-11-19'}); await p.hooks.show()
+  assert.equal(p.archive.plan.plan_date,'2026-11-19')
+  assert.equal(p.calls[0].path,'/api/family/family/daily-meal-plans/2026-11-19/archive')
+  await p.backArchive(); await p.archiveClient.list(true)
+  assert.ok(p.calls.at(-1).path.includes('before=2026-11-19'))
+  assert.equal(p.calls.some(c=>c.path.includes('/members')),false)
+  p.hooks.hide(); assert.equal(p.archive.plans.length,0)
+})
 
 test('detail opens above the list, returns to the same page, and prevents duplicate reads while busy', async () => {
   const p = mount(); await p.hooks.show()

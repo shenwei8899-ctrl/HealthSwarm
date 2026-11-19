@@ -77,6 +77,21 @@ class MealCommerceService
     /** 将服务端菜谱固定到报价，数量调整不会改写菜谱或营养结论。 */
     public function quoteSnapshot($uid, array $payload, array $pricing)
     {
+        // Direct package pricing has already checked ownership, version, provenance and each selected SKU.
+        // Reuse that request-local result; another package() call repeats the remote callback and checks unselected stock.
+        if (($payload['source_type'] ?? '') === 'recommendation_package') {
+            $package = $pricing['_validated_package'] ?? null;
+            if (!$package || (string)$package['package_sn'] !== (string)$payload['source_ref']
+                || (int)$package['package_version'] !== (int)$payload['source_version']) {
+                throw new DomainException('报价缺少已核对的本餐来源', 40906, 409);
+            }
+            $row = Db::name('shop_recommendation_package')->where('package_sn', $package['package_sn'])->where('user_id', $uid)->find();
+            $version = Db::name('shop_recommendation_package_version')->where('package_id', $row['id'])->where('version_no', $package['package_version'])->find();
+            return ['package_sn'=>$package['package_sn'], 'package_version'=>$package['package_version'],
+                'menu_version_ref'=>$version['menu_version_ref'], 'date'=>$row['meal_date'],
+                'dishes'=>Json::decode($version['recipes_snapshot_json'], []),
+                'purchased_sku_ids'=>array_map('strval', array_column($pricing['items'], 'sku_id'))];
+        }
         if (empty($payload['meal_package_sn'])) return null;
         $menu = $this->package($uid, $payload['meal_package_sn'], $payload['meal_package_version'] ?? 0);
         if (!$menu['available']) throw new DomainException('本餐依据已变化，请重新确认', 40917, 409, ['issues'=>$menu['issues']]);

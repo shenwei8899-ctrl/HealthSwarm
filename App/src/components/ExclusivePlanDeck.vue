@@ -1,7 +1,7 @@
 <script setup>
 import { planTierNames } from '../services/exclusive-plan-flow.js'
 
-defineProps({ plans: { type: Array, default: () => [] }, disabled: Boolean, previewOnly: Boolean })
+defineProps({ plans: { type: Array, default: () => [] }, disabled: Boolean, actionLabel: { type: String, default: '查看计划' } })
 const emit = defineEmits(['detail'])
 const tierArt = {
   economy: '/static/plans/economy-v2.webp',
@@ -20,7 +20,7 @@ const tierArt = {
       <view class="option-copy">
         <text class="option-title">{{ planTierNames[plan.tier_code] }}</text>
         <text class="option-caption">21 天 · 每日三餐</text>
-        <view class="option-link"><text>查看计划</text><text class="option-arrow" aria-hidden="true">›</text></view>
+        <view class="option-link"><text>{{ actionLabel }}</text><text v-if="!disabled" class="option-arrow" aria-hidden="true">›</text></view>
       </view>
     </button>
   </view>
@@ -36,6 +36,6 @@ const tierArt = {
 .option-title,.option-caption{display:block}.option-title{font-size:42rpx;line-height:1.4;font-weight:600;letter-spacing:2rpx}.option-caption{margin-top:18rpx;color:#8b97aa;font-size:23rpx;font-weight:400;white-space:nowrap}
 .option-link{display:flex;align-items:center;gap:14rpx;margin-top:38rpx;color:var(--card-ink);font-size:24rpx;font-weight:500}
 .option-arrow{display:flex;align-items:center;justify-content:center;width:42rpx;height:42rpx;flex:none;border-radius:50%;border:1rpx solid rgba(112,144,190,.2);background:rgba(238,245,255,.8);font-size:32rpx;font-weight:400;line-height:1;padding-bottom:3rpx;box-sizing:border-box}
-.option-pressed{opacity:.75}.plan-option[disabled]{opacity:.55}
+.option-pressed{opacity:.75}.plan-option[disabled]{opacity:1;color:#424b60}.plan-option[disabled] .option-link{color:#8794aa}
 @media(max-width:350px){.plan-option{padding:34rpx;height:350rpx}.option-title{font-size:42rpx}.option-caption{font-size:24rpx}.option-link{font-size:25rpx}}
 </style>

@@ -126,7 +126,11 @@ class AgentMealSourceService
         $row = Db::name('shop_recommendation_package')->where('package_sn', $ref)->find();
         if (!$row) throw new DomainException('推荐包不存在', 40402, 404);
         (new IdentityService())->assertOwner($userId, $row['user_id']);
-        if ((int)$row['current_version'] !== (int)$version || (int)$row['expires_at'] <= time() ||
+        if ((int)$row['current_version'] === (int)$version && in_array($row['status'], ['available', 'confirmed', 'expired'], true) &&
+            ((int)$row['expires_at'] <= time() || $row['status'] === 'expired')) {
+            throw new DomainException('采购来源已过期，请重新获取商品后报价', 40906, 409, ['reason'=>'source_expired']);
+        }
+        if ((int)$row['current_version'] !== (int)$version ||
             !in_array($row['status'], ['available', 'confirmed'], true)) {
             throw new DomainException('餐单采购来源已变化或过期', 40906, 409);
         }

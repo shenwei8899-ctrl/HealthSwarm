@@ -5,7 +5,7 @@ import json
 import re
 from copy import deepcopy
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from sqlalchemy import select
 
@@ -38,6 +38,7 @@ from yuxi.services.health_agent_roles import (
     consultation_skill_snapshot,
 )
 from yuxi.services.health_vision_service import health_vision_service
+from yuxi.services.health_catalog_policy import is_catalog_intent_denial
 from yuxi.services.health_vision_types import ConsultationInput, HealthVisionError
 from yuxi.services.project_service import create_implicit_project
 from yuxi.storage.postgres.manager import pg_manager
@@ -681,13 +682,20 @@ async def require_consultation_attempt(context, messages=None):
             session, context.uid, context.thread_id, context.model, expected=snapshot
         )
         health_repo = HealthVisionRepository(session)
+        human, calls = None, {}
         for message in messages or []:
+            if isinstance(message, HumanMessage):
+                human, calls = message, {}
+            elif isinstance(message, AIMessage):
+                calls = {call["id"]: call["name"] for call in message.tool_calls}
             if isinstance(message, ToolMessage) and message.name in {
                 "get_food_categories",
                 "find_food_packages",
                 "select_food_products",
             }:
                 if message.status == "error":
+                    if is_catalog_intent_denial(message, human, calls):
+                        continue
                     raise HealthVisionError("source_invalidated", "商品工具来源不可用，请重新查询", 410)
                 from yuxi.services.conversation_purchase_service import validate_catalog_profile_payload
 

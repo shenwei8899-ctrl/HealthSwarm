@@ -937,7 +937,7 @@ class HealthMiniappProfileCoding(Base):
 
 
 class HealthDailyMealPlan(Base):
-    """每日当前计划只保存餐次来源引用，内容由各来源持有。"""
+    """每日当前餐次来源和最新成功展示快照。"""
 
     __tablename__ = "health_daily_meal_plan"
     __table_args__ = (
@@ -958,6 +958,7 @@ class HealthDailyMealPlan(Base):
     is_shared = Column(Boolean, nullable=False, default=True, server_default=text("false"))
     version = Column(Integer, nullable=False, default=0)
     meal_sources = Column(JSON_VALUE, nullable=False, default=dict)
+    archive_meals = Column(JSON_VALUE, nullable=False, default=dict, server_default=text("'{}'"))
     pending = Column(JSON_VALUE, nullable=False, default=dict)
     updated_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
@@ -1029,8 +1030,8 @@ class HealthRecipeCommerceSource(Base):
     recipe_hash = Column(String(64), nullable=False)
     steps = Column(JSON_VALUE, nullable=False)
     ingredient_codes = Column(JSON_VALUE, nullable=False)
-    source_ref = Column(String(500), nullable=False)
     presentation = Column(JSON_VALUE, nullable=True)
+    source_ref = Column(String(500), nullable=False)
     published_by = Column(String, ForeignKey("users.uid"), nullable=False)
 
 

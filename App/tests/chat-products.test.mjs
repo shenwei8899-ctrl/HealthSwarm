@@ -1,4 +1,4 @@
-import { createDishSwap, dishSwapState } from '../src/services/dish-swap.js'
+import { createDishSwap, dishSwapState, watchDishSwap } from '../src/services/dish-swap.js'
 import {chatPromptProfileKey} from '../src/services/chat-prompt-profile.js'
 import {syntheticIntent} from './fixtures/health-intent.mjs'
 import {todayMealPlanState,createTodayMealPlan} from '../src/services/today-meal-plan.js'
@@ -37,7 +37,7 @@ test('对话商品卡和详情不展示商城长篇说明，购买使用今日�
 function setup(route={}){
  const submitted=[],opened=[],selections=[]
  const stored=new Map(),thread='22222222-2222-4222-8222-222222222222',referenceThread='33333333-3333-4333-8333-333333333333'
- const deps={createDishSwap,dishSwapState,dishSwapState,createDishSwap,todayMealPlanState,createTodayMealPlan,mealPairingText,chatPresentation,watch,createChatEntryTransition,createChatKeyboardLayout,mealQuestionAction,readDailyMealPlan:async(_family,date)=>({date,status:'absent',version:0,meals:[]}),listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,ref,computed,reactive,nextTick,onShow(){},onHide(){},onMounted(){},onUnmounted(){},defineOptions(){},defineProps:()=>({route}),
+ const deps={createDishSwap,dishSwapState,watchDishSwap,dishSwapState,createDishSwap,todayMealPlanState,createTodayMealPlan,mealPairingText,chatPresentation,watch,createChatEntryTransition,createChatKeyboardLayout,mealQuestionAction,readDailyMealPlan:async(_family,date)=>({date,status:'absent',version:0,meals:[]}),listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,ref,computed,reactive,nextTick,onShow(){},onHide(){},onMounted(){},onUnmounted(){},defineOptions(){},defineProps:()=>({route}),
  storageContext:()=> 'scope',getSession:()=>({token:'unit'}),
  dailyArrangementState:()=>({phase:'ready'}),createDailyArrangementClient:()=>({dispose(){}}),
  scopedStorage:{getStorageSync:key=>stored.get(key),setStorageSync:(key,value)=>stored.set(key,value)},localDate:date=>date?'2026-10-28':'2026-10-27',
