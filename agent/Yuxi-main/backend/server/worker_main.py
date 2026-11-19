@@ -11,7 +11,7 @@ if sys.platform == "win32":
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from yuxi.services.run_worker import WorkerSettings
+from yuxi.services.run_worker import WorkerSettings, consultation_worker_options
 
 __all__ = ["WorkerSettings"]
 
@@ -22,7 +22,8 @@ def main() -> None:
     from yuxi.services.arq_worker import run_worker
 
     logging.config.dictConfig(default_log_config(False))
-    run_worker(WorkerSettings)
+    options = consultation_worker_options() if sys.argv[1:] == ["--consultation"] else {}
+    run_worker(WorkerSettings, **options)
 
 
 if __name__ == "__main__":

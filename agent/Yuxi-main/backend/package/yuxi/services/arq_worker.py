@@ -16,6 +16,6 @@ class YuxiWorker(Worker):
         await super().start_jobs(candidates)
 
 
-def run_worker(settings: type) -> None:
+def run_worker(settings: type, **overrides) -> None:
     """让正式入口和诊断入口复用同一 Worker 与既有生命周期。"""
-    YuxiWorker(**get_kwargs(settings)).run()
+    YuxiWorker(**(get_kwargs(settings) | overrides)).run()

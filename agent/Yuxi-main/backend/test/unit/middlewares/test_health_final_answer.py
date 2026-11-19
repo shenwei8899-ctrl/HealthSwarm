@@ -218,6 +218,127 @@ async def test_final_graph_provides_only_current_successful_family_citation_ids(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fast", "ready", "hits", "parallel", "forged", "personal"),
+    [
+        (False, True, True, False, False, False),
+        (True, True, True, False, False, False),
+        (True, False, True, False, False, False),
+        (True, True, False, False, False, False),
+        (True, True, True, True, False, False),
+        (True, True, True, False, True, False),
+        (True, True, True, False, False, True),
+    ],
+)
+async def test_single_ordinary_knowledge_query_enters_verified_final_stage(
+    fast, ready, hits, parallel, forged, personal
+):
+    """比较同一真实图的模型调用数，错误引用不产生公开正文。"""
+    source_id = "11111111-1111-4111-8111-111111111111"
+
+    @tool
+    async def query_family_nutrition_knowledge(query: str, ready_to_answer: bool = False) -> dict:
+        """返回本轮合成检索结果。"""
+        return {
+            "scope": "general_education",
+            "status": "ok" if hits else "insufficient_material",
+            "sources": [{"source_id": source_id}] if hits else [],
+        }
+
+    research = AIMessageChunk(
+        content="",
+        tool_call_chunks=[
+            {
+                "name": query_family_nutrition_knowledge.name,
+                "args": json.dumps({"query": "减脂", "ready_to_answer": ready}),
+                "id": "research-call",
+                "index": 0,
+            }
+        ],
+    )
+    if parallel:
+        research = research + AIMessageChunk(
+            content="",
+            tool_call_chunks=[
+                {
+                    "name": read_authorized_records.name,
+                    "args": "{}",
+                    "id": "other-call",
+                    "index": 1,
+                }
+            ],
+        )
+    final = AIMessageChunk(content="合成正文。")
+    if hits:
+        final = AIMessageChunk(
+            content="",
+            tool_call_chunks=[
+                {
+                    "name": production.submit_consultation_answer.name,
+                    "args": json.dumps(
+                        {
+                            "answer": "合成正文。",
+                            "citations": [
+                                {
+                                    "kind": "family",
+                                    "id": "22222222-2222-4222-8222-222222222222" if forged else source_id,
+                                }
+                            ],
+                        }
+                    ),
+                    "id": "final-call",
+                    "index": 0,
+                }
+            ],
+        )
+    skip_finalize = fast and ready and hits and not parallel and not personal
+    model = ControlledStreamModel(
+        plan=[
+            [research],
+            *([] if skip_finalize else [[tool_chunk(production.finalize_health_answer.name)]]),
+            [final],
+        ]
+    )
+    graph = create_agent(
+        model,
+        tools=[query_family_nutrition_knowledge, read_authorized_records, production.finalize_health_answer],
+        middleware=[production.HealthFinalAnswerMiddleware(fast_family_knowledge=fast)],
+        context_schema=Context,
+    )
+    state = {
+        "messages": [
+            HumanMessage(
+                "减脂期应该吃肉吗，结合我的档案？" if personal else "减脂期应该吃肉吗？",
+                additional_kwargs={"health_request_id": "synthetic-request"},
+            )
+        ]
+    }
+    public = []
+
+    async def collect():
+        """消费实际图事件，只保留公开正文增量。"""
+        async with await graph.astream_events(
+            state, context=Context(), version="v3", transformers=[CustomTransformer]
+        ) as events:
+            async for event in events:
+                if event["method"] == "custom" and event["params"]["data"]["type"] == "health_final_answer_delta":
+                    public.append(event["params"]["data"])
+
+    if forged:
+        with pytest.raises(HealthVisionError) as error:
+            await collect()
+        assert error.value.code == "citation_invalid"
+        assert public == []
+    else:
+        await collect()
+        assert [event["content"] for event in public] == ["合成正文。"]
+        if hits:
+            assert public[0]["citations"] == [{"kind": "family", "id": source_id}]
+    assert len(model.calls) == (2 if skip_finalize else 3)
+    assert model.calls[-1]["tools"] == ([production.submit_consultation_answer.name] if hits else [])
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["valid", "plain_text", "forged_id"])
 async def test_cited_final_answer_forces_structured_tool_and_keeps_validation(monkeypatch, case):
     """强制结构化结果工具；普通正文和伪造引用仍拒绝公开。"""

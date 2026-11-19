@@ -69,6 +69,7 @@ from yuxi.services.workdir_service import (
     resolve_conversation_workdir_path,
 )
 from yuxi.services.worker_health import WORKER_HEALTH_INTERVAL_SECONDS, WORKER_HEALTH_KEY
+from yuxi.services.worker_health_service import CONSULTATION_QUEUE_NAME, CONSULTATION_WORKER_HEALTH_KEY
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import AgentRun, Conversation, Message, User
 from yuxi.storage.redis import get_arq_redis_settings
@@ -1840,15 +1841,31 @@ async def _publish_reconciliation_health() -> None:
     )
 
 
-async def _worker_startup(ctx):
-    """初始化 worker 依赖。"""
-
+async def _initialize_worker(ctx):
+    """初始化两类执行者共用的身份与数据库。"""
     if not isinstance(ctx, dict):
         raise TypeError("ARQ worker context 必须是字典")
     AuthUtils.require_security_secrets()
     ctx["worker_id"] = WORKER_ID
     pg_manager.initialize()
     await pg_manager.require_current_schema()
+
+
+async def _initialize_worker_skills():
+    """开始消费 Run 前同步固定 Skill。"""
+    async with pg_manager.get_async_session_context() as session:
+        await init_builtin_skills(session)
+
+
+async def _consultation_worker_startup(ctx):
+    """咨询消费者只初始化执行业务所需的依赖。"""
+    await _initialize_worker(ctx)
+    await _initialize_worker_skills()
+
+
+async def _worker_startup(ctx):
+    """由通用消费者负责共享初始化、定时派发和恢复。"""
+    await _initialize_worker(ctx)
     async with pg_manager.get_async_session_context() as session:
         from yuxi.config.options import (
             ensure_options_in_db,
@@ -1866,8 +1883,7 @@ async def _worker_startup(ctx):
             "Optional worker component failed: component=builtin_mcp_servers, type=%s",
             type(exc).__name__,
         )
-    async with pg_manager.get_async_session_context() as session:
-        await init_builtin_skills(session)
+    await _initialize_worker_skills()
     reconciled_ids = await reconcile_expired_run_leases()
     if reconciled_ids:
         logger.warning(f"Reconciled expired AgentRun leases at startup: count={len(reconciled_ids)}")
@@ -1925,3 +1941,14 @@ class WorkerSettings:
     on_startup = _worker_startup
     on_shutdown = _worker_shutdown
     redis_settings = get_arq_redis_settings()
+
+
+def consultation_worker_options() -> dict:
+    """只替换队列、注册任务和启动钩子，连接与清理沿用 Worker 设置。"""
+    return {
+        "queue_name": CONSULTATION_QUEUE_NAME,
+        "health_check_key": CONSULTATION_WORKER_HEALTH_KEY,
+        "functions": [process_agent_run],
+        "cron_jobs": [],
+        "on_startup": _consultation_worker_startup,
+    }

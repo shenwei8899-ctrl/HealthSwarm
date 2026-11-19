@@ -160,6 +160,12 @@ curl --fail http://localhost/api/system/ready
 
 worker 容器使用 `python -m server.worker_health` 检查 ARQ 消费、AgentRun 收敛和 Durable Task 收敛三项短期租约，与 API readiness 共用验证。该入口不初始化 Agent 或模型，Redis 操作预算为 2 秒，Compose 超时为 10 秒。缺失、永久、过长或过期租约以及连接失败均返回非零退出码；失败输出只包含异常类型。检查通过后仍需执行业务链路验收。
 
+### 普通营养咨询专用 Worker
+
+生产 Compose 的 `consultation` profile 提供 `worker-consultation`，默认分配 4 个并发槽。先启动专用 Worker 并确认容器健康，再在 `.env.prod` 设置 `YUXI_CONSULTATION_QUEUE_ENABLED=true` 和 `COMPOSE_PROFILES=consultation`，并应用于 API 和两个 Worker。以后用同一份 env 文件更新全部服务，也可以显式加 `--profile consultation`。启用后，普通营养咨询的新投递和恢复投递进入 `arq:queue:health-consultation`，同会话仍按 FIFO 执行。API readiness 同时检查专用消费者的短期租约。配餐、指标解读、后台任务、定时任务和两类运行恢复继续由通用 Worker 执行。
+
+关闭隔离时，先关闭 API 和通用 Worker 的投递开关。专用消费者可执行已领取的咨询及其 FIFO 接力，排空后停止。专用消费者不可用时，通用 Worker 将从 PostgreSQL 重新投递 pending Run。两个队列使用独立唤醒 ID，同一 Run 的执行权仍由 PostgreSQL 租约确定。重建 Redis 时，两个 Worker 均需重启并重新检查 readiness。
+
 就绪接口返回 `ready` 后，再用浏览器完成登录和一次真实对话。健康或就绪状态不能证明知识库、模型、沙盒或外部服务的业务链路正确。
 
 公开头像和智能体图片通过同源 `/minio/public/...` 只读代理访问。不要把 MinIO 的 9000 对象 API 或 9001 控制台暴露到公网；知识库等私有 bucket 不经过该代理。需要单独的静态资源域名时，设置 `MINIO_PUBLIC_URL`，并在域名侧保持同样的只读限制。

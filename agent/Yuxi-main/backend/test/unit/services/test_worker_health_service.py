@@ -65,6 +65,37 @@ async def test_each_invalid_lease_fails_closed(failure, failed_lease_index) -> N
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_consultation_worker_has_own_required_lease(monkeypatch):
+    """启用路由需咨询消费者续租，侧车自身检查只读咨询租约。"""
+    service = worker_health_service
+    leases = dict(service.WORKER_HEALTH_LEASES)
+
+    class RedisLease:
+        """只暴露测试显式登记的活跃租约。"""
+
+        async def get(self, key):
+            return "alive" if key in leases else None
+
+        async def pttl(self, key):
+            return leases.get(key, -2)
+
+    redis = RedisLease()
+    monkeypatch.delenv("YUXI_CONSULTATION_QUEUE_ENABLED", raising=False)
+    await service.probe_worker_health(redis)
+    monkeypatch.setenv("YUXI_CONSULTATION_QUEUE_ENABLED", "true")
+    with pytest.raises(service.WorkerUnavailableError):
+        await service.probe_worker_health(redis)
+    await service.probe_worker_health(redis, include_consultation=False)
+    leases[service.CONSULTATION_WORKER_HEALTH_KEY] = service.WORKER_HEALTH_MAX_TTL_MS
+    await service.probe_worker_health(redis)
+    leases.pop(service.WORKER_HEALTH_KEY)
+    await service.probe_worker_health(redis, consultation_only=True)
+    with pytest.raises(service.WorkerUnavailableError):
+        await service.probe_worker_health(redis)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_probe_timeout_closes_redis_client(monkeypatch) -> None:
     """命令无响应时按内部预算失败，关闭本探针独占连接。"""
     closed = []

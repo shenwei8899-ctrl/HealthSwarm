@@ -14,6 +14,7 @@ from yuxi.agents.middlewares.health_catalog import HealthCatalogMiddleware
 from yuxi.agents.middlewares.health_catalog_context import HealthCatalogContextMiddleware
 from yuxi.agents.middlewares.health_final_answer import HealthFinalAnswerMiddleware, finalize_health_answer
 from yuxi.agents.toolkits.health import (
+    ConsultationKnowledgeInput,
     find_food_packages,
     get_food_categories,
     select_food_products,
@@ -110,9 +111,16 @@ class HealthConsultationAgent(BaseAgent):
         handoff = await health_consultation_service.require_consultation_attempt(context)
         model_info = model_cache.get_model_info(context.model)
         tools = list(self.consultation_tools)
-        if self.prompt_name == "CONSULTATION_PROMPT":
+        ordinary = self.prompt_name == "CONSULTATION_PROMPT"
+        if ordinary:
             allowed = set(context.tools)
-            tools = [tool for tool in tools if tool.name in allowed and tool.name != "remember_member_fact"]
+            tools = [
+                tool.model_copy(update={"args_schema": ConsultationKnowledgeInput})
+                if tool is query_family_nutrition_knowledge
+                else tool
+                for tool in tools
+                if tool.name in allowed and tool.name != "remember_member_fact"
+            ]
         prompt = getattr(health_consultation_service, self.prompt_name)
         if isinstance(handoff, dict):
             prompt += (
@@ -126,14 +134,12 @@ class HealthConsultationAgent(BaseAgent):
             middleware=[
                 SteerMiddleware(),
                 HealthAuthorizationMiddleware(model_info),
-                *([HealthMemoryContextMiddleware()] if self.prompt_name == "CONSULTATION_PROMPT" else []),
+                *([HealthMemoryContextMiddleware()] if ordinary else []),
                 HealthCatalogContextMiddleware(),
                 HealthCatalogMiddleware(),
-                HealthAiBudgetMiddleware(
-                    "consultation" if self.prompt_name == "CONSULTATION_PROMPT" else "indicator_review"
-                ),
+                HealthAiBudgetMiddleware("consultation" if ordinary else "indicator_review"),
                 HealthCitationMiddleware(),
-                HealthFinalAnswerMiddleware(),
+                HealthFinalAnswerMiddleware(fast_family_knowledge=ordinary and not isinstance(handoff, dict)),
                 TokenUsageMiddleware(),
             ],
             context_schema=self.context_schema,

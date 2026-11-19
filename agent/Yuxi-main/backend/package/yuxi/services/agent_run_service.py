@@ -7,14 +7,15 @@ streaming run events, loading final results and requesting cancellation.
 Keep source-specific orchestration outside this file. Normal chat, external
 invocation and subagent tools may all create AgentRun records, but each caller
 should translate its own request shape into this module's public run APIs first.
-The worker then executes every run through the same queue and ``chat_service``
-runtime path, so this module must not depend on agent-call, evaluation or
+Workers execute every run through the same ``chat_service`` runtime path, so
+this module must not depend on agent-call, evaluation or
 subagent presentation details.
 """
 
 from __future__ import annotations
 
 from yuxi.repositories.health_consultation_repository import (
+    CONSULTATION_SLUG,
     EDUCATION_HEALTH_AGENTS,
     HEALTH_AGENT_BACKENDS,
     PLANNER_SLUG,
@@ -53,8 +54,9 @@ from yuxi.services.run_queue_service import (
     normalize_after_seq,
     publish_cancel_signals,
 )
+from yuxi.services.worker_health_service import CONSULTATION_QUEUE_NAME, consultation_queue_enabled
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_business import Message, User, build_agent_run_timing
+from yuxi.storage.postgres.models_business import AgentRun, Message, User, build_agent_run_timing
 from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.utils.hash_utils import hash_id
 from yuxi.utils.logging_config import logger
@@ -754,9 +756,18 @@ async def prepare_agent_run_creation_scope(
 
 
 async def enqueue_agent_run(run_id: str) -> None:
-    """把已持久化的 run 投递到后台 worker 队列。"""
+    """根据已提交的 Run 角色统一选择正常派发和恢复队列。"""
+    queue_name = None
+    if consultation_queue_enabled():
+        async with pg_manager.get_async_session_context() as db:
+            slug = await db.scalar(select(AgentRun.agent_slug).where(AgentRun.id == run_id))
+        if slug == CONSULTATION_SLUG:
+            queue_name = CONSULTATION_QUEUE_NAME
     queue = await get_arq_pool()
-    await queue.enqueue_job("process_agent_run", run_id, _job_id=f"run:{run_id}")
+    route = {"_queue_name": queue_name} if queue_name else {}
+    # ARQ 跨队列去重。切换时旧唤醒可以滞留，PG lease 仍保证只有一个执行者。
+    job_id = f"consultation:run:{run_id}" if queue_name else f"run:{run_id}"
+    await queue.enqueue_job("process_agent_run", run_id, _job_id=job_id, **route)
 
 
 async def get_agent_run_view(*, run_id: str, current_uid: str, db: AsyncSession) -> dict:

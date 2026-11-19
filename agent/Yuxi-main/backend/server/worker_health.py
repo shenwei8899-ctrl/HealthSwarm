@@ -19,7 +19,12 @@ async def check_worker_health() -> None:
         ping=False,
     )
     try:
-        await asyncio.wait_for(probe_worker_health(redis), timeout=PROBE_TIMEOUT_SECONDS)
+        await asyncio.wait_for(
+            probe_worker_health(
+                redis, consultation_only=sys.argv[1:] == ["--consultation"], include_consultation=False
+            ),
+            timeout=PROBE_TIMEOUT_SECONDS,
+        )
     finally:
         await redis.aclose()
 

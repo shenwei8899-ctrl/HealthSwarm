@@ -2,12 +2,16 @@
 
 import asyncio
 import uuid
+from contextlib import asynccontextmanager
+from time import monotonic
 
 import pytest
 import pytest_asyncio
 from arq import create_pool
 from arq.constants import in_progress_key_prefix
-from arq.worker import Retry, Worker
+from arq.jobs import Job
+from arq.worker import Retry, Worker, func
+from yuxi.services import agent_run_service
 from yuxi.services.arq_worker import YuxiWorker
 from yuxi.storage.redis import get_arq_redis_settings
 
@@ -76,6 +80,91 @@ def make_worker(state, worker_class=YuxiWorker, *, cancel_first=False):
     )
     workers.append(worker)
     return worker
+
+
+@pytest.mark.parametrize("isolated", [False, True])
+async def test_ordinary_consultation_gets_own_arq_slot_during_background_work(isolated_queue, monkeypatch, isolated):
+    """生产投递入口实际写入 Redis，比较共享槽被占用时独立队列的领取。"""
+    redis, namespace, shared_queue, workers = isolated_queue
+    consultation_queue = f"arq:{namespace}:consultation"
+    monkeypatch.setenv("YUXI_CONSULTATION_QUEUE_ENABLED", "true" if isolated else "false")
+    monkeypatch.setattr(agent_run_service, "CONSULTATION_QUEUE_NAME", consultation_queue)
+    monkeypatch.setattr(redis, "default_queue_name", shared_queue)
+
+    class RunScope:
+        """用合成运行角色驱动实际 Redis 派发。"""
+
+        async def scalar(self, _query):
+            """模拟已持久化的普通咨询角色。"""
+            return agent_run_service.CONSULTATION_SLUG
+
+    @asynccontextmanager
+    async def run_scope():
+        """本测试只验证真实 Redis 领取，PostgreSQL 路径由 E2E 覆盖。"""
+        yield RunScope()
+
+    async def pool():
+        """返回本测试独占的队列命名空间。"""
+        return redis
+
+    monkeypatch.setattr(agent_run_service.pg_manager, "get_async_session_context", run_scope)
+    monkeypatch.setattr(agent_run_service, "get_arq_pool", pool)
+    started, release = asyncio.Event(), asyncio.Event()
+    results_key = f"arq:{namespace}:results"
+    shared = YuxiWorker(
+        functions=[record_result, func(record_result, name="process_agent_run")],
+        redis_pool=redis,
+        queue_name=shared_queue,
+        health_check_key=f"arq:{namespace}:health",
+        handle_signals=False,
+        max_jobs=1,
+        ctx={"redis": redis, "results_key": results_key, "started": started, "release": release},
+    )
+    consultation = YuxiWorker(
+        functions=[func(record_result, name="process_agent_run")],
+        redis_pool=redis,
+        queue_name=consultation_queue,
+        health_check_key=f"arq:{namespace}:consultation:health",
+        handle_signals=False,
+        max_jobs=1,
+        ctx={"redis": redis, "results_key": results_key},
+    )
+    workers.extend([shared, consultation])
+    blocker = await redis.enqueue_job("record_result", "slow", _job_id=f"{namespace}-blocker")
+    await shared._poll_iteration()
+    await asyncio.wait_for(started.wait(), timeout=3)
+    run_id = f"{namespace}-fast"
+    start = monotonic()
+    await agent_run_service.enqueue_agent_run(run_id)
+    queue = consultation_queue if isolated else shared_queue
+    job_id = f"consultation:run:{run_id}" if isolated else f"run:{run_id}"
+    assert await redis.zscore(queue, job_id) is not None
+    await shared._poll_iteration()
+    await consultation._poll_iteration()
+    if not isolated:
+        await asyncio.sleep(0.25)
+        assert await redis.lrange(results_key, 0, -1) == []
+        release.set()
+        assert await blocker.result(timeout=3, poll_delay=0.01) == "slow"
+        await shared._poll_iteration()
+    job = Job(job_id, redis, _queue_name=queue)
+    assert await job.result(timeout=3, poll_delay=0.01) == run_id
+    print(f"consultation ARQ, isolated={isolated}, receipt={(monotonic() - start) * 1_000:.1f}ms")
+    if isolated:
+        assert await redis.lrange(results_key, 0, -1) == [run_id.encode()]
+        release.set()
+        assert await blocker.result(timeout=3, poll_delay=0.01) == "slow"
+
+        # 专用队列停止消费时，通用队列仍可重新投递同一个 PG Run。
+        pending = f"{namespace}-handoff"
+        await agent_run_service.enqueue_agent_run(pending)
+        monkeypatch.setenv("YUXI_CONSULTATION_QUEUE_ENABLED", "false")
+        await agent_run_service.enqueue_agent_run(pending)
+        assert await redis.zscore(consultation_queue, f"consultation:run:{pending}") is not None
+        await shared._poll_iteration()
+        assert (
+            await Job(f"run:{pending}", redis, _queue_name=shared_queue).result(timeout=3, poll_delay=0.01) == pending
+        )
 
 
 @pytest.mark.parametrize("worker_class", [Worker, YuxiWorker])

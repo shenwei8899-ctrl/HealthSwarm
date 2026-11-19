@@ -13,6 +13,7 @@ x-api-worker-env: &api-worker-env
   RUN_EVENTS_STREAM_TTL_SECONDS: ${RUN_EVENTS_STREAM_TTL_SECONDS:-7200}
   READINESS_PROBE_TIMEOUT_SECONDS: ${READINESS_PROBE_TIMEOUT_SECONDS:-2}
   READINESS_CACHE_TTL_SECONDS: ${READINESS_CACHE_TTL_SECONDS:-1}
+  YUXI_CONSULTATION_QUEUE_ENABLED: ${YUXI_CONSULTATION_QUEUE_ENABLED:-false}
   YUXI_CORS_ORIGINS: ${YUXI_CORS_ORIGINS:-}
   NEO4J_URI: ${NEO4J_URI:-bolt://graph:7687}
   NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
@@ -142,6 +143,20 @@ services:
         condition: service_healthy
       storage-migrator:
         condition: service_completed_successfully
+
+  worker-consultation:
+    extends:
+      service: worker
+    profiles: [consultation]
+    environment:
+      YUXI_RUNTIME_DIR: /app/runtime/worker-consultation
+      ARQ_MAX_JOBS: ${CONSULTATION_ARQ_MAX_JOBS:-4}
+      POSTGRES_POOL_SIZE: ${CONSULTATION_POSTGRES_POOL_SIZE:-8}
+      POSTGRES_MAX_OVERFLOW: ${CONSULTATION_POSTGRES_MAX_OVERFLOW:-4}
+      LANGGRAPH_POSTGRES_POOL_SIZE: ${CONSULTATION_LANGGRAPH_POSTGRES_POOL_SIZE:-4}
+    command: uv run --no-sync --no-dev python -m server.worker_main --consultation
+    healthcheck:
+      test: ["CMD", "uv", "run", "--no-sync", "--no-dev", "python", "-m", "server.worker_health", "--consultation"]
 
   storage-migrator:
     build:

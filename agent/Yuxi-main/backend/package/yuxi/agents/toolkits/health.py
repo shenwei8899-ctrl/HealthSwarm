@@ -89,6 +89,16 @@ class HealthKnowledgeInput(HealthReadInput):
     query: str = Field(min_length=1, max_length=120, description="营养科普短关键词，不传入成员身份或病历正文")
 
 
+class ConsultationKnowledgeInput(HealthKnowledgeInput):
+    """普通营养咨询可在单次科普检索成功后直接生成正文。"""
+
+    ready_to_answer: bool = Field(
+        default=False,
+        strict=True,
+        description="仅当本轮是通用科普且只需本次检索即可回答时传true，仍需资料或业务工具时传false",
+    )
+
+
 class HealthChatMealInput(HealthReadInput, ChatMealStatement):
     """只允许原文事实；身份、时间与写入权限在服务端核对。"""
 
@@ -187,7 +197,7 @@ async def query_reviewed_nutrition_knowledge(query: str, runtime: ToolRuntime) -
 
 
 @tool(category="health", display_name="授权营养科普检索", args_schema=HealthKnowledgeInput)
-async def query_family_nutrition_knowledge(query: str, runtime: ToolRuntime) -> dict:
+async def query_family_nutrition_knowledge(query: str, runtime: ToolRuntime, ready_to_answer: bool = False) -> dict:
     """检索当前角色固定资料；配餐只取菜谱参考，不替代批准目录或计算。"""
     from yuxi.services.health_family_kb_service import search_family_nutrition_knowledge
 

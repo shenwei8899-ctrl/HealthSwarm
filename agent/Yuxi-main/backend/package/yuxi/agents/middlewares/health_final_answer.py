@@ -1,6 +1,7 @@
 """工具决策结束后，在受控最终调用中输出可信正文增量。"""
 
 import json
+import re
 from typing import NotRequired
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from langgraph.prebuilt.tool_node import ToolRuntime
 from langgraph.types import Command
 
 from yuxi.services.health_evidence_types import ConsultationAnswer, CONSULTATION_CITATIONS_KEY
+from yuxi.services.health_catalog_policy import food_product_intent
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.agents.middlewares.health_catalog_context import catalog_selection_ready
 
@@ -48,20 +50,27 @@ class HealthFinalAnswerMiddleware(AgentMiddleware[HealthFinalAnswerState]):
 
     state_schema = HealthFinalAnswerState
 
+    def __init__(self, *, fast_family_knowledge=False):
+        """仅普通咨询启用单次科普检索后的正文切换。"""
+        self.fast_family_knowledge = fast_family_knowledge
+
     async def abefore_agent(self, state, runtime):
         """新请求清除旧阶段，同请求恢复保留已完成的资料准备。"""
         if state.get("health_final_request_id") != runtime.context.request_id:
             return {"health_final_request_id": runtime.context.request_id, "health_answer_phase": "tools"}
 
     async def awrap_tool_call(self, request, handler):
-        """独立选品成功时由原工具节点转入正文，不额外消耗每轮图执行步数。"""
+        """所需资料齐备时由原工具节点原子保存回执和正文阶段。"""
         result = await handler(request)
-        if request.tool_call["name"] != "select_food_products" or not isinstance(result, ToolMessage):
+        if not isinstance(result, ToolMessage) or result.status == "error":
             return result
         request_id = request.runtime.context.request_id
-        if request.state.get("health_final_request_id") == request_id and catalog_selection_ready(
-            [*request.state.get("messages", []), result], request_id
-        ):
+        if request.state.get("health_final_request_id") != request_id:
+            return result
+        messages = request.state.get("messages", [])
+        tool_name = request.tool_call["name"]
+        catalog_ready = tool_name == "select_food_products" and catalog_selection_ready([*messages, result], request_id)
+        if catalog_ready or self._family_knowledge_ready(request, result, messages, request_id):
             return Command(
                 update={
                     "messages": [result],
@@ -86,6 +95,12 @@ class HealthFinalAnswerMiddleware(AgentMiddleware[HealthFinalAnswerState]):
                 prompt += (
                     "商品选品时若本轮所有资料已经齐备，可在select_food_products同时传ready_to_answer=true，"
                     "成功后系统直接进入最终正文，无需再调用finalize_health_answer。若仍需其他工具则传false。"
+                )
+            if self.fast_family_knowledge and any(t.name == "query_family_nutrition_knowledge" for t in request.tools):
+                prompt += (
+                    "仅问通用科普且一次家庭知识库检索就足以作答时，单独调用 query_family_nutrition_knowledge "
+                    "并传 ready_to_answer=true，查到资料后直接进入最终正文。"
+                    "还需多项资料、核对个人档案、已审核证据或商城操作时，勿声明资料齐备。"
                 )
             response = await handler(
                 request.override(
@@ -183,6 +198,63 @@ class HealthFinalAnswerMiddleware(AgentMiddleware[HealthFinalAnswerState]):
             )
         writer({"type": "health_final_answer_end", "offset": len(answer) if buffered else callback.offset, **route})
         return response
+
+    def _family_knowledge_ready(self, request, result, messages, request_id):
+        """只接受当前用户轮次独立且命中资料的科普调用。"""
+        call = request.tool_call
+        if (
+            not self.fast_family_knowledge
+            or call["name"] != "query_family_nutrition_knowledge"
+            or call["args"].get("ready_to_answer") is not True
+            or not messages
+            or not isinstance(messages[-1], AIMessage)
+            or len(messages[-1].tool_calls) != 1
+            or messages[-1].invalid_tool_calls
+            or messages[-1].tool_calls[0]["id"] != call["id"]
+        ):
+            return False
+        human_index = next((i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)), None)
+        if human_index is None:
+            return False
+        human = messages[human_index]
+        if (
+            human.additional_kwargs.get("health_request_id") != request_id
+            or not isinstance(human.content, str)
+            or not self._standalone_education_question(human.text)
+            or any(isinstance(item, ToolMessage) for item in messages[human_index + 1 : -1])
+        ):
+            return False
+        try:
+            payload = json.loads(result.content)
+        except (TypeError, ValueError):
+            return False
+        return (
+            isinstance(payload, dict)
+            and payload.get("status") == "ok"
+            and payload.get("scope") == "general_education"
+            and isinstance(payload.get("sources"), list)
+            and bool(payload["sources"])
+        )
+
+    @staticmethod
+    def _standalone_education_question(text):
+        """仅对显式的短科普问句提速，个人和业务请求继续使用完整准备流程。"""
+        text = text.strip()
+        question = text.rstrip("？?")
+        return (
+            0 < len(question) <= 80
+            and bool(re.search(r"减脂|减肥|减重|瘦身|营养|膳食|蛋白质|碳水|维生素", question))
+            and (question != text or bool(re.search(r"吗$|么$|如何|怎么|为什么|什么是|有什么", question)))
+            and not re.search(
+                r"[。！!？?；;\n]|我|家人|家里|孩子|老人|怀孕|哺乳|年龄|岁|公斤|kg|BMI|"
+                r"病|偏高|偏低|偏好|过敏|禁忌|指标|报告|档案|记录|记住|保存|日志|回顾|"
+                r"吃了|喝了|吃过|刚吃|今天|明天|刚才|上一|前面|这次|这顿|那个|这个|上面|"
+                r"安排|生成|制定|规划|设计|餐单|换菜|审核|指南|出处",
+                question,
+                re.IGNORECASE,
+            )
+            and not food_product_intent(question)
+        )
 
     @staticmethod
     def _system_message(request, instruction):
