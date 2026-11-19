@@ -21,6 +21,7 @@ from yuxi.services import daily_meal_plan_service as daily
 from yuxi.services import reference_meal_plan_service as reference
 from yuxi.services import reference_recipe_index as index
 from yuxi.services import daily_commerce_service as commerce
+from yuxi.services.meal_archive_projection import archive_meal
 from yuxi.storage.postgres.models_health import HealthDailyMealPlan
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -123,6 +124,7 @@ async def test_replace_only_selected_position_persists_and_replays(family_profil
                 is_shared=True,
                 version=1,
                 meal_sources={m: {"kind": "reference", "id": source_id} for m in ("breakfast", "lunch", "dinner")},
+                archive_meals={meal["meal_type"]: archive_meal(meal) for meal in meals},
                 pending={},
             )
         )
@@ -178,7 +180,20 @@ async def test_replace_only_selected_position_persists_and_replays(family_profil
     assert result["version"] == 2
     assert result["needs_regeneration"] == ["lunch"]
     assert result["regeneration_participants"] == {"lunch": [member]}
-    assert result["meals"] == [after["meals"][0], after["meals"][2]]
+    assert result["meals"][0] == after["meals"][0] and result["meals"][2] == after["meals"][2]
+    archived = result["meals"][1]
+    assert archived["meal_type"] == "lunch" and archived["purchase_ready"] is False
+    assert all("origin" not in dish for dish in archived["meal"]["dishes"])
+    available = await client.get(path + "/dish-swap-candidates?version=2", headers=users["self"])
+    assert available.status_code == 200, available.text
+    assert available.json()["needs_regeneration"] == ["lunch"]
+    by_meal = {meal["meal_type"]: meal["dishes"] for meal in available.json()["meals"]}
+    assert by_meal["lunch"] == []
+    assert by_meal["breakfast"][0]["candidates"] and by_meal["dinner"][0]["candidates"]
+    refused = await client.post(
+        path + "/dish-swaps", headers=users["self"], json={**data, "version": 2, "client_request_id": str(uuid4())}
+    )
+    assert refused.status_code == 409 and "swap_meal_needs_regeneration" in refused.text
     async with sessions() as db:
         row = await db.get(HealthDailyMealPlan, pid)
         assert row.version == 2 and row.meal_sources["lunch"]["kind"] == "selection"
@@ -194,3 +209,24 @@ async def test_replace_only_selected_position_persists_and_replays(family_profil
 
     monkeypatch.setattr(swap, "meal_context", denied)
     assert (await client.get(path, headers=users["self"])).status_code == 403
+
+    monkeypatch.setattr(swap, "meal_context", context)
+    memory_facts.append({"id": "fact", "version": 1, "restriction": "牛肉"})
+    breakfast_dish = by_meal["breakfast"][0]
+    replaced = await client.post(
+        path + "/dish-swaps",
+        headers=users["self"],
+        json={
+            "version": 2,
+            "meal_type": "breakfast",
+            "dish_key": breakfast_dish["dish_key"],
+            "candidate_id": breakfast_dish["candidates"][0]["candidate_id"],
+            "client_request_id": str(uuid4()),
+        },
+    )
+    assert replaced.status_code == 200, replaced.text
+    assert replaced.json()["version"] == 3 and replaced.json()["needs_regeneration"] == ["lunch"]
+    async with sessions() as db:
+        row = await db.get(HealthDailyMealPlan, pid)
+        assert row.meal_sources["breakfast"]["kind"] == "selection"
+        assert row.meal_sources["lunch"]["version"] == 2

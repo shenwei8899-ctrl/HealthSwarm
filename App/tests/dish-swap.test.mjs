@@ -35,6 +35,24 @@ test('unknown write response keeps candidate and idempotency key for retry',asyn
  await h.client.load(plan);h.client.open(item,dish,plan);await h.client.choose(candidates(2)[0]);await h.client.choose(candidates(2)[1]);await h.client.choose(candidates(2)[0])
  assert.equal(writes.length,2);assert.deepEqual(writes[0],writes[1]);assert.equal(h.saved.length,0);assert.match(h.state.error,/网络/)
 })
+test('profile change while choosing removes only the stale meal’s options and surfaces the rearrange message',async()=>{
+ const dinner={...item,meal_type:'dinner'},mixed={...plan,meals:[item,dinner]}
+ const saved=receipt(2),lunch=saved.data.meals[0]
+ saved.data.meals.push({...lunch,meal_type:'dinner'})
+ const message='本餐资料已更新，请先重新安排'
+ const h=harness(async r=>{
+  if(r.method!=='POST')return saved
+  throw Object.assign(new Error(message),{code:409,businessCode:'swap_meal_needs_regeneration'})
+ })
+ await h.client.load(mixed);h.client.open(item,dish,mixed);await h.client.choose(candidates(2)[0])
+ assert.equal(h.state.error,message);assert.deepEqual(h.state.target.candidates,[])
+ assert.deepEqual(h.state.needsRegeneration,['lunch'])
+ assert.deepEqual(h.client.candidates(item,dish,mixed),[])
+ assert.equal(h.client.candidates(dinner,dish,mixed).length,2)
+ h.client.close()
+ assert.equal(h.state.error,'')
+ assert.deepEqual(h.state.needsRegeneration,['lunch'])
+})
 test('candidate read failure remains an error and cannot enable a hidden action',async()=>{
  const h=harness(async()=>{throw Error('候选读取失败')});await h.client.load(plan);assert.match(h.state.error,/失败/);h.client.open(item,dish,plan);assert.equal(h.state.open,false)
 })

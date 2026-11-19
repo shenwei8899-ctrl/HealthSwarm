@@ -4,10 +4,11 @@
 import json
 import hashlib
 from copy import deepcopy
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -706,6 +707,82 @@ async def test_daily_plan_merges_selected_meal_rejects_stale_task_and_purchase(f
     assert [meal["source"]["id"] for meal in read.json()["meals"]] == [changed["preview_id"], dinner["preview_id"]]
     denied = await client.get(path, headers=users["other"])
     assert denied.status_code in (403, 404), denied.text
+
+
+async def test_updated_member_profile_turns_swap_candidates_into_regeneration(family_profile_http, monkeypatch):
+    """真实档案更新让归档保留展示，换菜查询和写入返回受控状态。"""
+    from yuxi.services import daily_commerce_service as commerce
+    from yuxi.services import reference_recipe_presentation as presentation
+
+    current = await setup_reference(family_profile_http, monkeypatch)
+    client, sessions, users, _, _, selection = current
+    selection["plan_date"] = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    bound = await bind_reference(current, daily_base_version=0)
+    assert bound.status_code == 200, bound.text
+    context = await running_context(current, bound.json()["thread_id"])
+    plan, _, _ = await grounded_plan(current, context)
+    await complete(current, context, plan)
+    await add_recipe(
+        current, "swap-porridge", "烹饪菜谱｜南瓜燕麦粥.md",
+        "# 南瓜燕麦粥\n\n## 食材\n- 南瓜 100克\n- 燕麦 50克\n\n## 做法\n- 加水煮熟。\n",
+    )
+
+    async def catalog():
+        """隔离外部商城，餐单档案与来源重验走真实服务。"""
+        return {"items": []}
+
+    async def recipe_image(_dish):
+        """候选回归无需外部媒体对象。"""
+        return {}
+
+    monkeypatch.setattr(commerce, "current_product_catalog", catalog)
+    monkeypatch.setattr(presentation, "generated_recipe_image", recipe_image)
+    family_path = f"/api/family/{selection['family_id']}"
+    path = f"{family_path}/daily-meal-plans/{selection['plan_date']}"
+    headers = users["self"]
+    before = await client.get(path + "/dish-swap-candidates?version=1", headers=headers)
+    assert before.status_code == 200, before.text
+    original = before.json()["meals"][0]["dishes"][0]
+    candidate = next(c for c in original["candidates"] if c["dish"]["name"] == "南瓜燕麦粥")
+
+    body = deepcopy(sessions.reference_profile_input)
+    body["client_request_id"] = str(uuid4())
+    body["members"][0]["height_cm"] += 1
+    changed = await client.post(
+        family_path + "/miniapp-profile",
+        headers={**headers, "Idempotency-Key": body["client_request_id"]},
+        json=body,
+    )
+    assert changed.status_code == 200, changed.text
+    current_plan = await client.get(path, headers=headers)
+    assert current_plan.status_code == 200, current_plan.text
+    assert current_plan.json()["needs_regeneration"] == ["breakfast"]
+    assert current_plan.json()["meals"][0]["purchase_ready"] is False
+
+    after = await client.get(path + "/dish-swap-candidates?version=1", headers=headers)
+    assert after.status_code == 200, after.text
+    assert after.json() == {
+        "date": selection["plan_date"],
+        "version": 1,
+        "needs_regeneration": ["breakfast"],
+        "meals": [{"meal_type": "breakfast", "dishes": []}],
+    }
+    refused = await client.post(
+        path + "/dish-swaps",
+        headers=headers,
+        json={
+            "version": 1,
+            "meal_type": "breakfast",
+            "dish_key": original["dish_key"],
+            "candidate_id": candidate["candidate_id"],
+            "client_request_id": str(uuid4()),
+        },
+    )
+    assert refused.status_code == 409 and "swap_meal_needs_regeneration" in refused.text
+    async with sessions() as db:
+        row = await db.scalar(select(HealthDailyMealPlan))
+        assert row.version == 1 and row.meal_sources["breakfast"]["id"] == plan["preview_id"]
+        assert row.archive_meals["breakfast"]["dishes"]
 
 
 async def test_daily_reference_single_meal_purchase_keeps_current_source_guards(family_profile_http, monkeypatch):
