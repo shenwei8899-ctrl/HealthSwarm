@@ -21,7 +21,12 @@ async def swap_candidates(uid, family_id, day, version):
     async with pg_manager.get_async_session_context() as session:
         plan = await read_current_plan(uid, family_id, day, session=session)
         require_version(plan, version)
-        return {"date": str(day), "version": version, "meals": await plan_candidates(session, uid, family_id, plan)}
+        return {
+            "date": str(day),
+            "version": version,
+            "needs_regeneration": plan["needs_regeneration"],
+            "meals": await plan_candidates(session, uid, family_id, plan),
+        }
 
 
 async def replace_dish(uid, family_id, day, data):
@@ -43,6 +48,8 @@ async def replace_dish(uid, family_id, day, data):
                 raise HealthVisionError("swap_request_conflict", "同一换菜请求不能改选其他菜", 409)
             return plan
         require_version(plan, data.version)
+        if data.meal_type in plan["needs_regeneration"]:
+            raise HealthVisionError("swap_meal_needs_regeneration", "本餐资料已更新，请先重新安排", 409)
         choices = await plan_candidates(session, uid, family_id, plan)
         choice = next(
             (
@@ -135,11 +142,18 @@ async def plan_candidates(session, uid, family_id, plan):
     from yuxi.services.reference_recipe_index import reference_recipe_rows, prepare_reference_documents
     from yuxi.services.reference_recipe_variety import variety_context, dish_keys
 
+    stale_meals = set(plan.get("needs_regeneration", ()))
+    if all(meal["meal_type"] in stale_meals for meal in plan["meals"]):
+        return [{"meal_type": meal["meal_type"], "dishes": []} for meal in plan["meals"]]
+
     documents = prepare_reference_documents(await reference_recipe_rows(session))
     products = (await current_product_catalog())["items"]
     occupied = set().union(*(dish_keys(d) for m in plan["meals"] for d in m["meal"]["dishes"]))
     result = []
     for meal in plan["meals"]:
+        if meal["meal_type"] in stale_meals:
+            result.append({"meal_type": meal["meal_type"], "dishes": []})
+            continue
         anchors = [d["origin"].get("anchor", d["origin"]) for d in meal["meal"]["dishes"]]
         if not any(a["source"]["kind"] == "reference" for a in anchors):
             result.append({"meal_type": meal["meal_type"], "dishes": []})

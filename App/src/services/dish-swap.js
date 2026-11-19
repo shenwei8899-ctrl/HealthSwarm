@@ -14,7 +14,7 @@ export function watchDishSwap({ client, plan, enabled }) {
   }, { immediate:true })
 }
 
-export const dishSwapState = () => ({ loading:false, busy:false, open:false, error:'', entries:[], version:null, date:'', target:null, selected:'' })
+export const dishSwapState = () => ({ loading:false, busy:false, open:false, error:'', entries:[], needsRegeneration:[], version:null, date:'', target:null, selected:'' })
 
 export function createDishSwap({ state, send=request, context=storageContext, family=()=>getSession().householdId,
   day=localDate, newId=newHealthRequestId, onPlan=()=>{} }) {
@@ -30,7 +30,9 @@ export function createDishSwap({ state, send=request, context=storageContext, fa
     try {
       const {data}=await send({path:'/api/family/'+encodeURIComponent(familyId)+'/daily-meal-plans/'+value.date+'/dish-swap-candidates?version='+value.version})
       if(!current())return
-      if(data.date!==value.date||data.version!==value.version||!Array.isArray(data.meals))throw Error('候选版本不一致，请刷新餐单。')
+      if(data.date!==value.date||data.version!==value.version||!Array.isArray(data.meals)||
+        (data.needs_regeneration!=null&&!Array.isArray(data.needs_regeneration)))throw Error('候选版本不一致，请刷新餐单。')
+      state.needsRegeneration=data.needs_regeneration||[]
       state.entries=data.meals.flatMap(m=>(m.dishes||[]).map(d=>({mealType:m.meal_type,dishKey:d.dish_key,candidates:(d.candidates||[]).slice(0,3)})))
       state.version=data.version;state.date=data.date
     } catch(error) { if(current())state.error=error.message||'换菜候选暂时无法读取，请刷新。' }
@@ -38,6 +40,7 @@ export function createDishSwap({ state, send=request, context=storageContext, fa
   }
   function candidates(item,dish,value=plan) {
     if(owner!==context()||!plan||plan.date!==day()||value?.version!==plan.version||value.date!==plan.date)return []
+    if(value.needs_regeneration?.includes(item.meal_type)||state.needsRegeneration.includes(item.meal_type))return []
     return state.entries.find(e=>e.mealType===item.meal_type&&e.dishKey===dishKey(dish))?.candidates||[]
   }
   function open(item,dish,value) {
@@ -45,7 +48,11 @@ export function createDishSwap({ state, send=request, context=storageContext, fa
     state.target={item,dish,plan:value,candidates:candidates(item,dish,value)}
     state.open=true;state.error='';state.selected='';requestId='';attempted=''
   }
-  function close() { if(!state.busy){state.open=false;state.target=null} }
+  function close() {
+    if(state.busy)return
+    if(state.needsRegeneration.includes(state.target?.item.meal_type))state.error=''
+    state.open=false;state.target=null
+  }
   async function choose(candidate) {
     const target=state.target
     if(state.busy||!target||!target.candidates.some(c=>c.candidate_id===candidate.candidate_id)||owner!==context()||plan.date!==day())return
@@ -64,7 +71,15 @@ export function createDishSwap({ state, send=request, context=storageContext, fa
       if(current())await load(data)
     } catch(error) {
       if(!current())return
-      state.error=error.code===409?'餐单或候选已更新，请关闭后刷新餐单。':(error.message||'结果尚未确认，请重试同一道候选。')
+      if(error.businessCode==='swap_meal_needs_regeneration'){
+        const type=target.item.meal_type
+        state.needsRegeneration=[...new Set([...state.needsRegeneration,type])]
+        state.entries=state.entries.filter(entry=>entry.mealType!==type)
+        state.target={...target,candidates:[]}
+        state.error=error.message
+      }else{
+        state.error=error.code===409?'餐单或候选已更新，请关闭后刷新餐单。':(error.message||'结果尚未确认，请重试同一道候选。')
+      }
       // An unknown response keeps the same request key and candidate for a safe retry.
     } finally { if(current())state.busy=false }
   }
