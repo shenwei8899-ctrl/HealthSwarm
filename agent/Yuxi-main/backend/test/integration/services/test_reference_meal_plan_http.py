@@ -99,6 +99,12 @@ async def setup_reference(
     objects = {"reference-file.md": TEXT.encode()}
     sessions.reference_objects = objects
 
+    async def no_generated_image(_dish, **_options):
+        """参考餐单验证不连接外部图片对象服务。"""
+        return {}
+
+    monkeypatch.setattr("yuxi.services.reference_recipe_presentation.generated_recipe_image", no_generated_image)
+
     async def download(bucket, name):
         """精确字节替代对象网络；文件哈希及PG分片仍由真实服务校验。"""
         assert bucket == "knowledgebase"
@@ -1459,7 +1465,10 @@ async def test_exact_cooking_title_is_not_displaced_by_clinical_semantic_hits(fa
     context = await running_context(current, bound.json()["thread_id"])
     hits = await service.search_reference_recipes(context, "清粥")
     assert hits["items"][0]["file_id"] == "reference-file"
-    assert {item["file_id"] for item in hits["items"]} == {"reference-file", "competing-file", "earlier-body-file"}
+    assert {item["file_id"] for item in hits["items"]} == {"reference-file"}
+    await receipt(current[1], context, "search_reference_recipes", hits)
+    with pytest.raises(HealthVisionError, match="reference_receipt_invalid"):
+        await service.read_reference_recipe(context, "competing-file", "competing-file-chunk")
     assert hits["items"][0]["parse_status"] == "parsed"
 
 
@@ -1540,7 +1549,10 @@ async def test_home_recipe_catalog_is_bounded_and_does_not_authorize_reading(fam
     """分类上下文不授权原谱读取，实际检索数量与固定库边界保持有限。"""
     current = await setup_reference(family_profile_http, monkeypatch)
     for index in range(12):
-        await add_recipe(current, f"home-{index}", f"家常菜谱_大米{index:02}.md", TEXT)
+        await add_recipe(
+            current, f"home-{index}", f"家常菜谱_大米{index:02}.md",
+            TEXT.replace("清粥", f"大米配菜{index:02}"),
+        )
     async with current[1].begin() as db:
         db.add(KnowledgeBase(kb_id="other-home-kb", name="其他合成库", kb_type="milvus"))
     for index, (kb, status, folder, title) in enumerate(
@@ -1560,6 +1572,7 @@ async def test_home_recipe_catalog_is_bounded_and_does_not_authorize_reading(fam
         await service.read_reference_recipe(context, "reference-file", "reference-chunk")
     hits = await service.search_reference_recipes(context, "大米")
     assert len(hits["items"]) == 9
+    assert len({item["name"] for item in hits["items"]}) == 9
     assert not any(item["file_id"].startswith("excluded-") for item in hits["items"])
 
 

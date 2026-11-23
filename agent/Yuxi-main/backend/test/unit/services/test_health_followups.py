@@ -1,6 +1,7 @@
 """追问的公开协议与有界模型调用，不使用真实健康数据或模型。"""
 
 import time
+import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -70,6 +71,7 @@ def generation(monkeypatch):
     reserve, settle = AsyncMock(return_value=object()), AsyncMock()
     monkeypatch.setattr(service.pg_manager, "get_async_session_context", session)
     monkeypatch.setattr(service, "require_consultation", AsyncMock())
+    monkeypatch.setattr(service, "require_service_notice", AsyncMock())
     monkeypatch.setattr(budget, "reserve_model", reserve)
     monkeypatch.setattr(budget, "reserved_chat_model", lambda *a, **k: model)
     monkeypatch.setattr(budget, "settle", settle)
@@ -109,3 +111,35 @@ async def test_invalid_generation_is_empty_and_auth_denial_never_calls_model(gen
     monkeypatch.setattr(service, "require_consultation", AsyncMock(side_effect=PermissionError("revoked")))
     result = await service.generate_followups("user", "thread", 43, {"model": "approved"}, "问题", "答复")
     assert result.followups == [] and reserve.await_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["require_consultation", "require_service_notice"])
+async def test_revocation_while_waiting_for_budget_prevents_external_call(generation, monkeypatch, boundary):
+    """预算等待后再校验，撤权和声明失效均不能把已读问答发送到模型。"""
+    model, reserve, settle = generation
+    entered, release = asyncio.Event(), asyncio.Event()
+    reservation = object()
+    revoked = False
+
+    async def wait_for_budget(*args):
+        entered.set()
+        await release.wait()
+        return reservation
+
+    async def authorize(*args, **kwargs):
+        if revoked:
+            raise PermissionError("revoked while reserving")
+
+    reserve.side_effect = wait_for_budget
+    monkeypatch.setattr(service, boundary, authorize)
+    flight = asyncio.create_task(service.generate_followups(
+        "user", "thread", 42, {"model": "approved"}, "原问题", "原答复",
+    ))
+    await asyncio.wait_for(entered.wait(), 1)
+    revoked = True
+    release.set()
+    result = await flight
+    assert result.followups == []
+    model.ainvoke.assert_not_awaited()
+    settle.assert_awaited_once_with(reservation, None)

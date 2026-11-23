@@ -216,3 +216,39 @@ async def test_revocation_while_generating_cannot_publish_suggestions(family_pro
         assert message.extra_metadata["health_context_followups"]["status"] == "pending"
         assert message.content == "可以清蒸鱼、白灼西兰花，再配一小碗米饭。"
         assert (await db.get(AgentRun, case["run_id"])).status == "completed"
+
+
+async def test_revocation_during_budget_wait_never_sends_answer(family_profile_http, monkeypatch):
+    """真实HTTP/PG在预算等待中撤权，外部模型不得收到已读问答。"""
+    from unittest.mock import AsyncMock
+    from yuxi.services import health_ai_budget_service as budget
+
+    client, sessions, users = family_profile_http
+    case = await answer_case(family_profile_http, monkeypatch)
+    entered, release = asyncio.Event(), asyncio.Event()
+    reservation = object()
+    model = SimpleNamespace(ainvoke=AsyncMock())
+    settle = AsyncMock()
+
+    async def reserve(*args):
+        entered.set()
+        await release.wait()
+        return reservation
+
+    monkeypatch.setattr(budget, "reserve_model", reserve)
+    monkeypatch.setattr(budget, "reserved_chat_model", lambda *args, **kwargs: model)
+    monkeypatch.setattr(budget, "settle", settle)
+    flight = asyncio.create_task(client.post(case["path"], headers=users["self"]))
+    await asyncio.wait_for(entered.wait(), 5)
+    async with sessions.begin() as db:
+        grant = await db.get(HealthGrant, (case["member_id"], "self"))
+        grant.revoked_at = utc_now_naive()
+    release.set()
+    denied = await flight
+    assert denied.status_code == 404, denied.text
+    model.ainvoke.assert_not_awaited()
+    settle.assert_awaited_once_with(reservation, None)
+    async with sessions() as db:
+        message = await db.get(Message, case["message_id"])
+        assert message.extra_metadata["health_context_followups"]["status"] == "pending"
+        assert (await db.get(AgentRun, case["run_id"])).status == "completed"

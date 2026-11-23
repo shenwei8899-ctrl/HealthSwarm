@@ -54,6 +54,9 @@ async def generate_followups(uid, thread_id, message_id, snapshot, question, ans
         async with pg_manager.get_async_session_context() as session:
             await require_consultation(session, uid, thread_id, expected=snapshot)
         reservation = await budget.reserve_model("consultation", f"followup:{message_id}", snapshot["model"])
+        async with pg_manager.get_async_session_context() as session:
+            await require_service_notice(session, uid)
+            await require_consultation(session, uid, thread_id, expected=snapshot)
         model = budget.reserved_chat_model(reservation, session_id=thread_id)
         reply = await asyncio.wait_for(
             model.ainvoke(
