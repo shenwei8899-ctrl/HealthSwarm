@@ -123,14 +123,68 @@ test('cancel, disposal and account switch invalidate in-flight transcription', a
     pending.resolve('stale'); await tick(); assert.equal(f.texts.length,0)
   }
 })
-test('interruption discards audio; duration-limit stop transcribes automatically', async () => {
+test('interruption discards audio; duration-limit waits for release before recognizing', async () => {
   const f=fixture(); await recording(f); f.events.InterruptionBegin(); f.events.Stop({duration:1000,tempFilePath:'/temp.pcm'})
   await tick(); assert.equal(f.texts.length,0)
-  await recording(f); f.events.Stop({duration:60000,tempFilePath:'/max.pcm'}); await tick(); assert.equal(f.texts.length,1)
+  await recording(f); f.events.Stop({duration:60000,tempFilePath:'/max.pcm'}); await tick()
+  assert.equal(f.state().phase,'awaiting-release');assert.equal(f.calls.transcribe,0)
+  f.capture.end(200);await tick();assert.equal(f.texts.length,1)
 })
 test('singleton recorder refuses another owner without stealing callbacks', async () => {
   const f=fixture(); await recording(f); const other=fixture({},f.native); await other.capture.begin()
   assert.equal(other.state().phase,'error'); finish(f); await tick(); assert.equal(f.texts.length,1); assert.equal(other.texts.length,0)
+})
+
+test('sliding up while native start is pending can be reversed without stopping',async()=>{
+  const f=fixture();await f.capture.begin(200);f.capture.move(100);f.events.Start()
+  assert.equal(f.calls.stop,0);assert.equal(f.state().phase,'recording')
+  f.capture.move(190);finish(f);await tick();assert.deepEqual(f.texts,['今天吃什么'])
+})
+
+test('duration-limit recording may still be cancelled or moved back before release',async()=>{
+  for(const restore of [false,true]){
+    const f=fixture();await recording(f);f.capture.move(100)
+    f.events.Stop({duration:60000,tempFilePath:'/max.pcm'});await tick()
+    assert.equal(f.state().phase,'awaiting-release');assert.equal(f.calls.transcribe,0)
+    if(restore)f.capture.move(190)
+    f.capture.end(restore?190:100);await tick()
+    assert.equal(f.calls.transcribe,restore?1:0);assert.equal(f.state().phase,'idle')
+  }
+})
+
+test('unexpected native stop while holding never sends and permits another recording',async()=>{
+  const f=fixture();await recording(f);f.events.Stop({duration:1000,tempFilePath:'/interrupted.pcm'});await tick()
+  assert.equal(f.state().phase,'error');assert.equal(f.calls.transcribe,0)
+  await recording(f);finish(f);await tick();assert.deepEqual(f.texts,['今天吃什么'])
+})
+
+test('cancelling or disposing after duration limit discards without recognition',async()=>{
+  for(const action of ['cancel','dispose']){
+    const f=fixture();await recording(f);f.events.Stop({duration:60000,tempFilePath:'/max.pcm'})
+    f.capture[action]();f.capture.end(200);await tick();assert.equal(f.calls.transcribe,0)
+  }
+})
+
+test('account change while waiting for release clears busy without transcribing',async()=>{
+  const f=fixture();await recording(f);f.events.Stop({duration:60000,tempFilePath:'/max.pcm'})
+  f.setScope('account-b');f.capture.end(200);await tick()
+  assert.equal(f.state().phase,'error');assert.equal(f.calls.transcribe,0)
+  await recording(f);finish(f);await tick();assert.equal(f.texts.length,1)
+})
+
+test('blank recognizer result cannot emit a message',async()=>{
+  const f=fixture({transcribe:async()=> '  '});await recording(f);finish(f);await tick()
+  assert.equal(f.state().phase,'error');assert.equal(f.texts.length,0);f.capture.dispose()
+})
+
+test('recording limit keeps overlay and busy until release',async t=>{
+  const c=voiceComponent();t.after(()=>c.dispose());await c.record()
+  c.nativeEvents.Stop({duration:60000,tempFilePath:'/max.pcm'})
+  assert.equal(c.page.busy.value,true);assert.equal(c.page.overlay.value,true)
+  assert.match(c.page.prompt.value,/已达录音上限.*松手发送/)
+  assert.deepEqual(c.events.at(-1),{name:'busy',value:true})
+  c.stop();await tick()
+  assert.deepEqual(c.events.filter(e=>e.name==='send'),[{name:'send',value:'正常语音'}])
 })
 test('transcription adapter explicitly rejects missing service and blank content', async () => {
   registerApiAdapters({transcribeVoice:undefined})
@@ -170,22 +224,24 @@ function voiceComponent(extra={}) {
     dispose(){cleanup.forEach(fn=>fn());scope.stop()}}
 }
 
-test('visible cancel control releases microphone authorization and ignores a late grant',async t=>{
+test('authorization is silent and touch cancellation ignores a late grant',async t=>{
   const permission=deferred(),c=voiceComponent({authorize:()=>permission.promise});t.after(()=>c.dispose())
   c.page.start({touches:[{clientY:200}]})
-  assert.equal(c.page.state.value.phase,'authorizing');assert.equal(c.page.cancelLabel.value,'取消录音')
-  c.cancel()
+  assert.equal(c.page.state.value.phase,'authorizing');assert.equal(c.page.label.value,'按住说话')
+  assert.equal(c.page.overlay.value,false);assert.equal(c.page.progressVisible.value,false);assert.equal(c.cancelButton(),null)
+  c.page.cancel()
   assert.equal(c.page.state.value.phase,'idle');assert.equal(c.cancelButton(),null)
   assert.deepEqual(c.events.at(-1),{name:'busy',value:false})
   permission.resolve();await tick()
   assert.equal(c.calls.start,0);assert.equal(c.events.filter(e=>e.name==='send').length,0)
 })
 
-test('visible cancel control stops a late native start without sending or releasing ownership early',async t=>{
+test('native start and cancellation remain silent without releasing ownership early',async t=>{
   const c=voiceComponent();t.after(()=>c.dispose())
   c.page.start({touches:[{clientY:200}]});await tick()
-  assert.equal(c.page.state.value.phase,'starting');c.cancel()
-  assert.equal(c.page.state.value.phase,'stopping');assert.equal(c.page.prompt.value,'正在取消录音…')
+  assert.equal(c.page.state.value.phase,'starting');assert.equal(c.page.overlay.value,false);assert.equal(c.page.progressVisible.value,false)
+  c.page.cancel()
+  assert.equal(c.page.state.value.phase,'stopping');assert.equal(c.page.overlay.value,false);assert.equal(c.page.progressVisible.value,false)
   assert.equal(c.cancelButton(),null);assert.equal(c.calls.stop,0)
   c.nativeEvents.Start();assert.equal(c.calls.stop,1)
   c.finish();await tick()
@@ -198,7 +254,8 @@ test('cancel send during native stopping suppresses the impending transcription'
   const c=voiceComponent({transcribe:async()=>{transcriptions++;return '不应发送'}});t.after(()=>c.dispose())
   await c.record();c.stop()
   assert.equal(c.page.state.value.phase,'stopping');assert.equal(c.page.cancelLabel.value,'取消发送')
-  c.cancel();c.finish();await tick()
+  assert.equal(c.page.overlay.value,false);assert.equal(c.page.progressVisible.value,false);assert.equal(c.cancelButton(),null)
+  c.page.cancel();c.finish();await tick()
   assert.equal(transcriptions,0);assert.equal(c.page.state.value.phase,'idle')
   assert.deepEqual(c.events.at(-1),{name:'busy',value:false})
   assert.equal(c.events.filter(e=>e.name==='send').length,0)
@@ -211,7 +268,7 @@ test('cancel recognition aborts model work, releases busy and ignores late text 
     audio.onCancelReady(()=>{aborts++});return pending.promise
   }});t.after(()=>c.dispose())
   await c.record();c.stop();c.finish();await tick()
-  assert.equal(c.page.progressLabel.value,'正在识别…');assert.equal(c.page.cancelLabel.value,'取消识别')
+  assert.equal(c.page.progressLabel.value,'正在识别…');assert.equal(c.page.cancelLabel.value,'取消发送')
   c.cancel()
   assert.equal(aborts,1);assert.equal(c.page.state.value.phase,'idle');assert.equal(c.cancelButton(),null)
   assert.deepEqual(c.events.at(-1),{name:'busy',value:false})

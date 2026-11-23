@@ -673,8 +673,11 @@ async def require_consultation(
 
 async def require_consultation_attempt(context, messages=None):
     """在构图和每次模型调用前检查 PG 所有权及冻结的处理审批。"""
+    from yuxi.services.service_notice_service import require_service_notice
+
     async with pg_manager.get_async_session_context() as session:
         run = await HealthConsultationRepository(session).require_attempt(context)
+        await require_service_notice(session, context.uid)
         snapshot = (run.input_payload or {}).get("health_processing")
         if not snapshot:
             raise HealthVisionError("policy_changed", "咨询运行缺少处理审批快照", 409)

@@ -8,6 +8,7 @@ from yuxi.services.exclusive_plan_service import PREVIEW_POLICY, exclusive_conte
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.reference_recipe_presentation import generated_recipe_image, prepare_recipe_images, recipe_image_key
 from yuxi.services.task_service import tasker
+from yuxi.services.service_notice_service import require_service_notice
 from yuxi.storage.postgres.manager import pg_manager
 
 
@@ -24,6 +25,7 @@ async def start_plan_images(uid, fid, gid, *, retry=False):
         )
         if previous and (previous.status not in {"failed", "cancelled"} or not retry):
             return {"status": previous.status}
+        await require_service_notice(session, uid)
         task, created = await queue_plan_images(session, row)
     if created:
         await tasker.publish(task)
@@ -50,6 +52,7 @@ async def run_plan_images(context):
     """分批重新核验已保存原谱，网络生成时不持家庭事务。"""
     uid, fid, gid = (context.payload[k] for k in ("uid", "family_id", "group_id"))
     async with pg_manager.get_async_session_context() as session:
+        await require_service_notice(session, uid)
         row, _ = await image_context(session, uid, fid, gid)
         dishes = list(
             {

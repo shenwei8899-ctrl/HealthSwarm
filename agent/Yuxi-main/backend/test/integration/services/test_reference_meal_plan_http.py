@@ -99,6 +99,12 @@ async def setup_reference(
     objects = {"reference-file.md": TEXT.encode()}
     sessions.reference_objects = objects
 
+    async def no_generated_image(_dish, **_options):
+        """参考餐单验证不连接外部图片对象服务。"""
+        return {}
+
+    monkeypatch.setattr("yuxi.services.reference_recipe_presentation.generated_recipe_image", no_generated_image)
+
     async def download(bucket, name):
         """精确字节替代对象网络；文件哈希及PG分片仍由真实服务校验。"""
         assert bucket == "knowledgebase"
@@ -437,6 +443,14 @@ async def test_new_reference_binding_requires_complete_breakfast(family_profile_
     )
     bound = await bind_reference(current, legacy=False)
     assert bound.is_success, bound.text
+    # 该回归拥有旧食物组规则的蛋白质要求；当前规则另有纯主食排除用例。
+    from yuxi.services.reference_meal_composition import FOOD_GROUP_MEAL_POLICY_VERSION
+
+    async with current[1].begin() as db:
+        binding, _ = await require_consultation(db, "self", bound.json()["thread_id"])
+        binding.initial_planner_selection = {
+            **binding.initial_planner_selection, "meal_policy_version": FOOD_GROUP_MEAL_POLICY_VERSION,
+        }
     context = await running_context(current, bound.json()["thread_id"], read_products=False)
     options = []
     for keyword, file_id, chunk_id in (
@@ -444,6 +458,7 @@ async def test_new_reference_binding_requires_complete_breakfast(family_profile_
         ("水煮蛋", "egg", "egg-chunk"),
     ):
         hits = await service.search_reference_recipes(context, keyword)
+        assert any(item["file_id"] == file_id and item["chunk_id"] == chunk_id for item in hits["items"]), hits
         await receipt(current[1], context, "search_reference_recipes", hits)
         opened = await service.read_reference_recipe(context, file_id, chunk_id)
         await receipt(current[1], context, "read_reference_recipe", opened)
@@ -479,7 +494,7 @@ async def test_new_reference_binding_requires_complete_breakfast(family_profile_
     dishes.append(options[1])
     result = await save_selection()
     assert {dish["name"] for dish in result["meals"][0]["dishes"]} == {"清粥", "水煮蛋"}
-    assert result["meal_policy_version"] == REFERENCE_MEAL_POLICY_VERSION
+    assert result["meal_policy_version"] == FOOD_GROUP_MEAL_POLICY_VERSION
 
 
 async def test_read_selection_three_meals_and_dinner_replacement_preserve_other_sources(
@@ -1450,7 +1465,10 @@ async def test_exact_cooking_title_is_not_displaced_by_clinical_semantic_hits(fa
     context = await running_context(current, bound.json()["thread_id"])
     hits = await service.search_reference_recipes(context, "清粥")
     assert hits["items"][0]["file_id"] == "reference-file"
-    assert {item["file_id"] for item in hits["items"]} == {"reference-file", "competing-file", "earlier-body-file"}
+    assert {item["file_id"] for item in hits["items"]} == {"reference-file"}
+    await receipt(current[1], context, "search_reference_recipes", hits)
+    with pytest.raises(HealthVisionError, match="reference_receipt_invalid"):
+        await service.read_reference_recipe(context, "competing-file", "competing-file-chunk")
     assert hits["items"][0]["parse_status"] == "parsed"
 
 
@@ -1531,7 +1549,10 @@ async def test_home_recipe_catalog_is_bounded_and_does_not_authorize_reading(fam
     """分类上下文不授权原谱读取，实际检索数量与固定库边界保持有限。"""
     current = await setup_reference(family_profile_http, monkeypatch)
     for index in range(12):
-        await add_recipe(current, f"home-{index}", f"家常菜谱_大米{index:02}.md", TEXT)
+        await add_recipe(
+            current, f"home-{index}", f"家常菜谱_大米{index:02}.md",
+            TEXT.replace("清粥", f"大米配菜{index:02}"),
+        )
     async with current[1].begin() as db:
         db.add(KnowledgeBase(kb_id="other-home-kb", name="其他合成库", kb_type="milvus"))
     for index, (kb, status, folder, title) in enumerate(
@@ -1551,6 +1572,7 @@ async def test_home_recipe_catalog_is_bounded_and_does_not_authorize_reading(fam
         await service.read_reference_recipe(context, "reference-file", "reference-chunk")
     hits = await service.search_reference_recipes(context, "大米")
     assert len(hits["items"]) == 9
+    assert len({item["name"] for item in hits["items"]}) == 9
     assert not any(item["file_id"].startswith("excluded-") for item in hits["items"])
 
 

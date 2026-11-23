@@ -37,6 +37,10 @@ async def add_saved_dish(uid, family_id, day, data):
         if target and {m["id"] for m in target["members"]} != {m["id"] for m in source["members"]}:
             raise HealthVisionError("dish_members_changed", "两餐就餐成员不同，请先统一本餐成员", 409)
         dishes = (target or {}).get("meal", {}).get("dishes", [])
+        from yuxi.services.reference_recipe_variety import dish_keys
+
+        if any(dish_keys(dish) & dish_keys(existing) for existing in dishes):
+            raise HealthVisionError("meal_dish_repeated", "本餐已有这道菜，请选择其他菜品", 409)
         if len(dishes) >= 10:
             raise HealthVisionError("meal_dishes_limit", "本餐菜品已满，请先调整餐单", 422)
         refs = dict(row.meal_sources) if row else {}

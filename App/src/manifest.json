@@ -130,6 +130,18 @@
         {
           "type": "file",
           "value": "static/chat/reply-dislike-v2.png"
+        },
+        {
+          "type": "file",
+          "value": "static/plans/economy-v2.webp"
+        },
+        {
+          "type": "file",
+          "value": "static/plans/standard-v2.webp"
+        },
+        {
+          "type": "file",
+          "value": "static/plans/premium-v2.webp"
         }
       ]
     },

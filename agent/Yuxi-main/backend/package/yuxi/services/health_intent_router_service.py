@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from yuxi.services.health_intent_router_types import HealthIntentResult
+from yuxi.services.service_notice_service import require_service_notice
 
 
 async def route_health_intent(uid, data):
@@ -29,6 +30,7 @@ async def route_health_intent(uid, data):
             {"input": data.model_dump(mode="json"), "processing": snapshot, "date": str(today)}
         )
         repo = HealthIntentRepository(session)
+        await require_service_notice(session, uid)
         cached = await repo.claim(conversation.id, request_id, fingerprint)
         if cached is not None:
             return (
@@ -207,7 +209,10 @@ def classify_health_intent(
         )
     )
     contextual_revision = bool(
-        previous_date and re.fullmatch(r"(?:再)?换(?:一下|一批|几道)?[？?。！!]*|(?:重新|再)(?:生成|安排)[？?。！!]*|还有别的(?:吗|么)?[？?。！!]*", text)
+        previous_date and re.fullmatch(
+            r"(?:再)?换(?:一下|一批|几道)?[？?。！!]*|(?:重新|再)(?:生成|安排)[？?。！!]*|还有别的(?:吗|么)?[？?。！!]*",
+            text,
+        )
     )
     change = (
         bool(

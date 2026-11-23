@@ -36,6 +36,7 @@ test('opening an existing menu only reads and publishes its saved business plan'
  assert.equal(h.state.phase,'ready');assert.equal(h.state.plan.meals.length,3);assert.equal(h.published.length,1)
  assert.deepEqual(h.calls,[['read','family',date]])
 })
+
 test('a generation readiness failure is distinct from failing to read the saved menu',async()=>{
  const h=fixture({available:false})
  await h.client.open(profile)
@@ -44,7 +45,6 @@ test('a generation readiness failure is distinct from failing to read the saved 
  assert.equal(h.calls.filter(call=>call[0]==='read').length,1)
  assert.equal(h.calls.some(call=>call[0]==='submit'),false)
 })
-
 test('an authoritative absent menu generates once, then renders the read model in place',async()=>{
  let plan=absent();const h=fixture({read:async()=>plan});await h.client.open(profile)
  assert.equal(h.state.phase,'generating');assert.equal(h.state.plan,null)

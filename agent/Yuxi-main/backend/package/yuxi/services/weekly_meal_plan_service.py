@@ -13,6 +13,7 @@ from yuxi.services.daily_arrangement_service import read_daily_arrangement, star
 from yuxi.services.daily_arrangement_tasks import request_daily_resume
 from yuxi.services.family_service import FamilyService
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.service_notice_service import require_service_notice
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import Conversation
 from yuxi.storage.postgres.models_health import HealthDailyArrangement, HealthFamilyProfileLink, HealthWeeklyMealPlan
@@ -71,6 +72,7 @@ async def start_weekly_meal_plan(uid, family_id, data):
         ):
             raise HealthVisionError("idempotency_conflict", "多日餐单请求内容已变化", 409)
         if row is None:
+            await require_service_notice(session, uid)
             row = HealthWeeklyMealPlan(
                 id=str(uuid4()),
                 actor_uid=uid,

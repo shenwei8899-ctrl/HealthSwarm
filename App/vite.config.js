@@ -47,12 +47,24 @@ export default defineConfig(({ mode }) => {
           }
           appAsset.source = JSON.stringify(app) + '\n'
         }
-        if (!appid) return
         const asset = bundle['project.config.json']
         if (!asset || asset.type !== 'asset') return
         const project = JSON.parse(String(asset.source))
-        project.appid = appid
-        project.setting = { ...project.setting, urlCheck: true }
+        if ((process.env.VITE_SERVICE_MODE || env.VITE_SERVICE_MODE) === 'api') {
+          // These bundle illustrations belong to mock transactions. API chat
+          // still uses oats.webp, which must remain in the main package.
+          const demoImages = ['cucumber', 'eggs', 'fish-veg', 'grains', 'tomato-tofu']
+            .map(name => 'static/bundles/' + name + '.webp')
+          const pack = project.packOptions || {}
+          const ignore = pack.ignore || []
+          project.packOptions = { ...pack, ignore: [...ignore, ...demoImages
+            .filter(value => !ignore.some(item => item.type === 'file' && item.value === value))
+            .map(value => ({ type: 'file', value }))] }
+        }
+        if (appid) {
+          project.appid = appid
+          project.setting = { ...project.setting, urlCheck: true }
+        }
         asset.source = JSON.stringify(project) + '\n'
       },
     }],

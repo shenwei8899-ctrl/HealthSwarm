@@ -5,6 +5,7 @@ import { computed, reactive, ref } from 'vue'
 import { archiveDate, archiveMeals, archiveCard, plannedGrams } from '../src/services/meal-archive-presentation.js'
 import { createHealthPlanClient, healthPlanState } from '../src/services/health-plan-client.js'
 import { createMealArchiveClient, mealArchiveState } from '../src/services/meal-archive-client.js'
+import { dishTitle } from '../src/utils/meal-presentation.js'
 
 const a = '11111111-1111-4111-8111-111111111111', b = '22222222-2222-4222-8222-222222222222'
 const planId = '33333333-3333-4333-8333-333333333333'
@@ -34,12 +35,13 @@ test('cards show saved snapshot dishes without inventing meals or adoption statu
   assert.equal(family.summary, '2位成员 · 1餐')
 })
 
-function mount(override = async () => null) {
+function mount(override = async () => null, options = { memberId: a }) {
   const hooks = {}, calls = [], storage = new Map(), navigation = []; let epoch = 1
   const send = async options => {
     calls.push(structuredClone(options))
     const replacement = await override(options)
     if (replacement) return replacement
+    if (options.path.includes('/daily-meal-plans')) return { data: { plans: [], next_before: null } }
     if (options.path.endsWith('/members')) return { data: [a, b].map((id, index) => ({ id, display_name: index ? '家人' : '本人', scopes: ['diet_edit'] })) }
     if (options.path.includes('/meal-plans?')) return { data: { plans: [plan(options.path.includes(b) ? b : a)], next_offset: null } }
     if (options.path.endsWith('/meal-plans/' + planId)) return { data: plan(currentMember()) }
@@ -48,33 +50,105 @@ function mount(override = async () => null) {
     throw new Error('Unexpected request: ' + options.path)
   }
   function currentMember() { return page.state.memberId }
-  const deps = { computed, reactive, ref, archiveCard, archiveDate, plannedGrams, healthPlanState,
-    mealArchiveState, createMealArchiveClient: ({state}) => createMealArchiveClient({state,send,
-      session:()=>({householdId:'family'}),context:()=>String(epoch)}),
-    onLoad: fn => hooks.load = fn, onShow: fn => hooks.show = fn, onHide: fn => hooks.hide = fn, onUnload: fn => hooks.unload = fn,
+  const deps = { computed, reactive, ref, archiveCard, archiveDate, plannedGrams, healthPlanState, mealArchiveState, dishTitle,
+    createMealArchiveClient: ({ state }) => createMealArchiveClient({ state, send, session:()=>({householdId:'family'}), context:()=>String(epoch) }),
+    onLoad: fn => hooks.load = fn, onShow: fn => hooks.show = fn, onHide: fn => hooks.hide = fn, onUnload: fn => hooks.unload = fn, onBackPress: fn => hooks.back = fn,
     createHealthPlanClient: ({ state }) => createHealthPlanClient({ state, send, revision: () => epoch, newId: () => 'fixed-request',
       storage: { getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, structuredClone(value)) } }),
     uni: { pageScrollTo: () => {}, navigateBack: () => navigation.push('back'), navigateTo: options => navigation.push(options.url) },
   }
   const script = readFileSync(new URL('../src/pages/health/plans.vue', import.meta.url), 'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
-  const fields = 'state,memberId,selectedPlanId,view,replace,reason,reviewExpanded,client,select,back,changeMember,retry,chat,archive,archiveClient,selectArchive,backArchive'
+  const fields = 'state,memberId,selectedPlanId,view,replace,reason,reviewExpanded,client,select,back,changeMember,retry,chat,savedState,savedClient,savedDish,legacyMode'
   const page = new Function('deps', `const {${Object.keys(deps)}}=deps;${script};return {${fields}}`)(deps)
-  hooks.load({})
+  hooks.load(options)
   return { ...page, hooks, calls, navigation, switchAccount: () => epoch++ }
 }
 
-test('family archive links read the chosen day and paginate without querying professional plans', async () => {
-  const saved = {family_id:'family',version:1,plan_date:'2026-11-19',meals:[{meal_type:'dinner',dishes:[{name:'米饭'}]}]}
-  const p = mount(async options => options.path.endsWith('/archive') ? {data:saved}
-    : {data:{plans:[saved],next_before:options.path.includes('before=')?null:'2026-11-19'}})
-  p.hooks.load({date:'2026-11-19'}); await p.hooks.show()
-  assert.equal(p.archive.plan.plan_date,'2026-11-19')
-  assert.equal(p.calls[0].path,'/api/family/family/daily-meal-plans/2026-11-19/archive')
-  await p.backArchive(); await p.archiveClient.list(true)
-  assert.ok(p.calls.at(-1).path.includes('before=2026-11-19'))
-  assert.equal(p.calls.some(c=>c.path.includes('/members')),false)
-  p.hooks.hide(); assert.equal(p.archive.plans.length,0)
+const archived = { id:'saved-day',family_id:'family',plan_date:'2026-11-19',version:4,
+  meals:[{meal_type:'dinner',members:[{id:a,name:'本人'}],dishes:[{name:'已保存的晚餐',ingredients:['青菜'],steps:['煮熟'] }]}] }
+
+test('My Meals reads successful daily snapshots by default, without querying old member drafts',async()=>{
+ const p=mount(async options=>({data:options.path.endsWith('/archive')?archived:{plans:[archived],next_before:null}}),{})
+ await p.hooks.show()
+ assert.equal(p.legacyMode.value,false)
+ assert.equal(p.savedState.plans[0].meals[0].dishes[0].name,'已保存的晚餐')
+ assert.equal(p.calls[0].path,'/api/family/family/daily-meal-plans?limit=20')
+ await p.select(p.savedState.plans[0])
+ assert.equal(p.view.value,'detail')
+ assert.deepEqual(p.savedState.plan,archived)
+ assert.equal(p.calls[1].path,'/api/family/family/daily-meal-plans/2026-11-19/archive')
+ p.savedDish.value=p.savedState.plan.meals[0].dishes[0]
+ p.back();assert.equal(p.savedDish.value,null);assert.equal(p.view.value,'detail')
+ p.back();assert.equal(p.view.value,'list');assert.equal(p.savedState.plans.length,1)
+ assert.equal(p.calls.every(call=>!call.method||call.method==='GET'),true)
+})
+
+test('a dated archive link opens its exact saved date',async()=>{
+ const p=mount(async()=>({data:archived}),{date:'2026-11-19'})
+ await p.hooks.show()
+ assert.equal(p.view.value,'detail');assert.deepEqual(p.savedState.plan,archived)
+ assert.equal(p.calls.length,1)
+})
+
+test('returning from a dated archive link loads the saved list and resets the detail date',async()=>{
+ const p=mount(async input=>({data:input.path.endsWith('/archive')?archived:{plans:[archived],next_before:null}}),{date:'2026-11-19'})
+ await p.hooks.show();await p.back()
+ assert.equal(p.view.value,'list');assert.deepEqual(p.savedState.plans,[archived])
+ assert.match(p.calls[1].path,/daily-meal-plans\?limit=20$/)
+ p.hooks.hide();await p.hooks.show()
+ assert.match(p.calls.at(-1).path,/daily-meal-plans\?limit=20$/)
+})
+
+test('native back closes a saved dish and detail before allowing page navigation',async()=>{
+ const p=mount(async input=>({data:input.path.endsWith('/archive')?archived:{plans:[archived],next_before:null}}),{})
+ await p.hooks.show();await p.select(p.savedState.plans[0]);p.savedDish.value=archived.meals[0].dishes[0]
+ assert.equal(p.hooks.back({from:'backbutton'}),true);assert.equal(p.savedDish.value,null);assert.equal(p.view.value,'detail')
+ assert.equal(p.hooks.back({from:'backbutton'}),true);assert.equal(p.view.value,'list')
+ assert.equal(p.hooks.back({from:'backbutton'}),false)
+ assert.equal(p.hooks.back({from:'navigateBack'}),false)
+ assert.equal(p.navigation.length,0)
+})
+
+test('archive lists use the same translated title as details without changing the source',()=>{
+ const dish={name:'Steamed broccoli',display_zh:{name:'清蒸西兰花'}}
+ const before=structuredClone(dish)
+ const card=archiveCard({...archived,meals:[{meal_type:'dinner',dishes:[dish]}]})
+ assert.equal(card.meals.find(meal=>meal.type==='dinner').summary,dishTitle(dish))
+ assert.equal(card.meals.find(meal=>meal.type==='dinner').summary,'清蒸西兰花')
+ assert.deepEqual(dish,before)
+})
+
+test('leaving daily archives discards a late list or detail read',async()=>{
+ let release
+ const p=mount(()=>new Promise(resolve=>release=resolve),{})
+ const pending=p.hooks.show();p.hooks.hide()
+ release({data:{plans:[archived],next_before:null}});await pending
+ assert.deepEqual(p.savedState.plans,[])
+})
+
+test('archive request failures remain visible instead of becoming an empty saved list',async()=>{
+ const p=mount(async()=>{throw Error('暂时无法读取保存餐单')},{})
+ await p.hooks.show();assert.match(p.savedState.error,/无法读取/)
+})
+
+test('daily archives paginate by date and reject another family snapshot',async()=>{
+ const state=mealArchiveState(),calls=[]
+ const older={...archived,id:'older',plan_date:'2026-11-18'}
+ const client=createMealArchiveClient({state,session:()=>({householdId:'family'}),context:()=> 'A',send:async options=>{
+  calls.push(options)
+  return {data:calls.length===1?{plans:[archived],next_before:'2026-11-19'}:calls.length===2?{plans:[older],next_before:null}:{...archived,family_id:'another-family'}}
+ }})
+ await client.list();await client.list(true)
+ assert.deepEqual(state.plans.map(plan=>plan.plan_date),['2026-11-19','2026-11-18'])
+ assert.match(calls[1].path,/before=2026-11-19/)
+ await client.detail('2026-11-19')
+ assert.equal(state.plan,null);assert.match(state.error,/家庭/)
+})
+
+test('daily archives count the recorded diners across meals without duplicating members',()=>{
+ const card=archiveCard({...archived,meals:[...archived.meals,{...archived.meals[0],meal_type:'lunch',members:[{id:a},{id:b}]}]})
+ assert.equal(card.summary,'2位成员 · 2餐')
 })
 
 test('detail opens above the list, returns to the same page, and prevents duplicate reads while busy', async () => {

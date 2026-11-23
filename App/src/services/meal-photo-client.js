@@ -31,11 +31,11 @@ export const photoState = () => ({ members: [], memberId: '', config: null, cons
 
 /** 页面持有候选编辑状态，正式记录和任务终态始终由服务端回读。 */
 export function createMealPhotoClient({ state, send = request, upload = uploadMealPhoto, revision = sessionRevision,
-  storage = scopedStorage, newId = newHealthRequestId } = {}) {
+  storage = scopedStorage, newId = newHealthRequestId, namespace = () => '', sourceContext = () => null } = {}) {
   let generation = 0
   let declined = false
   let checkpointDay = ''
-  const key = () => 'meal-photo-flow:' + state.memberId
+  const key = () => 'meal-photo-flow:' + (namespace() ? encodeURIComponent(namespace()) + ':' : '') + state.memberId
   const checkpoint = () => storage.setStorageSync(key(), { day: checkpointDay, taskId: state.job?.task_id || null,
     draftId: state.draft?.id || null, pending: state.pending && state.pending.operation !== 'patch' ? state.pending : null,
     uploads: state.uploads.map(row => ({ upload_id: row.upload_id })) })
@@ -174,7 +174,7 @@ export function createMealPhotoClient({ state, send = request, upload = uploadMe
         if (!current()) return
         const id = newId()
         state.pending = { operation: 'task', request: { path: root + '/meal-photo-tasks', method: 'POST', headers: { 'Idempotency-Key': id },
-          data: { member_id: state.memberId, upload_ids: state.uploads.map(row => row.upload_id), client_request_id: id, meal_type: mealType, eaten_at: eatenAt } } }
+          data: { member_id: state.memberId, upload_ids: state.uploads.map(row => row.upload_id), client_request_id: id, meal_type: mealType, eaten_at: eatenAt, ...(sourceContext() ? { source_context: clone(sourceContext()) } : {}) } } }
         state.draft = null; state.meal = null; state.calculation = null; state.saved = null; state.dirty = false; state.job = null
         checkpoint(); await perform(current)
       })

@@ -91,6 +91,12 @@ async def test_budget_does_not_reauthorize_reserved_call_or_hide_saved_answer(bu
             return getattr(self.db, name)
 
         async def get(self, model, key, **kwargs):
+            from yuxi.storage.postgres.models_business import ServiceNoticeAcknowledgement
+            from yuxi.services.service_notice_service import NOTICE_HASH
+            from yuxi.utils.datetime_utils import utc_now_naive
+
+            if model is ServiceNoticeAcknowledgement:
+                return SimpleNamespace(content_hash=NOTICE_HASH, acknowledged_at=utc_now_naive())
             if model is Conversation:
                 return SimpleNamespace(agent_id="health-consultation")
             return await self.db.get(model, key, **kwargs)

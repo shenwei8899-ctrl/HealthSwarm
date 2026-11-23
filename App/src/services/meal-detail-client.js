@@ -27,7 +27,8 @@ export function createMealDetailClient({ state, send, context }) {
     Object.assign(state, detailState(), { open: true, phase: 'loading', target: selected, meal: cache.get(key) || target.seed || null, view: target.initialView || 'meal', dishIndex:Number.isInteger(target.dishIndex)?target.dishIndex:0 })
     try {
       let meal
-      if (target.kind === 'formal') {
+      // Expired formal sources still have an authoritative daily snapshot for reading.
+      if (target.kind === 'formal' && !(target.purchaseReady === false && target.dailyPlanVersion != null)) {
         const r = formalRoute(target)
         const { data } = await send({ path: `/api/family/${encodeURIComponent(target.familyId)}/daily-arrangements/${target.date}/meals/${target.mealType}?arrangement_id=${encodeURIComponent(r.arrangement)}&version=${r.version}${r.daily_plan_version != null ? '&daily_plan_version=' + r.daily_plan_version : ''}` })
         if (!current()) return
@@ -36,12 +37,13 @@ export function createMealDetailClient({ state, send, context }) {
       } else if (target.dailyPlanVersion != null) {
         const { data } = await send({ path: `/api/family/${encodeURIComponent(target.familyId)}/daily-meal-plans/${target.date}` })
         if (!current()) return
-        const item = data?.meals?.find(item => item.meal_type === target.mealType && item.source?.kind === target.kind && item.source.id === target.sourceId)
+        const item = data?.meals?.find(item => item.meal_type === target.mealType && item.source?.kind === target.kind && item.source.id === target.sourceId &&
+          (target.kind !== 'formal' || item.source.version === target.version))
         if (data.status !== 'ready' || data.date !== target.date || data.version !== target.dailyPlanVersion || !item) throw new Error(data.needs_regeneration?.includes(target.mealType)?'本餐需要重新安排，请返回今日餐单。':'这份参考餐单已有更新，请重新读取。')
         selected.purchaseReady = item.purchase_ready !== false
         meal = { ...item.meal, members: item.members || [] }
         // Keep the purchase option belonging to this version and source.
-        selected.purchaseOption = data.purchase_options?.find(o => o.kind === 'reference' && o.id === target.sourceId && o.meal_types?.includes(target.mealType)) || null
+        selected.purchaseOption = data.purchase_options?.find(o => o.kind === target.kind && o.id === target.sourceId && o.meal_types?.includes(target.mealType)) || null
       } else {
         if (target.kind === 'reference') {
           const { data } = await send({ path: `/api/health/v1/reference-meal-plans/${encodeURIComponent(target.sourceId)}` })

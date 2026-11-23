@@ -136,3 +136,16 @@ async def test_education_history_uses_current_member_access(monkeypatch, agent_s
     monkeypatch.setattr(conversation_purchase_service, "validate_catalog_profile_history", AsyncMock())
 
     assert await HealthConsultationRepository(session).authorize("actor", "thread", preview_history=True) is binding
+
+
+@pytest.fixture(autouse=True)
+def confirmed_account_notice(monkeypatch):
+    """本模块聚焦既有运行边界，合成账号已确认当前服务声明。"""
+    from datetime import datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from yuxi.repositories.service_notice_repository import ServiceNoticeRepository
+    from yuxi.services.service_notice_service import NOTICE_HASH
+
+    receipt = SimpleNamespace(content_hash=NOTICE_HASH, acknowledged_at=datetime(2026, 11, 22))
+    monkeypatch.setattr(ServiceNoticeRepository, "current", AsyncMock(return_value=receipt))

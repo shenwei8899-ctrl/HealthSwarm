@@ -28,6 +28,7 @@ from yuxi.services.health_family_safe_plan_service import check_family_trial
 from yuxi.services.health_family_meal_plan_types import FamilyMealPlanSpec
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.miniapp_profile_coding import prepare_daily_profile_coding
+from yuxi.services.service_notice_service import require_service_notice
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_health import HealthExclusivePlanGroup
 from yuxi.utils.datetime_utils import utc_now_naive
@@ -38,6 +39,7 @@ async def run_exclusive_plan(context):
     uid, fid, gid = (context.payload[key] for key in ("uid", "family_id", "group_id"))
     async with pg_manager.get_async_session_context() as session:
         row = await owned_group(session, context)
+        await require_service_notice(session, uid)
         policy = row.policy
         preview = policy == PREVIEW_POLICY
         catalog = row.progress.get("catalog_snapshot") if preview else None

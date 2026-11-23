@@ -17,7 +17,8 @@ export function createWechatAuthClient({ send, session, getCode, appId, isWechat
     const code = await getCode()
     current(t)
     const data = { code }
-    if (binding) { data.identifier = binding.identifier; data.password = binding.password }
+    if (binding?.identifier) { data.identifier = binding.identifier; data.password = binding.password }
+    if (binding?.serviceNotice) data.service_notice = binding.serviceNotice
     const response = await send({ path: '/api/auth/wechat/login', method: 'POST', data, authenticated: false })
     current(t)
     const result = projectLogin(response.data)
@@ -82,7 +83,7 @@ export function projectContext(data) {
     return { id: f.id, name: f.name, isOwner: f.is_owner === true, onboardingRequired: f.onboarding_required,
       ...(f.invitation_review_pending === true ? {invitationReviewPending:true} : {}) }
   })
-  return { accountId: String(data.account.id), accountName: typeof data.account.name === 'string' ? data.account.name : '', families }
+  return { accountId: String(data.account.id), accountName: typeof data.account.name === 'string' ? data.account.name : '', families, serviceNotice: data.service_notice || null }
 }
 
 export function projectLogin(data) {

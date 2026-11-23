@@ -1,8 +1,37 @@
+import { ensureServiceNotice, isServiceNoticeError } from './service-notice.js'
 import { apiBaseUrl, allowLocalHealthApi } from './config.js'
 import { getSession, clearSession, sessionRevision } from './session.js'
 import { storageContext } from './storage.js'
 // Paths and response mapping belong to the agreed backend adapters. Never retry writes automatically.
-export function request({ path, method = 'GET', data, headers = {}, timeout = 15000, authenticated = true, authenticationToken }) {
+export function request(options) {
+  const requestScope=storageContext()
+  return dispatchRequest(options).catch(async error => {
+    // The server explicitly rejected this operation before any AI write. Retry
+    // this same request only after the current account confirms the notice.
+    if (options.authenticated === false || !isServiceNoticeError(error) ||
+        options.path === '/api/account/service-notice' || (options.method || 'GET') === 'GET') throw error
+    const account=getSession(), owner=[account?.accountId,account?.token].join(':')
+    try { await ensureServiceNotice(request) }
+    catch (noticeError) {
+      if(noticeError.code!=='SESSION_CHANGED') {
+        noticeError.noticeRejected=true
+        // The original AI operation was explicitly rejected. A notice endpoint
+        // timeout must never be mistaken for an unknown AI submission outcome.
+        if(noticeError.code==='NETWORK_ERROR'||Number.isFinite(Number(noticeError.code))) {
+          noticeError.noticeHttpStatus=noticeError.code;noticeError.code='SERVICE_NOTICE_PENDING'
+        }
+      }
+      throw noticeError
+    }
+    const current=getSession()
+    if(requestScope!==storageContext()||owner!==[current?.accountId,current?.token].join(':'))throw Object.assign(new Error('账号已切换，请重新操作'),{code:'SESSION_CHANGED'})
+    return dispatchRequest(options).catch(rejected=>{
+      if(isServiceNoticeError(rejected)){rejected.noticeRejected=true;rejected.noticeHttpStatus=rejected.code;rejected.code='SERVICE_NOTICE_PENDING'}
+      throw rejected
+    })
+  })
+}
+function dispatchRequest({ path, method = 'GET', data, headers = {}, timeout = 15000, authenticated = true, authenticationToken }) {
   let sameOrigin = false
   // #ifdef H5
   sameOrigin = typeof window !== 'undefined' && apiBaseUrl === ''

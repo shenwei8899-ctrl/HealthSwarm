@@ -117,6 +117,7 @@ export function createVoiceCapture({ getRecorder = () => uni.getRecorderManager(
         else cancelTranscription = abort
       } })
       if (!valid(ticket)) return
+      if (typeof text !== 'string' || !text.trim()) throw new Error('没有识别到内容，请重新录音')
       cancelTranscription = null; clearAudio(); phase = 'idle'; emit(); onText(text)
     } catch (e) { if (valid(ticket)) { cancelTranscription = null; fail(e.message || '语音识别失败，录音已保留，可重试') } }
     finally {
@@ -126,7 +127,7 @@ export function createVoiceCapture({ getRecorder = () => uni.getRecorderManager(
     }
   }
   async function begin(y = 0) {
-    if (!alive || holding || (owner && slot?.owner === owner) || ['authorizing', 'starting', 'recording', 'stopping', 'transcribing'].includes(phase)) return
+    if (!alive || holding || (owner && slot?.owner === owner) || ['authorizing', 'starting', 'recording', 'stopping', 'awaiting-release', 'transcribing'].includes(phase)) return
     const ticket = ++version; scope = getScope(); holding = true; canceling = false; startY = y
     let claimed = false
     clearAudio(); error = ''; permissionDenied = false; phase = 'authorizing'; emit()
@@ -141,23 +142,26 @@ export function createVoiceCapture({ getRecorder = () => uni.getRecorderManager(
       owner = {
         Start() {
           started = true; startedAt = now()
-          if (!valid(ticket) || !holding || canceling) { stopNative(); return }
+          if (!valid(ticket) || !holding) { stopNative(); return }
           phase = 'recording'; emit()
         },
         FrameRecorded(event) { if (valid(ticket) && phase === 'recording') onLevel(pcmVoiceLevel(event?.frameBuffer)) },
         Stop(result = {}) {
-          releaseSlot(); holding = false
+          releaseSlot()
           if (!valid(ticket)) {
+            holding = false
             if (alive && phase === 'stopping') { phase = 'idle'; canceling = false; emit() }
             return
           }
-          if (canceling) { phase = 'idle'; canceling = false; emit(); return }
+          if (!holding && canceling) { phase = 'idle'; canceling = false; emit(); return }
           const duration = Number(result.duration) || Math.max(0, now() - startedAt)
-          if (duration < 500 || !result.tempFilePath) { fail('说话时间太短，请按住再说一次'); return }
+          if (holding && duration < VOICE_OPTIONS.duration - 500) { holding = false; fail('录音已中断，请重新按住说话'); return }
+          if (duration < 500 || !result.tempFilePath) { holding = false; fail('说话时间太短，请按住再说一次'); return }
           audio = { id: 'voice-' + now() + '-' + Math.random().toString(36).slice(2), tempFilePath: result.tempFilePath, duration }
           expiryTimer = setTimeout(() => { cancel(); fail('录音已过期，请重新按住说话') }, 300000)
           expiryTimer?.unref?.()
-          recognize(ticket)
+          if (holding) { phase = 'awaiting-release'; emit() }
+          else recognize(ticket)
         },
         Error() {
           releaseSlot(); holding = false
@@ -181,9 +185,15 @@ export function createVoiceCapture({ getRecorder = () => uni.getRecorderManager(
   }
   function end(y) {
     if (!holding) return
+    if (scope !== getScope()) { cancel(); fail('登录状态已变更，请重新登录后录音'); return }
     if (typeof y === 'number') move(y)
     holding = false
     if (phase === 'authorizing') { version++; phase = 'idle'; canceling = false; emit(); return }
+    if (phase === 'awaiting-release') {
+      if (canceling) { clearAudio(); phase = 'idle'; canceling = false; emit() }
+      else recognize(version)
+      return
+    }
     stopNative() // If start is still pending, the Start callback stops it.
   }
   function cancel() {

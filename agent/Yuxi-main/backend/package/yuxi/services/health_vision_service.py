@@ -17,6 +17,7 @@ from yuxi.repositories.health_source_repository import HealthSourceRepository
 from yuxi.repositories.health_meal_source_repository import HealthMealSourceRepository
 from yuxi.services.health_source_types import nutrition_source_references
 from yuxi.services.health_media_service import prepare_upload
+from yuxi.services.health_meal_photo_source import resolve_meal_photo_source
 from yuxi.services.health_meal_source_service import meal_source_inputs, search_meal_sources, validate_photo_estimates
 from yuxi.services.health_nutrition_service import (
     CALCULATION_VERSION,
@@ -39,6 +40,7 @@ from yuxi.services.health_vision_types import (
 from yuxi.services.ocr_service import resolve_ocr_task_params
 from yuxi.services.task_service import tasker
 from yuxi.storage.minio import get_minio_client
+from yuxi.services.service_notice_service import require_service_notice
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import TaskRecord
 from yuxi.storage.postgres.models_health import (
@@ -445,6 +447,9 @@ class HealthVisionService:
         """成员和用途绑定，提交持久意图后才投递 ARQ。"""
         member_id = str(data.member_id)
         request_payload = data.model_dump(mode="json")
+        # 旧请求仍使用原指纹；新增的可选空字段不改变重放身份。
+        if data.source_context is None:
+            request_payload.pop("source_context", None)
         if report_reprocess is not None:
             request_payload["reprocess"] = report_reprocess.model_dump(mode="json")
         fingerprint = input_fingerprint(request_payload)
@@ -469,6 +474,7 @@ class HealthVisionService:
                     "task_id": previous.task_id,
                     "execution_status": (await session.get(TaskRecord, previous.task_id)).status,
                 }
+            await require_service_notice(session, uid)
             if report_reprocess is not None:
                 require_editable(draft, report_reprocess.version)
                 payload = ReportPayload.model_validate(draft.payload)
@@ -489,6 +495,11 @@ class HealthVisionService:
                 "eaten_at": data.eaten_at.isoformat() if data.eaten_at else None,
                 "prompt_version": MEAL_PROMPT_VERSION if kind == "meal" else "health-vision-v1",
             }
+            if data.source_context is not None:
+                if kind != "meal":
+                    raise HealthVisionError("report_input_invalid", "报告任务不能包含菜品来源")
+                snapshot["source_context"] = data.source_context.model_dump(mode="json")
+                snapshot["source_hint"] = await resolve_meal_photo_source(session, uid, member_id, data.source_context)
             await repo.require_consent(member_id, uid, kind, snapshot)
             if parent_task_id is not None and kind == "report":
                 parent = await repo.job(parent_task_id, uid, write=True)
@@ -645,6 +656,7 @@ class HealthVisionService:
                 client_request_id=request_id,
                 meal_type=job.input_snapshot.get("meal_type"),
                 eaten_at=job.input_snapshot.get("eaten_at"),
+                source_context=job.input_snapshot.get("source_context"),
             )
             reprocess = job.input_snapshot.get("reprocess")
         return await self.create_task(

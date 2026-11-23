@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onUnmounted } from 'vue'
 import FoodImageSlot from './FoodImageSlot.vue'
 const props = defineProps({
   open: Boolean, embedded: Boolean, title: { type: String, default: '确认采购订单' },
@@ -9,7 +9,71 @@ const props = defineProps({
 })
 defineEmits(['close', 'address', 'slot', 'confirm', 'recover', 'quote'])
 const choosingSlot = ref(false)
-watch(() => props.open, () => { choosingSlot.value = false })
+const panelHeight = ref(80), dragging = ref(false)
+const dragArea = ref(null)
+let gesture = null, moved = false
+// #ifdef H5
+let mouseArea = null
+watch(dragArea, value => {
+  mouseArea?.removeEventListener('mousedown', startDrag)
+  mouseArea = value?.$el || value
+  mouseArea?.addEventListener('mousedown', startDrag)
+}, { flush: 'post' })
+// #endif
+const clampHeight = value => Math.max(42, Math.min(92, value))
+function stopDrag() {
+  gesture = null
+  dragging.value = false
+  // #ifdef H5
+  document.removeEventListener('mousemove', moveDrag)
+  document.removeEventListener('mouseup', stopDrag)
+  // #endif
+}
+watch(() => props.open, () => {
+  choosingSlot.value = false
+  stopDrag()
+  panelHeight.value = 80
+})
+function startDrag(event) {
+  // #ifdef H5
+  if (event.target?.closest?.('[aria-label="关闭订单确认"]')) return
+  // #endif
+  if (props.embedded || (event.touches && event.touches.length !== 1) || (event.button != null && event.button !== 0)) return
+  const point = event.touches?.[0] || event
+  const y = point.clientY ?? point.pageY
+  if (!Number.isFinite(y)) return
+  const viewport = uni.getWindowInfo().windowHeight
+  if (!(viewport > 0)) return
+  moved = false
+  gesture = { y, height: panelHeight.value, viewport, id: point.identifier }
+  dragging.value = true
+  // #ifdef H5
+  if (!event.touches) {
+    event.preventDefault()
+    document.addEventListener('mousemove', moveDrag)
+    document.addEventListener('mouseup', stopDrag)
+  }
+  // #endif
+}
+function moveDrag(event) {
+  if (!gesture) return
+  if (event.touches && event.touches.length !== 1) { stopDrag(); return }
+  const point = event.touches?.[0] || event
+  if (gesture.id != null && point.identifier !== gesture.id) return
+  const delta = gesture.y - (point.clientY ?? point.pageY)
+  if (!Number.isFinite(delta) || (!moved && Math.abs(delta) < 4)) return
+  moved = true
+  panelHeight.value = clampHeight(gesture.height + delta / gesture.viewport * 100)
+}
+function toggleHeight() {
+  if (!moved) panelHeight.value = panelHeight.value < 86 ? 92 : 42
+}
+onUnmounted(() => {
+  stopDrag()
+  // #ifdef H5
+  mouseArea?.removeEventListener('mousedown', startDrag)
+  // #endif
+})
 const slot = computed(() => props.slots.find(s => String(s.id) === String(props.slotId)))
 const slotName = item => item ? item.name || [item.start_time, item.end_time].filter(Boolean).join('—') : '选择送达时间'
 const money = cents => (Number(cents || 0) / 100).toFixed(2)
@@ -21,8 +85,11 @@ const lines = computed(() => (props.quote?.items || props.products.map(p=>({sku_
 </script>
 <template>
   <view v-if="open" class="checkout-mask" :class="{'is-embedded':embedded}" @click.self="!busy && $emit('close')">
-    <view class="checkout-panel" role="dialog" aria-modal="true" :aria-label="title">
-      <view v-if="!embedded" class="checkout-heading"><text>{{title}}</text><button :disabled="busy" aria-label="关闭订单确认" @click="$emit('close')">×</button></view>
+    <view class="checkout-panel" :class="{'is-dragging':dragging}" :style="embedded ? {} : {height:panelHeight+'vh'}" role="dialog" aria-modal="true" :aria-label="title">
+      <view v-if="!embedded" ref="dragArea" class="checkout-drag-area" @touchstart.stop="startDrag" @touchmove.stop.prevent="moveDrag" @touchend.stop="stopDrag" @touchcancel.stop="stopDrag">
+        <button class="checkout-grip" aria-label="调整订单面板高度" :aria-expanded="panelHeight>=86" @click="toggleHeight"><view /></button>
+        <view class="checkout-heading"><text>{{title}}</text><button :disabled="busy" aria-label="关闭订单确认" @touchstart.stop @mousedown.stop @click="$emit('close')">×</button></view>
+      </view>
       <scroll-view class="checkout-body" scroll-y :show-scrollbar="false">
         <slot v-if="accessRequired" name="access" />
         <template v-else>
@@ -51,10 +118,11 @@ const lines = computed(() => (props.quote?.items || props.products.map(p=>({sku_
 </template>
 <style scoped>
 .checkout-mask{position:fixed;inset:0;z-index:100;background:var(--ui-overlay);display:flex;align-items:flex-end}
-.checkout-panel{width:100%;max-height:90vh;display:flex;flex-direction:column;background:#fff;border-radius:40rpx 40rpx 0 0;overflow:hidden;color:#232936;box-sizing:border-box}
+.checkout-panel{width:100%;max-height:92vh;display:flex;flex-direction:column;background:#fff;border-radius:40rpx 40rpx 0 0;overflow:hidden;color:#232936;box-sizing:border-box;transition:height .2s ease}
+.checkout-panel.is-dragging{transition:none}.checkout-drag-area{flex-shrink:0;touch-action:none;user-select:none;cursor:ns-resize}.checkout-grip{display:flex;align-items:center;justify-content:center;width:100%;height:24px;min-height:24px;margin:0;padding:0;background:transparent;cursor:ns-resize}.checkout-grip>view{width:32px;height:4px;border-radius:4px;background:#b9bfce}.checkout-grip:after{border:0}@media(prefers-reduced-motion:reduce){.checkout-panel{transition:none}}
 .checkout-heading{display:flex;justify-content:space-between;align-items:center;gap:16rpx;padding:18rpx 32rpx 6rpx;flex-shrink:0;font-size:36rpx;font-weight:500}
 .checkout-heading button{display:flex;align-items:center;justify-content:center;width:44px;height:44px;font-size:36rpx;color:#6d7688;flex-shrink:0}
-.checkout-body{max-height:60vh;height:auto;min-height:0}.delivery-row{display:flex;align-items:center;gap:18rpx;width:calc(100% - 64rpx);margin:16rpx 32rpx 0;padding:20rpx;border:1rpx solid #e9edf3;border-radius:24rpx;text-align:left;min-height:88rpx;font-size:27rpx;box-sizing:border-box}
+.checkout-body{flex:1;height:0;min-height:0}.delivery-row{display:flex;align-items:center;gap:18rpx;width:calc(100% - 64rpx);margin:16rpx 32rpx 0;padding:20rpx;border:1rpx solid #e9edf3;border-radius:24rpx;text-align:left;min-height:88rpx;font-size:27rpx;box-sizing:border-box}
 .address-row{padding:24rpx 20rpx}.delivery-copy{flex:1;min-width:0}.delivery-copy text{display:block}.address-person{font-size:29rpx;font-weight:500;overflow-wrap:anywhere}.supporting{color:var(--ui-muted);font-size:24rpx;line-height:1.6}.address-row .supporting{margin-top:6rpx}.delivery-label{flex-shrink:0}.slot-value{flex:1;text-align:right;min-width:0;line-height:1.6}.chevron{color:#8390a6;font-size:34rpx;flex-shrink:0}
 .location-icon{width:30rpx;height:38rpx;border:3rpx solid #414b60;border-radius:50% 50% 50% 0;transform:rotate(-45deg);margin:0 8rpx 6rpx 4rpx;flex-shrink:0}.location-icon view{width:10rpx;height:10rpx;border:2rpx solid #414b60;border-radius:50%;margin:9rpx auto}
 .slot-options{margin:12rpx 32rpx;padding:8rpx 20rpx;border-radius:20rpx;background:var(--ui-soft)}.slot-options button{width:100%;display:flex;justify-content:space-between;align-items:center;min-height:44px;font-size:26rpx;color:#626e80}.slot-options .chosen{color:var(--ui-accent)}

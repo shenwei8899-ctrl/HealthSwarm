@@ -89,6 +89,12 @@ class TestReferenceMealComposition(TestCase):
         with self.assertRaisesRegex(HealthVisionError, "重复菜谱"):
             validate_reference_meal_composition([{"meal_type": "lunch", "dishes": [COMBO, COMBO]}], selection(1))
 
+    def test_duplicate_name_uses_the_same_normalization_as_candidate_selection(self):
+        """换文件、空白和全角标点不能绕过保存入口的同名检查。"""
+        dishes = [dish("a", "菠菜100克", name="清炒菠菜"), dish("b", "菠菜100克", name=" 清炒 菠菜！")]
+        with self.assertRaisesRegex(HealthVisionError, "重复菜谱"):
+            validate_reference_meal_composition([{"meal_type": "lunch", "dishes": dishes}], selection(1))
+
     def test_seasonings_do_not_fill_a_dish_slot(self):
         seasoning = dish("dip", "盐1克", "糖2克")
         with self.assertRaisesRegex(HealthVisionError, "调味料不能单独作为一道菜"):

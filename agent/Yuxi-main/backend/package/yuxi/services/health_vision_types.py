@@ -212,12 +212,23 @@ class ConsultationDirectoryInput(HealthDTO):
     links: list[ConsultationDirectoryLink] = Field(max_length=1000)
 
 
+class MealPhotoSource(HealthDTO):
+    """客户端只声明餐单出处，名称由服务端回读。"""
+
+    family_id: UUID
+    plan_date: date
+    plan_version: int = Field(ge=1)
+    meal_type: Literal["breakfast", "lunch", "dinner"]
+    dish_key: str = Field(min_length=1, max_length=1000)
+
+
 class VisionTaskInput(HealthDTO):
     member_id: UUID
     upload_ids: list[UUID] = Field(min_length=1, max_length=20)
     client_request_id: UUID
     meal_type: Literal["breakfast", "lunch", "dinner", "snack"] | None = None
     eaten_at: datetime | None = None
+    source_context: MealPhotoSource | None = None
 
     @field_validator("upload_ids")
     @classmethod

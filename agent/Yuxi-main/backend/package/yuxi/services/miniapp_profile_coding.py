@@ -8,6 +8,7 @@ from yuxi.services.health_quality_checks import external_projection
 from yuxi.services.health_quality_types import QualityRules
 from yuxi.services.health_vision_provider import call_json_model
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.service_notice_service import require_service_notice
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import FamilyMember
 from yuxi.storage.postgres.models_health import HealthFamilyProfileLink, HealthMiniappProfileCoding
@@ -30,6 +31,7 @@ async def prepare_daily_profile_coding(uid, sources, selection, context):
 
     for hid, source in sources["members"].items():
         async with pg_manager.get_async_session_context() as session:
+            await require_service_notice(session, uid)
             health = HealthVisionRepository(session)
             for scope in ("ai_use", "diet_edit", "profile_view"):
                 await health.authorize(hid, uid, scope)

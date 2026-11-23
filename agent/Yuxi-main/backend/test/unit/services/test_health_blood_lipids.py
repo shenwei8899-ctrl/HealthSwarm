@@ -17,7 +17,7 @@ def lipids_repo(weight_repo, monkeypatch):  # noqa: F811
     """沿实际共享授权与分页边界，仅切换血脂类型和回执表。"""
     state = weight_repo
     state.repo = HealthBloodLipidsRepository(state.session)
-    monkeypatch.setattr(boundary, "authorized_fields", lambda family, member, uid: {"blood_lipids"})
+    monkeypatch.setattr(boundary, "authorized_fields", lambda family, member, uid, **kwargs: {"blood_lipids"})
     return state
 
 
@@ -141,7 +141,7 @@ async def test_lipids_history_and_checkpoint_reject_single_component_or_permissi
     elif change == "revoke":
         state.authorize.side_effect = HealthVisionError("not_found", "合成撤回", 404)
     else:
-        monkeypatch.setattr(boundary, "authorized_fields", lambda family, member, uid: {"weight"})
+        monkeypatch.setattr(boundary, "authorized_fields", lambda family, member, uid, **kwargs: {"weight"})
     for checkpoint in (False, True):
         with pytest.raises(HealthVisionError, match="blood_lipids_source_changed") as error:
             if checkpoint:

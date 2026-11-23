@@ -1,3 +1,4 @@
+import { dishTitle } from '../utils/meal-presentation.js'
 const mealNames = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐' }
 const dayMs = 86400000
 
@@ -20,7 +21,7 @@ export function archiveMeals(plan) {
   const meals = Array.isArray(plan?.meals) ? plan.meals : []
   return Object.entries(mealNames).map(([type, name]) => {
     const meal = meals.find(row => row.meal_type === type)
-    const dishes = (meal?.dishes || []).map(dish => dish.name).filter(Boolean)
+    const dishes = (meal?.dishes || []).map(dish => dishTitle(dish)).filter(Boolean)
     return { type, name, summary: dishes.join(' · ') || '本餐未记录' }
   })
 }
@@ -28,7 +29,7 @@ export function archiveMeals(plan) {
 export function archiveCard(plan, now) {
   const date = archiveDate(plan.plan_date, now)
   const recorded = new Set((plan.meals || []).map(row => row.meal_type).filter(type => mealNames[type]))
-  const count = Object.keys(plan.members || {}).length
+  const count = new Set([...Object.keys(plan.members || {}), ...(plan.meals || []).flatMap(meal => (meal.members || []).map(member => member.id)).filter(Boolean)]).size
   const owner = count > 1 ? `${count}位成员` : '个人餐单'
   return {
     plan, date, title: date.title + (recorded.size === 3 ? '的三餐' : '的餐单'),

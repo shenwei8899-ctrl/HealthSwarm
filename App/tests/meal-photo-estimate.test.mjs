@@ -25,7 +25,7 @@ test('whole table estimate never becomes each person intake and replacing source
  assert.equal(personalMeal([dish],person,options).items[0].photo_estimate,null)
 })
 
-const component=readFileSync(new URL('../src/components/CloudMealCapture.vue',import.meta.url),'utf8')
+const component=readFileSync(new URL('../src/composables/use-meal-capture.js',import.meta.url),'utf8')
 for(const failedRead of ['task','draft'])test(`re-recognition recovers ${failedRead} read failure without a second paid task`,async()=>{
  const vision=photoState(),cache=new Map(),config={policy_version:'v1',meal:{available:true,processor:'synthetic'}}
  Object.assign(vision,{memberId:'member',members:[{id:'member',scopes:['diet_edit','ai_use']}],config,consent:{memberId:'member',policy_version:'v1',processor:'synthetic',persisted:true}})

@@ -1,3 +1,4 @@
+import { normalizeFollowups } from './chat-followups.js'
 import { mealPairingText } from '../utils/dish-commerce-presentation.js'
 import { request } from './request.js'
 import { sessionRevision } from './session.js'
@@ -116,6 +117,7 @@ export function chatMessages(value) {
     if (role === 'assistant') text = text.replace(/\[食材包:[A-Za-z0-9_-]{100,4096}\]/g, '').trim()
     return [{ id: String(item.id), role, text, business, purchaseRequestId, exclusivePlanEntry,
       ...(Array.isArray(item.citations) ? { citations: item.citations } : {}),
+      followups:normalizeFollowups(item.followups),
       recordedMeals: business?.kind==='meal_plan_candidates' ? [] : Array.isArray(item.recorded_meals) ? item.recorded_meals : [],
       ...(business?.data?.scope==='daily_reference'?{planDate:business.data.plan_date,planMeals:requestedMeals||business.data.meals.map(meal=>meal.meal_type)}:{}), createdAt: chatTimestamp(item.created_at),
       requestId: item.request_id || item.extra_metadata?.request_id || '', status: item.delivery_status || 'saved',

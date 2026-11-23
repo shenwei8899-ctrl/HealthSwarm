@@ -701,3 +701,11 @@ for(const code of ['NETWORK_ERROR',503])test(`unknown submission survives a tran
  assert.equal(h.calls.filter(c=>c.path==='/api/agent/runs').length,1)
  assert.equal(h.timers.size,0);assert.equal(h.listeners.size,0);h.flow.hide()
 })
+
+test('notice cancellation never polls an AI request that the server did not accept',async()=>{
+ const h=fixture({send:async options=>{
+  if(options.path==='/api/agent/runs')throw Object.assign(new Error('合成声明未确认'),{code:'SERVICE_NOTICE_PENDING',noticeRejected:true})
+  return fixtureBase(options)
+ }})
+ try{await h.flow.open(memberId,taskType);await h.flow.createEntry();assert.equal(await h.flow.submit('合成测试问题'),false);assert.equal(h.flow.getState().submitUnknown,false);assert.equal(h.flow.getState().status,'failed');assert.equal(h.scheduled.length,0);assert.match(h.flow.getState().error,/声明未确认/)}finally{h.flow.hide()}
+})

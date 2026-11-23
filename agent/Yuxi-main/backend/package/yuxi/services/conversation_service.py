@@ -611,6 +611,9 @@ async def get_thread_history_view(
 
         if msg.id in source_titles:
             msg_dict["citations"] = source_titles[msg.id]
+            from yuxi.services.health_followup_types import public_followup_result
+
+            msg_dict["followups"] = public_followup_result(msg).model_dump(mode="json")["followups"]
 
         if msg.role == "assistant":
             if health_answer or unverified_reference:

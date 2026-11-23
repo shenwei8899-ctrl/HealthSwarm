@@ -2,6 +2,8 @@
 
 import json
 
+from yuxi.services.health_followup_types import public_followup_result
+
 from pydantic import ValidationError
 
 from yuxi.repositories.health_consultation_repository import (
@@ -252,6 +254,7 @@ async def read_health_task_in_session(session, uid: str, request_id: str) -> Hea
             answer=answer,
             citations=citations,
             source_titles=titles,
+            followups=public_followup_result(message).followups,
             purchase_offers=offers,
         )
         return response

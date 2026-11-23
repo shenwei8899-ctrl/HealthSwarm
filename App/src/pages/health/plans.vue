@@ -1,18 +1,15 @@
 <script setup>
 import { computed, reactive, ref } from 'vue'
-import { onLoad, onShow, onHide, onUnload } from '@dcloudio/uni-app'
+import { onLoad, onShow, onHide, onUnload, onBackPress } from '@dcloudio/uni-app'
 import AppNavBar from '../../components/AppNavBar.vue'
 import { createHealthPlanClient, healthPlanState } from '../../services/health-plan-client.js'
 import { archiveCard, archiveDate, plannedGrams } from '../../services/meal-archive-presentation.js'
 import { createMealArchiveClient, mealArchiveState } from '../../services/meal-archive-client.js'
-const archiveMode = ref(false), archiveDay = ref(''), archive = reactive(mealArchiveState())
-const archiveClient = createMealArchiveClient({ state: archive })
-function readArchive() { return archiveDay.value ? archiveClient.detail(archiveDay.value) : archiveClient.list() }
-function selectArchive(day) { archiveDay.value = day; return readArchive() }
-function backArchive() {
-  if (archiveDay.value) { archiveDay.value = ''; archiveClient.discard(); return archiveClient.list() }
-  uni.navigateBack()
-}
+import { dishTitle } from '../../utils/meal-presentation.js'
+import CookingGuide from '../../components/CookingGuide.vue'
+const legacyMode = ref(false), savedDate = ref(''), savedDish = ref(null)
+const savedState = reactive(mealArchiveState()), savedClient = createMealArchiveClient({ state: savedState })
+const savedCards = computed(() => savedState.plans.map(plan => archiveCard(plan)))
 const selectedPlanId = ref(''), view = ref('list'), reviewExpanded = ref(false)
 const state = reactive(healthPlanState()), memberId = ref(''), replace = ref(false), reason = ref('')
 const client = createHealthPlanClient({ state })
@@ -27,30 +24,51 @@ const locked = computed(() => state.busy || !!state.pending)
 let visibility = 0
 function resetActions() { replace.value = false; reason.value = ''; reviewExpanded.value = false }
 async function load() {
-  if (archiveMode.value) return readArchive()
   const current = ++visibility
   resetActions()
+  if (!legacyMode.value) {
+    savedDish.value = null
+    if (view.value === 'detail' && savedDate.value) await savedClient.detail(savedDate.value)
+    else await savedClient.list()
+    return
+  }
   await client.open(memberId.value)
   if (current !== visibility) return
   if (state.memberId) memberId.value = state.memberId
   if (selectedPlanId.value && !state.pending && state.memberId) await client.detail(selectedPlanId.value)
 }
 onLoad(options => {
-  archiveMode.value = options.archive === '1' || !!options.date
-  archiveDay.value = options.date || ''
+  legacyMode.value = !!(options.memberId || options.planId)
+  savedDate.value = options.date || ''
   memberId.value = options.memberId || ''; selectedPlanId.value = options.planId || ''
-  view.value = selectedPlanId.value ? 'detail' : 'list'
+  view.value = selectedPlanId.value || savedDate.value ? 'detail' : 'list'
 })
 onShow(load)
-function clear() { visibility++; client.discard(); archiveClient.discard(); resetActions() }
+function clear() { visibility++; client.discard(); savedClient.discard(); savedDish.value = null; resetActions() }
 onHide(clear); onUnload(clear)
+onBackPress(event => {
+  if (event?.from === 'navigateBack') return false
+  if (savedDish.value || view.value === 'detail') { back(); return true }
+  return false
+})
 function top() { uni.pageScrollTo({ scrollTop: 0, duration: 0 }) }
 function select(plan) {
+  if (!legacyMode.value) {
+    if (savedState.busy) return
+    savedDate.value = plan.plan_date; savedDish.value = null; view.value = 'detail'; top()
+    return savedClient.detail(savedDate.value)
+  }
   if (locked.value) return
   resetActions(); selectedPlanId.value = typeof plan === 'string' ? plan : plan.plan_id
   view.value = 'detail'; top(); return client.detail(selectedPlanId.value)
 }
 function back() {
+  if (!legacyMode.value && savedDish.value) { savedDish.value = null; top(); return }
+  if (!legacyMode.value && view.value === 'detail') {
+    savedClient.discard({ keepList: true }); savedDate.value = ''; view.value = 'list'; top()
+    if (!savedState.plans.length) return savedClient.list()
+    return
+  }
   if (view.value === 'detail') { view.value = 'list'; selectedPlanId.value = ''; resetActions(); top() }
   else uni.navigateBack()
 }
@@ -68,30 +86,38 @@ async function retry() {
 function chat() { if (!locked.value) uni.navigateTo({ url: '/pages/chat/index' }) }
 </script>
 <template>
-  <view v-if="archiveMode" class="screen meal-archive">
-    <AppNavBar :title="archiveDay?'餐单详情':'我的餐单'"><template #left><button class="mra-back" aria-label="返回" @click="backArchive">‹</button></template></AppNavBar>
-    <text class="mra-caption">家庭已生成餐单 · 只读记录</text>
-    <text v-if="archive.busy" role="status">正在读取餐单…</text>
-    <view v-if="archive.error" class="mra-alert" role="alert"><text>{{archive.error}}</text><button @click="readArchive">重新读取</button></view>
-    <template v-if="archiveDay && archive.plan">
-      <text class="mra-card-title">{{archiveDate(archive.plan.plan_date).title}}的餐单</text>
-      <view v-for="meal in archive.plan.meals" :key="meal.meal_type" class="mra-card">
-        <text class="mra-section-title">{{meals[meal.meal_type]}}</text>
-        <view v-for="(dish,index) in meal.dishes" :key="index" class="mra-meal-row"><text>{{dish.name}}</text><text class="mra-caption">{{(dish.ingredients||[]).join('、')}}</text></view>
-      </view>
-    </template>
-    <template v-else-if="!archiveDay">
-      <view v-for="plan in archive.plans" :key="plan.plan_date" class="mra-card">
-        <text class="mra-card-title">{{archiveDate(plan.plan_date).title}}的餐单</text>
-        <view v-for="meal in plan.meals" :key="meal.meal_type" class="mra-meal-row"><text>{{meals[meal.meal_type]}}</text><text>{{meal.dishes.map(d=>d.name).join(' · ')}}</text></view>
-        <button class="mra-link" :disabled="archive.busy" @click="selectArchive(plan.plan_date)">查看餐单 →</button>
-      </view>
-      <text v-if="!archive.busy&&!archive.error&&!archive.plans.length" class="mra-caption">还没有已生成的家庭餐单。</text>
-      <button v-if="archive.nextBefore" :disabled="archive.busy" @click="archiveClient.list(true)">读取更早餐单</button>
-    </template>
-  </view>
-  <view v-else class="screen meal-archive">
+  <view class="screen meal-archive">
     <AppNavBar :title="(view==='detail'?'餐单详情':'我的餐单')"><template #left><button class="mra-back" :aria-label="view==='detail'?'返回餐单列表':'返回'" @click="back">‹</button></template></AppNavBar>
+    <template v-if="!legacyMode">
+      <view v-if="view==='list'" class="mra-heading"><text>好好吃饭，</text><text>每一餐都有迹可循。</text></view>
+      <view v-if="savedState.error" class="mra-alert" role="alert"><text>{{savedState.error}}</text><button :disabled="savedState.busy" @click="load">重新读取</button></view>
+      <text v-if="savedState.busy" class="mra-loading" role="status">正在读取餐单…</text>
+      <template v-if="view==='list'">
+        <view class="mra-section-heading"><text class="mra-section-title">已保存餐单</text></view>
+        <view v-for="card in savedCards" :key="card.plan.plan_date" class="mra-card">
+          <view class="mra-card-heading"><view><text class="mra-caption">{{card.date.caption}}</text><text class="mra-card-title">{{card.title}}</text></view><text class="mra-badge">已保存</text></view>
+          <view v-for="meal in card.meals" :key="meal.type" class="mra-meal-row"><text class="mra-meal-label">{{meal.name}}</text><text class="mra-meal-names">{{meal.summary}}</text></view>
+          <view class="mra-card-footer"><text class="mra-caption">{{card.summary}}</text><button class="mra-link" :disabled="savedState.busy" @click="select(card.plan)">查看餐单<text>→</text></button></view>
+        </view>
+        <view v-if="!savedState.plans.length&&!savedState.busy&&!savedState.error" class="mra-empty"><text class="mra-empty-title">第一份餐单，从今天开始</text><text class="mra-caption">还没有保存的餐单。<br/>和营养师聊聊，为自己安排一日三餐。</text><button class="mra-primary" @click="chat">和营养师聊聊<text>→</text></button></view>
+        <button v-if="savedState.nextBefore" class="mra-refresh" :disabled="savedState.busy" @click="savedClient.list(true)">查看更多餐单</button>
+        <button v-if="savedState.plans.length" class="mra-refresh" :disabled="savedState.busy" @click="savedClient.list()">刷新列表</button>
+      </template>
+      <template v-else-if="savedState.plan">
+        <CookingGuide v-if="savedDish" :dishes="[savedDish]" continuous action=""/>
+        <view v-else class="mra-card mra-detail">
+          <view class="mra-card-heading"><view><text class="mra-caption">{{archiveDate(savedState.plan.plan_date).caption}}</text><text class="mra-card-title">{{archiveDate(savedState.plan.plan_date).title}}的餐单</text></view><text class="mra-badge">已保存</text></view>
+          <view v-for="meal in savedState.plan.meals" :key="meal.meal_type" class="mra-detail-meal">
+            <text class="mra-detail-label">{{meals[meal.meal_type]}}</text>
+            <text v-if="meal.members?.length" class="mra-caption">{{meal.members.map(member=>member.name).join(' · ')}}</text>
+            <button v-for="(dish,index) in meal.dishes" :key="index" class="mra-link mra-dish" @click="savedDish=dish;top()"><text>{{dishTitle(dish)}}</text><text>查看做法 ›</text></button>
+            <text v-if="!meal.dishes.length" class="mra-caption">本餐未记录</text>
+          </view>
+        </view>
+      </template>
+      <button v-if="view==='detail'" class="mra-refresh" @click="back">{{savedDish?'返回餐单详情':'返回餐单列表'}}</button>
+    </template>
+    <template v-else>
     <view v-if="view==='list'" class="mra-heading">
       <text>好好吃饭，</text><text>每一餐都有迹可循。</text>
     </view>
@@ -175,6 +201,7 @@ function chat() { if (!locked.value) uni.navigateTo({ url: '/pages/chat/index' }
         </view>
       </view>
       <button class="mra-refresh" @click="back">返回餐单列表</button>
+    </template>
     </template>
     <text class="mra-bottom-note">餐单记录计划，实际吃了什么可在饮食记录中查看。</text>
   </view>

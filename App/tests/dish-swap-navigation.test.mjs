@@ -41,7 +41,7 @@ test('same-version reload after verification and updated plan both refresh candi
 test('read errors can retry; account changes and midnight invalidate old candidates',async()=>{
  const h=harness();try{
   await settle();h.deny(true);h.enabled.value=false;await settle();h.enabled.value=true;await settle()
-  assert.match(h.state.error,/网络/);assert.equal(h.state.entries.length,0)
+  assert.equal(h.state.error,'');assert.equal(h.state.entries.length,1)
   h.deny(false);await h.client.load(h.value.value);assert.equal(h.state.entries.length,1)
   h.owner('B');assert.equal(h.client.candidates(item,dish,plan).length,0)
   h.owner('A');h.date('2026-11-19');assert.equal(h.client.candidates(item,dish,plan).length,0)
@@ -86,4 +86,16 @@ test('grid card reacts to candidate data and emits swap only from its own button
  openRegeneration(profile,ref(false),ref(false),{busy:false},visible,{isGenerating:()=>true,open:()=>assert.fail('active generation must continue')})
  const detail=readFileSync(new URL('../src/components/MealDetailSheet.vue',import.meta.url),'utf8')
  assert.doesNotMatch(detail,/换一换|DishSwapSheet|createDishSwap/)
+})
+
+test('leaving the watched page cancels scheduled recovery',async()=>{
+ let pending=null,reads=0
+ const state=reactive(dishSwapState()),enabled=ref(true)
+ const client=createDishSwap({state,context:()=> 'A',day:()=>day,family:()=> 'family',
+  schedule:fn=>(pending=fn,1),cancel:()=>{pending=null},send:async()=>{reads++;throw Error('网络错误')}})
+ const stop=watchDishSwap({client,plan:()=>plan,enabled:()=>enabled.value})
+ await settle();assert.equal(state.error,'');assert.equal(typeof pending,'function')
+ enabled.value=false;await settle();assert.equal(pending,null)
+ enabled.value=true;await settle();assert.equal(typeof pending,'function')
+ stop();assert.equal(pending,null);assert.equal(reads,2)
 })

@@ -14,6 +14,7 @@ from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.miniapp_profile_service import save_miniapp_profile_in_session
 from yuxi.services.miniapp_profile_types import MiniappProfileInput, miniapp_profile_complete
 from yuxi.services.task_service import tasker
+from yuxi.services.service_notice_service import require_service_notice
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_health import (
     HealthGrant,
@@ -60,6 +61,7 @@ async def start_saved_preparation(uid, fid, data):
             if row.family_id != fid or row.fingerprint != digest:
                 raise HealthVisionError("request_conflict", "同一准备请求不能改变家庭或操作", 409)
         else:
+            await require_service_notice(db, uid)
             actor = await service.repo.subject_member(fid, uid)
             if not miniapp_profile_complete(actor):
                 raise HealthVisionError("profile_incomplete", "请补充本人档案后继续准备", 422)
@@ -137,6 +139,7 @@ async def start_onboarding_preparation(uid, fid, data):
                 raise HealthVisionError("request_conflict", "同一准备请求不能改变建档内容", 409)
             task = None
         else:
+            await require_service_notice(db, uid)
             # 另一设备连点的新键也复用同一份已保存来源；不同资料仍走原版本校验。
             latest = await latest_preparation(db, uid, fid)
             body = MiniappProfileInput.model_validate(data.submission_dump(exclude_processing_consents=True))
@@ -649,6 +652,7 @@ async def require_preparation(db, uid, fid, pid):
 
 async def queue_preparation(db, row):
     """状态与Task同事务登记，提交后由调用方发布。"""
+    await require_service_notice(db, row.actor_uid)
     payload = {
         "uid": row.actor_uid,
         "family_id": row.family_id,

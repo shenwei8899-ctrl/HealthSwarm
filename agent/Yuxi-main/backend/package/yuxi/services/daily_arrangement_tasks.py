@@ -8,12 +8,14 @@ from sqlalchemy import select
 from yuxi.repositories.daily_arrangement_repository import DailyArrangementRepository
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.task_service import tasker
+from yuxi.services.service_notice_service import require_service_notice
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_health import HealthDailyArrangement
 
 
 async def queue_daily_in_session(session, row):
     """安排与执行请求同事务提交；恢复仍使用同一业务版本和阶段结果。"""
+    await require_service_notice(session, row.actor_uid)
     payload = {
         "uid": row.actor_uid,
         "family_id": row.family_id,
@@ -49,6 +51,8 @@ async def request_daily_resume(uid, fid, day, *, retry_failed=False):
         _, row = await DailyArrangementRepository(session, uid, fid).context(day, lock=True)
         if row is not None:
             await authorize_sources(session, uid, row)
+            if row.status == "generating" or row.status == "failed" and retry_failed:
+                await require_service_notice(session, uid)
             if row.status == "failed" and retry_failed:
                 if row.selection.get("agent_result"):
                     try:

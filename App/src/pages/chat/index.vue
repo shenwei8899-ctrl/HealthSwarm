@@ -353,7 +353,7 @@ function voice() {
   if(thinking.value||draftSaving.value||disposed)return
   uni.hideKeyboard?.();voiceMode.value=true
 }
-function sendVoice(text){if(!disposed&&voiceMode.value&&chatScope===storageScope()){input.value=text;return ask()}}
+function sendVoice(text){if(!disposed&&voiceMode.value&&chatScope===storageScope()){return ask(text.trim())}}
 function go(url) { uni.navigateTo({ url }) }
 function openDailyMeal(item) {
   go('/pages/shop/index?meal=' + item.route + (isDiabetesCase.value && item.name === '晚餐' ? '&case=diabetes' : ''))

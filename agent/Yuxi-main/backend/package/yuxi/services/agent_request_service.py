@@ -34,6 +34,7 @@ from yuxi.services.agent_request_queue_service import (
 )
 from yuxi.services.agent_run_service import create_agent_run_input_message, enqueue_agent_run, resolve_agent_run_config
 from yuxi.services.input_message_service import AgentRunInputMessage
+from yuxi.services.service_notice_service import require_service_notice
 from yuxi.services.health_consultation_service import require_consultation
 from yuxi.repositories.health_consultation_repository import CONSULTATION_BACKEND, HEALTH_AGENT_BACKENDS
 from yuxi.services.health_vision_types import HealthVisionError
@@ -170,6 +171,9 @@ async def submit_agent_request(
         if project is None or project.status != "active":
             raise HTTPException(status_code=404, detail="Project 不存在或不可访问")
         return await request_view(repo=AgentRunRequestRepository(db), request=existing_request)
+
+    if health_binding is not None:
+        await require_service_notice(db, str(current_user.uid))
 
     if agent_item.backend_id == CONSULTATION_BACKEND:
         from yuxi.services.health_daily_service import require_current_day

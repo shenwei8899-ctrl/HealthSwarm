@@ -1,6 +1,11 @@
 /** 服务端推荐组是唯一任务来源；页面切换只读取，不重新排餐。 */
 export const planTiers = ['economy', 'standard', 'premium']
 export const planTierNames = { economy: '经济型', standard: '标准型', premium: '品质型' }
+export const planTierReferenceRanges = { economy: {min:10,max:20}, standard: {min:30,max:50}, premium: {min:50,max:100} }
+export const planTierReferencePrices = Object.fromEntries(planTiers.map(tier => {
+  const {min,max} = planTierReferenceRanges[tier]
+  return [tier, `约 ¥${min}–${max} /人/天`]
+}))
 export const planMoney = value => Number.isSafeInteger(value) && value >= 0 ? (value / 100).toFixed(2) : '待报价'
 export const exclusivePlanState = () => ({ status: 'empty', busy: false, error: '', errorCode: '', traceId: '', group: null, plans: [], tier: 'standard' })
 

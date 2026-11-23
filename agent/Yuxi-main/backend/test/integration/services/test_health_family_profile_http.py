@@ -96,6 +96,12 @@ async def family_profile_http(monkeypatch):
             user = User(uid=uid, username=uid, password_hash="test-only", role=role, department_id=department.id)
             session.add(user)
             await session.flush()
+            from yuxi.services.service_notice_service import NOTICE_HASH, NOTICE_VERSION
+            from yuxi.storage.postgres.models_business import ServiceNoticeAcknowledgement
+
+            session.add(ServiceNoticeAcknowledgement(
+                actor_uid=uid, notice_version=NOTICE_VERSION, content_hash=NOTICE_HASH,
+            ))
             identities[uid] = {"Authorization": f"Bearer {AuthUtils.create_access_token({'sub': str(user.id)})}"}
         await session.commit()
 

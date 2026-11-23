@@ -25,6 +25,8 @@ from yuxi.services.health_indicator_review_service import read_indicator_review
 from yuxi.services.health_nutrition_import_types import NutritionImportInput
 from yuxi.services.health_nutrition_import_service import prepare_nutrition_import, read_nutrition_import
 from yuxi.services.health_consultation_service import create_consultation, create_daily_consultation, list_consultations
+from yuxi.services.health_followup_service import consultation_followups
+from yuxi.services.health_followup_types import ChatFollowupResult
 from yuxi.services.health_family_planner_types import FamilyPlannerInput
 from yuxi.services.health_initial_meal_plan_types import InitialPlannerInput
 from yuxi.services.health_safe_planner_types import SafePlannerInput
@@ -231,6 +233,24 @@ class HealthRoute(APIRoute):
 
 
 health_vision = APIRouter(prefix="/health/v1", tags=["health-vision"], route_class=HealthRoute)
+
+
+@health_vision.get("/consultations/{thread_id}/messages/{message_id}/followups", response_model=ChatFollowupResult)
+async def read_followups(
+    thread_id: UUID, response: Response, message_id: int = Path(gt=0), user: User = Depends(get_required_user)
+):
+    """只读取本答案已保存的建议，不触发模型。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await consultation_followups(user.uid, thread_id, message_id)
+
+
+@health_vision.post("/consultations/{thread_id}/messages/{message_id}/followups", response_model=ChatFollowupResult)
+async def create_followups(
+    thread_id: UUID, response: Response, message_id: int = Path(gt=0), user: User = Depends(get_required_user)
+):
+    """原答复完成后一次生成可选追问，权限及事务由用例服务执行。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await consultation_followups(user.uid, thread_id, message_id, generate=True)
 
 
 @health_vision.post("/chat-intent", response_model=HealthIntentResult)

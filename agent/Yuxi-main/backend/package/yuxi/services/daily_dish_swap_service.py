@@ -173,6 +173,7 @@ async def plan_candidates(session, uid, family_id, plan):
         rows = []
         for original in meal["meal"]["dishes"]:
             candidates = []
+            seen = set()
             anchor = original["origin"]
             if anchor["source"]["kind"] == "replacement":
                 anchor = anchor["anchor"]
@@ -181,6 +182,9 @@ async def plan_candidates(session, uid, family_id, plan):
                     rank_candidates, original, documents, safe_products, restrictions, policy
                 )
                 for candidate in ranked:
+                    keys = dish_keys(candidate["dish"])
+                    if keys & seen:
+                        continue
                     doc = await recipe_document(session, candidate["dish"]["file_id"], candidate["dish"]["chunk_id"])
                     if any(doc[k] != candidate["dish"]["source"][k] for k in ("file_hash", "chunks_hash")):
                         continue
@@ -213,6 +217,7 @@ async def plan_candidates(session, uid, family_id, plan):
                         }
                     )
                     candidates.append(candidate)
+                    seen.update(keys)
                     if len(candidates) == 3:
                         break
             rows.append({"dish_key": dish_key(original), "candidates": candidates})

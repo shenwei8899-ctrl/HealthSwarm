@@ -29,6 +29,7 @@ from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.health_task_service import create_health_task_entry, read_health_task
 from yuxi.services.health_task_types import HealthTaskEntryInput
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.service_notice_service import require_service_notice
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import AgentRun, User
 from yuxi.storage.postgres.models_health import (
@@ -88,6 +89,7 @@ async def start_daily_arrangement(uid, fid, data):
                     if row.status == "ready"
                     else {"status": row.status, "date": data.date.isoformat(), "id": row.id}
                 )
+        await require_service_notice(db, uid)
         selection, sources = await daily_selection(db, uid, family, data.date, allow_interpretation=True)
         if row is None:
             row = HealthDailyArrangement(id=str(uuid4()), actor_uid=uid, family_id=fid, plan_date=data.date)
@@ -399,6 +401,7 @@ async def change_daily_members(uid, fid, day, data):
 
     digest = input_fingerprint(data.model_dump(mode="json", exclude_none=True))
     async with pg_manager.get_async_session_context() as db:
+        await require_service_notice(db, uid)
         family, row = await DailyArrangementRepository(db, uid, fid).context(day, lock=True)
         if row is None:
             raise HealthVisionError("daily_not_found", "今日安排尚未保存", 404)

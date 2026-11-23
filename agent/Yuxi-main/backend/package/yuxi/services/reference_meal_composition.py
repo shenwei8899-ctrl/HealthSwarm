@@ -6,6 +6,7 @@ from datetime import date
 
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.reference_recipe_matching import ingredient_food, optional_reference_ingredient
+from yuxi.services.reference_recipe_variety import recipe_name_key
 
 FOOD_GROUP_MEAL_POLICY_VERSION = 1
 REFERENCE_MEAL_POLICY_VERSION = 2
@@ -122,7 +123,7 @@ def validate_reference_meal_composition(meals, selection, *, policy_version=REFE
         shared = {dish["file_id"]: dish for dish in meal["dishes"] if not dish.get("alternative_for")}
         alternatives = [dish for dish in meal["dishes"] if dish.get("alternative_for")]
         recipes = meal["dishes"]
-        names = ["".join(dish["name"].casefold().split()) for dish in recipes if dish.get("name")]
+        names = [key for dish in recipes if (key := recipe_name_key(dish.get("name", "")))]
         if len({dish["file_id"] for dish in recipes}) != len(recipes) or len(set(names)) != len(names):
             raise HealthVisionError("reference_meal_incomplete", f"{name}含重复菜谱，请选择不同的菜品")
         if any(all(ingredient_food(item) in SEASONINGS for item in dish["ingredients"]) for dish in recipes):
