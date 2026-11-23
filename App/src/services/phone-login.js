@@ -3,15 +3,15 @@ import { createPhoneBindingClient } from './phone-binding-client.js'
 // The native button obtains consent. Login/grant codes stay separate and only in memory.
 export function createPhoneLogin({ auth, session, commerce, accountContext, appId, randomKey, resolveEntry, navigate, update,
   setTimer=setTimeout, clearTimer=clearTimeout }) {
-  let epoch=0,busy=false,binding={},error='',awaitingAuthorization=false,authorizationTimer=null,needsAuthorization=false
-  const publish=()=>update({busy,error,awaitingAuthorization,needsAuthorization,uncertain:binding.uncertain===true})
+  let epoch=0,busy=false,binding={},error='',awaitingAuthorization=false,authorizationTimer=null,needsAuthorization=false,failureCode=''
+  const publish=()=>update({busy,error,failureCode,awaitingAuthorization,needsAuthorization,uncertain:binding.uncertain===true})
   function stopWaiting() {
     if(authorizationTimer!==null)clearTimer(authorizationTimer)
     authorizationTimer=null;awaitingAuthorization=false
   }
   function beginAuthorization() {
     if(busy||binding.uncertain)return
-    stopWaiting();error='';awaitingAuthorization=true;publish()
+    stopWaiting();error='';failureCode='';awaitingAuthorization=true;publish()
     // Keep the native button enabled: changing disabled here can suppress its consent action.
     authorizationTimer=setTimer(()=>{
       authorizationTimer=null;awaitingAuthorization=false
@@ -35,7 +35,7 @@ export function createPhoneLogin({ auth, session, commerce, accountContext, appI
       if(Number.isSafeInteger(detail?.errno))error+='（错误码 '+detail.errno+'）'
       publish();return
     }
-    const mine=++epoch;busy=true;error='';publish()
+    const mine=++epoch;busy=true;error='';failureCode='';publish()
     try {
       let account=null
       if(session()?.token){
@@ -62,7 +62,7 @@ export function createPhoneLogin({ auth, session, commerce, accountContext, appI
       if(needsAuthorization){error=binding.error||(loginWithoutGrant?'当前微信账号尚未绑定手机号，请点击按钮完成手机号授权后继续。':'');return}
       const url=await resolveEntry()
       if(current(mine,owner))await navigate(url)
-    } catch(e) {if(mine===epoch)error=e.message||'登录未完成，请重试。'}
+    } catch(e) {if(mine===epoch){error=e.message||'登录未完成，请重试。';failureCode=e.businessCode||''}}
     finally {if(mine===epoch){busy=false;publish()}}
   }
   function dispose(){epoch++;stopWaiting();busy=false;error='';needsAuthorization=false;phone.dispose();publish()}

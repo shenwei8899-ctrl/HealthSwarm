@@ -10,14 +10,14 @@ const props = defineProps({ disabled: { type: Boolean, default: false }, embedde
 const emit = defineEmits(['send', 'busy'])
 const state = ref({ phase: 'idle', error: '', canceling: false, hasAudio: false, permissionDenied: false })
 const levels = ref(Array(44).fill(0))
-const busy = computed(() => ['authorizing', 'starting', 'recording', 'stopping', 'transcribing'].includes(state.value.phase))
-const overlay = computed(() => ['starting', 'recording', 'stopping'].includes(state.value.phase))
-const prompt = computed(() => state.value.phase === 'stopping' ? (state.value.canceling ? '正在取消录音…' : '正在结束录音…') : state.value.canceling ? '松手取消' : state.value.phase === 'starting' ? '正在打开麦克风…' : '松手识别，上移取消')
-const label = computed(() => state.value.phase === 'transcribing' ? '正在识别…' : state.value.phase === 'authorizing' ? '正在打开麦克风…' : '按住说话')
-const progressVisible = computed(() => ['authorizing', 'starting', 'stopping', 'transcribing'].includes(state.value.phase))
+const busy = computed(() => ['authorizing', 'starting', 'recording', 'stopping', 'awaiting-release', 'transcribing'].includes(state.value.phase))
+const overlay = computed(() => ['recording', 'awaiting-release'].includes(state.value.phase))
+const prompt = computed(() => state.value.canceling ? '松手取消' : state.value.phase === 'awaiting-release' ? '已达录音上限，松手发送，上移取消' : '松手发送，上移取消')
+const label = computed(() => state.value.phase === 'transcribing' ? '正在识别…' : '按住说话')
+const progressVisible = computed(() => state.value.phase === 'transcribing')
 const canCancel = computed(() => progressVisible.value && !state.value.canceling)
-const progressLabel = computed(() => ['starting', 'stopping'].includes(state.value.phase) ? prompt.value : label.value)
-const cancelLabel = computed(() => state.value.phase === 'transcribing' ? '取消识别' : state.value.phase === 'stopping' ? '取消发送' : '取消录音')
+const progressLabel = computed(() => label.value)
+const cancelLabel = computed(() => '取消发送')
 let voiceNoticeOpen = false
 let nativeRecording = false
 // #ifdef MP-WEIXIN
@@ -28,7 +28,7 @@ const recorder = createVoiceCapture({
     if (!nativeRecording) throw new Error('请在微信小程序中使用语音输入')
     return uni.getRecorderManager()
   },
-  onState: value => { state.value = value; emit('busy', ['authorizing', 'starting', 'recording', 'stopping', 'transcribing'].includes(value.phase)) },
+  onState: value => { state.value = value; emit('busy', ['authorizing', 'starting', 'recording', 'stopping', 'awaiting-release', 'transcribing'].includes(value.phase)) },
   onLevel: level => { levels.value = [...levels.value.slice(1), level] },
   onText: text => emit('send', text),
 })
@@ -40,7 +40,7 @@ function start(event) {
     voiceNoticeOpen = true
     uni.showModal({
       title: '语音转文字',
-      content: '录音会上传到本小程序的服务器用于转写，识别后的文字可编辑后发送。',
+      content: '录音会上传到本小程序的服务器用于转写，松手后会将识别出的文字直接发送，上移松手可取消。',
       confirmText: '同意使用',
       success(result) {
         if (result.confirm) {
@@ -75,8 +75,8 @@ defineExpose({ cancel })
 <template>
   <view class="voice-input" :class="{'is-embedded':embedded}">
     <button class="hold-to-talk" :class="{'is-holding':overlay}" :disabled="disabled||state.phase==='transcribing'" aria-label="按住说话" @touchstart.stop.prevent="start" @touchmove.stop.prevent="recorder.move(touchY($event)||0)" @touchend.stop.prevent="end" @touchcancel.stop.prevent="recorder.cancel()" @contextmenu.prevent>{{label}}</button>
-    <view v-if="progressVisible" class="voice-progress" role="status" aria-live="polite"><view class="voice-progress-copy"><text>{{progressLabel}}</text><text v-if="state.phase==='transcribing'" class="voice-progress-hint">取消后可切换文字输入</text></view><button v-if="canCancel" class="voice-progress-cancel" @click.stop="cancel">{{cancelLabel}}</button></view>
-    <view v-if="state.error" class="voice-error"><text>{{state.error}}</text><button v-if="state.hasAudio" :disabled="disabled||busy" @click="recorder.retry()">重试识别</button><button v-if="state.permissionDenied" class="permission-button" @click="openSettings">去开启麦克风</button><text v-if="state.permissionDenied" class="permission-hint">开启后，返回这里按住说话</text></view>
+    <view v-if="progressVisible" class="voice-progress" role="status" aria-live="polite"><view class="voice-progress-copy"><text>{{progressLabel}}</text><text v-if="state.phase==='transcribing'" class="voice-progress-hint">识别完成后自动发送，可在发送前取消</text></view><button v-if="canCancel" class="voice-progress-cancel" @click.stop="cancel">{{cancelLabel}}</button></view>
+    <view v-if="state.error" class="voice-error"><text>{{state.error}}</text><button v-if="state.hasAudio" :disabled="disabled||busy" @click="recorder.retry()">重试识别并发送</button><button v-if="state.permissionDenied" class="permission-button" @click="openSettings">去开启麦克风</button><text v-if="state.permissionDenied" class="permission-hint">开启后，返回这里按住说话</text></view>
     <view v-if="overlay" class="voice-recording-overlay" :class="{'is-canceling':state.canceling}" aria-live="polite">
       <view class="recording-wash"></view><view class="recording-glow"></view>
       <view class="recording-content"><text class="recording-prompt">{{prompt}}</text><view class="voice-waveform"><view v-for="(level,index) in levels" :key="index" class="wave-bar" :style="{height:(4+level*26)+'px',opacity:0.32+level*0.68}"></view></view></view>

@@ -33,7 +33,10 @@ from server.routers.tool_router import tools
 from server.routers.user_router import user_router
 from server.routers.workspace_router import workspace, workspace_knowledge
 
+from server.routers.service_notice_router import service_notice
+
 router = APIRouter()
+router.include_router(service_notice)
 router.include_router(product_feedback)
 
 router.include_router(family)

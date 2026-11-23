@@ -29,6 +29,29 @@ def test_four_queries_get_equal_opportunity():
     } == dict.fromkeys(range(4), 6)
 
 
+def test_visible_search_deduplicates_before_limit_and_batch_merge():
+    """不同来源同名菜不挤掉后续候选，搭配内部池仍保留配料版本。"""
+    from yuxi.services.reference_recipe_index import (
+        prepare_reference_documents,
+        rank_prepared_reference_recipes,
+        rank_reference_recipe_batch,
+    )
+    from yuxi.services.reference_recipe_variety import unique_reference_candidates
+
+    rows = [
+        (str(i), "kb", name + ".md", "hash", str(i), f"# {name}\n## 食材\n- 鸡蛋1个\n## 做法\n1. 蒸熟")
+        for i, name in enumerate(["蒸鸡蛋", "蒸鸡蛋", "鸡蛋羹", "鸡蛋三明治"])
+    ]
+    visible = rank_reference_recipes(rows, None, "", limit=3)
+    assert len(visible) == len({d["name"] for d in visible}) == 3
+    internal = rank_prepared_reference_recipes(prepare_reference_documents(rows), None, set(), "", 10, {})
+    assert len(internal) == 4
+    batch = rank_reference_recipe_batch(rows, None, ["鸡蛋", "蒸"])
+    merged = unique_reference_candidates(balanced_candidates(batch, limit=16))
+    assert len(merged) == len({d["name"] for d in merged}) == 3
+    assert unique_reference_candidates([visible[0], visible[0]], limit=3) == [visible[0]]
+
+
 def test_family_history_is_cross_date_and_other_family_only_affects_popularity():
     policy = variety_context(
         [

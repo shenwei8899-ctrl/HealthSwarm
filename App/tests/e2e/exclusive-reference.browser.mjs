@@ -21,7 +21,7 @@ const family = '11111111-1111-4111-8111-111111111111'
 const group = '22222222-2222-4222-8222-222222222222'
 const errors = []
 try {
-  for (const width of [390, 320]) {
+  for (const width of [390, 320, 430]) {
     const context = await browser.newContext({viewport:{width,height:844}})
     await context.addInitScript(({family}) => localStorage.setItem('fn-session-v2:api', JSON.stringify({
       type:'object',data:{accountId:'1',accountName:'合成测试',householdId:family,token:'synthetic-exclusive-test',
@@ -34,9 +34,11 @@ try {
       members:[{display_alias:'合成成员'}],notice:'当前沿用今日餐单口径，未作专业审核，个人营养量和家庭份量尚未核定。',pricing,
       days:Array.from({length:21},(_,index)=>index+1).map(day => ({day_no:day,plan_date:`2099-01-${String(day).padStart(2,'0')}`,
         meals:['breakfast','lunch','lunch'].map((type,index) => ({id:type+day+index,meal_type:type,recipe_name:type==='lunch'?(index===1?'清蒸鱼':'时蔬炒饭'):day===1?'鸡蛋蔬菜饭':'菠菜豆腐煲',
-          recipe_snapshot:{},ingredients:[day===1?'鸡蛋1个':'菠菜适量'],steps:['加热至熟。'],source:{filename:'合成原谱.md'}})),
+          recipe_snapshot:{image_url:'/family-app/static/food/'+(type==='breakfast'?'chat-meals/oatmeal.jpg':'family-meal.jpg')},ingredients:[day===1?'鸡蛋1个':'菠菜适量'],steps:['加热至熟。'],source:{filename:'合成原谱.md'}})),
         procurement:{ingredients:[{ingredient:day===1?'鸡蛋1个':'菠菜适量',recipe_name:day===1?'鸡蛋蔬菜饭':'菠菜豆腐煲',detail:'尚未匹配商品；可自行准备或待确认'}],
           purchase_gaps:[{ingredient:day===1?'鸡蛋1个':'菠菜适量',detail:'尚未匹配商品；可自行准备或待确认'}],matched_items:[],pricing}}))}
+    detail.days[20].meals=Array.from({length:8},(_,i)=>({id:'long-dish-'+i,meal_type:'breakfast',recipe_name:i===7?'超长菜品名称用于验证小屏文字换行与底栏间距':'合成菜品'+i,
+      recipe_snapshot:{},ingredients:Array.from({length:25},(_,n)=>'合成食材 '+n+' · 用量待确认'),steps:Array.from({length:35},(_,n)=>'合成步骤 '+n+'：保留原菜谱说明，不推断用量。')}))
     const productImage='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlX8AAAAASUVORK5CYII='
     const purchasePaths=[]
     let emptyCatalog=false
@@ -72,6 +74,17 @@ try {
     await page.locator('#plan-meal-lunch').click()
     assert.equal(await page.locator('.dish-name').count(),2)
     assert.match(await page.locator('.meal-list').innerText(),/清蒸鱼/)
+    await page.getByLabel('查看清蒸鱼菜谱',{exact:true}).click()
+    await page.locator('.detail-panel .single-dish').filter({hasText:'清蒸鱼'}).waitFor()
+    await page.getByText('加热至熟。',{exact:true}).waitFor()
+    await page.locator('.detail-panel-close').click()
+    assert.equal(await page.locator('.detail-panel').count(),0)
+    await page.locator('.meal-ingredients').click()
+    assert.equal(await page.locator('.ingredient-group').count(),2)
+    assert.match(await page.locator('.ingredient-group').first().innerText(),/菠菜适量/)
+    await page.locator('.detail-panel-close').click()
+    assert.equal(await page.locator('#plan-meal-lunch').getAttribute('aria-pressed'),'true')
+    await page.waitForFunction(()=>[...document.querySelectorAll('.recipe-block img')].every(img=>img.complete&&img.naturalWidth>0))
     await page.screenshot({path:path.join(process.env.EXCLUSIVE_SCREENSHOTS,`detail-lunch-${width}.png`),fullPage:true})
     await page.locator('#plan-meal-dinner').click()
     await page.getByText('这一餐的菜品暂不可用',{exact:true}).waitFor()
@@ -80,7 +93,31 @@ try {
     assert.equal(await page.getByText('选择配送安排',{exact:false}).count(),0)
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1),false)
     await page.screenshot({path:path.join(process.env.EXCLUSIVE_SCREENSHOTS,`detail-${width}.png`),fullPage:true})
-    assert.equal((await page.locator('.plan-fixed .plan-primary').innerText()).trim(),'购买')
+
+    await page.locator('#plan-day-21').click()
+    assert.equal(await page.locator('.dish-name').count(),8)
+    await page.evaluate(()=>window.scrollTo(0,document.documentElement.scrollHeight))
+    const bottom=await page.locator('.meal-ingredients').evaluate(el=>({bottom:el.getBoundingClientRect().bottom,footer:document.querySelector('.plan-fixed').getBoundingClientRect().top}))
+    assert.ok(bottom.bottom<=bottom.footer,'last meal row stays above the fixed purchase bar')
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false)
+    await page.getByLabel('查看合成菜品0菜谱',{exact:true}).click()
+    await page.locator('.detail-panel .recipe-step').last().waitFor()
+    await page.waitForFunction(()=>{const s=document.querySelector('.detail-panel-scroll .uni-scroll-view-scrollbar-hidden');return s&&s.scrollHeight>s.clientHeight+100})
+    const scrolling=await page.locator('.detail-panel-scroll').evaluate(el=>{const s=el.querySelector('.uni-scroll-view-scrollbar-hidden');s.scrollTop=s.scrollHeight;return {top:s.scrollTop,overflow:s.scrollHeight-s.clientHeight}})
+    assert.ok(scrolling.overflow>100&&scrolling.top>100,'recipe panel scrolls independently')
+    await page.screenshot({path:path.join(process.env.EXCLUSIVE_SCREENSHOTS,`recipe-panel-${width}.png`)})
+    await page.locator('.detail-panel-close').click()
+    await page.locator('.meal-ingredients').click()
+    assert.equal(await page.locator('.ingredient-group').count(),8)
+    await page.waitForFunction(()=>{const s=document.querySelector('.detail-panel-scroll .uni-scroll-view-scrollbar-hidden');return s&&s.scrollHeight>s.clientHeight+100})
+    const ingredientScroll=await page.locator('.detail-panel-scroll').evaluate(el=>{const s=el.querySelector('.uni-scroll-view-scrollbar-hidden');s.scrollTop=s.scrollHeight;return s.scrollTop})
+    assert.ok(ingredientScroll>100)
+    await page.screenshot({path:path.join(process.env.EXCLUSIVE_SCREENSHOTS,`ingredients-panel-${width}.png`)})
+    await page.locator('.detail-panel-backdrop').click({position:{x:5,y:5}})
+    assert.equal(await page.locator('.detail-panel').count(),0)
+    await page.locator('#plan-day-1').click()
+    await page.evaluate(()=>window.scrollTo(0,0))
+    assert.match((await page.locator('.plan-fixed .plan-primary').innerText()).trim(),/购买计划/)
     await page.locator('.plan-fixed .plan-primary').click()
     await page.getByText('整份 21 天计划',{exact:true}).waitFor()
     await page.getByText('合成大米',{exact:true}).waitFor()
@@ -130,5 +167,5 @@ try {
     await context.close()
   }
   assert.deepEqual(errors,[])
-  console.log('Passed: simplified details, day and meal switching, multiple dishes, empty meal, distinct card images, navigation, 390/320px layouts; synthetic HTTP responses.')
+  console.log('Passed: A-style details, 21-day and meal switching, saved recipe and ingredient panels, independent scrolling, long names, eight dishes, empty meals, images and whole-plan procurement at 320/390/430px; synthetic HTTP responses.')
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)) }

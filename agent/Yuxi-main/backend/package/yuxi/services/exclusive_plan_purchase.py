@@ -1,7 +1,7 @@
 """整份专属计划采购：菜单来源复核独立于商品资格，缺口不冒充零价。"""
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import NAMESPACE_URL, uuid5
 
@@ -20,7 +20,9 @@ def plan_meals(plan):
 
 def assemble_purchase(plan, catalog, restrictions):
     """按食材身份合并包装；未知家庭用量只给可手调的初始包装数。"""
-    from yuxi.services.exclusive_reference_plan import reference_procurement, price_ingredient_group
+    from yuxi.services.exclusive_reference_plan import (
+        reference_procurement, price_ingredient_group, reference_price_summary,
+    )
     from yuxi.services.reference_recipe_matching import ReferenceProductIndex, product_foods
     from yuxi.services.reference_meal_plan_service import (
         reference_product_composition, reference_restriction_conflict, product_facts,
@@ -65,9 +67,13 @@ def assemble_purchase(plan, catalog, restrictions):
     fingerprint = input_fingerprint({'group_id': plan['group_id'], 'tier': plan['tier_code'], 'plan': meals, 'items': [
         {key: item[key] for key in ('sku_id', 'quantity', 'facts_hash')} for item in items.values()
     ]})
-    return {'group_id': plan['group_id'], 'tier_code': plan['tier_code'], 'scope_hash': fingerprint,
-            'days': 21, 'catalog_version': catalog.get('version'), 'available': bool(items), 'items': list(items.values()), 'gaps': list(gaps.values()),
-            'notice': '采购范围为整份21天计划；包装数量可调整，不代表已核定家庭21天用量。未匹配食材需自行准备。'}
+    return {
+        'group_id': plan['group_id'], 'tier_code': plan['tier_code'], 'scope_hash': fingerprint,
+        'days': 21, 'catalog_version': catalog.get('version'), 'available': bool(items),
+        'items': list(items.values()), 'gaps': list(gaps.values()),
+        'pricing': reference_price_summary(procurement, 21, len(plan.get('members', []))),
+        'notice': '采购范围为整份21天计划；包装数量可调整，不代表已核定家庭21天用量。未匹配食材需自行准备。',
+    }
 
 
 async def read_purchase(uid, family_id, group_id, tier):
@@ -101,14 +107,15 @@ async def publish_purchase(uid, family_id, group_id, tier, scope_hash):
     # 十分钟窗口限定商品包寿命，重复提交沿用同一来源与任务号。
     expiry = (int(time.time()) // 600 + 2) * 600
     source = {'kind': 'exclusive_purchase', 'uid': uid, 'family_id': family_id, 'group_id': group_id,
-              'tier_code': tier, 'scope_hash': scope_hash, 'expires_at': expiry, 'catalog_version': result['catalog_version']}
+              'tier_code': tier, 'scope_hash': scope_hash, 'expires_at': expiry,
+              'catalog_version': result['catalog_version']}
     source['menu_version_ref'] = 'exclusive-purchase:' + input_fingerprint(source)
     task = str(uuid5(NAMESPACE_URL, source['menu_version_ref']))
     payload = {'agent_task_id': task, 'family_ref': 'exclusive-purchase:' + family_id,
                'user_ref': 'uid:' + uid, 'menu_version_ref': source['menu_version_ref'],
                'catalog_version': result['catalog_version'], 'ingredient_requirements': [],
                'items': [{'sku_id': i['sku_id'], 'quantity': i['quantity']} for i in result['items']],
-               'expires_at': datetime.fromtimestamp(expiry, timezone.utc).isoformat(),
+               'expires_at': datetime.fromtimestamp(expiry, UTC).isoformat(),
                'nutrition_validation': {'status': 'reference_only', 'validation_id': task,
                                         'rules_version': '', 'summary': '整份21天计划食材采购，家庭用量待确认'},
                'agent_source_proof': sign_commerce_source(source)}

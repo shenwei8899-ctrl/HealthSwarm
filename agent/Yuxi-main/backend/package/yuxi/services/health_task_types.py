@@ -7,6 +7,7 @@ from pydantic import Field, JsonValue, RootModel
 
 from yuxi.services.health_agent_personal_target_types import TargetAwareAnalystInput
 from yuxi.services.health_evidence_types import NutritionCitation
+from yuxi.services.health_followup_types import ChatFollowup
 from yuxi.services.health_family_planner_types import FamilyPlannerSelection
 from yuxi.services.health_initial_meal_plan_types import InitialPlanSelection
 from yuxi.services.health_quality_types import Code
@@ -186,6 +187,7 @@ class HealthTaskGeneralAnswer(HealthDTO):
     answer: str
     citations: list[NutritionCitation]
     source_titles: list[str] = Field(default_factory=list)
+    followups: list[ChatFollowup] = Field(default_factory=list, max_length=2)
     purchase_offers: list[dict[str, JsonValue]] = Field(default_factory=list)
 
 

@@ -17,7 +17,7 @@ def glucose_repo(weight_repo, monkeypatch):  # noqa: F811
     """共用真实授权边界 fixture，仅切换血糖字段与专用依赖表。"""
     state = weight_repo
     state.repo = HealthBloodGlucoseRepository(state.session)
-    monkeypatch.setattr(boundary, "authorized_fields", lambda family, member, uid: {"blood_glucose"})
+    monkeypatch.setattr(boundary, "authorized_fields", lambda family, member, uid, **kwargs: {"blood_glucose"})
     return state
 
 
@@ -140,7 +140,7 @@ async def test_glucose_history_and_checkpoint_fail_on_condition_or_permission_ch
     elif change == "revoke":
         state.authorize.side_effect = HealthVisionError("not_found", "合成撤回", 404)
     else:
-        monkeypatch.setattr(boundary, "authorized_fields", lambda family, member, uid: {"weight"})
+        monkeypatch.setattr(boundary, "authorized_fields", lambda family, member, uid, **kwargs: {"weight"})
     for checkpoint in (False, True):
         with pytest.raises(HealthVisionError, match="blood_glucose_source_changed") as error:
             if checkpoint:

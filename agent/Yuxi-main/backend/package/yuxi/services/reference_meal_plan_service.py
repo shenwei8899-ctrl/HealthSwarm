@@ -373,7 +373,11 @@ async def search_reference_recipes(context, query):
                 raise HealthVisionError("reference_product_required", "请先按商城分类读取在售商品", 409)
             products = (await current_catalog())["items"]
         from yuxi.repositories.reference_variety_repository import current_reference_menus, reference_history
-        from yuxi.services.reference_recipe_variety import variety_context, balanced_candidates
+        from yuxi.services.reference_recipe_variety import (
+            variety_context,
+            balanced_candidates,
+            unique_reference_candidates,
+        )
 
         selection = current["selection"]
         history = await reference_history(session, selection, run_id=run.id)
@@ -419,7 +423,7 @@ async def search_reference_recipes(context, query):
                 )
             ]
         )
-        items = balanced_candidates(ranked)
+        items = unique_reference_candidates(balanced_candidates(ranked, limit=sum(map(len, ranked))))
     return {
         "scope": "reference_recipe_search",
         "status": "ok",

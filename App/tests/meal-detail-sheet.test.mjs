@@ -1,12 +1,67 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
-import {ref,watch,nextTick,effectScope} from 'vue'
+import {ref,watch,nextTick,effectScope,reactive,computed,compile,createSSRApp} from 'vue'
+import {renderToString} from 'vue/server-renderer'
 import {createMealDetailClient,detailState,formalRoute,detailGesture} from '../src/services/meal-detail-client.js'
 const target={kind:'formal',familyId:'family',date:'2026-10-28',mealType:'breakfast',sourceId:'saved',version:2,dailyPlanVersion:4}
 const meal={type:'breakfast',members:[],dishes:[{id:'dish',name:'合成菜品',steps:['合成步骤']}]}
 const receipt=(t=target)=>({data:{arrangement_id:t.sourceId,version:t.version,meal:{...meal,type:t.mealType}}})
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return{promise,resolve,reject}}
+
+test('a verified reference meal remains readable when purchase matching is unavailable',async()=>{
+ const state=detailState(),calls=[]
+ const dinner={meal_type:'dinner',source:{kind:'reference',id:'saved'},purchase_ready:false,meal:{dishes:[{name:'合成晚餐',ingredients:['西兰花','牛肉']} ]},members:[]}
+ const client=createMealDetailClient({state,context:()=> 'A',send:async input=>{
+  calls.push(input)
+  return {data:{status:'ready',date:target.date,version:4,meals:[dinner],purchase_options:[]}}
+ }})
+ await client.open({...target,kind:'reference',mealType:'dinner',purchaseReady:false})
+ assert.equal(state.phase,'ready')
+ assert.deepEqual(state.meal.dishes[0].ingredients,['西兰花','牛肉'])
+ assert.equal(state.target.purchaseReady,false)
+ assert.equal(calls.length,1)
+ assert.match(calls[0].path,/daily-meal-plans/)
+ client.dispose()
+})
+
+test('an expired formal source reads its versioned daily snapshot and stays unavailable for purchase',async()=>{
+ const state=detailState(),calls=[]
+ const item={meal_type:target.mealType,source:{kind:'formal',id:target.sourceId,version:target.version},purchase_ready:false,meal,members:[]}
+ const client=createMealDetailClient({state,context:()=> 'A',send:async input=>{
+  calls.push(input)
+  assert.match(input.path,/daily-meal-plans\//)
+  return {data:{date:target.date,status:'ready',version:target.dailyPlanVersion,meals:[item],purchase_options:[]}}
+ }})
+ await client.open({...target,purchaseReady:false,seed:{dishes:[{name:'旧预览'}]}})
+ assert.equal(state.phase,'ready');assert.deepEqual(state.meal.dishes,meal.dishes)
+ assert.equal(state.target.purchaseReady,false);assert.equal(state.target.purchaseOption,null)
+ assert.equal(calls.length,1);assert.equal(calls[0].method,undefined)
+ client.dispose()
+})
+
+for(const mismatch of ['dailyVersion','sourceVersion','sourceId','mealType','date'])test(`expired formal snapshots reject ${mismatch} changes`,async()=>{
+ const state=detailState()
+ const item={meal_type:target.mealType,source:{kind:'formal',id:target.sourceId,version:target.version},purchase_ready:false,meal}
+ const data={date:target.date,status:'ready',version:target.dailyPlanVersion,meals:[item]}
+ if(mismatch==='dailyVersion')data.version++
+ if(mismatch==='sourceVersion')item.source.version++
+ if(mismatch==='sourceId')item.source.id='another'
+ if(mismatch==='mealType')item.meal_type='dinner'
+ if(mismatch==='date')data.date='2026-10-29'
+ const client=createMealDetailClient({state,context:()=> 'A',send:async()=>({data})})
+ await client.open({...target,purchaseReady:false,seed:meal})
+ assert.equal(state.phase,'error');assert.equal(state.meal,null)
+ client.dispose()
+})
+
+test('denied daily snapshots cannot fall back to a private formal preview',async()=>{
+ const state=detailState()
+ const client=createMealDetailClient({state,context:()=> 'A',send:async()=>{throw Object.assign(Error('授权已变化'),{code:403})}})
+ await client.open({...target,purchaseReady:false,seed:meal})
+ assert.equal(state.phase,'error');assert.equal(state.meal,null);assert.match(state.error,/授权/)
+ client.dispose()
+})
 
 function routeHarness({profileFails=false}={}){
  const source=readFileSync(new URL('../src/pages/meals/detail.vue',import.meta.url),'utf8').split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm,'')
@@ -182,4 +237,47 @@ test('reading down a long recipe never triggers sheet dismissal away from its to
  assert.equal(detailGesture({delta:120,expanded:true,scrollTop:180}),'none')
  assert.equal(detailGesture({delta:90,expanded:true,scrollTop:0}),'collapse')
  assert.equal(detailGesture({delta:90,expanded:false,scrollTop:0}),'close')
+})
+
+function purchaseFooter({phase='loading',purchaseReady=true,view='meal',kind='formal',items=[]}={}){
+ const source=readFileSync(new URL('../src/components/MealDetailSheet.vue',import.meta.url),'utf8')
+ const state=reactive({phase,view}),target=ref({purchaseReady,kind,dailyPlanVersion:4,date:'2026-11-19'})
+ const reference=computed(()=>target.value.kind==='reference'),referencePurchase=ref({items}),busy=ref(false)
+ const expression=source.match(/const canPurchase=computed\(\(\)=>([^\n]+)\)/)[1]
+ const canPurchase=new Function('computed','state','target','reference','referencePurchase','return computed(()=>'+expression+')')(computed,state,target,reference,referencePurchase)
+ const dish=ref({dish_key:'synthetic-dish'}),purchaseDish=ref(null),purchaseMounted=ref(false),purchaseOpen=ref(false)
+ const showPurchase=new Function('busy','canPurchase','state','dish','purchaseDish','purchaseMounted','purchaseOpen',source.match(/function showPurchase\(\)[^\n]+/)[0]+';return showPurchase')(busy,canPurchase,state,dish,purchaseDish,purchaseMounted,purchaseOpen)
+ const template=source.match(/<view v-if="state.view==='dish'[^\n]+class="detail-footer"[\s\S]*?<\/view>/)[0]
+ const render=compile(template)
+ const html=()=>renderToString(createSSRApp({render,setup:()=>({state,target,busy,canPurchase,showPurchase,startRecord:()=>{},localDate:()=> '2026-11-19'})}))
+ return {state,target,busy,canPurchase,purchaseDish,purchaseMounted,purchaseOpen,showPurchase,html}
+}
+
+test('purchase footer stays present and disabled while loading, then enables after verification',async()=>{
+ const h=purchaseFooter()
+ assert.match(await h.html(),/detail-buy[^>]*disabled/);assert.match(await h.html(),/正在准备…/)
+ h.showPurchase();assert.equal(h.purchaseMounted.value,false)
+ h.state.phase='ready'
+ assert.doesNotMatch(await h.html(),/disabled/);assert.match(await h.html(),/>购买<\/button>/)
+ h.showPurchase();assert.equal(h.purchaseOpen.value,true);assert.equal(h.purchaseDish.value,null)
+})
+
+for(const scenario of [{phase:'error'},{phase:'ready',purchaseReady:false},{phase:'ready',kind:'reference',purchaseReady:undefined}])test('blocked purchase keeps a disabled footer: '+JSON.stringify(scenario),async()=>{
+ const h=purchaseFooter(scenario)
+ if(scenario.kind==='reference')h.target.value.purchaseReady=undefined
+ const html=await h.html();assert.match(html,/detail-buy[^>]*disabled/);assert.match(html,/暂不可购买/)
+ h.showPurchase();assert.equal(h.purchaseMounted.value,false);assert.equal(h.purchaseOpen.value,false)
+})
+
+test('busy handlers cannot open procurement and dish purchase retains only its selected dish',async()=>{
+ const h=purchaseFooter({phase:'ready',view:'dish'})
+ h.busy.value=true;assert.match(await h.html(),/detail-buy[^>]*disabled/)
+ h.showPurchase();assert.equal(h.purchaseMounted.value,false)
+ h.busy.value=false;h.showPurchase();assert.equal(h.purchaseOpen.value,true)
+ assert.equal(h.purchaseDish.value.dish_key,'synthetic-dish')
+})
+
+test('member selection does not render the underlying purchase footer',async()=>{
+ const h=purchaseFooter({phase:'ready',view:'members'})
+ assert.doesNotMatch(await h.html(),/detail-footer|detail-buy/)
 })

@@ -10,6 +10,12 @@ from yuxi.services import exclusive_plan_images as images
 from yuxi.services.health_vision_types import HealthVisionError
 
 
+@pytest.fixture(autouse=True)
+def acknowledged_account(monkeypatch):
+    """原谱图片用例使用已阅读声明的合成账号，声明拒绝另有专门测试。"""
+    monkeypatch.setattr(images, "require_service_notice", AsyncMock())
+
+
 def dish(file_id="one"):
     """只含公开原谱事实的合成菜。"""
     return {

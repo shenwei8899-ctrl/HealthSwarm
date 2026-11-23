@@ -130,6 +130,29 @@ async def test_replace_only_selected_position_persists_and_replays(family_profil
         )
     path = f"/api/family/{fid}/daily-meal-plans/{day}"
     before = (await client.get(path, headers=users["self"])).json()
+    # 同名不同来源不能填充本餐；拒绝后回读持久版本和来源不变。
+    original_source["meals"][0]["dishes"][0]["file_id"] = "alias-original"
+    alias_plan = (await client.get(path, headers=users["self"])).json()
+    alias_key = alias_plan["meals"][0]["meal"]["dishes"][0]["dish_key"]
+    duplicate_request = {
+        "version": 1, "source_meal": "breakfast", "meal_type": "dinner",
+        "dish_key": alias_key, "client_request_id": str(uuid4()),
+    }
+    duplicate = await client.post(path + "/dishes", headers=users["self"], json=duplicate_request)
+    assert duplicate.status_code == 409 and "meal_dish_repeated" in duplicate.text
+    assert (await client.get(path, headers=users["self"])).json() == alias_plan
+    async with sessions() as db:
+        unchanged = await db.get(HealthDailyMealPlan, pid)
+        assert unchanged.version == 1
+        assert unchanged.meal_sources == {
+            m: {"kind": "reference", "id": source_id} for m in ("breakfast", "lunch", "dinner")
+        }
+    original_source["meals"][0]["dishes"][0]["file_id"] = "original"
+    existing_key = before["meals"][0]["meal"]["dishes"][0]["dish_key"]
+    replay = await client.post(path + "/dishes", headers=users["self"], json={
+        **duplicate_request, "version": 0, "dish_key": existing_key,
+    })
+    assert replay.status_code == 200 and replay.json() == before
     candidates = await client.get(path + "/dish-swap-candidates?version=1", headers=users["self"])
     assert candidates.status_code == 200, candidates.text
     lunch = next(m for m in candidates.json()["meals"] if m["meal_type"] == "lunch")

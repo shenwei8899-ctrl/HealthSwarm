@@ -131,5 +131,10 @@ function finishWelcome(event){
 .conversation-surface .edge-fades:before,.conversation-surface .edge-fades:after{display:none}
 .home-surface .welcome-layer :deep(.uni-scroll-view-content){min-height:100%;display:block}
 .home-surface .composer-wrap{padding-top:8px}
+/* Home and conversation share the pills without changing artwork or actions. */
+.home-surface .shortcut-reveal,.conversation-surface .shortcut-reveal{height:60px}
+.home-surface .shortcut-scroll,.conversation-surface .shortcut-scroll{height:52px;margin-bottom:8px}
+.home-surface .bottom-shortcuts,.conversation-surface .bottom-shortcuts{height:50px}
+.home-surface .shortcut-button,.conversation-surface .shortcut-button{flex-direction:row;gap:8px;width:auto;min-width:0;height:46px;min-height:46px;padding:5px 11px 5px 6px;border-radius:18px;font-size:11px}
 .keyboard-open .shortcut-reveal{height:0;opacity:0;visibility:hidden;pointer-events:none}
 </style>

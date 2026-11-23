@@ -99,6 +99,7 @@ async function run(name,options,verify){
 }
 async function home(page){
  await page.goto(origin+'/family-app/#/pages/chat/index')
+ await page.locator('#chat-welcome-layer .prompt-grid > *').nth(3).waitFor()
  await page.waitForFunction(()=>document.querySelector('.camera-button')&&!document.querySelector('.camera-button').classList.contains('uni-button-disabled'))
  await page.locator('#chat-welcome-layer .character-rig.is-ready').waitFor()
  await page.waitForFunction(()=>getComputedStyle(document.querySelector('#chat-welcome-layer')).opacity==='1')

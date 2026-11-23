@@ -32,7 +32,7 @@ def bp_repo(weight_repo, monkeypatch):  # noqa: F811
     """共用真实持久化边界fixture，切换当前血压消费者与字段授权。"""
     state = weight_repo
     state.repo = HealthBloodPressureRepository(state.session)
-    monkeypatch.setattr(boundary, "authorized_fields", lambda family, member, uid: {"blood_pressure"})
+    monkeypatch.setattr(boundary, "authorized_fields", lambda family, member, uid, **kwargs: {"blood_pressure"})
     return state
 
 
@@ -148,7 +148,7 @@ async def test_blood_pressure_history_invalidates_without_new_tool(bp_repo, monk
     elif change == "source":
         state.source.id = "other-source"
     elif change == "field":
-        monkeypatch.setattr(boundary, "authorized_fields", lambda family, member, uid: {"weight"})
+        monkeypatch.setattr(boundary, "authorized_fields", lambda family, member, uid, **kwargs: {"weight"})
     elif change == "revoke":
         state.authorize.side_effect = HealthVisionError("not_found", "合成撤回", 404)
     else:
@@ -321,7 +321,9 @@ async def test_consultation_and_final_publication_recheck_both_measurement_depen
     monkeypatch.setattr(HealthBloodLipidsRepository, "validate_history", AsyncMock())
     await HealthConsultationRepository(session).authorize("actor", "thread")
     for index, guard in enumerate((profile, weight, bp)):
-        guard.assert_awaited_once_with("actor", binding, lock=False, **({"family_assistant": True} if index == 0 else {}))
+        guard.assert_awaited_once_with(
+            "actor", binding, lock=False, **({"family_assistant": True} if index == 0 else {})
+        )
 
     async def require(session, uid, thread_id, *, expected, lock):
         """保留来源授权编排，隔离本测试无关的配置与Skill读取。"""
@@ -395,3 +397,16 @@ def isolate_account_memory_context(monkeypatch):
     from yuxi.agents.middlewares import health_memory_context
     monkeypatch.setattr(health_memory_context, "process_memory_for_run", AsyncMock(return_value={}))
     monkeypatch.setattr(health_memory_context, "memory_context_for_run", AsyncMock(return_value={}))
+
+
+@pytest.fixture(autouse=True)
+def confirmed_account_notice(monkeypatch):
+    """本模块聚焦既有运行边界，合成账号已确认当前服务声明。"""
+    from datetime import datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from yuxi.repositories.service_notice_repository import ServiceNoticeRepository
+    from yuxi.services.service_notice_service import NOTICE_HASH
+
+    receipt = SimpleNamespace(content_hash=NOTICE_HASH, acknowledged_at=datetime(2026, 11, 22))
+    monkeypatch.setattr(ServiceNoticeRepository, "current", AsyncMock(return_value=receipt))

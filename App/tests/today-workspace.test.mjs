@@ -5,6 +5,26 @@ let scope='A';globalThis.uni={getStorageSync:()=>({accountId:'account',household
 const item=(type,id='ref',kind='reference')=>({meal_type:type,source:{id,kind,version:kind==='formal'?2:undefined},members:[{id:type,name:type}],meal:{dishes:[{name:type,ingredients:[type+' ingredient']}]}})
 const option={kind:'reference',id:'ref',meal_types:['lunch','dinner'],items:[{sku_id:1,quantity:1,ingredient_refs:['lunch ingredient']},{sku_id:2,quantity:2,ingredient_refs:['dinner ingredient']} ]}
 const plan={date:'2026-10-30',version:4,meals:[item('breakfast','formal','formal'),item('lunch'),item('dinner')],purchase_options:[{kind:'formal',id:'formal',meal_types:['breakfast']},option]}
+
+test('unavailable purchasing still opens the selected meal and its ingredients instead of the archive',()=>{
+ for(const kind of ['reference','formal','selection']){
+  const dinner={...item('dinner','saved',kind),purchase_ready:false}
+  const target=mealTarget(dinner,{...plan,meals:[dinner],purchase_options:[]})
+  assert.equal(target.kind,kind)
+  assert.equal(target.purchaseReady,false)
+  uni.navigateTo=options=>{
+   const url=new URL(options.url,'https://miniapp.test')
+   assert.equal(url.pathname,'/pages/meals/detail')
+   const received=takeMealPageTarget(url.searchParams.get('mealNavigation'))
+   assert.equal(received.mealType,'dinner')
+   assert.equal(received.sourceId,'saved')
+   assert.equal(received.purchaseReady,false)
+   assert.deepEqual(received.seed.dishes,dinner.meal.dishes)
+   options.success({})
+  }
+  openMealPage(target)
+ }
+})
 test('single meal navigation retains exact source and version without expanding purchase scope',()=>{const target=mealTarget(plan.meals[1],plan);assert.deepEqual(target.purchaseMeals,['lunch']);assert.equal(target.dailyPlanVersion,4);assert.equal(target.sourceId,'ref');assert.equal(target.familyId,'family')})
 test('full day review covers every available meal grouped by server package',()=>{const groups=purchaseGroups(plan);assert.equal(groups.length,2);assert.deepEqual(groups.flatMap(g=>g.purchaseMeals),['breakfast','lunch','dinner']);assert.deepEqual(groups[1].purchaseMembers.map(m=>m.id),['lunch','dinner'])})
 test('single reference meal filters by authoritative ingredient references, preserving package counts',()=>{const ref=referencePurchaseFor(mealTarget(plan.meals[2],plan));assert.deepEqual(ref.mealTypes,['dinner']);assert.deepEqual(ref.items.map(i=>[i.sku_id,i.quantity]),[[2,2]])})

@@ -92,6 +92,7 @@ def rank_reference_recipe_batch(rows, products, queries, excluded_file_ids=None,
             excluded_file_ids=excluded_file_ids,
             catalog_key=catalog_key,
             variety=variety,
+            unique_dishes=True,
         )
         for query in queries
     ]
@@ -197,6 +198,7 @@ def rank_reference_recipes(
         {},
         excluded_file_ids=excluded_file_ids,
         variety=variety,
+        unique_dishes=True,
     )
 
 
@@ -304,6 +306,7 @@ def rank_prepared_reference_recipes(
     *,
     catalog_key=None,
     variety=None,
+    unique_dishes=False,
 ):
     """每个关键词独立评分，复用本次调用已解析的候选原谱。"""
     query = normalize_reference_query(query)
@@ -411,4 +414,8 @@ def rank_prepared_reference_recipes(
             )
         )
     candidates.sort(key=lambda pair: (tuple(-value for value in pair[0]), pair[1]["filename"]))
+    if unique_dishes:
+        from yuxi.services.reference_recipe_variety import unique_reference_candidates
+
+        return unique_reference_candidates((item for _, item in candidates), limit=limit)
     return [item for _, item in candidates[:limit]]

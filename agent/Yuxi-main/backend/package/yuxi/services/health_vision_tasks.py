@@ -34,6 +34,7 @@ from yuxi.services.health_vision_types import (
 from yuxi.services.ocr_service import resolve_ocr_task_params
 from yuxi.services.health_vision_usage import vision_usage_receipt
 from yuxi.storage.minio import get_minio_client
+from yuxi.services.service_notice_service import require_service_notice
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_health import PrivateUpload, VisionDraft, VisionJob, VisionRevision
 from yuxi.storage.postgres.models_business import TaskRecord
@@ -41,6 +42,7 @@ from yuxi.storage.postgres.models_business import TaskRecord
 
 async def check_job_access(session, job, *, expected_ocr_kwargs=None):
     """每个外呼与最终写入之前重查权限、源文件及同意。"""
+    await require_service_notice(session, job.actor_uid)
     repo = HealthVisionRepository(session)
     member = await repo.authorize(
         job.member_id, job.actor_uid, "report_upload" if job.kind == "report" else "diet_edit", lock=True
@@ -129,7 +131,10 @@ async def run_health_vision(context):
                 async with pg_manager.get_async_session_context() as session:
                     await check_job_access(session, await session.get(VisionJob, job.id))
 
-            result = await recognize_meal(snapshot["model"], images, context, authorize=authorize_meal_call)
+            source_options = {"source_hint": snapshot["source_hint"]} if snapshot.get("source_hint") else {}
+            result = await recognize_meal(
+                snapshot["model"], images, context, authorize=authorize_meal_call, **source_options
+            )
             payload = MealPayload(
                 meal_type=snapshot["meal_type"],
                 eaten_at=snapshot["eaten_at"],

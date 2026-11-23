@@ -17,7 +17,7 @@ import {isReferencePlan} from '../src/services/reference-meal-plan.js'
 
 function setup({linked=true,available=true,entry=true,notice='',error='',prepared=true,initialized=true,initializationError='',tickOverride}={}){
   const toasts=[],submits=[],modals=[],submitCalls=[],refreshCalls=[],hooks={},identity={scope:'account:family'}
-  const deps={createDishSwap,dishSwapState,watchDishSwap,chatPromptProfileKey,todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),defineOptions(){},selectChatPrompts:()=>[],loadCloudProfile:async()=>{throw new Error('咨询资料读取失败，请重试。')},isReferencePlan,chatPresentation,createChatEntryTransition,createChatKeyboardLayout,watch,ref,computed,reactive,nextTick:tickOverride||nextTick,mealQuestionAction,listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,onShow:fn=>{hooks.show=fn},onHide:fn=>{hooks.hide=fn},onMounted(){},onUnmounted:fn=>{hooks.unmount=fn},defineProps:()=>({route:{}}),
+  const deps={createDishSwap,dishSwapState,watchDishSwap,chatPromptProfileKey,todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),defineOptions(){},selectChatPrompts:()=>[],ensureServiceNotice:async()=>({acknowledged:true}),loadCloudProfile:async()=>{throw new Error('咨询资料读取失败，请重试。')},isReferencePlan,chatPresentation,createChatEntryTransition,createChatKeyboardLayout,watch,ref,computed,reactive,nextTick:tickOverride||nextTick,mealQuestionAction,listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,onShow:fn=>{hooks.show=fn},onHide:fn=>{hooks.hide=fn},onMounted(){},onUnmounted:fn=>{hooks.unmount=fn},defineProps:()=>({route:{}}),
     storageContext:()=>identity.scope,getSession:()=>({token:'synthetic',householdId:'family'}),
     dailyArrangementState:()=>({phase:prepared?'ready':'error',error:'配餐数据未就绪',busy:false}),
     createDailyArrangementClient:()=>({reset(){},dispose(){},pause(){}}),
@@ -31,7 +31,7 @@ function setup({linked=true,available=true,entry=true,notice='',error='',prepare
       async refresh(...args){refreshCalls.push(args)},pause(){},
     })}
   const code=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
-  const page=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${code};return {canCheckTask,checkTaskStatus,submitting,visibleMessages,hasMessageIssue,taskMessageIssue,messageStatus,canRetryMessage,needsProfileLink,recoveryNotice,conversationId,returnVerified,draftImage,flow,inputBusy,chatBusy,primaryMode,captureDraft,settleDraft,markDraftInput,removeDraft,reading,latestAvailable,detailOpen,historyOpen,scrollLatest,scrollTarget,stageSubmitted:s=>{submittedDraft=s},profile,question,task,chatError,sendQuestion,sendVoice,switchInputMode,voiceMode,voiceBusy,draftSaving,messages,entryReady,entryError}`)(deps)
+  const page=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${code};return {canCheckTask,checkTaskStatus,submitting,visibleMessages,hasMessageIssue,taskMessageIssue,messageStatus,canRetryMessage,needsProfileLink,recoveryNotice,conversationId,conversationThreadId,followupTarget,sendFollowup,returnVerified,draftImage,flow,inputBusy,chatBusy,primaryMode,captureDraft,settleDraft,markDraftInput,removeDraft,reading,latestAvailable,detailOpen,historyOpen,scrollLatest,scrollTarget,stageSubmitted:s=>{submittedDraft=s},profile,question,task,chatError,sendQuestion,sendVoice,switchInputMode,voiceMode,voiceBusy,draftSaving,draftError,messages,entryReady,entryError}`)(deps)
   page.entryReady.value=initialized
   page.entryError.value=initializationError
   page.profile.value={selfMemberId:'self',members:[{id:'self',relation:'爸爸',...(linked?{healthMemberId:'health-self'}:{})}]}
@@ -48,6 +48,28 @@ test('linked self members use account identity rather than their relationship la
  delete p.profile.value.members[0].healthMemberId
  p.profile.value.members.push({id:'other',relation:'本人',healthMemberId:'other-health'})
  assert.equal(p.needsProfileLink.value,true)
+})
+
+test('contextual followups send only their own text and preserve edited text and picture drafts',async()=>{
+ const p=setup();p.conversationThreadId.value='thread'
+ p.messages.value=[{id:42,threadId:'thread',role:'assistant',text:'清淡晚餐建议'}]
+ p.question.value='正在编辑的问题';p.draftImage.value={localPath:'draft-image'};p.draftError.value='图片尚未就绪'
+ const sent=[];p.flow.submit=async(text,retry,images)=>{sent.push({text,images});return true}
+ assert.equal(p.followupTarget.value.messageId,42)
+ await p.sendFollowup({messageId:42,threadId:'thread',question:'只有15分钟怎么做？'})
+ assert.equal(sent.length,1);assert.equal(sent[0].text,'只有15分钟怎么做？');assert.ok(!sent[0].images?.length)
+ assert.equal(p.question.value,'正在编辑的问题');assert.equal(p.draftImage.value.localPath,'draft-image');assert.equal(p.draftError.value,'图片尚未就绪')
+ assert.equal(p.followupTarget.value,null)
+ await p.sendFollowup({messageId:42,threadId:'thread',question:'重复点击'})
+ assert.equal(sent.length,1)
+})
+
+test('followup clicks from a previous answer or conversation cannot send',async()=>{
+ const p=setup();p.conversationThreadId.value='current'
+ p.messages.value=[{id:43,threadId:'current',role:'assistant',text:'新答案'}]
+ await p.sendFollowup({messageId:42,threadId:'current',question:'旧答案'})
+ await p.sendFollowup({messageId:43,threadId:'old',question:'旧对话'})
+ assert.equal(p.submits.length,0)
 })
 
 test('submitting, queueing, generating and reconnecting show no archive or footer recovery area',()=>{
@@ -161,15 +183,20 @@ test('switching input mode keeps a draft and never submits while switching or bu
  assert.equal(p.question.value,'晚饭想清淡一点');assert.deepEqual(p.submits,[])
 })
 
-test('recognized speech supplements a typed draft instead of replacing it',async()=>{
- const p=setup();p.question.value='我想咨询饮食习惯'
- await p.sendVoice('最近吃饭时间不规律')
- assert.deepEqual(p.submits,[])
- assert.equal(p.question.value,'我想咨询饮食习惯\n最近吃饭时间不规律')
- assert.equal(p.voiceMode.value,false)
- await p.sendQuestion()
- assert.deepEqual(p.submits,['我想咨询饮食习惯\n最近吃饭时间不规律'])
- assert.equal(p.question.value,'')
+test('recognized speech sends only its text and keeps typed and image drafts and voice mode',async()=>{
+ const p=setup();p.question.value='我想咨询饮食习惯';p.voiceMode.value=true
+ p.draftImage.value={localPath:'draft-image'};p.draftError.value='图片尚未准备好'
+ const drafts=[];let images
+ const stop=watch(p.question,value=>drafts.push(value),{flush:'sync'})
+ p.flow.submit=async(text,retry,attached)=>{p.submits.push(text);images=attached;p.flow.inject({...p.task.value,requestId:'voice-request',status:'running'});return true}
+ await p.sendVoice('  最近吃饭时间不规律  ')
+ assert.deepEqual(p.submits,['最近吃饭时间不规律']);assert.deepEqual(images,[])
+ assert.equal(p.question.value,'我想咨询饮食习惯');assert.deepEqual(drafts,[])
+ assert.equal(p.draftImage.value.localPath,'draft-image');assert.equal(p.draftError.value,'图片尚未准备好')
+ assert.equal(p.voiceMode.value,true)
+ p.flow.inject({...p.task.value,requestId:'voice-request',status:'completed'})
+ assert.equal(p.question.value,'我想咨询饮食习惯');assert.equal(p.draftImage.value.localPath,'draft-image')
+ stop()
 })
 
 
@@ -178,6 +205,51 @@ test('terminal processing errors do not offer to reread a finished response',()=
  assert.doesNotMatch(template,/v-if="message.error"[^>]*@click="flow.refresh/)
  assert.match(template,/message-issue/)
  assert.match(template,/budget_price_unavailable/)
+})
+
+for(const draft of ['', '已有草稿'])test(`voice submission failure retains the message without filling composer: ${draft||'empty'}`,async()=>{
+ const p=setup({entry:false});p.question.value=draft;p.draftImage.value={localPath:'draft'}
+ await p.sendVoice('语音问题')
+ assert.equal(p.question.value,draft);assert.equal(p.draftImage.value.localPath,'draft')
+ assert.equal(p.messages.value[0].text,'语音问题');assert.equal(p.messages.value[0].status,'failed')
+ assert.equal(p.submits.length,0)
+})
+
+test('late voice completion cannot settle a same-text draft or a replacement image',async()=>{
+ const p=setup();let release
+ p.question.value='语音问题';p.draftImage.value={localPath:'old'}
+ p.flow.submit=async()=>{
+  p.flow.inject({...p.task.value,requestId:'voice',status:'提交中',busy:true,submitUnknown:true})
+  await new Promise(resolve=>{release=resolve});return false
+ }
+ const pending=p.sendVoice('语音问题')
+ while(!release)await new Promise(resolve=>setImmediate(resolve))
+ await p.sendVoice('第二次');assert.equal(p.messages.value.filter(m=>m.text==='第二次').length,1)
+ p.question.value='修改后草稿';p.draftImage.value={localPath:'new'}
+ release();await pending
+ p.flow.inject({...p.task.value,requestId:'voice',status:'completed',busy:false,submitUnknown:false})
+ assert.equal(p.question.value,'修改后草稿');assert.equal(p.draftImage.value.localPath,'new')
+})
+
+test('repeated voice delivery while sending does not submit another task',async()=>{
+ const p=setup();let release,calls=0
+ p.flow.submit=async()=>{calls++;await new Promise(resolve=>{release=resolve});return true}
+ const first=p.sendVoice('第一条')
+ while(!release)await new Promise(resolve=>setImmediate(resolve))
+ await p.sendVoice('第二条');assert.equal(calls,1)
+ assert.equal(p.messages.value.find(m=>m.text==='第二条').status,'failed')
+ release();await first
+})
+
+test('blank, hidden and stale-account recognition never sends or edits a draft',async()=>{
+ for(const action of ['blank','hidden','account']){
+  const p=setup();p.question.value='草稿'
+  if(action==='hidden')p.hooks.hide()
+  if(action==='account')p.identity.scope='other-account'
+  await p.sendVoice(action==='blank'?'  ':'迟到语音')
+  assert.deepEqual(p.submits,[]);assert.equal(p.question.value,'草稿')
+  assert.equal(p.messages.value.length,0);p.hooks.unmount()
+ }
 })
 
 test('unfinished consultation keeps the draft and reports why sending failed',async()=>{

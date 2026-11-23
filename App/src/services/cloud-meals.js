@@ -44,7 +44,7 @@ export function personalMeal(dishes,person,{mealType,eatenAt,captureScope,oil='�
 }
 
 /** Freeze every member's draft and confirmation before transport; never repeat an unknown draft creation. */
-export function createCloudMealSaver({send=request,storage=scopedStorage,revision=sessionRevision,newId=newHealthRequestId,key='meal-capture-pending'}={}){
+export function createCloudMealSaver({send=request,storage=scopedStorage,revision=sessionRevision,newId=newHealthRequestId,key='meal-capture-pending',entryKey=()=>''}={}){
   let busy=false,generation=0
   const read=()=>storage.getStorageSync(key)||null
   function hide(){generation++}
@@ -54,7 +54,7 @@ export function createCloudMealSaver({send=request,storage=scopedStorage,revisio
     const current=()=>{if(!valid())throw Object.assign(new Error('页面或账号已变化，请重新读取保存结果'),{code:'SESSION_CHANGED'})}
     let group=read()
     if(group?.editable){group={...group,editable:false,rows:[...group.rows.filter(r=>r.phase==='saved'),...meals.filter(m=>!group.rows.some(r=>r.phase==='saved'&&r.memberId===m.memberId)).map(m=>({...copy(m),phase:m.draftId?'patching':'new',clientId:newId(),acceptIncomplete:acceptIncomplete===true}))]};storage.setStorageSync(key,group)}
-    if(!group){if(!meals.length)throw new Error('请选择实际吃过的成员');group={groupId:newId(),rows:meals.map(m=>({...copy(m),phase:m.draftId?'patching':'new',clientId:newId(),acceptIncomplete:acceptIncomplete===true}))};storage.setStorageSync(key,group)}
+    if(!group){if(!meals.length)throw new Error('请选择实际吃过的成员');group={groupId:newId(),entryKey:entryKey(),rows:meals.map(m=>({...copy(m),phase:m.draftId?'patching':'new',clientId:newId(),acceptIncomplete:acceptIncomplete===true}))};storage.setStorageSync(key,group)}
     const checkpoint=()=>{current();storage.setStorageSync(key,copy(group))}
     busy=true
     try{

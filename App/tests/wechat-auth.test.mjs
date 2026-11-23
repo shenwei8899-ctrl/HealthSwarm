@@ -117,7 +117,9 @@ test('formal welcome has only WeChat entry and displays automatic registration e
   globalThis.uni = { showToast() {} }
   const source = readFileSync(new URL('../src/pages/index/index.vue', import.meta.url), 'utf8')
   const code = source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
-  const page = new Function('deps', `const {${Object.keys(deps)}}=deps;${code};return {continueLogin,loginOpen,loginError}`)(deps)
+  const page = new Function('deps', `const {${Object.keys(deps)}}=deps;${code};return {continueLogin,loginOpen,loginError,noticeDocument,changeLoginNotice}`)(deps)
+  page.noticeDocument.value={version:'synthetic',content_hash:'a'.repeat(64)}
+  page.changeLoginNotice({detail:{value:['yes']}})
   await page.continueLogin()
   assert.equal(page.loginOpen.value, false)
   assert.match(page.loginError.value, /配置尚未就绪/)

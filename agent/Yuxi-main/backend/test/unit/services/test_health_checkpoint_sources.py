@@ -283,3 +283,16 @@ def isolate_account_memory_context(monkeypatch):
     from yuxi.agents.middlewares import health_memory_context
     monkeypatch.setattr(health_memory_context, "process_memory_for_run", AsyncMock(return_value={}))
     monkeypatch.setattr(health_memory_context, "memory_context_for_run", AsyncMock(return_value={}))
+
+
+@pytest.fixture(autouse=True)
+def confirmed_account_notice(monkeypatch):
+    """本模块聚焦既有运行边界，合成账号已确认当前服务声明。"""
+    from datetime import datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from yuxi.repositories.service_notice_repository import ServiceNoticeRepository
+    from yuxi.services.service_notice_service import NOTICE_HASH
+
+    receipt = SimpleNamespace(content_hash=NOTICE_HASH, acknowledged_at=datetime(2026, 11, 22))
+    monkeypatch.setattr(ServiceNoticeRepository, "current", AsyncMock(return_value=receipt))

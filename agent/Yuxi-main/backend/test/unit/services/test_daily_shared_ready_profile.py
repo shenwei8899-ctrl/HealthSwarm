@@ -66,6 +66,7 @@ def coding_guard(monkeypatch):
         HealthFamilyProfileLink=link_type,
         pg_manager=SimpleNamespace(get_async_session_context=session),
         call_json_model=state.provider,
+        require_service_notice=AsyncMock(),
     )
     path = backend / "package/yuxi/services/miniapp_profile_coding.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))

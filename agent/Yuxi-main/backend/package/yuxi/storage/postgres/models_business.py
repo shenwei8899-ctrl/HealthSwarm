@@ -31,6 +31,16 @@ Base = declarative_base()
 JSON_VALUE = JSON().with_variant(JSONB, "postgresql")
 
 
+class ServiceNoticeAcknowledgement(Base):
+    """个人阅读确认按版本追加，与家庭和数据处理授权分开。"""
+
+    __tablename__ = "service_notice_acknowledgement"
+    actor_uid = Column(String, ForeignKey("users.uid"), primary_key=True)
+    notice_version = Column(String(80), primary_key=True)
+    content_hash = Column(String(64), nullable=False)
+    acknowledged_at = Column(DateTime, nullable=False, default=utc_now_naive)
+
+
 class ProductFeedback(Base):
     """账号产品意见与私有截图元数据，提交编号是幂等边界。"""
 

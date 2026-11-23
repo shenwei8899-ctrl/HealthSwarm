@@ -123,11 +123,11 @@ test('a local conversation continues across days and its drawer profile opens My
   p.showHistory();p.historyProfile();assert.equal(p.historyOpen.value,false);assert.equal(calls.navigation.url,'/pages/my/index');p.dispose()
 })
 
-test('recognized speech automatically sends with the existing photo draft',async()=>{
+test('recognized speech sends separately and preserves existing text and photo drafts',async()=>{
   setup();const p=chat();await p.prepareDraftImage({path:'/tmp/voice-meal.jpg',source:'album'})
-  p.voice();assert.equal(p.voiceMode.value,true);await p.sendVoice('看看这顿饭')
-  assert.equal(p.messages.value[0].text,'看看这顿饭');assert.ok(p.messages.value[0].image)
-  assert.equal(p.draftImage.value,null);assert.equal(p.input.value,'');p.dispose()
+  p.input.value='原有草稿';p.voice();assert.equal(p.voiceMode.value,true);await p.sendVoice('看看这顿饭')
+  assert.equal(p.messages.value[0].text,'看看这顿饭');assert.equal(p.messages.value[0].image,undefined)
+  assert.match(p.draftImage.value.localPath,/voice-meal/);assert.equal(p.input.value,'原有草稿');assert.equal(p.voiceMode.value,true);p.dispose()
 })
 
 test('active voice blocks sending and camera; hiding page cancels recording',async()=>{

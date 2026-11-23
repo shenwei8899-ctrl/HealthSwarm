@@ -115,9 +115,24 @@ def test_plain_staple_is_excluded_from_replacement_ranking_and_readback():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "restriction,count,malformed", [([], 3, False), (["牛肉"], 3, False), (["低钾饮食"], 0, False), ([], 3, True)]
+    "restriction,count,malformed,duplicates",
+    [
+        ([], 3, False, False),
+        (["牛肉"], 3, False, False),
+        (["低钾饮食"], 0, False, False),
+        ([], 3, True, False),
+        ([], 3, False, True),
+        ([], 3, True, True),
+        (["牛肉"], 3, True, True),
+    ],
 )
-async def test_candidate_batch_uses_actual_meal_members_and_caps_three(monkeypatch, restriction, count, malformed):
+async def test_candidate_batch_uses_actual_meal_members_and_caps_three(
+    monkeypatch,
+    restriction,
+    count,
+    malformed,
+    duplicates,
+):
     """本餐名单独立传给授权核对；未知医嘱不以忽略限制换取候选。"""
     from yuxi.services import daily_dish_swap_service as swap
     from yuxi.services import reference_recipe_index as index
@@ -125,13 +140,18 @@ async def test_candidate_batch_uses_actual_meal_members_and_caps_three(monkeypat
     from yuxi.services import daily_commerce_service as commerce
     from yuxi.repositories import reference_variety_repository as history
 
-    docs = documents(["清炒菠菜", "炒西兰花", "炒白菜", "炒豆腐"])
+    docs = documents(
+        ["清炒菠菜", "清炒菠菜", "炒西兰花", "炒白菜", "炒豆腐"]
+        if duplicates
+        else ["清炒菠菜", "炒西兰花", "炒白菜", "炒豆腐"]
+    )
 
     async def full_document(_, fid, cid):
         """模拟一个完整原文与索引分片不一致的候选。"""
         found = next({**d["source"], **d} for d in docs if d["source"]["file_id"] == fid)
         if malformed and fid == "0":
-            found["content"] = found["content"].replace("菠菜 100克", "菠菜 100克\n- 花生 10克")
+            extra = "牛肉" if restriction == ["牛肉"] else "花生"
+            found["content"] = found["content"].replace("菠菜 100克", f"菠菜 100克\n- {extra} 10克")
         return found
 
     context = AsyncMock(
@@ -158,13 +178,26 @@ async def test_candidate_batch_uses_actual_meal_members_and_caps_three(monkeypat
     plan = {
         "date": "2026-11-16",
         "version": 1,
-        "meals": [{"meal_type": "lunch", "members": members, "meal": {"dishes": [original]}}],
+        "meals": [
+            {"meal_type": "lunch", "members": members, "meal": {"dishes": [original, {**original, "name": "蒜蓉茄子"}]}}
+        ],
     }
     result = await swap.plan_candidates(None, "actor", "family", plan)
     assert context.call_args.args[-1] == members
+    assert len(result[0]["dishes"]) == 2
+    assert [c["candidate_id"] for c in result[0]["dishes"][0]["candidates"]] != [
+        c["candidate_id"] for c in result[0]["dishes"][1]["candidates"]
+    ] or count == 0
+    assert [c["dish"]["file_id"] for c in result[0]["dishes"][0]["candidates"]] == [
+        c["dish"]["file_id"] for c in result[0]["dishes"][1]["candidates"]
+    ]
     assert len(result[0]["dishes"][0]["candidates"]) == count
+    chosen = [c["dish"] for c in result[0]["dishes"][0]["candidates"]]
+    assert len({d["name"] for d in chosen}) == count
+    if duplicates:
+        assert [d["file_id"] for d in chosen] == (["1", "2", "3"] if malformed else ["0", "2", "3"])
     if malformed:
-        assert "清炒菠菜" not in [c["dish"]["name"] for c in result[0]["dishes"][0]["candidates"]]
+        assert "0" not in [d["file_id"] for d in chosen]
 
 
 @pytest.mark.asyncio

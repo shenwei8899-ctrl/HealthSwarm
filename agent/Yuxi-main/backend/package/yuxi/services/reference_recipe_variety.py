@@ -11,9 +11,28 @@ from yuxi.services.health_vision_types import HealthVisionError
 
 def dish_keys(dish):
     """来源身份和规范菜名同时识别重复，不依赖模型改写的中文译名。"""
-    name = re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", dish.get("name", "")).casefold())
+    name = recipe_name_key(dish.get("name", ""))
     file_id = (dish.get("source") or {}).get("file_id") or dish.get("file_id")
     return ({"name:" + name} if name else set()) | ({"file:" + str(file_id)} if file_id else set())
+
+
+def recipe_name_key(name):
+    """规范原始菜名，保留不同食材和做法的文字差异。"""
+    return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", name or "").casefold())
+
+
+def unique_reference_candidates(items, limit=24):
+    """保留排名靠前的完整记录，去重后再限制可见数量。"""
+    result, seen = [], set()
+    for item in items:
+        keys = dish_keys(item)
+        if keys & seen:
+            continue
+        result.append(item)
+        seen.update(keys)
+        if len(result) == limit:
+            break
+    return result
 
 
 def variety_context(history, selection, members=()):

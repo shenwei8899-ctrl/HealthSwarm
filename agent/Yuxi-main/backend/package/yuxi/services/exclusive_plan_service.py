@@ -13,7 +13,9 @@ from yuxi.services.exclusive_reference_plan import (
     CAPABILITY_NOTICE,
     REFERENCE_POLICY,
     TIER_TARGETS,
+    TIER_REFERENCE_CENTS,
     exclusive_reference_context,
+    reference_member_restrictions,
     summarize_reference_prices,
 )
 from yuxi.services.family_service import FamilyService
@@ -22,6 +24,7 @@ from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.health_vision_service import health_vision_service
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.task_service import tasker
+from yuxi.services.service_notice_service import require_service_notice
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_health import HealthExclusivePlanGroup, HealthRecipeCommerceSource
 
@@ -43,6 +46,7 @@ async def start_exclusive_plan(uid, fid, data, *, only_missing=False, required_m
                 or (latest.policy.get("version") != "agent-preview-v1" and latest.status not in {"failed", "stale"})
             ):
                 return None
+        await require_service_notice(session, uid)
         context = await exclusive_context(session, uid, fid, policy, allow_interpretation=True)
         if required_member and required_member not in context["sources"]["members"]:
             raise HealthVisionError("not_found", "该成员不属于本次家庭就餐成员", 404)
@@ -93,7 +97,7 @@ async def start_exclusive_plan(uid, fid, data, *, only_missing=False, required_m
             row.progress = {key: value for key, value in row.progress.items() if key not in {"error", "recovery_count"}}
         if row.status == "generating":
             task = await queue_exclusive_in_session(session, row)
-        result = project_group(row, context["sources"])
+        result = project_group(row, context["sources"], current=context["current"])
     if task:
         await tasker.publish(task)
     return result
@@ -116,7 +120,12 @@ async def read_exclusive_plan(uid, fid, group_id=None, *, tier=None):
         if tier is not None and (tier not in TIERS or row.policy != PREVIEW_POLICY or row.status != "ready"):
             raise HealthVisionError("exclusive_preview_unavailable", "计划预览尚未就绪，请返回计划页", 404)
         context = await exclusive_context(
-            session, uid, fid, row.policy, allow_interpretation=True, load_documents=False,
+            session,
+            uid,
+            fid,
+            row.policy,
+            allow_interpretation=True,
+            load_documents=False,
         )
         if row.basis_hash != context["basis_hash"]:
             if tier is not None:
@@ -134,15 +143,19 @@ async def read_exclusive_plan(uid, fid, group_id=None, *, tier=None):
                     raise
                 return {"status": "stale", "group_id": row.id, "plans": [], "message": error.message}
         if tier is not None:
-            return project_preview(row, tier, context["sources"])
-        return project_group(row, context["sources"])
+            return project_preview(row, tier, context["sources"], current=context["current"])
+        return project_group(row, context["sources"], current=context["current"])
 
 
 async def exclusive_context(session, uid, fid, policy, *, allow_interpretation=False, day=None, load_documents=True):
     """新版复用今日餐单依据，历史正式计划继续核对批准规则。"""
     if policy == PREVIEW_POLICY:
         return await exclusive_reference_context(
-            session, uid, fid, day=day or datetime.now(ZoneInfo("Asia/Shanghai")).date(), load_documents=load_documents,
+            session,
+            uid,
+            fid,
+            day=day or datetime.now(ZoneInfo("Asia/Shanghai")).date(),
+            load_documents=load_documents,
         )
     from yuxi.services.daily_arrangement_service import daily_selection
 
@@ -223,17 +236,32 @@ async def queue_exclusive_in_session(session, row):
     return task
 
 
-def project_group(row, sources):
+def project_group(row, sources, *, current=None):
     """只返回状态，以及已发布的三档摘要或历史商城引用。"""
     progress = row.progress
     completed = sum(len(days) for days in progress.get("tiers", {}).values())
     plans = []
     if row.status == "ready":
         plans = (
-            [{"tier_code": tier, "tier_name": name, "difference": TIER_TARGETS[tier],
-              "pricing": summarize_reference_prices(progress["tiers"][tier], include_gaps=False),
-              "tier_cost_status": "unverified"} for tier, name in TIERS.items()]
-            if row.policy == PREVIEW_POLICY else list(progress.get("receipts", {}).values())
+            [
+                {
+                    "tier_code": tier,
+                    "tier_name": name,
+                    "difference": TIER_TARGETS[tier],
+                    "reference_price": {
+                        "min_cent": TIER_REFERENCE_CENTS[tier][0],
+                        "max_cent": TIER_REFERENCE_CENTS[tier][1],
+                        "unit": "person_day",
+                    },
+                    "pricing": project_reference_pricing(
+                        row, progress["tiers"][tier], sources, current=current, include_gaps=False
+                    ),
+                    "tier_cost_status": "unverified",
+                }
+                for tier, name in TIERS.items()
+            ]
+            if row.policy == PREVIEW_POLICY
+            else list(progress.get("receipts", {}).values())
         )
     return {
         "group_id": row.id,
@@ -251,7 +279,7 @@ def project_group(row, sources):
     }
 
 
-def project_preview(row, tier, sources):
+def project_preview(row, tier, sources, *, current=None):
     """返回完整每日原谱、食材、采购缺口和部分小计。"""
     entries = row.progress.get("tiers", {}).get(tier, [])
     if [entry["day"]["day_no"] for entry in entries] != list(range(1, 22)):
@@ -264,7 +292,12 @@ def project_preview(row, tier, sources):
         "professional_status": "not_reviewed",
         "nutrition_status": "not_calculated",
         "notice": CAPABILITY_NOTICE,
-        "pricing": summarize_reference_prices(entries),
+        "reference_price": {
+            "min_cent": TIER_REFERENCE_CENTS[tier][0],
+            "max_cent": TIER_REFERENCE_CENTS[tier][1],
+            "unit": "person_day",
+        },
+        "pricing": project_reference_pricing(row, entries, sources, current=current),
         "tier_cost_status": "unverified",
         "members": [{"display_alias": member["name"]} for member in sources["members"].values()],
         "days": [
@@ -277,8 +310,10 @@ def project_preview(row, tier, sources):
                         "id": meal["meal_type"] + ":" + dish["file_id"],
                         "meal_type": meal["meal_type"],
                         "recipe_name": dish["name"],
-                        "ingredients": dish["ingredients"], "steps": dish["steps"],
-                        "source": dish["source"], "portion_note": dish.get("portion_note"),
+                        "ingredients": dish["ingredients"],
+                        "steps": dish["steps"],
+                        "source": dish["source"],
+                        "portion_note": dish.get("portion_note"),
                         "recipe_snapshot": {key: dish.get(key) for key in ("image_url", "cooking_minutes", "source")},
                     }
                     for meal in entry["meals"]
@@ -288,6 +323,20 @@ def project_preview(row, tier, sources):
             for entry in entries
         ],
     }
+
+
+def project_reference_pricing(row, entries, sources, *, current=None, include_gaps=True):
+    """摘要与详情共用任务快照、实际就餐成员及当前限制计算采购费用。"""
+    restrictions = (
+        reference_member_restrictions(current["members"]) + current.get("memory_restrictions", []) if current else ()
+    )
+    return summarize_reference_prices(
+        entries,
+        catalog=row.progress.get("catalog_snapshot"),
+        member_count=len(sources["members"]),
+        restrictions=restrictions,
+        include_gaps=include_gaps,
+    )
 
 
 def export_payload(row, tier):

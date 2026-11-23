@@ -9,10 +9,11 @@ import { scopedStorage } from '../services/storage.js'
 import { newHealthRequestId } from '../services/health-task-flow.js'
 import { mealDay,mealLabels,readDietRecord,feedbackUrl,portionNote } from '../services/cloud-meals.js'
 import { mealInput } from '../services/health-meal-input.js'
+import {mealTime,sortMealRecords} from '../services/meal-record-entry.js'
 import HealthMealEditor from './HealthMealEditor.vue'
-const props=defineProps({detailId:String,memberId:String})
-const members=ref([]),records=ref([]),scope=ref('all'),date=ref(mealDay(new Date().toISOString())),busy=ref(false),error=ref(''),detail=ref(null),editing=ref(false),meal=ref(null),reason=ref(''),next=ref({}),pending=ref(null),recipes=ref([])
-const visible=computed(()=>records.value.filter(r=>mealDay(r.snapshot.meal.eaten_at)===date.value&&(scope.value==='all'||r.member_id===scope.value)))
+const props=defineProps({detailId:String,memberId:String,initialDate:String})
+const members=ref([]),records=ref([]),scope=ref('all'),date=ref(/^\d{4}-\d{2}-\d{2}$/.test(props.initialDate||'')&&mealDay(props.initialDate+'T12:00:00+08:00')===props.initialDate?props.initialDate:mealDay(new Date().toISOString())),busy=ref(false),error=ref(''),detail=ref(null),editing=ref(false),meal=ref(null),reason=ref(''),next=ref({}),pending=ref(null),recipes=ref([])
+const visible=computed(()=>sortMealRecords(records.value).filter(r=>mealDay(r.snapshot.meal.eaten_at)===date.value&&(scope.value==='all'||r.member_id===scope.value)))
 const recordedMeals=computed(()=>Object.keys(mealLabels).filter(key=>visible.value.some(r=>r.snapshot.meal.meal_type===key)).length)
 const today=computed(()=>date.value===mealDay(new Date().toISOString()))
 function capture(key){uni.navigateTo({url:'/pages/scan/index?date='+encodeURIComponent(date.value)+(key?'&meal='+encodeURIComponent(key):'')+(scope.value!=='all'?'&memberId='+encodeURIComponent(scope.value):'')})}
@@ -51,11 +52,11 @@ const dayLabel=value=>{const match=/^\d{4}-(\d{2})-(\d{2})$/.exec(value||'');ret
    <view class="dj19"><text>一日三餐与加餐</text><text>{{busy?'正在读取…':error?'暂时无法读取':'已记录 '+recordedMeals+' 个餐次'}}</text></view>
    <view class="meal-list"><view v-for="(label,key) in mealLabels" :key="key" class="dj20" :class="'dj-meal-'+key">
     <view class="dj21"><view class="dj22"><image class="dj-food" :src="'/static/journal/'+key+'.png'" mode="aspectFit" aria-hidden="true"/><view class="dj23"><text>{{label}}</text><text class="dj24">{{busy?'读取中':error?'等待重新读取':visible.some(r=>r.snapshot.meal.meal_type===key)?'已记录':'还没有记录'}}</text></view></view><button class="dj25" :aria-label="'记录'+label" @click="capture(key)"><text>记录</text><text class="dj26">＋</text></button></view>
-    <button v-for="r in visible.filter(r=>r.snapshot.meal.meal_type===key)" :key="r.id" class="dj37" :disabled="busy" @click="show(r)"><FoodImageSlot class="dj38"/><view class="dj39"><text>{{r.snapshot.meal.items.filter(i=>!i.excluded).map(i=>i.name).join(' · ')||'查看这一餐'}}</text><text>{{name(r.member_id)}} · {{portionNote(r.snapshot.meal.items[0]||{})}}</text></view><text class="dj40">›</text></button>
+    <button v-for="r in visible.filter(r=>r.snapshot.meal.meal_type===key)" :key="r.id" class="dj37" :disabled="busy" @click="show(r)"><FoodImageSlot class="dj38"/><view class="dj39"><text>{{r.snapshot.meal.items.filter(i=>!i.excluded).map(i=>i.name).join(' · ')||'查看这一餐'}}</text><text>{{mealTime(r.snapshot.meal.eaten_at)}} · {{name(r.member_id)}} · {{portionNote(r.snapshot.meal.items[0]||{})}}</text></view><text class="dj40">›</text></button>
    </view></view><button v-if="Object.values(next).some(n=>n!==null)" class="dj41" :disabled="busy" @click="load(true)">加载更早记录</button>
    <view class="dj35"><view class="dj36"/><text>记下真实吃过的，慢慢了解自己的饮食</text></view>
   </template>
-  <template v-else><view class="dj42"><text>{{name(detail.member_id)}} · {{mealLabels[detail.snapshot.meal.meal_type]}}</text><text>{{dayLabel(mealDay(detail.snapshot.meal.eaten_at))}}</text></view>
+  <template v-else><view class="dj42"><text>{{name(detail.member_id)}} · {{mealLabels[detail.snapshot.meal.meal_type]}}</text><text>{{dayLabel(mealDay(detail.snapshot.meal.eaten_at))}} {{mealTime(detail.snapshot.meal.eaten_at)}}</text></view>
    <template v-if="editing"><HealthMealEditor :meal="meal" :coarse="true" :disabled="busy||!!pending" :recipes="recipes" @search="searchRecipes"/><view class="dj48"><text>更正原因</text><textarea v-model="reason" :disabled="busy||!!pending" class="text-area" placeholder="例如：调整了实际吃过的份量"/></view><view class="dj49"><button class="dj50" :disabled="busy||!!pending" @click="editing=false">取消</button><button class="dj51" :disabled="busy||(!pending&&!reason.trim())" @click="save">{{busy?'正在保存…':pending?'恢复原保存请求':'确认更正并保存'}}</button></view></template>
    <template v-else><view class="dj43"><view v-for="item in detail.snapshot.meal.items.filter(i=>!i.excluded)" :key="item.item_id" class="dj44"><FoodImageSlot class="dj38"/><view><text>{{item.name}}</text><text>{{portionNote(item)}} · {{eatenWeight(item)}}</text></view></view></view><view class="dj45"><text>热量</text><text>{{detail.snapshot.nutrition?.totals?.energy_kcal??'未知'}}<text v-if="detail.snapshot.nutrition?.totals?.energy_kcal!=null"> kcal</text></text></view><view class="dj46"><button class="primary-button" :disabled="busy||!!pending" @click="chat()">聊聊这一餐</button><button v-if="pending" class="dj47" :disabled="busy" @click="save">恢复上次更正请求</button><button v-else class="dj47" :disabled="busy" @click="edit">更正这条记录</button><button class="dj41" :disabled="busy||!!pending" @click="detail=null;editing=false">返回记录列表</button></view></template>
   </template>

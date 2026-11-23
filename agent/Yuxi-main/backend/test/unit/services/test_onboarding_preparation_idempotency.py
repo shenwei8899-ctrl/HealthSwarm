@@ -126,6 +126,7 @@ def preparation_start():
         "preparation_sources": sources,
         "business_date": lambda: original.plan_date,
         "uuid4": uuid4,
+        "require_service_notice": AsyncMock(),
         "queue_preparation": state.queue,
         "tasker": SimpleNamespace(publish=state.publish),
         "read_onboarding_preparation": read,

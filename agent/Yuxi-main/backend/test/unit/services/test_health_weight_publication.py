@@ -213,3 +213,16 @@ async def test_weight_derived_partial_discards_private_body_and_metadata(
     session.commit.assert_awaited_once()
     assert repo.set_terminal_status.await_args.kwargs["status"] == "interrupted"
     assert repo.set_terminal_status.await_args.kwargs["error_message"] == "咨询已中断"
+
+
+@pytest.fixture(autouse=True)
+def confirmed_account_notice(monkeypatch):
+    """本模块聚焦既有运行边界，合成账号已确认当前服务声明。"""
+    from datetime import datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from yuxi.repositories.service_notice_repository import ServiceNoticeRepository
+    from yuxi.services.service_notice_service import NOTICE_HASH
+
+    receipt = SimpleNamespace(content_hash=NOTICE_HASH, acknowledged_at=datetime(2026, 11, 22))
+    monkeypatch.setattr(ServiceNoticeRepository, "current", AsyncMock(return_value=receipt))

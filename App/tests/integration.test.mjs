@@ -317,7 +317,8 @@ async function apiRuntime() {
   const session=dataUrl(readFileSync(new URL('../src/services/session.js',import.meta.url),'utf8').replace("'./config.js'",JSON.stringify(config)))
   const storage=dataUrl(readFileSync(new URL('../src/services/storage.js',import.meta.url),'utf8').replace("'./config.js'",JSON.stringify(config)).replace("'./session.js'",JSON.stringify(session)))
   const navigation=dataUrl(readFileSync(new URL('../src/services/navigation.js',import.meta.url),'utf8').replace("'./config.js'",JSON.stringify(config)).replace("'./session.js'",JSON.stringify(session)).replace("'./storage.js'",JSON.stringify(storage)).replace(/^import .*from '\.\/(app-entry|family-invitations|wechat-auth)\.js'$/gm,''))
-  const transport=dataUrl(readFileSync(new URL('../src/services/request.js',import.meta.url),'utf8').replace("'./config.js'",JSON.stringify(config)).replace("'./session.js'",JSON.stringify(session)).replace("'./storage.js'",JSON.stringify(storage)))
+  const notice=dataUrl(readFileSync(new URL('../src/services/service-notice.js',import.meta.url),'utf8').replace("'./session.js'",JSON.stringify(session)))
+  const transport=dataUrl(readFileSync(new URL('../src/services/request.js',import.meta.url),'utf8').replace("'./service-notice.js'",JSON.stringify(notice)).replace("'./config.js'",JSON.stringify(config)).replace("'./session.js'",JSON.stringify(session)).replace("'./storage.js'",JSON.stringify(storage)))
   return {config:await import(config),session:await import(session),storage:await import(storage),navigation:await import(navigation),transport:await import(transport)}
 }
 

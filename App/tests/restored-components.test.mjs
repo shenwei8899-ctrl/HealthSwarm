@@ -1,3 +1,4 @@
+import {captureUiKey,mealTime,sortMealRecords} from '../src/services/meal-record-entry.js'
 import { createDishSwap, dishSwapState, watchDishSwap } from '../src/services/dish-swap.js'
 import {chatPromptProfileKey} from '../src/services/chat-prompt-profile.js'
 import {createConversationHistoryCache} from '../src/services/conversation-history.js'
@@ -32,9 +33,13 @@ import {captureMenuDishes} from '../src/services/capture-menu.js'
 const jsonClone=v=>v===undefined?undefined:JSON.parse(JSON.stringify(v))
 const member='11111111-1111-4111-8111-111111111111',thread='22222222-2222-4222-8222-222222222222',requestId='33333333-3333-4333-8333-333333333333'
 function mount(file,fields,extras={}){
- const hooks={},deps={chatPromptProfileKey,defineOptions:()=>{},mealPairingText,supplementCandidates,appendMealCandidates,preserveMealEvidence,mealDishKey,createMealSupplementSaver:()=>({read:()=>null,hide(){}}),readDietRecord,mealNutritionState,recognizedMealDish,createMealNutritionClient:({state})=>({invalidate(){Object.assign(state,mealNutritionState())},preview:async()=>{},search:async()=>{},portions:async()=>{}}),defineEmits:()=>()=>{},defineExpose:()=>{},createChatEntryTransition,createChatKeyboardLayout,listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,loadChatMealPlan,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,watch,chatTimestamp,chatBusinessDate,chatPresentation,defineProps:()=>({route:{}}),onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnload:fn=>hooks.unload=fn,onUnmounted:fn=>hooks.unmount=fn,...extras}
+ const hooks={},deps={mealPhotoNavigation:{read:()=>null,open:()=>{}},captureUiKey,mealTime,sortMealRecords,chatPromptProfileKey,defineOptions:()=>{},mealPairingText,supplementCandidates,appendMealCandidates,preserveMealEvidence,mealDishKey,createMealSupplementSaver:()=>({read:()=>null,hide(){}}),readDietRecord,mealNutritionState,recognizedMealDish,createMealNutritionClient:({state})=>({invalidate(){Object.assign(state,mealNutritionState())},preview:async()=>{},search:async()=>{},portions:async()=>{}}),defineEmits:()=>()=>{},defineExpose:()=>{},createChatEntryTransition,createChatKeyboardLayout,listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,loadChatMealPlan,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,watch,chatTimestamp,chatBusinessDate,chatPresentation,defineProps:()=>({route:{}}),onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnload:fn=>hooks.unload=fn,onUnmounted:fn=>hooks.unmount=fn,...extras}
  deps.captureMenuDishes ??= captureMenuDishes
  deps.readDailyMealPlan ??= readDailyMealPlan
+ if(file==='CloudMealCapture.vue'){
+  const shared=readFileSync(new URL('../src/composables/use-meal-capture.js',import.meta.url),'utf8').replace(/^import .*$/gm,'').replace('export function useMealCapture','function useMealCapture')
+  deps.useMealCapture=props=>new Function('deps','props',`const {${Object.keys(deps).filter(k=>k!=='useMealCapture').join(',')}}=deps;${shared};return useMealCapture(props)`)(deps,props)
+ }
  if(file==='CloudMealPurchase.vue') Object.assign(deps,{defineOptions:()=>{}},addressNavigation(deps.storageContext,deps.uni))
  if(file==='CloudNutritionChat.vue')deps.conversationHistory=createConversationHistoryCache({read:deps.readChatSnapshot,context:deps.storageContext})
  const source=readFileSync(new URL('../src/components/'+file,import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
@@ -46,7 +51,7 @@ function storage(){const m=new Map();return {getStorageSync:k=>jsonClone(m.get(k
 function captureEditor(extras={}){
  let account='A',menuFailure=null,saves=0,pending=null
  const cache=new Map(),scoped={getStorageSync:k=>jsonClone(cache.get(account+':'+k)),setStorageSync:(k,v)=>cache.set(account+':'+k,jsonClone(v))}
- const page=mount('CloudMealCapture.vue','load,hide,manual,manualOpen,manualText,manualError,applyManual,cancelManual,dishes,people,editing,canSave,save,fromMenu,menuNotice,error,chooseImage,newMeal,saved,date,time,mealType,membersLoading,photoPreparing,captureLocked,photo,vision,portionDraft,applyPortions,savedMeal,source,acceptMissing',{
+ const page=mount('CloudMealCapture.vue','load,hide,manual,manualOpen,manualText,manualError,applyManual,cancelManual,dishes,people,editing,canSave,save,fromMenu,menuNotice,error,chooseImage,newMeal,saved,date,time,mealType,membersLoading,photoPreparing,captureLocked,photo,vision,portionDraft,applyPortions,savedMeal,source,acceptMissing,entryBlocked,entryKey,togglePerson,beginSupplement,supplement,handleBack,isBusy,joinSupplement,matchCarriedDish,removeCarriedDish',{
   photoState,createMealPhotoClient:({state})=>({open:async id=>{state.memberId=id},discard(){}}),
   createCloudMealSaver:()=>({read:()=>pending,hide(){},finish(){pending=null},save:async()=>{saves++;return null}}),
   personalMeal,mealLabels,mealDay,scopedStorage:scoped,storageContext:()=>account,getSession:()=>({householdId:account}),commerce:{},uni:{chooseImage:()=>{throw Error('must not replace an open editor')}},
@@ -340,7 +345,7 @@ test('incomplete dishes require explicit acceptance and preserve unknown nutriti
 for(const file of ['CloudMealDetail.vue','CloudRecipe.vue'])test(`${file} rereads after same-account foreground and hides revoked content`,async()=>{
  let denied=false,reads=0
  const p=mount(file,'load,error,'+(file==='CloudRecipe.vue'?'dish':'meal'),{storageContext:()=> 'same-account',getSession:()=>({householdId:'family'}),defineProps:()=>({route:{arrangement:'arrangement',date:'2026-10-22',version:1,meal:'lunch',dish:'dish'}}),
-  dailyArrangementState,scopedStorage:storage(),newHealthRequestId:()=>requestId,loadCloudProfile:async()=>({}),createDailyArrangementClient:()=>({pause(){},reset(){},dispose(){}}),
+  dailyArrangementState,scopedStorage:storage(),newHealthRequestId:()=>requestId,ensureServiceNotice:async()=>({acknowledged:true}),loadCloudProfile:async()=>({}),createDailyArrangementClient:()=>({pause(){},reset(){},dispose(){}}),
   request:async()=>{reads++;if(denied)throw Object.assign(new Error('授权撤回'),{code:403});return {data:{arrangement_id:'arrangement',version:1,meal:{type:'lunch',dishes:[{id:'dish',steps:['合成做法']}],memberNotes:[]}}}}
  })
  await p.load();denied=true;p.hooks.show();await new Promise(resolve=>setImmediate(resolve))
@@ -359,7 +364,7 @@ test('diet correction authorization loss removes the record and its editable pri
 test('member change authorization loss also removes the independently displayed meal snapshot',async()=>{
  const p=mount('CloudMealDetail.vue','load,confirm,meal,error',{
   storageContext:()=> 'same-account',getSession:()=>({householdId:'family'}),defineProps:()=>({route:{arrangement:'arrangement',date:'2026-10-22',version:1,meal:'lunch'}}),
-  dailyArrangementState,scopedStorage:storage(),newHealthRequestId:()=>requestId,loadCloudProfile:async()=>({}),
+  dailyArrangementState,scopedStorage:storage(),newHealthRequestId:()=>requestId,ensureServiceNotice:async()=>({acknowledged:true}),loadCloudProfile:async()=>({}),
   createDailyArrangementClient:({state})=>({load:async()=>{state.arrangement={id:'arrangement',version:1}},changeMembers:async()=>{state.arrangement=null;state.error='授权撤回'},pause(){},reset(){},dispose(){}}),
   request:async()=>({data:{arrangement_id:'arrangement',version:1,meal:{type:'lunch',memberNotes:[],dishes:[]}}}),
  })
@@ -448,7 +453,7 @@ test('feedback pagination reports a stalled cursor instead of claiming no saved 
 
 function chat(){let submits=0,exists=false,invalid=false;const saved=storage(),calls=[]
  const send=async o=>{calls.push(jsonClone(o));if(o.path.includes('/daily-meal-plans/'))return {data:{status:'absent',date:o.path.split('/').at(-1),version:0,meals:[]}};if(o.path.includes('/reference-meal-plans/'))return {data:{status:'absent'}};if(o.path.includes('/daily-arrangements/'))return {data:readyPreparation('2026-10-20').arrangement};if(o.path.includes('/consultations?'))return {data:{items:[{thread_id:thread,member_id:member,agent_slug:'health-consultation',business_date:'2026-10-20'}],has_more:false,next_offset:null}};if(o.path.includes('/requests?agent_slug='))return {data:{requests:[]}};if(o.path.endsWith('/members'))return {data:[{id:member,is_owner:true}]};if(o.path.endsWith('/readiness'))return {data:{capabilities:{member_id:member},entries:[{entry_type:'consultation',status:'available'}]}};if(o.path.endsWith('/daily-conversations'))return {data:{days:[{date:'2026-10-20',thread_id:thread}]}};if(o.path==='/api/agent/runs'){if(++submits===1)throw Object.assign(new Error('timeout'),{code:503});exists=true;return {data:{request_id:requestId,thread_id:thread}}}if(o.path.includes('/tasks/')){if(invalid)throw Object.assign(new Error('withdrawn'),{code:410});if(!exists)throw Object.assign(new Error('not yet'),{code:404});return {data:{member_id:member,thread_id:thread,request_id:requestId,task_type:'consultation',agent_slug:'health-consultation',request_status:'dispatched',execution_status:'completed',result:{result_type:'general_education_answer',scope:'general_education',answer:'private previous answer',citations:[]}}}};throw new Error(o.path)}
- const deps={createDishSwap,dishSwapState,watchDishSwap,chatPromptProfileKey,todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),createChatEntryTransition,createChatKeyboardLayout,watch,chooseReference,isReferencePlan,preparationReady:value=>checkPreparation(value,'2026-10-20'),readCurrentPreparation:async()=>readyPreparation('2026-10-20'),preparationRoute:()=>'/pages/onboarding/preparing',HEALTH_TEXT_TASKS,loadCloudProfile:async()=>({onboarded:true,selfMemberId:'self',householdId:'family',defaultDiners:['self'],members:[{id:'self',relation:'本人',healthMemberId:member}]}),dailyArrangementState:()=>({phase:'idle',busy:false}),createDailyArrangementClient:({state})=>({adopt:arrangement=>{state.phase='ready';state.arrangement=arrangement},load:async()=>{state.phase='ready';state.arrangement={}},pause(){},reset(){},dispose(){}}),storageContext:()=> 'scope',scopedStorage:saved,getSession:()=>({accountId:'self',householdId:'family',token:'synthetic'}),commerce:{connect:async()=>{}},request:send,newHealthRequestId:()=>requestId,localDate:()=> '2026-10-20',readChatSnapshot:async()=>({messages:[],runs:[]}),chatImageContent:async image=>image.localPath,persistChatImage:async image=>({localPath:image.path}),createHealthTaskFlow:options=>createHealthTaskFlow({...options,send,session:()=>({accountId:'self',token:'synthetic'}),revision:()=>1,storage:saved,newId:()=>requestId,day:()=> '2026-10-20',subscribe:()=>()=>{}}),uni:{redirectTo(){},reLaunch(){},showToast(){}}}
+ const deps={createDishSwap,dishSwapState,watchDishSwap,chatPromptProfileKey,todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),createChatEntryTransition,createChatKeyboardLayout,watch,chooseReference,isReferencePlan,preparationReady:value=>checkPreparation(value,'2026-10-20'),readCurrentPreparation:async()=>readyPreparation('2026-10-20'),preparationRoute:()=>'/pages/onboarding/preparing',HEALTH_TEXT_TASKS,ensureServiceNotice:async()=>({acknowledged:true}),loadCloudProfile:async()=>({onboarded:true,selfMemberId:'self',householdId:'family',defaultDiners:['self'],members:[{id:'self',relation:'本人',healthMemberId:member}]}),dailyArrangementState:()=>({phase:'idle',busy:false}),createDailyArrangementClient:({state})=>({adopt:arrangement=>{state.phase='ready';state.arrangement=arrangement},load:async()=>{state.phase='ready';state.arrangement={}},pause(){},reset(){},dispose(){}}),storageContext:()=> 'scope',scopedStorage:saved,getSession:()=>({accountId:'self',householdId:'family',token:'synthetic'}),commerce:{connect:async()=>{}},request:send,newHealthRequestId:()=>requestId,localDate:()=> '2026-10-20',readChatSnapshot:async()=>({messages:[],runs:[]}),chatImageContent:async image=>image.localPath,persistChatImage:async image=>({localPath:image.path}),createHealthTaskFlow:options=>createHealthTaskFlow({...options,send,session:()=>({accountId:'self',token:'synthetic'}),revision:()=>1,storage:saved,newId:()=>requestId,day:()=> '2026-10-20',subscribe:()=>()=>{}}),uni:{redirectTo(){},reLaunch(){},showToast(){}}}
  // Recovery fixtures explicitly reopen a conversation; plain entry is tested
  // separately and must never pick up this fixture's pre-existing daily thread.
  deps.defineProps=()=>({route:{entry:'conversation'}})
@@ -1203,4 +1208,143 @@ test('public chat shell is immediately present while fresh private entry data re
  assert.equal(p.messages.value[0].text,'same account result');assert.equal(p.entryReady.value,false);assert.equal(p.chatBusy.value,true)
  resolveProfile({onboarded:true,selfMemberId:'self',householdId:'family',members:[{id:'self',relation:'本人',healthMemberId:member}]})
  await warm;assert.equal(p.entryReady.value,true);p.dispose()
+})
+
+const recordEntryFixture={key:'synthetic-dish-entry',dishes:[{name:'番茄炒蛋',grams:null,portion_source:'unknown',portion_confirmed:false}]}
+const recordProps=()=>({route:{},embedded:true,entry:recordEntryFixture})
+
+test('dish recording has its own draft and does not inherit an unrelated unfinished page',async()=>{
+ const p=captureEditor({defineProps:recordProps})
+ try{
+  p.cache.set('A:cloud-capture-ui',{entryDay:mealDay(new Date().toISOString()),dishes:[{name:'别的一餐'}],people:[]})
+  await p.load();assert.deepEqual(p.dishes.value.map(d=>d.name),['番茄炒蛋'])
+  assert.equal(p.people.value[0].portion,'不确定');assert.equal(p.people.value[0].grams,'')
+  assert.deepEqual(p.cache.get('A:cloud-capture-ui').dishes,[{name:'别的一餐'}])
+ }finally{p.dispose()}
+})
+
+test('an uncertain previous save blocks dish seeding and preserves the original recovery request',async()=>{
+ const pending={entryKey:'another-entry',rows:[{phase:'creating',memberId:member,meal:{items:[{name:'上一餐'}]}}]}
+ const p=captureEditor({defineProps:recordProps,createCloudMealSaver:()=>({read:()=>pending,hide(){},finish(){throw Error('must preserve')}})})
+ try{await p.load();assert.equal(p.entryBlocked.value,true);assert.equal(p.canSave.value,false);assert.deepEqual(p.dishes.value,[]);assert.match(p.error.value,/继续上次/);assert.equal(pending.rows[0].phase,'creating')}
+ finally{p.dispose()}
+})
+
+test('changing record members keeps the dish and records each persons actual amount separately',async()=>{
+ const second='22222222-2222-4222-8222-222222222222'
+ const p=captureEditor({defineProps:recordProps,request:async()=>({data:[{id:member,display_name:'我',scopes:['diet_edit']},{id:second,display_name:'妈妈',scopes:['diet_edit']}]})})
+ try{
+  await p.load();p.people.value[0].grams='80';p.togglePerson(p.people.value[1]);p.people.value[1].grams='120'
+  assert.deepEqual(p.dishes.value.map(d=>d.name),['番茄炒蛋'])
+  assert.equal(p.savedMeal(p.people.value[0]).meal.items[0].grams,80)
+  assert.equal(p.savedMeal(p.people.value[1]).meal.items[0].grams,120)
+  p.togglePerson(p.people.value[0]);assert.equal(p.dishes.value[0].name,'番茄炒蛋');assert.equal(p.people.value[1].grams,'120')
+ }finally{p.dispose()}
+})
+
+test('dish photo supplement navigates with the intact draft and freezes hidden source writes',async()=>{
+ let entry,ui,url
+ const p=captureEditor({defineProps:recordProps,mealPhotoNavigation:{open:(e,u,go)=>{entry=e;ui=jsonClone(u);go({url:'/pages/scan/index?captureNavigation=opaque'})}},uni:{navigateTo:options=>url=options.url}})
+ try{
+  await p.load();p.people.value[0].grams='125';p.time.value='18:25';await p.beginSupplement()
+  assert.equal(url,'/pages/scan/index?captureNavigation=opaque');assert.equal(entry.key,recordEntryFixture.key)
+  assert.equal(ui.people[0].grams,'125');assert.equal(ui.time,'18:25');assert.equal(ui.supplement.phase,'choose');assert.equal(p.supplement.value,null)
+  const key='A:'+captureUiKey(entry.key),before=jsonClone(p.cache.get(key))
+  p.hide();await nextTick();assert.deepEqual(p.cache.get(key),before);assert.equal(p.saves,0)
+ }finally{p.dispose()}
+})
+
+test('source photo page restores members and actual time, and returning reads its saved receipt',async()=>{
+ const key=captureUiKey(recordEntryFixture.key),today=mealDay(new Date().toISOString())
+ const p=captureEditor({defineProps:()=>({route:{captureNavigation:'opaque'}}),mealPhotoNavigation:{read:()=>recordEntryFixture}})
+ try{
+  p.cache.set('A:'+key,{entryDay:today,date:today,time:'18:25',mealType:'dinner',captureScope:'单人餐盘',oil:'不确定',source:'菜品详情',dishes:recordEntryFixture.dishes,people:[{memberId:member,selected:true,dishes:recordEntryFixture.dishes.map(d=>d.name),grams:'125',portion:'一般'}],supplement:{phase:'choose',candidates:[]}})
+  await p.load();assert.equal(p.time.value,'18:25');assert.equal(p.people.value[0].grams,'125');assert.equal(p.dishes.value.length,1);assert.equal(p.canSave.value,false)
+  const input=p.savedMeal(p.people.value[0]);assert.equal(input.meal.items[0].grams,125)
+  p.hide();await nextTick();assert.equal(p.cache.get('A:'+key).people[0].grams,'125')
+ }finally{p.dispose()}
+})
+
+test('invalid photo handoff cannot inherit an unrelated photo draft',async()=>{
+ const p=captureEditor({defineProps:()=>({route:{captureNavigation:'missing'}})})
+ try{await p.load();assert.equal(p.entryBlocked.value,true);assert.equal(p.canSave.value,false);assert.deepEqual(p.dishes.value,[]);assert.match(p.error.value,/来源已失效/)}finally{p.dispose()}
+})
+
+test('a delayed show hook from the previous photo page cannot claim the new photo editors draft',async()=>{
+ const p=captureEditor({defineProps:()=>({route:{captureNavigation:'old'}}),mealPhotoNavigation:{read:()=>recordEntryFixture},getCurrentPages:()=>[{route:'pages/scan/index',options:{captureNavigation:'new'}}]})
+ try{await p.load();assert.deepEqual(p.dishes.value,[]);assert.equal(p.membersLoading.value,false);assert.equal(p.cache.size,0)}finally{p.dispose()}
+})
+
+test('hidden source watchers cannot overwrite the visible photo editors draft',async()=>{
+ let route='pages/meals/detail'
+ const p=captureEditor({defineProps:recordProps,getCurrentPages:()=>[{route}]})
+ try{await p.load();await nextTick();const before=jsonClone([...p.cache]);route='pages/scan/index';p.people.value[0].grams='999';await nextTick();assert.deepEqual([...p.cache],before)}finally{p.dispose()}
+})
+
+test('returning without choosing a photo keeps photography optional and re-enables the source meal',async()=>{
+ const p=captureEditor({defineProps:recordProps}),today=mealDay(new Date().toISOString())
+ try{
+  p.cache.set('A:'+captureUiKey(recordEntryFixture.key),{entryDay:today,date:today,time:'18:25',mealType:'dinner',captureScope:'单人餐盘',oil:'不确定',source:'菜品详情',dishes:recordEntryFixture.dishes,people:[{memberId:member,selected:true,dishes:recordEntryFixture.dishes.map(d=>d.name),grams:'125',portion:'一般'}],supplement:{phase:'choose',candidates:[]}})
+  await p.load();assert.equal(p.supplement.value,null);assert.equal(p.canSave.value,true);assert.equal(p.people.value[0].grams,'125')
+ }finally{p.dispose()}
+})
+
+test('explicitly merging a differently named photo keeps manual intake and original photo estimate identity',async()=>{
+ const p=captureEditor({defineProps:()=>({route:{captureNavigation:'opaque'}}),mealPhotoNavigation:{read:()=>recordEntryFixture},createMealPhotoClient:({state})=>({open:async id=>{state.memberId=id},discard(){},resetSelection:()=>true})})
+ try{
+  await p.load();p.dishes.value=jsonClone(recordEntryFixture.dishes);const original=p.dishes.value[0].name
+  p.people.value[0].dishes=[original];p.people.value[0].grams='125'
+  const item={item_id:'photo-item',name:'不同识别名称',photo_estimate:{draft_id:'draft',grams:400,nutrients:{energy_kcal:120}}}
+  p.vision.draft={id:'draft',version:1};p.vision.meal={items:[item],photos:[{image_index:0,upload_id:'photo',upload_page_index:0}]}
+  p.supplement.value={phase:'review',photo:'local-photo',candidates:supplementCandidates(p.dishes.value,[item])}
+  p.matchCarriedDish(p.supplement.value.candidates[0]);p.joinSupplement()
+  assert.equal(p.dishes.value.length,1);assert.equal(p.dishes.value[0].name,item.name);assert.equal(p.people.value[0].grams,'125')
+  const saved=p.savedMeal(p.people.value[0]);assert.equal(saved.draftId,'draft');assert.equal(saved.meal.items[0].item_id,'photo-item');assert.equal(saved.meal.items[0].grams,125);assert.equal(saved.meal.items[0].photo_estimate.grams,400)
+ }finally{p.dispose()}
+})
+
+test('removing an uneaten source dish clears old person weights before recording other photo food',async()=>{
+ const p=captureEditor({defineProps:()=>({route:{captureNavigation:'opaque'}}),mealPhotoNavigation:{read:()=>recordEntryFixture}})
+ try{
+  await p.load();p.dishes.value=jsonClone(recordEntryFixture.dishes);p.people.value[0].dishes=p.dishes.value.map(d=>d.name);p.people.value[0].grams='125'
+  p.supplement.value={phase:'review',candidates:[{dish:{name:'米饭'},choice:'add'}]};p.removeCarriedDish()
+  assert.deepEqual(p.dishes.value,[]);assert.equal(p.people.value[0].grams,'');assert.deepEqual(p.people.value[0].dishes,[])
+  p.changeAccount('B');await p.load();assert.equal(p.entryBlocked.value,true);assert.equal(p.canSave.value,false)
+ }finally{p.dispose()}
+})
+
+test('adding photo rice retains the old dish weight without calling it the combined meal weight',async()=>{
+ const p=captureEditor({defineProps:()=>({route:{captureNavigation:'opaque'}}),mealPhotoNavigation:{read:()=>recordEntryFixture},createMealPhotoClient:({state})=>({open:async id=>{state.memberId=id},discard(){},resetSelection:()=>true})})
+ try{
+  await p.load();p.dishes.value=jsonClone(recordEntryFixture.dishes);const name=p.dishes.value[0].name
+  p.people.value[0].dishes=[name];p.people.value[0].grams='125'
+  const items=[{item_id:'photo-item',name},{item_id:'photo-rice',name:'米饭'}]
+  p.vision.draft={id:'draft',version:1};p.vision.meal={items,photos:[]}
+  p.supplement.value={phase:'review',photo:'local-photo',candidates:supplementCandidates(p.dishes.value,items)}
+  p.supplement.value.candidates[0].choice='same';p.joinSupplement()
+  const saved=p.savedMeal(p.people.value[0]);assert.equal(saved.meal.items[0].grams,125);assert.equal(saved.meal.items[1].grams,null);assert.equal(p.people.value[0].grams,'')
+ }finally{p.dispose()}
+})
+
+test('dish entry saves the chosen eating time rather than the menu date',async()=>{
+ const p=captureEditor({defineProps:recordProps})
+ try{await p.load();p.date.value='2026-11-19';p.time.value='18:30';p.mealType.value='dinner';assert.equal(p.savedMeal(p.people.value[0]).meal.eaten_at,'2026-11-19T18:30:00+08:00')}
+ finally{p.dispose()}
+})
+
+test('unmounting a sheet prevents late member loads from refilling its private state',async()=>{
+ let release;const p=captureEditor({defineProps:recordProps,request:()=>new Promise(r=>release=r)})
+ const reading=p.load();p.hooks.unmount();release({data:[{id:member,display_name:'我',scopes:['diet_edit']}]});await reading
+ try{assert.equal(p.dishes.value.length,0);assert.equal(p.people.value.length,0)}finally{p.dispose()}
+})
+
+test('invalid actual grams cannot be saved or silently converted to unknown intake',async()=>{
+ const p=captureEditor({defineProps:recordProps})
+ try{await p.load();for(const value of ['-1','0','10001','NaN']){p.people.value[0].grams=value;assert.throws(()=>p.savedMeal(p.people.value[0]),/实际份量/)}p.people.value[0].grams='';assert.equal(p.savedMeal(p.people.value[0]).meal.items[0].grams,null)}
+ finally{p.dispose()}
+})
+
+test('explicitly recording the dish again starts fresh actual intake without duplicating a completed save',async()=>{
+ const p=captureEditor({defineProps:recordProps})
+ try{await p.load();p.saved.value={rows:[]};p.people.value[0].grams='90';p.newMeal();assert.equal(p.saved.value,null);assert.deepEqual(p.dishes.value.map(d=>d.name),['番茄炒蛋']);assert.equal(p.people.value[0].grams,'');assert.equal(p.people.value[0].portion,'不确定');assert.equal(p.saves,0)}finally{p.dispose()}
 })

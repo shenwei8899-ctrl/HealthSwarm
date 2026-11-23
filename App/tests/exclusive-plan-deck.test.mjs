@@ -1,5 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { planTierNames, planTierReferencePrices, planTierReferenceRanges } from '../src/services/exclusive-plan-flow.js'
+import * as Vue from 'vue'
+import {createRequire} from 'node:module'
+const vueRequire=createRequire(import.meta.resolve('vue'))
+const {compile}=vueRequire('@vue/compiler-dom')
+const {renderToString}=vueRequire('@vue/server-renderer')
 import { createPlanDeck, planDeckState, PLAN_DECK_DURATION } from '../src/services/exclusive-plan-deck.js'
 
 function harness(reduced = false) {
@@ -82,4 +89,41 @@ test('the current tier and unknown values never create a transition', () => {
   h.deck.request('standard'); h.deck.request('unrecognized')
   assert.equal(h.state.front, 'standard'); assert.equal(h.state.requested, 'standard')
   assert.equal(h.timers.size, 0); assert.deepEqual(h.commits, [])
+})
+
+function cardView(props) {
+  const source=readFileSync(new URL('../src/components/ExclusivePlanDeck.vue',import.meta.url),'utf8')
+  const script=source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
+  const setup=new Function('defineProps','defineEmits','planTierNames','planTierReferencePrices','planTierReferenceRanges',script+';return {tierArt,tierCopy}')
+    (()=>{},()=>()=>{},planTierNames,planTierReferencePrices,planTierReferenceRanges)
+  const template=source.match(/<template>([\s\S]*?)<\/template>/)[1]
+  const {code}=compile(template,{mode:'function',isCustomElement:tag=>['view','text','image'].includes(tag)})
+  const render=new Function('Vue',code)(Vue)
+  return renderToString(Vue.createSSRApp({setup:()=>({...setup,...props,planTierNames,planTierReferencePrices,planTierReferenceRanges,emit(){}}),render}))
+}
+
+test('tier reference ranges retain the established wording and never become a plan total', () => {
+  assert.deepEqual(planTierReferencePrices, {
+    economy: '约 ¥10–20 /人/天', standard: '约 ¥30–50 /人/天', premium: '约 ¥50–100 /人/天',
+  })
+  for(const [tier,range] of Object.entries(planTierReferenceRanges))assert.equal(planTierReferencePrices[tier],`约 ¥${range.min}–${range.max} /人/天`)
+})
+
+test('all three cards render their own tier art, descriptive label and reference range',async()=>{
+ const html=await cardView({plans:['economy','standard','premium'].map(tier_code=>({tier_code})),actionLabel:'查看计划',disabled:false})
+ for(const [tier,name] of Object.entries(planTierNames)){
+  assert.ok(html.includes(name));assert.ok(html.includes(`/static/plans/${tier}-v3.webp`))
+  assert.ok(html.includes(`${planTierReferenceRanges[tier].min}–${planTierReferenceRanges[tier].max}`))
+ }
+ for(const label of ['日常实惠','日常之选','品质之选','参考','/人/天'])assert.ok(html.includes(label))
+ assert.equal((html.match(/<button\b/g)||[]).length,3)
+ assert.doesNotMatch(html,/economy-v2|standard-v2|premium-v2/)
+})
+
+for(const label of ['生成计划','正在读取','正在生成','查看计划','待重试','待准备'])test(`cards visibly reflect ${label} without replacing the existing disabled state`,async()=>{
+ const disabled=label!=='查看计划'&&label!=='生成计划'
+ const html=await cardView({plans:[{tier_code:'standard'}],actionLabel:label,disabled})
+ assert.ok(html.includes(`>${label}</text>`))
+ assert.equal(/<button[^>]* disabled/.test(html),disabled)
+ assert.ok(html.includes(`aria-label="${label}，标准型，约 ¥30–50 /人/天"`))
 })

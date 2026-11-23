@@ -35,7 +35,7 @@ function act() { if (!props.busy && props.interactive) emit('action') }
     </view>
     <view class="tm-meal-entries" :aria-busy="!state.plan&&(state.checking||state.phase==='generating')">
      <button v-for="meal in mealEntries" :key="meal.type" class="tm-meal-entry" :disabled="!meal.item||!state.displayable||!interactive" :aria-label="'查看'+meal.name+'安排'" @click="detail(meal.item)">
-      <view class="tm-meal-symbol" :class="'tm-symbol-'+meal.type" aria-hidden="true"><view class="tm-meal-glyph"><AppIcon :name="meal.icon" :size="44"/></view></view>
+      <view class="tm-meal-symbol" :class="'tm-symbol-'+meal.type" aria-hidden="true"><view class="tm-meal-glyph"><AppIcon :name="meal.icon" :size="heading?34:44"/></view></view>
       <text>{{meal.name}}</text>
      </button>
     </view>
@@ -48,10 +48,10 @@ function act() { if (!props.busy && props.interactive) emit('action') }
 </template>
 <style>
 .tm-body{padding:0 20px 20px;color:var(--ui-text,#35343f)}
-.tm-inline{margin:8px 0 16px;padding:18px;border:1px solid var(--ui-line,#eae8f0);border-radius:22px;background:var(--ui-surface,#fff)}
-.tm-inline-heading{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:18px}
-.tm-inline-title{font-size:18px;font-weight:600;line-height:1.4}
-.tm-inline-date{font-size:12px;line-height:1.6;color:var(--ui-muted,#74717f)}
+.tm-inline{margin:8px 0 16px;padding:10px 12px;border:0;border-radius:20px;background:var(--ui-surface,#fff)}
+.tm-inline-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+.tm-inline-title{font-size:14px;font-weight:600;line-height:20px}
+.tm-inline-date{flex-shrink:0;font-size:10px;line-height:16px;color:#9690a3}
 .tm-meal-entries{display:flex;align-items:stretch;gap:12px}
 .tm-meal-entry{
  display:flex;
@@ -94,6 +94,15 @@ function act() { if (!props.busy && props.interactive) emit('action') }
 .tm-symbol-dinner .tm-meal-glyph{transform:rotate(6deg)}
 .tm-meal-entry:active{transform:translateY(1px) scale(.98);background:#f0f2f7}
 .tm-meal-entry[disabled]{opacity:.5;color:#858995}
+/* Compact conversation card; the shortcut sheet retains its larger controls. */
+.tm-inline .tm-meal-entries{gap:8px}
+.tm-inline .tm-meal-entry{min-height:56px;padding:6px 8px;gap:4px;border:1px solid #efedf7;border-radius:14px;background:#f7f6fc;color:#827b90;font-size:12px;font-weight:400;line-height:16px;letter-spacing:0}
+.tm-inline .tm-meal-symbol{width:24px;height:24px;border-radius:7px;box-shadow:inset 0 1px 1px rgba(255,255,255,.65),0 1px 3px rgba(225,139,93,.1);transform:none}
+.tm-inline .tm-meal-glyph{transform:none}
+.tm-inline .tm-symbol-lunch{box-shadow:inset 0 1px 1px rgba(255,255,255,.65),0 1px 3px rgba(226,173,71,.1)}
+.tm-inline .tm-symbol-dinner{box-shadow:inset 0 1px 1px rgba(255,255,255,.65),0 1px 3px rgba(146,121,213,.1)}
+.tm-inline .tm-meal-entry:active{background:#eeebf8}
+.tm-inline .tm-meal-entry[disabled]{color:#858995}
 .tm-status,.tm-error{margin:0 0 14px;padding:12px;border-radius:14px;background:#f5f4f8;color:var(--ui-muted,#74717f);font-size:13px;line-height:1.7}
 .tm-status>text,.tm-question{display:block;overflow-wrap:anywhere}
 .tm-status .tm-retry{margin-top:8px}
@@ -106,6 +115,6 @@ function act() { if (!props.busy && props.interactive) emit('action') }
 .tm-body-paused .tm-pulse{animation-play-state:paused}
 .tm-body button:after{border:0}
 @keyframes tm-breathe{0%,100%{opacity:.55}50%{opacity:1}}
-@media(max-width:350px){.tm-inline{padding:16px}.tm-inline-heading{gap:6px}.tm-inline-date{font-size:11px}.tm-meal-entries{gap:8px}.tm-meal-entry{min-height:94px;padding:12px 6px 10px;font-size:14px}.tm-meal-symbol{width:34px;height:34px}}
+@media(max-width:350px){.tm-inline-heading{gap:6px}.tm-meal-entries{gap:8px}.tm-meal-entry{min-height:94px;padding:12px 6px 10px;font-size:14px}.tm-meal-symbol{width:34px;height:34px}}
 @media(prefers-reduced-motion:reduce){.tm-pulse{animation:none}.tm-meal-entry{transition:none}}
 </style>

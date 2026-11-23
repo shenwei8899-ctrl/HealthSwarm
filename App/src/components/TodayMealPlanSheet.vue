@@ -62,7 +62,7 @@ watch([()=>props.open,()=>props.state.date,()=>props.members],cancelEditing)
    <view class="tm-header">
     <view class="tm-heading-wrap">
      <view class="tm-heading" @touchstart="start" @touchend="end" @touchcancel="cancelTouch"><text class="tm-title">{{editing?'调整就餐成员':'今日餐单'}}</text></view>
-     <view class="tm-date-row"><text class="tm-date">{{displayDate}}</text><button v-if="!editing" class="tm-edit" :disabled="!canEdit" @click="startEditing">调整就餐成员</button></view>
+     <view class="tm-date-row"><text class="tm-date">{{displayDate}}</text></view>
     </view>
     <view class="tm-controls"><button class="tm-close" :aria-label="editing?'返回今日餐单':'关闭今日餐单'" @click="dismiss"><text>{{editing?'‹':'×'}}</text></button></view>
    </view>

@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 
 from yuxi.repositories.family_repository import FamilyRepository
 from yuxi.repositories.wechat_identity_repository import WechatIdentityRepository
+from yuxi.services.service_notice_service import acknowledge_notice, notice_status, validate_acknowledgement
 from yuxi.services.miniapp_profile_types import miniapp_onboarding_ready
 from yuxi.services.login_rate_limit_service import (
     check_login_rate_limit,
@@ -70,6 +71,9 @@ class WechatLoginService:
         """验证微信和绑定凭据后提交关联，成功响应只包含业务会话。"""
         if not self.settings.public()["available"]:
             raise HTTPException(503, {"code": "WECHAT_NOT_CONFIGURED", "message": "微信登录服务尚未配置完成"})
+        notice = getattr(payload, "service_notice", None)
+        if notice is not None:
+            validate_acknowledgement(notice)
         identifier = payload.identifier or "wechat-login"
         allowed, retry_after = await check_login_rate_limit(client_ip, identifier)
         if not allowed:
@@ -110,6 +114,7 @@ class WechatLoginService:
                 )
             if not self.settings.department_id or not await self.repo.department(self.settings.department_id):
                 raise HTTPException(503, {"code": "WECHAT_REGISTRATION_NOT_READY", "message": "新用户注册尚未配置完成"})
+            validate_acknowledgement(notice)
             uid = "wx_" + secrets.token_hex(12)
             user = User(
                 uid=uid,
@@ -124,10 +129,14 @@ class WechatLoginService:
         try:
             if not identity:
                 await self.repo.bind(self.settings.appid, digest, user)
+            if notice is not None:
+                await acknowledge_notice(self.db, user.uid, notice)
             user.reset_failed_login()
             user.last_login = utc_now_naive()
             expires_at = int(time.time()) + 7 * 24 * 60 * 60
-            token = AuthUtils.create_access_token({"sub": str(user.id), "login_channel": "wechat"}, expires_delta=timedelta(days=7))
+            token = AuthUtils.create_access_token(
+                {"sub": str(user.id), "login_channel": "wechat"}, expires_delta=timedelta(days=7)
+            )
             context = await self.session_context(user)
             await self.db.commit()
         except IntegrityError:
@@ -190,7 +199,8 @@ class WechatLoginService:
                     "invitation_review_pending": bool(member and member.invitation_review_pending),
                 }
             )
-        return {"account": {"id": user.id, "uid": user.uid, "name": user.username}, "families": families}
+        return {"account": {"id": user.id, "uid": user.uid, "name": user.username}, "families": families,
+                "service_notice": await notice_status(self.db, user.uid)}
 
     @staticmethod
     def require_user(user):

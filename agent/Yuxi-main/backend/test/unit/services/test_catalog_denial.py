@@ -131,3 +131,16 @@ async def test_denial_never_bypasses_authorization(authorized_attempt, monkeypat
     monkeypatch.setattr(owner, boundary, AsyncMock(side_effect=HealthVisionError("not_authorized", "合成拒绝", 403)))
     with pytest.raises(HealthVisionError, match="not_authorized"):
         await service.require_consultation_attempt(authorized_attempt, denial_turn(marked=True))
+
+
+@pytest.fixture(autouse=True)
+def confirmed_account_notice(monkeypatch):
+    """本模块聚焦既有运行边界，合成账号已确认当前服务声明。"""
+    from datetime import datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from yuxi.repositories.service_notice_repository import ServiceNoticeRepository
+    from yuxi.services.service_notice_service import NOTICE_HASH
+
+    receipt = SimpleNamespace(content_hash=NOTICE_HASH, acknowledged_at=datetime(2026, 11, 22))
+    monkeypatch.setattr(ServiceNoticeRepository, "current", AsyncMock(return_value=receipt))

@@ -1,3 +1,4 @@
+import { normalizeFollowups } from './chat-followups.js'
 import { newHealthRequestId } from './health-request-id.js'
 export { newHealthRequestId } from './health-request-id.js'
 import { request } from './request.js'
@@ -452,6 +453,9 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       await refresh(ticket)
       return true
     } catch (error) {
+      if(current(ticket)&&error.noticeRejected===true){
+        state.submitRejected=true;failRequest(error,'service_notice_required');state.error=error.message;emit();return false
+      }
       if (current(ticket)) {
         // 旧版提交接口只返回冲突文案，先独立确认原会话再处理本条拒绝。
         const verifyConflict = Number(error?.code) === 409 &&
@@ -528,7 +532,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       else if (data.execution_status === 'completed') {
         if (data.result?.result_type === 'general_education_answer' && data.result.scope === 'general_education' &&
           typeof data.result.answer === 'string' && Array.isArray(data.result.citations)) {
-          state.result = { type: 'answer', text: data.result.answer,
+          state.result = { type: 'answer', text: data.result.answer, followups:normalizeFollowups(data.result.followups),
             purchaseOffers: Array.isArray(data.result.purchase_offers) ? data.result.purchase_offers : [],
             recordedMeals: state.recordedMeals,
             citations: data.result.source_titles?.length ? data.result.source_titles : data.result.citations.map(item => item.title).filter(Boolean) }

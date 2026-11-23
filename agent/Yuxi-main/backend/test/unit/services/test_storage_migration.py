@@ -21,13 +21,14 @@ def family_schema_upgrade(monkeypatch):
         return None
 
     monkeypatch.setattr(storage_migration, "upgrade_family_archives", upgrade)
+    monkeypatch.setattr(storage_migration, "upgrade_service_notice", upgrade)
+    monkeypatch.setattr(storage_migration, "upgrade_meal_archive", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_family_care", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_wechat_identity", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_product_feedback", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_family_membership", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_shared_daily_meal_plan", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_converged_health", upgrade)
-    monkeypatch.setattr(storage_migration, "upgrade_meal_archive", upgrade)
 
 
 class _Session:

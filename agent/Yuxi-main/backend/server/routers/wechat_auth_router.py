@@ -11,11 +11,15 @@ from yuxi.storage.postgres.models_business import User
 from yuxi.utils.auth_utils import AuthUtils
 
 
+from yuxi.services.service_notice_service import NoticeAcknowledgement
+
+
 class WechatLoginInput(BaseModel):
     """前端只提交临时 code，以及显式绑定时的已有账号凭据。"""
 
     model_config = ConfigDict(extra="forbid")
     code: SecretStr = Field(min_length=1, max_length=256)
+    service_notice: NoticeAcknowledgement | None = None
     identifier: str | None = Field(default=None, min_length=1, max_length=100)
     password: SecretStr | None = Field(default=None, min_length=1, max_length=128)
 

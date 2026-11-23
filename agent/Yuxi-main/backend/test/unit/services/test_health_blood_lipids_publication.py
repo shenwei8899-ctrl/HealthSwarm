@@ -396,3 +396,16 @@ def isolate_structured_citation_storage(monkeypatch):
     """图装配验证隔离引用存储，引用真实校验在独立接口测试覆盖。"""
     from yuxi.services import health_evidence_service
     monkeypatch.setattr(health_evidence_service, "validate_nutrition_answer", AsyncMock())
+
+
+@pytest.fixture(autouse=True)
+def confirmed_account_notice(monkeypatch):
+    """本模块聚焦既有运行边界，合成账号已确认当前服务声明。"""
+    from datetime import datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from yuxi.repositories.service_notice_repository import ServiceNoticeRepository
+    from yuxi.services.service_notice_service import NOTICE_HASH
+
+    receipt = SimpleNamespace(content_hash=NOTICE_HASH, acknowledged_at=datetime(2026, 11, 22))
+    monkeypatch.setattr(ServiceNoticeRepository, "current", AsyncMock(return_value=receipt))

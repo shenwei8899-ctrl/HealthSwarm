@@ -437,6 +437,14 @@ async def test_new_reference_binding_requires_complete_breakfast(family_profile_
     )
     bound = await bind_reference(current, legacy=False)
     assert bound.is_success, bound.text
+    # 该回归拥有旧食物组规则的蛋白质要求；当前规则另有纯主食排除用例。
+    from yuxi.services.reference_meal_composition import FOOD_GROUP_MEAL_POLICY_VERSION
+
+    async with current[1].begin() as db:
+        binding, _ = await require_consultation(db, "self", bound.json()["thread_id"])
+        binding.initial_planner_selection = {
+            **binding.initial_planner_selection, "meal_policy_version": FOOD_GROUP_MEAL_POLICY_VERSION,
+        }
     context = await running_context(current, bound.json()["thread_id"], read_products=False)
     options = []
     for keyword, file_id, chunk_id in (
@@ -444,6 +452,7 @@ async def test_new_reference_binding_requires_complete_breakfast(family_profile_
         ("水煮蛋", "egg", "egg-chunk"),
     ):
         hits = await service.search_reference_recipes(context, keyword)
+        assert any(item["file_id"] == file_id and item["chunk_id"] == chunk_id for item in hits["items"]), hits
         await receipt(current[1], context, "search_reference_recipes", hits)
         opened = await service.read_reference_recipe(context, file_id, chunk_id)
         await receipt(current[1], context, "read_reference_recipe", opened)
@@ -479,7 +488,7 @@ async def test_new_reference_binding_requires_complete_breakfast(family_profile_
     dishes.append(options[1])
     result = await save_selection()
     assert {dish["name"] for dish in result["meals"][0]["dishes"]} == {"清粥", "水煮蛋"}
-    assert result["meal_policy_version"] == REFERENCE_MEAL_POLICY_VERSION
+    assert result["meal_policy_version"] == FOOD_GROUP_MEAL_POLICY_VERSION
 
 
 async def test_read_selection_three_meals_and_dinner_replacement_preserve_other_sources(

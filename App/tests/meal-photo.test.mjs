@@ -5,6 +5,16 @@ import { createMealPhotoClient, photoState, mealPhotoUploadMessage } from '../sr
 const meal = { meal_type:'lunch',eaten_at:'2026-10-19T12:00:00+08:00',photos:[{image_index:0,upload_id:'photo',upload_page_index:0}],items:[{item_id:'item',name:'合成米饭',grams:null,share_ratio:null,locations:[{image_index:0,bbox:[0,0,1,1]}]}] }
 const draft = () => ({id:'draft',member_id:'member',kind:'meal',version:1,review_status:'pending_confirmation',payload:structuredClone(meal)})
 
+test('source context is frozen once with the task and survives exact recovery',async()=>{
+ let count=0,source={family_id:'family',plan_date:'2026-11-21',plan_version:3,meal_type:'dinner',dish_key:'potato'}
+ const h=setup({sourceContext:()=>source,send:o=>{if(o.path.endsWith('/meal-photo-tasks')&&++count===1)throw Object.assign(new Error('timeout'),{code:'NETWORK_ERROR'})}})
+ await h.client.open();await h.client.addPhoto('local');h.client.setConsent(true);await h.client.start('lunch',meal.eaten_at)
+ const original=structuredClone(h.state.pending.request)
+ assert.equal(original.data.source_context.dish_key,'potato');assert.equal(original.data.meal_type,'lunch')
+ source.dish_key='changed';h.client.discard();await h.client.open();await h.client.retryPending()
+ assert.deepEqual(h.calls.filter(c=>c.path.endsWith('/meal-photo-tasks')),[original,original])
+})
+
 test('changed processor invalidates consent across repeated clicks until a new toggle',async()=>{
   const h=setup();await h.client.open();await h.client.addPhoto('local');h.client.setConsent(true)
   h.config.meal.processor='replacement';h.config.policy_version='synthetic-v2'
@@ -64,7 +74,7 @@ function setup(overrides={}, memory=new Map()) {
     if(path.includes('/diet-logs/page'))return {data:{records:[{id:'record',source_version:2,snapshot:{nutrition:{totals:{energy_kcal:'120'}}}}],next_offset:null}}
     throw new Error('unexpected '+path)
   }
-  const client=createMealPhotoClient({state,send,revision:()=>rev,storage:{getStorageSync:k=>structuredClone(memory.get(k)),setStorageSync:(k,v)=>memory.set(k,structuredClone(v))},newId:()=>`key-${++next}`,upload:overrides.upload|| (async()=>({upload_id:'photo',purpose:'meal'}))})
+  const client=createMealPhotoClient({state,send,revision:()=>rev,storage:{getStorageSync:k=>structuredClone(memory.get(k)),setStorageSync:(k,v)=>memory.set(k,structuredClone(v))},sourceContext:overrides.sourceContext,newId:()=>`key-${++next}`,upload:overrides.upload|| (async()=>({upload_id:'photo',purpose:'meal'}))})
   return {state,client,calls,memory,config,changeAccount:()=>rev++}
 }
 test('capture can reuse freshly authorized member list while still reading policy and drafts',async()=>{

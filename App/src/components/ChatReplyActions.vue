@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { parseAiAnswer } from '../utils/ai-answer.js'
 
-const props=defineProps({text:{type:String,default:''},messageId:{type:[String,Number],default:null},canQuote:{type:Boolean,default:true}})
+const props=defineProps({text:{type:String,default:''},messageId:{type:[String,Number],default:null},canQuote:{type:Boolean,default:true},appearance:{type:String,default:'default'}})
 const emit=defineEmits(['quote'])
 const error=ref('')
 watch(()=>props.messageId,()=>{error.value=''})
@@ -13,7 +13,7 @@ const plainText=computed(()=>{
 function copy(){if(!plainText.value)return;uni.setClipboardData({data:plainText.value,fail(){error.value='复制未完成，请重试'}})}
 </script>
 <template>
- <view class="answer-tools">
+ <view class="answer-tools" :class="{'is-subtle':appearance==='subtle'}">
   <view class="answer-tool-row" aria-label="回复操作">
    <view class="utility-actions">
     <button class="tool-button tool-with-label" aria-label="复制回复" :disabled="!plainText" @click="copy"><image class="tool-icon" src="/static/chat/reply-copy-v2.png" mode="aspectFit" aria-hidden="true"/><text class="tool-label">复制</text></button>
@@ -36,5 +36,9 @@ function copy(){if(!plainText.value)return;uni.setClipboardData({data:plainText.
 .tool-button:not([disabled]):active{background:rgba(70,62,79,.1);transform:scale(.96)}
 .tool-button:focus-visible{outline:2px solid var(--ui-accent,#536b60);outline-offset:2px}
 .tool-error{display:block;margin:4px 0 0 3px;font-size:11px;line-height:1.5;color:#98696b}
+.is-subtle .utility-actions{gap:12px}
+.is-subtle .tool-with-label{justify-content:flex-start;min-width:56px;padding:0 3px;background:transparent;color:#9c8bad}
+.is-subtle .tool-icon{width:16px;height:16px;opacity:.65}
+.is-subtle .tool-button:not([disabled]):active{background:rgba(156,139,173,.06)}
 @media(prefers-reduced-motion:reduce){.tool-button{transition:none}.tool-button:not([disabled]):active{transform:none}}
 </style>

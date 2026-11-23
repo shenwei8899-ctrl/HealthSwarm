@@ -127,7 +127,7 @@ function workflow(options = {}) {
     onMounted: fn => { hooks.mount = fn }, onUnmounted: fn => { hooks.unmount = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn },
     dishTitle,mealLabels,mealPairingText,chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,
     newHealthRequestId: id, storageContext: () => identity.scope, getSession: () => ({ ...identity }), scopedStorage,
-    loadCloudProfile: async () => {if(options.beforeProfile)await options.beforeProfile();return profile()}, localDate: value => value ? nextDay(clock.day) : clock.day,
+    ensureServiceNotice:async()=>({acknowledged:true}),loadCloudProfile: async () => {if(options.beforeProfile)await options.beforeProfile();return profile()}, localDate: value => value ? nextDay(clock.day) : clock.day,
     dailyArrangementState: () => ({ phase: 'idle', busy: false, date: clock.day, arrangement: null }),
     createDailyArrangementClient: ({ state }) => ({ pause() {},reset() { state.phase = 'idle'; state.busy = false; state.arrangement = null }, dispose() {},
       adopt(value) { state.phase = 'ready'; state.arrangement = value; state.date = value.date },
@@ -319,7 +319,7 @@ test('home renders four interactive local suggestions before any entry request c
   assert.equal(p.calls.length,before,'shuffle must not call a service')
   assert.equal(p.chatBusy.value,true)
   assert.equal(p.promptAskBusy.value,false)
-  assert.equal(p.composerPlaceholder,'有问题尽管问我')
+  assert.equal(p.composerPlaceholder.value,'有问题尽管问我')
   const phase=p.entryView.value.phase,generation=p.entryView.value.generation
   gate.resolve();await opening;await flush()
   assert.equal(p.welcomeMounted.value,true)

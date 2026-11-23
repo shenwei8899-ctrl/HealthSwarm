@@ -3,14 +3,18 @@
 import asyncio
 import re
 from datetime import date, timedelta
-from decimal import Decimal, InvalidOperation, ROUND_CEILING
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP
 
 from yuxi.repositories.family_repository import FamilyRepository
 from yuxi.services.daily_commerce_service import current_catalog, sku_matches_plan
 from yuxi.services.family_service import FamilyService
 from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.health_vision_types import HealthVisionError
-from yuxi.services.reference_meal_composition import is_plain_reference_staple, validate_reference_meal_composition
+from yuxi.services.reference_meal_composition import (
+    is_plain_reference_staple,
+    reference_meal_targets,
+    validate_reference_meal_composition,
+)
 from yuxi.services.reference_meal_plan_service import (
     checked_reference_meals,
     recipe_document,
@@ -41,8 +45,11 @@ TIER_TARGETS = {
     "standard": "以适中食材费用为目标",
     "premium": "以较高食材费用为目标",
 }
+TIER_REFERENCE_CENTS = {"economy": (1000, 2000), "standard": (3000, 5000), "premium": (5000, 10000)}
 CAPABILITY_NOTICE = "当前沿用今日餐单口径生成21天参考菜单，未作专业审核，个人营养量和家庭份量尚未核定。"
-PRICE_NOTICE = "小计仅按已核对原谱用量计算所需包装，未核定家庭份量，不代表完整计划预算，不用于比较三档总费用。"
+PRICE_NOTICE = (
+    "按整期合并采购包装计算，参考人均费用为总价除以天数及本计划就餐人数；家庭份量尚未核定，未匹配食材不计入完整总价。"
+)
 
 
 async def exclusive_reference_context(session, uid, fid, *, day=None, load_documents=True):
@@ -73,7 +80,8 @@ async def exclusive_reference_context(session, uid, fid, *, day=None, load_docum
     }
     documents = (
         await asyncio.to_thread(prepare_reference_documents, await reference_recipe_rows(session))
-        if load_documents else []
+        if load_documents
+        else []
     )
     return {
         "mode": "reference",
@@ -134,9 +142,10 @@ def generate_reference_day(context, tier, previous, seed, catalog, *, cost_cache
         if key not in cost_cache:
             cost_cache[key] = recipe_cost_evidence(document["parsed"].ingredients, catalog)
         costs[item["file_id"]] = cost_cache[key]
-    known = sorted({value for value in costs.values() if value is not None})
-    if known:
-        target = known[0] if tier == "economy" else known[-1] if tier == "premium" else known[len(known) // 2]
+    if any(value is not None for value in costs.values()):
+        lower, upper = TIER_REFERENCE_CENTS[tier]
+        dish_count = sum(target["shared_min"] for target in reference_meal_targets(selection).values())
+        target = Decimal(lower + upper) * len(selection["participant_ids"]) / (2 * dish_count)
         # 缺失资料不冒充便宜或昂贵；保留偏好/去重排序作为同级依据。
         ranked.sort(
             key=lambda item: (
@@ -149,23 +158,35 @@ def generate_reference_day(context, tier, previous, seed, catalog, *, cost_cache
         raise HealthVisionError(
             "exclusive_menu_insufficient", reference_coverage_message(options["coverage_gaps"]), 422
         )
-    meals = []
-    for meal in options["menus"][0]:
-        dishes = []
-        for item in meal["dishes"]:
-            document = documents[item["file_id"]]
-            parsed, source = document["parsed"], document["source"]
-            dishes.append(
-                {
-                    "file_id": source["file_id"],
-                    "chunk_id": source["chunk_id"],
-                    "name": parsed.name,
-                    "ingredients": list(parsed.ingredients),
-                    "steps": list(parsed.steps),
-                    "source": {**source, "chunks_hash": document["chunks_hash"]},
-                }
-            )
-        meals.append({"meal_type": meal["meal_type"], "dishes": dishes})
+    candidates = []
+    for menu in options["menus"]:
+        meals = []
+        for meal in menu:
+            dishes = []
+            for item in meal["dishes"]:
+                document = documents[item["file_id"]]
+                parsed, source = document["parsed"], document["source"]
+                dishes.append(
+                    {
+                        "file_id": source["file_id"],
+                        "chunk_id": source["chunk_id"],
+                        "name": parsed.name,
+                        "ingredients": list(parsed.ingredients),
+                        "steps": list(parsed.steps),
+                        "source": {**source, "chunks_hash": document["chunks_hash"]},
+                    }
+                )
+            meals.append({"meal_type": meal["meal_type"], "dishes": dishes})
+        all_meals = [meal for entry in previous for meal in entry["meals"]] + meals
+        procurement = reference_procurement(all_meals, catalog, restrictions)
+        # 只比较现有有限备选；区间外仍可采用，不按预算重排或放宽饮食限制。
+        total = procurement["pricing"]["matched_subtotal_cent"]
+        known = total is not None and not procurement["purchase_gaps"]
+        average = Decimal(total) / ((len(previous) + 1) * len(selection["participant_ids"])) if known else None
+        lower, upper = TIER_REFERENCE_CENTS[tier]
+        distance = max(lower - average, average - upper, Decimal(0)) if known else Decimal(0)
+        candidates.append(((not known, distance), meals))
+    meals = min(candidates, key=lambda candidate: candidate[0])[1]
     validate_reference_meal_composition(meals, selection)
     return {
         "mode": "reference",
@@ -190,7 +211,10 @@ async def prepare_reference_day(session, context, entry, catalog):
             dish.update(name=parsed.name, ingredients=list(parsed.ingredients), steps=list(parsed.steps))
     await validate_reference_days(session, context, [entry])
     entry["procurement"] = reference_procurement(
-        entry["meals"], catalog, reference_member_restrictions(context["current"]["members"]) + context["current"].get("memory_restrictions", []),
+        entry["meals"],
+        catalog,
+        reference_member_restrictions(context["current"]["members"])
+        + context["current"].get("memory_restrictions", []),
     )
 
 
@@ -256,6 +280,7 @@ def reference_procurement(meals, catalog, restrictions=()):
                     "meal_type": meal["meal_type"],
                     "file_id": dish["file_id"],
                     "food": food,
+                    **({"day_no": meal["day_no"]} if "day_no" in meal else {}),
                 }
                 rows.append(row)
                 if food == "水" or optional_reference_ingredient(line):
@@ -300,8 +325,12 @@ def reference_procurement(meals, catalog, restrictions=()):
     }
 
 
-def summarize_reference_prices(entries, *, include_gaps=True):
-    """仅合计已匹配小计，未知日不补零，不计算档间价格顺序。"""
+def summarize_reference_prices(entries, *, catalog=None, member_count=0, restrictions=(), include_gaps=True):
+    """有商品快照时合并整期包装；旧小计保持部分金额，不冒充完整报价。"""
+    if catalog is not None:
+        meals = [{**meal, "day_no": entry["day"]["day_no"]} for entry in entries for meal in entry["meals"]]
+        procurement = reference_procurement(meals, catalog, restrictions)
+        return reference_price_summary(procurement, len(entries), member_count, include_gaps=include_gaps)
     values = [entry["procurement"]["pricing"]["matched_subtotal_cent"] for entry in entries]
     gaps = [
         dict(gap, day_no=entry["day"]["day_no"]) for entry in entries for gap in entry["procurement"]["purchase_gaps"]
@@ -309,11 +338,38 @@ def summarize_reference_prices(entries, *, include_gaps=True):
     known = [value for value in values if value is not None]
     return {
         "matched_subtotal_cent": sum(known) if known else None,
+        "total_cent": None,
+        "per_person_day_cent": None,
+        "day_count": len(entries),
+        "member_count": member_count,
         **({"unpriced_ingredients": gaps} if include_gaps else {"unpriced_ingredient_count": len(gaps)}),
         "status": "partial" if known and gaps else "matched_only" if known else "unavailable",
         "complete_estimate": False,
         "notice": PRICE_NOTICE,
     }
+
+
+def reference_price_summary(procurement, day_count, member_count, *, include_gaps=True):
+    """先取合并采购总额，再按天数及绑定人数折算，展示时才舍入到分。"""
+    gaps = procurement["purchase_gaps"]
+    subtotal = procurement["pricing"]["matched_subtotal_cent"]
+    total = subtotal if not gaps else None
+    average = (
+        int((Decimal(total) / (day_count * member_count)).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+        if total is not None and day_count > 0 and member_count > 0
+        else None
+    )
+    result = {
+        **procurement["pricing"],
+        "total_cent": total,
+        "per_person_day_cent": average,
+        "day_count": day_count,
+        "member_count": member_count,
+    }
+    if not include_gaps:
+        result.pop("unpriced_ingredients", None)
+        result["unpriced_ingredient_count"] = len(gaps)
+    return result
 
 
 def recipe_cost_evidence(ingredients, catalog):

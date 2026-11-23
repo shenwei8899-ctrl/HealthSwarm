@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, getCurrentInstance, nextTick, onMounted, onUpdated, onUnmounted } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
+import ServiceNoticeHost from './ServiceNoticeHost.vue'
 import { standardNavGeometry } from '../services/nav-layout.js'
 const props = defineProps({ title: { type: String, default: undefined }, titleStyle: Object, belowCapsule: Boolean, capsuleAligned: Boolean, centered: Boolean })
 const standard = computed(() => props.title !== undefined)
@@ -95,6 +96,7 @@ onUnmounted(() => { alive = false; uni.offWindowResize?.(resize) })
       <view class="app-nav-right"><slot name="right" /></view>
     </view>
     <slot v-else />
+    <ServiceNoticeHost/>
   </view>
 </template>
 <style scoped>
