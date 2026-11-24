@@ -27,53 +27,55 @@ async def read_plan_summary(uid, fid, gid=None):
         row = await repo.summary(gid)
         if row is None:
             return {"status": "empty", "group_id": None, "plans": []}
-        if row["policy"] != PREVIEW_POLICY:
-            # 历史商城导出继续使用原完整契约。
-            from yuxi.services.exclusive_plan_service import read_exclusive_plan
+        if row["policy"] == PREVIEW_POLICY:
+            context = await exclusive_context(
+                session,
+                uid,
+                fid,
+                row["policy"],
+                day=date.fromisoformat(row["selection"]["plan_date"]),
+                start_date=row["selection"]["plan_date"],
+                load_documents=False,
+            )
+            valid = context["basis_hash"] == row["basis_hash"]
+            tiers = row["tiers"] or {}
+            complete = all(
+                [entry.get("day", {}).get("day_no") for entry in tiers.get(tier) or []]
+                == list(range(1, EXCLUSIVE_PLAN_DAYS + 1))
+                for tier in TIERS
+            )
+            plans = (
+                [
+                    {
+                        "tier_code": tier,
+                        "tier_name": name,
+                        "difference": TIER_TARGETS[tier],
+                        "pricing": summarize_reference_prices(tiers[tier], include_gaps=False),
+                        "tier_cost_status": "unverified",
+                    }
+                    for tier, name in TIERS.items()
+                ]
+                if row["status"] == "ready" and valid and complete
+                else []
+            )
+            return {
+                "group_id": row["id"],
+                "status": (
+                    ("stale" if row["status"] == "ready" and not complete else row["status"]) if valid else "stale"
+                ),
+                "plans": plans,
+                "preview_only": True,
+                "completed_days": sum(len(d) for d in (row["tiers"] or {}).values()),
+                "total_days": EXCLUSIVE_PLAN_DAYS * len(TIERS),
+                "period_days": EXCLUSIVE_PLAN_DAYS,
+                "members": [{"member_ref": hid, "name": s["name"]} for hid, s in context["sources"]["members"].items()],
+                "error": row["error"],
+            }
 
-            return await read_exclusive_plan(uid, fid, gid)
-        context = await exclusive_context(
-            session,
-            uid,
-            fid,
-            row["policy"],
-            day=date.fromisoformat(row["selection"]["plan_date"]),
-            start_date=row["selection"]["plan_date"],
-            load_documents=False,
-        )
-        valid = context["basis_hash"] == row["basis_hash"]
-        tiers = row["tiers"] or {}
-        complete = all(
-            [entry.get("day", {}).get("day_no") for entry in tiers.get(tier) or []]
-            == list(range(1, EXCLUSIVE_PLAN_DAYS + 1))
-            for tier in TIERS
-        )
-        plans = (
-            [
-                {
-                    "tier_code": tier,
-                    "tier_name": name,
-                    "difference": TIER_TARGETS[tier],
-                    "pricing": summarize_reference_prices(tiers[tier], include_gaps=False),
-                    "tier_cost_status": "unverified",
-                }
-                for tier, name in TIERS.items()
-            ]
-            if row["status"] == "ready" and valid and complete
-            else []
-        )
-        return {
-            "group_id": row["id"],
-            "status": ("stale" if row["status"] == "ready" and not complete else row["status"]) if valid else "stale",
-            "plans": plans,
-            "preview_only": True,
-            "completed_days": sum(len(d) for d in (row["tiers"] or {}).values()),
-            "total_days": EXCLUSIVE_PLAN_DAYS * len(TIERS),
-            "period_days": EXCLUSIVE_PLAN_DAYS,
-            "members": [{"member_ref": hid, "name": s["name"]} for hid, s in context["sources"]["members"].items()],
-            "error": row["error"],
-        }
+    # 完整读取拥有独立事务；外层家庭行锁释放后才能调用，并固定已选推荐组。
+    from yuxi.services.exclusive_plan_service import read_exclusive_plan
 
+    return await read_exclusive_plan(uid, fid, row["id"])
 
 async def read_plan_directory(uid, fid, gid, tier):
     """目录只核对授权、整体依据和数据库来源版本，不读取对象原文。"""
