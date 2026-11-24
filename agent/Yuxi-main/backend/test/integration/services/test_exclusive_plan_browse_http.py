@@ -298,3 +298,42 @@ async def test_legacy_english_source_has_translated_or_hidden_display(family_pro
         updated = await h.client.get(path + "?known_version=" + result["version"], headers=h.users["self"])
         assert updated.status_code == 200 and updated.json()["unchanged"] is False, updated.text
         assert "新菠菜饭" in str(updated.json())
+
+@pytest.mark.parametrize("policy,status", [("exclusive-reference-v2", "ready"), ("exclusive-reference-v2", "failed"), ("agent-preview-v1", "ready")])
+async def test_legacy_summary_releases_family_lock_and_preserves_snapshot(family_profile_http, monkeypatch, policy, status):
+    """真实概览兼容路径结束外层事务，重复并发读取不互锁或改写旧快照。"""
+    import asyncio
+
+    h = await published(family_profile_http, monkeypatch)
+    legacy_id = str(uuid4())
+    progress = {"tiers": {"economy": [{"day": {"day_no": n}} for n in range(1, 22)]}}
+    async with h.sessions.begin() as db:
+        db.add(HealthExclusivePlanGroup(id=legacy_id, actor_uid="self", family_id=h.fid, request_id=str(uuid4()),
+            basis_hash="legacy", status=status, attempt=1, selection={"plan_date":"2026-11-01"}, sources={},
+            policy={"version":policy,"hash":policy}, progress=progress))
+    engine = h.sessions.kw["bind"]
+
+    def bounded_locks(connection):
+        """负控在真实行锁等待处失败，防止错误版本把测试挂住。"""
+        connection.exec_driver_sql("SET LOCAL lock_timeout = '750ms'")
+
+    event.listen(engine.sync_engine, "begin", bounded_locks)
+    root = f"/api/health/v1/families/{h.fid}/exclusive-plans"
+    try:
+        paths = [root + "?summary=true", root + f"/{legacy_id}?summary=true"]
+        for path in paths:
+            response = await asyncio.wait_for(h.client.get(path, headers=h.users["self"]), 5)
+            assert response.status_code == 200, response.text
+            assert response.json()["status"] == "stale" and response.json()["group_id"] == legacy_id
+            assert response.json()["plans"] == []
+        responses = await asyncio.wait_for(asyncio.gather(*[h.client.get(paths[1], headers=h.users["self"]) for _ in range(2)]), 5)
+        assert all(response.status_code == 200 and response.json()["status"] == "stale" for response in responses)
+        denied = await h.client.get(paths[1], headers=h.users["other"])
+        assert denied.status_code in (403,404)
+        async with h.sessions.begin() as db:
+            saved = await db.get(HealthExclusivePlanGroup, legacy_id)
+            assert saved.progress == progress and saved.status == status
+            # 同一家庭仍能立即取得行锁；兼容读取没有遗留锁。
+            await db.execute(text("SELECT id FROM family_archives WHERE id=:fid FOR UPDATE NOWAIT"), {"fid":h.fid})
+    finally:
+        event.remove(engine.sync_engine, "begin", bounded_locks)
