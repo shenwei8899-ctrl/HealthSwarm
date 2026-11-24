@@ -111,8 +111,7 @@ const lines = computed(() => (props.quote?.items || props.products.map(p=>({sku_
         <view v-if="quote" class="payable"><text>应付金额</text><text class="amount">¥{{money(quote.payable_amount_cent)}}</text></view>
         <button v-if="pending" class="checkout-submit" :disabled="busy" @click="$emit('recover')">确认原订单结果</button>
         <button v-else-if="!address" class="checkout-submit" :disabled="addressBusy??busy" @click="$emit('address')">添加收货地址</button>
-        <button v-else-if="quote" class="checkout-submit" :disabled="busy" @click="$emit('confirm')">{{busy?'正在核对…':'确认下单'}} <text>¥{{money(quote.payable_amount_cent)}}</text></button>
-        <button v-else class="checkout-submit" :disabled="busy" @click="$emit('quote')">{{busy?'正在核对…':'核对商品与价格'}}</button>
+        <button v-else class="checkout-submit" :disabled="busy" @click="$emit('confirm')">点击支付</button>
       </view>
     </view>
   </view>
