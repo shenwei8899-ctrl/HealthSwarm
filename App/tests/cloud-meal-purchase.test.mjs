@@ -10,7 +10,7 @@ function mount({daily=false,reference=false,exclusive=false,productReference=fal
   const calls=[],hooks={},route={date:'2026-10-21',meal:'dinner',arrangement:'saved-1',version:'2'}
   if(daily){route.meal='daily';route.meals=['breakfast','lunch']}
   let scope='A',linked=false,publicationVersion=2,denied=false,referenceVersion=4
-  const saved=new Map()
+  const saved=new Map();let publishGate=null
   const items=[{sku_id:'tomato',quantity:1,sku:{sku_id:'tomato',product_name:'合成番茄',price_cent:800,available_quantity:5,net_content:{value:500,unit:'g'},ingredients:[{ingredient_code:'tomato'}]}}]
   const purchase={status:'matched',available:true,catalog_version:'catalog-1',items,gaps,
     ingredient_requirements:[{ingredient_id:'tomato',ingredient_code:'tomato',required_value:'300',required_unit:'g'}]}
@@ -25,12 +25,13 @@ function mount({daily=false,reference=false,exclusive=false,productReference=fal
     addMeal:async()=>{calls.push('cart');return {items:[line]}},
     quantity:async(value,quantity)=>{line.quantity=quantity;line.version++;return {items:[line]}},
     quote:async (lines,address,slot)=>{calls.push(['quote',lines.map(item=>item.cart_item_id),slot]);return {checkout_token:'synthetic-quote',expires_at:new Date(Date.now()+60000).toISOString(),items:[],goods_amount_cent:800,shipping_fee_cent:500,payable_amount_cent:1300}},
-    quoteRecommendation:async(sn,version,address,slot,items)=>{if(denied)throw Object.assign(new Error('采购用途授权已撤回'),{code:403});calls.push(['direct-quote',sn,items,slot]);return {checkout_token:'synthetic-quote',expires_at:new Date(Date.now()+60000).toISOString(),items:[],goods_amount_cent:800,shipping_fee_cent:500,payable_amount_cent:1300}},
+    quoteRecommendation:async(sn,version,address,slot,items)=>{if(exclusive&&referenceVersion!==4)throw Object.assign(new Error('计划或商品已变化'),{code:409});if(denied)throw Object.assign(new Error('采购用途授权已撤回'),{code:403});calls.push(['direct-quote',sn,items,slot]);return {checkout_token:'synthetic-quote',expires_at:new Date(Date.now()+60000).toISOString(),items:[],goods_amount_cent:800,shipping_fee_cent:500,payable_amount_cent:1300}},
   }
   const send=async input=>{
     calls.push(input)
+    if(exclusive&&input.method==='POST'&&publishGate)await publishGate
     if(denied)throw Object.assign(new Error('采购用途授权已撤回'),{code:403})
-    if(exclusive)return {data:{scope_hash:String(referenceVersion),...(input.method==='POST'?{package:{package_sn:'pack-1',package_version:1}}:{})}}
+    if(exclusive)return {data:{...structuredClone(purchase),items:structuredClone(menu.items),scope_hash:String(referenceVersion),...(input.method==='POST'?{package:{package_sn:menu.package_sn,package_version:menu.package_version,expires_at:new Date(Date.now()+600000).toISOString()}}:{})}}
     if(reference){if(input.method==='POST')return {data:{preview_id:'preview',package:{package_sn:'pack-1',package_version:1}}};return {data:{date:route.date,version:referenceVersion,purchase_options:[{kind:'reference',id:'preview',meal_types:['lunch']}]}}}
     return {data:{arrangement_id:route.arrangement,version:input.method==='POST'?publicationVersion:2,
       purchase:input.method==='POST'?{...purchase,package_sn:'pack-1',package_version:1}:structuredClone(purchase)}}
@@ -54,8 +55,8 @@ function mount({daily=false,reference=false,exclusive=false,productReference=fal
   const source=readFileSync(new URL('../src/components/CloudMealPurchase.vue',import.meta.url),'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const vueScope=effectScope()
-  const component=vueScope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {refresh,refreshUnified,checkout,submit,toggle,changeQuantity,selected,preview,products,picked,total,totalKnown,state,loginOpen,error,purchaseReady,purchaseGaps,returnKey,quoteWaiting,canSubmit,selectSlot}`)(deps))
-  return {...component,calls,uiProps,api,menu,line,mounted:()=>hooks.mount(),deny(){denied=true},pending(){purchase.available=false;purchase.confirmation_pending=true;items[0].sku.available_quantity=0},unavailable(){purchase.available=false;purchase.confirmation_pending=false},link(){linked=true},wrongVersion(){publicationVersion=3},switch(){scope='B'},
+  const component=vueScope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {refresh,refreshUnified,checkout,submit,toggle,changeQuantity,selected,preview,products,picked,total,totalKnown,state,loginOpen,error,purchaseReady,purchaseGaps,returnKey,quoteWaiting,canSubmit,selectSlot,checkoutOpen,chooseAddress}`)(deps))
+  return {...component,calls,uiProps,api,menu,line,holdPublication(){let release;publishGate=new Promise(resolve=>release=resolve);return release},mounted:()=>hooks.mount(),deny(){denied=true},pending(){purchase.available=false;purchase.confirmation_pending=true;items[0].sku.available_quantity=0},unavailable(){purchase.available=false;purchase.confirmation_pending=false},link(){linked=true},wrongVersion(){publicationVersion=3},switch(){scope='B'},
     changeReferenceVersion(){referenceVersion++},show:()=>hooks.show(),dispose(){hooks.unmount();vueScope.stop()}}
 }
 
@@ -76,14 +77,14 @@ test('direct refresh requested during submission is queued for the settled opera
  assert.ok(text.includes('refreshRequested&&!busy.value&&!state.busy&&!submitting.value'))
 })
 
-test('21-day exclusive purchase binds publication to its tier and scope, then reuses checkout',async()=>{
+test('weekly exclusive purchase binds publication to its tier and scope, then reuses checkout',async()=>{
  const f=mount({exclusive:true});try{
   f.link();await f.refresh();await f.checkout()
   const writes=f.calls.filter(c=>c?.method==='POST')
   assert.equal(writes.length,1);assert.equal(writes[0].path,f.uiProps.exclusive.path)
   assert.deepEqual(writes[0].data,{scope_hash:'4'})
   assert.equal(f.state.ready,true);assert.ok(f.state.quote)
-  f.changeReferenceVersion();await f.checkout();assert.match(f.error.value,/计划或商品已变化/)
+  f.changeReferenceVersion();await f.checkout();assert.match(f.error.value||f.state.error||f.state.checkoutError,/计划或商品已变化/)
   assert.equal(f.calls.filter(c=>c?.method==='POST').length,1)
  }finally{f.dispose()}
 })
@@ -167,8 +168,8 @@ test('exclusive entry renders the fresh parent receipt without another read, but
   await f.refresh()
   assert.equal(f.calls.filter(c=>c?.path).length,1)
   f.link();f.changeReferenceVersion();await f.checkout()
-  assert.match(f.error.value,/计划或商品已变化/)
-  assert.equal(f.calls.filter(c=>c?.method==='POST').length,0)
+  assert.match(f.error.value||f.state.error||f.state.checkoutError,/计划或商品已变化/)
+  assert.equal(f.calls.filter(c=>c?.method==='POST').length,1)
  }finally{f.dispose()}
 })
 
@@ -276,6 +277,7 @@ test('expired exclusive package is republished before quoting and keeps quantity
 
 test('renewing into a new package keeps deselected products and user quantities',async()=>{
  const f=mount({exclusive:true});try{
+  f.uiProps.reference.items.push({sku_id:'egg',product_name:'合成鸡蛋',quantity:1})
   f.menu.items.push({quantity:1,sku:{sku_id:'egg',product_name:'合成鸡蛋',price_cent:600,available_quantity:5}})
   const eggLine={...f.line,cart_item_id:'line-2',sku_id:'egg'}
   f.api.cart=async()=>({items:[f.line,eggLine]})
@@ -288,15 +290,15 @@ test('renewing into a new package keeps deselected products and user quantities'
   await f.checkout()
   assert.deepEqual(f.state.selected,['tomato']);assert.equal(f.state.quantities.tomato,2)
   assert.equal(f.state.menu.package_sn,'pack-2');assert.ok(f.state.quote)
-  assert.equal(eggLine.selected,false)
+  assert.equal(f.state.selected.includes('egg'),false)
  }finally{f.dispose()}
 })
 
 test('server expiry refreshes exclusive source once and requotes without placing an order',async()=>{
  const f=mount({exclusive:true});try{
   let attempts=0
-  const quote=f.api.quote
-  f.api.quote=async(...args)=>{
+  const quote=f.api.quoteRecommendation
+  f.api.quoteRecommendation=async(...args)=>{
    if(++attempts===1)throw Object.assign(new Error('采购来源已过期'),{status:409,code:40906,details:{reason:'source_expired'}})
    return quote(...args)
   }
@@ -310,19 +312,19 @@ test('server expiry refreshes exclusive source once and requotes without placing
 test('source refresh is bounded and a changed source is never silently accepted',async()=>{
  const f=mount({exclusive:true});try{
   let attempts=0
-  f.api.quote=async()=>{attempts++;throw Object.assign(new Error('采购来源已过期'),{status:409,code:40906,details:{reason:'source_expired'}})}
+  f.api.quoteRecommendation=async()=>{attempts++;throw Object.assign(new Error('采购来源已过期'),{status:409,code:40906,details:{reason:'source_expired'}})}
   f.link();await f.refresh();await f.checkout()
   assert.equal(attempts,2);assert.equal(f.state.quote,null)
   assert.match(f.state.checkoutError,/已过期/)
   f.changeReferenceVersion();await f.checkout()
-  assert.match(f.error.value,/计划或商品已变化/)
+  assert.match(f.error.value||f.state.error||f.state.checkoutError,/计划或商品已变化/)
   assert.equal(attempts,2)
  }finally{f.dispose()}
 })
 
 test('a generic version conflict does not automatically republish the source',async()=>{
  const f=mount({exclusive:true});try{
-  f.api.quote=async()=>{throw Object.assign(new Error('购物车版本冲突'),{status:409,code:40906})}
+  f.api.quoteRecommendation=async()=>{throw Object.assign(new Error('购物车版本冲突'),{status:409,code:40906})}
   f.link();await f.refresh();await f.checkout()
   assert.equal(f.calls.filter(call=>call?.method==='POST').length,1)
   assert.equal(f.state.quote,null);assert.match(f.state.checkoutError,/版本冲突/)
@@ -533,4 +535,34 @@ test('purchase panel distinguishes failure from loading and renders self-purchas
  })}))
  assert.match(loadingAddressHtml,/合成收件人/);assert.match(loadingAddressHtml,/测试地区/)
  assert.doesNotMatch(loadingAddressHtml,/正在(?:核对|读取).*地址/)
+})
+
+
+test('weekly checkout exposes address while one publication is delayed and never reads or writes cart',async()=>{
+ const f=mount({exclusive:true});const release=f.holdPublication()
+ try{
+  for(const name of ['mealPackage','cart','addMeal','quantity','select','quote'])f.api[name]=async()=>{throw new Error('legacy checkout must not run')}
+  f.link();await f.refresh();const pending=f.checkout()
+  await new Promise(resolve=>setImmediate(resolve))
+  assert.equal(f.state.addressReady,true);assert.equal(f.state.address.id,1)
+  assert.equal(f.state.ready,false);assert.equal(f.state.productsLoading,true)
+  const second=f.checkout();await second
+  assert.equal(f.calls.filter(c=>c?.method==='POST').length,1)
+  release();await pending
+  assert.ok(f.state.quote);assert.equal(f.state.error,'')
+  const count=f.calls.filter(c=>c?.path).length;await f.selectSlot(20)
+  assert.equal(f.state.slotId,20);assert.equal(f.calls.filter(c=>c?.path).length,count)
+  assert.equal(f.calls.filter(c=>Array.isArray(c)&&c[0]==='direct-quote').length,2)
+ }finally{release();f.dispose()}
+})
+
+test('closed weekly sheet rejects late publication and never shows its quote',async()=>{
+ const f=mount({exclusive:true});const release=f.holdPublication()
+ try{
+  f.link();await f.refresh();const pending=f.checkout()
+  await new Promise(resolve=>setImmediate(resolve));f.checkoutOpen.value=false
+  await new Promise(resolve=>setImmediate(resolve));release();await pending
+  assert.equal(f.state.ready,false);assert.equal(f.state.quote,null)
+  assert.equal(f.calls.filter(c=>Array.isArray(c)&&c[0]==='direct-quote').length,0)
+ }finally{release();f.dispose()}
 })

@@ -6,6 +6,7 @@ const props = defineProps({
   address: Object, slots: { type: Array, default: () => [] }, slotId: [String, Number],
   quote: Object, products: { type: Array, default: () => [] }, busy: Boolean,
   error: String, pending: Boolean, accessRequired: Boolean,
+  addressBusy: {type:Boolean,default:undefined}, slotsBusy: {type:Boolean,default:undefined},
 })
 defineEmits(['close', 'address', 'slot', 'confirm', 'recover', 'quote'])
 const choosingSlot = ref(false)
@@ -93,12 +94,12 @@ const lines = computed(() => (props.quote?.items || props.products.map(p=>({sku_
       <scroll-view class="checkout-body" scroll-y :show-scrollbar="false">
         <slot v-if="accessRequired" name="access" />
         <template v-else>
-          <button class="delivery-row address-row" :disabled="busy" @click="$emit('address')">
+          <button class="delivery-row address-row" :disabled="addressBusy??busy" @click="$emit('address')">
             <view class="location-icon" aria-hidden="true"><view /></view>
             <view class="delivery-copy"><text class="address-person">{{address ? (address.name || address.receiver) + ' · ' + (address.phone || address.mobile) : '选择收货地址'}}</text><text v-if="address" class="supporting">{{address.region}} {{address.detail}}</text></view><text class="chevron">›</text>
           </button>
-          <button class="delivery-row" :disabled="busy || !slots.length" @click="choosingSlot=!choosingSlot"><text class="delivery-label">送达时间</text><text class="slot-value">{{slotName(slot)}}</text><text class="chevron">›</text></button>
-          <view v-if="choosingSlot" class="slot-options"><button v-for="item in slots" :key="item.id" :disabled="busy" :class="{chosen:String(item.id)===String(slotId)}" @click="$emit('slot',item.id);choosingSlot=false">{{slotName(item)}}<text v-if="String(item.id)===String(slotId)">✓</text></button></view>
+          <button class="delivery-row" :disabled="(slotsBusy??busy) || !slots.length" @click="choosingSlot=!choosingSlot"><text class="delivery-label">送达时间</text><text class="slot-value">{{slotName(slot)}}</text><text class="chevron">›</text></button>
+          <view v-if="choosingSlot" class="slot-options"><button v-for="item in slots" :key="item.id" :disabled="slotsBusy??busy" :class="{chosen:String(item.id)===String(slotId)}" @click="$emit('slot',item.id);choosingSlot=false">{{slotName(item)}}<text v-if="String(item.id)===String(slotId)">✓</text></button></view>
           <text v-if="error" class="checkout-error" role="alert">{{error}}</text>
           <view class="quote"><text class="review-caption">已选食材 · {{lines.length}} 项</text>
             <view v-for="line in lines" :key="line.sku_id" class="checkout-item"><view class="item-image"><FoodImageSlot :src="line.image" :label="line.name" :width="56" :height="56" :radius="14"/></view><view class="item-copy"><text class="item-name">{{line.name}}</text><text v-if="line.spec" class="supporting">{{line.spec}}</text></view><view class="item-numbers"><text>{{Number.isFinite(line.line_amount_cent)?'¥'+money(line.line_amount_cent):'待核价'}}</text><text class="supporting">×{{line.quantity}}</text></view></view>
@@ -109,7 +110,7 @@ const lines = computed(() => (props.quote?.items || props.products.map(p=>({sku_
       <view v-if="!accessRequired" class="checkout-footer">
         <view v-if="quote" class="payable"><text>应付金额</text><text class="amount">¥{{money(quote.payable_amount_cent)}}</text></view>
         <button v-if="pending" class="checkout-submit" :disabled="busy" @click="$emit('recover')">确认原订单结果</button>
-        <button v-else-if="!address" class="checkout-submit" :disabled="busy" @click="$emit('address')">添加收货地址</button>
+        <button v-else-if="!address" class="checkout-submit" :disabled="addressBusy??busy" @click="$emit('address')">添加收货地址</button>
         <button v-else-if="quote" class="checkout-submit" :disabled="busy" @click="$emit('confirm')">{{busy?'正在核对…':'确认下单'}} <text>¥{{money(quote.payable_amount_cent)}}</text></button>
         <button v-else class="checkout-submit" :disabled="busy" @click="$emit('quote')">{{busy?'正在核对…':'核对商品与价格'}}</button>
       </view>
