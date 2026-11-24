@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { computed, ref } from 'vue'
+import { computed, ref, reactive, watch } from 'vue'
+import {createExclusivePlanBrowser,exclusiveBrowseState} from '../src/services/exclusive-plan-browser.js'
 import { memberAge, birthDateError, ageLabel } from '../src/utils/member-age.js'
 import { normalizeProfile, newMember, saveProfile } from '../src/utils/profile.js'
 import { dataWarnings } from '../src/utils/health.js'
@@ -171,16 +172,17 @@ test('delivery selection quotes the selected plan version without regenerating m
   assert.deepEqual(requests[1],['real-plan',4,7,'2026-11-03',2,'weekly_3'])
 })
 
-test('plan detail switches days and meals in the full exclusive menu', async () => {
+test('plan detail switches days and meals while loading only the selected exclusive date', async () => {
   const presentation = await import('../src/services/plan-presentation.js')
   let loadRoute
   const requests = []
   const deps = {
-    ...presentation, ref, computed: fn => ({get value(){ return fn() }}),
+    ...presentation, ref, computed, reactive, watch, exclusiveBrowseState,createExclusivePlanBrowser:options=>createExclusivePlanBrowser({...options,later:()=>null}),storageContext:()=> 'family',getSession:()=>({householdId:'family'}),sessionRevision:()=>1,
     onLoad(fn){loadRoute=fn}, onShow(){}, onHide(){}, onUnload(){},
     createExclusiveImageFlow:()=>({stop(){},open(){}}),exclusiveImages(){},
     planTiers: ['economy', 'standard', 'premium'],
     readExclusivePreview: async (...args) => { requests.push(args); return menu },
+    request:async({path})=>{requests.push(path);if(path.endsWith('/directory'))return {data:{days:Array.from({length:7},(_,i)=>({day_no:i+1,available:true}))}};const number=Number(path.match(/days\/(\d+)/)[1]);return {data:{day_no:number,version:'v'+number,day:menu.days.find(day=>day.day_no===number)}}},
     useCommercePage: () => ({busy: ref(false), error: ref(''), run: fn => fn(() => true)}),
   }
   const source = readFileSync(new URL('../src/pages/exclusive-plans/detail.vue', import.meta.url), 'utf8')
@@ -199,13 +201,14 @@ test('plan detail switches days and meals in the full exclusive menu', async () 
   }
   loadRoute({group_id: 'group', tier: 'economy'})
   await page.load()
-  assert.deepEqual(requests, [['group', 'economy']])
+  assert.equal(requests.length,2);assert.match(requests[0],/\/directory$/);assert.match(requests[1],/\/days\/1$/)
   assert.equal(page.meal.value.dishes[0].recipe_name, '第一天早餐')
   page.jumpToDay({detail: {value: '1'}})
+  await new Promise(resolve=>setImmediate(resolve))
   page.mealType.value = 'dinner'
   assert.equal(page.meal.value.dishes.length, 2)
   assert.equal(page.dayNo.value, 2)
-  page.selectDay(1)
+  await page.selectDay(1)
   assert.equal(page.mealType.value, 'breakfast')
 })
 

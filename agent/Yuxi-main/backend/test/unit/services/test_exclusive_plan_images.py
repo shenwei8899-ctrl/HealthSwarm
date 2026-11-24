@@ -99,6 +99,9 @@ async def test_image_task_rechecks_source_before_generation_and_holds_no_family_
 async def test_task_status_is_sampled_before_images(monkeypatch):
     """任务完成交错不会把早先缺图与success组合导致停止轮询。"""
     from yuxi.services import exclusive_plan_tasks
+    from yuxi.services import exclusive_plan_browse
+
+    monkeypatch.setattr(exclusive_plan_browse, "read_plan_day", AsyncMock(return_value={"raw_dishes": [dish()]}))
 
     row = SimpleNamespace(progress={"tiers": {"economy": [{"day": {"day_no": 1}, "meals": [{"dishes": [dish()]}]}]}})
 

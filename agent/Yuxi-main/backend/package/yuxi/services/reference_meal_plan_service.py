@@ -629,8 +629,8 @@ def same_reference_document(fresh, receipt):
     return all(key in receipt and receipt[key] == value for key, value in fresh.items())
 
 
-def checked_reference_meals(draft, documents, members):
-    """核对原文引句及明确限制，数值和专业状态由服务端固定。"""
+def checked_reference_meals(draft, documents, members, *, require_translation=True):
+    """核对原文和限制；新发布须有译文，历史浏览可单独隐藏缺译内容。"""
     result = []
     translation_errors = []
     restrictions = reference_member_restrictions(members)
@@ -659,15 +659,16 @@ def checked_reference_meals(draft, documents, members):
                 raise HealthVisionError("reference_quote_invalid", "菜谱食材或步骤与完整原文不一致", 422)
             if reference_restriction_conflict(doc["content"], restrictions):
                 raise HealthVisionError("reference_restriction_conflict", "所选菜谱含已明确填写的过敏或忌口食材", 422)
-            try:
-                checked_chinese_display(
-                    dish.model_dump(exclude={"display_zh"}),
-                    dish.display_zh.model_dump() if dish.display_zh else None,
-                )
-            except HealthVisionError as error:
-                if error.code not in {"recipe_translation_invalid", "recipe_translation_missing"}:
-                    raise
-                translation_errors.append(f"{dish.file_id}/{dish.chunk_id}: {error.message}")
+            if require_translation:
+                try:
+                    checked_chinese_display(
+                        dish.model_dump(exclude={"display_zh"}),
+                        dish.display_zh.model_dump() if dish.display_zh else None,
+                    )
+                except HealthVisionError as error:
+                    if error.code not in {"recipe_translation_invalid", "recipe_translation_missing"}:
+                        raise
+                    translation_errors.append(f"{dish.file_id}/{dish.chunk_id}: {error.message}")
             dishes.append(
                 {
                     **dish.model_dump(mode="json", exclude={"display_zh", "alternative_for", "replaces_file_id"}),

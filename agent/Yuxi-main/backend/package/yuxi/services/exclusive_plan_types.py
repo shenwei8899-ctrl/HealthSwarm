@@ -6,6 +6,9 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 
+EXCLUSIVE_PLAN_DAYS = 7
+
+
 class ExclusivePlanInput(BaseModel):
     """首次复用、明确重试和主动换一套是独立动作。"""
 

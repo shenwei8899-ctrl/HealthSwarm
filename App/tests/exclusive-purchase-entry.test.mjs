@@ -1,18 +1,24 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
-import {ref,computed} from 'vue'
+import {ref,computed,reactive,watch} from 'vue'
+import {createExclusivePlanBrowser,exclusiveBrowseState} from '../src/services/exclusive-plan-browser.js'
 
 function page({purchase=true,denied=false}={}) {
   const calls=[],hooks={}
   let current=true
   const receipt={tier_name:'经济型',members:[{display_alias:'合成成员'}],scope_hash:'scope',available:true,items:[],gaps:[]}
-  const deps={ref,computed,onLoad:fn=>hooks.load=fn,onShow:()=>{},onHide:()=>{},onUnload:()=>{},
+  const deps={ref,computed,reactive,watch,exclusiveBrowseState,createExclusivePlanBrowser:options=>createExclusivePlanBrowser({...options,later:()=>null}),storageContext:()=> 'family',onLoad:fn=>hooks.load=fn,onShow:()=>{},onHide:()=>{},onUnload:()=>{},
     getSession:()=>({householdId:'family'}),sessionRevision:()=>1,planTiers:['economy','standard','premium'],
     createExclusiveImageFlow:()=>({stop(){},open(){},retry(){}}),exclusiveImages(){},recipeCover(){},
     selectedDay:()=>null,dayMeals:()=>[],validPlanRoute:()=>({sn:'legacy',version:1}),commerce:{},
     useCommercePage:()=>({busy:ref(false),error:ref(''),run:async work=>work(()=>current)}),
-    request:async input=>{calls.push(input);if(denied)throw new Error('授权已撤回');return {data:receipt}},
+    request:async input=>{
+      calls.push(input);if(denied)throw new Error('授权已撤回')
+      if(input.path.endsWith('/directory'))return {data:{tier_name:'经济型',days:Array.from({length:7},(_,i)=>({day_no:i+1,available:true}))}}
+      if(input.path.endsWith('/days/1'))return {data:{day_no:1,version:'v1',day:{day_no:1,meals:[]}}}
+      return {data:receipt}
+    },
     readExclusivePreview:async()=>{calls.push('preview');return {days:[],tier_name:'计划详情'}},
   }
   const source=readFileSync(new URL('../src/pages/exclusive-plans/detail.vue',import.meta.url),'utf8')
@@ -30,9 +36,9 @@ test('purchase entry reads a single receipt and renders server plan metadata',as
   assert.deepEqual(p.plan.value.members,p.receipt.members)
   assert.deepEqual(p.purchaseData.value,p.receipt)
 })
-test('ordinary detail still reads the complete plan',async()=>{
+test('ordinary detail reads the directory and only the selected day',async()=>{
   const p=page({purchase:false});await p.load()
-  assert.deepEqual(p.calls,['preview'])
+  assert.equal(p.calls.length,2);assert.match(p.calls[0].path,/\/directory$/);assert.match(p.calls[1].path,/\/days\/1$/)
   assert.equal(p.purchaseData.value,null)
 })
 

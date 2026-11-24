@@ -16,7 +16,10 @@ from yuxi.services.exclusive_plan_generation import (
     generate_exclusive_day,
 )
 from yuxi.services.exclusive_reference_plan import (
-    generate_reference_day, optional_exclusive_catalog, prepare_reference_day, validate_reference_days,
+    generate_reference_day,
+    optional_exclusive_catalog,
+    prepare_reference_day,
+    validate_reference_days,
 )
 from yuxi.services.exclusive_plan_service import (
     PREVIEW_POLICY,
@@ -43,8 +46,27 @@ async def run_exclusive_plan(context):
         policy = row.policy
         preview = policy == PREVIEW_POLICY
         catalog = row.progress.get("catalog_snapshot") if preview else None
-        initial = await exclusive_context(session, uid, fid, policy, allow_interpretation=True)
-        assert_basis(row, initial)
+        retired = policy.get("version") == "exclusive-reference-v2"
+        if not retired:
+            initial = await exclusive_context(
+                session,
+                uid,
+                fid,
+                policy,
+                day=date.fromisoformat(row.selection["plan_date"]),
+                start_date=row.selection["plan_date"],
+                allow_interpretation=True,
+            )
+            assert_basis(row, initial)
+    if retired:
+
+        async def retire(session, _record):
+            """旧参考任务不再补生成21天，保留快照供追溯。"""
+            row = await owned_group(session, context, lock=True)
+            row.status, row.updated_at = "stale", utc_now_naive()
+
+        await context.run_owned_transaction(retire)
+        return {"group_id": gid, "status": "stale"}
     try:
         if not preview:
             await prepare_daily_profile_coding(
@@ -66,11 +88,19 @@ async def run_exclusive_plan(context):
             async def finish_preview(session, _record):
                 """菜单完整且来源有效即可发布，不要求采购或价格完整。"""
                 row = await owned_group(session, context, lock=True)
-                fresh = await exclusive_context(session, uid, fid, policy)
+                fresh = await exclusive_context(
+                    session,
+                    uid,
+                    fid,
+                    policy,
+                    day=date.fromisoformat(row.selection["plan_date"]),
+                    start_date=row.selection["plan_date"],
+                )
                 assert_basis(row, fresh)
                 tiers = row.progress["tiers"]
                 if set(tiers) != set(TIERS) or any(
-                    [entry["day"]["day_no"] for entry in tiers[tier]] != list(range(1, 22)) for tier in TIERS
+                    [entry["day"]["day_no"] for entry in tiers[tier]] != list(range(1, policy.get("day_count", 21) + 1))
+                    for tier in TIERS
                 ):
                     raise HealthVisionError("exclusive_incomplete", "三档计划尚未完整", 503)
                 for entries in tiers.values():
@@ -110,7 +140,7 @@ async def generate_exclusive_tiers(context, uid, fid, seed, policy, catalog):
     """逐日保存三档菜单，恢复时沿用原定备选顺序。"""
     cost_cache = {}
     for tier in TIERS:
-        for _ in range(21):
+        for _ in range(policy.get("day_count", 21)):
             await context.raise_if_cancelled()
             async with pg_manager.get_async_session_context() as session:
                 row = await owned_group(session, context)
@@ -119,15 +149,23 @@ async def generate_exclusive_tiers(context, uid, fid, seed, policy, catalog):
                 day_seed = f"{seed}:{row.progress.get('generation', 0)}" if catalog is not None else seed
                 if row.progress.get("price_retry"):
                     day_seed += ":retry"
-                if len(previous) == 21:
+                if len(previous) == policy.get("day_count", 21):
                     break
                 day = date.fromisoformat(row.selection["plan_date"]) + timedelta(days=len(previous))
-                inputs = await exclusive_context(session, uid, fid, policy, day=day)
+                inputs = await exclusive_context(
+                    session, uid, fid, policy, day=day, start_date=row.selection["plan_date"]
+                )
                 assert_basis(row, inputs)
                 await validate_saved_days(session, inputs, previous)
             if policy == PREVIEW_POLICY:
                 generated = await asyncio.to_thread(
-                    generate_reference_day, inputs, tier, previous, day_seed, catalog, cost_cache=cost_cache,
+                    generate_reference_day,
+                    inputs,
+                    tier,
+                    previous,
+                    day_seed,
+                    catalog,
+                    cost_cache=cost_cache,
                 )
             else:
                 stock = catalog if catalog is not None else await current_catalog()
@@ -151,7 +189,9 @@ async def generate_exclusive_tiers(context, uid, fid, seed, policy, catalog):
             async def save_day(session, _record):
                 """持有任务和推荐组行锁，写入前重验来源。"""
                 current_row = await owned_group(session, context, lock=True)
-                fresh = await exclusive_context(session, uid, fid, policy, day=day)
+                fresh = await exclusive_context(
+                    session, uid, fid, policy, day=day, start_date=row.selection["plan_date"]
+                )
                 assert_basis(current_row, fresh)
                 if policy == PREVIEW_POLICY:
                     await prepare_reference_day(session, fresh, generated, catalog)
@@ -165,7 +205,12 @@ async def generate_exclusive_tiers(context, uid, fid, seed, policy, catalog):
                 current_row.updated_at = utc_now_naive()
 
             await context.run_owned_transaction(save_day)
-            await context.set_progress((list(TIERS).index(tier) * 21 + len(previous) + 1) / 63 * 90, "正在准备三档餐单")
+            await context.set_progress(
+                (list(TIERS).index(tier) * policy.get("day_count", 21) + len(previous) + 1)
+                / (len(TIERS) * policy.get("day_count", 21))
+                * 90,
+                "正在准备三档餐单",
+            )
 
 
 async def publish_legacy_plans(context, uid, fid, gid, policy):
@@ -176,7 +221,14 @@ async def publish_legacy_plans(context, uid, fid, gid, policy):
         async def save_export(session, _record):
             """先落完整请求，商城回源验证和网络重试读取同一份内容。"""
             row = await owned_group(session, context, lock=True)
-            fresh = await exclusive_context(session, uid, fid, policy)
+            fresh = await exclusive_context(
+                session,
+                uid,
+                fid,
+                policy,
+                day=date.fromisoformat(row.selection["plan_date"]),
+                start_date=row.selection["plan_date"],
+            )
             assert_basis(row, fresh)
             for entries in row.progress["tiers"].values():
                 await validate_saved_days(session, fresh, entries)
@@ -217,7 +269,14 @@ async def publish_legacy_plans(context, uid, fid, gid, policy):
     async def finish(session, _record):
         """三档全部可用且来源仍有效时才发布推荐组。"""
         row = await owned_group(session, context, lock=True)
-        fresh = await exclusive_context(session, uid, fid, policy)
+        fresh = await exclusive_context(
+            session,
+            uid,
+            fid,
+            policy,
+            day=date.fromisoformat(row.selection["plan_date"]),
+            start_date=row.selection["plan_date"],
+        )
         assert_basis(row, fresh)
         for entries in row.progress["tiers"].values():
             await validate_saved_days(session, fresh, entries)

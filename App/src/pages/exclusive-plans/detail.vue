@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { onLoad, onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import AppNavBar from '../../components/AppNavBar.vue'
 import AppIcon from '../../components/AppIcon.vue'
@@ -14,11 +14,24 @@ import { selectedDay, dayMeals, validPlanRoute } from '../../services/plan-prese
 import { recipeCover } from '../../utils/recipe-cover.js'
 import { planTiers, readExclusivePreview, exclusiveImages } from '../../services/exclusive-planning.js'
 import { createExclusiveImageFlow } from '../../services/exclusive-image-flow.js'
+import { createExclusivePlanBrowser, exclusiveBrowseState } from '../../services/exclusive-plan-browser.js'
+import { storageContext } from '../../services/storage.js'
 import { ingredientCopy } from '../../utils/dish-commerce-presentation.js'
 const route = ref(null), plan = ref(null), dayNo = ref(1), mealType = ref('breakfast')
 const purchasing = ref(false), purchaseData = ref(null)
 const panel = ref(''), selectedDishId = ref('')
 const visible = ref(false)
+const browsing = reactive(exclusiveBrowseState())
+const browser = createExclusivePlanBrowser({state:browsing,send:request,scope:storageContext,
+  onDay:()=>refreshImages(false)})
+const browseMode = computed(()=>!!route.value?.groupId&&!purchasing.value)
+const currentDayState = computed(()=>browsing.days[browsing.selected])
+const pageError = computed(()=>browseMode.value?browsing.error:error.value)
+const pageLoading = computed(()=>browseMode.value?browsing.checking:busy.value)
+watch(()=>browsing.directory,value=>{if(browseMode.value)plan.value=value})
+watch(()=>browsing.selected,value=>{if(browseMode.value)dayNo.value=value})
+watch(()=>currentDayState.value?.data,()=>closePanel())
+
 const imageFlow = createExclusiveImageFlow({send:exclusiveImages,
   scope:()=>String(sessionRevision())+':'+getSession()?.householdId,
   status:()=>{},
@@ -31,7 +44,7 @@ const imageFlow = createExclusiveImageFlow({send:exclusiveImages,
     }
   },
 })
-const { busy, error, run } = useCommercePage(() => { closePanel(); plan.value = null; purchaseData.value = null; selectDay(1) })
+const { busy, error, run } = useCommercePage(() => { browser.reset(); closePanel(); plan.value = null; purchaseData.value = null; selectDay(1) })
 const purchasePath = computed(() => '/api/health/v1/families/' + encodeURIComponent(getSession()?.householdId) + '/exclusive-plans/' + encodeURIComponent(route.value?.groupId) + '/tiers/' + encodeURIComponent(route.value?.tier) + '/purchase')
 const purchaseReference = computed(() => purchaseData.value ? {
   previewId: route.value.groupId, gaps: purchaseData.value.gaps,
@@ -39,10 +52,12 @@ const purchaseReference = computed(() => purchaseData.value ? {
     price_cent:item.sku.price_cent,available_quantity:item.sku.available_quantity,sale_status:item.sku.sale_status})),
 } : null)
 const purchaseRoute = computed(() => ({arrangement:route.value.groupId+':'+route.value.tier,version:purchaseData.value.scope_hash,date:'',meal:'daily',meals:['breakfast','lunch','dinner']}))
-const day = computed(() => selectedDay(plan.value, dayNo.value))
+const day = computed(() => browseMode.value?currentDayState.value?.data:selectedDay(plan.value, dayNo.value))
 const meals = computed(() => dayMeals(day.value))
 const meal = computed(() => meals.value.find(item => item.type === mealType.value))
 const dayLabels = computed(() => (plan.value?.days || []).map(item => '第 ' + item.day_no + ' 天'))
+const delivery = computed(() => purchaseData.value?.delivery_suggestions)
+const storageLabels = {ambient:'常温存放',refrigerated:'需冷藏',frozen:'需冷冻'}
 const period = computed(() => plan.value?.days?.length || 0)
 const panelRecipe = computed(() => {
   const dish = meal.value?.dishes.find(item => item.id === selectedDishId.value)
@@ -80,8 +95,8 @@ onLoad(options => {
   } catch (e) { error.value = e.message }
 })
 onShow(()=>{visible.value=true;load()})
-onHide(()=>{visible.value=false;closePanel();imageFlow.stop()})
-onUnload(()=>{visible.value=false;closePanel();imageFlow.stop()})
+onHide(()=>{visible.value=false;closePanel();imageFlow.stop();browser.hide()})
+onUnload(()=>{visible.value=false;closePanel();imageFlow.stop();browser.reset()})
 function refreshImages(start=false){
   if(!visible.value||!route.value?.groupId||purchasing.value||!plan.value)return
   void imageFlow.open({groupId:route.value.groupId,tier:route.value.tier,dayNo:dayNo.value},{start})
@@ -89,6 +104,11 @@ function refreshImages(start=false){
 function selectDay(number) {
   if (plan.value && !selectedDay(plan.value, number)) return
   closePanel()
+  if(browseMode.value){
+    imageFlow.stop()
+    if(browsing.selected!==Number(number))mealType.value='breakfast'
+    return browser.select(number)
+  }
   dayNo.value = Number(number)
   mealType.value = 'breakfast'
   refreshImages()
@@ -99,6 +119,11 @@ function jumpToDay(event) {
 }
 function load() {
   if (!route.value) return
+  if(browseMode.value){
+    closePanel()
+    if(!plan.value)mealType.value='breakfast'
+    return browser.open({...route.value,familyId:getSession()?.householdId})
+  }
   closePanel()
   imageFlow.stop()
   return run(async active => {
@@ -123,7 +148,7 @@ function load() {
 }
 function next() { if (plan.value?.status === 'available') uni.navigateTo({url:'/pages/exclusive-plans/schedule?plan_sn='+encodeURIComponent(route.value.sn)+'&plan_version='+route.value.version}) }
 function purchase() {
-  if (busy.value || !plan.value) return
+  if (busy.value || !plan.value || browseMode.value&&!browser.ready()) return
   if (!route.value.groupId) { next(); return }
   uni.navigateTo({url:'/pages/exclusive-plans/detail?group_id='+encodeURIComponent(route.value.groupId)+'&tier='+encodeURIComponent(route.value.tier)+'&purchase=1'})
 }
@@ -132,18 +157,27 @@ const back = () => uni.navigateBack()
 <template>
   <view class="screen exclusive-screen detail-screen" :class="{'plan-preview':!purchasing}">
     <AppNavBar :title="purchasing?'计划采购':'计划详情'"><template #left><button class="icon-button" aria-label="返回" @click="back">‹</button></template></AppNavBar>
-    <view v-if="error" class="plan-surface plan-empty"><text class="plan-caption">{{error}}</text><button class="plan-secondary" :disabled="busy" @click="load">重新读取</button><button class="plan-text-link" @click="back">返回选择计划</button></view>
-    <text v-else-if="busy && !plan" class="plan-notice">正在读取计划…</text>
+    <view v-if="pageError&&!plan" class="plan-surface plan-empty"><text class="plan-caption">{{pageError}}</text><button class="plan-secondary" :disabled="busy" @click="load">重新读取</button><button class="plan-text-link" @click="back">返回选择计划</button></view>
+    <text v-else-if="pageLoading && !plan" class="plan-notice">正在读取计划…</text>
     <template v-if="plan && purchasing">
-      <view class="plan-heading"><text class="plan-title">{{plan.tier_name}}</text><text class="plan-caption">整份 21 天计划</text></view>
+      <view class="plan-heading"><text class="plan-title">{{plan.tier_name}}</text><text class="plan-caption">一周 7 天计划</text></view>
       <template v-if="purchaseData">
         <text class="plan-notice purchase-coverage">{{purchaseData.notice}}</text>
-        <text v-if="purchaseData.items.some(item=>item.quantity_confirmed===false)" class="plan-notice quantity-warning">部分商品包装数量待确认，请按家庭实际需要调整，当前数量不能视为足够 21 天。</text>
-        <view v-if="purchaseData.gaps?.length" class="plan-surface purchase-coverage-gaps"><text class="plan-notice">以下食材未加入购物车，需自行准备或确认：</text><text v-for="(gap,index) in purchaseData.gaps" :key="index" class="plan-notice">{{gap.label||gap.ingredient}}：{{gap.detail}}</text></view>
+        <text v-if="purchaseData.items.some(item=>item.quantity_confirmed===false)" class="plan-notice quantity-warning">部分商品包装数量待确认，请按家庭实际需要调整，当前数量不能视为足够一周。</text>
+        <view v-if="purchaseData.gaps?.length" class="plan-surface purchase-coverage-gaps"><text class="plan-notice">未匹配食材需自行准备：</text><text v-for="(gap,index) in purchaseData.gaps" :key="index" class="plan-notice">{{gap.label||gap.ingredient}}：{{gap.detail}}</text></view>
+        <view v-if="delivery" class="weekly-delivery">
+          <view class="plan-surface"><text class="plan-caption">本周配送建议</text><text class="plan-notice">{{delivery.notice}}</text><view class="plan-row"><text>配送费</text><text>待定</text></view><text class="plan-notice">实际送达安排待供应商确认。</text></view>
+          <view v-for="batch in delivery.batches" :key="batch.batch_no" class="plan-surface delivery-batch">
+            <text class="plan-caption">第 {{batch.batch_no}} 趟 · 第 {{batch.day_no}} 天用餐前</text><text class="plan-notice">{{batch.timing}}</text>
+            <view v-for="item in batch.items" :key="item.food" class="delivery-item"><text>{{item.food}} · {{item.quantity_g===null?'包装数量可调整':'原谱参考 '+item.quantity_g+'g'}}</text><text>用于第 {{item.use_days.join('、')}} 天 · {{storageLabels[item.storage_condition]||'按使用日安排'}}</text></view>
+          </view>
+          <view v-if="!delivery.batches.length" class="plan-surface"><text class="plan-notice">未匹配食材需自行准备；已匹配商品可在下方选择包装数量。</text></view>
+        </view>
         <CloudMealPurchase v-if="purchaseData.available" :key="purchaseData.scope_hash" :meal="{members:plan.members}" :route="purchaseRoute" :reference="purchaseReference" :exclusive="{path:purchasePath,scopeHash:purchaseData.scope_hash,initialPurchase:purchaseData}"/>
         <view v-else class="plan-surface plan-empty"><text class="plan-caption">暂无可购买商品</text><button class="plan-secondary" :disabled="busy" @click="load">重新核对</button></view>
       </template>
     </template>
+    <text v-if="pageError&&plan" class="plan-notice">{{pageError}}</text>
     <template v-if="plan && !purchasing">
       <view class="preview-heading">
         <view class="preview-identity"><view class="preview-symbol" aria-hidden="true"><AppIcon name="record" :size="36"/></view><text>AI 专属计划</text></view>
@@ -168,10 +202,11 @@ const back = () => uni.navigateBack()
           <FoodImageSlot class="dish-photo" :src="recipeCover(dish.recipe_snapshot)?.image_url" :label="dish.recipe_name" fallback-icon/>
           <view class="dish-copy"><text class="dish-name">{{dish.recipe_name}}</text><text class="dish-summary">{{ingredientSummary(dish)}}</text></view><text class="dish-arrow" aria-hidden="true">›</text>
         </button>
-        <view v-if="!meal.dishes.length" class="plan-empty"><text class="plan-caption">这一餐的菜品暂不可用</text></view>
+        <view v-if="browseMode && currentDayState?.error" class="plan-empty"><text class="plan-caption">{{currentDayState.error}}</text><button class="plan-text-link" :disabled="currentDayState.loading" @click="browser.retry()">重试当天菜谱</button></view>
+        <view v-else-if="!meal.dishes.length" class="plan-empty"><text class="plan-caption">{{browseMode && currentDayState?.loading?'正在读取当天菜谱…':'这一餐的菜品暂不可用'}}</text></view>
         <button v-else class="meal-ingredients" @click="openIngredients"><AppIcon name="record" :size="30"/><text>本餐食材</text><text class="ingredient-link">查看清单 ›</text></button>
       </view>
-      <view class="plan-fixed"><button class="plan-primary" :disabled="busy || (!route.groupId && plan.status!=='available')" @click="purchase"><text>购买计划</text><text class="purchase-arrow" aria-hidden="true">→</text></button></view>
+      <view class="plan-fixed"><button class="plan-primary" :disabled="busy || (browseMode&&!browser.ready()) || (!route.groupId && plan.status!=='available')" @click="purchase"><text>查看周采购与配送建议</text><text class="purchase-arrow" aria-hidden="true">→</text></button></view>
     </template>
     <view v-if="panel && plan && !purchasing" class="detail-panel-mask">
       <view class="detail-panel-backdrop" @tap="closePanel" @touchmove.stop.prevent @wheel.stop.prevent/>
@@ -217,6 +252,7 @@ const back = () => uni.navigateBack()
 .plan-preview .meal-list{display:block;overflow:hidden;padding:0 16px;border:1px solid #fff;border-radius:23px;background:#fff;box-shadow:0 8px 22px #54476e06}.plan-preview .meal-title{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:59px;margin:0;padding:12px 0;border-bottom:1px solid #eae3f2}.meal-heading{display:flex;align-items:center;gap:7px;min-width:0}.meal-heading .plan-section-title{font-size:15px}.meal-dot{flex:none;width:7px;height:7px;border-radius:50%;background:#9865e1}.dish-count{flex-shrink:0;padding:5px 8px;border-radius:7px;color:#795299;background:#f1e9fc;font-size:11px;line-height:1.5;white-space:nowrap}
 .plan-preview .recipe-block{display:flex;align-items:center;gap:13px;width:100%;min-height:80px;padding:10px 0;margin:0;border-bottom:1px solid #edeaf2;border-radius:0;background:transparent;text-align:left}.plan-preview .dish-photo{width:62px;height:58px;flex:none;border-radius:13px;background:#f1edf7}.plan-preview .dish-photo :deep(.fallback-plate){border-color:#b29acb;box-shadow:inset 0 0 0 6px #f6f1fb;background:#e4d8f2}.dish-copy{flex:1;min-width:0}.plan-preview .dish-name{display:block;min-width:0;color:#3d354b;font-size:16px;font-weight:400;line-height:1.5;overflow-wrap:anywhere}.dish-summary{display:-webkit-box;margin-top:7px;color:#817489;font-size:12px;line-height:1.6;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow-wrap:anywhere}.dish-arrow{flex:none;font-size:22px;color:#a18cb6;line-height:1}.plan-preview .meal-list .plan-empty{padding:36px 8px;border:0;box-shadow:none}.plan-preview .meal-list .plan-caption{color:#817489;font-size:13px}
 .plan-preview .meal-ingredients{display:flex;align-items:center;gap:7px;min-height:46px;width:calc(100% + 32px);margin:0 -16px;padding:10px 16px;border-radius:0;background:#f3edfb;color:#8056ad;font-size:13px;line-height:1.5;text-align:left}.ingredient-link{margin-left:auto;font-size:12px;white-space:nowrap}.plan-preview .plan-fixed{padding:13px 20px calc(13px + env(safe-area-inset-bottom));border-top:1px solid #ffffffb0;background:#ffffffc9;backdrop-filter:blur(16px)}.plan-preview .plan-primary{display:flex;align-items:center;justify-content:center;gap:21px;min-height:47px;padding:10px 16px;border-radius:16px;background:#424b60;color:#fff;font-size:15px;font-weight:400;line-height:1.5;box-shadow:0 4px 12px #3a3b5720}.purchase-arrow{font-size:20px;color:#c5c1d3}.plan-preview .day-tabs button:focus-visible,.plan-preview .meal-tabs button:focus-visible,.plan-preview .recipe-block:focus-visible{outline:2px solid #8051bc;outline-offset:-3px}
+.weekly-delivery .plan-surface{padding:18px;margin:14px 0;border-radius:22px}.weekly-delivery .plan-caption{display:block;font-size:16px;line-height:1.6}.weekly-delivery .plan-row{display:flex;justify-content:space-between;gap:16px;padding:10px 0}.weekly-delivery .plan-notice{padding:10px 0}.delivery-item{display:flex;flex-direction:column;gap:6px;padding:12px 0;border-bottom:1px solid #eee8f4;color:#51465f;font-size:14px;line-height:1.6}.delivery-item>text:last-child{color:#887793;font-size:12px}.delivery-item:last-child{border-bottom:0}.weekly-delivery .plan-caption{font-weight:600}
 .detail-panel-mask{position:fixed;inset:0;z-index:90;display:flex;align-items:flex-end;justify-content:center}.detail-panel-backdrop{position:absolute;inset:0;background:#362b4e55}.detail-panel{position:relative;display:flex;flex-direction:column;width:100%;max-width:480px;height:84vh;max-height:calc(100vh - 64px);min-height:0;overflow:hidden;border:1px solid #fff;border-bottom:0;border-radius:27px 27px 0 0;background:linear-gradient(180deg,#e8e3fc,#f5f1fc 45%);box-shadow:0 -8px 35px #46355d15}.detail-panel-handle{flex:none;width:32px;height:4px;margin:9px auto 0;border-radius:5px;background:#bdacd5}.detail-panel-header{display:flex;align-items:center;justify-content:space-between;flex:none;padding:13px 16px 16px 21px;border-bottom:1px solid #ffffffb3}.detail-panel-header>view{flex:1;min-width:0}.detail-panel-title{display:block;color:#463452;font-size:19px;font-weight:500;line-height:1.5}.detail-panel-subtitle{display:block;margin-top:3px;color:#8c729f;font-size:12px;line-height:1.5}.detail-panel-close{display:flex;align-items:center;justify-content:center;width:44px;height:44px;flex:none;border-radius:50%;background:#ffffff8c;color:#8f74a7;font-size:28px;line-height:1}.detail-panel-scroll{display:block;flex:1;height:0;min-height:0;width:100%}.detail-panel-content{padding:18px 20px calc(24px + env(safe-area-inset-bottom))}.ingredient-note{display:block;margin-bottom:16px;color:#877092;font-size:12px;line-height:1.8}.ingredient-group{padding:17px 16px;margin-bottom:12px;border:1px solid #fff;border-radius:18px;background:#ffffffda}.ingredient-group-title{display:block;padding-bottom:11px;margin-bottom:8px;border-bottom:1px solid #eae1f3;color:#4e3b5e;font-size:15px;font-weight:500;line-height:1.5}.ingredient-item{display:block;padding:5px 0;color:#725c81;font-size:14px;line-height:1.7;overflow-wrap:anywhere}.ingredient-unknown{color:#94839f}.ingredient-group .ingredient-note{margin:10px 0 0}
 @media(max-width:350px){.plan-preview.detail-screen{padding-left:16px;padding-right:16px}.preview-title{font-size:27px}.preview-period{padding:5px 8px;font-size:10px}.plan-preview .meal-list{padding-left:13px;padding-right:13px}.plan-preview .meal-title{gap:7px}.dish-count{font-size:10px;padding:5px 6px}.plan-preview .dish-photo{width:54px;height:54px}.plan-preview .recipe-block{gap:10px}.plan-preview .dish-name{font-size:15px}.plan-preview .meal-ingredients{width:calc(100% + 26px);margin-left:-13px;margin-right:-13px;padding-left:13px;padding-right:13px}.plan-preview .plan-fixed{padding-left:16px;padding-right:16px}}
 </style>

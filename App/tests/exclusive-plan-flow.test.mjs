@@ -21,7 +21,7 @@ test('首次进入只读取，明确点击生成后才提交，重进与切档�
 test('响应丢失后保留原请求号，恢复不多建推荐组',async()=>{
   let fail=true
   const h=harness(async r=>{if(r.method==='POST' && fail){fail=false;throw new Error('offline')}return {data:{status:r.method?'generating':'empty',group_id:'g',plans:[]}}})
-  await h.flow.open();await h.flow.act('ensure');assert.equal(h.values.get('exclusive-plan-intent:v1:f').client_request_id,'stable-request')
+  await h.flow.open();await h.flow.act('ensure');assert.equal(h.values.get('exclusive-plan-intent:week-v1:f').client_request_id,'stable-request')
   await h.flow.open();await h.flow.act('ensure')
   assert.deepEqual(h.calls.filter(r=>r.method==='POST').map(r=>r.data.client_request_id),['stable-request','stable-request'])
 })

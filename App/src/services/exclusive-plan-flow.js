@@ -12,7 +12,7 @@ export const exclusivePlanState = () => ({ status: 'empty', busy: false, error: 
 export function createExclusivePlanFlow({ state, send, commerce, family, revision, storage, newId,
   later = setTimeout, cancelLater = clearTimeout }) {
   let epoch = 0, timer = null
-  const key = () => 'exclusive-plan-intent:v1:' + family()
+  const key = () => 'exclusive-plan-intent:week-v1:' + family()
   const stop = () => { epoch++; if (timer) cancelLater(timer); timer = null; state.busy = false }
   async function run(work) {
     if (state.busy) return
@@ -86,7 +86,7 @@ export function createExclusivePlanFlow({ state, send, commerce, family, revisio
   function refresh() {
     return run(async (active, fid) => {
       const suffix = state.group?.group_id ? '/' + encodeURIComponent(state.group.group_id) : ''
-      const { data } = await send({ path: `/api/health/v1/families/${encodeURIComponent(fid)}/exclusive-plans${suffix}` })
+      const { data } = await send({ path: `/api/health/v1/families/${encodeURIComponent(fid)}/exclusive-plans${suffix}?summary=true` })
       await accept(data, active)
     })
   }
@@ -95,7 +95,7 @@ export function createExclusivePlanFlow({ state, send, commerce, family, revisio
       stop(); Object.assign(state, exclusivePlanState())
       return run(async (active, fid) => {
         state.status = 'reading'
-        const { data } = await send({ path: `/api/health/v1/families/${encodeURIComponent(fid)}/exclusive-plans` })
+        const { data } = await send({ path: `/api/health/v1/families/${encodeURIComponent(fid)}/exclusive-plans?summary=true` })
         if (!active()) return
         await accept(data, active)
       })

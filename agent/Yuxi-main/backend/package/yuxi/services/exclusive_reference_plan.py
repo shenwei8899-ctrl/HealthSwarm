@@ -39,20 +39,22 @@ from yuxi.services.reference_recipe_matching import (
 )
 from yuxi.services.reference_recipe_variety import validate_variety, variety_context
 
-REFERENCE_POLICY = {"version": "exclusive-reference-v2", "hash": "exclusive-reference-v2"}
+from yuxi.services.exclusive_plan_types import EXCLUSIVE_PLAN_DAYS
+
+REFERENCE_POLICY = {"version": "exclusive-week-v1", "hash": "exclusive-week-v1", "day_count": EXCLUSIVE_PLAN_DAYS}
 TIER_TARGETS = {
     "economy": "以较低食材费用为目标",
     "standard": "以适中食材费用为目标",
     "premium": "以较高食材费用为目标",
 }
 TIER_REFERENCE_CENTS = {"economy": (1000, 2000), "standard": (3000, 5000), "premium": (5000, 10000)}
-CAPABILITY_NOTICE = "当前沿用今日餐单口径生成21天参考菜单，未作专业审核，个人营养量和家庭份量尚未核定。"
+CAPABILITY_NOTICE = "当前沿用今日餐单口径生成7天参考菜单，未作专业审核，个人营养量和家庭份量尚未核定。"
 PRICE_NOTICE = (
     "按整期合并采购包装计算，参考人均费用为总价除以天数及本计划就餐人数；家庭份量尚未核定，未匹配食材不计入完整总价。"
 )
 
 
-async def exclusive_reference_context(session, uid, fid, *, day=None, load_documents=True):
+async def exclusive_reference_context(session, uid, fid, *, day=None, start_date=None, load_documents=True):
     """复用今日餐单授权边界，来源不依赖审核配方或采购目录。"""
     family, _ = await FamilyService(session, uid).context(fid)
     diners = sorted((family.settings or {}).get("default_diners", []))
@@ -88,7 +90,13 @@ async def exclusive_reference_context(session, uid, fid, *, day=None, load_docum
         "selection": selection,
         "sources": sources,
         "current": current,
-        "basis_hash": input_fingerprint({"sources": current["sources"], "policy": REFERENCE_POLICY}),
+        "basis_hash": input_fingerprint(
+            {
+                "sources": current["sources"],
+                "policy": REFERENCE_POLICY,
+                "start_date": str(start_date or selection.plan_date),
+            }
+        ),
         "documents": documents,
         "verified_documents": {},
     }
@@ -97,7 +105,10 @@ async def exclusive_reference_context(session, uid, fid, *, day=None, load_docum
 async def optional_exclusive_catalog():
     """采购服务不可用只形成可观察缺口，不能撤销菜单。"""
     try:
-        return {**await current_catalog(), "status": "available"}
+        from yuxi.services.exclusive_delivery_suggestions import catalog_storage_rules
+
+        catalog = await current_catalog()
+        return {**catalog, "status": "available", "storage_rules": catalog_storage_rules(catalog.get("items", []))}
     except HealthVisionError as error:
         if not error.code.startswith(("commerce_", "catalog_")):
             raise
@@ -219,24 +230,10 @@ async def prepare_reference_day(session, context, entry, catalog):
 
 
 async def validate_reference_days(session, context, entries):
-    """保存、发布和读取均重验原谱及限制；不读取商品或采购映射。"""
+    """发布整期菜单时保留连续日期和跨日重复检查。"""
     history = []
     for entry in entries:
-        if entry.get("mode") != "reference":
-            raise HealthVisionError("source_invalidated", "旧版计划需重新准备", 410)
-        if sorted(meal["meal_type"] for meal in entry["meals"]) != ["breakfast", "dinner", "lunch"]:
-            raise HealthVisionError("source_invalidated", "计划三餐不完整，请重新准备", 410)
-        documents = context["verified_documents"]
-        meals = []
-        for meal in entry["meals"]:
-            dishes = []
-            for dish in meal["dishes"]:
-                await verified_reference_document(session, context, dish)
-                dishes.append({key: dish[key] for key in ("file_id", "chunk_id", "name", "ingredients", "steps")})
-            meals.append(ReferenceMeal.model_validate({"meal_type": meal["meal_type"], "dishes": dishes}))
-        from types import SimpleNamespace
-
-        checked = checked_reference_meals(SimpleNamespace(meals=meals), documents, context["current"]["members"])
+        checked = await validate_reference_day(session, context, entry)
         selection = context["selection"].model_dump(mode="json") | {"plan_date": entry["day"]["plan_date"]}
         if history and (
             entry["day"]["day_no"] != entries[len(history) - 1]["day"]["day_no"] + 1
@@ -247,6 +244,30 @@ async def validate_reference_days(session, context, entries):
         validate_variety(history[-14:], selection, checked)
         history.append((selection["family_id"], selection["plan_date"], checked))
         entry["meals"] = checked
+
+
+async def validate_reference_day(session, context, entry, *, require_translation=True):
+    """浏览只验证当天原谱及三餐组成，不冒充整期跨日校验。"""
+    if entry.get("mode") != "reference":
+        raise HealthVisionError("source_invalidated", "旧版计划需重新准备", 410)
+    if sorted(meal["meal_type"] for meal in entry["meals"]) != ["breakfast", "dinner", "lunch"]:
+        raise HealthVisionError("source_invalidated", "计划三餐不完整，请重新准备", 410)
+    documents = context["verified_documents"]
+    meals = []
+    for meal in entry["meals"]:
+        dishes = []
+        for dish in meal["dishes"]:
+            await verified_reference_document(session, context, dish)
+            dishes.append({key: dish[key] for key in ("file_id", "chunk_id", "name", "ingredients", "steps")})
+        meals.append(ReferenceMeal.model_validate({"meal_type": meal["meal_type"], "dishes": dishes}))
+    from types import SimpleNamespace
+
+    checked = checked_reference_meals(
+        SimpleNamespace(meals=meals), documents, context["current"]["members"], require_translation=require_translation
+    )
+    selection = context["selection"].model_dump(mode="json") | {"plan_date": entry["day"]["plan_date"]}
+    validate_reference_meal_composition(checked, selection)
+    return checked
 
 
 async def verified_reference_document(session, context, dish):
