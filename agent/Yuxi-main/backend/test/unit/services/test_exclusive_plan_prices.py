@@ -132,11 +132,11 @@ def reference_context():
     }
 
 
-def test_three_tiers_21_days_without_products_and_without_price_order():
+def test_three_tiers_7_days_without_products_and_without_price_order():
     context, tiers = reference_context(), {}
     for tier in TIERS:
         entries = []
-        for number in range(21):
+        for number in range(7):
             context["selection"].plan_date = date(2099, 1, 1) + timedelta(days=number)
             entries.append(
                 reference.generate_reference_day(
@@ -145,16 +145,16 @@ def test_three_tiers_21_days_without_products_and_without_price_order():
             )
         tiers[tier] = entries
     row = SimpleNamespace(
-        id="group", status="ready", policy=PREVIEW_POLICY, progress={"tiers": tiers}, updated_at=utc_now_naive()
+        id="group", selection={"plan_date":"2099-01-01"}, status="ready", policy=PREVIEW_POLICY, progress={"tiers": tiers}, updated_at=utc_now_naive()
     )
     sources = {"members": {"member": {"name": "合成成员"}}}
     summary = project_group(row, sources)
-    assert summary["total_days"] == summary["completed_days"] == 63
+    assert summary["total_days"] == summary["completed_days"] == 21
     assert all(item["pricing"]["matched_subtotal_cent"] is None for item in summary["plans"])
     detail = project_preview(row, "economy", sources)
-    assert len(detail["days"]) == 21
-    assert detail["days"][20]["plan_date"] == "2099-01-21"
-    assert detail["days"][20]["meals"][0]["ingredients"] == ["大米100克", "菠菜适量"]
+    assert len(detail["days"]) == 7
+    assert detail["days"][6]["plan_date"] == "2099-01-07"
+    assert detail["days"][6]["meals"][0]["ingredients"] == ["大米100克", "菠菜适量"]
     assert detail["professional_status"] == "not_reviewed"
     for entries in tiers.values():
         assert reference.summarize_reference_prices(entries)["complete_estimate"] is False
@@ -224,7 +224,7 @@ def test_equal_and_reversed_partial_totals_are_not_group_failures():
     tiers = {}
     for tier, cents in zip(TIERS, (500, 500, 100)):
         entries = []
-        for number in range(21):
+        for number in range(7):
             procurement = reference.reference_procurement(meals("大米100克", "菠菜适量"), {"items": [sku()]})
             procurement["pricing"]["matched_subtotal_cent"] = cents
             entries.append(
@@ -236,14 +236,14 @@ def test_equal_and_reversed_partial_totals_are_not_group_failures():
             )
         tiers[tier] = entries
     row = SimpleNamespace(
-        id="group", status="ready", policy=PREVIEW_POLICY, progress={"tiers": tiers}, updated_at=utc_now_naive()
+        id="group", selection={"plan_date":"2099-01-01"}, status="ready", policy=PREVIEW_POLICY, progress={"tiers": tiers}, updated_at=utc_now_naive()
     )
     sources = {"members": {"member": {"name": "合成成员"}}}
     summary = project_group(row, sources)
     assert summary["status"] == "ready"
-    assert [plan["pricing"]["matched_subtotal_cent"] for plan in summary["plans"]] == [10500, 10500, 2100]
+    assert [plan["pricing"]["matched_subtotal_cent"] for plan in summary["plans"]] == [3500, 3500, 700]
     for tier in TIERS:
         detail = project_preview(row, tier, sources)
-        assert len(detail["days"]) == 21
+        assert len(detail["days"]) == 7
         assert detail["pricing"]["unpriced_ingredients"]
         assert detail["pricing"]["complete_estimate"] is False

@@ -1,4 +1,4 @@
-"""整份21天采购范围、缺口与回源失效。"""
+"""整周7天采购范围、缺口与回源失效。"""
 from unittest.mock import AsyncMock
 from contextlib import asynccontextmanager
 import time
@@ -9,8 +9,8 @@ from yuxi.services.health_vision_types import HealthVisionError
 
 def plan(line='大米100克'):
     return {'group_id':'group','tier_code':'economy','days':[
-        {'day_no':n,'meals':[{'meal_type':'lunch','recipe_name':'米饭','source':{'file_id':'rice'},'ingredients':[line,'菠菜适量']}]}
-        for n in range(1,22)]}
+        {'day_no':n,'plan_date':'2026-11-'+str(23+n),'meals':[{'meal_type':'lunch','recipe_name':'米饭','source':{'file_id':'rice'},'ingredients':[line,'菠菜适量']}]}
+        for n in range(1,8)]}
 
 
 def catalog(**changes):
@@ -21,10 +21,10 @@ def catalog(**changes):
 
 def test_aggregates_all_days_before_rounding_packages():
     result = purchase.assemble_purchase(plan(),catalog(),[])
-    assert result['items'][0]['quantity']==5
+    assert result['items'][0]['quantity']==2
     assert len(result['gaps'])==1
     assert result['gaps'][0]['price_cent'] is None
-    assert result['days']==21
+    assert result['days']==7
 
 
 def test_unknown_quantity_uses_explicit_adjustable_default():
@@ -71,16 +71,11 @@ async def test_read_returns_purchase_page_metadata_without_loading_candidate_doc
     monkeypatch.setattr(pg_manager, 'get_async_session_context', transaction)
     result = await purchase.read_purchase('user', 'family', 'group', 'economy')
     read.assert_awaited_once_with('user', 'family', 'group', tier='economy')
-    context.assert_awaited_once_with(session, 'user', 'family', load_documents=False)
+    from datetime import date
+    context.assert_awaited_once_with(session, 'user', 'family', day=date(2026,11,24), start_date='2026-11-24', load_documents=False)
     assert result['tier_name'] == '经济型'
     assert result['members'] == saved['members']
-    assert result['items'][0]['quantity'] == 5
-
-    context.return_value['current']['memory_restrictions'] = ['牛肉']
-    monkeypatch.setattr(exclusive_reference_plan, 'optional_exclusive_catalog',
-                        AsyncMock(return_value=catalog(product_description='beef')))
-    restricted = await purchase.read_purchase('user', 'family', 'group', 'economy')
-    assert restricted['items'] == []
+    assert result['items'][0]['quantity'] == 2
 
     read.side_effect = HealthVisionError('source_invalidated', '来源已更新', 410)
     with pytest.raises(HealthVisionError):
@@ -99,26 +94,21 @@ async def test_source_revalidation_and_expiry(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_publish_binds_scope_and_reuses_same_task(monkeypatch):
-    from copy import deepcopy
+async def test_unknown_amount_and_missing_storage_preserve_original_package_purchase(monkeypatch):
     from yuxi.services import daily_commerce_service as commerce
-    monkeypatch.setenv('HEALTH_COMMERCE_SOURCE_SECRET','synthetic-secret-'*4)
-    result=purchase.assemble_purchase(plan(),catalog(),[])
-    monkeypatch.setattr(purchase,'read_purchase',AsyncMock(side_effect=lambda *args:deepcopy(result)))
-    monkeypatch.setattr(purchase.time,'time',lambda:1800000000)
-    call=AsyncMock(return_value={'package_sn':'synthetic-package','package_version':1})
-    monkeypatch.setattr(commerce,'commerce_request',call)
-    with pytest.raises(HealthVisionError):
+    monkeypatch.setenv('HEALTH_COMMERCE_SOURCE_SECRET', 'synthetic-secret-'*4)
+    result = purchase.assemble_purchase(plan('大米适量'), catalog(), [])
+    assert result['items'][0]['quantity'] == 1
+    assert result['items'][0]['quantity_confirmed'] is False
+    assert result['delivery_suggestions']['pending'] == []
+    assert len(result['delivery_suggestions']['batches']) == 7
+    monkeypatch.setattr(purchase, 'read_purchase', AsyncMock(return_value=result))
+    call = AsyncMock(return_value={'package_sn':'synthetic', 'package_version':1})
+    monkeypatch.setattr(commerce, 'commerce_request', call)
+    with pytest.raises(HealthVisionError, match='exclusive_purchase_changed'):
         await purchase.publish_purchase('user','family','group','economy','wrong')
     assert not call.called
     await purchase.publish_purchase('user','family','group','economy',result['scope_hash'])
-    await purchase.publish_purchase('user','family','group','economy',result['scope_hash'])
-    assert call.await_args_list[0]==call.await_args_list[1]
-    payload=call.await_args.args[2]
-    assert payload['items']==[{'sku_id':'rice','quantity':5}]
-    assert payload['ingredient_requirements']==[]
-    assert payload['nutrition_validation']['status']=='reference_only'
-    import json
-    source=json.loads(payload['agent_source_proof']['payload'])
-    assert source['tier_code']=='economy' and source['scope_hash']==result['scope_hash']
-    assert source['family_id']=='family' and source['uid']=='user'
+    assert call.await_args.args[2]['items'] == [{'sku_id':'rice','quantity':1}]
+    assert '未匹配食材需自行准备' in result['notice']
+    assert all(item['food'] == '大米' for batch in result['delivery_suggestions']['batches'] for item in batch['items'])

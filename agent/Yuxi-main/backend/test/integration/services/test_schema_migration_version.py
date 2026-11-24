@@ -666,3 +666,57 @@ async def test_resource_selection_migration_is_atomic_and_does_not_repeat(fail_v
         assert await manager.get_schema_versions() == {"business": 9}
     finally:
         await _drop_isolated_schema(schema, admin_engine, engine)
+
+async def test_exclusive_day_validation_upgrade_40_to_41_preserves_snapshots(monkeypatch, tmp_path):
+    """正式迁移入口从40重复升级，创建回执表并保留历史21天菜单。"""
+    from unittest.mock import AsyncMock
+
+    from yuxi import storage_migration as migration
+    from yuxi.storage.postgres.models_business import Base, FamilyArchive, User
+    from yuxi.storage.postgres.models_health import HealthExclusiveDayValidation, HealthExclusivePlanGroup
+    from yuxi.storage_migrations.v071_workdirs import V071WorkdirMigrationPlan
+
+    schema, admin, engine, manager = await _create_isolated_manager("pytest_exclusive41")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    original = {"tiers": {"economy": [{"day": {"day_no": n}, "marker": f"legacy-{n}"} for n in range(1, 22)]}}
+    try:
+        async with engine.begin() as connection:
+            tables = [table for table in Base.metadata.sorted_tables if table is not HealthExclusiveDayValidation.__table__]
+            await connection.run_sync(lambda conn: Base.metadata.create_all(conn, tables=tables))
+            assert await connection.scalar(text("SELECT to_regclass('health_exclusive_day_validation')")) is None
+        async with sessions.begin() as session:
+            session.add(User(uid="schema-owner", username="schema-owner", password_hash="synthetic"))
+            await session.flush()
+            session.add(FamilyArchive(id="schema-family", owner_uid="schema-owner", name="合成家庭"))
+            await session.flush()
+            session.add(HealthExclusivePlanGroup(id="legacy-group", actor_uid="schema-owner", family_id="schema-family",
+                request_id="schema-request", basis_hash="legacy-basis", status="ready", attempt=1,
+                selection={"plan_date": "2026-11-01"}, sources={}, policy={"version": "exclusive-reference-v2"}, progress=original))
+        await manager.create_schema_version_table()
+        for domain, version in [("business", BUSINESS_SCHEMA_VERSION), ("knowledge", KNOWLEDGE_SCHEMA_VERSION), ("health", 40)]:
+            await manager.record_schema_version(domain, version)
+        manager.AsyncSession = sessions
+        monkeypatch.setattr(manager, "initialize", lambda: None)
+        monkeypatch.setattr(manager, "close", AsyncMock())
+        monkeypatch.setattr(migration, "pg_manager", manager)
+        monkeypatch.setattr(migration, "read_v071_workdir_plan", AsyncMock(return_value=V071WorkdirMigrationPlan(False, (), ())))
+        for name in ("_legacy_skill_roots_exist", "_legacy_system_config_exists", "runtime_storage_requires_quiescence"):
+            monkeypatch.setattr(migration, name, lambda: False)
+        monkeypatch.setattr(migration, "get_legacy_storage_dir", lambda: tmp_path)
+        monkeypatch.setattr(migration, "_converge_database_state", AsyncMock())
+        monkeypatch.setattr(migration, "migrate_shared_skills", AsyncMock())
+        monkeypatch.setattr(migration, "mark_v071_skills_migrated", lambda: None)
+        monkeypatch.setattr(migration, "migrate_runtime_storage_identity", lambda: None)
+        for attempt in range(2):
+            await migration.main()
+            assert (await manager.get_schema_versions())["health"] == HEALTH_SCHEMA_VERSION == 41
+            async with sessions.begin() as session:
+                saved = await session.get(HealthExclusivePlanGroup, "legacy-group")
+                assert saved.progress == original and saved.status == "ready"
+                if attempt == 0:
+                    session.add(HealthExclusiveDayValidation(group_id="legacy-group", tier="economy", day_no=21, version="checked-source"))
+                else:
+                    receipt = await session.get(HealthExclusiveDayValidation, ("legacy-group", "economy", 21))
+                    assert receipt.version == "checked-source"
+    finally:
+        await _drop_isolated_schema(schema, admin, engine)

@@ -14,6 +14,7 @@ from yuxi.config.options import ensure_options_in_db
 from yuxi.repositories.agent_run_repository import AgentRunRepository
 from yuxi.storage_migrations.v039_converged_health import upgrade_converged_health
 from yuxi.storage_migrations.v039_meal_archive import upgrade_meal_archive
+from yuxi.storage_migrations.v041_exclusive_day_validation import upgrade_exclusive_day_validation
 from yuxi.storage.postgres.manager import (
     BUSINESS_SCHEMA_VERSION,
     HEALTH_SCHEMA_VERSION,
@@ -134,6 +135,7 @@ async def main() -> None:
                     37,
                     38,
                     39,
+                    40,
                 ),
             )
 
@@ -218,6 +220,7 @@ async def main() -> None:
                     await upgrade_shared_daily_meal_plan(pg_manager)
                 await upgrade_converged_health(pg_manager)
                 await upgrade_meal_archive(pg_manager)
+                await upgrade_exclusive_day_validation(pg_manager)
                 await pg_manager.record_schema_version("health", HEALTH_SCHEMA_VERSION)
 
             await _converge_database_state(fail_nonterminal_runs=requires_quiescence)

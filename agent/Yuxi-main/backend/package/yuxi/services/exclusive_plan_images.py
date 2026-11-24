@@ -1,6 +1,7 @@
 """专属菜单图片独立生成，读取只查询来源绑定的公共缓存。"""
 
 import asyncio
+from datetime import date
 from copy import deepcopy
 
 from yuxi.repositories.exclusive_plan_repository import ExclusivePlanRepository
@@ -16,15 +17,15 @@ async def start_plan_images(uid, fid, gid, *, retry=False):
     """显式登记旧计划补图；自动进入页面不重复已结束的尝试。"""
     async with pg_manager.get_async_session_context() as session:
         row, context = await image_context(session, uid, fid, gid)
-        from yuxi.services.exclusive_plan_tasks import validate_saved_days
-
-        for entries in row.progress["tiers"].values():
-            await validate_saved_days(session, context, entries)
         previous = await tasker.find_task_by_payload(
             task_type="exclusive_recipe_images_v1", payload_match={"group_id": gid}
         )
         if previous and (previous.status not in {"failed", "cancelled"} or not retry):
             return {"status": previous.status}
+        from yuxi.services.exclusive_plan_tasks import validate_saved_days
+
+        for entries in row.progress["tiers"].values():
+            await validate_saved_days(session, context, entries)
         await require_service_notice(session, uid)
         task, created = await queue_plan_images(session, row)
     if created:
@@ -34,15 +35,10 @@ async def start_plan_images(uid, fid, gid, *, retry=False):
 
 async def read_plan_images(uid, fid, gid, tier, day_no):
     """仅返回当前一天已经核验原文的图片及持久任务状态。"""
-    async with pg_manager.get_async_session_context() as session:
-        row, context = await image_context(session, uid, fid, gid)
-        entries = [e for e in row.progress["tiers"].get(tier, []) if e["day"]["day_no"] == day_no]
-        if not entries:
-            raise HealthVisionError("not_found", "计划日期不存在", 404)
-        from yuxi.services.exclusive_plan_tasks import validate_saved_days
+    from yuxi.services.exclusive_plan_browse import read_plan_day
 
-        await validate_saved_days(session, context, entries)
-        dishes = deepcopy([d for e in entries for m in e["meals"] for d in m["dishes"]])
+    day = await read_plan_day(uid, fid, gid, tier, day_no, for_images=True)
+    dishes = day["raw_dishes"]
     task = await tasker.find_task_by_payload(task_type="exclusive_recipe_images_v1", payload_match={"group_id": gid})
     images = await cached_plan_images(dishes)
     return {"day_no": day_no, "status": task.status if task else "not_started", "images": images}
@@ -125,7 +121,15 @@ async def image_context(session, uid, fid, gid):
     row = await repo.find(group_id=gid)
     if row is None or row.status != "ready" or row.policy != PREVIEW_POLICY:
         raise HealthVisionError("not_found", "计划不存在或尚未就绪", 404)
-    current = await exclusive_context(session, uid, fid, row.policy, load_documents=False)
+    current = await exclusive_context(
+        session,
+        uid,
+        fid,
+        row.policy,
+        day=date.fromisoformat(row.selection["plan_date"]),
+        start_date=row.selection["plan_date"],
+        load_documents=False,
+    )
     if current["basis_hash"] != row.basis_hash:
         raise HealthVisionError("source_invalidated", "计划依据已变化，请重新准备", 410)
     return row, current

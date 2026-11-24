@@ -1001,6 +1001,17 @@ class HealthExclusivePlanGroup(Base):
     updated_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
+class HealthExclusiveDayValidation(Base):
+    """记录按日来源版本的校验回执，避免重写原计划。"""
+
+    __tablename__ = "health_exclusive_day_validation"
+    __table_args__ = (CheckConstraint("day_no BETWEEN 1 AND 21", name="ck_exclusive_validation_day"),)
+    group_id = Column(String(36), ForeignKey("health_exclusive_plan_group.id", ondelete="CASCADE"), primary_key=True)
+    tier = Column(String(16), primary_key=True)
+    day_no = Column(Integer, primary_key=True)
+    version = Column(String(64), nullable=False)
+
+
 class HealthWeeklyMealPlan(Base):
     """保存多日请求、对话归属与各日安排版本。"""
 
@@ -1057,6 +1068,7 @@ HEALTH_TABLES = HEALTH_BUDGET_TABLES + [
         HealthDailyMealPlan,
         HealthDailyArrangement,
         HealthExclusivePlanGroup,
+        HealthExclusiveDayValidation,
         HealthWeeklyMealPlan,
         HealthRecipeCommerceSource,
         HealthRecipeTranslation,

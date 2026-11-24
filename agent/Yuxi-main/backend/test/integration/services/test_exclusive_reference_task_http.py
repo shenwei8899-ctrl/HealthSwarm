@@ -24,10 +24,9 @@ from yuxi.services.exclusive_plan_generation import TIERS
 from yuxi.services.exclusive_plan_tasks import run_exclusive_plan
 from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.task_service import TaskContext
-from yuxi.storage.postgres.models_business import TaskRecord
+from yuxi.storage.postgres.models_business import TaskRecord, FamilyMember
 from yuxi.storage.postgres.models_health import (
     HealthExclusivePlanGroup,
-    HealthProcessingConsent,
     HealthMemoryFact,
     HealthFamilyProfileLink,
 )
@@ -42,6 +41,13 @@ async def test_real_task_publishes_and_reads_all_days_without_catalog_or_purchas
     """断点恢复、完整发布和读取不借助预填ready或跳过来源复核。"""
     current = await setup_reference(family_profile_http, monkeypatch)
     client, sessions, users, mid, actor, selection = current
+    notice = (await client.get("/api/service-notice")).json()
+    acknowledged = await client.post(
+        "/api/account/service-notice",
+        headers=users["self"],
+        json={"version": notice["version"], "content_hash": notice["content_hash"], "acknowledged": True},
+    )
+    assert acknowledged.status_code == 200, acknowledged.text
     for number in range(24):
         content = f"# 合成蔬菜饭{number}\n## 食材\n- 大米100克\n- 菠菜适量\n## 做法\n1. 加热至熟。"
         await add_recipe(current, f"exclusive-{number}", f"烹饪菜谱{number}.md", content)
@@ -89,18 +95,43 @@ async def test_real_task_publishes_and_reads_all_days_without_catalog_or_purchas
         row = await db.get(HealthExclusivePlanGroup, gid)
         assert row.status == "ready"
         assert row.progress["tiers"]["economy"][0] == saved_first
-        assert all(len(row.progress["tiers"][tier]) == 21 for tier in TIERS)
+        assert all(len(row.progress["tiers"][tier]) == 7 for tier in TIERS)
         assert "tier_costs_cent" not in row.progress and "receipts" not in row.progress
         source_id = saved_first["meals"][0]["dishes"][0]["file_id"]
     group = await client.get(path + "/" + gid, headers=users["self"])
     assert group.status_code == 200, group.text
-    assert group.json()["status"] == "ready" and group.json()["completed_days"] == 63
+    assert group.json()["status"] == "ready" and group.json()["completed_days"] == 21
+    # 读取原周计划不再依赖阅读当天；跨午夜仍保留最初的第一天。
+    from yuxi.services import exclusive_plan_service as plan_service
+    from datetime import datetime
+    class NoCurrentDate(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            raise AssertionError("读取已保存周计划不能重新选择当天")
+    with monkeypatch.context() as clock_patch:
+        clock_patch.setattr(plan_service, "datetime", NoCurrentDate)
+        unchanged = await client.get(path + "/" + gid, headers=users["self"])
+        assert unchanged.status_code == 200, unchanged.text
+        assert unchanged.json()["start_date"] == saved_first["day"]["plan_date"]
+
+    # 旧21天参考记录只返回失效提示，原始快照不裁剪也不自动改写。
+    legacy_id = str(uuid4())
+    async with sessions.begin() as db:
+        original = await db.get(HealthExclusivePlanGroup, gid)
+        legacy_progress = {"tiers": {"economy": [{"day": {"day_no": n}} for n in range(1, 22)]}}
+        db.add(HealthExclusivePlanGroup(id=legacy_id, actor_uid="self", family_id=selection["family_id"], request_id=str(uuid4()), basis_hash="a"*64, status="ready", selection=original.selection, sources=original.sources, policy={"version":"exclusive-reference-v2","hash":"exclusive-reference-v2"}, progress=legacy_progress))
+    legacy = await client.get(path + "/" + legacy_id, headers=users["self"])
+    assert legacy.status_code == 200 and legacy.json()["status"] == "stale" and not legacy.json()["plans"]
+    async with sessions() as db:
+        archived = await db.get(HealthExclusivePlanGroup, legacy_id)
+        assert archived.progress == legacy_progress and archived.status == "ready"
+
     for tier in TIERS:
         detail = await client.get(path + f"/{gid}/tiers/{tier}", headers=users["self"])
         assert detail.status_code == 200, detail.text
         data = detail.json()
-        assert len(data["days"]) == 21
-        assert data["days"][20]["procurement"]["ingredients"]
+        assert len(data["days"]) == 7
+        assert data["days"][6]["procurement"]["ingredients"]
         assert data["pricing"]["matched_subtotal_cent"] is None
         assert all(gap["reason"] == "catalog_unavailable" for gap in data["pricing"]["unpriced_ingredients"])
     assert (await client.get(path + f"/{gid}/tiers/economy", headers=users["other"])).status_code == 404
@@ -150,13 +181,19 @@ async def test_real_task_publishes_and_reads_all_days_without_catalog_or_purchas
     assert stale.status_code == 200 and stale.json()["status"] == "stale", stale.text
     replacement = await client.post(path, headers=users["self"], json={"client_request_id": str(uuid4())})
     assert replacement.status_code == 200 and replacement.json()["group_id"] != gid, replacement.text
+    # 升级前已排队的旧参考任务停止补生成；不把它当成正式商城计划导出。
     async with sessions.begin() as db:
-        consent = await db.scalar(
-            select(HealthProcessingConsent).where(
-                HealthProcessingConsent.member_id == mid,
-                HealthProcessingConsent.purpose == "meal_plan",
-            )
-        )
-        consent.revoked_at = __import__("datetime").datetime.now(__import__("datetime").UTC).replace(tzinfo=None)
+        retired = await db.get(HealthExclusivePlanGroup, gid)
+        retired.policy = {"version":"exclusive-reference-v2", "hash":"exclusive-reference-v2"}
+        retired.status = "generating"
+        retired.progress = deepcopy(legacy_progress)
+    assert await run_exclusive_plan(context) == {"group_id":gid, "status":"stale"}
+    async with sessions() as db:
+        retired = await db.get(HealthExclusivePlanGroup, gid)
+        assert retired.status == "stale" and retired.progress == legacy_progress
+
+    async with sessions.begin() as db:
+        member = await db.get(FamilyMember, actor)
+        member.is_active = False
     revoked = await client.get(path + "/" + replacement.json()["group_id"], headers=users["self"])
-    assert revoked.status_code in (403, 409), revoked.text
+    assert revoked.status_code in (403, 404, 409), revoked.text

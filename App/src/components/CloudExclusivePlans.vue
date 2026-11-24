@@ -36,8 +36,8 @@ onUnload(stop)
 <template>
   <view class="screen exclusive-overview">
     <AppNavBar title="AI 专属计划"><template #left><button class="overview-back" aria-label="返回" @click="back">‹</button></template></AppNavBar>
-    <view class="overview-hero"><text class="hero-eyebrow">为家人的每一餐，多想一点</text><view class="hero-title"><text>接下来 </text><text class="hero-number">21</text><text> 天，</text><text class="hero-line">好好吃饭。</text></view><text class="hero-caption">根据家庭档案，安排全家的三餐。</text><view class="calendar-stack" aria-hidden="true"><view class="calendar-page"><view class="calendar-header"><text>三餐计划</text></view><view class="calendar-date"><text class="calendar-number">21</text><text class="calendar-unit">天</text></view><view class="calendar-grid"/></view><view class="calendar-ring ring-left"/><view class="calendar-ring ring-right"/></view></view>
-    <view class="overview-family"><view><AppIcon name="family" :size="28"/><text>为全家安排</text></view><text>21 天 · 每日三餐</text></view>
+    <view class="overview-hero"><text class="hero-eyebrow">为家人的每一餐，多想一点</text><view class="hero-title"><text>接下来 </text><text class="hero-number">7</text><text> 天，</text><text class="hero-line">好好吃饭。</text></view><text class="hero-caption">根据家庭档案，安排全家的三餐。</text><view class="calendar-stack" aria-hidden="true"><view class="calendar-page"><view class="calendar-header"><text>三餐计划</text></view><view class="calendar-date"><text class="calendar-number">7</text><text class="calendar-unit">天</text></view><view class="calendar-grid"/></view><view class="calendar-ring ring-left"/><view class="calendar-ring ring-right"/></view></view>
+    <view class="overview-family"><view><AppIcon name="family" :size="28"/><text>为全家安排</text></view><text>7 天 · 每日三餐</text></view>
     <view class="overview-heading"><text>选一份适合家的计划</text><text>三种选择</text></view>
     <ExclusivePlanDeck :plans="cards" :action-label="cardAction" :disabled="(!ready && !canStart) || state.busy || !active" @detail="detail"/>
     <text v-if="preparing" class="overview-notice" role="status">正在为家人准备计划，可以离开页面，稍后回来查看。</text>
