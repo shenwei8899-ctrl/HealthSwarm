@@ -138,6 +138,9 @@ async def read_exclusive_plan(uid, fid, group_id=None, *, tier=None):
             allow_interpretation=True,
             load_documents=False,
         )
+        from yuxi.services.diet_stage_plan_history import historical_goal_context
+
+        context = await historical_goal_context(session, context, row.sources, row.policy, row.selection["plan_date"])
         if row.basis_hash != context["basis_hash"]:
             if tier is not None:
                 raise HealthVisionError("source_invalidated", "档案或计划规则已更新，请重新准备", 410)

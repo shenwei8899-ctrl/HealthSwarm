@@ -190,6 +190,9 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
         if draft.activity_level is not None:
             changes["activity_level"] = draft.activity_level
         service.require_fields(family, member, changes, write=True)
+        from yuxi.services.diet_stage_guard import require_stage_goal_entry
+
+        require_stage_goal_entry(member.profile or {}, {**(member.profile or {}), **changes})
         relationship = member.relationship if member_only else draft.relation
         if member.name != draft.name or member.relationship != relationship:
             if member.subject_uid and member.subject_uid != uid:
@@ -278,6 +281,9 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
 
 async def profile_result(service, family):
     """只投影当前可读资料；不把空字段改成无疾病或无过敏。"""
+    from yuxi.services.diet_stage_summaries import family_stage_summaries
+
+    summaries = await family_stage_summaries(service.db, family.id)
     members = []
     actor = None
     for member in await service.repo.members(family.id):
@@ -316,6 +322,8 @@ async def profile_result(service, family):
                 "id": member.id,
                 "memberId": member.person_id or member.id,
                 "healthMemberId": health_id,
+                "stageManaged": bool(member.profile.get("diet_stage_managed")),
+                "stageSummary": summaries.get(member.id) if {"goal", "dietary_details"} <= set(view["allowed_fields"]) else None,
                 "version": member.version,
                 "relationshipVersion": member.relationship_version,
                 "isSelf": member.subject_uid == service.uid,

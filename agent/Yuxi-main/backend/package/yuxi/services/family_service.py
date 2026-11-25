@@ -95,6 +95,7 @@ def member_view(family, member, uid):
         "is_self": member.subject_uid == uid,
         "claimed": member.subject_uid is not None or guardian_active(member, uid),
         "profile": profile,
+        "stage_managed": bool((member.profile or {}).get("diet_stage_managed")),
         "profile_access": "family_shared" if member.is_active else "unavailable",
         "allowed_fields": sorted(allowed),
         "editable_fields": sorted(editable),
@@ -495,6 +496,9 @@ class FamilyService:
             await self.db.commit()
             return result
         merged_profile = {**(member.profile or {}), **changes}
+        from yuxi.services.diet_stage_guard import require_stage_goal_entry
+
+        require_stage_goal_entry(member.profile or {}, merged_profile)
         from yuxi.services.miniapp_profile_types import miniapp_profile_complete, saved_miniapp_member
 
         if miniapp_profile_complete(member):

@@ -21,6 +21,7 @@ from sqlalchemy import (
 
 from yuxi.storage.postgres.models_business import Base, JSON_VALUE
 from yuxi.storage.postgres.models_health_budget import HEALTH_BUDGET_TABLES
+from yuxi.storage.postgres.models_diet_stage import DIET_STAGE_TABLES
 from yuxi.utils.datetime_utils import utc_now_naive
 
 
@@ -1058,7 +1059,7 @@ class HealthRecipeTranslation(Base):
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
-HEALTH_TABLES = HEALTH_BUDGET_TABLES + [
+HEALTH_TABLES = HEALTH_BUDGET_TABLES + DIET_STAGE_TABLES + [
     model.__table__
     for model in (
         HealthMiniappProfileReceipt,

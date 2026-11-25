@@ -192,6 +192,13 @@
             "navigationStyle": "custom",
             "navigationBarTitleText": "餐单与正式采用"
           }
+        },
+        {
+          "path": "diet-stage",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "饮食目标与行动"
+          }
         }
       ]
     },

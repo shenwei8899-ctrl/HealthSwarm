@@ -25,6 +25,7 @@ FAMILY_AI_PURPOSES = frozenset(
 )
 NUTRIENTS = {"energy_kcal": "kcal", "protein_g": "g", "fat_g": "g", "carbohydrate_g": "g", "sodium_mg": "mg"}
 HEALTH_TASK_TYPES = {
+    'diet_stage_v1',
     "onboarding_preparation_v1",
     "report_extract_v1",
     "meal_recognize_v1",

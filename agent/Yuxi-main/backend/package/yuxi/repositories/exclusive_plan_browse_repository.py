@@ -21,7 +21,7 @@ class ExclusivePlanBrowseRepository:
         await ExclusivePlanRepository(self.session, self.uid, self.fid).context()
         result = await self.session.execute(
             text("""
-            SELECT id, status, policy, selection, basis_hash,
+            SELECT id, status, policy, selection, basis_hash, sources,
               (SELECT jsonb_agg(jsonb_build_object(
                 'day_no', e->'day'->'day_no', 'plan_date', e->'day'->'plan_date',
                 'content_version', encode(sha256(convert_to(e::text, 'UTF8')), 'hex'),
@@ -69,7 +69,7 @@ class ExclusivePlanBrowseRepository:
         await ExclusivePlanRepository(self.session, self.uid, self.fid).context()
         result = await self.session.execute(
             text("""
-            SELECT id, status, policy, selection, basis_hash, updated_at,
+            SELECT id, status, policy, selection, basis_hash, updated_at, sources,
               (SELECT jsonb_object_agg(t.key, (SELECT jsonb_agg(jsonb_build_object(
                 'day', e->'day', 'procurement', jsonb_build_object(
                   'pricing', e->'procurement'->'pricing',

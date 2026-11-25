@@ -44,6 +44,7 @@ class TaskDefinition:
 _TASK_DEFINITIONS = {
     definition.task_type: definition
     for definition in (
+        TaskDefinition('diet_stage_v1', 'yuxi.services.diet_stage_tasks', 'run_diet_stage', failure_function='fail_diet_stage'),
         TaskDefinition(
             "nutrition_knowledge_prepare_v1", "yuxi.services.health_knowledge_import_service", "run_knowledge_nutrition"
         ),
