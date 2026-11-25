@@ -96,6 +96,7 @@ async def reference_context_in_session(session, uid, anchor, selection, *, inclu
                 "name": member.name,
                 "relation": member.relationship,
                 "dietary": dietary,
+                "stage_goals": dietary.get("goals", []) if p.get("diet_stage_managed") else [],
                 "allergens": dietary.get("allergies"),
                 "avoidances": dietary.get("avoidances"),
                 "intolerances": dietary.get("intolerances"),

@@ -48,12 +48,14 @@ def variety_context(history, selection, members=()):
                 excluded.update(keys)
             elif 1 < age <= 14:
                 recent.update(keys)
-    preferences = []
+    preferences, stage_goals = [], []
     for member in members:
+        stage_goals.extend(member.get("stage_goals", []))
         dietary = member.get("dietary") or {}
         for field in ("cuisines", "flavors", "tastePreferences"):
             preferences.extend(str(value) for value in dietary.get(field, []) if value)
     return {"excluded": excluded, "recent": recent, "popular": popular, "preferences": preferences,
+            "stage_goals": stage_goals,
             "seed": f"{selection['family_id']}:{selection['plan_date']}"}
 
 
@@ -63,6 +65,12 @@ def candidate_priority(keys, content, variety):
         return ()
     text = content.casefold()
     preference = sum(word.casefold() in text for word in variety["preferences"])
+    # 明确的行为目标只用于原谱食材/做法软排序，不解释疾病或生成营养阈值。
+    goals = variety.get("stage_goals", [])
+    if any(goal in {"增加蔬菜搭配", "丰富蔬菜搭配"} for goal in goals):
+        preference += bool(re.search(r"菠菜|西兰花|白菜|胡萝卜|番茄|青菜|芹菜|生菜|茄子|西葫芦|broccoli|spinach|cabbage|carrot|zucchini", text))
+    if "增加蒸煮菜品" in goals:
+        preference += bool(re.search(r"清蒸|水煮|白灼|\b(?:steam\w*|poach\w*|boil\w*)\b", text))
     # 只用于口味排序，不声明医学适用性，也不改写原谱食材。
     if any("清淡" in word for word in variety["preferences"]):
         preference += bool(re.search(r"清蒸|水煮|白灼|\b(?:steam\w*|poach\w*|boil\w*)\b", text))

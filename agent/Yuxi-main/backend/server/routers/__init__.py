@@ -11,6 +11,7 @@ from server.routers.chat_router import chat
 from server.routers.dashboard_router import dashboard
 from server.routers.daily_arrangement_router import daily_arrangement
 from server.routers.exclusive_plan_router import exclusive_plan
+from server.routers.diet_stage_router import diet_stage
 from server.routers.external_kb_router import external_kb
 from server.routers.family_router import family
 from server.routers.filesystem_router import filesystem_router
@@ -43,6 +44,7 @@ router.include_router(family)
 router.include_router(health_voice)
 router.include_router(daily_arrangement)
 router.include_router(exclusive_plan)
+router.include_router(diet_stage)
 
 # 基础系统接口：健康检查、配置、认证与聊天主链路。
 router.include_router(system)  # /api/system/* 系统状态与全局配置

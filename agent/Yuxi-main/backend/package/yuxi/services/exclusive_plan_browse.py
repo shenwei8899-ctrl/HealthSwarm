@@ -37,6 +37,9 @@ async def read_plan_summary(uid, fid, gid=None):
                 start_date=row["selection"]["plan_date"],
                 load_documents=False,
             )
+            from yuxi.services.diet_stage_plan_history import historical_goal_context
+
+            context = await historical_goal_context(session, context, row.get("sources"), row["policy"], row["selection"]["plan_date"])
             valid = context["basis_hash"] == row["basis_hash"]
             tiers = row["tiers"] or {}
             complete = all(
@@ -202,6 +205,9 @@ async def browse_context(session, uid, fid, gid, tier):
         if error.status in (409, 410, 422):
             raise HealthVisionError("plan_basis_changed", error.message, error.status) from None
         raise
+    from yuxi.services.diet_stage_plan_history import historical_goal_context
+
+    context = await historical_goal_context(session, context, header.get("sources"), header["policy"], header["selection"]["plan_date"])
     if context["basis_hash"] != header["basis_hash"]:
         raise HealthVisionError("plan_basis_changed", "成员资料或计划依据已变化，请重新核对计划", 410)
     return repo, header, context

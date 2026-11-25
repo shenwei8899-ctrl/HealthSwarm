@@ -4,8 +4,8 @@ import { profileFields, recordGroups, objectGroups } from '../services/family-ar
 const props=defineProps({draft:Object,source:Object,editing:Boolean,section:String,archive:Boolean})
 const represented=new Set(['sex','birth_date','height_cm','goal','doctor_instructions','allergens','avoidances'])
 const sections={activity_level:'health',medical_history:'health',medications:'health',condition_records:'health',medication_records:'health',lifestyle:'health',health_goals:'preferences',preferences:'preferences',meal_habits:'preferences',instruction_records:'restrictions',allergy_records:'restrictions'}
-const visible=key=>props.source?.allowed_fields?.includes(key)&&(!props.section||sections[key]===props.section)
-const disabled=key=>!props.editing||!props.source?.editable_fields?.includes(key)
+const visible=key=>!(key==='health_goals'&&props.source?.stage_managed)&&props.source?.allowed_fields?.includes(key)&&(!props.section||sections[key]===props.section)
+const disabled=key=>(key==='health_goals'&&props.source?.stage_managed)||!props.editing||!props.source?.editable_fields?.includes(key)
 function add(group){props.draft[group.key].push(Object.fromEntries(group.fields.map(f=>[f.key,f.type==='select'?f.options[0][0]:''])))}
 </script>
 <template><view class="card additional-fields" :class="{'archive-additional':archive}"><text v-if="!section" class="section-title">补充健康资料</text>

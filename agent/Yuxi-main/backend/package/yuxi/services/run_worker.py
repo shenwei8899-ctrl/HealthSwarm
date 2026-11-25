@@ -14,6 +14,7 @@ from datetime import datetime
 
 from arq.worker import RetryJob, func
 from arq import cron
+from yuxi.services.diet_stage_tasks import prepare_diet_stages
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 from yuxi.agents.backends.sandbox.provider import get_sandbox_provider
@@ -1919,6 +1920,7 @@ async def _worker_shutdown(ctx):
 
 class WorkerSettings:
     cron_jobs = [
+        cron(prepare_diet_stages, minute=set(range(0, 60, 5)), second=45),
         cron(summarize_closed_health_days, minute=set(range(60)), second=5, run_at_startup=True),
         cron(prepare_missing_exclusive_plans, minute=set(range(60)), second=25),
     ]
