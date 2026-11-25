@@ -125,26 +125,12 @@ async def generation_sources(repo, data, *, as_of=None, for_read=False):
 async def conversation_sources(session, uid, hid, start, stop):
     """只收当前账号有权日常会话中的用户原话，失效轮次沿用原过滤。"""
     from yuxi.repositories.health_daily_repository import HealthDailyRepository
-    from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
-    from yuxi.storage.postgres.models_health import HealthDailyConversation
 
     repo = HealthDailyRepository(session)
-    rows = (
-        await session.execute(
-            repo.visible()
-            .where(
-                HealthDailyConversation.actor_uid == uid,
-                HealthDailyConversation.member_id == hid,
-                HealthDailyConversation.business_date >= start,
-                HealthDailyConversation.business_date < stop,
-            )
-            .order_by(HealthDailyConversation.business_date)
-        )
-    ).all()
+    rows = await repo.stage_conversations(uid, hid, start, stop)
     result = []
     for daily, thread in rows:
-        await HealthConsultationRepository(session).authorize(uid, thread)
-        messages = await repo.source_messages(daily, thread)
+        messages = await repo.source_messages(daily, thread, user_only=True)
         if messages is None:
             continue
         if len(messages) > 1000:

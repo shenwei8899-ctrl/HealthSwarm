@@ -4,7 +4,7 @@ from sqlalchemy import or_, select
 
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES
 from yuxi.storage.postgres.models_business import AgentRun, AgentRunRequest, Conversation, Message, Project
-from yuxi.storage.postgres.models_health import HealthDailyConversation
+from yuxi.storage.postgres.models_health import HealthDailyConversation, HealthConsultation
 from yuxi.repositories.health_memory_repository import HealthMemoryRepository
 from yuxi.repositories.health_meal_feedback_repository import HealthMealFeedbackRepository
 
@@ -82,7 +82,29 @@ class HealthDailyRepository:
             ).all()
         )
 
-    async def source_messages(self, daily, thread_id):
+    async def stage_conversations(self, uid, member_id, start, stop):
+        """阶段只读取有权用户自述，不沿用历史模型或商品结果。"""
+        from yuxi.repositories.health_vision_repository import HealthVisionRepository
+
+        await HealthVisionRepository(self.session).authorize(member_id, uid, "ai_use")
+        return (
+            await self.session.execute(
+                self.visible()
+                .join(HealthConsultation, HealthConsultation.conversation_id == Conversation.id)
+                .where(
+                    HealthDailyConversation.actor_uid == uid,
+                    HealthDailyConversation.member_id == member_id,
+                    HealthConsultation.actor_uid == uid,
+                    HealthConsultation.member_id == member_id,
+                    Conversation.agent_id == "health-consultation",
+                    HealthDailyConversation.business_date >= start,
+                    HealthDailyConversation.business_date < stop,
+                )
+                .order_by(HealthDailyConversation.business_date)
+            )
+        ).all()
+
+    async def source_messages(self, daily, thread_id, *, user_only=False):
         """未结束请求先等待，失败 Run 和被撤回的记忆来源不入摘要。"""
         pending = await self.session.scalar(
             select(AgentRunRequest.id)
@@ -117,7 +139,7 @@ class HealthDailyRepository:
                     .where(
                         Message.conversation_id == daily.conversation_id,
                         AgentRun.status == "completed",
-                        Message.role.in_(("user", "assistant")),
+                        Message.role.in_(("user",) if user_only else ("user", "assistant")),
                         Message.message_type == "text",
                         Message.delivery_status == "complete",
                         Message.content != "",

@@ -5,10 +5,13 @@ import { newHealthRequestId } from './health-request-id.js'
 
 export const stageGoalOptions = ['规律三餐', '增加在家用餐', '增加蔬菜搭配', '增加蒸煮菜品', '丰富食物种类']
 export function dietStageState() {
-  return { value: null, job: null, busy: false, error: '', pending: null }
+  return { value: null, job: null, busy: false, error: '', notice: '', recovery: '', refreshRequired: false, pending: null }
 }
 export function currentStageWeek(value, day = value?.today) {
   return value?.weeks?.find(row => row.starts_on <= day && row.ends_on > day) || null
+}
+export function stageWeekEnd(endsOn) {
+  return new Date(Date.parse(endsOn + 'T00:00:00Z') - 86400000).toISOString().slice(5, 10).replace('-', '.')
 }
 export function stageEntryUrl(familyId, memberId) {
   return '/pages/health/diet-stage?familyId=' + encodeURIComponent(familyId) + '&memberId=' + encodeURIComponent(memberId)
@@ -17,28 +20,26 @@ export function stageEntryUrl(familyId, memberId) {
 /** 服务端事实拥有状态；不确定写入保留原键，切换账号丢弃迟到响应。 */
 export function createDietStageClient({ state, send = request, revision = sessionRevision,
   context = storageContext, storage = scopedStorage, newId = newHealthRequestId }) {
-  let epoch = 0, family = '', member = '', timer = null, selectedStage = '', pollVersion = 0
+  let epoch = 0, family = '', member = '', timer = null, selectedStage = '', pollVersion = 0, lastRead = null
   const key = () => 'diet-stage-pending:' + family + ':' + member
   const root = () => '/api/health/v1/families/' + encodeURIComponent(family) + '/members/' + encodeURIComponent(member) + '/diet-stage'
   const copy = value => JSON.parse(JSON.stringify(value))
   function stopPolling() { pollVersion++; clearTimeout(timer); timer = null }
   function stop() { epoch++; stopPolling(); state.busy = false }
-  function discard() { stop(); state.value = null; state.job = null; state.pending = null; state.error = '' }
-  async function run(fn) {
+  function discard() { stop(); state.value = null; state.job = null; state.pending = null; state.error = ''; state.notice = ''; state.recovery = ''; state.refreshRequired = false; lastRead = null }
+  async function run(fn, scope = 'read') {
     if (state.busy) return
     const ticket = ++epoch, rev = revision(), owner = context()
     const valid = () => ticket === epoch && rev === revision() && owner === context()
     state.busy = true; state.error = ''
-    try { await fn(valid) }
+    try { return await fn(valid) }
     catch (error) {
       if (!valid()) return
-      if ([401, 403, 404, 410].includes(Number(error.code))) {
-        state.value = null; state.job = null
-      }
-      state.error = error.message || '暂时未完成，请重试'
-      if ([400, 409, 422].includes(Number(error.code))) {
-        state.pending = null; storage.setStorageSync(key(), null)
-      }
+      if (!error.noticeRejected && ([401, 403, 404].includes(Number(error.code)) || (scope === 'read' && Number(error.code) === 410))) {
+        state.value = null; state.job = null; clearPending()
+      } else if (scope === 'job') state.job = null
+      state.error = error.businessCode === 'profile_source_changed' ? '资料有更新，请重新生成建议，已填写内容已保留。' : error.message || '暂时未完成，请重试'
+      if (scope !== 'write') { lastRead = { fn, scope }; state.recovery = scope }
     } finally {
       if (valid()) state.busy = false
       else if (ticket === epoch) discard()
@@ -46,25 +47,40 @@ export function createDietStageClient({ state, send = request, revision = sessio
   }
   async function read(valid) {
     const { data } = await send({ path: root() + (selectedStage ? '?stage_id=' + encodeURIComponent(selectedStage) : '') })
-    if (valid()) state.value = data
+    if (valid()) { state.value = data; state.notice = ''; state.recovery = ''; state.refreshRequired = false; lastRead = null }
   }
+  function clearPending() { state.pending = null; storage.setStorageSync(key(), null) }
   async function submit(valid) {
     const frozen = copy(state.pending)
-    const { data } = await send(frozen)
+    let data
+    try { ({ data } = await send(frozen)) }
+    catch (error) {
+      const uncertain = !error.noticeRejected && (error.code === 'NETWORK_ERROR' || Number(error.code) >= 500)
+        && error.businessCode !== 'stage_model_unavailable'
+      if (valid() && !uncertain) clearPending()
+      throw error
+    }
     if (!valid()) return
-    state.pending = null; storage.setStorageSync(key(), null)
-    if (frozen.path.endsWith('/generations')) state.job = data
-    else { state.job = null; selectedStage = ''; await read(valid) }
+    clearPending()
+    if (frozen.path.endsWith('/generations')) { state.job = data; return data }
+    state.job = null; selectedStage = ''; state.refreshRequired = true
+    try { await read(valid) }
+    catch (error) {
+      if (!valid()) return
+      if ([401,403,404,410].includes(Number(error.code))) throw error
+      state.notice = '已保存，暂时未能刷新页面，请重新读取。'
+      lastRead = { fn: read, scope: 'read' }
+    }
+    return { saved: true, data }
   }
   function write(path, method, body) {
-    if (state.pending) {
-      state.error = '上次提交结果尚未确认，请先重试原操作'
-      return
-    }
+    if (state.busy) return
+    if (state.refreshRequired) { state.error = '上次修改已保存，请先刷新当前内容'; return }
+    if (state.pending) { state.error = '正在等待上次提交的结果，请先恢复'; return }
     stopPolling()
     state.pending = { path, method, data: { ...copy(body), client_request_id: newId() } }
     storage.setStorageSync(key(), state.pending)
-    return run(submit)
+    return run(submit, 'write')
   }
   const api = {
     stop, discard,
@@ -76,6 +92,7 @@ export function createDietStageClient({ state, send = request, revision = sessio
     reload() { return run(read) },
     history(id = '') { stop(); selectedStage = id; state.job = null; state.value = null; return run(read) },
     generate(kind, { goals = [], note = '' } = {}) {
+      if (state.recovery === 'job') { state.error = '请先继续读取已有任务的进度'; return }
       return write(root() + '/generations', 'POST', {
         kind, goals, note, stage_id: state.value?.stage?.id || null,
       })
@@ -90,12 +107,12 @@ export function createDietStageClient({ state, send = request, revision = sessio
       return write(root() + '/' + encodeURIComponent(state.value.stage.id) + '/weeks/' + encodeURIComponent(week.id),
         'PUT', { expected_version: week.version, actions })
     },
-    retry() { if (state.pending) return run(submit) },
+    retry() { if (state.pending) return run(submit, 'write'); if (lastRead) return run(lastRead.fn, lastRead.scope); return run(read) },
     job(id) {
       return run(async valid => {
         const { data } = await send({ path: root() + '/generations/' + encodeURIComponent(id) })
-        if (valid()) state.job = data
-      })
+        if (valid()) { state.job = data; state.recovery = ''; lastRead = null; return data }
+      }, 'job')
     },
     poll(id, changed = () => {}) {
       stopPolling()
@@ -108,7 +125,7 @@ export function createDietStageClient({ state, send = request, revision = sessio
         if (mine !== pollVersion || stage !== selectedStage) return
         changed()
         if (state.job?.status === 'pending' && !state.error) api.poll(id, changed)
-        if (state.job?.kind === 'week' && state.job.status === 'ready') await api.reload()
+        if (state.job?.kind === 'week' && state.job.status === 'ready') { state.refreshRequired = true; await api.reload() }
       }, 2200)
     },
   }
