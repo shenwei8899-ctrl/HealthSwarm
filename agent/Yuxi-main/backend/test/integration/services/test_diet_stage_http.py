@@ -545,3 +545,166 @@ async def test_ended_review_freezes_text_and_adds_new_report_as_supplement(stage
     assert supplement["result"] == original["result"]
     assert supplement["reports"][0]["supplemental"] is True
     assert supplement["reports"][0]["delta"] == "-1"
+
+
+async def seed_stage_conversation(c, *, hidden=False, failed=False):
+    """合成真实日会话、用户原话及过期商品审计，供来源边界测试。"""
+    from yuxi.storage.postgres.models_business import Project, Conversation, AgentRun, Message, TOOL_AUDIT_MESSAGE_TYPE
+    from yuxi.storage.postgres.models_health import HealthConsultation, HealthDailyConversation
+    from yuxi.services.diet_stage_types import stage_today
+
+    pid, thread, rid, request = [str(uuid4()) for _ in range(4)]
+    async with c.sessions.begin() as session:
+        session.add(
+            Project(
+                id=pid,
+                uid=c.uid,
+                name="合成阶段测试",
+                selection_status="implicit",
+                directory_mode="managed",
+                workdir_path="projects/" + pid,
+                status="deleted" if hidden else "active",
+            )
+        )
+        await session.flush()
+        conversation = Conversation(thread_id=thread, uid=c.uid, agent_id="health-consultation", project_id=pid)
+        session.add(conversation)
+        await session.flush()
+        session.add(
+            HealthConsultation(
+                conversation_id=conversation.id, actor_uid=c.uid, member_id=c.hid, request_id=str(uuid4())
+            )
+        )
+        await session.flush()
+        session.add(
+            HealthDailyConversation(
+                conversation_id=conversation.id, actor_uid=c.uid, member_id=c.hid, business_date=stage_today()
+            )
+        )
+        session.add(
+            AgentRun(
+                id=rid,
+                conversation_id=conversation.id,
+                conversation_thread_id=thread,
+                runtime_scope_id=thread,
+                agent_slug="health-consultation",
+                uid=c.uid,
+                status="failed" if failed else "completed",
+                request_id=request,
+            )
+        )
+        await session.flush()
+        session.add_all(
+            [
+                Message(
+                    conversation_id=conversation.id,
+                    role="user",
+                    content="合成：最近早餐不规律",
+                    request_id=request,
+                    run_id=rid,
+                ),
+                Message(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content="旧AI答复不得当成执行事实",
+                    request_id=request,
+                    run_id=rid,
+                ),
+                Message(
+                    conversation_id=conversation.id,
+                    role="tool",
+                    message_type=TOOL_AUDIT_MESSAGE_TYPE,
+                    execution_status="completed",
+                    extra_metadata={"tool_name": "query_food_catalog"},
+                    content=json.dumps({"catalog_context_version": 1, "profile_context": {"profile_hash": "expired"}}),
+                    request_id=request,
+                    run_id=rid,
+                ),
+            ]
+        )
+    return pid, thread
+
+
+async def test_stale_catalog_history_does_not_block_current_stage_and_ai_reads_user_only(stage_http):
+    """真实PG/HTTP/lease链路只投影用户自述，旧商品审计不进入模型。"""
+    c = stage_http
+    await seed_stage_conversation(c)
+    response = await c.client.post(c.root + "/generations", json={"client_request_id": str(uuid4()), "kind": "draft"})
+    assert response.status_code == 200, response.text
+    await finish_job(c, response.json()["id"])
+    facts = c.calls[-1]["facts"]
+    assert [m["text"] for m in facts["user_messages"]] == ["合成：最近早餐不规律"]
+    assert "expired" not in json.dumps(facts) and "旧AI答复" not in json.dumps(facts, ensure_ascii=False)
+    saved, _ = await start_stage(c)
+    review = await c.client.post(
+        c.root + "/generations",
+        json={"client_request_id": str(uuid4()), "kind": "review", "stage_id": saved["stage"]["id"]},
+    )
+    assert review.status_code == 200, review.text
+    await finish_job(c, review.json()["id"])
+
+
+@pytest.mark.parametrize("hidden,failed", [(True, False), (False, True)])
+async def test_stage_user_sources_exclude_deleted_projects_and_failed_runs(stage_http, hidden, failed):
+    """会话或执行不可用时不把旧原话补回阶段分析。"""
+    c = stage_http
+    await seed_stage_conversation(c, hidden=hidden, failed=failed)
+    response = await c.client.post(c.root + "/generations", json={"client_request_id": str(uuid4()), "kind": "draft"})
+    assert response.status_code == 200, response.text
+    await finish_job(c, response.json()["id"])
+    assert c.calls[-1]["facts"]["user_messages"] == []
+
+
+async def test_withdrawn_user_source_invalidates_existing_stage_draft(stage_http):
+    """来源在生成后删除，已生成的正文仍不可继续展示。"""
+    from yuxi.storage.postgres.models_business import Project
+
+    c = stage_http
+    pid, _ = await seed_stage_conversation(c)
+    response = await c.client.post(c.root + "/generations", json={"client_request_id": str(uuid4()), "kind": "draft"})
+    jid = response.json()["id"]
+    await finish_job(c, jid)
+    async with c.sessions.begin() as session:
+        project = await session.get(Project, pid)
+        project.status = "deleted"
+    result = await c.client.get(c.root + "/generations/" + jid)
+    assert result.json()["status"] == "stale" and result.json()["result"] is None
+
+
+@pytest.mark.parametrize("mismatch", ["member", "actor"])
+async def test_stage_user_sources_require_matching_consultation_binding(stage_http, mismatch):
+    """每日记录不能借用另一个成员或账号的咨询绑定。"""
+    from yuxi.storage.postgres.models_health import HealthConsultation
+    from yuxi.storage.postgres.models_business import Conversation
+
+    c = stage_http
+    _, thread = await seed_stage_conversation(c)
+    async with c.sessions.begin() as session:
+        conversation = await session.scalar(select(Conversation).where(Conversation.thread_id == thread))
+        binding = await session.get(HealthConsultation, conversation.id)
+        if mismatch == "member":
+            hid = str(uuid4())
+            session.add(HealthMember(id=hid, owner_uid=c.uid, display_name="另一个成员", relationship_label="家人"))
+            await session.flush()
+            binding.member_id = hid
+        else:
+            other = await session.get(FamilyMember, c.other)
+            binding.actor_uid = other.subject_uid
+    response = await c.client.post(c.root + "/generations", json={"client_request_id": str(uuid4()), "kind": "draft"})
+    assert response.status_code == 200, response.text
+    await finish_job(c, response.json()["id"])
+    assert c.calls[-1]["facts"]["user_messages"] == []
+
+
+async def test_stage_source_access_loss_rejects_old_result(stage_http):
+    """成员被移除后，已生成的草案不能继续展示。"""
+    c = stage_http
+    await seed_stage_conversation(c)
+    response = await c.client.post(c.root + "/generations", json={"client_request_id": str(uuid4()), "kind": "draft"})
+    jid = response.json()["id"]
+    await finish_job(c, jid)
+    async with c.sessions.begin() as session:
+        member = await session.get(FamilyMember, c.mid)
+        member.is_active = False
+    result = await c.client.get(c.root + "/generations/" + jid)
+    assert result.status_code in (403, 404) and "result" not in result.json()

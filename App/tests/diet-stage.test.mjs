@@ -98,3 +98,54 @@ test('an in-flight polling response cannot restart polling after page hide', asy
   await new Promise(resolve=>setImmediate(resolve))
   assert.equal(jobs,1)
 })
+
+for (const rejection of [{code:410,businessCode:'profile_source_changed'},{code:'SERVICE_NOTICE_DECLINED',noticeRejected:true},{code:503,businessCode:'stage_model_unavailable'}]) {
+ test('explicit rejection clears only the rejected submission: '+rejection.code,async()=>{
+  const f=fixture(async r=>{if(r.method)throw Object.assign(new Error('明确拒绝'),rejection);return {data:value}})
+  await f.client.open('f','m');await f.client.generate('draft',{note:'保留这段输入'})
+  assert.equal(f.state.pending,null);assert.deepEqual(f.state.value,value)
+  await f.client.open('f','m');assert.equal(f.state.pending,null)
+ })
+}
+test('read conflicts cannot erase a different uncertain write',async()=>{
+ let conflict=false
+ const f=fixture(async r=>{if(r.method)throw Object.assign(new Error('timeout'),{code:'NETWORK_ERROR'});if(conflict)throw Object.assign(new Error('读取冲突'),{code:409});return {data:value}})
+ await f.client.open('f','m');await f.client.generate('draft');const frozen=JSON.stringify(f.state.pending)
+ conflict=true;await f.client.reload();assert.equal(JSON.stringify(f.state.pending),frozen)
+})
+test('busy requests cannot create an unsent intent',async()=>{
+ let resolve;const calls=[]
+ const f=fixture(r=>{calls.push(r);return new Promise(r=>resolve=r)})
+ const reading=f.client.open('f','m');await f.client.generate('draft');assert.equal(f.state.pending,null)
+ resolve({data:value});await reading;assert.equal(calls.length,1)
+})
+test('a saved write followed by failed refresh is retried as a read only',async()=>{
+ let failed=false;const calls=[]
+ const f=fixture(async r=>{calls.push(r);if(r.method){failed=true;return {data:{saved:true}}}if(failed)throw Object.assign(new Error('读取超时'),{code:'NETWORK_ERROR'});return {data:value}})
+ await f.client.open('f','m');const saved=await f.client.saveWeek({id:'w',version:1},[])
+ assert.equal(saved.saved,true);assert.equal(f.state.pending,null);assert.ok(f.state.refreshRequired);assert.match(f.state.notice,/已保存/)
+ failed=false;await f.client.retry();assert.equal(calls.filter(r=>r.method).length,1);assert.equal(f.state.refreshRequired,false)
+})
+test('a failed generation cannot return the previous task as a new result',async()=>{
+ const f=fixture(async r=>{if(r.method)throw Object.assign(new Error('失败'),{code:409});return {data:value}})
+ await f.client.open('f','m');f.state.job={id:'old',status:'ready'}
+ assert.equal(await f.client.generate('draft'),undefined);assert.equal(f.state.error,'失败')
+})
+test('end dates display the last included day across month and year boundaries',async()=>{
+ const {stageWeekEnd}=await import('../src/services/diet-stage-client.js')
+ assert.equal(stageWeekEnd('2026-12-09'),'12.08');assert.equal(stageWeekEnd('2027-01-01'),'12.31')
+})
+
+test('a failed task read can recover the same ready or pending task without a new POST',async()=>{
+ let outage=true;let writes=0
+ const f=fixture(async r=>{if(r.method){writes++;return {data:{id:'same-task',kind:'draft',status:'pending'}}}if(r.path.includes('/generations/')){if(outage)throw Object.assign(new Error('读取失败'),{code:'NETWORK_ERROR'});return {data:{id:'same-task',kind:'draft',status:'ready',result:{goals:['规律三餐']}}}}return {data:value}})
+ await f.client.open('f','m');await f.client.generate('draft');await f.client.job('same-task')
+ assert.equal(f.state.recovery,'job');assert.equal(f.state.pending,null)
+ outage=false;const recovered=await f.client.retry();assert.equal(recovered.id,'same-task');assert.equal(recovered.status,'ready');assert.equal(f.state.recovery,'');assert.equal(writes,1)
+})
+
+test('unread task recovery blocks a new generation until original job is read',async()=>{
+ let writes=0
+ const f=fixture(async r=>{if(r.method){writes++;return {data:{id:'task',kind:'week',status:'pending'}}}if(r.path.includes('/generations/'))throw Object.assign(new Error('读取失败'),{code:'NETWORK_ERROR'});return {data:value}})
+ await f.client.open('f','m');await f.client.generate('week');await f.client.job('task');await f.client.generate('review');assert.equal(writes,1);assert.equal(f.state.recovery,'job')
+})

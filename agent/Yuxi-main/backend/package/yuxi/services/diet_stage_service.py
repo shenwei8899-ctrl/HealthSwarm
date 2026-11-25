@@ -55,6 +55,7 @@ async def read_stage(uid, fid, mid, *, stage_id=None):
             or guardian_active(member, str(uid)),
             "member_id": member.id,
             "name": member.name,
+            "is_self": member.subject_uid == str(uid),
             "profile_version": member.version,
             "existing_goals": (member.profile or {}).get("dietary_details", {}).get("goals", []),
             "stage": stage_view(stage) if stage else None,
