@@ -28,7 +28,11 @@ async def test_recipe_search_only_returns_current_reference_and_rechecks_auth(mo
     """检索前后重验授权且只输出参考来源。"""
     monkeypatch.setenv(service.RECIPE_KB_ID_ENV, "recipes")
     file, chunk = _source_records()
-    session = SimpleNamespace(scalar=AsyncMock(side_effect=[chunk, file]))
+    file.processing_params = {}
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=[("recipes", "excluded-recipe")]),
+        scalar=AsyncMock(side_effect=[chunk, file]),
+    )
 
     @asynccontextmanager
     async def transaction():
@@ -55,6 +59,7 @@ async def test_recipe_search_only_returns_current_reference_and_rechecks_auth(mo
         "use_reranker": False,
         "use_graph_retrieval": False,
         "read_only": True,
+        "excluded_file_ids": ["excluded-recipe"],
     }
     auth.side_effect = [auth.return_value, HealthVisionError("policy_changed", "撤回", 409)]
     session.scalar.side_effect = [chunk, file]

@@ -8,7 +8,8 @@ from itertools import zip_longest
 from uuid import UUID, uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from sqlalchemy import select
+from sqlalchemy import cast, select
+from sqlalchemy.dialects.postgresql import JSONB
 
 from yuxi.knowledge.base import FileStatus
 from yuxi.knowledge.implementations.milvus import OrphanedMilvusHitsError
@@ -33,11 +34,17 @@ TOOL_NAME = "query_family_nutrition_knowledge"
 KB_ID_ENV = "HEALTH_FAMILY_NUTRITION_KB_ID"
 RECIPE_KB_ID_ENV = "HEALTH_RECIPE_KB_ID"
 RECIPE_EXTRA_KB_IDS_ENV = "HEALTH_RECIPE_EXTRA_KB_IDS"
+RECIPE_SEARCH_EXCLUDED = "recipe_search_excluded"
 KNOWLEDGE_HEALTH_AGENTS = EDUCATION_HEALTH_AGENTS | {PLANNER_SLUG}
 INDICATOR_KB_ENVS = {
     GLUCOSE_SLUG: "HEALTH_BLOOD_GLUCOSE_KB_IDS",
     LIPIDS_SLUG: "HEALTH_BLOOD_LIPIDS_KB_IDS",
     PRESSURE_SLUG: "HEALTH_BLOOD_PRESSURE_KB_IDS",
+}
+REFERENCE_HEALTH_TOPICS = {
+    "高血压": (PRESSURE_SLUG, "高血压 家庭烹饪 饮食搭配"),
+    "糖尿病": (GLUCOSE_SLUG, "糖尿病 家庭烹饪 饮食搭配"),
+    "高血脂": (LIPIDS_SLUG, "高血脂 家庭烹饪 饮食搭配"),
 }
 MAX_SOURCES = 4
 MAX_SOURCE_CHARS = 1200
@@ -102,6 +109,50 @@ async def search_family_nutrition_knowledge(context, query: str) -> dict:
         if current_run.agent_slug != agent_slug or configured_health_kb_ids(agent_slug) != kb_ids:
             raise HealthVisionError("source_invalidated", "科普知识库绑定已变化，请重新检索", 410)
     return result
+
+
+async def reference_health_guidance(members) -> dict:
+    """按已授权就餐档案选择专题，只发送固定检索词。"""
+    result = {}
+    for condition in _reference_health_topics(members):
+        topic = REFERENCE_HEALTH_TOPICS.get(condition)
+        if topic is None:
+            result[condition] = {"status": "not_configured"}
+            continue
+        agent_slug, query = topic
+        try:
+            kb_ids = configured_education_kb_ids(agent_slug)
+            result[condition] = await _retrieve_nutrition_knowledge(
+                query, kb_ids, agent_slug=agent_slug, max_sources=2
+            )
+        except HealthVisionError as error:
+            if error.code not in {"knowledge_unavailable", "source_invalidated"}:
+                raise
+            result[condition] = {"status": "unavailable"}
+    return result
+
+
+async def validate_reference_health_guidance(session, members, guidance):
+    """回放时继续核对就餐成员对应的专题和此前返回的分片。"""
+    if not isinstance(guidance, dict) or guidance.keys() != set(_reference_health_topics(members)):
+        raise HealthVisionError("source_invalidated", "配餐专题与当前就餐档案不一致", 410)
+    for condition, payload in guidance.items():
+        if payload in ({"status": "not_configured"}, {"status": "unavailable"}):
+            continue
+        topic = REFERENCE_HEALTH_TOPICS.get(condition)
+        if topic is None or not isinstance(payload, dict) or payload.get("query") != topic[1]:
+            raise HealthVisionError("source_invalidated", "配餐专题与当前就餐档案不一致", 410)
+        await _validate_payload(session, payload, agent_slug=topic[0])
+
+
+def _reference_health_topics(members):
+    """仅接受成员明确填写的结构化标签，忽略自由文本与未填写状态。"""
+    return sorted({
+        condition
+        for member in members
+        if (dietary := member.get("dietary") or {}).get("healthStatus") == "set"
+        for condition in dietary.get("conditions") or []
+    })
 
 
 async def retrieve_family_nutrition_knowledge(query: str, *, kind: str = "food") -> dict:
@@ -272,31 +323,46 @@ def _nutrition_knowledge_agent(kind: str) -> str:
     raise HealthVisionError("nutrition_candidate_kind_invalid", "营养候选类型无效", 422)
 
 
-async def _retrieve_nutrition_knowledge(query: str, kb_ids: tuple[str, ...], *, agent_slug: str) -> dict:
+async def _retrieve_nutrition_knowledge(
+    query: str, kb_ids: tuple[str, ...], *, agent_slug: str, max_sources: int = MAX_SOURCES
+) -> dict:
     """按已确定范围检索，并从当前 PostgreSQL 分片重建有界来源。"""
     if not isinstance(query, str) or not 1 <= len(query.strip()) <= 120:
         raise HealthVisionError("knowledge_query_invalid", "请使用简短的营养科普主题词", 422)
     query = query.strip()
+    excluded_by_kb = {kb_id: [] for kb_id in kb_ids}
     async with pg_manager.get_async_session_context() as session:
         for kb_id in kb_ids:
             await _require_fixed_kb(session, kb_id)
+        if agent_slug == PLANNER_SLUG:
+            excluded = await session.execute(
+                select(KnowledgeFile.kb_id, KnowledgeFile.file_id).where(
+                    KnowledgeFile.kb_id.in_(kb_ids),
+                    KnowledgeFile.status == FileStatus.INDEXED,
+                    cast(KnowledgeFile.processing_params, JSONB).contains({RECIPE_SEARCH_EXCLUDED: True}),
+                )
+            )
+            for kb_id, file_id in excluded:
+                excluded_by_kb[kb_id].append(file_id)
 
     hit_groups = []
     try:
         for kb_id in kb_ids:
+            options = {"excluded_file_ids": excluded_by_kb[kb_id]} if excluded_by_kb[kb_id] else {}
             retrieved = await knowledge_base.retrieve(
                 kb_id,
                 query,
-                final_top_k=MAX_SOURCES,
+                final_top_k=max_sources,
                 search_mode="keyword",
                 use_reranker=False,
                 use_graph_retrieval=False,
                 read_only=True,
+                **options,
             )
             hits = retrieved.get("results") if isinstance(retrieved, dict) else None
             if not isinstance(hits, list):
                 raise ValueError("invalid knowledge results")
-            hit_groups.append([(kb_id, hit) for hit in hits[:MAX_SOURCES]])
+            hit_groups.append([(kb_id, hit) for hit in hits[:max_sources]])
     except OrphanedMilvusHitsError as error:
         raise HealthVisionError("source_invalidated", "家庭科普检索命中已失效，请稍后重试", 410) from error
     except Exception as error:
@@ -309,7 +375,7 @@ async def _retrieve_nutrition_knowledge(query: str, kb_ids: tuple[str, ...], *, 
         # 每库取一条后再取下一轮，保持配置顺序并避免首库占满结果。
         hits = [item for group in zip_longest(*hit_groups) for item in group if item is not None]
         for kb_id, hit in hits:
-            if len(sources) == MAX_SOURCES:
+            if len(sources) == max_sources:
                 break
             if not isinstance(hit, dict) or hit.get("kb_id") != kb_id:
                 continue
@@ -334,6 +400,8 @@ async def _retrieve_nutrition_knowledge(query: str, kb_ids: tuple[str, ...], *, 
                 or not chunk.content.strip()
                 or chunk.content != hit.get("content")
             ):
+                continue
+            if agent_slug == PLANNER_SLUG and (file.processing_params or {}).get(RECIPE_SEARCH_EXCLUDED) is True:
                 continue
             sources.append(_project_source(kb_id, file, chunk, str(uuid4())))
             seen_chunks.add((kb_id, chunk_id))

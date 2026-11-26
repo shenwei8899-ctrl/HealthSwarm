@@ -75,3 +75,6 @@ test = [
     "pytest-timeout>=2.4.0",
     "pytest-cov>=6.0.0",
 ]
+recipe-import = [
+    "opencc==1.4.2",
+]

@@ -19,6 +19,12 @@ from yuxi.services.health_vision_service import health_vision_service
 from yuxi.services.health_vision_types import HealthVisionError, NUTRIENTS
 from yuxi.services.miniapp_profile_types import require_miniapp_profile
 from yuxi.services.reference_cooking_water import cooking_water
+from yuxi.services.reference_catalog_recipe import (
+    CATALOG_PREFIX,
+    CATALOG_SOURCE,
+    freeze_catalog_cover,
+    read_catalog_document,
+)
 from yuxi.services.reference_recipe_matching import (
     ingredient_food_for_products,
     optional_reference_ingredient,
@@ -62,7 +68,7 @@ def reference_binding(binding):
     return isinstance(selection, dict) and selection.get("mode") == "reference"
 
 
-async def reference_context_in_session(session, uid, anchor, selection, *, include_age_bands=False):
+async def reference_context_in_session(session, uid, anchor, selection, *, include_age_bands=False, use_catalog=False):
     """核对每位成员的当前资料、字段范围及独立配餐用途同意。"""
     selected = ReferenceSelection.model_validate(selection)
     family, _ = await FamilyService(session, uid).context(str(selected.family_id))
@@ -113,7 +119,11 @@ async def reference_context_in_session(session, uid, anchor, selection, *, inclu
             "family_id": family.id,
             "family_version": family.version,
             "members": sources,
-            "recipe_kb_ids": list(configured_health_kb_ids("health-meal-planner")),
+            **(
+                {"recipe_source": CATALOG_SOURCE}
+                if use_catalog
+                else {"recipe_kb_ids": list(configured_health_kb_ids("health-meal-planner"))}
+            ),
         },
     }
 
@@ -124,7 +134,8 @@ async def bound_reference_context(session, uid, binding, *, include_age_bands=Fa
         raise HealthVisionError("reference_mode_required", "当前线程不是日常参考餐单模式", 409)
     fixed = binding.initial_planner_selection
     result = await reference_context_in_session(
-        session, uid, binding.member_id, fixed["selection"], include_age_bands=include_age_bands
+        session, uid, binding.member_id, fixed["selection"],
+        include_age_bands=include_age_bands, use_catalog=fixed.get("use_catalog", False),
     )
     if input_fingerprint(result["sources"]) != fixed["source_hash"]:
         raise ReferencePlanSourceChanged("成员资料或知识库绑定已更新，请重新生成参考餐单", result["selection"])
@@ -222,6 +233,18 @@ async def get_reference_context(context):
         reference_member_restrictions(current["members"]) + memory_restrictions
     )
     categories = None if modern or unverified else await reference_catalog_categories()
+    guidance = {}
+    if current["sources"].get("recipe_source") == CATALOG_SOURCE and not unverified:
+        from yuxi.services.health_family_kb_service import reference_health_guidance
+
+        guidance = await reference_health_guidance(current["members"])
+        if guidance:
+            from yuxi.services.health_family_kb_service import validate_reference_health_guidance
+
+            async with pg_manager.get_async_session_context() as session:
+                _, binding = await require_planner_run(session, context)
+                fresh = await bound_reference_context(session, context.uid, binding)
+                await validate_reference_health_guidance(session, fresh["members"], guidance)
     current_plan = None
     if current["selection"].get("daily_base_version") is not None:
         from datetime import date
@@ -236,6 +259,7 @@ async def get_reference_context(context):
         "scope": "daily_reference",
         **current,
         "current_daily_plan": current_plan,
+        **({"health_guidance": guidance} if guidance else {}),
         **(
             {
                 "diner_count": len(current["members"]),
@@ -344,7 +368,7 @@ async def find_reference_products(context, category_codes=None):
     }
 
 
-async def search_reference_recipes(context, query):
+async def search_reference_recipes(context, query, *, market_only=False):
     """按用餐意图召回候选，旧任务保留原商城排序。"""
     batch = isinstance(query, list)
     queries = query if batch else [query]
@@ -384,16 +408,31 @@ async def search_reference_recipes(context, query):
         history = await reference_history(session, selection, run_id=run.id)
         variety = variety_context(history, selection, current["members"])
         variety["restrictions"] = reference_member_restrictions(current["members"])
+        use_catalog = binding.initial_planner_selection.get("use_catalog", False)
+        if use_catalog:
+            from yuxi.services.health_memory_context_service import memory_restrictions_for_plan
+
+            variety["restrictions"] += await memory_restrictions_for_plan(session, run, binding, current)
         if modern:
             if unverified_reference_restrictions(variety["restrictions"]):
                 raise HealthVisionError("reference_restriction_unverified", "当前硬限制尚无法完整核对", 422)
             previous = await tool_payloads(session, run, "search_reference_recipes")
-            if len(previous) >= MAX_REFERENCE_SEARCHES:
+            if len(previous) >= (1 if use_catalog else MAX_REFERENCE_SEARCHES):
                 raise HealthVisionError("reference_search_exhausted", "本轮菜谱检索次数已用完", 422)
+            market_only = bool(
+                selection.get("market_only")
+                or (use_catalog and market_only)
+                or any(r.get("market_only") for r in previous)
+            )
+            if market_only:
+                selection = {**selection, "market_only": True}
             searched = {normalize_reference_query(q) for receipt in previous for q in receipt.get("queries", [])}
             fresh = list(dict.fromkeys(normalize_reference_query(q) for q in queries))
             fresh = [q for q in fresh if q not in searched]
             menus = await current_reference_menus(session, selection)
+            catalog_options = {}
+            if use_catalog or market_only:
+                catalog_options = {"use_catalog": use_catalog, "products": (await current_catalog())["items"]}
             result = await reference_menu_search(
                 session,
                 fresh,
@@ -404,11 +443,13 @@ async def search_reference_recipes(context, query):
                 variety,
                 previous,
                 policy_version=policy_version,
+                **catalog_options,
             )
             return {
                 "scope": "reference_recipe_search",
                 "status": "ok",
                 "queries": sorted(searched) + fresh,
+                **({"market_only": True} if market_only else {}),
                 **result,
             }
         excluded_file_ids = set()
@@ -445,7 +486,10 @@ async def recent_reference_file_ids(session, uid, selection):
 
 
 async def recipe_document(session, file_id, chunk_id):
-    """打开固定库的完整原始文件，并校验原始字节和分片版本。"""
+    """按稳定来源读取当前完整菜谱，并校验来源完整性。"""
+    if file_id.startswith(CATALOG_PREFIX):
+        return await read_catalog_document(session, file_id, chunk_id)
+
     from yuxi.knowledge.utils.kb_utils import parse_minio_url
     from yuxi.storage.minio import StorageError, get_minio_client
 
@@ -530,17 +574,33 @@ async def read_reference_recipe(context, file_id, chunk_id):
     """只打开本 Run 检索过的菜谱，正文中的命令不具有权限。"""
     async with pg_manager.get_async_session_context() as session:
         run, binding = await require_planner_run(session, context)
-        await bound_reference_context(session, context.uid, binding)
+        current = await bound_reference_context(session, context.uid, binding)
         hits = await tool_payloads(session, run, "search_reference_recipes")
         chunk_id = resolve_reference_search_chunk(hits, file_id, chunk_id)
         document = await recipe_document(session, file_id, chunk_id)
+        if document.get("recipe_id"):
+            if not any(
+                all(item.get(k) == document[k] for k in ("file_id", "chunk_id", "file_hash", "chunks_hash"))
+                for hit in hits for item in hit.get("items", [])
+            ):
+                raise HealthVisionError("source_invalidated", "数据库菜谱已更新，请重新生成餐单", 410)
+            from yuxi.services.health_memory_context_service import memory_restrictions_for_plan
+
+            restrictions = reference_member_restrictions(current["members"]) + await memory_restrictions_for_plan(
+                session, run, binding, current
+            )
+            if reference_restriction_conflict(document["content"], restrictions):
+                raise HealthVisionError("reference_restriction_conflict", "菜谱含用户明确限制的食材", 422)
         policy_version = binding.initial_planner_selection.get("meal_policy_version")
         modern = policy_version in BATCH_REFERENCE_MEAL_POLICY_VERSIONS
         if not modern and not await tool_payloads(session, run, "find_reference_products"):
             raise HealthVisionError("reference_product_required", "请先读取本轮商城分类", 409)
         full_catalog = await current_catalog()
         products = {str(sku["sku_id"]): sku for sku in full_catalog["items"]}
-        check = reference_recipe_check(document["content"], list(products.values()), policy_version=policy_version)
+        recipe_products = list(products.values())
+        if document.get("recipe_id"):
+            recipe_products = skus_for_stocked_products(recipe_products)
+        check = reference_recipe_check(document["content"], recipe_products, policy_version=policy_version)
         if policy_version == FOOD_GROUP_MEAL_POLICY_VERSION and check.get("ingredients"):
             check["food_groups"] = sorted(recipe_food_groups(check["ingredients"]))
         if "name" in check:
@@ -635,6 +695,7 @@ def checked_reference_meals(draft, documents, members, *, require_translation=Tr
     result = []
     translation_errors = []
     restrictions = reference_member_restrictions(members)
+    member_names = {str(member["id"]): member["name"] for member in members if member.get("id")}
     for meal in draft.meals:
         dishes = []
         for dish in meal.dishes:
@@ -670,9 +731,39 @@ def checked_reference_meals(draft, documents, members, *, require_translation=Tr
                     if error.code not in {"recipe_translation_invalid", "recipe_translation_missing"}:
                         raise
                     translation_errors.append(f"{dish.file_id}/{dish.chunk_id}: {error.message}")
+            portion_note = "个人份量尚未核定，请参考原食谱并按实际情况调整"
+            if dish.serving_suggestion is not None:
+                suggestion = dish.serving_suggestion
+                excluded = {"display_zh", "alternative_for", "replaces_file_id"}
+                if not doc.get("recipe_id") or any(
+                    item.position >= len(parsed.ingredients) for item in suggestion.ingredient_amounts
+                ):
+                    raise HealthVisionError("reference_amounts_invalid", "建议用量须对应所选数据库菜谱的原食材", 422)
+                alternatives = {
+                    str(mid) for other in meal.dishes if other.replaces_file_id == dish.file_id
+                    for mid in other.alternative_for
+                }
+                diners = (
+                    set(map(str, dish.alternative_for))
+                    if dish.alternative_for
+                    else member_names.keys() - alternatives
+                )
+                if suggestion.shares and {str(share.member_id) for share in suggestion.shares} != diners:
+                    raise HealthVisionError("reference_amounts_invalid", "分菜成员须与本菜实际用餐成员一致", 422)
+                amounts = "、".join(
+                    f"〔{parsed.ingredients[item.position]}〕约{item.amount:g}{item.unit}"
+                    for item in sorted(suggestion.ingredient_amounts, key=lambda item: item.position)
+                )
+                portion_note = f"{len(diners)}人份建议用量（估算）：{amounts}。未列食材请按原方和口味调整。"
+                if suggestion.shares:
+                    portion_note += "分菜参考：" + "、".join(
+                        f"{member_names[str(share.member_id)]}{share.percent}%" for share in suggestion.shares
+                    ) + "。"
+            else:
+                excluded = {"display_zh", "alternative_for", "replaces_file_id", "serving_suggestion"}
             dishes.append(
                 {
-                    **dish.model_dump(mode="json", exclude={"display_zh", "alternative_for", "replaces_file_id"}),
+                    **dish.model_dump(mode="json", exclude=excluded),
                     **(
                         dish.model_dump(mode="json", include={"alternative_for", "replaces_file_id"})
                         if dish.alternative_for
@@ -682,7 +773,7 @@ def checked_reference_meals(draft, documents, members, *, require_translation=Tr
                     "source": {
                         k: doc[k] for k in ("file_id", "chunk_id", "kb_id", "filename", "file_hash", "chunks_hash")
                     },
-                    "portion_note": "个人份量尚未核定，请参考原食谱并按实际情况调整",
+                    "portion_note": portion_note,
                     "nutrition": {code: None for code in NUTRIENTS},
                     "nutrition_status": "not_calculated",
                 }
@@ -723,6 +814,8 @@ async def reference_meal_media(session, meal):
 
     result = copy.deepcopy(meal)
     for dish in result["dishes"]:
+        if dish.get("recipe_id"):
+            continue
         doc = await recipe_document(session, dish["file_id"], dish["chunk_id"])
         if any(doc[k] != dish["source"][k] for k in ("kb_id", "file_hash", "chunks_hash")):
             raise HealthVisionError("source_invalidated", "菜谱来源已变化，请重新读取", 410)
@@ -753,6 +846,8 @@ async def reference_plan_display(session, plan):
     result["meals"] = [
         attach_recipe_products(await reference_meal_media(session, meal), display_products) for meal in result["meals"]
     ]
+    # 客户端用它识别可展示的校验结果，包括所有食材均需自行购买的餐单。
+    result["purchase_validation_version"] = 1
     return result
 
 
@@ -898,7 +993,10 @@ async def save_reference_plan(context, draft):
         if {m.meal_type for m in draft.meals} != set(current["selection"]["meal_types"]):
             raise HealthVisionError("reference_meals_mismatch", "餐次须与用户明确选择一致", 422)
         documents = {}
+        selected_keys = {(d.file_id, d.chunk_id) for m in draft.meals for d in m.dishes}
         for receipt in receipts:
+            if receipt.get("recipe_id") and (receipt["file_id"], receipt["chunk_id"]) not in selected_keys:
+                continue
             fresh = await recipe_document(session, receipt["file_id"], receipt["chunk_id"])
             if not same_reference_document(fresh, receipt):
                 raise HealthVisionError("source_invalidated", "菜谱正文已变化，请重新读取", 410)
@@ -950,7 +1048,11 @@ async def save_reference_plan(context, draft):
                 for dish in meal.dishes
             ):
                 raise HealthVisionError("catalog_changed", "商城目录已更新，请重新打开所选菜谱核对食材", 409)
-        gaps = checked_reference_gaps(draft.purchase_gaps, catalog["items"] if modern else list(seen.values()))
+        gaps = checked_reference_gaps(
+            draft.purchase_gaps,
+            catalog["items"] if modern else list(seen.values()),
+            require_stock=binding.initial_planner_selection.get("use_catalog", False),
+        )
         by_sku = {str(s["sku_id"]): s for s in catalog["items"]}
         by_product = {str(p["product_id"]): p for p in group_catalog_products(catalog["items"])}
         items = []
@@ -1011,6 +1113,33 @@ async def save_reference_plan(context, draft):
             ):
                 raise HealthVisionError("reference_ingredient_mismatch", "菜谱食材与所选商城商品名称不相符", 422)
             items.append({**reference_product(sku, requested.quantity), "ingredient_refs": requested.ingredient_refs})
+        searches = (
+            await tool_payloads(session, run, "search_reference_recipes")
+            if binding.initial_planner_selection.get("use_catalog")
+            else []
+        )
+        if current["selection"].get("market_only") or any(search.get("market_only") for search in searches):
+            stocked = {
+                ref for product in product_matches
+                if any(sku.get("sale_status") == "available" and int(sku.get("available_quantity") or 0) > 0
+                       for sku in product.get("skus", []))
+                for ref in product["ingredient_refs"]
+            }
+            required = {
+                ingredient for meal in meals for dish in meal["dishes"] for ingredient in dish["ingredients"]
+                if not (cooking_water(ingredient) or optional_reference_ingredient(ingredient))
+            }
+            if required - stocked:
+                raise HealthVisionError(
+                    "reference_market_supply_incomplete", "商城未能买齐必需食材，请换菜或允许自备", 422
+                )
+
+        for meal in meals:
+            for dish in meal["dishes"]:
+                document = documents[dish["file_id"], dish["chunk_id"]]
+                if document.get("recipe_id"):
+                    dish["recipe_id"] = document["recipe_id"]
+                    dish.update(await freeze_catalog_cover(session, document))
         from yuxi.services.reference_recipe_presentation import check_recipe_nutrition, recipe_pairing_summary
 
         check_recipe_nutrition(meals, product_matches or items)
@@ -1063,7 +1192,8 @@ async def save_reference_plan(context, draft):
                 snapshot=snapshot,
             )
             session.add(row)
-        image_task, image_task_created = await queue_reference_images(session, pid)
+        if any(not dish.get("recipe_id") for meal in meals for dish in meal["dishes"]):
+            image_task, image_task_created = await queue_reference_images(session, pid)
         result = {"preview_id": pid, **snapshot}
     if image_task_created:
         from yuxi.services.task_service import tasker
@@ -1086,10 +1216,12 @@ async def queue_reference_images(session, preview_id):
     )
 
 
-def checked_reference_gaps(gaps, products):
+def checked_reference_gaps(gaps, products, *, require_stock=False):
     """逐项保留真实采购缺口，不把自备食材说成已购或家中已有。"""
     from yuxi.services.reference_recipe_matching import reference_ingredient_matches
 
+    if require_stock:
+        products = skus_for_stocked_products(products)
     result = []
     for gap in gaps:
         status = reference_ingredient_matches((gap.ingredient,), products)[0]["status"]
@@ -1099,11 +1231,14 @@ def checked_reference_gaps(gaps, products):
             result.append(gap.model_dump())
         elif gap.reason in {"no_match", "needs_confirmation"} and status in {"missing_product", "needs_confirmation"}:
             reason = "no_match" if status == "missing_product" else "needs_confirmation"
-            detail = (
-                "需自行购买：本轮已查询的商城商品名称中未找到对应食材。"
-                if reason == "no_match"
-                else "需自行购买并核对菜谱中的具体品种、形态和用量。"
-            )
+            if reason == "no_match":
+                detail = (
+                    "需自行购买：本轮商城未找到有货的对应商品。"
+                    if require_stock
+                    else "需自行购买：本轮已查询的商城商品名称中未找到对应食材。"
+                )
+            else:
+                detail = "需自行购买并核对菜谱中的具体品种、形态和用量。"
             result.append(
                 {
                     **gap.model_dump(),
@@ -1127,6 +1262,16 @@ def checked_reference_gaps(gaps, products):
         else:
             raise HealthVisionError("reference_purchase_reason_invalid", "食材缺口原因与本轮商品核对结果不一致", 422)
     return result
+
+
+def skus_for_stocked_products(skus):
+    """只留下至少一种规格有货的商品，每件商品仍提供全部规格。"""
+    stocked_ids = {
+        str(sku.get("product_id") or sku["sku_id"]).strip()
+        for sku in skus
+        if sku.get("sale_status") == "available" and int(sku.get("available_quantity") or 0) > 0
+    }
+    return [sku for sku in skus if str(sku.get("product_id") or sku["sku_id"]).strip() in stocked_ids]
 
 
 async def reference_result_in_session(session, run, binding, preview_id):
@@ -1164,6 +1309,9 @@ async def reference_result_in_session(session, run, binding, preview_id):
     documents = []
     for meal in row.snapshot["meals"]:
         for dish in meal["dishes"]:
+            if dish.get("recipe_id") and run.status == "completed":
+                documents.append({"content": "\n".join([dish["name"], *dish["ingredients"], *dish["steps"]])})
+                continue
             try:
                 fresh = await recipe_document(session, dish["file_id"], dish["chunk_id"])
             except HealthVisionError as error:
@@ -1327,6 +1475,10 @@ async def validate_reference_tool_payload(session, context, binding, message):
         if name == "get_reference_plan_context":
             if any(payload[k] != current[k] for k in ("selection", "members", "sources")):
                 raise HealthVisionError("source_invalidated", "参考成员上下文已变化", 410)
+            if "health_guidance" in payload:
+                from yuxi.services.health_family_kb_service import validate_reference_health_guidance
+
+                await validate_reference_health_guidance(session, current["members"], payload["health_guidance"])
         elif name == "find_reference_products":
             if not isinstance(payload.get("category_codes"), list) or not isinstance(payload.get("catalog"), list):
                 raise HealthVisionError("source_invalidated", "商城商品回执无法解析", 410)
@@ -1508,18 +1660,30 @@ def select_reference_purchase_items(plan, meal_types):
 
 
 async def reference_plan_for_purchase(session, uid, preview_id, daily_plan):
-    """家庭餐单采购须绑定当前餐次，私人采购仍按原结果归属读取。"""
-    if not daily_plan:
-        return await read_reference_plan_in_session(session, uid, preview_id)
+    """采购绑定获授权餐次，并核对目录原谱仍与发布时一致。"""
+    if daily_plan:
+        from yuxi.services.daily_meal_plan_service import (
+            read_published_reference_source,
+            require_current_reference_purchase,
+        )
 
-    from yuxi.services.daily_meal_plan_service import (
-        read_published_reference_source,
-        require_current_reference_purchase,
-    )
+        await require_current_reference_purchase(session, uid, daily_plan, preview_id)
+        run, plan = await read_published_reference_source(
+            session, daily_plan["family_id"], daily_plan["date"], preview_id
+        )
+        await require_current_reference_purchase(session, uid, daily_plan, preview_id, plan)
+    else:
+        run, plan = await read_reference_plan_in_session(session, uid, preview_id)
 
-    await require_current_reference_purchase(session, uid, daily_plan, preview_id)
-    run, plan = await read_published_reference_source(session, daily_plan["family_id"], daily_plan["date"], preview_id)
-    await require_current_reference_purchase(session, uid, daily_plan, preview_id, plan)
+    from yuxi.services.meal_purchase_source import recipe_metadata
+
+    restrictions = reference_member_restrictions(plan["members"])
+    for meal in plan["meals"]:
+        if daily_plan and meal["meal_type"] not in daily_plan["meal_types"]:
+            continue
+        for dish in meal["dishes"]:
+            if dish.get("recipe_id"):
+                await recipe_metadata(session, dish, restrictions)
     return run, plan
 
 

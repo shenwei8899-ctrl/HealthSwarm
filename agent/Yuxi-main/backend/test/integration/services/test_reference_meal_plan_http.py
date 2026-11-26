@@ -70,7 +70,8 @@ SKU = {
 
 
 async def setup_reference(
-    fixture, monkeypatch, *, allergens=None, avoidances=None, intolerances=None, doctor_instructions=None
+    fixture, monkeypatch, *, allergens=None, avoidances=None, intolerances=None, doctor_instructions=None,
+    conditions=None,
 ):
     """正式建档和同意接口，无正式规则或菜谱，绑定当前知识文件。"""
     client, sessions, users = fixture
@@ -119,6 +120,8 @@ async def setup_reference(
     monkeypatch.setattr("yuxi.storage.minio.get_minio_client", lambda: SimpleNamespace(adownload_file=download))
     family, _, body, headers = await input_for(client, users["self"])
     body.pop("processing_consents")
+    if conditions:
+        body["members"][0]["dietary"].update(healthStatus="set", conditions=conditions)
     if allergens:
         body["members"][0]["dietary"].update(allergyStatus="set", allergies=allergens)
     if avoidances:
@@ -648,6 +651,8 @@ async def complete(current, context, plan):
 
 def assert_reference_display(rendered, stored):
     """展示可附加商品及媒体，但不能改写持久化来源、引句或缺失状态。"""
+    assert rendered["purchase_validation_version"] == 1
+    assert "purchase_validation_version" not in stored
     for key, value in stored.items():
         if key == "product_matches":
             assert len(rendered[key]) == len(value)
@@ -1374,10 +1379,11 @@ async def test_existing_preview_rechecks_restrictions_for_publication_history_an
 
         monkeypatch.setattr(service, "current_catalog", previous_catalog)
     bound = await bind_reference(current)
-    context = await running_context(current, bound.json()["thread_id"])
-    # 仅用于准备旧版已存在的保存/发布事实；所有待测入口恢复真实修复后的检查。
+    # 仅用于准备旧版已存在的回执；所有待测入口恢复当前限制检查。
     with monkeypatch.context() as previous:
+        previous.setattr(service, "unverified_reference_restrictions", lambda restrictions: [])
         previous.setattr(service, "reference_restriction_conflict", lambda content, restrictions: False)
+        context = await running_context(current, bound.json()["thread_id"])
         plan, _, _ = await grounded_plan(current, context)
         await complete(current, context, plan)
     async with current[1]() as db:
@@ -1640,7 +1646,7 @@ async def test_cooking_body_hit_is_found_before_directory_and_clinical_titles(fa
 
 
 async def test_cooking_body_search_keeps_current_kb_and_indexed_file_boundary(family_profile_http, monkeypatch):
-    """候选只能来自固定库、已索引且非目录的烹饪文件。"""
+    """候选必须来自固定库内已索引的烹饪文件，只认布尔排除标记。"""
     current = await setup_reference(family_profile_http, monkeypatch)
     async with current[1].begin() as db:
         db.add(KnowledgeBase(kb_id="other-recipe-kb", name="其他合成库", kb_type="milvus"))
@@ -1661,9 +1667,16 @@ async def test_cooking_body_search_keeps_current_kb_and_indexed_file_boundary(fa
             status=status,
             folder=folder,
         )
+    for file_id in ("flag-excluded", "flag-other-value"):
+        await add_recipe(current, file_id, "烹饪菜谱｜燕麦糊.md", content)
+    async with current[1].begin() as db:
+        for file_id, value in (("flag-excluded", True), ("flag-other-value", "pending")):
+            recipe = await db.scalar(select(KnowledgeFile).where(KnowledgeFile.file_id == file_id))
+            recipe.processing_params = {"recipe_search_excluded": value}
     bound = await bind_reference(current)
     context = await running_context(current, bound.json()["thread_id"])
-    assert (await service.search_reference_recipes(context, "燕麦"))["items"] == []
+    items = (await service.search_reference_recipes(context, "燕麦"))["items"]
+    assert [item["file_id"] for item in items] == ["flag-other-value"]
 
 
 async def test_no_title_match_uses_fixed_kb_indexed_body(family_profile_http, monkeypatch):
@@ -2256,3 +2269,223 @@ async def test_shared_daily_plan_migration_preserves_existing_rows(family_profil
         )
         assert formal.meal_sources == {"dinner": {"kind": "formal", "id": formal_id, "version": 2}}
         assert formal.version == 1
+
+
+@pytest.mark.parametrize(
+    ("image_format", "image_mime", "suffix", "image_label"),
+    [("JPEG", "image/jpeg", "jpg", "原菜谱参考图"), ("WEBP", "image/webp", "webp", "AI 生成示意图")],
+)
+async def test_postgres_reference_plan_keeps_snapshot_and_checks_market(
+    family_profile_http, monkeypatch, image_format, image_mime, suffix, image_label
+):
+    """真实 PostgreSQL 和 HTTP：菜谱双表、缺货、建议用量和覆盖后的历史回显。"""
+    from yuxi.services.reference_meal_selection_service import assemble_reference_selection
+
+    current = await setup_reference(family_profile_http, monkeypatch)
+    client, sessions, users, _, _, _ = current
+    async with sessions() as db:
+        if not (await db.scalar(text("SELECT current_database()"))).endswith("_test"):
+            pytest.skip("菜谱固定 schema 的写入测试需要专用的 *_test PostgreSQL 数据库")
+    monkeypatch.setenv("HEALTH_REFERENCE_RECIPE_SOURCE", "postgres")
+    # 合成两种格式，不使用真实用户媒体或线上目录数据。
+    from io import BytesIO
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (2, 2), "green").save(buffer, format=image_format)
+    image_bytes = buffer.getvalue()
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    async with sessions.begin() as db:
+        await db.execute(text("CREATE SCHEMA recipe_catalog"))
+        await db.execute(text("""
+            CREATE TABLE recipe_catalog.recipes (
+              id text PRIMARY KEY, name text, ingredients jsonb, steps jsonb, image_bytes bytea,
+              image_mime text, image_label text, image_sha256 char(64)
+            )
+        """))
+        await db.execute(text("""
+            CREATE TABLE recipe_catalog.reference_recipe_ingredient (
+              recipe_id text REFERENCES recipe_catalog.recipes (id), position int, raw_text text,
+              PRIMARY KEY (recipe_id, position)
+            )
+        """))
+        await db.execute(
+            text("""
+                INSERT INTO recipe_catalog.recipes
+                VALUES ('rice-cake','煎米饼',CAST(:ingredients AS jsonb),CAST(:steps AS jsonb),:image,
+                        :image_mime,:image_label,:digest),
+                       ('bad', '缺少食材索引的米饼',CAST(:ingredients AS jsonb),CAST(:steps AS jsonb),
+                        NULL,NULL,NULL,NULL)
+            """),
+            {
+                "ingredients": json.dumps(["大米 100克", "水 50毫升"]),
+                "steps": json.dumps(["米饭加水压成饼，在锅中煎熟。"]),
+                "image": image_bytes,
+                "image_mime": image_mime,
+                "image_label": image_label,
+                "digest": digest,
+            },
+        )
+        await db.execute(text("""
+            INSERT INTO recipe_catalog.reference_recipe_ingredient
+            VALUES ('rice-cake',1,'水 50毫升'),('rice-cake',0,'大米 100克'),('bad',0,'鸡蛋 2个')
+        """))
+
+    try:
+        bound = await bind_reference(current, legacy=False, requested_dish_count=1, daily_base_version=0)
+        assert bound.is_success, bound.text
+        context = await running_context(current, bound.json()["thread_id"], read_products=False)
+        objects = {}
+
+        async def upload(bucket, key, data, content_type):
+            objects[bucket, key] = (data, content_type)
+
+        sku = deepcopy(SKU)
+        out_of_stock = {**SKU, "sku_id": "sku-out", "product_id": "a-out", "available_quantity": 0}
+
+        async def catalog():
+            return {"version": "synthetic-v1", "items": [deepcopy(out_of_stock), deepcopy(sku)]}
+
+        monkeypatch.setattr(service, "current_catalog", catalog)
+        monkeypatch.setattr("yuxi.storage.minio.get_minio_client", lambda: SimpleNamespace(aupload_file=upload))
+
+        sku["available_quantity"] = 0
+        flexible = await service.search_reference_recipes(context, "米饼")
+        assert flexible["items"][0]["purchase_status"] == "has_gaps"
+        strict = await service.search_reference_recipes(context, "米饼", market_only=True)
+        assert strict["items"] == []
+        assert strict["coverage_gaps"][0]["reason"] == "market_supply"
+        assert strict["coverage_gaps"][0]["missing_ingredients"] == ["大米 100克"]
+        sku["available_quantity"] = SKU["available_quantity"]
+
+        hits = await service.search_reference_recipes(context, "米饼", market_only=True)
+        assert [r["recipe_id"] for r in hits["items"]] == ["rice-cake"]
+        await receipt(sessions, context, "search_reference_recipes", hits)
+        with pytest.raises(HealthVisionError, match="reference_search_exhausted"):
+            await service.search_reference_recipes(context, "再次检索米饼", market_only=True)
+        opened = await service.read_reference_recipe(context, "pg:rice-cake", "recipe_catalog")
+        await receipt(sessions, context, "read_reference_recipe", opened)
+        choices = {
+            "use_read_recipes": True,
+            "auto_purchase_matches": True,
+            "meals": [{"meal_type": "breakfast", "dishes": [{
+                "recipe_option": opened["recipe_option"],
+                "serving_suggestion": {"ingredient_amounts": [{"position": 0, "amount": 80, "unit": "克"}]},
+            }]}],
+        }
+        draft = await assemble_reference_selection(context, choices)
+        assert [item.product_id for item in draft.product_matches] == ["rice"]
+        sku["available_quantity"] = 0
+        with pytest.raises(HealthVisionError, match="reference_market_supply_incomplete"):
+            await service.save_reference_plan(context, draft)
+        sku["available_quantity"] = SKU["available_quantity"]
+
+        invalid = deepcopy(choices)
+        invalid["meals"][0]["dishes"][0]["serving_suggestion"]["ingredient_amounts"][0]["position"] = 2
+        with pytest.raises(HealthVisionError, match="reference_amounts_invalid"):
+            await service.save_reference_plan(context, await assemble_reference_selection(context, invalid))
+
+        if image_format == "WEBP":
+            async with sessions.begin() as db:
+                await db.execute(text("UPDATE recipe_catalog.recipes SET image_bytes=:image"), {"image": b"invalid"})
+            with pytest.raises(HealthVisionError, match="reference_catalog_image_invalid"):
+                await service.save_reference_plan(context, draft)
+            async with sessions.begin() as db:
+                await db.execute(
+                    text("UPDATE recipe_catalog.recipes SET image_bytes=:image WHERE id='rice-cake'"),
+                    {"image": image_bytes},
+                )
+
+        saved = await service.save_reference_plan(context, draft)
+        await receipt(sessions, context, "save_reference_meal_plan", saved)
+        output = await complete(current, context, saved)
+        dish = output["meals"][0]["dishes"][0]
+        assert dish["recipe_id"] == "rice-cake"
+        assert dish["ingredients"] == ["大米 100克", "水 50毫升"] and "约80克" in dish["portion_note"]
+        assert f"煎米饼：{dish['portion_note']}" in output["pairing_summary"]
+        image_path = f"/minio/public/reference-recipes/catalog/{digest}.{suffix}"
+        assert dish["image_url"] == image_path
+        assert dish["image_source"]["label"] == image_label
+        assert dish["image_source"]["image_role"] == ("ai_generated" if image_format == "WEBP" else "reference")
+        assert objects["public", image_path.removeprefix("/minio/public/")] == (image_bytes, image_mime)
+
+        monkeypatch.setattr("yuxi.services.daily_commerce_service.current_catalog", catalog)
+        selection = current[-1]
+        daily_path = f"/api/family/{selection['family_id']}/daily-meal-plans/{selection['plan_date']}"
+        daily = await client.get(daily_path, headers=users["self"])
+        assert daily.is_success, daily.text
+        params = {"version": daily.json()["version"]}
+        purchase_path = daily_path + "/meals/breakfast/purchase"
+        purchase = await client.get(purchase_path, params=params, headers=users["self"])
+        assert purchase.is_success, purchase.text
+        assert [item["sku_id"] for item in purchase.json()["purchase"]["items"]] == ["sku-rice"]
+
+        async with sessions.begin() as db:
+            await db.execute(text("UPDATE recipe_catalog.recipes SET name='改版米饼' WHERE id='rice-cake'"))
+        old_purchase = await client.get(purchase_path, params=params, headers=users["self"])
+        assert old_purchase.status_code == 409 and "dish_source_changed" in old_purchase.text
+        path = f"{ROOT}/reference-meal-plans/{saved['preview_id']}"
+        rejected = await client.post(
+            path + "/purchase",
+            json={"product_choices": [{"product_id": "rice", "sku_id": "sku-rice", "quantity": 1}]},
+            headers=users["self"],
+        )
+        assert rejected.status_code == 409 and "dish_source_changed" in rejected.text
+        response = await client.get(path, headers=users["self"])
+        assert response.is_success, response.text
+        reloaded = response.json()["meals"][0]["dishes"][0]
+        assert (reloaded["name"], reloaded["image_url"], reloaded["portion_note"]) == (
+            dish["name"], image_path, dish["portion_note"]
+        )
+        assert (await client.get(path, headers=users["other"])).status_code == 404
+    finally:
+        async with sessions.begin() as db:
+            await db.execute(text("DROP SCHEMA recipe_catalog CASCADE"))
+
+
+
+async def test_postgres_reference_context_selects_authorized_health_topic(family_profile_http, monkeypatch):
+    """只按本餐已授权结构化疾病标签检索；回放验证原始资料变更。"""
+    from yuxi.services import health_family_kb_service as kb
+
+    current = await setup_reference(family_profile_http, monkeypatch, conditions=["高血压", "肾脏疾病"])
+    _, sessions, _, _, _, _ = current
+    monkeypatch.setenv("HEALTH_REFERENCE_RECIPE_SOURCE", "postgres")
+    monkeypatch.setenv("HEALTH_BLOOD_PRESSURE_KB_IDS", "synthetic-pressure")
+    source = "合成专题原文：家庭烹饪搭配参考。"
+    async with sessions.begin() as db:
+        db.add(KnowledgeBase(kb_id="synthetic-pressure", name="合成血压知识库", kb_type="milvus"))
+        await db.flush()
+        db.add(KnowledgeFile(
+            file_id="pressure-file", kb_id="synthetic-pressure", filename="合成血压档案.md", status="indexed",
+            content_hash=hashlib.sha256(source.encode()).hexdigest(),
+        ))
+        await db.flush()
+        db.add(KnowledgeChunk(
+            chunk_id="pressure-chunk", file_id="pressure-file", kb_id="synthetic-pressure",
+            chunk_index=0, content=source,
+        ))
+
+    async def retrieve(kb_id, query, **kwargs):
+        assert kb_id == "synthetic-pressure"
+        assert query == "高血压 家庭烹饪 饮食搭配" and kwargs["read_only"]
+        return {"results": [{
+            "kb_id": kb_id, "id": "pressure-chunk", "file_id": "pressure-file", "content": source,
+        }]}
+
+    monkeypatch.setattr(kb.knowledge_base, "retrieve", retrieve)
+    bound = await bind_reference(current, legacy=False, requested_dish_count=1)
+    assert bound.is_success, bound.text
+    context = await running_context(current, bound.json()["thread_id"], read_context=False, read_products=False)
+    payload = await service.get_reference_context(context)
+    guidance = payload["health_guidance"]
+    assert guidance["肾脏疾病"] == {"status": "not_configured"}
+    assert guidance["高血压"]["sources"][0]["content"] == source
+    assert guidance["高血压"]["scope"] == "general_education"
+    async with sessions.begin() as db:
+        await kb.validate_reference_health_guidance(db, payload["members"], guidance)
+        chunk = await db.scalar(select(KnowledgeChunk).where(KnowledgeChunk.chunk_id == "pressure-chunk"))
+        chunk.content = "变更后的专题资料。"
+    async with sessions() as db:
+        with pytest.raises(HealthVisionError, match="source_invalidated"):
+            await kb.validate_reference_health_guidance(db, payload["members"], guidance)

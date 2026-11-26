@@ -31,6 +31,9 @@ class ReferenceRecipeSearch(HealthReadInput):
 
     query: str | None = Field(default=None, min_length=1, max_length=80)
     queries: list[str] | None = Field(default=None, min_length=1, max_length=4)
+    market_only: bool = Field(
+        default=False, strict=True, description="仅用户明确要求所有必需食材都从商城买齐时设为 true"
+    )
 
     @model_validator(mode="after")
     def one_search_mode(self):
@@ -112,12 +115,15 @@ async def find_reference_products(runtime: ToolRuntime) -> dict:
 
 @tool(category="health", display_name="检索参考菜谱", args_schema=ReferenceRecipeSearch)
 async def search_reference_recipes(
-    runtime: ToolRuntime, query: str | None = None, queries: list[str] | None = None
+    runtime: ToolRuntime, query: str | None = None, queries: list[str] | None = None, market_only: bool = False
 ) -> dict:
     """用已读商品检索相关食谱；候选允许有缺项，需打开完整原文核对。"""
     from yuxi.services.reference_meal_plan_service import search_reference_recipes as search
 
-    return await search(runtime.context, queries if queries is not None else query)
+    keywords = queries if queries is not None else query
+    if market_only:
+        return await search(runtime.context, keywords, market_only=True)
+    return await search(runtime.context, keywords)
 
 
 def reference_recipe_search_validation_error(_: ValidationError) -> str:
@@ -225,6 +231,8 @@ async def save_reference_meal_plan(
                 "reference_menu_repeated",
                 "reference_meal_incomplete",
                 "reference_ingredient_mismatch",
+                "reference_market_supply_incomplete",
+                "reference_amounts_invalid",
                 "recipe_translation_missing",
                 "recipe_translation_invalid",
             }

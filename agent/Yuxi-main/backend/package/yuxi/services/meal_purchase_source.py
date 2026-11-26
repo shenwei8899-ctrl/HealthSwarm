@@ -16,6 +16,8 @@ async def selected_purchase_origins(session, uid, family_id, day, meal_type, ver
     row = await current_row(session, uid, family_id, day)
     if row is None or row.version != version:
         raise HealthVisionError("daily_plan_version_changed", "餐单已更新，请重新打开采购", 409)
+    if (row.meal_sources or {}).get("_roster", {}).get(meal_type, {}).get("status") in {"pending", "failed"}:
+        raise HealthVisionError("roster_not_ready", "成员更新尚未完成，请核对后再采购", 409)
     ref = (row.meal_sources or {}).get(meal_type)
     if not ref or len(keys) != len(set(keys)):
         raise HealthVisionError("dish_scope_invalid", "采购菜品不属于本餐，请重新读取", 422)
@@ -174,25 +176,38 @@ async def published_reference(session, family_id, day, saved):
 
 
 async def recipe_metadata(session, dish, restrictions=()):
-    """只比较所选菜谱的文件与分片版本。"""
-    from yuxi.services.health_family_kb_service import configured_health_kb_ids
-    from yuxi.repositories.meal_purchase_repository import recipe_version
-
-    file, chunks = await recipe_version(session, dish["file_id"], configured_health_kb_ids("health-meal-planner"))
-    expected = dish.get("source", {})
-    if (
-        file is None
-        or file.is_folder
-        or file.status != "indexed"
-        or file.kb_id != expected.get("kb_id")
-        or file.content_hash != expected.get("file_hash")
-    ):
-        raise HealthVisionError("dish_source_changed", "菜谱来源版本已变化，请重新安排", 409)
-    if not any(c.chunk_id == dish["chunk_id"] for c in chunks) or input_fingerprint(
-        [(c.chunk_id, c.content) for c in chunks]
-    ) != expected.get("chunks_hash"):
-        raise HealthVisionError("dish_source_changed", "菜谱分片版本已变化，请重新安排", 409)
+    """核对所选菜谱的当前来源与限制。"""
+    from yuxi.services.reference_catalog_recipe import CATALOG_PREFIX, read_catalog_document
     from yuxi.services.reference_meal_plan_service import reference_restriction_conflict
 
-    if reference_restriction_conflict("\n".join(c.content for c in chunks), restrictions):
+    expected = dish.get("source", {})
+    if dish["file_id"].startswith(CATALOG_PREFIX):
+        try:
+            document = await read_catalog_document(session, dish["file_id"], dish["chunk_id"])
+        except HealthVisionError as error:
+            if error.code != "reference_source_unavailable":
+                raise
+            raise HealthVisionError("dish_source_changed", "菜谱来源版本已变化，请重新安排", 409) from error
+        if any(document[key] != expected.get(key) for key in ("kb_id", "file_hash", "chunks_hash")):
+            raise HealthVisionError("dish_source_changed", "菜谱来源版本已变化，请重新安排", 409)
+        content = document["content"]
+    else:
+        from yuxi.services.health_family_kb_service import configured_health_kb_ids
+        from yuxi.repositories.meal_purchase_repository import recipe_version
+
+        file, chunks = await recipe_version(session, dish["file_id"], configured_health_kb_ids("health-meal-planner"))
+        if (
+            file is None
+            or file.is_folder
+            or file.status != "indexed"
+            or file.kb_id != expected.get("kb_id")
+            or file.content_hash != expected.get("file_hash")
+        ):
+            raise HealthVisionError("dish_source_changed", "菜谱来源版本已变化，请重新安排", 409)
+        if not any(c.chunk_id == dish["chunk_id"] for c in chunks) or input_fingerprint(
+            [(c.chunk_id, c.content) for c in chunks]
+        ) != expected.get("chunks_hash"):
+            raise HealthVisionError("dish_source_changed", "菜谱分片版本已变化，请重新安排", 409)
+        content = "\n".join(c.content for c in chunks)
+    if reference_restriction_conflict(content, restrictions):
         raise HealthVisionError("reference_restriction_conflict", "所选菜谱含当前明确限制的食材", 422)

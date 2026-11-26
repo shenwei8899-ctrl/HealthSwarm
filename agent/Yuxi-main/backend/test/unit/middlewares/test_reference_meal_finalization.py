@@ -2070,3 +2070,97 @@ def isolate_account_memory_context(monkeypatch):
     from yuxi.agents.middlewares import health_memory_context
     monkeypatch.setattr(health_memory_context, "process_memory_for_run", AsyncMock(return_value={}))
     monkeypatch.setattr(health_memory_context, "memory_context_for_run", AsyncMock(return_value={}))
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("calls", [1, 2])
+async def test_database_reference_search_uses_one_batch_before_receipts(calls):
+    """数据库菜谱一步查库存；模型绕开并行设置也不能发出两次检索。"""
+    from yuxi.agents.buildin.health_meal_planner.graph import ReferenceContextMiddleware
+
+    context = receipt(
+        name="get_reference_plan_context",
+        content=json.dumps({
+            "sources": {"recipe_source": "recipe_catalog"},
+            "restriction_verification": {"status": "supported_terms"},
+        }),
+    )
+    model_result = ModelResponse(result=[AIMessage(content="", tool_calls=[
+        {"name": "search_reference_recipes", "args": {"queries": ["花菜", "地瓜汤"]}, "id": f"search-{i}"}
+        for i in range(calls)
+    ])])
+    handler = AsyncMock(return_value=model_result)
+    middleware = ReferenceContextMiddleware()
+    if calls == 1:
+        assert await middleware.awrap_model_call(request_for([human(), context]), handler) is model_result
+    else:
+        with pytest.raises(HealthVisionError, match="reference_tool_parameters_invalid"):
+            await middleware.awrap_model_call(request_for([human(), context]), handler)
+    request = handler.call_args.args[0]
+    assert [tool.name for tool in request.tools] == ["search_reference_recipes"]
+    assert request.model_settings["parallel_tool_calls"] is False
+    assert "queries" in request.system_message.text
+
+
+@pytest.mark.asyncio
+async def test_database_reference_empty_batch_cannot_trigger_second_search():
+    """缺口明确返回用户；同一运行不重试或降级为自备。"""
+    from yuxi.agents.buildin.health_meal_planner.graph import ReferenceContextMiddleware
+
+    context = receipt(name="get_reference_plan_context", content='{"sources":{"recipe_source":"recipe_catalog"}}')
+    empty = receipt(
+        name="search_reference_recipes", content='{"items":[],"coverage_gaps":[{"reason":"market_supply"}]}'
+    )
+    handler = AsyncMock(return_value="observed")
+    await ReferenceContextMiddleware().awrap_model_call(request_for([human(), context, empty]), handler)
+    request = handler.call_args.args[0]
+    assert not request.tools and request.tool_choice is None
+    assert "coverage_gaps" in request.system_message.text
+
+
+def test_catalog_model_projection_keeps_ingredients_and_audit_intact():
+    """保留用量位置、异议及可选商品，原审计消息不被改写。"""
+    context = receipt(name="get_reference_plan_context", content=json.dumps({
+        "sources": {"recipe_source": "recipe_catalog", "member_hashes": "raw-private"},
+        "diner_count": 3, "current_daily_plan": {"meals": []},
+    }))
+    search = receipt(name="search_reference_recipes", content=json.dumps({
+        "items": [{
+            "file_id": "f1", "name": "菜", "purchase_status": "has_gaps",
+            "excerpt": "raw-excerpt", "ingredient_matches": [{"ingredient": "味噌"}],
+        }],
+        "menus": [[{"meal_type": "dinner", "dishes": [{"file_id": "f1", "chunk_id": "c1"}]}]],
+        "coverage_gaps": [], "market_only": False,
+    }))
+    matches = [
+        {"status": "matched", "candidate_key": "k0", "candidate_products": [{"product_id": "a"}]},
+        {"status": "needs_confirmation", "candidate_key": "k1"},
+        {"status": "matched", "candidate_key": "k2", "candidate_products": [
+            {"product_id": "c", "product_name": "黄油", "skus": ["hidden"]},
+            {"product_id": "d", "product_name": "黄油乙", "skus": ["hidden"]},
+        ]},
+    ]
+    read = receipt(name="read_reference_recipe", content=json.dumps({"items": [{
+        "recipe_option": "r0000000000000001", "file_id": "f1", "chunk_id": "c1", "content": "raw-original",
+        "chunks_hash": "raw-hash", "recipe_check": {
+            "status": "has_gaps", "name": "菜", "ingredients": ["花菜", "味噌", "黄油"],
+            "steps": ["拌匀"], "ingredient_matches": matches,
+        },
+    }]}))
+    prior = [m.content for m in (context, search, read)]
+    _, *view = MealPlanResultMiddleware._reference_model_messages(request_for([human(), context, search, read]))
+    assert [m.content for m in (context, search, read)] == prior
+    ctx, found, detail = [json.loads(m.content) for m in view]
+    assert ctx == {"sources": {"recipe_source": "recipe_catalog"}, "diner_count": 3}
+    assert found["items"] == [{"file_id": "f1", "name": "菜", "purchase_status": "has_gaps"}]
+    assert found["menus"][0][0]["dishes"][0]["chunk_id"] == "c1"
+    dish = detail["items"][0]
+    assert "content" not in dish and "chunks_hash" not in dish
+    assert dish["recipe_option"] == "r0000000000000001"
+    check = dish["recipe_check"]
+    assert check["ingredients"] == ["花菜", "味噌", "黄油"] and check["steps"] == ["拌匀"]
+    assert check["ingredient_matches"] == [
+        {"position": 1, "status": "needs_confirmation"},
+        {"position": 2, "status": "matched", "candidate_key": "k2", "candidate_products": [
+            {"product_id": "c", "product_name": "黄油"}, {"product_id": "d", "product_name": "黄油乙"},
+        ]},
+    ]

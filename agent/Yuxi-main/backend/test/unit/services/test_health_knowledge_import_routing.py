@@ -28,6 +28,7 @@ def knowledge_scope(monkeypatch):
         status="indexed",
         content_hash="synthetic-file-hash",
         updated_at=datetime(2026, 11, 4, tzinfo=UTC),
+        processing_params={},
     )
     chunk = SimpleNamespace(chunk_id="synthetic-chunk", content="合成资料，仅用于来源路由验证。")
 
@@ -39,7 +40,7 @@ def knowledge_scope(monkeypatch):
             KnowledgeChunk: chunk,
         }[statement.column_descriptions[0]["entity"]]
 
-    session = SimpleNamespace(scalar=AsyncMock(side_effect=scalar))
+    session = SimpleNamespace(execute=AsyncMock(return_value=[]), scalar=AsyncMock(side_effect=scalar))
 
     @asynccontextmanager
     async def transaction():

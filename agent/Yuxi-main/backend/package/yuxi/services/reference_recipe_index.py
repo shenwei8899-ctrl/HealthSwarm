@@ -7,10 +7,12 @@ from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial, lru_cache
 
-from sqlalchemy import or_, select
+from sqlalchemy import cast, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 
-from yuxi.services.health_family_kb_service import configured_health_kb_ids
+from yuxi.services.health_family_kb_service import RECIPE_SEARCH_EXCLUDED, configured_health_kb_ids
 from yuxi.services.health_nutrition_service import input_fingerprint
+from yuxi.services.reference_catalog_recipe import CATALOG_PREFIX, CATALOG_SOURCE
 from yuxi.services.reference_meal_composition import (
     FOOD_GROUP_MEAL_POLICY_VERSION,
     GROUP_NAMES,
@@ -109,11 +111,20 @@ async def reference_menu_search(
     previous,
     *,
     policy_version=REFERENCE_MEAL_POLICY_VERSION,
+    use_catalog=False,
+    products=None,
 ):
     """共用一次原谱扫描，按任务规则计算可行组合。"""
+    from yuxi.services.reference_catalog_recipe import catalog_search_rows
     from yuxi.services.reference_menu_candidates import reference_menu_options
 
-    rows = await reference_recipe_rows(session)
+    rows = await catalog_search_rows(session) if use_catalog else await reference_recipe_rows(session)
+    stocked = [
+        sku for sku in products or []
+        if sku.get("sale_status") == "available" and int(sku.get("available_quantity") or 0) > 0
+    ] if products is not None else None
+    available = available_reference_foods(stocked or [])
+    market_only = selection.get("market_only", False)
 
     def search():
         documents = prepare_reference_documents(rows)
@@ -125,8 +136,11 @@ async def reference_menu_search(
             ]
         analyzed = {}
 
-        def rank(query, limit):
-            return rank_prepared_reference_recipes(documents, None, set(), query, limit, analyzed, variety=variety)
+        def rank(query, limit, *, require_stock=market_only):
+            return rank_prepared_reference_recipes(
+                documents, stocked, available, query, limit, analyzed,
+                variety=variety, market_only=require_stock, prefer_market=use_catalog,
+            )
 
         ranked = [rank(query, 8) for query in queries]
         if policy_version == FOOD_GROUP_MEAL_POLICY_VERSION:
@@ -137,7 +151,7 @@ async def reference_menu_search(
             groups = sorted(groups, key=lambda group: (group not in missing, group))
             ranked.extend(rank(group, len(documents) if previous else 8) for group in groups)
         ranked.append(rank("", len(documents) if previous else 24))
-        return reference_menu_options(
+        result = reference_menu_options(
             ranked,
             selection,
             history,
@@ -145,6 +159,19 @@ async def reference_menu_search(
             actor_uid,
             policy_version=policy_version,
         )
+        if market_only and any(gap["reason"] != "variety" for gap in result["coverage_gaps"]):
+            nearby = [item for query in queries for item in rank(query, 1, require_stock=False)]
+            if not nearby:
+                nearby = rank("", 3, require_stock=False)
+            missing = list(dict.fromkeys(
+                match["ingredient"][:80]
+                for item in nearby for match in item["ingredient_matches"]
+                if match["status"] in {"missing_product", "needs_confirmation"}
+            ))[:3]
+            for gap in result["coverage_gaps"]:
+                if gap["reason"] != "variety":
+                    gap.update(reason="market_supply", missing_ingredients=missing)
+        return result
 
     return await asyncio.get_running_loop().run_in_executor(_SEARCH_EXECUTOR, search)
 
@@ -167,6 +194,7 @@ async def reference_recipe_rows(session):
                 KnowledgeChunk.kb_id == KnowledgeFile.kb_id,
                 KnowledgeFile.is_folder.is_(False),
                 KnowledgeFile.status == "indexed",
+                cast(KnowledgeFile.processing_params, JSONB).contains({RECIPE_SEARCH_EXCLUDED: True}).is_not(True),
                 or_(
                     KnowledgeFile.filename.startswith("家常菜谱_", autoescape=True),
                     KnowledgeFile.filename.startswith("烹饪菜谱"),
@@ -307,6 +335,8 @@ def rank_prepared_reference_recipes(
     catalog_key=None,
     variety=None,
     unique_dishes=False,
+    market_only=False,
+    prefer_market=False,
 ):
     """每个关键词独立评分，复用本次调用已解析的候选原谱。"""
     query = normalize_reference_query(query)
@@ -375,6 +405,8 @@ def rank_prepared_reference_recipes(
         if variety and keys & variety["excluded"]:
             continue
         gaps = sum(item["status"] in {"needs_confirmation", "missing_product"} for item in matches)
+        if market_only and (products is None or gaps):
+            continue
         covered = sum(item["status"] == "matched" for item in matches)
         required = sum(item["status"] not in {"cooking_water", "optional_not_selected"} for item in matches)
         exact_name = int(len(query.strip()) >= 5 and query.casefold().strip() in title)
@@ -385,6 +417,7 @@ def rank_prepared_reference_recipes(
             exact_name,
             bool(relevant_title),
             method_hits,
+            not gaps if prefer_market else False,
             *candidate_priority(keys, content, variety),
             coverage >= 0.5,
             candidate_rotation(keys, variety),
@@ -400,6 +433,10 @@ def rank_prepared_reference_recipes(
                 score,
                 {
                     **document["source"],
+                    **(
+                        {"recipe_id": file_id.removeprefix(CATALOG_PREFIX)}
+                        if document["source"]["kb_id"] == CATALOG_SOURCE else {}
+                    ),
                     "chunks_hash": chunks_hash,
                     "name": parsed.name,
                     "excerpt": content[:320],

@@ -34,6 +34,7 @@ class ReferenceSelection(HealthDTO):
     daily_base_version: int | None = Field(default=None, ge=0, strict=True)
     requested_dish_count: int | None = Field(default=None, ge=1, le=MAX_REFERENCE_DISHES, strict=True)
     simple_meal: Literal[True] | None = None
+    market_only: Literal[True] | None = None
 
     @model_validator(mode="after")
     def unique_members(self):
@@ -58,6 +59,40 @@ class RecipeNutritionHighlight(HealthDTO):
         """新回执使用商品身份，旧快照仍可按 SKU 读取。"""
         if bool(self.product_id) == bool(self.sku_id):
             raise ValueError("营养摘录须且只能引用一个商品身份")
+        return self
+
+
+class ReferenceSuggestedAmount(HealthDTO):
+    """按原谱食材位置记录本餐建议，不改写食材与采购规格。"""
+
+    position: int = Field(ge=0, lt=30, strict=True, description="对应食材列表的从零开始的位置")
+    amount: float = Field(gt=0, le=20000, allow_inf_nan=False, strict=True)
+    unit: Literal["克", "毫升", "个", "片", "瓣", "根"]
+
+
+class ReferenceServingShare(HealthDTO):
+    """仅记录本餐分菜比例，不代表精确营养摄入。"""
+
+    member_id: UUID
+    percent: int = Field(ge=1, le=100, strict=True)
+
+
+class ReferenceServingSuggestion(HealthDTO):
+    """家庭烹饪用量与可选个人分菜比例。"""
+
+    ingredient_amounts: list[ReferenceSuggestedAmount] = Field(min_length=1, max_length=30)
+    shares: list[ReferenceServingShare] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_positions_and_shares(self):
+        """一个原谱位置只能给一个用量，分菜比例必须合计百分之百。"""
+        if len({item.position for item in self.ingredient_amounts}) != len(self.ingredient_amounts):
+            raise ValueError("同一食材位置不能重复给出用量")
+        if self.shares and (
+            len({item.member_id for item in self.shares}) != len(self.shares)
+            or sum(item.percent for item in self.shares) != 100
+        ):
+            raise ValueError("分菜成员不能重复，比例合计必须为100%")
         return self
 
 
@@ -93,6 +128,7 @@ class ReferenceDish(ReferenceDishAssignment):
         default=None, ge=1, le=1440, strict=True, description="预计总制作分钟数，包含备菜；按原文步骤估算，不是商品事实"
     )
     nutrition_highlights: list[RecipeNutritionHighlight] = Field(default_factory=list, max_length=8)
+    serving_suggestion: ReferenceServingSuggestion | None = None
 
 
 class ReferenceMeal(HealthDTO):

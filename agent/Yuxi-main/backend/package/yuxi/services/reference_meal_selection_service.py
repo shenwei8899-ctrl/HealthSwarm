@@ -13,7 +13,11 @@ from yuxi.services.reference_meal_composition import (
     REFERENCE_MEAL_POLICY_VERSION,
     validate_reference_dish,
 )
-from yuxi.services.reference_meal_plan_types import ReferenceDishAssignment, ReferencePlanDraft
+from yuxi.services.reference_meal_plan_types import (
+    ReferenceDishAssignment,
+    ReferencePlanDraft,
+    ReferenceServingSuggestion,
+)
 
 
 class ReferenceReadDish(ReferenceDishAssignment):
@@ -23,6 +27,7 @@ class ReferenceReadDish(ReferenceDishAssignment):
     chunk_id: str = Field(min_length=1, max_length=128)
     display_zh: RecipeChineseDisplay | None = None
     cooking_minutes: int | None = Field(default=None, ge=1, le=1440, strict=True)
+    serving_suggestion: ReferenceServingSuggestion | None = None
 
 
 class ReferenceReadMeal(HealthDTO):
@@ -90,6 +95,7 @@ class ReferenceOptionDish(HealthDTO):
     recipe_option: str = Field(pattern=r"^r[0-9a-f]{16}$")
     display_zh: RecipeChineseDisplay | None = None
     cooking_minutes: int | None = Field(default=None, ge=1, le=1440, strict=True)
+    serving_suggestion: ReferenceServingSuggestion | None = None
     alternative_for: list[UUID] = Field(default_factory=list, max_length=20)
     replaces_recipe_option: str | None = Field(default=None, pattern=r"^r[0-9a-f]{16}$")
 
@@ -240,6 +246,7 @@ async def assemble_reference_selection(context, payload, *, allow_purchase_fallb
                     "portion_quote": None,
                     "nutrition_quote": None,
                     "cooking_minutes": choice.cooking_minutes,
+                    "serving_suggestion": choice.serving_suggestion,
                     "display_zh": choice.display_zh.model_dump(mode="json") if choice.display_zh else None,
                 }
                 if dish["display_zh"] is None:

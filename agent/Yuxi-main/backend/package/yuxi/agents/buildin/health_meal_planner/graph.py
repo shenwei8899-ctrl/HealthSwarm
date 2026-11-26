@@ -30,6 +30,7 @@ from yuxi.agents.toolkits.meal_planner import (
     reference_save_failure_index,
 )
 from yuxi.agents.toolkits.health import query_family_nutrition_knowledge
+from yuxi.services.reference_catalog_recipe import CATALOG_SOURCE
 from yuxi.services.reference_menu_candidates import MAX_REFERENCE_SEARCHES
 from yuxi.services.health_family_planner_types import FAMILY_PLANNER_TOOLS
 from yuxi.services.health_initial_meal_plan_types import INITIAL_PLANNER_TOOLS
@@ -47,7 +48,7 @@ from yuxi.models.providers.cache import model_cache
 
 
 class ReferenceContextMiddleware(AgentMiddleware):
-    """每轮配餐先读取当前授权档案和商城分类，续改也不沿用旧轮回执。"""
+    """每轮先读取当前授权档案，再按菜谱来源开启检索。"""
 
     async def awrap_model_call(self, request, handler):
         """前置工具成功后才开放后续配餐工具，服务端仍重新校验来源。"""
@@ -82,8 +83,30 @@ class ReferenceContextMiddleware(AgentMiddleware):
             context = json.loads(receipts[-1].content)
             if context.get("restriction_verification", {}).get("status") == "needs_verification":
                 return await handler(request)
+            catalog = context.get("sources", {}).get("recipe_source") == CATALOG_SOURCE
+            if catalog:
+                searches = [m for m in successful if m.name == "search_reference_recipes"]
+                if not searches:
+                    return await self._catalog_batch_search(request, handler)
+                request = request.override(
+                    tools=[
+                        tool
+                        for tool in request.tools
+                        if tool.name in {"read_reference_recipe", "save_reference_meal_plan"}
+                    ]
+                )
+                if not json.loads(searches[-1].content).get("items"):
+                    original = request.system_message.text if request.system_message else ""
+                    instruction = "本轮数据库查菜已结束。没有可用组合，只用 questions 说明 coverage_gaps 中的实际缺口。"
+                    return await handler(
+                        request.override(
+                            tools=[],
+                            tool_choice=None,
+                            system_message=SystemMessage(content=f"{original}\n\n{instruction}"),
+                        )
+                    )
             next_tool = None
-            if not any(m.name == "find_reference_products" for m in successful):
+            if not catalog and not any(m.name == "find_reference_products" for m in successful):
                 next_tool = "find_reference_products"
             elif "meal_targets" in context:
                 missing = self._reference_menu_missing(current[start + 1 :], successful)
@@ -158,6 +181,35 @@ class ReferenceContextMiddleware(AgentMiddleware):
                     model_settings={**request.model_settings, "parallel_tool_calls": False},
                 )
         return await handler(request)
+
+    @staticmethod
+    async def _catalog_batch_search(request, handler):
+        """数据库流程由一次批量工具调用统一核对菜谱与当前库存。"""
+        name = "search_reference_recipes"
+        tools = [tool for tool in request.tools if tool.name == name]
+        if not tools:
+            raise HealthVisionError("reference_search_unavailable", "菜谱检索工具暂不可用", 503)
+        original = request.system_message.text if request.system_message else ""
+        instruction = (
+            "只调用一次 search_reference_recipes，把本餐所有菜名或食材关键词放进同一个 queries 数组，最多四项。"
+        )
+        response = await handler(
+            request.override(
+                tools=tools,
+                tool_choice={"type": "function", "function": {"name": name}},
+                model_settings={**request.model_settings, "parallel_tool_calls": False},
+                system_message=SystemMessage(content=f"{original}\n\n{instruction}"),
+            )
+        )
+        message = response.result[-1] if response.result else None
+        if (
+            not isinstance(message, AIMessage)
+            or message.invalid_tool_calls
+            or len(message.tool_calls) != 1
+            or message.tool_calls[0]["name"] != name
+        ):
+            raise HealthVisionError("reference_tool_parameters_invalid", "请将菜谱关键词放在一次批量检索中", 422)
+        return response
 
     @staticmethod
     def _reference_menu_missing(messages, successful):
@@ -498,13 +550,84 @@ class MealPlanResultMiddleware(AgentMiddleware):
             if isinstance(messages[index], HumanMessage):
                 if messages[index].additional_kwargs.get("health_request_id") != request.runtime.context.request_id:
                     return messages
+                current = messages[index:]
+                latest_context = next(
+                    (
+                        item
+                        for item in reversed(current)
+                        if isinstance(item, ToolMessage)
+                        and item.status == "success"
+                        and item.name == "get_reference_plan_context"
+                    ),
+                    None,
+                )
+                try:
+                    sources = json.loads(latest_context.content).get("sources", {}) if latest_context else {}
+                    catalog = sources.get("recipe_source") == CATALOG_SOURCE
+                except (TypeError, ValueError, AttributeError):
+                    catalog = False
+                compact = (
+                    MealPlanResultMiddleware._compact_catalog_receipt
+                    if catalog
+                    else MealPlanResultMiddleware._compact_reference_products
+                )
                 return [
                     message
                     for message in messages[:index]
                     if not isinstance(message, ToolMessage)
                     and not (isinstance(message, AIMessage) and (message.tool_calls or message.invalid_tool_calls))
-                ] + [MealPlanResultMiddleware._compact_reference_products(message) for message in messages[index:]]
+                ] + [compact(message) for message in current]
         return messages
+
+    @staticmethod
+    def _compact_catalog_receipt(message):
+        """仅投影模型需要的编号、原谱和采购状态；完整回执留给服务端核验。"""
+        if not isinstance(message, ToolMessage) or message.status != "success":
+            return message
+        if message.name not in {"get_reference_plan_context", "search_reference_recipes", "read_reference_recipe"}:
+            return MealPlanResultMiddleware._compact_reference_products(message)
+        payload = json.loads(message.content)
+        if message.name == "get_reference_plan_context":
+            payload["sources"] = {"recipe_source": CATALOG_SOURCE}
+            if not (payload.get("current_daily_plan") or {}).get("meals"):
+                payload.pop("current_daily_plan", None)
+        elif message.name == "search_reference_recipes":
+            payload["items"] = [
+                {key: item[key] for key in ("file_id", "name", "purchase_status")}
+                for item in payload["items"]
+            ]
+        else:
+            items = []
+            for item in payload.get("items", [payload]):
+                check = item.get("recipe_check", {})
+                if check.get("status") == "needs_review":
+                    items.append(item)
+                    continue
+                facts = {key: item[key] for key in ("recipe_option", "file_id", "chunk_id")}
+                projection = {
+                    key: check[key]
+                    for key in (
+                        "name", "ingredients", "steps", "status", "food_groups", "display_zh", "translation_status"
+                    )
+                    if key in check
+                }
+                groups = []
+                for position, group in enumerate(check["ingredient_matches"]):
+                    candidates = group.get("candidate_products", [])
+                    if group["status"] == "matched" and len(candidates) <= 1:
+                        continue
+                    output = {"position": position, "status": group["status"]}
+                    if len(candidates) > 1:
+                        output["candidate_key"] = group["candidate_key"]
+                        output["candidate_products"] = [
+                            {key: value for key, value in candidate.items() if key in {"product_id", "product_name"}}
+                            for candidate in candidates
+                        ]
+                    groups.append(output)
+                projection["ingredient_matches"] = groups
+                items.append({**facts, "recipe_check": projection})
+            payload = {"items": items} if "items" in payload else items[0]
+        return message.model_copy(update={"content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))})
 
     @staticmethod
     def _compact_reference_products(message):

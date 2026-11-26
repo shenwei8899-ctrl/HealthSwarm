@@ -154,6 +154,10 @@ def reference_coverage_message(gaps):
             messages.append(f"{name}未找到同时满足道数和搭配要求的组合")
         elif gap["reason"] == "dish_count":
             messages.append(f"{name}还缺{gap['missing_count']}道可核对的不同菜品")
+        elif gap["reason"] == "market_supply":
+            ingredients = "、".join(gap.get("missing_ingredients", []))
+            detail = f"；例如以下食材没有确认有货的匹配：{ingredients}" if ingredients else ""
+            messages.append(f"{name}未找到能从商城买齐必需食材且符合要求的搭配{detail}；可换菜或选择自备")
     if gaps and not messages:
         return "所选餐次未找到符合近期去重要求的组合。"
     return "；".join(messages) + "。" if messages else "未能完成餐单，请重新安排。"

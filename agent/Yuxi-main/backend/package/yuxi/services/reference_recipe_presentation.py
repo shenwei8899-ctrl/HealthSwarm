@@ -47,14 +47,21 @@ def check_recipe_nutrition(meals, products):
 
 
 def recipe_pairing_summary(meals, draft):
-    """仅用已校验菜名和原文营养摘录组织说明，不发布模型自由营养结论。"""
+    """从已校验的菜名、烹饪用量和营养摘录组织餐单说明。"""
     dishes = [dish for meal in meals for dish in meal["dishes"]]
     names = {d.name: (d.display_zh.name if d.display_zh else d.name) for m in draft.meals for d in m.dishes}
     introduction = "这次为你搭配了" + "、".join(names[d["name"]] for d in dishes) + "。"
+    serving_notes = [
+        f'{names[dish["name"]]}：{dish["portion_note"]}'
+        for dish in dishes
+        if dish.get("serving_suggestion")
+    ]
+    if serving_notes:
+        introduction += "\n\n" + "\n".join(serving_notes) + "\n\n"
     quotes = list(dict.fromkeys(h["quote"] for d in dishes for h in d.get("nutrition_highlights", [])))
     if quotes:
         return (
-            introduction
+            introduction.rstrip()
             + "\n\n所用食材的营养资料中提到：\n"
             + "\n".join(quotes[:6])
             + "\n\n下方可查看每道菜、食材用量和做法。"
