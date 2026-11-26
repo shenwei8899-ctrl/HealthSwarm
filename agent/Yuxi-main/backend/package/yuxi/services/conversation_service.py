@@ -45,7 +45,7 @@ from yuxi.workspace.workdir import Workdir
 MESSAGE_AUDIT_LIMIT = 500
 AGENT_RUN_TRACE_LIMIT = 500
 MODEL_HISTORY_METADATA_KEYS = frozenset(
-    {"attachments", "source", "error_type", "error_message", "langfuse_trace_id", "model"}
+    {"attachments", "source", "error_type", "error_message", "langfuse_trace_id", "model", "reply_quote"}
 )
 
 
@@ -585,6 +585,17 @@ async def get_thread_history_view(
         health_answer = conversation.agent_id in EDUCATION_HEALTH_AGENTS and msg.role == "assistant"
         unverified_reference = msg.role == "assistant" and msg.run_id in unverified_reference_runs
         extra_metadata = {} if health_answer or unverified_reference else _serialize_history_metadata(msg)
+        if msg.role == "user" and extra_metadata.get("reply_quote"):
+            from yuxi.services.health_reply_quote_service import resolve_reply_quote
+            from pydantic import ValidationError
+
+            try:
+                extra_metadata["reply_quote"] = await resolve_reply_quote(
+                    db, str(current_uid), thread_id, extra_metadata["reply_quote"]
+                )
+            except (HealthVisionError, HTTPException, ValidationError):
+                extra_metadata["reply_quote"] = {"unavailable": True, "text": "原引用内容当前不可用"}
+                extra_metadata.pop("raw_message", None)
         request_id = extra_metadata.get("request_id")
         if msg.role == "user" and request_id and not extra_metadata.get("attachments"):
             extra_metadata["attachments"] = attachments_by_request_id.get(str(request_id), [])
@@ -747,7 +758,17 @@ async def _consultation_message_is_public(db, message, uid, *, run=None, source_
     if message.role == "assistant" and not message.run_id and message.delivery_status == "complete":
         from yuxi.repositories.health_intent_repository import HealthIntentRepository
 
-        return await HealthIntentRepository(db).is_published_message(message)
+        if not await HealthIntentRepository(db).is_published_message(message):
+            return False
+        from yuxi.services.health_reply_quote_service import validate_intent_reply_dependencies
+        from yuxi.storage.postgres.models_business import Conversation
+
+        try:
+            conversation = await db.get(Conversation, message.conversation_id)
+            await validate_intent_reply_dependencies(db, message, uid, conversation.thread_id)
+        except HealthVisionError:
+            return False
+        return True
     if message.role != "assistant" or not message.run_id:
         return False
     run = run or await db.get(AgentRun, message.run_id)

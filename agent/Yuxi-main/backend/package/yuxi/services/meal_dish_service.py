@@ -25,6 +25,11 @@ async def add_saved_dish(uid, family_id, day, data):
     async with pg_manager.get_async_session_context() as session:
         row = await current_row(session, uid, family_id, day, lock=True)
         plan = await read_current_plan(uid, family_id, day, session=session)
+        from yuxi.services.meal_roster_service import current_roster
+
+        policy = (await current_roster(session, row, lock=True)).get(data.meal_type, {})
+        if policy.get("execution_locked") or policy.get("status") in {"pending", "failed"}:
+            raise HealthVisionError("roster_not_ready", "本餐已有记餐或成员正在更新，保留原安排", 409)
         target = next((m for m in plan["meals"] if m["meal_type"] == data.meal_type), None)
         if target and any(dish_key(d) == data.dish_key for d in target["meal"]["dishes"]):
             return plan

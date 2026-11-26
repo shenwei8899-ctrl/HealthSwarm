@@ -53,7 +53,7 @@ test('grid card reacts to candidate data and emits swap only from its own button
  const events=[]
  const script=text.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
  const {computed}=await import('vue')
- const panel=new Function('computed','defineProps','defineEmits','dishKey','localDate','allTypes',script+';return {emit,needsRegeneration,swapOptions,visibleTypes,names,openDish,openDetail}')(computed,()=>props,()=> (...args)=>events.push(args),d=>d.dish_key,()=>day,['lunch','dinner'])
+ const panel=new Function('computed','defineProps','defineEmits','dishKey','localDate','allTypes',script+';return {swapOptions,visibleTypes,names,openDish,openDetail}')(computed,()=>props,()=> (...args)=>events.push(args),d=>d.dish_key,()=>day,['lunch'])
  const render=compile(text.match(/<template>([\s\S]*?)<\/template>\s*<style/)[1])
  const context=()=>({...props,...panel,visibleTypes:panel.visibleTypes.value,dishTitle:d=>d.name,dishKey:d=>d.dish_key,recipeCover:()=>null,localDate:()=>day,$emit:(...args)=>events.push(args)})
  const html=()=>renderToString(createSSRApp({render,setup:context}))
@@ -65,25 +65,6 @@ test('grid card reacts to candidate data and emits swap only from its own button
  const button=find(node);assert.ok(button);button.props.onClick();assert.equal(events[0][0],'swap')
  props.swapVersion=2;assert.doesNotMatch(await html(),/换一换/)
  props.swapVersion=3;props.interactive=false;assert.doesNotMatch(await html(),/换一换/)
- props.interactive=true
- props.plan={...plan,meals:[item,{...item,meal_type:'dinner'}]}
- props.swapNeedsRegeneration=['lunch']
- props.swapEntries.push({mealType:'dinner',dishKey:'dish-1',candidates:[{candidate_id:'c2'}]})
- const mixed=await html()
- assert.match(mixed,/午餐需要重新安排/)
- assert.equal((mixed.match(/换一换/g)||[]).length,1)
- assert.deepEqual(panel.swapOptions(item,dish),[])
- assert.equal(panel.swapOptions(props.plan.meals[1],dish).length,1)
- const regenerate=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
- assert.match(regenerate,/@regenerate="openMealRegeneration"/)
- const reopen=regenerate.match(/function openMealRegeneration\(\)\{[\s\S]*?\n\}/)[0]
- const visible=ref(false),profile=ref({householdId:'family'}),calls=[]
- const openRegeneration=new Function('profile','mealViewBlocked','planPurchaseBusy','state','inlineTodayOpen','todayMenuClient',
-  reopen+';openMealRegeneration()')
- openRegeneration(profile,ref(false),ref(false),{busy:false},visible,{isGenerating:()=>false,open:(...args)=>calls.push(args)})
- assert.equal(visible.value,true)
- assert.deepEqual(calls,[[profile.value,{readOnly:true}]])
- openRegeneration(profile,ref(false),ref(false),{busy:false},visible,{isGenerating:()=>true,open:()=>assert.fail('active generation must continue')})
  const detail=readFileSync(new URL('../src/components/MealDetailSheet.vue',import.meta.url),'utf8')
  assert.doesNotMatch(detail,/换一换|DishSwapSheet|createDishSwap/)
 })

@@ -2,7 +2,6 @@
 
 import asyncio
 import base64
-import hashlib
 import io
 import json
 import os
@@ -15,6 +14,7 @@ from urllib3.exceptions import HTTPError as StorageHTTPError
 from PIL import Image
 
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.recipe_image_identity import recipe_image_key
 from yuxi.storage.minio import get_minio_client
 from yuxi.storage.minio.client import StorageError
 from yuxi.utils import logger
@@ -128,9 +128,13 @@ async def prepare_recipe_images(meals):
 
 async def generated_recipe_image(dish, *, strict=False):
     """只读查询已存在的成品图；不存在时由调用方保留原谱图或无图状态。"""
-    client = get_minio_client()
-    key = recipe_image_key(dish)
+    return await stored_recipe_image(recipe_image_key(dish), strict=strict)
+
+
+async def stored_recipe_image(key, *, strict=False):
+    """按已绑定的菜谱图片标识查询对象，不触发图片生成。"""
     try:
+        client = get_minio_client()
         probe = Minio(
             client.endpoint.split("://")[-1].rstrip("/"),
             access_key=client.access_key,
@@ -213,13 +217,6 @@ async def publish_recipe_image(dish, content):
         if await generated_recipe_image(dish, strict=True):
             return
         await get_minio_client().aupload_file("public", key, content, "image/webp")
-
-
-def recipe_image_key(dish):
-    """以菜谱来源及实际食材做法绑定图片，避免不同菜品共用错误封面。"""
-    facts = {k: dish.get(k) for k in ("name", "ingredients", "steps", "source")}
-    digest = hashlib.sha256(json.dumps(facts, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-    return "recipe-illustrations/gpt-v1/" + digest + ".webp"
 
 
 def compress_recipe_image(data):

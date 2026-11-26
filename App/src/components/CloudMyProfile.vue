@@ -25,7 +25,7 @@ const dietItems = [
 ]
 const planItems = [
   { icon: 'plan', name: 'AI专属计划', desc: '查看当前可用计划与安排', url: '/pages/exclusive-plans/index' },
-  { icon: 'menu', name: '我的餐单', desc: '', url: '/pages/health/plans?archive=1' },
+  { icon: 'menu', name: '我的餐单', desc: '', url: '/pages/health/plans' },
   ...(isCommerceEnabled ? [
     { icon: 'receipt', name: '我的订单', desc: '', url: '/pages/orders/index' },
   ] : []),
@@ -50,7 +50,7 @@ function logout(){uni.showModal({title:'退出账号？',content:'已保存的�
 // Reuse the existing entries and commerce visibility; only their presentation changes.
 const quickItems=[planItems[0],planItems[1],dietItems[0],profileItems[0]]
 const commerceItems=isCommerceEnabled?[...planItems.slice(2),settingItems.find(item=>item.url==='/pages/address/index')]:[]
-const serviceItems=[dietItems[1],profileItems[1],settingItems.find(item=>item.url==='/pages/supplier/index')]
+const serviceItems=[{name:'邀请好友',desc:'分享给朋友，一起好好吃饭',url:'/pages/referral/index'},dietItems[1],profileItems[1],settingItems.find(item=>item.url==='/pages/supplier/index')]
 </script>
 <template>
   <view id="my-page" class="screen cloud-my" :class="{'is-entering':entering}" @animationend="finishEntrance">

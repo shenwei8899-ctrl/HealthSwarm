@@ -55,6 +55,8 @@ export default defineConfig(({ mode }) => {
           // still uses oats.webp, which must remain in the main package.
           const demoImages = ['cucumber', 'eggs', 'fish-veg', 'grains', 'tomato-tofu']
             .map(name => 'static/bundles/' + name + '.webp')
+            .concat(['static/plans/meal-preview.webp'])
+            .concat(['economy','standard','premium'].flatMap(tier => ['static/plans/' + tier + '-v3.webp','static/plans/' + tier + '-v4.jpg']))
           const pack = project.packOptions || {}
           const ignore = pack.ignore || []
           project.packOptions = { ...pack, ignore: [...ignore, ...demoImages

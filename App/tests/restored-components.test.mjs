@@ -1,3 +1,10 @@
+import {journalEditorState,createJournalEditor} from '../src/pages/records/journal-editor.js'
+import { PLAN_DELIVERY_TIMES, deliverySlotTime } from '../src/services/meal-commerce-state.js'
+import {ensureMealItemIds,createCapturePortionDraft,confirmCapturePortions,selectedIntakeDishes,captureIntakeSummary} from '../src/services/meal-item-intake.js'
+import { useReplySelection } from '../src/composables/use-reply-selection.js'
+import { replyQuote } from '../src/utils/reply-selection.js'
+import { journalPageState, createJournalPageClient } from '../src/services/diet-journal-page.js'
+import { journalWeek, journalMealLabels, quantityText, recordSource } from '../src/services/diet-journal-presentation.js'
 import {captureUiKey,mealTime,sortMealRecords} from '../src/services/meal-record-entry.js'
 import { createDishSwap, dishSwapState, watchDishSwap } from '../src/services/dish-swap.js'
 import {chatPromptProfileKey} from '../src/services/chat-prompt-profile.js'
@@ -33,7 +40,7 @@ import {captureMenuDishes} from '../src/services/capture-menu.js'
 const jsonClone=v=>v===undefined?undefined:JSON.parse(JSON.stringify(v))
 const member='11111111-1111-4111-8111-111111111111',thread='22222222-2222-4222-8222-222222222222',requestId='33333333-3333-4333-8333-333333333333'
 function mount(file,fields,extras={}){
- const hooks={},deps={mealPhotoNavigation:{read:()=>null,open:()=>{}},captureUiKey,mealTime,sortMealRecords,chatPromptProfileKey,defineOptions:()=>{},mealPairingText,supplementCandidates,appendMealCandidates,preserveMealEvidence,mealDishKey,createMealSupplementSaver:()=>({read:()=>null,hide(){}}),readDietRecord,mealNutritionState,recognizedMealDish,createMealNutritionClient:({state})=>({invalidate(){Object.assign(state,mealNutritionState())},preview:async()=>{},search:async()=>{},portions:async()=>{}}),defineEmits:()=>()=>{},defineExpose:()=>{},createChatEntryTransition,createChatKeyboardLayout,listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,loadChatMealPlan,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,watch,chatTimestamp,chatBusinessDate,chatPresentation,defineProps:()=>({route:{}}),onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnload:fn=>hooks.unload=fn,onUnmounted:fn=>hooks.unmount=fn,...extras}
+ const hooks={},deps={journalEditorState,createJournalEditor,PLAN_DELIVERY_TIMES,deliverySlotTime,ensureMealItemIds,createCapturePortionDraft,confirmCapturePortions,selectedIntakeDishes,captureIntakeSummary,useReplySelection,replyQuote,journalPageState,createJournalPageClient,journalWeek,journalMealLabels,quantityText,recordSource,onBackPress:()=>{},mealPhotoNavigation:{read:()=>null,open:()=>{}},captureUiKey,mealTime,sortMealRecords,chatPromptProfileKey,defineOptions:()=>{},mealPairingText,supplementCandidates,appendMealCandidates,preserveMealEvidence,mealDishKey,createMealSupplementSaver:()=>({read:()=>null,hide(){}}),readDietRecord,mealNutritionState,recognizedMealDish,createMealNutritionClient:({state})=>({invalidate(){Object.assign(state,mealNutritionState())},preview:async()=>{},search:async()=>{},portions:async()=>{}}),defineEmits:()=>()=>{},defineExpose:()=>{},createChatEntryTransition,createChatKeyboardLayout,listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,loadChatMealPlan,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,watch,chatTimestamp,chatBusinessDate,chatPresentation,defineProps:()=>({route:{}}),onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnload:fn=>hooks.unload=fn,onUnmounted:fn=>hooks.unmount=fn,...extras}
  deps.captureMenuDishes ??= captureMenuDishes
  deps.readDailyMealPlan ??= readDailyMealPlan
  if(file==='CloudMealCapture.vue'){
@@ -42,7 +49,7 @@ function mount(file,fields,extras={}){
  }
  if(file==='CloudMealPurchase.vue') Object.assign(deps,{defineOptions:()=>{}},addressNavigation(deps.storageContext,deps.uni))
  if(file==='CloudNutritionChat.vue')deps.conversationHistory=createConversationHistoryCache({read:deps.readChatSnapshot,context:deps.storageContext})
- const source=readFileSync(new URL('../src/components/'+file,import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
+ const source=readFileSync(new URL(file==='HealthMealJournal.vue'?'../src/pages/records/components/HealthMealJournal.vue':'../src/components/'+file,import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
  const scope=effectScope();const page=scope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {${fields}}`)(deps))
  return {...page,hooks,dispose(){hooks.unmount?.();hooks.unload?.();scope.stop()}}
 }
@@ -51,7 +58,7 @@ function storage(){const m=new Map();return {getStorageSync:k=>jsonClone(m.get(k
 function captureEditor(extras={}){
  let account='A',menuFailure=null,saves=0,pending=null
  const cache=new Map(),scoped={getStorageSync:k=>jsonClone(cache.get(account+':'+k)),setStorageSync:(k,v)=>cache.set(account+':'+k,jsonClone(v))}
- const page=mount('CloudMealCapture.vue','load,hide,manual,manualOpen,manualText,manualError,applyManual,cancelManual,dishes,people,editing,canSave,save,fromMenu,menuNotice,error,chooseImage,newMeal,saved,date,time,mealType,membersLoading,photoPreparing,captureLocked,photo,vision,portionDraft,applyPortions,savedMeal,source,acceptMissing,entryBlocked,entryKey,togglePerson,beginSupplement,supplement,handleBack,isBusy,joinSupplement,matchCarriedDish,removeCarriedDish',{
+ const page=mount('CloudMealCapture.vue','captureDishLabel,load,hide,manual,manualOpen,manualText,manualError,applyManual,cancelManual,dishes,people,editing,canSave,save,fromMenu,menuNotice,error,chooseImage,newMeal,saved,date,time,mealType,membersLoading,photoPreparing,captureLocked,photo,vision,portionDraft,applyPortions,savedMeal,source,acceptMissing,entryBlocked,entryKey,togglePerson,beginSupplement,supplement,handleBack,isBusy,joinSupplement,matchCarriedDish,removeCarriedDish',{
   photoState,createMealPhotoClient:({state})=>({open:async id=>{state.memberId=id},discard(){}}),
   createCloudMealSaver:()=>({read:()=>pending,hide(){},finish(){pending=null},save:async()=>{saves++;return null}}),
   personalMeal,mealLabels,mealDay,scopedStorage:scoped,storageContext:()=>account,getSession:()=>({householdId:account}),commerce:{},uni:{chooseImage:()=>{throw Error('must not replace an open editor')}},
@@ -170,7 +177,7 @@ test('single meal manual edits retain metadata and list all dishes for explicit 
   assert.deepEqual(p.dishes.value.map(d=>d.name),['杂粮饭','西兰花','紫菜汤'])
   assert.equal(p.dishes.value[0].food_id,'food');assert.equal(p.dishes.value[0].image_url,'rice.jpg');assert.equal(p.dishes.value[1].recipe_version_id,'recipe')
   assert.deepEqual(p.people.value[0].dishes,['杂粮饭','西兰花','紫菜汤']);assert.equal(p.people.value[0].grams,'250')
-  assert.equal(p.manualOpen.value,false);assert.equal(p.editing.value,false)
+  assert.equal(p.manualOpen.value,false);assert.equal(p.editing.value,true)
  }finally{p.dispose()}
 })
 
@@ -241,7 +248,7 @@ test('capture imports the current daily meal and saves only explicitly selected 
   await p.load();p.mealType.value='lunch';await p.fromMenu()
   assert.deepEqual(p.dishes.value.map(d=>d.name),['清蒸鱼','米饭'])
   assert.equal(p.editing.value,true);assert.equal(p.canSave.value,false);assert.equal(written.length,0)
-  p.portionDraft.value[0].dishes=['清蒸鱼'];p.applyPortions();p.acceptMissing.value=true
+  p.portionDraft.value[0].rows.forEach(r=>r.selected=r.name==='清蒸鱼');p.applyPortions();p.acceptMissing.value=true
   await p.save()
   assert.equal(written.length,1);assert.equal(written[0].memberId,member)
   assert.deepEqual(written[0].meal.items.map(i=>i.name),['清蒸鱼'])
@@ -250,8 +257,8 @@ test('capture imports the current daily meal and saves only explicitly selected 
   assert.equal(p.saved.value.rows[0].record.id,'saved')
   assert.equal(p.saved.value.rows[0].record.snapshot.nutrition.totals.energy_kcal,null)
   assert.ok(calls.some(o=>o.path.includes('/diet-logs/page')))
-  const journal=mount('HealthMealJournal.vue','load,records,date,scope,visible',{request:async o=>o.path.endsWith('/members')?{data:[{id:member,scopes:['diet_edit']}]}:send(o),scopedStorage:cache,sessionRevision:()=>1,mealDay,mealLabels,uni:{}})
-  try{await journal.load();journal.date.value=today;journal.scope.value=member;assert.equal(journal.visible.value[0].id,'saved');assert.deepEqual(journal.visible.value[0].snapshot.meal.items.map(i=>i.name),['清蒸鱼'])}finally{journal.dispose()}
+  const journalState=journalPageState(); const journal=createJournalPageClient({state:journalState,storage:cache,context:()=> 'test',send:async()=>({data:{records:[p.saved.value.rows[0].record],recorded_dates:[today]}})});journalState.members=[{id:member,scopes:['diet_edit']}]
+  await journal.load(member,today);assert.equal(journalState.records[0].id,'saved');assert.deepEqual(journalState.records[0].snapshot.meal.items.map(i=>i.name),['清蒸鱼'])
   assert.equal(calls.some(o=>o.path.includes('daily-arrangements')),false)
  }finally{p.dispose()}
 })
@@ -296,13 +303,26 @@ test('returning to menu candidates preserves the selected subset instead of mark
  }finally{p.dispose()}
 })
 
+test('journal header opens the shared editor for both empty and populated meals',async()=>{
+ const calls=[]
+ const p=mount('HealthMealJournal.vue','tableAction,state',{createJournalEditor:()=>({open:async input=>calls.push(input),clear(){}})})
+ try{
+  p.state.day='2026-11-24';p.state.memberId=member;p.tableAction();await nextTick()
+  assert.deepEqual(calls[0],{memberId:member,day:'2026-11-24',mealType:'breakfast',id:undefined})
+  p.state.records=[{id:'existing',snapshot:{meal:{meal_type:'lunch',eaten_at:'2026-11-24T12:00:00+08:00'}}}]
+  p.tableAction();await nextTick();assert.equal(calls[1].mealType,'lunch')
+  p.state.busy=true;p.tableAction();await nextTick();assert.equal(calls.length,2)
+  p.state.busy=false;p.state.saving=true;p.tableAction();await nextTick();assert.equal(calls.length,2)
+ }finally{p.dispose()}
+})
+
 test('journal recording link preserves the selected date and member, while whole-family scope remains unselected',()=>{
  const urls=[]
- const p=mount('HealthMealJournal.vue','capture,date,scope',{request:()=>{},scopedStorage:storage(),sessionRevision:()=>1,mealDay,mealLabels,uni:{navigateTo:o=>urls.push(o.url)}})
+ const p=mount('HealthMealJournal.vue','capture,state',{request:()=>{},scopedStorage:storage(),sessionRevision:()=>1,mealDay,mealLabels,uni:{navigateTo:o=>urls.push(o.url)}})
  try{
-  p.date.value='2026-10-15';p.scope.value=member;p.capture('lunch')
+  p.state.day='2026-10-15';p.state.memberId=member;p.capture('lunch')
   const url=new URL('https://local'+urls[0]);assert.equal(url.searchParams.get('date'),'2026-10-15');assert.equal(url.searchParams.get('memberId'),member);assert.equal(url.searchParams.get('meal'),'lunch')
-  p.scope.value='all';p.capture();assert.equal(new URL('https://local'+urls[1]).searchParams.has('memberId'),false)
+  p.state.memberId='all';p.capture();assert.equal(new URL('https://local'+urls[1]).searchParams.has('memberId'),false)
  }finally{p.dispose()}
 })
 
@@ -314,7 +334,7 @@ test('foreground reload clears an old accounts editor even without a preceding h
 })
 
 
-test('incomplete dishes require explicit acceptance and preserve unknown nutrition',async()=>{
+for(const embedded of [false,true])test(`incomplete dishes preserve unknown nutrition in ${embedded?'embedded sheet':'photo page'}`,async()=>{
  const cache=storage(),calls=[];let serial=0,submitted=null
  const send=async options=>{
   calls.push(options)
@@ -325,6 +345,7 @@ test('incomplete dishes require explicit acceptance and preserve unknown nutriti
   throw new Error(options.path)
  }
  const p=mount('CloudMealCapture.vue','load,people,dishes,save,saved,canSave,acceptMissing',{
+  defineProps:()=>({route:{},embedded}),
   photoState,createMealPhotoClient:()=>({open:async()=>{},discard(){}}),
   createCloudMealSaver:()=>createCloudMealSaver({send,storage:cache,revision:()=>1,newId:()=>String(++serial)}),
   personalMeal,mealLabels,mealDay,scopedStorage:cache,storageContext:()=> 'scope',getSession:()=>({householdId:'family'}),
@@ -334,7 +355,7 @@ test('incomplete dishes require explicit acceptance and preserve unknown nutriti
   await p.load();p.dishes.value=[{name:'香菇鸡肉'},{name:'青菜'}]
   await p.save();assert.equal(calls.length,0,'unconfirmed dishes still cannot save')
   p.people.value[0].dishes=['香菇鸡肉'];p.people.value[0].portion='一般'
-  assert.equal(p.canSave.value,true);await nextTick();await p.save();assert.equal(p.saved.value,null);p.acceptMissing.value=true;await p.save()
+  assert.equal(p.canSave.value,true);await nextTick();assert.equal(p.acceptMissing.value,embedded);await p.save();if(!embedded){assert.equal(p.saved.value,null);p.acceptMissing.value=true;await p.save()}
   assert.equal(p.saved.value.rows[0].record.totals.kcal,null)
   assert.equal(submitted.items[0].grams,null);assert.equal(submitted.items[0].share_ratio,null)
   assert.equal(submitted.items[0].portion_source,'unknown');assert.equal(submitted.items.length,1)
@@ -353,12 +374,9 @@ for(const file of ['CloudMealDetail.vue','CloudRecipe.vue'])test(`${file} reread
 })
 
 test('diet correction authorization loss removes the record and its editable private copy',async()=>{
- const p=mount('HealthMealJournal.vue','save,detail,meal,reason,records,error,editing',{
-  sessionRevision:()=>1,scopedStorage:storage(),newHealthRequestId:()=>requestId,mealDay,mealLabels,readDietRecord:async()=>{},feedbackUrl:()=>'',portionNote:()=>'',mealInput,
-  request:async()=>{throw Object.assign(new Error('授权撤回'),{code:403})},
- })
- p.detail.value={id:'record',member_id:member,source_version:1,snapshot:{meal:{items:[]}}};p.meal.value={meal_type:'lunch',eaten_at:'2026-10-22T12:00:00+08:00',items:[]};p.reason.value='合成更正';p.records.value=[p.detail.value];p.editing.value=true
- await p.save();assert.equal(p.detail.value,null);assert.equal(p.meal.value,null);assert.deepEqual(p.records.value,[]);assert.equal(p.editing.value,false);p.dispose()
+ const state=journalPageState();state.detail={id:'record',source_version:1,snapshot:{meal:{items:[]}}};state.records=[state.detail]
+ const client=createJournalPageClient({state,storage:storage(),context:()=> 'test',newId:()=>requestId,send:async()=>{throw Object.assign(new Error('授权撤回'),{code:403})}})
+ await client.mutate('correct',{items:[]});assert.equal(state.detail,null);assert.deepEqual(state.records,[]);assert.equal(state.pending,null)
 })
 
 test('member change authorization loss also removes the independently displayed meal snapshot',async()=>{
@@ -668,16 +686,14 @@ test('retaking the single meal photo submits the replacement upload only',async(
  await p.load();p.chooseImage('camera');await picker.success({tempFilePaths:['first']});picker.complete();p.chooseImage('camera');await picker.success({tempFilePaths:['replacement']});picker.complete();p.consent.value=true;await p.analyze();assert.deepEqual(calls.find(c=>c.path.endsWith('/meal-photo-tasks')).data.upload_ids,['replacement']);p.dispose()
 })
 test('late journal detail response cannot restore private state after leaving',async()=>{
- let release;const p=mount('HealthMealJournal.vue','load,hide,detail',{
-  defineProps:()=>({memberId:member,detailId:'record'}),sessionRevision:()=>1,scopedStorage:storage(),mealDay,mealLabels,request:async o=>({data:o.path.endsWith('/members')?[{id:member,scopes:['diet_edit']}]:{records:[],next_offset:null}}),readDietRecord:()=>new Promise(resolve=>release=resolve)})
- const loading=p.load();while(!release)await nextTick();p.hide();release({id:'record',source_version:1,snapshot:{meal:{eaten_at:'2026-10-20T12:00:00+08:00'}}});await loading;assert.equal(p.detail.value,null);p.dispose()
+ let release;const state=journalPageState();const client=createJournalPageClient({state,storage:storage(),context:()=> 'test',send:()=>new Promise(r=>release=r)})
+ const pending=client.detail({id:'record',member_id:member});client.hide();release({data:{id:'record',source_version:1,snapshot:{meal:{items:[]}}}});await pending;assert.equal(state.detail,null)
 })
 test('journal conflict rereads the current version before a second correction',async()=>{
- const cache=storage(),writes=[];let attempt=0
- const record=version=>({id:'record',member_id:member,source_version:version,snapshot:{meal:{meal_type:'lunch',eaten_at:'2026-10-20T12:00:00+08:00',items:[]}}})
- const p=mount('HealthMealJournal.vue','detail,edit,save,reason,editing',{
-  defineProps:()=>({}),sessionRevision:()=>1,scopedStorage:cache,mealDay,mealLabels,newHealthRequestId:()=>String(++attempt),mealInput:v=>v,readDietRecord:async()=>record(3),request:async o=>{writes.push(o);if(writes.length===1)throw Object.assign(new Error('conflict'),{code:409});return {data:{}}}})
- p.detail.value=record(1);p.edit();p.reason.value='correction';await p.save();assert.equal(p.detail.value.source_version,3);assert.equal(p.editing.value,false);p.edit();p.reason.value='rechecked';await p.save();assert.equal(writes[1].data.expected_version,3);p.dispose()
+ const state=journalPageState(),writes=[];let n=0
+ const record=version=>({id:'record',member_id:member,source_version:version,snapshot:{meal:{items:[],eaten_at:'2026-11-23T12:00:00+08:00'}}})
+ const client=createJournalPageClient({state,storage:storage(),context:()=> 'test',newId:()=>String(++n),send:async o=>{if(o.method==='PATCH'){writes.push(o);if(writes.length===1)throw Object.assign(new Error('conflict'),{code:409});return {data:record(4)}}return {data:record(3)}}})
+ state.detail=record(1);await client.mutate('correct',{items:[]});assert.equal(state.detail,null);await client.detail(record(1));await client.mutate('correct',{items:[]});assert.equal(writes[1].data.expected_version,3)
 })
 
 
@@ -739,19 +755,12 @@ test('family retry uses the original intent date and enables failed-task recover
 })
 
 test('correction saves unknown nutrition and retries the exact original payload after uncertain transport',async()=>{
- const cache=storage(),calls=[];let attempts=0
- const record={id:'record',member_id:member,source_version:1,snapshot:{meal:{meal_type:'lunch',eaten_at:'2026-10-25T12:00:00+08:00',items:[{item_id:'dish',name:'青菜',grams:null,share_ratio:null,portion_source:'unknown',excluded:false}]},nutrition:{totals:{energy_kcal:null}}}}
- const p=mount('HealthMealJournal.vue','detail,meal,edit,save,reason,pending,editing,eatenWeight',{
-  defineProps:()=>({}),sessionRevision:()=>1,scopedStorage:cache,mealDay,mealLabels,newHealthRequestId:()=>requestId,mealInput,
-  readDietRecord:async()=>({...record,source_version:2}),request:async o=>{calls.push(jsonClone(o));if(++attempts===1)throw new Error('timeout');return {data:{}}},
- })
- try{
-  p.detail.value=record;p.edit();p.reason.value='核对菜品';await p.save()
-  assert.equal(calls[0].data.accept_incomplete,true);assert.equal(calls[0].data.meal.items[0].grams,null);assert.equal(calls[0].data.meal.items[0].share_ratio,null)
-  assert.ok(p.pending.value);p.meal.value.items[0].grams=888;p.reason.value='later edit';await p.save()
-  assert.deepEqual(calls[1],calls[0]);assert.equal(p.pending.value,null);assert.equal(p.editing.value,false);assert.equal(p.detail.value.snapshot.nutrition.totals.energy_kcal,null)
-  assert.equal(p.eatenWeight({grams:200,share_ratio:.5}),'100 g');assert.equal(p.eatenWeight({grams:200,share_ratio:null}),'重量未知')
- }finally{p.dispose()}
+ const state=journalPageState(),calls=[];let n=0
+ const meal={meal_type:'lunch',eaten_at:'2026-11-23T12:00:00+08:00',items:[{name:'青菜',grams:null,share_ratio:null}]}
+ state.detail={id:'record',source_version:1,snapshot:{meal}}
+ const client=createJournalPageClient({state,storage:storage(),context:()=> 'test',newId:()=>requestId,send:async o=>{calls.push(jsonClone(o));if(++n===1)throw new Error('timeout');return {data:{id:'record',source_version:2,snapshot:{meal,nutrition:{totals:{energy_kcal:null}}}}}}})
+ await client.mutate('correct',meal);assert.equal(calls[0].data.accept_incomplete,true);assert.equal(calls[0].data.meal.items[0].grams,null);assert.ok(state.pending)
+ await client.mutate('correct',{items:[]});assert.deepEqual(calls[0],calls[1]);assert.equal(state.pending,null)
 })
 
 function checkoutHarness(cache,options={}){
@@ -1347,4 +1356,16 @@ test('invalid actual grams cannot be saved or silently converted to unknown inta
 test('explicitly recording the dish again starts fresh actual intake without duplicating a completed save',async()=>{
  const p=captureEditor({defineProps:recordProps})
  try{await p.load();p.saved.value={rows:[]};p.people.value[0].grams='90';p.newMeal();assert.equal(p.saved.value,null);assert.deepEqual(p.dishes.value.map(d=>d.name),['番茄炒蛋']);assert.equal(p.people.value[0].grams,'');assert.equal(p.people.value[0].portion,'不确定');assert.equal(p.saves,0)}finally{p.dispose()}
+})
+
+
+test('unchecked photo food never displays a confirmed intake amount',async()=>{
+ const p=captureEditor({defineProps:recordProps})
+ try{
+  await p.load();const dish={item_id:'photo-food',name:'米饭',portion_confirmed:true,grams:200}
+  p.dishes.value=[dish];const person=p.people.value[0];person.itemIntakes={'photo-food':{selected:false,grams:'150',portion:'一般'}}
+  assert.equal(p.captureDishLabel(dish),'未计入本餐')
+  person.itemIntakes['photo-food'].selected=true;assert.equal(p.captureDishLabel(dish),'150 克')
+  person.noneConfirmed=true;assert.equal(p.captureDishLabel(dish),'本餐未吃')
+ }finally{p.dispose()}
 })

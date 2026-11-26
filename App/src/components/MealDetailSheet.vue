@@ -161,7 +161,7 @@ defineExpose({open,close,clear,handleBack:()=>requestBack(true)})
 
      <template v-if="state.view==='meal'||state.view==='members'">
 
-      <view class="meal-overview"><text class="meal-overview-title">好好吃饭，轻松安排</text><button v-if="reference&&members.length&&Number.isInteger(target.dailyPlanVersion)" class="detail-secondary detail-diners-summary" :disabled="busy" @click="startMembers">{{(state.meal.members||[]).map(m=>m.name).join(' · ')}} · 调整就餐成员</button><text v-else-if="(state.meal.members||[]).length" class="detail-members">{{(state.meal.members||[]).map(m=>m.name).join(' · ')}}</text><view v-if="nutritionSummary.length" class="meal-nutrition-summary"><text>{{(state.meal.members||[]).length>1?'全餐合计':'本餐份量'}}</text><text v-for="item in nutritionSummary" :key="item.key">{{item.label}} {{item.value}} {{item.unit}}</text></view></view>
+      <view class="meal-overview"><text class="meal-overview-title">好好吃饭，轻松安排</text><text v-if="(state.meal.members||[]).length" class="detail-members">{{(state.meal.members||[]).map(m=>m.name).join(' · ')}}</text><view v-if="nutritionSummary.length" class="meal-nutrition-summary"><text>{{(state.meal.members||[]).length>1?'全餐合计':'本餐份量'}}</text><text v-for="item in nutritionSummary" :key="item.key">{{item.label}} {{item.value}} {{item.unit}}</text></view></view>
       <view class="detail-section-heading"><text>本餐菜品</text><text>共 {{state.meal.dishes.length}} 道</text></view>
       <text v-if="portionRows.some(rows => rows.length)" class="portion-basis">建议食用量按成品可食重量计</text>
       <view v-for="(item,index) in state.meal.dishes" :key="key+':'+dishKey(item)" class="detail-dish-card">

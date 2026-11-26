@@ -14,6 +14,7 @@ async def route_health_intent(uid, data):
     from yuxi.repositories.health_consultation_repository import CONSULTATION_SLUG
     from yuxi.repositories.health_intent_repository import HealthIntentRepository
     from yuxi.services.health_nutrition_service import input_fingerprint
+    from yuxi.services.health_reply_quote_service import intent_dialogue_context, resolve_reply_quote
     from yuxi.storage.postgres.manager import pg_manager
     from yuxi.storage.postgres.models_business import Conversation
     from yuxi.services.health_vision_types import HealthVisionError
@@ -26,6 +27,9 @@ async def route_health_intent(uid, data):
         conversation = await session.get(Conversation, binding.conversation_id)
         if conversation.agent_id != CONSULTATION_SLUG:
             raise HealthVisionError("intent_thread_invalid", "请从营养咨询入口发送问题", 409)
+        quote = None
+        if data.reply_quote is not None:
+            quote = await resolve_reply_quote(session, uid, str(data.thread_id), data.reply_quote)
         fingerprint = input_fingerprint(
             {"input": data.model_dump(mode="json"), "processing": snapshot, "date": str(today)}
         )
@@ -33,12 +37,18 @@ async def route_health_intent(uid, data):
         await require_service_notice(session, uid)
         cached = await repo.claim(conversation.id, request_id, fingerprint)
         if cached is not None:
+            for dependency in cached.get("reply_quote_dependencies", ()):
+                await resolve_reply_quote(session, uid, str(data.thread_id), dependency)
             return (
                 HealthIntentResult.model_validate(cached["result"])
                 if cached["result"]
                 else clarification("这条问题正在分析或结果尚未确认，请稍后编辑问题重试。")
             )
-        recent = await repo.recent_dialogue(conversation.id)
+        recent, dependencies = await intent_dialogue_context(
+            session, uid, str(data.thread_id), await repo.recent_dialogue(conversation.id)
+        )
+        if quote:
+            recent.append({"role": "assistant", "text": quote["text"]})
         conversation_id = conversation.id
     result = classify_health_intent(
         data.text,
@@ -50,16 +60,27 @@ async def route_health_intent(uid, data):
     source = "rule"
     if result is None:
         source = "model"
-        result = await analyze_health_intent(uid, data, today, snapshot, recent)
+        result = await analyze_health_intent(uid, data, today, snapshot, recent, dependencies=dependencies)
+    else:
+        dependencies = []
     async with pg_manager.get_async_session_context() as session:
         await require_consultation(session, uid, str(data.thread_id), expected=snapshot)
-        await HealthIntentRepository(session).finish(conversation_id, request_id, result)
+        if data.reply_quote is not None:
+            quote = await resolve_reply_quote(session, uid, str(data.thread_id), data.reply_quote)
+        for dependency in dependencies:
+            await resolve_reply_quote(session, uid, str(data.thread_id), dependency)
+        await HealthIntentRepository(session).finish(
+            conversation_id, request_id, result, reply_quote_dependencies=[*dependencies, *([quote] if quote else [])]
+        )
         if result.route in {"exclusive_plan", "needs_clarification"}:
             import json
             from yuxi.repositories.conversation_repository import ConversationRepository
 
             repo = ConversationRepository(session)
-            await repo.add_message(conversation_id, "user", data.text, request_id=request_id, commit=False)
+            await repo.add_message(
+                conversation_id, "user", data.text, request_id=request_id,
+                extra_metadata={"reply_quote": quote} if quote else None, commit=False
+            )
             await repo.add_message(
                 conversation_id,
                 "assistant",
@@ -71,7 +92,7 @@ async def route_health_intent(uid, data):
     return result
 
 
-async def analyze_health_intent(uid, data, today, snapshot, recent):
+async def analyze_health_intent(uid, data, today, snapshot, recent, *, dependencies=()):
     """无业务工具、一次有界外呼，只允许返回受校验的入口协议。"""
     import asyncio
     import json
@@ -88,6 +109,13 @@ async def analyze_health_intent(uid, data, today, snapshot, recent):
     try:
         async with pg_manager.get_async_session_context() as session:
             await require_consultation(session, uid, str(data.thread_id), expected=snapshot)
+            from yuxi.services.health_reply_quote_service import resolve_reply_quote
+
+            for dependency in dependencies:
+                await resolve_reply_quote(session, uid, str(data.thread_id), dependency)
+            if data.reply_quote is not None:
+                fresh_quote = await resolve_reply_quote(session, uid, str(data.thread_id), data.reply_quote)
+                recent = [*recent[:-1], {"role": "assistant", "text": fresh_quote["text"]}]
         model = budget.reserved_chat_model(reservation, session_id=str(data.thread_id))
         reply = await asyncio.wait_for(
             model.ainvoke(

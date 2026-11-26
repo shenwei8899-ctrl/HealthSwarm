@@ -8,6 +8,7 @@ import { localDate } from '../utils/meal-state.js'
 const active = status => ['queued','dispatched','pending','running','cancel_requested'].includes(status)
 const stopped = status => ['failed','rejected','interrupted','cancelled','needs_input'].includes(status)
 const mealTypes = ['breakfast','lunch','dinner']
+const rosterUpdating = plan => mealTypes.some(type=>plan?.roster?.[type]?.status==='pending')
 const requiredMeals = plan => [...new Set([...(plan.needs_regeneration || []),
   ...mealTypes.filter(type => !plan.meals.some(meal => meal.meal_type === type))])]
 export function todayMealPlanState() {
@@ -122,6 +123,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       state.issue = needsInput || incomplete
       state.notice = needsInput ? '还有配餐问题需要确认。' : incomplete && state.plan ? '三餐尚未配齐，已有餐次可继续查看。' : ''
       state.action = needsInput ? 'answer' : incomplete && state.plan ? 'regenerate' : ''
+      if (rosterUpdating(plan)) {state.label='正在按新的就餐成员更新餐单';state.notice=state.label}
       if (active(plan.pending?.status)) updating()
       if (plan.pending?.status === 'reference_candidates') showCandidatePending(plan.pending)
       if (state.plan) { state.phase = 'ready'; onPlan(plan) }
@@ -168,6 +170,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
           if (!current()) { if (ticket === generation) clear(); return }
           readFailures = 0
           adopt(plan)
+          if (rosterUpdating(plan)) {poll();return}
           if (revised(plan)) { flow?.pause(); return }
           if (plan.pending?.status === 'reference_candidates') return
           const ownedTask = flow?.getState()
@@ -216,6 +219,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       let plan = await read(family,date)
       if (!current()) { if (ticket === generation) clear(); return }
       adopt(plan)
+      if (rosterUpdating(plan)) {poll();return}
       if (dinerChange) {
         const { mealType, participantIds, expected } = dinerChange
         if (readOnly || !mealTypes.includes(mealType) || !participantIds?.length ||

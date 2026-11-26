@@ -7,6 +7,7 @@ import { archiveCard, archiveDate, plannedGrams } from '../../services/meal-arch
 import { createMealArchiveClient, mealArchiveState } from '../../services/meal-archive-client.js'
 import { dishTitle } from '../../utils/meal-presentation.js'
 import CookingGuide from '../../components/CookingGuide.vue'
+import MealArchiveCard from './components/MealArchiveCard.vue'
 const legacyMode = ref(false), savedDate = ref(''), savedDish = ref(null)
 const savedState = reactive(mealArchiveState()), savedClient = createMealArchiveClient({ state: savedState })
 const savedCards = computed(() => savedState.plans.map(plan => archiveCard(plan)))
@@ -94,11 +95,7 @@ function chat() { if (!locked.value) uni.navigateTo({ url: '/pages/chat/index' }
       <text v-if="savedState.busy" class="mra-loading" role="status">正在读取餐单…</text>
       <template v-if="view==='list'">
         <view class="mra-section-heading"><text class="mra-section-title">已保存餐单</text></view>
-        <view v-for="card in savedCards" :key="card.plan.plan_date" class="mra-card">
-          <view class="mra-card-heading"><view><text class="mra-caption">{{card.date.caption}}</text><text class="mra-card-title">{{card.title}}</text></view><text class="mra-badge">已保存</text></view>
-          <view v-for="meal in card.meals" :key="meal.type" class="mra-meal-row"><text class="mra-meal-label">{{meal.name}}</text><text class="mra-meal-names">{{meal.summary}}</text></view>
-          <view class="mra-card-footer"><text class="mra-caption">{{card.summary}}</text><button class="mra-link" :disabled="savedState.busy" @click="select(card.plan)">查看餐单<text>→</text></button></view>
-        </view>
+        <MealArchiveCard v-for="card in savedCards" :key="card.plan.plan_date" :card="card" :disabled="savedState.busy" @open="select"/>
         <view v-if="!savedState.plans.length&&!savedState.busy&&!savedState.error" class="mra-empty"><text class="mra-empty-title">第一份餐单，从今天开始</text><text class="mra-caption">还没有保存的餐单。<br/>和营养师聊聊，为自己安排一日三餐。</text><button class="mra-primary" @click="chat">和营养师聊聊<text>→</text></button></view>
         <button v-if="savedState.nextBefore" class="mra-refresh" :disabled="savedState.busy" @click="savedClient.list(true)">查看更多餐单</button>
         <button v-if="savedState.plans.length" class="mra-refresh" :disabled="savedState.busy" @click="savedClient.list()">刷新列表</button>
@@ -141,11 +138,7 @@ function chat() { if (!locked.value) uni.navigateTo({ url: '/pages/chat/index' }
         <text class="mra-meta">{{state.members.length>1?selectedMember?.display_name:''}}{{state.plans.length?(state.members.length>1?' · ':'')+'本页'+state.plans.length+'份':''}}</text>
       </view>
       <text v-if="state.busy" class="mra-loading" role="status">正在读取餐单…</text>
-      <view v-for="card in cards" :key="card.plan.plan_id" class="mra-card">
-        <view class="mra-card-heading"><view><text class="mra-caption">{{card.date.caption}}</text><text class="mra-card-title">{{card.title}}</text></view><text class="mra-badge">已保存</text></view>
-        <view v-for="meal in card.meals" :key="meal.type" class="mra-meal-row"><text class="mra-meal-label">{{meal.name}}</text><text class="mra-meal-names">{{meal.summary}}</text></view>
-        <view class="mra-card-footer"><text class="mra-caption">{{card.summary}}</text><button class="mra-link" :disabled="locked" @click="select(card.plan)">查看餐单<text>→</text></button></view>
-      </view>
+      <MealArchiveCard v-for="card in cards" :key="card.plan.plan_id" :card="card" :disabled="locked" @open="select"/>
       <view v-if="!state.plans.length&&!state.busy&&!state.error&&!state.pending&&state.memberId" class="mra-empty">
 
         <text class="mra-empty-title">第一份餐单，从今天开始</text>

@@ -160,7 +160,10 @@ class CatalogService
     public function currentVersion()
     {
         $row = Db::name('shop_catalog_version')->order('id', 'desc')->find();
-        return $row ? $row['catalog_version'] : 'catalog_0';
+        $version = $row ? $row['catalog_version'] : 'catalog_0';
+        // 规则可定时生效，目录身份必须跟随当前政策，而非只在发布瞬间更新。
+        $policy = Db::name('shop_plan_policy')->where('status','active')->where('effective_at','<=',time())->order('effective_at desc,id desc')->find();
+        return $policy ? 'catalog_'.substr(hash('sha256',$version.':'.$policy['content_hash']),0,56) : $version;
     }
 
     public function versionSummary()
@@ -172,7 +175,7 @@ class CatalogService
             ->where('g.agent_visible', 1)->where('g.catalog_status', 'published')->where('g.status', 'normal')
             ->whereRaw('s.stocks - s.reserved_stock - s.safety_stock > 0')->count();
         return [
-            'catalog_version' => $row ? (string)$row['catalog_version'] : 'catalog_0',
+            'catalog_version' => $this->currentVersion(),
             'updated_at' => $row && (int)$row['createtime'] > 0 ? date(DATE_ATOM, (int)$row['createtime']) : null,
             'published_product_count' => (int)$published,
             'available_sku_count' => (int)$available,
@@ -254,6 +257,7 @@ class CatalogService
             'available_stock_level'=> $available <= 0 ? 'out' : ($available <= max(5, (int)$row['safety_stock']) ? 'low' : 'sufficient'),
             'available_quantity'   => $available,
             'net_content'          => ['value' => number_format((float)$row['net_content_value'], 3, '.', ''), 'unit' => $row['net_content_unit']],
+            'storage_rule'         => (new PlanPolicyService())->skuStorageRule($skuId),
             'ingredients'          => $maps,
             'allergen_codes'       => array_values($allergenCodes),
             'nutrition_facts'      => $nutrition ?: null,

@@ -27,7 +27,7 @@ async def read_plan_summary(uid, fid, gid=None):
         row = await repo.summary(gid)
         if row is None:
             return {"status": "empty", "group_id": None, "plans": []}
-        if row["policy"] == PREVIEW_POLICY:
+        if row["policy"] == PREVIEW_POLICY and row["status"] == "ready":
             context = await exclusive_context(
                 session,
                 uid,
@@ -39,7 +39,8 @@ async def read_plan_summary(uid, fid, gid=None):
             )
             from yuxi.services.diet_stage_plan_history import historical_goal_context
 
-            context = await historical_goal_context(session, context, row.get("sources"), row["policy"], row["selection"]["plan_date"])
+            context = await historical_goal_context(
+                session, context, row.get("sources"), row["policy"], row["selection"]["plan_date"])
             valid = context["basis_hash"] == row["basis_hash"]
             tiers = row["tiers"] or {}
             complete = all(
@@ -122,7 +123,14 @@ async def read_plan_day(uid, fid, gid, tier, number, known_version=None, *, for_
         dishes = [d for m in entry["meals"] for d in m["dishes"]]
         translations = await repo.translations([translation_key(d) for d in dishes])
         displays = []
+        preserved = {
+            id(d) for meal in entry["meals"]
+            if meal["meal_type"] in entry.get("roster_preserved_meals", []) for d in meal["dishes"]
+        }
         for dish in dishes:
+            if id(dish) in preserved:
+                displays.append(None)
+                continue
             record = translations.get(translation_key(dish))
             try:
                 displays.append(
@@ -164,10 +172,14 @@ async def read_plan_day(uid, fid, gid, tier, number, known_version=None, *, for_
                     "steps": visible["steps"],
                     "source": dish["source"],
                     "portion_note": dish.get("portion_note"),
+                    "roster_preserved": meal_type in entry.get("roster_preserved_meals", []),
                     "recipe_snapshot": {k: dish.get(k) for k in ("image_url", "cooking_minutes", "source")},
                 }
             )
-            if display is None and sources[source_key(dish)].get("search_excluded"):
+            if (
+                display is None and id(dish) not in preserved
+                and sources.get(source_key(dish), {}).get("search_excluded")
+            ):
                 projected[-1].update(
                     recipe_name="菜谱暂不可展示",
                     ingredients=[],
@@ -207,7 +219,8 @@ async def browse_context(session, uid, fid, gid, tier):
         raise
     from yuxi.services.diet_stage_plan_history import historical_goal_context
 
-    context = await historical_goal_context(session, context, header.get("sources"), header["policy"], header["selection"]["plan_date"])
+    context = await historical_goal_context(
+        session, context, header.get("sources"), header["policy"], header["selection"]["plan_date"])
     if context["basis_hash"] != header["basis_hash"]:
         raise HealthVisionError("plan_basis_changed", "成员资料或计划依据已变化，请重新核对计划", 410)
     return repo, header, context

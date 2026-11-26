@@ -1,5 +1,4 @@
 <script setup>
-import { HOME_SERVICE_NOTICE } from '../services/service-notice.js'
 import NutritionistCharacter from './NutritionistCharacter.vue'
 defineProps({prompts:{type:Array,default:()=>[]},disabled:Boolean,shuffleDisabled:Boolean,compact:Boolean,density:String,refined:Boolean})
 defineEmits(['ask','shuffle'])
@@ -11,7 +10,6 @@ defineEmits(['ask','shuffle'])
    <text class="welcome-title">你好，我是家庭营养师。</text>
    <text class="welcome-description">{{'聊聊今天怎么吃，\n也可以一起安排家人的三餐。'}}</text>
   </view>
-  <text class="service-notice-summary">{{HOME_SERVICE_NOTICE}}</text>
   <view class="welcome-suggestions">
    <view class="suggestion-heading">
     <text class="suggestion-label">你可以这样问我</text>
@@ -22,8 +20,6 @@ defineEmits(['ask','shuffle'])
  </view>
 </template>
 <style scoped>
-.service-notice-summary{display:block;flex-shrink:0;padding:0 8px;font-size:12px;line-height:1.75;text-align:center;color:#81748f;overflow-wrap:anywhere}
-
 .chat-welcome{box-sizing:border-box;display:flex;flex-direction:column;gap:36px;padding:46px 4px 12px;color:var(--ui-text)}.welcome-intro{display:flex;flex-direction:column;align-items:center;text-align:center}.welcome-logo{display:flex;align-items:center;justify-content:center;width:128px;height:128px;margin-bottom:16px}.welcome-title{display:block;font-size:24px;font-weight:500;line-height:1.5;letter-spacing:.3px}.welcome-description{display:block;margin-top:14px;white-space:pre-line;font-size:15px;line-height:1.85;color:var(--ui-muted)}
 .welcome-suggestions{width:100%}.suggestion-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;margin-bottom:8px}.suggestion-label{color:var(--ui-muted);font-size:12px}.shuffle-prompts{display:inline-flex;align-items:center;justify-content:center;gap:5px;flex-shrink:0;min-height:44px;margin:0;padding:0 4px 0 10px;border:0;background:transparent;color:var(--ui-muted);font-size:12px;line-height:1.5;font-weight:400}.shuffle-prompts:after{border:0}.refresh-icon{font-size:16px;line-height:1}.prompt-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}.prompt-grid button{display:flex;align-items:center;justify-content:flex-start;width:100%;height:62px;min-height:62px;box-sizing:border-box;margin:0;padding:10px 14px;border:0;border-radius:16px;background:var(--ui-surface);text-align:left;font-size:14px;line-height:1.65;font-weight:400;color:var(--ui-text);white-space:nowrap}.prompt-grid button:after{border:0}.prompt-grid button:active{background:var(--ui-accent-soft)}.prompt-grid button[disabled]{opacity:.5}
 .chat-welcome.is-compact{padding-top:20px;gap:20px}.is-compact .welcome-logo{display:none}.is-compact .welcome-title{font-size:22px}.is-compact .welcome-description{margin-top:10px}

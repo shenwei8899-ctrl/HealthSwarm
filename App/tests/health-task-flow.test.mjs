@@ -709,3 +709,22 @@ test('notice cancellation never polls an AI request that the server did not acce
  }})
  try{await h.flow.open(memberId,taskType);await h.flow.createEntry();assert.equal(await h.flow.submit('合成测试问题'),false);assert.equal(h.flow.getState().submitUnknown,false);assert.equal(h.flow.getState().status,'failed');assert.equal(h.scheduled.length,0);assert.match(h.flow.getState().error,/声明未确认/)}finally{h.flow.hide()}
 })
+
+
+test('quoted question recovery preserves its original passage and request instead of a later draft',async()=>{
+ let fail=true;const posted=[];
+ const h=fixture({send:async options=>{
+  if(options.path==='/api/agent/runs'){posted.push(structuredClone(options.data));if(fail)throw Object.assign(new Error('lost'),{code:'NETWORK_ERROR'})}
+  if(fail && options.path.endsWith('/tasks/'+requestId))throw Object.assign(new Error('not found'),{code:404});
+  return fixtureBase(options)
+ }});
+ try{
+  await h.flow.open(memberId,taskType);await h.flow.createEntry();
+  const quote={source_thread_id:threadId,source_message_id:42,text:'实际份量未知'};
+  await h.flow.submit('具体怎么判断？',false,[],quote);
+  assert.deepEqual([...h.saved.values()].find(v=>v?.pendingQuote)?.pendingQuote,quote);
+  quote.text='后来的修改';fail=false;await h.flow.submit('不应替换原问题',true,[],quote);
+  assert.deepEqual(posted[0],posted[1]);assert.equal(posted[1].query,'具体怎么判断？');
+  assert.equal(posted[1].meta.reply_quote.text,'实际份量未知');
+ }finally{h.flow.hide()}
+});

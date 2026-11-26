@@ -3,7 +3,7 @@
 from sqlalchemy import cast, select
 from sqlalchemy.dialects.postgresql import JSONB
 
-from yuxi.storage.postgres.models_business import Message
+from yuxi.storage.postgres.models_business import Conversation, Message
 from yuxi.storage.postgres.models_health import DietLog, VisionConfirmation
 
 
@@ -13,6 +13,20 @@ class HealthChatMealRepository:
     def __init__(self, session):
         """接收用例拥有的事务。"""
         self.session = session
+
+    async def original_quotes(self, uid, record):
+        """只返回当前账号拥有的原消息，家庭饮食权限不扩展私人对话访问权。"""
+        ids = record.snapshot.get("recording", {}).get("source_message_ids", [])
+        if not ids:
+            return []
+        rows = await self.session.scalars(
+            select(Message)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(Message.id.in_(ids), Message.role == "user", Conversation.uid == uid,
+                   Conversation.status != "deleted")
+            .order_by(Message.created_at, Message.id)
+        )
+        return [row.content for row in rows if isinstance(row.content, str)]
 
     async def user_sources(self, run, current):
         """最多六条当前及此前用户消息，排除排队的后续请求。"""

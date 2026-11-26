@@ -7,6 +7,14 @@ use addons\shop\library\v5\IdempotencyService;
 
 class CommerceCheckout extends Base
 {
+    public function exclusiveDates()
+    {
+        return $this->execute(function () {
+            $this->requireMethod('POST');
+            return (new \addons\shop\library\v5\ExclusivePurchaseDeliveryService())->availableDates($this->userId(), $this->input());
+        });
+    }
+
     public function preview()
     {
         return $this->execute(function () {

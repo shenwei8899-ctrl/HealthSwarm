@@ -86,6 +86,10 @@ async def read_consultation_citations(uid, run_id):
 
 async def validate_evidence_publication(session, run, content, *, refs=None):
     """最终发布事务锁住实际采用的当前来源，图校验不能替代提交边界。"""
+    from yuxi.services.health_reply_quote_service import validate_quote_dependencies
+
+    await validate_quote_dependencies(session, run, run.uid)
+
     from yuxi.services.health_consultation_service import require_consultation
 
     snapshot = (run.input_payload or {}).get("health_processing")
@@ -117,7 +121,9 @@ async def validate_evidence_publication(session, run, content, *, refs=None):
     await validate_family_kb_publication(session, run, binding, content)
 
 
-async def read_public_consultation_answer(session, run, uid, *, binding=None, source_titles=None):
+async def read_public_consultation_answer(
+    session, run, uid, *, binding=None, source_titles=None, quote_visited=None, quote_verified=None
+):
     """正文读取只校验权威最终回答实际采用的同Run来源，不扩大模型用途。"""
     if run.agent_slug not in EDUCATION_HEALTH_AGENTS or run.uid != uid or run.status != "completed":
         raise HealthVisionError("answer_unavailable", "咨询缺少可公开的最终答复", 409)
@@ -127,6 +133,9 @@ async def read_public_consultation_answer(session, run, uid, *, binding=None, so
         )
     if binding.conversation_id != run.conversation_id or binding.actor_uid != uid:
         raise HealthVisionError("not_found", "咨询运行与当前成员绑定不符", 404)
+    from yuxi.services.health_reply_quote_service import validate_quote_dependencies
+
+    await validate_quote_dependencies(session, run, uid, visited=quote_visited, verified=quote_verified)
     repo = HealthEvidenceRepository(session)
     answer = await repo.final_answer(run)
     titles, _ = await resolve_consultation_citations(

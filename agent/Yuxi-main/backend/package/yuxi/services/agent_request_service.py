@@ -381,9 +381,22 @@ async def _persist_request(
         if request_input.health_processing_snapshot is not None:
             input_payload["health_processing"] = request_input.health_processing_snapshot
 
-    run_input_message = input_message.with_metadata(
-        _build_message_metadata(request_id=request_id, source=source, input_message=input_message, meta=meta)
-    )
+    quote = None
+    if meta.get("reply_quote") is not None:
+        from pydantic import ValidationError
+        from yuxi.services.health_reply_quote_service import resolve_reply_quote, quote_model_input
+
+        try:
+            quote = await resolve_reply_quote(db, uid_str, thread_id, meta["reply_quote"])
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail="引用格式无效") from exc
+        except HealthVisionError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.message) from exc
+        input_message = quote_model_input(input_message, quote)
+    metadata = _build_message_metadata(request_id=request_id, source=source, input_message=input_message, meta=meta)
+    if quote is not None:
+        metadata["reply_quote"] = quote
+    run_input_message = input_message.with_metadata(metadata)
     try:
         async with db.begin_nested():
             attachment_file_ids = _normalize_attachment_file_ids(meta.get("attachment_file_ids"))

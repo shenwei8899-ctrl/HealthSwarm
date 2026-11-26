@@ -118,7 +118,13 @@ async def start_miniapp_analysis(uid, fid, data):
 async def save_miniapp_profile(uid, fid, data):
     """完整建档、历史及幂等收据同事务提交，不隐式授予模型权限。"""
     async with pg_manager.get_async_session_context() as db:
-        return await save_miniapp_profile_in_session(db, uid, fid, data)
+        result = await save_miniapp_profile_in_session(db, uid, fid, data)
+        tasks = db.info.get("meal_roster_tasks", [])
+    from yuxi.services.task_service import tasker
+
+    for task in tasks:
+        await tasker.publish(task)
+    return result
 
 
 async def save_miniapp_profile_in_session(db, uid, fid, data):
@@ -256,6 +262,7 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
         for member in analysis_members:
             member.invitation_analysis_pending = False
     if not member_only:
+        previous_diners = list((family.settings or {}).get("default_diners", []))
         settings = {
             **(family.settings or {}),
             "default_diners": [refs[ref] for ref in data.default_diners],
@@ -265,6 +272,9 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
         if family_changed or family.settings != settings:
             family.settings = settings
             family.version += 1
+        from yuxi.services.meal_roster_service import schedule_default_roster
+
+        await schedule_default_roster(db, uid, family, previous_diners)
     db.add(
         HealthMiniappProfileReceipt(
             actor_uid=uid,
@@ -275,6 +285,11 @@ async def save_miniapp_profile_in_session(db, uid, fid, data):
         )
     )
     await service.repo.audit(fid, None, uid, "miniapp.onboarding.save", family.version)
+    # 只统计本次提交并确认的本人完整档案，其他成员建档不替受邀账号激活。
+    if actor in submitted and miniapp_profile_complete(actor):
+        from yuxi.repositories.referral_repository import ReferralRepository
+
+        await ReferralRepository(db).complete(uid)
     await db.flush()
     return {**await profile_result(service, family), "memberRefs": refs}
 
@@ -323,7 +338,8 @@ async def profile_result(service, family):
                 "memberId": member.person_id or member.id,
                 "healthMemberId": health_id,
                 "stageManaged": bool(member.profile.get("diet_stage_managed")),
-                "stageSummary": summaries.get(member.id) if {"goal", "dietary_details"} <= set(view["allowed_fields"]) else None,
+                "stageSummary": summaries.get(member.id)
+                if {"goal", "dietary_details"} <= set(view["allowed_fields"]) else None,
                 "version": member.version,
                 "relationshipVersion": member.relationship_version,
                 "isSelf": member.subject_uid == service.uid,

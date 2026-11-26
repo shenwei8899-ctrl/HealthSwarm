@@ -126,6 +126,10 @@ class WechatLoginService:
             self.db.add(user)
             await self.db.flush()
 
+            from yuxi.services.referral_service import bind_new_referral
+
+            await bind_new_referral(self.db, uid, getattr(payload, "referral_receipt", None))
+
         try:
             if not identity:
                 await self.repo.bind(self.settings.appid, digest, user)

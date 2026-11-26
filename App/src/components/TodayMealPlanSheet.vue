@@ -1,11 +1,15 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import TodayMealPlanContent from './TodayMealPlanContent.vue'
+import MealRosterControl from './MealRosterControl.vue'
 import { detailGesture } from '../services/meal-detail-client.js'
 import { localDate } from '../utils/meal-state.js'
-const props=defineProps({open:Boolean,state:{type:Object,required:true},busy:Boolean,interactive:{type:Boolean,default:true},members:{type:Array,default:()=>[]},defaultDiners:{type:Array,default:()=>[]},dinerDraft:Object})
-const emit=defineEmits(['close','action','detail','dish','confirm-diners','arrange-diners'])
+import { todayMealPlanPresentation } from '../services/today-meal-plan-presentation.js'
+const props=defineProps({familyId:String,rosterExternal:Boolean,open:Boolean,state:{type:Object,required:true},busy:Boolean,updating:Boolean,interactive:{type:Boolean,default:true},members:{type:Array,default:()=>[]},defaultDiners:{type:Array,default:()=>[]},dinerDraft:Object})
+const emit=defineEmits(['close','action','detail','dish','confirm-diners','arrange-diners','roster-updated','roster-open'])
 const expanded=ref(false)
+const presentation=computed(()=>todayMealPlanPresentation(props.state,props.updating))
+const actionLabels={refresh:'刷新状态',regenerate:'重新安排餐次'}
 const editing=ref(false),mealType=ref(''),selected=ref([])
 const meals=[{type:'breakfast',name:'早餐'},{type:'lunch',name:'午餐'},{type:'dinner',name:'晚餐'}]
 const mealName=computed(()=>meals.find(item=>item.type===mealType.value)?.name||'')
@@ -36,7 +40,7 @@ function confirm(){
 }
 const displayDate=computed(()=>{
  const [year,month,day]=(props.state.date||localDate()).split('-').map(Number)
- return `${month}月${day}日 · 周${'日一二三四五六'[new Date(year,month-1,day).getDay()]}`
+ return `${month}月${day}日·周${'日一二三四五六'[new Date(year,month-1,day).getDay()]}`
 })
 let touch=null
 function start(event){const point=event.touches?.[0];touch=point?{x:point.clientX,y:point.clientY}:null}
@@ -59,12 +63,19 @@ watch([()=>props.open,()=>props.state.date,()=>props.members],cancelEditing)
  <view v-if="open" class="tm-mask" @click.self="dismiss">
   <view class="tm-sheet" :class="{'tm-expanded':expanded,'tm-paused':!interactive}" role="dialog" aria-modal="true" :aria-label="editing?'调整就餐成员':'今日餐单'" @click.stop>
    <view class="tm-handle" aria-hidden="true" @touchstart="start" @touchend="end" @touchcancel="cancelTouch"><view class="tm-grip"/></view>
-   <view class="tm-header">
+   <view class="tm-header" :class="{'tm-header-has-status':!editing&&!!presentation.kind}">
     <view class="tm-heading-wrap">
      <view class="tm-heading" @touchstart="start" @touchend="end" @touchcancel="cancelTouch"><text class="tm-title">{{editing?'调整就餐成员':'今日餐单'}}</text></view>
-     <view class="tm-date-row"><text class="tm-date">{{displayDate}}</text></view>
+     <view v-if="!editing&&presentation.kind" class="tm-plan-status" :class="'tm-plan-status-'+presentation.kind" role="status" aria-live="polite">
+      <button v-if="presentation.retry" class="tm-plan-status-action" :disabled="busy||!interactive" :aria-label="'餐单更新未完成，'+actionLabels[state.action]" @click.stop="act"><view class="tm-plan-status-dot" aria-hidden="true"/><text>{{presentation.label}}</text></button>
+      <template v-else><view class="tm-plan-status-dot" aria-hidden="true"/><text>{{presentation.label}}</text></template>
+     </view>
     </view>
-    <view class="tm-controls"><button class="tm-close" :aria-label="editing?'返回今日餐单':'关闭今日餐单'" @click="dismiss"><text>{{editing?'‹':'×'}}</text></button></view>
+    <view class="tm-controls">
+     <text v-if="!editing" class="tm-date">{{displayDate}}</text>
+     <MealRosterControl v-if="!editing" :entry-only="rosterExternal" @open="emit('roster-open')" :plan="state.plan" :family-id="familyId" :members="members" :busy="busy||!interactive" @updated="emit('roster-updated')"/>
+     <button class="tm-close" :aria-label="editing?'返回今日餐单':'关闭今日餐单'" @click="dismiss"><text>{{editing?'‹':'×'}}</text></button>
+    </view>
    </view>
    <scroll-view class="tm-content" scroll-y :show-scrollbar="false" :aria-busy="!state.plan&&(state.checking||state.phase==='generating')">
     <view v-if="editing" class="tm-diners">
@@ -80,7 +91,7 @@ watch([()=>props.open,()=>props.state.date,()=>props.members],cancelEditing)
       <text>{{draftMealName}} {{dinerDraft.participantIds.length}} 人 · {{busy?'正在核对':'待安排'}}</text>
       <button v-if="!busy&&interactive&&!['answer','candidates','regenerate'].includes(state.action)" class="tm-edit" @click="emit('arrange-diners')">重新安排{{draftMealName}}</button>
      </view>
-     <TodayMealPlanContent :state="state" :busy="busy" :interactive="interactive&&open" @action="act" @detail="detail" @dish="dish"/>
+     <TodayMealPlanContent :state="state" :updating="updating" :family-id="familyId" :members="members" @roster-updated="emit('roster-updated')" :busy="busy" :interactive="interactive&&open" @action="act" @detail="detail" @dish="dish"/>
     </view>
    </scroll-view>
    <view v-if="editing" class="tm-diner-footer">
@@ -91,20 +102,22 @@ watch([()=>props.open,()=>props.state.date,()=>props.members],cancelEditing)
  </view>
 </template>
 <style>
+@import '../styles/today-meal-status.css';
 /* All selectors use this component's tm- namespace; avoid repeated scope IDs in the upload. */
 .tm-mask{position:fixed;inset:0;z-index:70;display:flex;align-items:flex-end;background:rgba(34,41,58,.28)}
 .tm-sheet{display:flex;flex-direction:column;box-sizing:border-box;width:100%;max-width:480px;margin:0 auto;height:auto;max-height:calc(100vh - 68px);overflow:hidden;padding:0 0 env(safe-area-inset-bottom);border:1px solid rgba(255,255,255,.9);border-bottom:0;border-radius:26px 26px 0 0;color:var(--ui-text,#35343f);background-color:#fafafc;background-image:radial-gradient(ellipse at 0% 0%,rgba(159,192,249,.24),transparent 72%),radial-gradient(ellipse at 100% 0%,rgba(205,186,237,.22),transparent 75%);background-size:100% 150px;background-repeat:no-repeat;box-shadow:0 -8px 32px rgba(36,55,87,.1);transition:height 240ms cubic-bezier(.2,.7,.2,1)}
 .tm-sheet.tm-expanded{height:90vh;height:90dvh}.tm-handle{height:20px;min-height:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0}.tm-grip{width:30px;height:4px;border-radius:4px;background:#d0d2de}
-.tm-header{display:flex;align-items:center;gap:10px;padding:4px 16px 16px 20px;flex-shrink:0}.tm-heading{flex:1;min-width:0}.tm-title{display:block;font-size:21px;font-weight:600;line-height:1.4}.tm-date{display:block;margin-top:4px;color:#74717f;font-size:12px;line-height:1.6}
-.tm-controls{display:flex;align-items:center;gap:2px}.tm-close{display:flex;align-items:center;justify-content:center;width:44px;height:44px;min-width:44px;margin:0;padding:0;background:transparent;color:#74717f}.tm-close>text{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:50%;background:rgba(229,230,239,.6);font-size:24px;line-height:1}.tm-sheet button:after{border:0}
+.tm-header{display:flex;flex-wrap:nowrap;align-items:center;gap:6px;padding:0 12px 8px 20px;flex-shrink:0}.tm-heading-wrap{display:flex;flex:1;align-items:center;gap:6px;min-width:0}.tm-heading{flex:none;min-width:0}.tm-title{display:block;white-space:nowrap;font-size:21px;font-weight:600;line-height:1.4}.tm-date{flex:none;white-space:nowrap;color:#74717f;font-size:11px;line-height:18px}
+.tm-controls{display:flex;flex:none;align-items:center;gap:4px}.tm-close{display:flex;align-items:center;justify-content:center;width:44px;height:44px;min-width:44px;margin:0;padding:0;background:transparent;color:#74717f}.tm-close>text{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:50%;background:rgba(229,230,239,.6);font-size:24px;line-height:1}.tm-sheet button:after{border:0}
 .tm-content{height:auto;max-height:50vh;min-height:0}.tm-expanded .tm-content{height:0;max-height:none;flex:1}
-.tm-heading-wrap{flex:1;min-width:0}.tm-date-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.tm-edit{min-height:44px;padding:6px 10px;margin:0;border-radius:12px;background:#e9e8f2;color:#51496b;font-size:12px;line-height:32px}
+.tm-edit{min-height:44px;padding:6px 10px;margin:0;border-radius:12px;background:#e9e8f2;color:#51496b;font-size:12px;line-height:32px}
 .tm-diners,.tm-diner-summary{padding:0 20px 12px;font-size:14px}.tm-diner-tabs,.tm-diner-actions{display:flex;gap:8px;margin:8px 0 12px}
 .tm-diner-tabs button,.tm-diner-actions button{flex:1;min-height:44px;margin:0;border-radius:14px;background:#eeedf3;font-size:14px;line-height:44px}.tm-diner-tabs .tm-selected,.tm-diner-actions button:last-child{background:#343442;color:#fff}
 .tm-diner-member{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-width:0;min-height:44px;padding:8px;white-space:normal;margin:0;border-radius:0;border-bottom:1px solid #e8e6ee;background:transparent;font-size:14px}
 .tm-diner-name{flex:1;min-width:0;text-align:left;white-space:normal;overflow-wrap:anywhere;word-break:break-word}.tm-diner-check{flex:none}
 .tm-diner-footer{flex-shrink:0;padding:10px 20px 0;background:#fafafc;font-size:13px}.tm-diner-summary{color:#51496b}
-@media(max-width:350px){.tm-header{padding-left:16px;padding-right:12px}}
+@media(max-width:350px){.tm-header{padding-left:16px;padding-right:8px;gap:4px}.tm-title{font-size:20px}.tm-controls{gap:2px}}
+@media(max-width:350px){.tm-header-has-status{padding-left:14px;padding-right:6px}.tm-header-has-status .tm-title{font-size:18px}.tm-header-has-status .tm-date{font-size:10px}.tm-header-has-status .tm-controls{gap:1px}.tm-header-has-status .tm-heading-wrap{gap:2px}}
 @media(max-height:480px){.tm-sheet{max-height:calc(100vh - 44px)}.tm-content{max-height:calc(100vh - 150px)}.tm-header{padding-bottom:10px}}
 @media(prefers-reduced-motion:reduce){.tm-sheet{transition:none}}
 </style>

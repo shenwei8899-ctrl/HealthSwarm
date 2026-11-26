@@ -1,5 +1,5 @@
 <script setup>
-import HealthMealJournal from '../../components/HealthMealJournal.vue'
+import HealthMealJournal from './components/HealthMealJournal.vue'
 import { isMockMode } from '../../services/config.js'
 const cloudMemberId=ref('')
 import AppNavBar from '../../components/AppNavBar.vue'

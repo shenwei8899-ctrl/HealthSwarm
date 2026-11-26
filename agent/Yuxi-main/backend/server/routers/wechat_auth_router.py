@@ -19,6 +19,7 @@ class WechatLoginInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     code: SecretStr = Field(min_length=1, max_length=256)
+    referral_receipt: str | None = Field(default=None, max_length=256)
     service_notice: NoticeAcknowledgement | None = None
     identifier: str | None = Field(default=None, min_length=1, max_length=100)
     password: SecretStr | None = Field(default=None, min_length=1, max_length=128)

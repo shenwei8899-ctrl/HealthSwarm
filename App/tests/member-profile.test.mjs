@@ -1,3 +1,5 @@
+import { useReplySelection } from '../src/composables/use-reply-selection.js'
+import { replyQuote } from '../src/utils/reply-selection.js'
 import {restrictionIssue,basicProfileIssue} from '../src/utils/onboarding-validation.js'
 import {restrictionFields} from '../src/utils/health.js'
 import {preserveMemberEdit,readMemberEdit,clearMemberEdit} from '../src/services/member-edit-draft.js'
@@ -104,7 +106,7 @@ function detail(overrides={}){
   setup()
   const src=readFileSync(new URL('../src/components/CloudMemberDetail.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const raw=source(),m=member();let revision=1;const writes=[]
-  const deps={ref,computed,defineOptions(){},defineProps:()=>({id:'mother'}),defineEmits:()=>()=>{},defineExpose(){},onMounted(){},onUnmounted(){},onShow(){},onHide(){},onUnload(){},sessionRevision:()=>revision,profileDraft,profileChanges,
+  const deps={useReplySelection,replyQuote,ref,computed,defineOptions(){},defineProps:()=>({id:'mother'}),defineEmits:()=>()=>{},defineExpose(){},onMounted(){},onUnmounted(){},onShow(){},onHide(){},onUnload(){},sessionRevision:()=>revision,profileDraft,profileChanges,
     restrictionIssue,basicProfileIssue,restrictionFields,preserveMemberEdit,readMemberEdit,clearMemberEdit,readMemberProfile:async()=>({profile:{householdId:'family',isOwner:true,selfMemberId:'creator',members:[m]},member:m,source:raw}),
     saveMemberProfile:async(...args)=>writes.push(args),request:async()=>({data:{}}),...overrides}
   const page=new Function('deps',`const {${Object.keys(deps)}}=deps;${src};return {load,edit,save,hide,cancelEdit,section,conflictEdit,canEdit,profile,source,draft,error,busy,editing,requestClose,reload,writing,dirty,writeUncertain,report,reportError,reportBusy,reportHint,canOpenReport}`)(deps)

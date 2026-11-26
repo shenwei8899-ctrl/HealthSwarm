@@ -650,3 +650,31 @@ async def prepare_knowledge_import(data: KnowledgeNutritionInput, user=Depends(g
 async def knowledge_import_status(task_id: str, user=Depends(get_admin_user)):
     """读取本人后台候选整理任务。"""
     return await read_knowledge_nutrition(user.uid, task_id)
+
+
+class MealRosterInput(BaseModel):
+    """一次明确选择当前餐次名单或确认已用餐。"""
+
+    model_config = ConfigDict(extra="forbid")
+    client_request_id: UUID
+    version: int = Field(ge=0)
+    meal_types: list[Literal["breakfast", "lunch", "dinner"]] = Field(min_length=1, max_length=3)
+    member_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    consumed: bool = False
+
+    @model_validator(mode="after")
+    def distinct_selection(self):
+        """空名单和重复餐次不能进入更新流程。"""
+        if len(set(self.meal_types)) != len(self.meal_types) or len(set(self.member_ids)) != len(self.member_ids):
+            raise ValueError("成员及餐次不能重复")
+        if not self.consumed and not self.member_ids:
+            raise ValueError("请至少选择一位就餐成员")
+        return self
+
+
+@daily_arrangement.post("/family/{fid}/daily-meal-plans/{day}/members")
+async def update_meal_roster(fid: UUID, day: date, data: MealRosterInput, user=Depends(get_required_user)):
+    """统一成员入口由受控服务登记后台更新。"""
+    from yuxi.services.meal_roster_service import change_roster
+
+    return await change_roster(str(user.uid), str(fid), day, data)

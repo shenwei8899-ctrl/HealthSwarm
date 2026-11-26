@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from uuid import uuid4, uuid5
 
 from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
+from yuxi.repositories.health_chat_meal_repository import HealthChatMealRepository
 from yuxi.repositories.health_diet_correction_repository import HealthDietCorrectionRepository
 from yuxi.repositories.health_diet_analysis_repository import HealthDietAnalysisRepository
 from yuxi.repositories.health_vision_repository import HealthVisionRepository
@@ -140,7 +141,9 @@ async def read_meal(uid, member_id, record_id):
     """详情始终重验当前成员授权、版本与来源。"""
     async with pg_manager.get_async_session_context() as session:
         record, confirmation = await HealthDietAnalysisRepository(session).source(uid, member_id, record_id)
+        quotes = await HealthChatMealRepository(session).original_quotes(uid, record)
         return {
+            "original_quotes": quotes,
             "id": record.id,
             "source_version": record.version or confirmation.draft_version,
             "snapshot": record.snapshot,

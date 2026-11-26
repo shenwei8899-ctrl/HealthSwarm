@@ -2,8 +2,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import {ref,computed} from 'vue'
-import {newMealCommerceState,createMealCommerceController,commerceMealView} from '../src/services/meal-commerce-state.js'
+import {newMealCommerceState,createMealCommerceController,commerceMealView,mealDateStart,validMealDate} from '../src/services/meal-commerce-state.js'
 const copy=value=>structuredClone(value)
+
+test('preferred date validation uses the China calendar and rejects invalid or past dates',()=>{
+ const now=Date.parse('2026-11-25T16:30:00Z')
+ assert.equal(mealDateStart(now),'2026-11-27')
+ assert.equal(validMealDate('2026-11-27',now),true)
+ for(const date of ['2026-11-26','2026-02-30','2026-13-01','2026-11-27junk',null,undefined])assert.equal(validMealDate(date,now),false)
+})
 
 test('structured unsupported delivery preserves meal display and does not change the cart', async () => {
   const f = fixture();

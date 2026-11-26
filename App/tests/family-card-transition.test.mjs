@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { ref, computed, compile, createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
-import { createFamilyCardTransition, restrictionProgress, memberHealthSummary } from '../src/utils/family-card-transition.js'
+import { createFamilyCardTransition, createFamilyCardGesture, familyCardPose, restrictionProgress, memberHealthSummary } from '../src/utils/family-card-transition.js'
 
 const people = () => [{ id: 'self', name: '我', weight: 58, goals: ['饮食均衡'] }, { id: 'mother', name: '妈妈', weight: 56 }, { id: 'father', name: '爸爸', weight: 70 }]
 function fixture() {
@@ -52,7 +52,7 @@ test('disposing while hidden clears health snapshots and invalidates callbacks',
 })
 test('missing animation-end still settles exactly once via fallback', () => {
  const f = fixture(); f.controller.select('mother'); const ticket = f.current.ticket
- assert.ok(f.timers[0].delay > 1100); f.timers[0].fn(); f.controller.finish(ticket)
+ assert.ok(f.timers[0].delay > 0 && f.timers[0].delay <= 500); f.timers[0].fn(); f.controller.finish(ticket)
  assert.deepEqual(f.selected, ['mother']); assert.equal(f.current.busy, false)
 })
 test('same-member, unknown-member, empty and removed preferred member stay valid', () => {
@@ -134,4 +134,71 @@ test('summary links open the requested member and category in a sheet without na
  const f = overview(); const p = f.load(); f.pending[0].resolve(f.data()); await p
  f.detail(f.data().members[1], 'restrictions')
  assert.equal(f.sheetId.value,'mother');assert.equal(f.sheetSection.value,'restrictions');assert.equal(f.navigations.length,0)
+})
+
+function dragFixture(initial = 'mother') {
+ const f = fixture(); f.controller.reset(people(), 'gesture', initial)
+ let time = 0
+ const gesture = createFamilyCardGesture({controller:f.controller,getMembers:people,getIndex:()=>people().findIndex(m=>m.id===(f.current.from||f.current.to)?.id),getWidth:()=>300,now:()=>time})
+ const event = (x,y=100,id=1) => ({touches:[{clientX:x,clientY:y,identifier:id}],changedTouches:[{clientX:x,clientY:y,identifier:id}]})
+ return {...f,get current(){return f.current},gesture,event,at:value=>{time=value},finish:()=>f.controller.finish(f.current.ticket,'gesture')}
+}
+test('slow dragging exposes both cards before release and can remain paused without settling',()=>{
+ const f=dragFixture();f.gesture.start(f.event(200));f.at(500);f.gesture.move(f.event(150))
+ assert.equal(f.current.phase,'dragging');assert.equal(f.current.from.id,'mother');assert.equal(f.current.to.id,'father')
+ assert.ok(f.current.progress>.25&&f.current.progress<.26);assert.equal(f.timers.length,0);assert.deepEqual(f.selected,[])
+ assert.equal(f.controller.finish(f.current.ticket),false)
+ f.at(5000);assert.equal(f.current.phase,'dragging')
+})
+test('returning the finger decreases progress and cancellation restores the original selection',()=>{
+ const f=dragFixture();f.gesture.start(f.event(200));f.at(200);f.gesture.move(f.event(100));const far=f.current.progress
+ f.at(800);f.gesture.move(f.event(185));assert.ok(f.current.progress<far)
+ f.at(1200);f.gesture.end(f.event(185));assert.equal(f.current.commit,false);f.finish()
+ assert.equal(f.current.to.id,'mother');assert.deepEqual(f.selected,[])
+})
+test('a deliberate long slow drag commits once after settling, not during preview',()=>{
+ const f=dragFixture();f.gesture.start(f.event(200));f.at(2000);f.gesture.move(f.event(100));assert.deepEqual(f.selected,[])
+ f.at(4000);f.gesture.end(f.event(100));assert.equal(f.current.commit,true);assert.equal(f.current.from.id,'mother')
+ const ticket=f.current.ticket;f.finish();f.controller.finish(ticket,'gesture');assert.deepEqual(f.selected,['father'])
+})
+test('recent velocity allows a short flick, while a pause prevents an old flick from committing',()=>{
+ for(const pause of [false,true]){
+  const f=dragFixture();f.gesture.start(f.event(200));f.at(20);f.gesture.move(f.event(175))
+  f.at(pause?1000:40);f.gesture.end(f.event(165));assert.equal(f.current.commit,!pause)
+ }
+})
+test('vertical scrolling locks direction without previewing or submitting a member',()=>{
+ const f=dragFixture();f.gesture.start(f.event(200));assert.equal(f.gesture.move(f.event(198,130)),false)
+ assert.equal(f.gesture.move(f.event(100,135)),false);f.gesture.end(f.event(100,135))
+ assert.equal(f.current.busy,false);assert.equal(f.current.to.id,'mother')
+})
+test('crossing the start point previews the other neighbor without changing the origin',()=>{
+ const f=dragFixture();f.gesture.start(f.event(200));f.gesture.move(f.event(120));assert.equal(f.current.to.id,'father')
+ f.gesture.move(f.event(250));assert.equal(f.current.from.id,'mother');assert.equal(f.current.to.id,'self');assert.equal(f.current.direction,-1)
+})
+test('first and last members cannot commit an out-of-range drag',()=>{
+ for(const [initial,x] of [['self',280],['father',100]]){
+  const f=dragFixture(initial);f.gesture.start(f.event(200));f.gesture.move(f.event(x));f.gesture.end(f.event(x))
+  assert.equal(f.current.busy,false);assert.equal(f.current.to.id,initial);assert.deepEqual(f.selected,[])
+ }
+})
+test('touch interruption and a second finger roll back instead of committing',()=>{
+ for(const multi of [false,true]){
+  const f=dragFixture();f.gesture.start(f.event(200));f.gesture.move(f.event(100))
+  if(multi)f.gesture.move({touches:[...f.event(100).touches,...f.event(110,100,2).touches]});else f.gesture.cancel()
+  assert.equal(f.current.commit,false);f.finish();assert.equal(f.current.to.id,'mother');assert.deepEqual(f.selected,[])
+ }
+})
+test('resetting a family during drag rejects all late gesture and settle callbacks',()=>{
+ const f=dragFixture();f.gesture.start(f.event(200));f.gesture.move(f.event(100));f.gesture.cancel()
+ const callbacks=f.timers.map(t=>t.fn);f.controller.reset([{id:'new',name:'新家庭'}],'new-family','new')
+ callbacks.forEach(fn=>fn());assert.equal(f.current.to.id,'new');assert.deepEqual(f.selected,[])
+})
+test('all progress positions retain a visible card and reverse direction mirrors translation and rotation',()=>{
+ for(const progress of [0,.1,.33,.4,.5,.7,1]){
+  const out=familyCardPose(progress,1),incoming=familyCardPose(progress,1,true)
+  assert.ok(out.opacity+incoming.opacity>=.99);assert.ok(out.opacity>=0&&incoming.opacity>=0)
+ }
+ assert.equal(familyCardPose(.5,1).transform,'translate(-1.5%, 4px) rotate(4deg)')
+ assert.equal(familyCardPose(.5,-1).transform,'translate(1.5%, 4px) rotate(-4deg)')
 })

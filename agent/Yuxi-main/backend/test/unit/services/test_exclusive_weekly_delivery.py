@@ -1,6 +1,10 @@
 """周配送建议验证逐项覆盖、包装取整和未知状态，不使用供应商真实数据。"""
 
 from copy import deepcopy
+import time
+from unittest.mock import AsyncMock
+
+import pytest
 
 from yuxi.services.exclusive_delivery_suggestions import suggest_deliveries
 from yuxi.services.exclusive_plan_purchase import assemble_purchase
@@ -82,6 +86,46 @@ def test_durable_food_first_used_late_still_joins_the_first_delivery():
     result = suggest_deliveries([demand(6)], plan()["days"], products, [])
     assert result["batches"][0]["day_no"] == 1
     assert result["batches"][0]["items"][0]["use_days"] == [6]
+
+
+def test_signed_delivery_requirements_contain_only_sku_days_and_approved_rules():
+    from yuxi.services.exclusive_plan_purchase import purchase_delivery_requirements
+
+    products = catalog()
+    products["storage_rules"] = {"大米": rule(7)}
+    purchase = assemble_purchase(plan(), products, [])
+    requirements = purchase_delivery_requirements(purchase)
+    assert requirements["version"] == 1 and requirements["period_days"] == 7
+    assert requirements["items"][0]["storage_rule"] == rule(7)
+    assert set(requirements["items"][0]) == {"sku_id", "food", "uses", "storage_rule"}
+    assert all(set(use) == {"day_no", "weight"} and 1 <= use["day_no"] <= 7 for use in requirements["items"][0]["uses"])
+    products["storage_rules"]["大米"]["review_status"] = "draft"
+    unapproved = purchase_delivery_requirements(assemble_purchase(plan(), products, []))
+    assert unapproved["items"][0]["storage_rule"] is None
+    # 食材级聚合因其他规格冲突而缺失时，实际选中 SKU 的审核规则仍拥有排期身份。
+    products["items"][0]["storage_rule"] = rule(3)
+    sku_specific = purchase_delivery_requirements(assemble_purchase(plan(), products, []))
+    assert sku_specific["items"][0]["storage_rule"] == rule(3)
+
+
+@pytest.mark.asyncio
+async def test_changed_signed_delivery_requirements_are_rejected_before_checkout(monkeypatch):
+    from yuxi.services import exclusive_plan_purchase
+    from yuxi.services.health_vision_types import HealthVisionError
+
+    products = catalog()
+    products["storage_rules"] = {"大米": rule(7)}
+    purchase = assemble_purchase(plan(), products, [])
+    monkeypatch.setattr(exclusive_plan_purchase, "read_purchase", AsyncMock(return_value=purchase))
+    source = {
+        "uid": 1, "family_id": "synthetic", "group_id": "group", "tier_code": "economy",
+        "expires_at": int(time.time()) + 60, "scope_hash": purchase["scope_hash"],
+        "delivery_requirements": exclusive_plan_purchase.purchase_delivery_requirements(purchase),
+    }
+    assert (await exclusive_plan_purchase.validate_purchase_source(source))["available"] is True
+    source["delivery_requirements"]["items"][0]["storage_rule"]["max_days"] = 99
+    with pytest.raises(HealthVisionError, match="配送依据已变化"):
+        await exclusive_plan_purchase.validate_purchase_source(source)
 
 
 def test_live_catalog_path_preserves_only_consistent_approved_storage_rules():

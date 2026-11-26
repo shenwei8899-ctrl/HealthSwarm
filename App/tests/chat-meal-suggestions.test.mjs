@@ -1,159 +1,93 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, statSync } from 'node:fs'
-import { computed, ref, watch, reactive, effectScope, nextTick } from 'vue'
-import { parseAiAnswer } from '../src/utils/ai-answer.js'
-import { chatMealSuggestions, chatMealAnswerBlocks, splitMealDishes } from '../src/utils/chat-meal-suggestions.js'
-import { chatFoodCover } from '../src/utils/chat-food-cover.js'
-import { chatFoodCovers } from '../src/data/chat-food-covers.js'
+import {readFileSync} from 'node:fs'
+import {computed,ref,watch,reactive,effectScope,nextTick} from 'vue'
+import {parseAiAnswer} from '../src/utils/ai-answer.js'
+import {chatMealAnswerBlocks} from '../src/utils/chat-meal-suggestions.js'
+import {quoteLayout} from '../src/utils/reply-selection.js'
+const blocks=(text,streaming=false)=>chatMealAnswerBlocks(parseAiAnswer(text,{streaming}).blocks)
+const text=value=>quoteLayout(value).text
+const advice='如果两餐之间想吃水果，选低含糖量、低升糖指数的，并计入全天总量。'
+const table='| 餐次 | 食物与份量 | 提醒 | 其他限制 |\n| --- | --- | --- | --- |\n| 早餐 | **燕麦粥**1碗＋鸡蛋1个 | 牛奶过敏者不要选牛奶 | 按医嘱调整 |\n| 午餐（12:00） | 米饭半碗＋豆腐 | 缺失营养保持未知 | 不加糖 |'
 
-const heading = '| 餐次 | 用餐候选 | 搭配思路 |\n| --- | --- | --- |\n'
-const breakfast = '| 早餐 | **燕麦粥** + 水煮蛋 + 牛奶 + 苹果 | 把主食、蛋类、奶类和水果搭配起来 |\n'
-const lunch = '| 午餐 | 杂粮米饭 + 香菇蒸鸡 + 清炒西兰花 | 主食配荤菜和蔬菜，做法以蒸、炒为主 |\n'
-const dinner = '| 晚餐 | 米饭 + 番茄炖豆腐 + 蒜蓉小白菜 | 换一种蛋白质食材，也更换蔬菜品种 |'
-const table = (text, streaming = false) => parseAiAnswer(text, { streaming }).blocks.find(block => block.type === 'table')
-
-test('截图三餐投影保留食物顺序、完整说明和餐次身份', () => {
-  const result = chatMealSuggestions(table(heading + breakfast + lunch + dinner))
-  assert.deepEqual(result.meals.map(meal => [meal.type, meal.label, meal.dishes[0]]), [
-    ['breakfast', '早餐', '燕麦粥'], ['lunch', '午餐', '杂粮米饭'], ['dinner', '晚餐', '米饭'],
-  ])
-  assert.deepEqual(result.meals[0].dishes, ['燕麦粥', '水煮蛋', '牛奶', '苹果'])
-  assert.equal(result.meals[1].notes[0].text, '主食配荤菜和蔬菜，做法以蒸、炒为主')
-  assert.equal(result.pending, false)
+test('截图中的加餐建议完整保留为标题和普通文字，不按顿号拆成菜品',()=>{
+ const result=blocks('**加餐**：'+advice)
+ assert.deepEqual(result.map(b=>b.type),['heading','paragraph'])
+ assert.equal(text(result),'加餐\n\n'+advice)
+ assert.equal(result[1].segments.map(s=>s.text).join(''),advice)
+ assert.ok(result[0].segments.every(s=>s.strong))
 })
 
-test('逐字符流式输出在换行前不展示半张餐次卡，最终无换行的晚餐仍可显示', () => {
-  for (let end = 1; end < breakfast.length; end++) {
-    const result = chatMealSuggestions(table(heading + breakfast.slice(0, end), true))
-    assert.equal(result.meals.length, 0, `premature card at ${end}`)
-  }
-  const streamed = chatMealSuggestions(table(heading + breakfast + lunch + dinner, true))
-  assert.deepEqual(streamed.meals.map(meal => meal.type), ['breakfast', 'lunch'])
-  assert.equal(streamed.pending, true)
-  assert.equal(chatMealSuggestions(table(heading + breakfast + lunch + dinner)).meals.length, 3)
+test('已有餐次标题和食物列表保留原内容、份量、格式与顺序',()=>{
+ const input='## 早餐\n\n- **燕麦粥**（燕麦、水）1碗\n- 牛奶过敏者改用豆浆\n\n份量：按实际需要。'
+ const original=parseAiAnswer(input).blocks
+ assert.deepEqual(blocks(input),original)
+ assert.match(text(blocks(input)),/燕麦粥（燕麦、水）1碗/)
 })
 
-test('普通表格、非餐次数据和多余单元格不会被错误转换或丢弃', () => {
-  assert.equal(chatMealSuggestions(table('| 指标 | 食物 |\n| --- | --- |\n| 血糖 | 未知 |')), null)
-  assert.equal(chatMealSuggestions(table(heading + '| 血糖 | 不要停药 | 咨询医护人员 |')), null)
-  assert.equal(chatMealSuggestions(table(heading + '| 早餐 | 燕麦粥 | 按需 | 必须保留的额外说明 |')), null)
-  assert.equal(chatMealSuggestions({ type: 'paragraph', segments: [] }), null)
+test('连续餐次和编号餐次使用文字标题，样式不会丢失',()=>{
+ for(const input of ['早餐：**燕麦粥**1碗\n午餐：豆腐\n晚餐：米饭','1. 早餐：**燕麦粥**1碗\n2. 午餐：豆腐\n3. 晚餐：米饭']){
+  const result=blocks(input)
+  assert.deepEqual(result.filter(b=>b.type==='heading').map(b=>b.segments.map(s=>s.text).join('')),['早餐','午餐','晚餐'])
+  assert.ok(result.some(b=>b.segments?.some(s=>s.strong&&s.text==='燕麦粥')))
+ }
 })
 
-test('未知列和限制说明完整保留，缺失值不补造', () => {
-  const result = chatMealSuggestions(table('| 提醒 | 菜品 | 餐次 | 份量 |\n| --- | --- | --- | --- |\n| 牛奶过敏者不要选 | 燕麦粥 + 苹果 | 早餐（7:30） | 由实际需求决定 |'))
-  assert.equal(result.meals[0].label, '早餐（7:30）')
-  assert.deepEqual(result.meals[0].notes, [{ label: '提醒', text: '牛奶过敏者不要选' }, { label: '份量', text: '由实际需求决定' }])
-  assert.deepEqual(chatMealSuggestions(table(heading + '| 早餐 | 燕麦粥 |')).meals[0].notes, [])
+test('餐次表格变成普通标题列表，每一列内容均保留且不使用图片',()=>{
+ const result=blocks(table)
+ assert.deepEqual(result.map(b=>b.type),['heading','list','heading','list'])
+ for(const value of ['燕麦粥','1碗＋鸡蛋1个','提醒：牛奶过敏者不要选牛奶','其他限制：按医嘱调整','午餐（12:00）','缺失营养保持未知','不加糖'])assert.ok(text(result).includes(value),value)
+ assert.ok(result[1].items[0].segments.some(s=>s.strong&&s.text==='燕麦粥'))
 })
 
-test('食物拆分不拆开括号里的配料、份量和限制', () => {
-  assert.deepEqual(splitMealDishes('燕麦粥（燕麦、水，适量）＋鸡蛋（1个）+ 苹果'), ['燕麦粥（燕麦、水，适量）', '鸡蛋（1个）', '苹果'])
-  assert.deepEqual(splitMealDishes('米饭；番茄炖豆腐、青菜'), ['米饭', '番茄炖豆腐', '青菜'])
+test('普通表格、未知餐次及多余单元格保留原始结构，绝不丢内容',()=>{
+ for(const input of ['| 指标 | 食物 |\n| --- | --- |\n| 血糖 | 未知 |','| 餐次 | 食物 |\n| --- | --- |\n| 未知 | 请补充信息 |','| 餐次 | 食物 |\n| --- | --- |\n| 早餐 | 米饭 | 额外说明 |']){
+  const original=parseAiAnswer(input).blocks;assert.deepEqual(chatMealAnswerBlocks(original),original)
+ }
 })
 
-test('图片严格跟随首菜，份量和别名可匹配，不用后一道菜或相似菜冒充', () => {
-  const meals = chatMealSuggestions(table(heading + breakfast + lunch + dinner)).meals
-  assert.deepEqual(meals.map(meal => chatFoodCover(meal.dishes[0]).src.split('/').pop()), ['oatmeal.jpg', 'multigrain-rice.jpg', 'white-rice.jpg'])
-  assert.equal(chatFoodCover('主食：燕麦粥（1碗）').src, chatFoodCover('燕麦粥').src)
-  assert.equal(chatFoodCover('白米饭 100g').src, chatFoodCover('米饭').src)
-  assert.equal(chatFoodCover('番茄牛肉盖饭'), null)
-  assert.equal(chatFoodCover(splitMealDishes('未知菜 + 米饭')[0]), null)
-  assert.equal(chatFoodCover('米饭（不要加糖）'), null)
-  assert.equal(chatFoodCover('燕麦或全麦面包一份').src, '/static/bundles/oats.webp')
-  assert.equal(chatFoodCover('白米饭一小碗').src, chatFoodCover('米饭').src)
-  for (const cover of chatFoodCovers.filter(item => item.image.startsWith('/static/food/chat-meals/'))) assert.ok(statSync(new URL('../src' + cover.image, import.meta.url)).size < 30000)
+test('普通科普、过敏提醒和引用保留原文，不重写建议',()=>{
+ for(const input of ['早餐的重要性\n\n规律进餐有帮助。','如何安排午餐\n\n- 不要自行停药。','> 牛奶过敏者不要选牛奶。','**提醒**：按医嘱调整。'])assert.deepEqual(blocks(input),parseAiAnswer(input).blocks)
 })
 
-function renderer(values = {}, seen = []) {
-  const props = reactive({ text: '', citations: [], streaming: false, compact: true, animateMeals: true, messageKey: 'request-1', shownMeals: seen, ...values })
-  const events = [], scope = effectScope()
-  const source = readFileSync(new URL('../src/components/AiAnswer.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
-  const deps = { computed, ref, watch, parseAiAnswer, chatMealAnswerBlocks, defineProps: () => props,
-    defineEmits: () => (name, event) => { events.push([name, event]); seen.push(event.key) } }
-  const state = scope.run(() => new Function('deps', `const {${Object.keys(deps)}}=deps;${source};return {displayBlocks,answer}`)(deps))
-  return { ...state, props, events, dispose: () => scope.stop() }
-}
-
-test('流式已出现餐次移交最终回复后不重播，最后完成的晚餐仍淡入', async () => {
-  const seen = [], live = renderer({ text: heading + breakfast, streaming: true }, seen)
-  assert.equal(live.displayBlocks.value[0].meals[0].animate, true)
-  live.props.text += lunch + dinner
-  await nextTick()
-  assert.equal(live.events.length, 2)
-  const final = renderer({ text: '下面是三餐候选。\n\n' + heading + breakfast + lunch + dinner }, seen)
-  assert.deepEqual(final.displayBlocks.value.find(block => block.type === 'meal-suggestions').meals.map(meal => meal.animate), [false, false, true])
-  assert.deepEqual(final.events.map(([, event]) => event.key), ['dinner:0'])
-  final.props.text += '\n\n今天规律进餐，少量多次饮水。'
-  await nextTick()
-  assert.equal(final.events.length, 1)
-  live.dispose(); final.dispose()
+test('流式逐字输出持续展示已收到的建议，最终回复与历史重读一致',()=>{
+ const input='加餐：'+advice
+ for(let end=1;end<=input.length;end++){
+  const result=blocks(input.slice(0,end),true)
+  assert.ok(result.every(b=>b.type!=='meal-suggestions'))
+  if(end>3)assert.ok(text(result).includes(advice.slice(0,end-3)))
+ }
+ assert.deepEqual(blocks(input,true),blocks(input,false))
 })
 
-test('同批卡片依次错开，历史恢复、重复刷新不播放新动画', async () => {
-  const fresh = renderer({ text: heading + breakfast + lunch + dinner })
-  assert.deepEqual(fresh.displayBlocks.value[0].meals.map(meal => meal.delay), [0, 90, 180])
-  fresh.props.citations = ['公开膳食指南']
-  await nextTick()
-  assert.equal(fresh.events.length, 3)
-  const history = renderer({ text: heading + breakfast + lunch + dinner, animateMeals: false })
-  assert.deepEqual(history.displayBlocks.value[0].meals.map(meal => meal.animate), [false, false, false])
-  assert.equal(history.events.length, 0)
-  fresh.dispose(); history.dispose()
+test('表格流式末行也显示已收到文字，完整份量与限制最终不丢失',()=>{
+ const prefix='| 餐次 | 食物 | 提醒 |\n| --- | --- | --- |\n| 早餐 | 燕麦粥1碗 | 不加'
+ assert.ok(text(blocks(prefix,true)).includes('不加'))
+ const done=blocks(prefix+'糖 |',false)
+ assert.match(text(done),/提醒：不加糖/)
 })
 
-const listIntro = '下面是一份今日普通饮食候选，仅供参考，不保存为正式餐单，也不是个体化治疗方案。当前未读取到你的过敏、忌口、医嘱或完整营养档案，若有这些限制，请先按实际情况替换。'
-const listBreakfast = '早餐\n\n- 燕麦或全麦面包一份\n\n- 水煮蛋1个\n\n- 无糖牛奶或无糖豆浆一杯\n\n- 一个水果，如苹果或橙子'
-const listLunch = '## 午餐：\n\n- 杂粮米饭一小碗\n- 香菇蒸鸡\n- 清炒西兰花\n\n搭配思路：主食配荤菜和蔬菜。'
-const listDinner = '**晚餐**\n\n- 米饭一小碗\n- 番茄炖豆腐\n- 蒜蓉小白菜'
-const menuBlocks = (text, streaming = false) => chatMealAnswerBlocks(parseAiAnswer(text, { streaming }).blocks, { streaming })
-const menuMeals = blocks => blocks.filter(block => block.type === 'meal-suggestions').flatMap(block => block.meals)
-
-test('用户实际截图的餐次标题与分散项目列表生成卡片，不需要表格', () => {
-  const blocks = menuBlocks(listIntro + '\n\n' + listBreakfast + '\n\n' + listLunch + '\n\n' + listDinner + '\n\n今天按作息规律进餐。')
-  const meals = menuMeals(blocks)
-  assert.deepEqual(meals.map(meal => meal.type), ['breakfast', 'lunch', 'dinner'])
-  assert.deepEqual(meals[0].dishes, ['燕麦或全麦面包一份', '水煮蛋1个', '无糖牛奶或无糖豆浆一杯', '一个水果，如苹果或橙子'])
-  assert.equal(chatFoodCover(meals[0].dishes[0]).src, '/static/bundles/oats.webp')
-  assert.deepEqual(meals[1].notes, [{ label: '搭配思路', text: '主食配荤菜和蔬菜。' }])
-  assert.equal(blocks[0].segments.map(segment => segment.text).join(''), listIntro)
-  assert.equal(blocks.at(-1).segments.map(segment => segment.text).join(''), '今天按作息规律进餐。')
+test('全部餐次文字都能进入长按引用布局，选择内容与显示内容一致',()=>{
+ const result=blocks('早餐：鸡蛋1个\n午餐：豆腐\n晚餐：米饭'),layout=quoteLayout(result,true)
+ assert.ok(layout.text.includes('鸡蛋1个'));assert.ok(layout.text.includes('豆腐'));assert.ok(layout.text.includes('米饭'))
+ assert.equal(layout.leaves.flatMap(l=>l.groups.flatMap(g=>g.glyphs)).map(g=>g.text).join(''),layout.text.replace(/\n\n/g,''))
 })
 
-test('餐次行内段落、连续段落和编号列表使用同一套卡片', () => {
-  for (const text of [
-    '早餐：燕麦粥 + 鸡蛋\n午餐：杂粮米饭 + 青菜\n晚餐：米饭 + 豆腐',
-    '1. **早餐**：燕麦粥 + 鸡蛋\n2. **午餐**：杂粮米饭 + 青菜\n3. **晚餐**：米饭 + 豆腐',
-  ]) assert.deepEqual(menuMeals(menuBlocks(text)).map(meal => meal.dishes[0]), ['燕麦粥', '杂粮米饭', '米饭'])
-  const text = '早餐：燕麦粥 + 鸡蛋\n\n午餐：杂粮米饭 + 青菜\n\n晚餐：米饭 + 豆腐'
-  assert.equal(menuMeals(menuBlocks(text)).length, 3)
+test('真实回复组件在流式转最终及历史恢复时始终使用普通文字块',async()=>{
+ const props=reactive({text:'加餐：'+advice,citations:[],streaming:true,selectionActive:false})
+ const source=readFileSync(new URL('../src/components/AiAnswer.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
+ const scope=effectScope(),deps={computed,ref,watch,nextTick,getCurrentInstance:()=>null,onUnmounted(){},parseAiAnswer,chatMealAnswerBlocks,quoteLayout,defineProps:()=>props,defineEmits:()=>()=>{}}
+ try{
+  const state=scope.run(()=>new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {displayBlocks,quoteContent}`)(deps))
+  assert.equal(state.quoteContent.value.text,'加餐\n\n'+advice)
+  props.streaming=false;await nextTick();assert.equal(state.quoteContent.value.text,'加餐\n\n'+advice)
+  props.text=table;await nextTick();assert.deepEqual(state.displayBlocks.value.map(b=>b.type),['heading','list','heading','list'])
+ }finally{scope.stop()}
 })
 
-test('普通科普、无菜品的餐次标题以及段落后的提醒保持原始内容', () => {
-  for (const text of ['早餐的重要性\n\n- 规律进餐有帮助。', '早餐\n\n请先补充信息。', '如何安排午餐\n\n- 不要自行停药。']) {
-    const original = parseAiAnswer(text).blocks
-    assert.deepEqual(chatMealAnswerBlocks(original), original)
-  }
-  const blocks = menuBlocks('早餐：燕麦粥\n\n> 牛奶过敏者不要选牛奶。')
-  assert.equal(blocks.at(-1).type, 'quote')
-  assert.match(blocks.at(-1).segments.map(segment => segment.text).join(''), /过敏/)
-})
-
-test('列表餐次在完整前不提前出现，后续餐次开始才显示上一餐', () => {
-  for (let length = 1; length <= listBreakfast.length; length++) {
-    assert.equal(menuMeals(menuBlocks(listBreakfast.slice(0, length), true)).length, 0, `partial list at ${length}`)
-  }
-  const blocks = menuBlocks(listBreakfast + '\n\n' + listLunch + '\n\n' + listDinner, true)
-  assert.deepEqual(menuMeals(blocks).map(meal => meal.type), ['breakfast', 'lunch'])
-  assert.equal(blocks.at(-1).pending, true)
-  assert.equal(menuMeals(menuBlocks(listBreakfast)).length, 1)
-})
-
-test('Agent 最终回复由表格改成列表时已出现餐次也不重播', () => {
-  const seen = [], live = renderer({ text: heading + breakfast + lunch + dinner, streaming: true }, seen)
-  const final = renderer({ text: listIntro + '\n\n' + listBreakfast + '\n\n' + listLunch + '\n\n' + listDinner }, seen)
-  assert.deepEqual(final.displayBlocks.value.filter(block => block.type === 'meal-suggestions').flatMap(block => block.meals).map(meal => meal.animate), [false, false, true])
-  assert.deepEqual(final.events.map(([, event]) => event.key), ['dinner:0'])
-  live.dispose(); final.dispose()
+test('回复渲染不再引用餐次图文组件，正式业务餐单仍保留',()=>{
+ const answer=readFileSync(new URL('../src/components/AiAnswer.vue',import.meta.url),'utf8'),chat=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
+ assert.doesNotMatch(answer,/ChatMealSuggestionCard|answer-meal-cards|正在整理下一餐|mealShown/)
+ assert.doesNotMatch(chat,/mealAppearances|rememberMealAppearance|animate-meals|shown-meals/)
+ assert.match(chat,/<DailyMealPlanCard/);assert.match(chat,/<ChatMealRecordCard/);assert.match(chat,/<HealthChatBusinessCard/)
 })

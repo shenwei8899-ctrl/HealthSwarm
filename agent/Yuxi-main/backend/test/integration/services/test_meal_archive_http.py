@@ -37,6 +37,115 @@ from yuxi.storage_migrations.v039_meal_archive import upgrade_meal_archive
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
+@pytest.fixture(autouse=True)
+def archive_image_storage(monkeypatch):
+    """归档协议测试使用确定的对象查询，不依赖生产图片存储。"""
+    from unittest.mock import AsyncMock
+    from yuxi.services import meal_archive_service
+
+    monkeypatch.setattr(meal_archive_service, "stored_recipe_image", AsyncMock(return_value={}), raising=False)
+
+
+async def test_later_image_appears_in_today_and_legacy_archive_without_rewriting_snapshot(
+    family_profile_http, monkeypatch
+):
+    """真实HTTP和PG验证晚出图、旧归档恢复及首页归档回退共用图片。"""
+    from yuxi.services import meal_archive_service, reference_recipe_presentation
+    from yuxi.services.meal_archive_projection import archive_meal
+    from yuxi.services.recipe_image_identity import recipe_image_key
+
+    generated_recipe_image = reference_recipe_presentation.generated_recipe_image
+    current = await setup_reference(family_profile_http, monkeypatch)
+    monkeypatch.setattr(reference_recipe_presentation, "generated_recipe_image", generated_recipe_image)
+    client, sessions, users, _, _, choice = current
+    day = date.fromisoformat(choice["plan_date"])
+    root = f"/api/family/{choice['family_id']}/daily-meal-plans"
+    dish = {
+        "file_id": "synthetic",
+        "chunk_id": "synthetic-chunk",
+        "name": "合成蒸蛋",
+        "ingredients": ["鸡蛋"],
+        "steps": ["蒸熟"],
+        "source": {"kb_id": "synthetic", "file_id": "synthetic", "file_hash": "immutable"},
+    }
+    meal = {"meal_type": "breakfast", "dishes": [dish], "members": []}
+    key = recipe_image_key(dish)
+    arrangement_id = str(uuid4())
+    async with sessions.begin() as db:
+        db.add(
+            HealthDailyArrangement(
+                id=arrangement_id,
+                actor_uid="self",
+                family_id=choice["family_id"],
+                plan_date=day,
+                version=1,
+                status="ready",
+                request_id=str(uuid4()),
+                selection={},
+                sources={},
+                snapshot={"version": 1, "meals": [meal]},
+            )
+        )
+        db.add(
+            HealthDailyMealPlan(
+                id=str(uuid4()),
+                actor_uid="self",
+                family_id=choice["family_id"],
+                plan_date=day,
+                is_shared=True,
+                version=1,
+                pending={},
+                archive_meals={"breakfast": archive_meal(meal)},
+                meal_sources={
+                    "breakfast": {"kind": "formal", "id": arrangement_id, "version": 1},
+                    "_roster": {"breakfast": {"status": "pending"}},
+                },
+            )
+        )
+    available = set()
+
+    async def lookup(image_key, **kwargs):
+        """模拟后台任务完成前后同一对象是否已经存在。"""
+        return (
+            {"image_url": "/minio/public/" + image_key, "image_source": {"image_role": "ai_generated"}}
+            if image_key in available
+            else {}
+        )
+
+    monkeypatch.setattr(meal_archive_service, "stored_recipe_image", lookup)
+    monkeypatch.setattr(reference_recipe_presentation, "stored_recipe_image", lookup)
+    first = (await client.get(root, headers=users["self"])).json()["plans"][0]
+    assert not first["meals"][0]["dishes"][0].get("image_url")
+    available.add(key)
+    live_image = (await reference_recipe_presentation.generated_recipe_image(dish))["image_url"]
+    saved = (await client.get(root + f"/{day}/archive", headers=users["self"])).json()
+    assert saved["meals"][0]["dishes"][0]["image_url"] == live_image
+    today = (await client.get(root + f"/{day}", headers=users["self"])).json()
+    assert today["meals"][0]["meal"]["dishes"][0]["image_url"] == live_image
+    assert "recipe_image_key" not in str(today) and "recipe_image_key" not in str(saved)
+    async with sessions.begin() as db:
+        row = await db.scalar(
+            select(HealthDailyMealPlan).where(
+                HealthDailyMealPlan.family_id == choice["family_id"], HealthDailyMealPlan.plan_date == day
+            )
+        )
+        assert not row.archive_meals["breakfast"]["dishes"][0].get("image_url")
+        legacy = deepcopy(row.archive_meals)
+        for item in legacy["breakfast"]["dishes"]:
+            item.pop("recipe_image_key", None)
+        row.archive_meals = legacy
+    restored = (await client.get(root, headers=users["self"])).json()["plans"][0]
+    assert restored["meals"][0]["dishes"][0]["image_url"] == live_image
+    async with sessions.begin() as db:
+        row = await db.scalar(
+            select(HealthDailyMealPlan).where(
+                HealthDailyMealPlan.family_id == choice["family_id"], HealthDailyMealPlan.plan_date == day
+            )
+        )
+        assert row.archive_meals == legacy
+    assert (await client.get(root, headers=users["other"])).status_code == 404
+
+
 async def test_archive_reads_do_not_wait_for_family_write_lock(family_profile_http, monkeypatch):
     """换菜持有家庭锁时列表和详情仍返回快照，并拒绝非有效成员。"""
     from yuxi.repositories.family_repository import FamilyRepository

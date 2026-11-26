@@ -454,6 +454,7 @@ class ConversationRepository:
                     AgentRun.conversation_id,
                     AgentRun.conversation_thread_id,
                     AgentRun.output_message_id,
+                    AgentRun.input_message_id,
                     AgentRun.request_id,
                     AgentRun.run_type,
                     AgentRun.created_by_run_id,

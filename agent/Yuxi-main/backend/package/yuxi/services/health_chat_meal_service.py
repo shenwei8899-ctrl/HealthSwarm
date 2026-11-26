@@ -100,7 +100,7 @@ async def read_chat_meal(uid, record_id):
         return chat_meal_receipt(record, member)
 
 
-async def withdraw_chat_meal(uid, record_id, data):
+async def withdraw_chat_meal(uid, record_id, data, *, chat_only=True):
     """成员锁、版本和账号级收据保证撤销可重试，保留原事实与修订。"""
     request_id = str(data.client_request_id)
     fingerprint = input_fingerprint(
@@ -108,21 +108,25 @@ async def withdraw_chat_meal(uid, record_id, data):
     )
     async with pg_manager.get_async_session_context() as session:
         await HealthConsultationRepository(session).lock_request(uid, request_id)
-        record, member, confirmation = await require_chat_meal(session, uid, record_id, lock=True)
+        if chat_only:
+            record, member, confirmation = await require_chat_meal(session, uid, record_id, lock=True)
+        else:
+            record, member, confirmation = await require_withdrawable_meal(session, uid, record_id)
         repo = HealthDietCorrectionRepository(session)
         receipt = await repo.receipt(uid, request_id)
         if receipt:
             if receipt.fingerprint != fingerprint:
                 raise HealthVisionError("idempotency_conflict", "同一撤销请求不能修改内容", 409)
             return chat_meal_receipt(record, member)
-        if record.version != data.expected_version or record.snapshot["recording"].get("withdrawn_at"):
+        version = record.version or confirmation.draft_version
+        if version != data.expected_version or record.snapshot.get("recording", {}).get("withdrawn_at"):
             raise HealthVisionError("version_conflict", "这条饮食记录已变化，请刷新后操作", 409)
         if not await repo.revisions(record.id):
             session.add(
                 DietLogRevision(
                     id=str(uuid4()),
                     diet_log_id=record.id,
-                    version=record.version,
+                    version=version,
                     calculation_id=record.calculation_id,
                     actor_uid=confirmation.actor_uid,
                     reason="原确认快照",
@@ -131,11 +135,11 @@ async def withdraw_chat_meal(uid, record_id, data):
                 )
             )
         now = utc_now_naive()
-        record.version += 1
+        record.version = version + 1
         record.snapshot = {
             **record.snapshot,
             "recording": {
-                **record.snapshot["recording"],
+                **record.snapshot.get("recording", {}),
                 "withdrawn_at": format_utc_datetime(now),
                 "withdrawn_by": uid,
             },
@@ -151,7 +155,7 @@ async def withdraw_chat_meal(uid, record_id, data):
                 actor_uid=uid,
                 request_id=request_id,
                 fingerprint=fingerprint,
-                reason="用户撤销对话记餐",
+                reason="用户删除饮食记录",
                 snapshot=deepcopy(record.snapshot),
             )
         )
@@ -172,6 +176,29 @@ async def withdraw_chat_meal(uid, record_id, data):
                 )
             )
         await session.flush()
+        return chat_meal_receipt(record, member)
+
+
+async def require_withdrawable_meal(session, uid, record_id):
+    """所有记餐来源逐次核对成员、原始证据和有效版本，已撤销结果允许重放。"""
+    from yuxi.repositories.health_diet_analysis_repository import HealthDietAnalysisRepository
+
+    record = await HealthDietCorrectionRepository(session).record(uid, record_id, lock=True)
+    confirmation = await session.get(VisionConfirmation, record.confirmation_id)
+    if confirmation is None:
+        raise HealthVisionError("source_invalidated", "记录确认来源已失效", 410)
+    if record.snapshot.get("recording", {}).get("withdrawn_at"):
+        await HealthVisionRepository(session).draft(confirmation.draft_id, uid, "meal")
+    else:
+        await HealthDietAnalysisRepository(session).source(uid, record.member_id, record_id)
+    member = await HealthVisionRepository(session).authorize(record.member_id, uid, "diet_edit")
+    return record, member, confirmation
+
+
+async def read_diet_log_status(uid, record_id):
+    """有效与已撤销记录共用授权核对，供丢失删除回执后只读恢复。"""
+    async with pg_manager.get_async_session_context() as session:
+        record, member, _ = await require_withdrawable_meal(session, uid, record_id)
         return chat_meal_receipt(record, member)
 
 
@@ -197,7 +224,7 @@ def chat_meal_receipt(record, member):
         "member_id": record.member_id,
         "member_name": member.display_name,
         "source_version": record.version,
-        "status": "withdrawn" if record.snapshot["recording"].get("withdrawn_at") else "saved",
+        "status": "withdrawn" if record.snapshot.get("recording", {}).get("withdrawn_at") else "saved",
         "meal_type": meal["meal_type"],
         "eaten_at": meal["eaten_at"],
         "time_known": False,

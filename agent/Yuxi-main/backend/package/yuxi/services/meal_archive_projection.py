@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 
+from yuxi.services.recipe_image_identity import recipe_image_key
+
 
 def archive_meal(meal, members=()):
     """从成功餐次提取可供家庭查看的菜谱和成员姓名。"""
@@ -26,17 +28,22 @@ def archive_meal(meal, members=()):
         "cover",
         "file_id",
         "chunk_id",
+        "recipe_image_key",
     }
     kind = meal.get("meal_type", meal.get("type"))
+    dishes = []
+    for dish in meal.get("dishes", []):
+        saved = {key: deepcopy(value) for key, value in dish.items() if key in dish_fields}
+        source = dish.get("source") or {}
+        if all(source.get(key) for key in ("kb_id", "file_id", "file_hash")):
+            saved["recipe_image_key"] = recipe_image_key(dish)
+        dishes.append(saved)
     return {
         "meal_type": kind,
         "members": [
             {"id": person["id"], "name": person.get("name", "共餐成员")} for person in meal.get("members", members)
         ],
-        "dishes": [
-            {key: deepcopy(value) for key, value in dish.items() if key in dish_fields}
-            for dish in meal.get("dishes", [])
-        ],
+        "dishes": dishes,
     }
 
 

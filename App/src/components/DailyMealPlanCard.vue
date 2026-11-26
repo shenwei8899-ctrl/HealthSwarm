@@ -6,18 +6,14 @@ import { computed } from 'vue'
 import { dishTitle, dishKey, mealTypes as allTypes } from '../utils/meal-presentation.js'
 import { recipeCover } from '../utils/recipe-cover.js'
 import { localDate } from '../utils/meal-state.js'
-const props=defineProps({plan:{type:Object,required:true},busy:Boolean,detailMode:Boolean,workspace:Boolean,compact:Boolean,dishGrid:Boolean,interactive:{type:Boolean,default:true},mealTypes:Array,swapEntries:{type:Array,default:()=>[]},swapNeedsRegeneration:{type:Array,default:()=>[]},swapVersion:Number,swapDate:String,swapBusy:Boolean})
-const emit=defineEmits(['open','members','shop','detail','all','dish','swap','regenerate'])
+const props=defineProps({plan:{type:Object,required:true},busy:Boolean,detailMode:Boolean,workspace:Boolean,compact:Boolean,dishGrid:Boolean,interactive:{type:Boolean,default:true},mealTypes:Array,swapEntries:{type:Array,default:()=>[]},swapVersion:Number,swapDate:String,swapBusy:Boolean})
+const emit=defineEmits(['open','members','shop','detail','all','dish','swap'])
 const visibleTypes=computed(()=>allTypes.filter(type=>!props.mealTypes?.length||props.mealTypes.includes(type)))
 const names={breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}
 function openDetail(item){if(props.interactive)emit('detail',item)}
 function openDish(item,dishIndex){if(props.interactive)emit('dish',{item,dishIndex})}
-function needsRegeneration(type){
- return props.plan.needs_regeneration?.includes(type)||
-  props.plan.date===props.swapDate&&props.plan.version===props.swapVersion&&props.swapNeedsRegeneration?.includes(type)
-}
 function swapOptions(item,dish){
- if(!props.interactive||props.plan.date!==localDate()||props.plan.date!==props.swapDate||props.plan.version!==props.swapVersion||needsRegeneration(item.meal_type))return []
+ if(!props.interactive||props.plan.date!==localDate()||props.plan.date!==props.swapDate||props.plan.version!==props.swapVersion)return []
  return props.swapEntries.find(entry=>entry.mealType===item.meal_type&&entry.dishKey===dishKey(dish))?.candidates||[]
 }
 </script>
@@ -26,10 +22,6 @@ function swapOptions(item,dish){
   <view v-if="!workspace&&visibleTypes.length>1" class="heading"><text>{{plan.date===localDate()?'今日餐单':plan.date===localDate(new Date(Date.now()+86400000))?'明日餐单':'餐单'}}</text><text class="date">{{plan.date}}</text></view>
   <template v-for="type in visibleTypes" :key="type">
    <view v-for="item in plan.meals.filter(i=>i.meal_type===type)" :key="item.source.id+type" class="meal-card">
-    <view v-if="needsRegeneration(type)" class="meal-regeneration">
-     <text>{{names[type]}}需要重新安排</text>
-     <button v-if="interactive&&plan.date===localDate()" class="dish-swap" :disabled="busy" @click="emit('regenerate')">重新安排</button>
-    </view>
     <template v-if="dishGrid">
      <view class="dish-grid-heading"><text>{{names[type]}}菜品</text><text class="date">共 {{item.meal.dishes.length}} 道</text></view>
      <view class="dish-grid">
@@ -73,8 +65,6 @@ function swapOptions(item,dish){
 .meal-image{width:72px;height:72px;flex:0 0 72px;overflow:hidden;border-radius:18px}
 .dish-name{flex:1;min-width:0;display:block;margin-left:18px;font-size:16px;font-weight:500;line-height:1.6;color:var(--ui-text);overflow-wrap:anywhere;word-break:break-word}
 .meal-empty{margin-left:auto;font-size:13px;color:var(--ui-muted)}
-.meal-regeneration{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 12px;color:var(--ui-muted);font-size:13px}
-.meal-regeneration .dish-swap{width:auto}
 .menu-cards button:after{border:0}
 .menu-cards button[disabled]{opacity:.45}
 .meal-detail:active,.meal-dish:active{background:rgba(255,255,255,.62)}

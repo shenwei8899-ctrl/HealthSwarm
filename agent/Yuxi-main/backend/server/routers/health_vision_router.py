@@ -18,7 +18,9 @@ from yuxi.services.health_handoff_service import HandoffConfirmation, preview_ha
 from yuxi.services.health_vision_types import DietLogPage, VisionListPage
 from yuxi.services.health_diet_correction_types import DietLogCorrection
 from yuxi.services.health_diet_correction_service import correct_diet_log, diet_log_revisions
-from yuxi.services.health_meal_recording_types import MealRecordingInput, FamilyMealRecordingInput
+from yuxi.services.health_meal_recording_types import (
+    MealRecordingInput, FamilyMealRecordingInput, JournalMealRecordingInput,
+)
 from yuxi.services.health_meal_recording_service import record_meal, record_family_meal, read_meal
 from yuxi.services.health_indicator_review_types import IndicatorSelection
 from yuxi.services.health_indicator_review_service import read_indicator_review
@@ -34,7 +36,8 @@ from yuxi.services.health_daily_service import daily_history, daily_summary
 from yuxi.services.health_memory_service import list_member_memory, memory_history, change_member_memory
 from yuxi.services.health_memory_types import MemoryPatch, MemoryRevoke
 from yuxi.services.health_chat_meal_types import ChatMealWithdrawal
-from yuxi.services.health_chat_meal_service import read_chat_meal, withdraw_chat_meal
+from yuxi.services.health_chat_meal_service import read_chat_meal, withdraw_chat_meal, read_diet_log_status
+from yuxi.services.health_diet_journal_service import read_diet_journal
 from yuxi.services.health_agent_roles import health_agent_roles
 from yuxi.services.health_source_service import read_nutrition_source
 from yuxi.services.health_readiness_service import read_nutrition_readiness
@@ -1280,6 +1283,19 @@ async def record_actual_meal(
     return await record_meal(user.uid, data)
 
 
+@health_vision.post("/diet-journal-recordings", status_code=201)
+async def record_journal_meal(
+    data: JournalMealRecordingInput,
+    response: Response,
+    request_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(get_required_user),
+):
+    """手动补记用户确认的实际饮食，未知份量不推算营养。"""
+    require_request_key(data.client_request_id, request_key)
+    response.headers["Cache-Control"] = "no-store"
+    return await record_meal(user.uid, data)
+
+
 @health_vision.post("/family-meal-recordings")
 async def record_actual_family_meal(
     data: FamilyMealRecordingInput,
@@ -1391,6 +1407,37 @@ async def confirm_meal(
 async def observations(member_id: UUID, user: User = Depends(get_required_user)):
     """读取已确认指标。"""
     return await service.records(user.uid, str(member_id), "report")
+
+
+@health_vision.get("/members/{member_id}/diet-journal")
+async def diet_journal(
+    member_id: UUID, response: Response, day: date = Query(...),
+    user: User = Depends(get_required_user),
+):
+    """读取北京日历周的有效记录，日期标记与当日表格共用真实来源。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await read_diet_journal(user.uid, str(member_id), day)
+
+
+@health_vision.post("/diet-logs/{record_id}/withdraw")
+async def withdraw_diet_log(
+    record_id: UUID, data: ChatMealWithdrawal, response: Response,
+    request_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    match: str | None = Header(default=None, alias="If-Match"),
+    user: User = Depends(get_required_user),
+):
+    """按成员饮食权限撤销实际记录，保存幂等回执与修订。"""
+    require_request_key(data.client_request_id, request_key)
+    require_match(data.expected_version, match)
+    response.headers["Cache-Control"] = "no-store"
+    return await withdraw_chat_meal(user.uid, str(record_id), data, chat_only=False)
+
+
+@health_vision.get("/diet-logs/{record_id}/status")
+async def diet_log_status(record_id: UUID, response: Response, user: User = Depends(get_required_user)):
+    """只读核对撤销结果，不再次提交写入。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await read_diet_log_status(user.uid, str(record_id))
 
 
 @health_vision.get("/members/{member_id}/diet-logs")

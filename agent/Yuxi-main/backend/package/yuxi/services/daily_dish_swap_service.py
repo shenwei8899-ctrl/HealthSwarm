@@ -50,6 +50,8 @@ async def replace_dish(uid, family_id, day, data):
         require_version(plan, data.version)
         if data.meal_type in plan["needs_regeneration"]:
             raise HealthVisionError("swap_meal_needs_regeneration", "本餐资料已更新，请先重新安排", 409)
+        if data.meal_type in blocked_meals(plan):
+            raise HealthVisionError("roster_not_ready", "本餐已用餐或成员正在更新，保留原安排", 409)
         choices = await plan_candidates(session, uid, family_id, plan)
         choice = next(
             (
@@ -142,7 +144,7 @@ async def plan_candidates(session, uid, family_id, plan):
     from yuxi.services.reference_recipe_index import reference_recipe_rows, prepare_reference_documents
     from yuxi.services.reference_recipe_variety import variety_context, dish_keys
 
-    stale_meals = set(plan.get("needs_regeneration", ()))
+    stale_meals = blocked_meals(plan)
     if all(meal["meal_type"] in stale_meals for meal in plan["meals"]):
         return [{"meal_type": meal["meal_type"], "dishes": []} for meal in plan["meals"]]
 
@@ -396,3 +398,19 @@ def require_version(plan, version):
     """过期卡片不能覆盖刚更新的餐单。"""
     if plan["version"] != version:
         raise HealthVisionError("daily_plan_version_changed", "餐单已更新，请刷新后换菜", 409)
+
+
+def blocked_meals(plan):
+    """归档回退及已执行餐次只展示，不作为换菜来源。"""
+    blocked = set(plan.get("needs_regeneration", ()))
+    for meal in plan["meals"]:
+        kind = meal["meal_type"]
+        roster = plan.get("roster", {}).get(kind, {})
+        if (
+            meal.get("purchase_ready") is False
+            or roster.get("execution_locked")
+            or roster.get("status") in {"pending", "failed"}
+            or any(not dish.get("origin") for dish in meal["meal"]["dishes"])
+        ):
+            blocked.add(kind)
+    return blocked

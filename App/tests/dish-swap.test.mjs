@@ -110,22 +110,3 @@ test('saved swap updates today menu and its cache synchronously',()=>{
  client.acceptSavedPlan({...plan,version:2},profile);assert.equal(state.plan.version,3)
  assert.equal(cache.get('today-menu:snapshot-v1').plan.version,3);client.dispose()
 })
-
-test('profile change while choosing removes only the stale meal’s options and surfaces the rearrange message',async()=>{
- const dinner={...item,meal_type:'dinner'},mixed={...plan,meals:[item,dinner]}
- const saved=receipt(2),lunch=saved.data.meals[0]
- saved.data.meals.push({...lunch,meal_type:'dinner'})
- const message='本餐资料已更新，请先重新安排'
- const h=harness(async r=>{
-  if(r.method!=='POST')return saved
-  throw Object.assign(new Error(message),{code:409,businessCode:'swap_meal_needs_regeneration'})
- })
- await h.client.load(mixed);h.client.open(item,dish,mixed);await h.client.choose(candidates(2)[0])
- assert.equal(h.state.error,message);assert.deepEqual(h.state.target.candidates,[])
- assert.deepEqual(h.state.needsRegeneration,['lunch'])
- assert.deepEqual(h.client.candidates(item,dish,mixed),[])
- assert.equal(h.client.candidates(dinner,dish,mixed).length,2)
- h.client.close()
- assert.equal(h.state.error,'')
- assert.deepEqual(h.state.needsRegeneration,['lunch'])
-})

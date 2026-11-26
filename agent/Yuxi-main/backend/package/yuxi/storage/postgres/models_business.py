@@ -41,6 +41,37 @@ class ServiceNoticeAcknowledgement(Base):
     acknowledged_at = Column(DateTime, nullable=False, default=utc_now_naive)
 
 
+class FriendReferralCode(Base):
+    """好友邀请账号级入口，与家庭共享凭证独立。"""
+
+    __tablename__ = "friend_referral_code"
+    inviter_uid = Column(String, ForeignKey("users.uid"), primary_key=True)
+    code = Column(String(24), nullable=False, unique=True)
+    enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime, nullable=False, default=utc_now_naive)
+
+
+class FriendReferral(Base):
+    """注册归因与首次本人完整建档事实。"""
+
+    __tablename__ = "friend_referral"
+    __table_args__ = (
+        CheckConstraint("invitee_uid <> inviter_uid", name="ck_friend_referral_not_self"),
+        CheckConstraint("channel IN ('share', 'qr')", name="ck_friend_referral_channel"),
+        CheckConstraint("(completed_at IS NULL AND success_number IS NULL) OR "
+                        "(completed_at IS NOT NULL AND success_number IS NOT NULL AND success_number > 0)",
+                        name="ck_friend_referral_success"),
+        UniqueConstraint("inviter_uid", "success_number", name="uq_friend_referral_number"),
+    )
+    invitee_uid = Column(String, ForeignKey("users.uid"), primary_key=True)
+    inviter_uid = Column(String, ForeignKey("friend_referral_code.inviter_uid"), nullable=False, index=True)
+    code = Column(String(24), nullable=False)
+    channel = Column(String(10), nullable=False)
+    registered_at = Column(DateTime, nullable=False, default=utc_now_naive)
+    completed_at = Column(DateTime, nullable=True)
+    success_number = Column(Integer, nullable=True)
+
+
 class ProductFeedback(Base):
     """账号产品意见与私有截图元数据，提交编号是幂等边界。"""
 

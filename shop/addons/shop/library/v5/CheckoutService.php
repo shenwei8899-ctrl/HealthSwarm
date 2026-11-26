@@ -20,7 +20,6 @@ class CheckoutService
         if ($payload['source_type'] === 'service_plan') {
             $pricing = $this->pricePlan($userId, $payload, $delivery);
         } else {
-            if (($delivery['slot']['service_scope'] ?? 'normal')!=='normal') throw new DomainException('请选择普通订单配送时段',40915,409);
             $pricing = $this->priceCommerce($userId, $payload, $delivery);
         }
         if (!empty($pricing['warnings'])) {
@@ -237,7 +236,9 @@ class CheckoutService
                 throw new DomainException('推荐包不可结算或版本已变化', 40906, 409);
             }
             $sourceItems = self::recommendationItems($package['items'], $payload['items'] ?? null);
+            $exclusiveSource = ExclusivePurchaseDeliveryService::source($payload['source_ref']);
         }
+        if (empty($exclusiveSource) && ($delivery['slot']['service_scope'] ?? 'normal') !== 'normal') throw new DomainException('请选择普通订单配送时段',40915,409);
         if (!$sourceItems) {
             throw new DomainException('结算商品不能为空', 40012, 400);
         }
@@ -257,7 +258,7 @@ class CheckoutService
             }
         }
         $shipping = $delivery['slot'] ? (int)$delivery['slot']['extra_fee_cent'] : 0;
-        return [
+        $pricing = [
             'source_type' => $payload['source_type'], 'source_ref' => $payload['source_ref'],
             'source_version' => (int)$payload['source_version'], 'items' => $items,
             'goods_amount_cent' => $goodsTotal, 'discount_amount_cent' => 0,
@@ -267,6 +268,12 @@ class CheckoutService
             'cart_items' => $payload['source_type'] === 'cart' ? $sourceItems : [],
             '_validated_package' => $payload['source_type'] === 'recommendation_package' ? $package : null,
         ];
+        if (!empty($exclusiveSource) && !$warnings) {
+            $schedule = (new ExclusivePurchaseDeliveryService())->quote($exclusiveSource, $items, $delivery, $payload['first_meal_date'] ?? null);
+            $pricing = array_merge($pricing, $schedule);
+            $pricing['payable_amount_cent'] = $goodsTotal + $schedule['shipping_fee_cent'];
+        }
+        return $pricing;
     }
 
     /** 客户端只能从本人已校验商品包中减选并调整包装数；省略 items 沿用整包。 */
@@ -332,6 +339,31 @@ class CheckoutService
             foreach (['fresh','pricing'] as $name) { foreach (${$name}['delivery_batches'] as &$batch) { foreach ($batch['items'] as &$item) unset($item['snapshot']); unset($item); } unset($batch); }
             foreach (['policy_snapshot','delivery_batches','payable_amount_cent'] as $key) {
                 if (Json::canonical($fresh[$key])!==Json::canonical($pricing[$key])) throw new DomainException('价格、供货或配送规则已变化，请重新确认报价',40922,409);
+            }
+            return;
+        }
+        if (!empty($pricing['exclusive_delivery'])) {
+            (new PlanScheduleService())->lockCapacity();
+            $fresh = $this->priceCommerce($session['user_id'], [
+                'source_type'=>$session['source_type'], 'source_ref'=>$session['source_ref'], 'source_version'=>$session['source_version'],
+                'items'=>array_map(static function ($item) { return ['sku_id'=>(string)$item['sku_id'],'quantity'=>(int)$item['quantity']]; }, $pricing['items']),
+                'first_meal_date'=>$pricing['exclusive_delivery']['first_meal_date'],
+            ], $delivery);
+            if (!empty($fresh['warnings'])) throw new DomainException('商品库存或供货已变化，请重新核对',40922,409);
+            $currentItems = array_column($fresh['items'], null, 'sku_id');
+            foreach ($pricing['items'] as $item) {
+                AgentMealSourceService::assertComposition($item['snapshot'], $currentItems[$item['sku_id']]['snapshot']);
+            }
+            // 商品快照含每次读取都会变化的 valid_until；价格、包装及排期单独参与比较。
+            foreach (['fresh','pricing'] as $name) {
+                foreach (${$name}['delivery_batches'] as &$batch) {
+                    foreach ($batch['items'] as &$item) unset($item['snapshot']);
+                    unset($item);
+                }
+                unset($batch);
+            }
+            foreach (['exclusive_delivery','delivery_batches','shipping_fee_cent','payable_amount_cent'] as $key) {
+                if (Json::canonical($fresh[$key] ?? null) !== Json::canonical($pricing[$key])) throw new DomainException('商品、配送安排或费用已变化，请重新确认',40922,409);
             }
             return;
         }
@@ -406,7 +438,7 @@ class CheckoutService
                 }
             }
             Db::name('shop_checkout_session')->where('id', $session['id'])->where('status', 'active')->update(['status' => 'consumed', 'updatetime' => $now]);
-            if ($orderType !== 'plan') (new DeliveryService())->reserveSlot($orderSn, (int)($pricing['delivery_slot_id'] ?? 0), $pricing['delivery_area_id']);
+            if ($orderType !== 'plan' && empty($pricing['exclusive_delivery'])) (new DeliveryService())->reserveSlot($orderSn, (int)($pricing['delivery_slot_id'] ?? 0), $pricing['delivery_area_id']);
             if ($session['source_type'] === 'cart') {
                 foreach ($pricing['cart_items'] as $cartItem) {
                     Db::name('shop_carts')->where('id', $cartItem['cart_item_id'])->where('user_id', $session['user_id'])->where('row_version', $cartItem['version'])->delete();
