@@ -134,8 +134,12 @@ async def bound_reference_context(session, uid, binding, *, include_age_bands=Fa
         raise HealthVisionError("reference_mode_required", "当前线程不是日常参考餐单模式", 409)
     fixed = binding.initial_planner_selection
     result = await reference_context_in_session(
-        session, uid, binding.member_id, fixed["selection"],
-        include_age_bands=include_age_bands, use_catalog=fixed.get("use_catalog", False),
+        session,
+        uid,
+        binding.member_id,
+        fixed["selection"],
+        include_age_bands=include_age_bands,
+        use_catalog=fixed.get("use_catalog", False),
     )
     if input_fingerprint(result["sources"]) != fixed["source_hash"]:
         raise ReferencePlanSourceChanged("成员资料或知识库绑定已更新，请重新生成参考餐单", result["selection"])
@@ -581,7 +585,8 @@ async def read_reference_recipe(context, file_id, chunk_id):
         if document.get("recipe_id"):
             if not any(
                 all(item.get(k) == document[k] for k in ("file_id", "chunk_id", "file_hash", "chunks_hash"))
-                for hit in hits for item in hit.get("items", [])
+                for hit in hits
+                for item in hit.get("items", [])
             ):
                 raise HealthVisionError("source_invalidated", "数据库菜谱已更新，请重新生成餐单", 410)
             from yuxi.services.health_memory_context_service import memory_restrictions_for_plan
@@ -690,7 +695,7 @@ def same_reference_document(fresh, receipt):
     return all(key in receipt and receipt[key] == value for key, value in fresh.items())
 
 
-def checked_reference_meals(draft, documents, members, *, require_translation=True):
+def checked_reference_meals(draft, documents, members, *, require_translation=True, require_servings=False):
     """核对原文和限制；新发布须有译文，历史浏览可单独隐藏缺译内容。"""
     result = []
     translation_errors = []
@@ -732,6 +737,22 @@ def checked_reference_meals(draft, documents, members, *, require_translation=Tr
                         raise
                     translation_errors.append(f"{dish.file_id}/{dish.chunk_id}: {error.message}")
             portion_note = "个人份量尚未核定，请参考原食谱并按实际情况调整"
+            alternatives = {
+                str(mid)
+                for other in meal.dishes
+                if other.replaces_file_id == dish.file_id
+                for mid in other.alternative_for
+            }
+            diners = set(map(str, dish.alternative_for)) if dish.alternative_for else member_names.keys() - alternatives
+            from yuxi.services.reference_serving import checked_member_servings
+
+            member_servings = checked_member_servings(
+                dish.serving_suggestion,
+                diners,
+                member_names,
+                required=require_servings and bool(doc.get("recipe_id")),
+                ingredient_labels=parsed.ingredients,
+            )
             if dish.serving_suggestion is not None:
                 suggestion = dish.serving_suggestion
                 excluded = {"display_zh", "alternative_for", "replaces_file_id"}
@@ -740,13 +761,13 @@ def checked_reference_meals(draft, documents, members, *, require_translation=Tr
                 ):
                     raise HealthVisionError("reference_amounts_invalid", "建议用量须对应所选数据库菜谱的原食材", 422)
                 alternatives = {
-                    str(mid) for other in meal.dishes if other.replaces_file_id == dish.file_id
+                    str(mid)
+                    for other in meal.dishes
+                    if other.replaces_file_id == dish.file_id
                     for mid in other.alternative_for
                 }
                 diners = (
-                    set(map(str, dish.alternative_for))
-                    if dish.alternative_for
-                    else member_names.keys() - alternatives
+                    set(map(str, dish.alternative_for)) if dish.alternative_for else member_names.keys() - alternatives
                 )
                 if suggestion.shares and {str(share.member_id) for share in suggestion.shares} != diners:
                     raise HealthVisionError("reference_amounts_invalid", "分菜成员须与本菜实际用餐成员一致", 422)
@@ -756,9 +777,13 @@ def checked_reference_meals(draft, documents, members, *, require_translation=Tr
                 )
                 portion_note = f"{len(diners)}人份建议用量（估算）：{amounts}。未列食材请按原方和口味调整。"
                 if suggestion.shares:
-                    portion_note += "分菜参考：" + "、".join(
-                        f"{member_names[str(share.member_id)]}{share.percent}%" for share in suggestion.shares
-                    ) + "。"
+                    portion_note += (
+                        "分菜参考："
+                        + "、".join(
+                            f"{member_names[str(share.member_id)]}{share.percent}%" for share in suggestion.shares
+                        )
+                        + "。"
+                    )
             else:
                 excluded = {"display_zh", "alternative_for", "replaces_file_id", "serving_suggestion"}
             dishes.append(
@@ -774,6 +799,7 @@ def checked_reference_meals(draft, documents, members, *, require_translation=Tr
                         k: doc[k] for k in ("file_id", "chunk_id", "kb_id", "filename", "file_hash", "chunks_hash")
                     },
                     "portion_note": portion_note,
+                    "member_servings": member_servings,
                     "nutrition": {code: None for code in NUTRIENTS},
                     "nutrition_status": "not_calculated",
                 }
@@ -1001,7 +1027,12 @@ async def save_reference_plan(context, draft):
             if not same_reference_document(fresh, receipt):
                 raise HealthVisionError("source_invalidated", "菜谱正文已变化，请重新读取", 410)
             documents[(fresh["file_id"], fresh["chunk_id"])] = fresh
-        meals = checked_reference_meals(draft, documents, current["members"])
+        meals = checked_reference_meals(
+            draft,
+            documents,
+            current["members"],
+            require_servings=binding.initial_planner_selection.get("use_catalog", False),
+        )
         for meal in draft.meals:
             for dish in meal.dishes:
                 document = documents[(dish.file_id, dish.chunk_id)]
@@ -1120,13 +1151,19 @@ async def save_reference_plan(context, draft):
         )
         if current["selection"].get("market_only") or any(search.get("market_only") for search in searches):
             stocked = {
-                ref for product in product_matches
-                if any(sku.get("sale_status") == "available" and int(sku.get("available_quantity") or 0) > 0
-                       for sku in product.get("skus", []))
+                ref
+                for product in product_matches
+                if any(
+                    sku.get("sale_status") == "available" and int(sku.get("available_quantity") or 0) > 0
+                    for sku in product.get("skus", [])
+                )
                 for ref in product["ingredient_refs"]
             }
             required = {
-                ingredient for meal in meals for dish in meal["dishes"] for ingredient in dish["ingredients"]
+                ingredient
+                for meal in meals
+                for dish in meal["dishes"]
+                for ingredient in dish["ingredients"]
                 if not (cooking_water(ingredient) or optional_reference_ingredient(ingredient))
             }
             if required - stocked:
@@ -1140,7 +1177,10 @@ async def save_reference_plan(context, draft):
                 if document.get("recipe_id"):
                     dish["recipe_id"] = document["recipe_id"]
                     dish.update(await freeze_catalog_cover(session, document))
+        from yuxi.services.reference_serving_nutrition import attach_reference_nutrition
         from yuxi.services.reference_recipe_presentation import check_recipe_nutrition, recipe_pairing_summary
+
+        await attach_reference_nutrition(session, meals, documents)
 
         check_recipe_nutrition(meals, product_matches or items)
         snapshot = {

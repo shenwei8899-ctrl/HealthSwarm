@@ -1,12 +1,12 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
-import AppNavBar from './AppNavBar.vue'
-import AppIcon from './AppIcon.vue'
-import { addressApi } from '../services/address-api.js'
-import { addressText } from '../services/address-model.js'
-import { addressBack, openAddressEditor } from '../services/address-navigation.js'
-import { useCommercePage } from '../services/commerce-page.js'
+import AppNavBar from '../../../components/AppNavBar.vue'
+import AppIcon from '../../../components/AppIcon.vue'
+import { addressApi } from '../../../services/address-api.js'
+import { addressText } from '../../../services/address-model.js'
+import { addressBack, openAddressEditor } from '../../../services/address-navigation.js'
+import { useCommercePage } from '../../../services/commerce-page.js'
 const props = defineProps({ mode: { type: String, default: 'manage' }, selectedId: String })
 const emit = defineEmits(['select'])
 const addresses = ref([]), loaded = ref(false)
@@ -63,6 +63,6 @@ onMounted(load); onShow(load)
  </view>
 </template>
 <style scoped>
-@import '../styles/address.css';
+@import '../../../styles/address.css';
 .address-list-screen{padding-left:24rpx;padding-right:24rpx}.address-list{background:#fff;border-radius:26rpx;overflow:hidden;margin-top:24rpx}.address-row{padding:26rpx 24rpx 14rpx;border-bottom:1rpx solid #edf0f2}.address-row:last-child{border:0}.address-main{display:flex;align-items:flex-start;gap:18rpx;width:100%;text-align:left;padding:4rpx 0 10rpx;min-height:100rpx}.address-copy{flex:1;min-width:0}.region-line{display:block;color:#8a8e97;font-size:25rpx;line-height:1.5;margin-bottom:9rpx}.detail-line{display:block;font-size:33rpx;line-height:1.45;font-weight:600;color:#25262a;overflow-wrap:anywhere}.person-line{display:flex;align-items:baseline;flex-wrap:wrap;gap:8rpx 16rpx;font-size:27rpx;line-height:1.6;margin-top:14rpx;color:#555b65}.person-line>text:first-child{color:#333740}.address-tag{font-size:22rpx;line-height:1.4;border-radius:6rpx;padding:2rpx 8rpx;color:#727984;background:#f2f3f5}.address-actions{display:flex;align-items:center;justify-content:space-between;gap:8rpx;margin-top:7rpx}.default-action{display:flex;align-items:center;gap:10rpx;font-size:24rpx;color:#7b818c;min-height:44px;text-align:left}.default-check{display:flex;align-items:center;justify-content:center;width:30rpx;height:30rpx;border:2rpx solid #d3d7de;border-radius:50%;font-size:22rpx;flex-shrink:0}.address-screen .default-action.isdefault[disabled]{opacity:1}.default-action.isdefault{color:#4b515b;opacity:1}.isdefault .default-check{background:#25262a;border-color:#25262a;color:#fff}.row-tools{display:flex;gap:12rpx}.row-tools button{font-size:25rpx;min-width:44px;min-height:44px;color:#666d78}.selection-check{display:flex;align-items:center;justify-content:center;width:34rpx;height:34rpx;flex-shrink:0;border:2rpx solid #d3d7de;border-radius:50%;margin-top:45rpx;color:#fff;font-size:24rpx}.selection-check.active{background:#25262a;border-color:#25262a}
 </style>

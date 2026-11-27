@@ -1,12 +1,12 @@
 <script setup>
-import FoodImageSlot from './FoodImageSlot.vue'
+import FoodImageSlot from '../../../components/FoodImageSlot.vue'
 import PlanOrderControls from './PlanOrderControls.vue'
 const back = () => uni.navigateBack();
 import { ref, computed, onMounted } from "vue";
 import { onShow } from "@dcloudio/uni-app";
-import AppNavBar from "./AppNavBar.vue";
-import { commerce } from "../services/commerce.js";
-import { useCommercePage } from "../services/commerce-page.js";
+import AppNavBar from "../../../components/AppNavBar.vue";
+import { commerce } from "../../../services/commerce.js";
+import { useCommercePage } from "../../../services/commerce-page.js";
 const props = defineProps({ id: { type: String, required: true } });
 const orderId = computed(() => props.id);
 const pending = ref(null),

@@ -2,7 +2,7 @@
 import { ref, getCurrentInstance } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import CommerceAccess from '../../components/CommerceAccess.vue'
-import AddressForm from '../../components/AddressForm.vue'
+import AddressForm from './components/AddressForm.vue'
 import { isMockMode } from '../../services/config.js'
 import { openerChannel, addressBack } from '../../services/address-navigation.js'
 const id = ref(''), mode = ref('manage'), routeReady = ref(false), instance = getCurrentInstance()

@@ -1,12 +1,12 @@
 <script setup>
 import { computed, ref, onMounted } from 'vue'
 import { onShow, onBackPress } from '@dcloudio/uni-app'
-import AppNavBar from './AppNavBar.vue'
-import { addressApi } from '../services/address-api.js'
-import { addressPayload, addressErrors, regionColumns, regionIndices } from '../services/address-model.js'
-import { addressBack } from '../services/address-navigation.js'
-import { useCommercePage } from '../services/commerce-page.js'
-import { storageContext } from '../services/storage.js'
+import AppNavBar from '../../../components/AppNavBar.vue'
+import { addressApi } from '../../../services/address-api.js'
+import { addressPayload, addressErrors, regionColumns, regionIndices } from '../../../services/address-model.js'
+import { addressBack } from '../../../services/address-navigation.js'
+import { useCommercePage } from '../../../services/commerce-page.js'
+import { storageContext } from '../../../services/storage.js'
 
 const props = defineProps({ addressId: String, mode: { type: String, default: 'manage' } })
 const emit = defineEmits(['saved', 'removed'])
@@ -150,6 +150,6 @@ onShow(() => { if (owner !== storageContext()) { owner = storageContext(); load(
  </view>
 </template>
 <style scoped>
-@import '../styles/address.css';
+@import '../../../styles/address.css';
 .address-form-screen{padding-left:24rpx;padding-right:24rpx}.form-section{background:#fff;border-radius:26rpx;padding:0 26rpx;margin-top:24rpx}.form-row{display:flex;align-items:center;gap:22rpx;min-height:112rpx;padding:20rpx 0;border-bottom:1rpx solid #eff0f2;font-size:29rpx}.form-row:last-child{border:0}.row-label{width:138rpx;flex-shrink:0;line-height:1.6;color:#333740}.field-content{flex:1;min-width:0}.field-content input{font-size:29rpx;min-height:64rpx;width:100%;color:#25262a}.field-content textarea{font-size:29rpx;line-height:1.65;width:100%;min-height:112rpx;color:#25262a}.detail-row{align-items:flex-start;padding-top:30rpx;padding-bottom:30rpx}.detail-row .row-label{padding-top:4rpx}.region-value{display:flex;align-items:center;justify-content:space-between;gap:14rpx;min-height:66rpx;line-height:1.6}.region-value>text:first-child{overflow-wrap:anywhere}.placeholder{color:#8a8e97}.region-arrow{font-size:36rpx;color:#9a9fa8;flex-shrink:0}.field-error{display:block;color:#b8413c;font-size:24rpx;line-height:1.6;margin-top:8rpx}.region-error{font-size:24rpx;color:#b8413c;line-height:1.6}.region-error button{min-height:44px;color:#246b50;text-align:left;font-size:25rpx}.default-row{display:flex;align-items:center;justify-content:space-between;gap:16rpx;padding:30rpx 0;border-bottom:1rpx solid #eff0f2}.default-row:last-child{border:0}.default-row>view{flex:1;min-width:0}.default-title{display:block;font-size:29rpx;line-height:1.5}.setting-hint{display:block;color:#8a8e97;font-size:24rpx;margin-top:10rpx;line-height:1.55}.default-row switch{flex-shrink:0;transform:scale(.85);transform-origin:right center}.tag-row{align-items:flex-start;padding:26rpx 0 30rpx}.tag-row .row-label{padding-top:14rpx}.tag-options{display:flex;flex-wrap:wrap;gap:14rpx}.tag-options button{min-width:118rpx;min-height:44px;background:#f5f6f7;border:1rpx solid transparent;border-radius:14rpx;font-size:26rpx;padding:15rpx 20rpx;color:#616873}.tag-options button.active{background:#eef1f0;border-color:#68756f;color:#25382d}.field-content .custom-label{font-size:26rpx;border-bottom:1rpx solid #e6e8ec;margin-top:16rpx}.form-error{margin:24rpx 6rpx;color:#b8413c;font-size:26rpx;line-height:1.6}.delete-address{display:flex;align-items:center;justify-content:center;width:30%;min-height:44px;border:1rpx solid #d6d9df;border-radius:999rpx;font-size:29rpx;background:#fff;color:#626872}
 </style>

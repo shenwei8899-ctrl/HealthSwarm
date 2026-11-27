@@ -2370,9 +2370,19 @@ async def test_postgres_reference_plan_keeps_snapshot_and_checks_market(
             "auto_purchase_matches": True,
             "meals": [{"meal_type": "breakfast", "dishes": [{
                 "recipe_option": opened["recipe_option"],
-                "serving_suggestion": {"ingredient_amounts": [{"position": 0, "amount": 80, "unit": "克"}]},
+                "serving_suggestion": {
+                    "ingredient_amounts": [{"position": 0, "amount": 80, "unit": "克"}],
+                    "members": [{"member_id": mid, "cooked_grams": 90.0,
+                                 "description": "按实际大小分取米饼",
+                                 "ingredient_amounts": [{"position": 0, "amount": 80.0, "unit": "克"}]}
+                                for mid in current[-1]["participant_ids"]],
+                },
             }]}],
         }
+        incomplete = deepcopy(choices)
+        incomplete["meals"][0]["dishes"][0]["serving_suggestion"]["members"] = []
+        with pytest.raises(HealthVisionError, match="reference_amounts_invalid"):
+            await service.save_reference_plan(context, await assemble_reference_selection(context, incomplete))
         draft = await assemble_reference_selection(context, choices)
         assert [item.product_id for item in draft.product_matches] == ["rice"]
         sku["available_quantity"] = 0
@@ -2401,6 +2411,19 @@ async def test_postgres_reference_plan_keeps_snapshot_and_checks_market(
         output = await complete(current, context, saved)
         dish = output["meals"][0]["dishes"][0]
         assert dish["recipe_id"] == "rice-cake"
+        assert len(dish["member_servings"]) == len(current[-1]["participant_ids"])
+        assert all(person["source"] == "model_estimate" for person in dish["member_servings"])
+        assert dish["nutrition_status"] == "not_calculated"
+        from yuxi.storage.postgres.models_health import HealthDailyMealPlan
+
+        async with sessions() as db:
+            daily_row = await db.scalar(select(HealthDailyMealPlan).where(
+                HealthDailyMealPlan.family_id == current[-1]["family_id"],
+                HealthDailyMealPlan.plan_date == date.fromisoformat(current[-1]["plan_date"]),
+            ))
+            archived = daily_row.archive_meals["breakfast"]["dishes"][0]
+            assert archived["member_servings"] == dish["member_servings"]
+            assert "description" not in archived["serving_suggestion"]["members"][0]
         assert dish["ingredients"] == ["大米 100克", "水 50毫升"] and "约80克" in dish["portion_note"]
         assert f"煎米饼：{dish['portion_note']}" in output["pairing_summary"]
         image_path = f"/minio/public/reference-recipes/catalog/{digest}.{suffix}"

@@ -1,6 +1,6 @@
 <script setup>
 import { isCommerceEnabled } from '../../services/config.js'
-import CommerceOrders from '../../components/CommerceOrders.vue'
+import CommerceOrders from './components/CommerceOrders.vue'
 import CommerceAccess from '../../components/CommerceAccess.vue'
 
 import AppNavBar from '../../components/AppNavBar.vue'

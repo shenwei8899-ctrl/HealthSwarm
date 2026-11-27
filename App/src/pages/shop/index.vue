@@ -4,7 +4,7 @@ import { resolveCheckoutAddress } from '../../services/address-model.js'
 const demoPreferredAddressId=ref('')
 import { isCommerceEnabled } from '../../services/config.js'
 import CommerceAccess from '../../components/CommerceAccess.vue'
-import CommerceShop from '../../components/CommerceShop.vue'
+import CommerceShop from './components/CommerceShop.vue'
 import CloudMealDetail from '../../components/CloudMealDetail.vue'
 import CloudDailyPurchase from '../../components/CloudDailyPurchase.vue'
 import ConversationPackagePurchase from '../../components/ConversationPackagePurchase.vue'

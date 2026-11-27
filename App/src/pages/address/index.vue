@@ -2,7 +2,7 @@
 import { ref, getCurrentInstance } from 'vue'
 import { onLoad, onUnload } from '@dcloudio/uni-app'
 import CommerceAccess from '../../components/CommerceAccess.vue'
-import CommerceAddresses from '../../components/CommerceAddresses.vue'
+import CommerceAddresses from './components/CommerceAddresses.vue'
 import { isMockMode } from '../../services/config.js'
 import { storageContext } from '../../services/storage.js'
 import { openerChannel, addressBack } from '../../services/address-navigation.js'

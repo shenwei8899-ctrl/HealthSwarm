@@ -1,11 +1,11 @@
 <script setup>
-import { openAddressPicker } from '../services/address-navigation.js'
-import { resolveCheckoutAddress } from '../services/address-model.js'
+import { openAddressPicker } from '../../../services/address-navigation.js'
+import { resolveCheckoutAddress } from '../../../services/address-model.js'
 import { ref, computed, onMounted } from "vue";
 import { onShow } from "@dcloudio/uni-app";
-import AppNavBar from "./AppNavBar.vue";
-import { commerce } from "../services/commerce.js";
-import { useCommercePage } from "../services/commerce-page.js";
+import AppNavBar from "../../../components/AppNavBar.vue";
+import { commerce } from "../../../services/commerce.js";
+import { useCommercePage } from "../../../services/commerce-page.js";
 
 const props = defineProps({ route: { type: Object, default: () => ({}) } });
 const cartOnly = computed(() => props.route.cart === '1');
