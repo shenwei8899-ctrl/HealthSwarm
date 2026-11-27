@@ -1195,7 +1195,7 @@ async function sendQuestion(promptAction='',outgoing=null){
       const selection=continuing?referenceSelection:candidate
       referenceFollowUp=referenceAdjustment&&!changedRequirements&&['family_id','plan_date','participant_ids','meal_types'].every(key=>JSON.stringify(selection[key])===JSON.stringify(referenceSelection[key]))
       if(!continuing)referenceSelection=selection
-      if(action==='change'&&!referenceAdjustment&&!referenceFollowUp&&referenceSelection.meal_types.length===3&&!/三餐|全天|一天/.test(text))throw new Error('请说明要调整早餐、午餐还是晚餐。')
+      if(action==='change'&&!mealIntent&&!referenceAdjustment&&!referenceFollowUp&&referenceSelection.meal_types.length===3&&!/三餐|全天|一天/.test(text))throw new Error('请说明要调整早餐、午餐还是晚餐。')
       const plan=await loadDailyPlan(profile.value.householdId,referenceSelection.plan_date,epoch,scope)
       if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration)return
       if(!plan)throw new Error('暂时无法读取餐单，请重试。')
