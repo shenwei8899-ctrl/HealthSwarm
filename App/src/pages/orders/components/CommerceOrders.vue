@@ -1,12 +1,12 @@
 <script setup>
-import FoodImageSlot from './FoodImageSlot.vue'
-import AppIcon from './AppIcon.vue'
+import FoodImageSlot from '../../../components/FoodImageSlot.vue'
+import AppIcon from '../../../components/AppIcon.vue'
 const back = () => uni.navigateBack();
 import { ref, computed, onMounted } from "vue";
 import { onShow } from "@dcloudio/uni-app";
-import AppNavBar from "./AppNavBar.vue";
-import { commerce } from "../services/commerce.js";
-import { useCommercePage } from "../services/commerce-page.js";
+import AppNavBar from "../../../components/AppNavBar.vue";
+import { commerce } from "../../../services/commerce.js";
+import { useCommercePage } from "../../../services/commerce-page.js";
 const orders = ref([]),
   page = ref(1),
   total = ref(0),

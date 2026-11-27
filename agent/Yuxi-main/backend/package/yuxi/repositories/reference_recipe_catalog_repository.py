@@ -1,9 +1,10 @@
 """读取独立的 PostgreSQL 参考菜谱目录。"""
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import ProgrammingError
 
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.storage.postgres.models_health import FoodRecord, RecipeVersion
 
 _CATALOG_ROWS = """
     SELECT r.id, r.name, r.ingredients, r.steps, r.image_mime, r.image_label, r.image_sha256,
@@ -26,6 +27,21 @@ async def catalog_recipe_row(session, recipe_id, *, include_image=False):
         else _CATALOG_ROWS + " WHERE r.id = :recipe_id FOR SHARE OF r"
     )
     return (await _catalog_query(session, statement, {"recipe_id": recipe_id})).mappings().one_or_none()
+
+
+async def catalog_nutrition_recipe(session, recipe_id, file_hash):
+    """只读取显式绑定当前参考目录版本的已发布配方。"""
+    return await session.scalar(
+        select(RecipeVersion).where(
+            RecipeVersion.record_code == "reference:" + recipe_id,
+            RecipeVersion.dataset_version == file_hash,
+        )
+    )
+
+
+async def catalog_nutrition_foods(session, ids):
+    """按配方中的实际食品版本编号读取营养，不按名称猜测。"""
+    return {food.id: food for food in (await session.scalars(select(FoodRecord).where(FoodRecord.id.in_(ids)))).all()}
 
 
 async def _catalog_query(session, statement, params=None):

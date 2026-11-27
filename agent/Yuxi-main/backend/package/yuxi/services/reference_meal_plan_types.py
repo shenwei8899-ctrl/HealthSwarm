@@ -77,17 +77,38 @@ class ReferenceServingShare(HealthDTO):
     percent: int = Field(ge=1, le=100, strict=True)
 
 
+class ReferenceMemberServing(HealthDTO):
+    """本菜一位实际就餐者的建议熟重、分餐说明和原料分配。"""
+
+    member_id: UUID
+    cooked_grams: float = Field(gt=0, le=20000, allow_inf_nan=False, strict=True)
+    description: str = Field(min_length=2, max_length=240)
+    ingredient_amounts: list[ReferenceSuggestedAmount] = Field(min_length=1, max_length=30)
+
+    @model_validator(mode="after")
+    def unique_ingredients(self):
+        """每位成员的同一原料只能分配一次。"""
+        if len({item.position for item in self.ingredient_amounts}) != len(self.ingredient_amounts):
+            raise ValueError("个人食材位置不能重复")
+        if not self.description.strip():
+            raise ValueError("分餐说明不能为空")
+        return self
+
+
 class ReferenceServingSuggestion(HealthDTO):
     """家庭烹饪用量与可选个人分菜比例。"""
 
     ingredient_amounts: list[ReferenceSuggestedAmount] = Field(min_length=1, max_length=30)
     shares: list[ReferenceServingShare] = Field(default_factory=list, max_length=20)
+    members: list[ReferenceMemberServing] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def validate_positions_and_shares(self):
         """一个原谱位置只能给一个用量，分菜比例必须合计百分之百。"""
         if len({item.position for item in self.ingredient_amounts}) != len(self.ingredient_amounts):
             raise ValueError("同一食材位置不能重复给出用量")
+        if len({item.member_id for item in self.members}) != len(self.members):
+            raise ValueError("份量规划成员不能重复")
         if self.shares and (
             len({item.member_id for item in self.shares}) != len(self.shares)
             or sum(item.percent for item in self.shares) != 100

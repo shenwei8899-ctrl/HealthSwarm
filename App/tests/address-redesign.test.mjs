@@ -33,7 +33,7 @@ function formFixture({ entry = null, capabilities = { default_address: true, add
       } }
     },
   }
-  const source = fs.readFileSync(new URL('../src/components/AddressForm.vue', import.meta.url), 'utf8').split('<script setup>')[1].split('</script>')[0].replace(/^import .+$/gm, '')
+  const source = fs.readFileSync(new URL('../src/pages/address/components/AddressForm.vue', import.meta.url), 'utf8').split('<script setup>')[1].split('</script>')[0].replace(/^import .+$/gm, '')
   const component = new Function(...Object.keys(deps), source + '\nreturn {form,fields,load,save,remove,back,error,loaded,pending,saved,conflict,indices,chooseRegion,columnChange,loadRegions}')(...Object.values(deps))
   return { ...component, calls, emitted, emitBackStates, modals, setScope(next) { scope = next; invalidator(); busy.value = false }, api }
 }
@@ -175,7 +175,7 @@ test('choosing an address emits its ID and never calls default/save APIs', async
     addressText: model.addressText, addressBack() {}, openAddressEditor() {}, uni: {},
     useCommercePage: () => ({ busy: ref(false), error: ref(''), run: work => work(() => true) }),
   }
-  const code = fs.readFileSync(new URL('../src/components/CommerceAddresses.vue', import.meta.url), 'utf8').split('<script setup>')[1].split('</script>')[0].replace(/^import .+$/gm, '')
+  const code = fs.readFileSync(new URL('../src/pages/address/components/CommerceAddresses.vue', import.meta.url), 'utf8').split('<script setup>')[1].split('</script>')[0].replace(/^import .+$/gm, '')
   const p = new Function(...Object.keys(deps), code + '\nreturn {load,choose}')(...Object.values(deps))
   await p.load(); p.choose(sample)
   assert.deepEqual(events, [['select', '1']]); assert.deepEqual(writes, [])

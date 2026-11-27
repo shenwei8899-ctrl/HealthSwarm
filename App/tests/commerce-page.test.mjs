@@ -51,7 +51,7 @@ function detail(h, commerce) {
     defineProps: () => ({ id: "REAL-ORDER" }),
   };
   const code = readFileSync(
-    new URL("../src/components/CommerceOrderDetail.vue", import.meta.url),
+    new URL("../src/pages/orders/components/CommerceOrderDetail.vue", import.meta.url),
     "utf8",
   )
     .match(/<script setup>([\s\S]*?)<\/script>/)[1]
@@ -256,7 +256,7 @@ function shop(delivery) {
     quote: async () => { quoteCalls++; return { checkout_token: 'quote' }; },
   };
   const deps = { ...h.deps, commerce, resolveCheckoutAddress, defineProps: () => ({ route: {} }) };
-  const code = readFileSync(new URL('../src/components/CommerceShop.vue', import.meta.url), 'utf8')
+  const code = readFileSync(new URL('../src/pages/shop/components/CommerceShop.vue', import.meta.url), 'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '');
   const page = new Function('deps', `const {${Object.keys(deps)}}=deps;${code};return {products,cart,ready,error,deliveryState,deliveryMessage,quote,load,preview,retryDelivery}`)(deps);
   return { page, quotes: () => quoteCalls };

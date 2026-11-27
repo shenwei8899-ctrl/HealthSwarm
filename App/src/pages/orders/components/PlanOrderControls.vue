@@ -1,9 +1,9 @@
 <script setup>
 import { ref, watch } from 'vue'
-import { commerce } from '../services/commerce.js'
-import { useCommercePage } from '../services/commerce-page.js'
-import { priceText, batchNames, batchMealDates } from '../services/plan-presentation.js'
-import PlanDeliveryPicker from './PlanDeliveryPicker.vue'
+import { commerce } from '../../../services/commerce.js'
+import { useCommercePage } from '../../../services/commerce-page.js'
+import { priceText, batchNames, batchMealDates } from '../../../services/plan-presentation.js'
+import PlanDeliveryPicker from '../../../components/PlanDeliveryPicker.vue'
 const props = defineProps({ order: Object })
 const emit = defineEmits(['changed'])
 const mode = ref(''), selection = ref(null), preview = ref(null), message = ref('')
@@ -60,6 +60,6 @@ function confirm() {
   </view>
 </template>
 <style scoped>
-@import '../styles/exclusive-plan.css';
+@import '../../../styles/exclusive-plan.css';
 .plan-order-controls{min-height:0;padding-bottom:0;background:transparent}.plan-actions{display:flex;flex-direction:column;gap:16rpx;margin-top:24rpx}.plan-row>view>text{display:block}.plan-surface>.plan-primary{margin-top:24rpx}
 </style>

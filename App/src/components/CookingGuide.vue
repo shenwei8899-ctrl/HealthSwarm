@@ -3,6 +3,8 @@ import { recipeTime, recipeIngredients, recipeNutrition } from '../utils/dish-co
 import { computed, ref, watch } from 'vue'
 import FoodImageSlot from './FoodImageSlot.vue'
 import DishNutritionCard from './DishNutritionCard.vue'
+import ReferenceMemberServings from './ReferenceMemberServings.vue'
+import ReferenceDishNutrition from './ReferenceDishNutrition.vue'
 import { normalizeDishNutrition } from '../utils/dish-nutrition.js'
 import { dishTitle, recipeDisplay } from '../utils/meal-presentation.js'
 import { recipeCover } from '../utils/recipe-cover.js'
@@ -12,6 +14,7 @@ const tab=ref('steps'),nutritionOpen=ref(false)
 const key=d=>d.id||d.recipe_ref
 const name=d=>dishTitle(d)
 const dish=computed(()=>props.dishes.find(d=>key(d)===props.selected)||props.dishes[0])
+const referenceDish = computed(() => !!dish.value?.recipe_id || dish.value?.file_id?.startsWith('pg:'))
 const display=computed(()=>recipeDisplay(dish.value))
 const commerceIngredients=computed(()=>recipeIngredients(dish.value))
 const commerceNutrition=computed(()=>recipeNutrition(dish.value))
@@ -35,12 +38,14 @@ function stepCopy(step,index){
   <text v-if="dish.image_source?.image_role==='ai_generated'" class="image-credit">AI 生成示意图</text>
   <text v-if="continuous&&cover?.image_source?.publisher" class="image-credit">图片来源：{{cover.image_source.publisher}} · {{cover.image_source.publication}}</text>
   <view v-if="continuous&&summary.length" class="dish-nutrition-summary"><text>每100克成品可食部分</text><view><text v-for="item in summary" :key="item.label">{{item.label}} {{item.value}} {{item.unit}}</text></view></view><view v-if="!continuous" class="content-tabs"><button role="button" tabindex="0" :class="{active:tab==='ingredients'}" :aria-pressed="tab==='ingredients'" @click="tab='ingredients'">食材<view v-if="tab==='ingredients'" class="active-line"/></button><button role="button" tabindex="0" :class="{active:tab==='steps'}" :aria-pressed="tab==='steps'" @click="tab='steps'">步骤<view v-if="tab==='steps'" class="active-line"/></button><button role="button" tabindex="0" v-if="notes.length" :class="{active:tab==='notes'}" :aria-pressed="tab==='notes'" @click="tab='notes'">注意事项<view v-if="tab==='notes'" class="active-line"/></button></view>
+  <ReferenceMemberServings v-if="continuous && referenceDish" :servings="dish.member_servings || []"/>
   <text v-if="dish.translation_status==='missing'" class="unavailable">菜谱中文译文暂未就绪，请稍后重新读取。</text>
   <text v-if="continuous" class="guide-section-title">食材清单</text><view v-if="continuous||tab==='ingredients'" class="ingredient-list"><view v-for="item in commerceIngredients" :key="item.key" class="ingredient-row"><FoodImageSlot v-if="item.image" :src="item.image" :label="item.name" :width="44" :height="44" :radius="12"/><view><text v-if="item.skuId" class="ingredient-product-name">{{item.name}}</text><text>{{item.amount}}</text></view></view></view>
   <text v-if="continuous" class="guide-section-title">制作步骤</text><view v-if="continuous||tab==='steps'" class="steps-list"><view v-for="(step,n) in display.steps||[]" :key="n" class="recipe-step"><text class="step-number">{{String(n+1).padStart(2,'0')}}</text><image v-if="(typeof step!=='string'&&step.image_url)||dish.step_images?.[n]" :src="(typeof step!=='string'&&step.image_url)||dish.step_images[n]" mode="widthFix" class="step-image"/><view class="step-copy"><text class="step-title">{{stepCopy(step,n).title}}</text><text class="step-description">{{stepCopy(step,n).text}}</text></view></view><text v-if="!display.steps?.length" class="unavailable">暂无可用制作步骤</text></view>
   <view v-if="!continuous&&tab==='notes'" class="notes-list"><text v-for="(note,n) in notes" :key="n">{{note}}</text></view>
   <view v-if="commerceNutrition.length" class="commerce-nutrition"><text class="guide-section-title">商城食材营养说明</text><view v-for="(item,index) in commerceNutrition" :key="index" class="commerce-nutrition-item"><text class="ingredient-product-name">{{item.name}}</text><text>{{item.quote}}</text></view><text class="image-credit">摘自本菜关联的商城食材资料，不代表整道菜或个人摄入量的实测结果。</text></view>
-  <view v-if="dish.nutrition&&(!continuous||summary.length)" class="nutrition"><button role="button" tabindex="0" @click="nutritionOpen=!nutritionOpen"><text>营养信息</text><text>{{nutritionOpen?'收起':'查看'}} ›</text></button><DishNutritionCard v-if="nutritionOpen" :nutrition="dish.nutrition"/></view>
+  <view v-if="referenceDish" class="nutrition"><button role="button" tabindex="0" @click="nutritionOpen=!nutritionOpen"><text>营养信息</text><text>{{nutritionOpen?'收起':'查看'}} ›</text></button><ReferenceDishNutrition v-if="nutritionOpen" :dish="dish"/></view>
+  <view v-else-if="dish.nutrition&&(!continuous||summary.length)" class="nutrition"><button role="button" tabindex="0" @click="nutritionOpen=!nutritionOpen"><text>营养信息</text><text>{{nutritionOpen?'收起':'查看'}} ›</text></button><DishNutritionCard v-if="nutritionOpen" :nutrition="dish.nutrition"/></view>
   <view v-if="continuous&&display.nutrition_quote" class="recipe-nutrition-quote"><text class="guide-section-title">原食谱营养说明</text><text>{{display.nutrition_quote}}</text><text v-if="dish.display_zh" class="image-credit">原食谱中文助译；数值及计量范围沿用原文，个人营养量尚未核算。</text></view><button role="button" tabindex="0" v-if="action" class="guide-action" @click="$emit('action')">{{action}}</button>
  </view>
 </template>

@@ -352,6 +352,13 @@ async def read_shared_formal_meal(uid, family_id, day, arrangement_id, version, 
 def shared_meal_view(meal, members):
     """保留家庭餐单内容，隐藏生成来源中的个人资料和发起人的采购回执。"""
     public = {key: value for key, value in meal.items() if key not in {"nutritionSource", "purchase"}}
+    from yuxi.services.reference_serving import public_serving_suggestion
+
+    public["dishes"] = [
+        {**dish, "serving_suggestion": public_serving_suggestion(dish.get("serving_suggestion"))}
+        if dish.get("serving_suggestion") else dish
+        for dish in meal.get("dishes", [])
+    ]
     return {**public, "members": members, "memberNotes": []}
 
 

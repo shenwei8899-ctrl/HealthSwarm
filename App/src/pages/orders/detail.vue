@@ -1,6 +1,6 @@
 <script setup>
 import { isCommerceEnabled } from '../../services/config.js'
-import CommerceOrderDetail from '../../components/CommerceOrderDetail.vue'
+import CommerceOrderDetail from './components/CommerceOrderDetail.vue'
 import CommerceAccess from '../../components/CommerceAccess.vue'
 const commerceOrderId=ref('')
 
