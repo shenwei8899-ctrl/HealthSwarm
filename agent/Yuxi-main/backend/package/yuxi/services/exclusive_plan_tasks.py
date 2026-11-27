@@ -30,6 +30,7 @@ from yuxi.services.exclusive_plan_service import (
 from yuxi.services.health_family_safe_plan_service import check_family_trial
 from yuxi.services.health_family_meal_plan_types import FamilyMealPlanSpec
 from yuxi.services.health_vision_types import HealthVisionError
+from yuxi.services.reference_recipe_matching import ReferenceProductIndex
 from yuxi.services.miniapp_profile_coding import prepare_daily_profile_coding
 from yuxi.services.service_notice_service import require_service_notice
 from yuxi.storage.postgres.manager import pg_manager
@@ -139,6 +140,10 @@ async def run_exclusive_plan(context):
 async def generate_exclusive_tiers(context, uid, fid, seed, policy, catalog):
     """逐日保存三档菜单，恢复时沿用原定备选顺序。"""
     cost_cache = {}
+    # 索引仅属于本次执行及其固定商品快照；恢复执行从原快照重建。
+    product_index = (
+        await asyncio.to_thread(ReferenceProductIndex, catalog["items"]) if policy == PREVIEW_POLICY else None
+    )
     for tier in TIERS:
         for _ in range(policy.get("day_count", 21)):
             await context.raise_if_cancelled()
@@ -166,6 +171,7 @@ async def generate_exclusive_tiers(context, uid, fid, seed, policy, catalog):
                     day_seed,
                     catalog,
                     cost_cache=cost_cache,
+                    product_index=product_index,
                 )
             else:
                 stock = catalog if catalog is not None else await current_catalog()
@@ -194,7 +200,7 @@ async def generate_exclusive_tiers(context, uid, fid, seed, policy, catalog):
                 )
                 assert_basis(current_row, fresh)
                 if policy == PREVIEW_POLICY:
-                    await prepare_reference_day(session, fresh, generated, catalog)
+                    await prepare_reference_day(session, fresh, generated, catalog, product_index=product_index)
                 else:
                     await validate_saved_days(session, fresh, [generated])
                 tiers = current_row.progress.get("tiers", {})

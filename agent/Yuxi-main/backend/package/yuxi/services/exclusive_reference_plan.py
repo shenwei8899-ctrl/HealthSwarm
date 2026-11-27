@@ -115,8 +115,10 @@ async def optional_exclusive_catalog():
         return {"items": [], "version": None, "status": "unavailable", "error_code": error.code}
 
 
-def generate_reference_day(context, tier, previous, seed, catalog, *, cost_cache=None):
+def generate_reference_day(context, tier, previous, seed, catalog, *, cost_cache=None, product_index=None):
     """共用今日选菜和跨日去重；只有可靠费用资料参与三档排序。"""
+    if product_index is None:
+        product_index = ReferenceProductIndex(catalog["items"])
     selection = context["selection"].model_dump(mode="json")
     history = [(selection["family_id"], entry["day"]["plan_date"], entry["meals"]) for entry in previous[-14:]]
     variety = variety_context(history, selection, context["current"]["members"])
@@ -151,7 +153,7 @@ def generate_reference_day(context, tier, previous, seed, catalog, *, cost_cache
         document = documents[item["file_id"]]
         key = item["file_id"], document["chunks_hash"]
         if key not in cost_cache:
-            cost_cache[key] = recipe_cost_evidence(document["parsed"].ingredients, catalog)
+            cost_cache[key] = recipe_cost_evidence(document["parsed"].ingredients, catalog, product_index=product_index)
         costs[item["file_id"]] = cost_cache[key]
     if any(value is not None for value in costs.values()):
         lower, upper = TIER_REFERENCE_CENTS[tier]
@@ -189,7 +191,7 @@ def generate_reference_day(context, tier, previous, seed, catalog, *, cost_cache
                 )
             meals.append({"meal_type": meal["meal_type"], "dishes": dishes})
         all_meals = [meal for entry in previous for meal in entry["meals"]] + meals
-        procurement = reference_procurement(all_meals, catalog, restrictions)
+        procurement = reference_procurement(all_meals, catalog, restrictions, product_index=product_index)
         # 只比较现有有限备选；区间外仍可采用，不按预算重排或放宽饮食限制。
         total = procurement["pricing"]["matched_subtotal_cent"]
         known = total is not None and not procurement["purchase_gaps"]
@@ -207,11 +209,11 @@ def generate_reference_day(context, tier, previous, seed, catalog, *, cost_cache
         "tier_cost_status": "evidence_available"
         if any(value is not None for value in costs.values())
         else "unverified",
-        "procurement": reference_procurement(meals, catalog, restrictions),
+        "procurement": reference_procurement(meals, catalog, restrictions, product_index=product_index),
     }
 
 
-async def prepare_reference_day(session, context, entry, catalog):
+async def prepare_reference_day(session, context, entry, catalog, *, product_index=None):
     """新菜单从摘要一致的完整原谱取内容，再严格核验并重算采购。"""
     for meal in entry["meals"]:
         for dish in meal["dishes"]:
@@ -226,6 +228,7 @@ async def prepare_reference_day(session, context, entry, catalog):
         catalog,
         reference_member_restrictions(context["current"]["members"])
         + context["current"].get("memory_restrictions", []),
+        product_index=product_index,
     )
 
 
@@ -287,9 +290,9 @@ async def verified_reference_document(session, context, dish):
     return document
 
 
-def reference_procurement(meals, catalog, restrictions=()):
+def reference_procurement(meals, catalog, restrictions=(), *, product_index=None):
     """保留每道菜的原谱食材；以明确克重和单食材包装计算部分小计。"""
-    index = ReferenceProductIndex(catalog["items"])
+    index = product_index if product_index is not None else ReferenceProductIndex(catalog["items"])
     rows, groups = [], {}
     for meal in meals:
         for dish in meal["dishes"]:
@@ -393,7 +396,7 @@ def reference_price_summary(procurement, day_count, member_count, *, include_gap
     return result
 
 
-def recipe_cost_evidence(ingredients, catalog):
+def recipe_cost_evidence(ingredients, catalog, *, product_index=None):
     """只有必需食材均有原谱克重及可靠单价时才提供费用排序依据。"""
     procurement = reference_procurement(
         [
@@ -405,6 +408,7 @@ def recipe_cost_evidence(ingredients, catalog):
             }
         ],
         catalog,
+        product_index=product_index,
     )
     if procurement["purchase_gaps"]:
         return None
