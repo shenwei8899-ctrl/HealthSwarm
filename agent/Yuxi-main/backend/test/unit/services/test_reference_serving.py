@@ -92,33 +92,48 @@ def test_legacy_missing_servings_remain_readable_without_new_save_requirement():
     assert checked_member_servings(None, {A}, {A: "甲"}) == []
 
 
-def test_nutrition_uses_individual_ingredient_distribution_and_preserves_unknown():
-    value = ReferenceServingSuggestion.model_validate(suggestion())
-    dish = {
-        "serving_suggestion": value.model_dump(),
-        "member_servings": checked_member_servings(value, {A, B}, {A: "甲", B: "乙"}),
+def test_whole_nutrition_uses_original_recipe_grams_and_preserves_unknown():
+    recipe = SimpleNamespace(
+        ingredients=[
+            {"food": {"id": "meat"}, "grams": "100"},
+            {"food": {"id": "vegetable"}, "grams": "200"},
+        ],
+        yield_grams=280,
+    )
+    foods = {
+        "meat": SimpleNamespace(nutrients={"energy_kcal": 200, "protein_g": 20, "sodium_mg": 0}),
+        "vegetable": SimpleNamespace(nutrients={"energy_kcal": 20, "protein_g": 2, "sodium_mg": 0}),
     }
-    foods = [
-        SimpleNamespace(nutrients={"energy_kcal": 200, "protein_g": 20}),
-        SimpleNamespace(nutrients={"energy_kcal": 20, "protein_g": 2}),
-    ]
-    per100, total, people = calculate_reference_nutrition(dish, foods)
+    total = calculate_reference_nutrition(recipe, foods)
     assert total["energyKcal"] == 240
-    assert [p["energyKcal"] for p in people] == [170, 70]
-    assert per100["energyKcal"] == pytest.approx(240 / 280 * 100)
-    assert people[0]["sodiumMg"] is None and per100["fiberG"] is None
-    assert people[0]["basis"] == "per_serving"
-    dish["serving_suggestion"]["ingredient_amounts"][0]["unit"] = "个"
-    assert calculate_reference_nutrition(dish, foods) is None
+    assert total["proteinG"] == 24
+    assert total["sodiumMg"] == 0
+    assert total["fatG"] is None and total["fiberG"] is None
+    assert total["basis"] == "whole_dish" and total["quantity_basis"] == "source_recipe"
+    recipe.yield_grams = 1000
+    assert calculate_reference_nutrition(recipe, foods) == total
 
 
 def test_incomplete_recipe_ingredients_cannot_be_reported_as_whole_dish_nutrition():
-    value = ReferenceServingSuggestion.model_validate(suggestion())
-    dish = {
-        "serving_suggestion": value.model_dump(),
-        "member_servings": checked_member_servings(value, {A, B}, {A: "甲", B: "乙"}),
+    for ingredients in [[], [{"food": {"id": "unknown"}}]]:
+        assert calculate_reference_nutrition(SimpleNamespace(ingredients=ingredients), {}) is None
+
+
+def test_archive_preserves_nutrition_quantity_basis_without_mutating_legacy_data():
+    """旧计划量保持原样，原食谱总量标记随公开快照保留。"""
+    from yuxi.services.meal_archive_projection import archive_meal
+
+    old = {"name": "旧菜", "nutrition_total": {"basis": "whole_dish", "energyKcal": 240}}
+    current = {
+        "name": "原谱菜",
+        "nutrition_total": {"basis": "whole_dish", "quantity_basis": "source_recipe", "energyKcal": 580},
     }
-    assert calculate_reference_nutrition(dish, [SimpleNamespace(), SimpleNamespace(), SimpleNamespace()]) is None
+    meal = {"meal_type": "dinner", "dishes": [old, current]}
+    before = deepcopy(meal)
+    saved = archive_meal(meal)
+    assert saved["dishes"][0]["nutrition_total"] == old["nutrition_total"]
+    assert saved["dishes"][1]["nutrition_total"]["quantity_basis"] == "source_recipe"
+    assert meal == before
 
 
 def test_shared_archive_never_contains_model_health_reasoning():

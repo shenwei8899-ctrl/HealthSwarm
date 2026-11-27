@@ -29,11 +29,9 @@ export function recipeIngredients(dish) {
     // Bind only an exact recipe ingredient; never infer a SKU from a similar name.
     const product = typeof quote === 'string' ? products.find(p => p && Array.isArray(p.ingredient_refs) && p.ingredient_refs.includes(quote)) : null
     const label = ingredientCopy(display.ingredients?.[index] ?? quote)
-    const suggestion = dish?.serving_suggestion?.ingredient_amounts?.find(item => item.position === index)
-    const planned = suggestion && typeof suggestion.amount === 'number' && Number.isFinite(suggestion.amount) && suggestion.amount > 0
     return { key: index, name: product?.product_name || label, image: typeof product?.image_url === 'string' ? product.image_url : '',
       productId: product?.product_id ?? '', skuId: product?.sku_id ?? '', skus:Array.isArray(product?.skus)?product.skus:[],
-      amount: planned ? `${label}（本餐建议 ${suggestion.amount}${suggestion.unit}）` : label }
+      amount: label }
   })
 }
 

@@ -1,4 +1,4 @@
-"""由明确绑定的已发布配方和食品数据计算参考餐单营养。"""
+"""由已发布的原食谱用量和食品数据计算整道菜营养。"""
 
 from decimal import Decimal
 
@@ -12,7 +12,7 @@ async def attach_reference_nutrition(session, meals, documents):
     for meal in meals:
         for dish in meal["dishes"]:
             document = documents[dish["file_id"], dish["chunk_id"]]
-            if not document.get("recipe_id") or not dish.get("member_servings"):
+            if not document.get("recipe_id"):
                 continue
             recipe = await catalog_nutrition_recipe(session, document["recipe_id"], document["file_hash"])
             if recipe is None or len(recipe.ingredients) != len(dish["ingredients"]):
@@ -26,46 +26,27 @@ async def attach_reference_nutrition(session, meals, documents):
             sources = [recipe.source, *(food.source for food in foods.values())]
             if not all((await HealthSourceRepository(session).current_sources(sources)).values()):
                 continue
-            result = calculate_reference_nutrition(dish, [foods[fid] for fid in ids])
-            if result is None:
+            total = calculate_reference_nutrition(recipe, foods)
+            if total is None:
                 continue
-            per100, total, people = result
             if not any(isinstance(value, (int, float)) for value in total.values()):
                 continue
             dish.update(
-                nutrition=per100,
                 nutrition_total=total,
                 nutrition_status="calculated",
                 nutrition_reference={"recipe_version_id": recipe.id, "dataset_version": recipe.dataset_version},
             )
-            for person, nutrients in zip(dish["member_servings"], people):
-                person["nutrition"] = nutrients
 
 
-def calculate_reference_nutrition(dish, foods):
-    """只计算有完整克数分配的原料；缺失营养保留空值，单位不作猜测。"""
-    people = dish["member_servings"]
-    amounts = dish["serving_suggestion"]["ingredient_amounts"]
-    if {item["position"] for item in amounts} != set(range(len(foods))):
-        return None
-    if any(item["unit"] != "克" for item in amounts):
+def calculate_reference_nutrition(recipe, foods):
+    """原食谱克数决定整道菜总量，计划分餐和熟重不参与缩放。"""
+    if not recipe.ingredients or any(item.get("grams") is None for item in recipe.ingredients):
         return None
     ingredients = [
-        {"food": {"nutrients": foods[item["position"]].nutrients}, "grams": str(item["amount"])} for item in amounts
+        {"food": {"nutrients": foods[item["food"]["id"]].nutrients}, "grams": item["grams"]}
+        for item in recipe.ingredients
     ]
-    cooked = sum(Decimal(str(person["cooked_grams"])) for person in people)
-    per100 = recipe_nutrients(ingredients, cooked)
     totals = recipe_nutrients(ingredients, Decimal(100))
-    allocated = [
-        recipe_nutrients(
-            [
-                {"food": {"nutrients": foods[item["position"]].nutrients}, "grams": str(item["amount"])}
-                for item in person["ingredient_amounts"]
-            ],
-            Decimal(100),
-        )
-        for person in people
-    ]
     names = {
         "energy_kcal": "energyKcal",
         "protein_g": "proteinG",
@@ -74,21 +55,9 @@ def calculate_reference_nutrition(dish, foods):
         "sodium_mg": "sodiumMg",
     }
 
-    def display(values):
-        return {
-            **{target: float(values[code]) if values.get(code) is not None else None for code, target in names.items()},
-            "fiberG": None,
-        }
-
-    metadata = {
-        "basis": "per_100g",
-        "foodState": "recipe_edible",
-        "cookingStateLabel": "按建议成品重量估算",
-        "source": "calculated",
-        "sourceReference": "已发布食品数据；成品份量为建议估算",
+    return {
+        "basis": "whole_dish",
+        "quantity_basis": "source_recipe",
+        **{target: float(totals[code]) if totals.get(code) is not None else None for code, target in names.items()},
+        "fiberG": None,
     }
-    return (
-        {**metadata, **display(per100)},
-        {"basis": "whole_dish", **display(totals)},
-        [{"basis": "per_serving", **display(values)} for values in allocated],
-    )
