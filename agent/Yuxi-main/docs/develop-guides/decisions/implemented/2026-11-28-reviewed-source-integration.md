@@ -39,6 +39,6 @@ Owner：backend/package/yuxi/services/daily_dish_swap_service.py
 | 工程规范与后端静态检查 | 工程契约 / Python | 检查脚本与54个变更后端源文件 | 工程检查、检查器unittest、Ruff check/format | 检查器63项负向测试 | Passed：工程契约、检查器63项、Ruff check/format均通过 |
 | API小程序源码可编译 | 本地编译 / 包体 | App构建脚本 | 正式微信API构建、包体检查 | 正式API配置、测试登录禁用、分包预算 | 编译Passed；包体gate未通过：主包1,796,884字节，超1.7MiB预算14,305字节 |
 
-后端全量 unit 正在完整复跑。首次中断结果为2478 passed、4 failed；同一四个失败在主线源码上复现（46 passed、4 failed），涉及旧测试替身和共享投影预期，不能据此声明全量通过。
+后端全量 unit 已完成：6174 passed、96 failed、0 errors，另有49 subtests passed，耗时639.18秒。针对96个失败节点，在当前主线原始源码和原始测试中复跑对应26个函数（109例），结果为13 passed、96 failed、0 errors；失败节点集合及每个节点的失败首行信息全部一致，没有本次候选独有的失败节点。此对照仅覆盖候选失败节点，不是完整主线套件结果，也不能表述为完整单测通过。权限及确认相关的既有失败仍需独立处理。
 
 H5本地正式API模式构建为Passed。界面视觉、浏览器业务链路、真机与正式上传包体为Not run。文档站点构建为Not run，检出未安装文档依赖。草稿 PR 的源码审查结论不代表可合并或正式发布。
