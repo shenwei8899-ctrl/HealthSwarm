@@ -4,7 +4,7 @@ import TodayMealPlanContent from './TodayMealPlanContent.vue'
 import { detailGesture } from '../services/meal-detail-client.js'
 import { localDate } from '../utils/meal-state.js'
 const props=defineProps({open:Boolean,state:{type:Object,required:true},busy:Boolean,interactive:{type:Boolean,default:true},members:{type:Array,default:()=>[]},defaultDiners:{type:Array,default:()=>[]},dinerDraft:Object})
-const emit=defineEmits(['close','action','detail','dish','confirm-diners','arrange-diners'])
+const emit=defineEmits(['close','action','detail','dish','confirm-diners','arrange-diners','complete-profile'])
 const expanded=ref(false)
 const editing=ref(false),mealType=ref(''),selected=ref([])
 const meals=[{type:'breakfast',name:'早餐'},{type:'lunch',name:'午餐'},{type:'dinner',name:'晚餐'}]
@@ -80,7 +80,7 @@ watch([()=>props.open,()=>props.state.date,()=>props.members],cancelEditing)
       <text>{{draftMealName}} {{dinerDraft.participantIds.length}} 人 · {{busy?'正在核对':'待安排'}}</text>
       <button v-if="!busy&&interactive&&!['answer','candidates','regenerate'].includes(state.action)" class="tm-edit" @click="emit('arrange-diners')">重新安排{{draftMealName}}</button>
      </view>
-     <TodayMealPlanContent :state="state" :busy="busy" :interactive="interactive&&open" @action="act" @detail="detail" @dish="dish"/>
+     <TodayMealPlanContent :state="state" @complete-profile="emit('complete-profile',$event)" :busy="busy" :interactive="interactive&&open" @action="act" @detail="detail" @dish="dish"/>
     </view>
    </scroll-view>
    <view v-if="editing" class="tm-diner-footer">

@@ -1,6 +1,6 @@
 <script setup>
 import { basicProfileIssue } from '../utils/onboarding-validation.js'
-import { computed,ref,onMounted,onUnmounted } from 'vue'
+import { computed,ref,onMounted,onUnmounted,nextTick } from 'vue'
 import { onShow,onHide,onUnload } from '@dcloudio/uni-app'
 import ProfileFormLayout from './ProfileFormLayout.vue'
 import {preserveMemberEdit,readMemberEdit,clearMemberEdit} from '../services/member-edit-draft.js'
@@ -17,7 +17,7 @@ import { localDate } from '../utils/meal-state.js'
 import { mealDate } from '../services/diet-journal-client.js'
 // Keep the sheet's flex containers adjacent in WeChat's native component tree.
 defineOptions({options:{virtualHost:true}})
-const props=defineProps({id:String,shareReady:Boolean,shareError:String,shareBusy:Boolean,scrollTop:{type:Number,default:0},initialSection:String,embedded:Boolean})
+const props=defineProps({id:String,shareReady:Boolean,shareError:String,shareBusy:Boolean,scrollTop:{type:Number,default:0},initialSection:String,embedded:Boolean,completeProfile:Boolean,initialField:String})
 const emit=defineEmits(['close','saved','prepare-invite','manage-invite'])
 const writing=ref(false)
 const profile=ref(null),draft=ref(null),editing=ref(false),busy=ref(false),error=ref(''),records=ref([]),dietError=ref(''),reportError=ref('')
@@ -28,7 +28,7 @@ const reportBusy=ref(false)
 const canOpenReport=computed(()=>!!member.value)
 const reportHint=computed(()=>reportBusy.value?'正在准备…':member.value?.reportStatus==='loading'?'读取中…':member.value?.reportStatus==='done'?'已核对':member.value?.reportStatus==='review'?'待核对':member.value?.reportStatus==='failed'?'点击重试':'可添加')
 const labels={breakfast:'早餐',lunch:'午餐',dinner:'晚餐',snack:'加餐'}
-let epoch=0,loadedRevision=-1,initialSectionApplied=false
+let epoch=0,loadedRevision=-1,initialSectionApplied=false,completionApplied=false
 const section=ref('basic'),conflictEdit=ref(null),showConflictEdit=ref(false)
 const sections=[{key:'basic',label:'基本资料'},{key:'health',label:'健康情况'},{key:'preferences',label:'饮食偏好'},{key:'restrictions',label:'饮食限制'}]
 const dirty=computed(()=>editing.value&&draft.value&&(JSON.stringify(draft.value)!==JSON.stringify(member.value)||JSON.stringify(additional.value)!==JSON.stringify(profileDraft(source.value?.profile||{}))))
@@ -59,7 +59,7 @@ async function load(){if(busy.value)return;const mine=++epoch,rev=sessionRevisio
  if(!initialSectionApplied){section.value=sections.some(s=>s.key===props.initialSection)?props.initialSection:'basic';initialSectionApplied=true}
  const cached=readMemberEdit(props.id,source.value);conflictEdit.value=null;
  if(cached){if(cached.conflict)conflictEdit.value=cached;else if(canEdit.value){draft.value=cached.draft;additional.value=cached.additional;section.value=sections.some(s=>s.key===cached.section)?cached.section:'basic';editing.value=true}}
- if(!member.value)throw new Error('这位成员已不在当前家庭，请返回重新选择');if(profile.value.isOwner&&member.value.claimed===false)emit('prepare-invite');if(member.value.healthMemberId){if(props.embedded)void extras(member.value,mine,rev);else await extras(member.value,mine,rev)}else dietError.value='尚未开始健康分析，已有家庭资料已保存。'}catch(e){if(mine===epoch){if(rev!==sessionRevision()||[401,403,404,410].includes(Number(e.code))){hide();error.value='当前授权或来源已变化，请重新读取。'}else error.value=e.message}}finally{if(mine===epoch){if(rev!==sessionRevision())hide();else busy.value=false}}}
+ if(!member.value)throw new Error('这位成员已不在当前家庭，请返回重新选择');if(props.completeProfile&&!completionApplied&&!cached){completionApplied=true;if(canEdit.value){edit();error.value='请补齐资料，保存后返回餐单重新核对。';await nextTick();const selectors={sex:'#field-gender',name:'#field-name',birth_date:'#field-birth',height_cm:'#field-height',weight_kg:'#field-weight',activity_level:'#field-activity_level'};if(mine===epoch&&rev===sessionRevision()&&selectors[props.initialField])uni.pageScrollTo?.({selector:selectors[props.initialField],duration:200});}else error.value='请由本人或有权限的家人补齐资料。';}if(profile.value.isOwner&&member.value.claimed===false)emit('prepare-invite');if(member.value.healthMemberId){if(props.embedded)void extras(member.value,mine,rev);else await extras(member.value,mine,rev)}else dietError.value='尚未开始健康分析，已有家庭资料已保存。'}catch(e){if(mine===epoch){if(rev!==sessionRevision()||[401,403,404,410].includes(Number(e.code))){hide();error.value='当前授权或来源已变化，请重新读取。'}else error.value=e.message}}finally{if(mine===epoch){if(rev!==sessionRevision())hide();else busy.value=false}}}
 async function extras(person,mine,rev){
  const current=()=>mine===epoch&&rev===sessionRevision()
  if(current())person.reportStatus='loading'

@@ -1,3 +1,4 @@
+import { planningProfileIssues } from './planning-profile-issues.js'
 import { createTodayMenuCache, profileKey } from './today-menu-cache.js'
 import { readDailyMealPlan } from './daily-meal-plan.js'
 import { createHealthTaskFlow } from './health-task-flow.js'
@@ -11,7 +12,7 @@ const mealTypes = ['breakfast','lunch','dinner']
 const requiredMeals = plan => [...new Set([...(plan.needs_regeneration || []),
   ...mealTypes.filter(type => !plan.meals.some(meal => meal.meal_type === type))])]
 export function todayMealPlanState() {
-  return { phase:'idle',date:'',plan:null,verified:false,displayable:false,checking:false,issue:false, generationFailed:false,label:'正在读取今日餐单',notice:'',action:'',pending:null,consentOption:null }
+  return { phase:'idle',date:'',plan:null,verified:false,displayable:false,checking:false,issue:false, generationFailed:false,label:'正在读取今日餐单',notice:'',action:'',pending:null,consentOption:null,profileIssues:[] }
 }
 
 // The menu owns its task. It never reads or writes the chat composer, history,
@@ -21,7 +22,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
   day = localDate, schedule = setTimeout, cancel = clearTimeout, pollLimit = 150, taskNamespace = 'today-menu' } = {}) {
   const menuCache = createTodayMenuCache(storage)
   let generation = 0, timer = null, flow = null, disposed = false, verifiedScope = ''
-  let pendingConsent = null
+  let pendingConsent = null, pendingProfile = null, planningPause = null
   const taskStorage = {
     getStorageSync: key => storage.getStorageSync(taskNamespace + ':' + key),
     setStorageSync: (key,value) => storage.setStorageSync(taskNamespace + ':' + key,value),
@@ -34,7 +35,13 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
     pendingConsent = null
     const previous = flow; flow = null; previous?.pause()
   }
-  function clear() { stop(); verifiedScope = ''; Object.assign(state,todayMealPlanState()) }
+  function clear({preserveProfileIntent=false,preservePlanningPause=false}={}) {
+    const same=entry=>entry?.scope===context()&&entry.date===day()
+    const pause=preservePlanningPause&&(same(pendingProfile)||same(planningPause))
+    pendingProfile=preserveProfileIntent&&same(pendingProfile)?{...pendingProfile,problems:[]}:null
+    planningPause=pause&&!pendingProfile?{scope:context(),date:day()}:null
+    stop(); verifiedScope = ''; Object.assign(state,todayMealPlanState())
+  }
   async function acceptConsent() {
     const pending = pendingConsent
     if (!pending || pending.scope !== context() || state.checking) return
@@ -53,10 +60,15 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       if (pending === pendingConsent) state.checking = false
     }
   }
-  async function open(profile, { readOnly = false, retryFailed = false, revision = null, dinerChange = null } = {}) {
+  async function open(profile, { readOnly = false, retryFailed = false, revision = null, dinerChange = null, resumeProfile = false } = {}) {
     if (disposed) return
     stop()
     const cacheProfile = profile, ticket = generation, scope = context(), date = day(), family = profile?.householdId
+    if(dinerChange||revision)pendingProfile=null
+    if(retryFailed||dinerChange||revision||planningPause&&(planningPause.scope!==scope||planningPause.date!==date))planningPause=null
+    if(pendingProfile&&(pendingProfile.scope!==scope||pendingProfile.date!==date||pendingProfile.selection.family_id!==family))pendingProfile=null
+    const completing=pendingProfile
+    if(completing&&resumeProfile){revision=completing.revision;dinerChange=completing.dinerChange;retryFailed=completing.retryFailed}
     const planScope = JSON.stringify([scope,date,profileKey(profile || {}),revision?.sourceId])
     // Restore the same-session display immediately; details and purchase verify independently.
     const previousPlan = revision ? null : verifiedScope === planScope && state.displayable
@@ -75,7 +87,7 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
     const fail = (privateData = false, notice = '', canRetry = false, generationFailed = false) => {
       if (!current()) return
       state.checking = false
-      if (privateData) { state.plan = null; state.pending = null; state.verified = false; state.displayable = false; verifiedScope = ''; menuCache.clear() }
+      if (privateData) { if(pendingProfile)planningPause={scope,date};pendingProfile=null;state.profileIssues=[];state.plan = null; state.pending = null; state.verified = false; state.displayable = false; verifiedScope = ''; menuCache.clear() }
       state.issue = true; state.phase = state.plan ? 'ready' : 'error'
       state.generationFailed = generationFailed
       state.notice = notice || (privateData ? '餐单资料已变化，请刷新后重新核对。' : state.plan ? state.verified ? '暂未获取更新结果，已有餐单仍可查看。' : '暂未完成核对，已有餐单仅供预览，请刷新后查看详情。' : '暂未获取餐单结果，请稍后刷新。')
@@ -85,6 +97,24 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       timer = null
       const previous = flow; flow = null; previous?.pause()
     }
+    const blockProfiles = (issues, selection) => {
+      const problems=planningProfileIssues(issues)
+      if(!problems.length)return false
+      pendingProfile={scope,date,selection:JSON.parse(JSON.stringify(selection)),problems,retryFailed:retryFailed||!!completing?.retryFailed,
+        revision:revision?JSON.parse(JSON.stringify(revision)):completing?.revision||null,
+        dinerChange:dinerChange?JSON.parse(JSON.stringify(dinerChange)):completing?.dinerChange||null}
+      state.checking=false;state.issue=true;state.phase=state.plan?'ready':'error'
+      state.profileIssues=problems;state.notice='请先补齐以下参餐成员资料，再继续配餐。';state.action='complete-profile'
+      state.generationFailed=false;flow?.pause()
+      return true
+    }
+    const profileProblems = selection => selection.participant_ids.flatMap(id=>{
+      const member=profile.members.find(row=>row.id===id)
+      if(!member)return []
+      const fields=member.planningIssues
+      return Array.isArray(fields)&&fields.length?[{member_id:id,name:member.name,version:member.version,fields,
+        can_edit:member.planningCanEdit===true}]:[]
+    })
     const revised = plan => revision && plan.version > revision.version && plan.meals.some(item =>
       item.meal_type === revision.mealType && item.source.kind === 'reference' && item.source.id !== revision.sourceId &&
       JSON.stringify((item.members || []).map(member=>member.id).sort()) === JSON.stringify(revision.participantIds))
@@ -216,6 +246,13 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       let plan = await read(family,date)
       if (!current()) { if (ticket === generation) clear(); return }
       adopt(plan)
+      if(planningPause){state.checking=false;state.issue=true;state.phase=state.plan?'ready':'error';state.action='regenerate';state.notice='参餐成员或资料授权已变化，请重新选择后安排餐次。';return}
+      if(completing){
+        if(completing.selection.participant_ids.some(id=>!profile.members.some(m=>m.id===id&&m.planningCanRead!==false))){fail(true,'参餐成员已变化，请重新选择。');return}
+        if(!completing.selection.participant_ids.every(id=>Array.isArray(profile.members.find(m=>m.id===id).planningIssues))){fail(false,'参餐成员资料尚未核对，请刷新后重试。');return}
+        if(blockProfiles(profileProblems(completing.selection),completing.selection))return
+        if(!resumeProfile){state.checking=false;state.phase=state.plan?'ready':'error';state.profileIssues=[];state.issue=true;state.notice='参餐成员资料已补齐，可以继续配餐。';state.action='continue-planning';return}
+      }
       if (dinerChange) {
         const { mealType, participantIds, expected } = dinerChange
         if (readOnly || !mealTypes.includes(mealType) || !participantIds?.length ||
@@ -275,15 +312,17 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       }
       state.phase = state.plan?'ready':'generating'; state.label = '正在安排今天的三餐'
       updating()
-      const selection = referenceSelection(profile,'安排今天的三餐',{today:date})
-      const needed = revision ? [revision.mealType] : requiredMeals(plan)
-      const firstDiners = revision?.participantIds || plan.regeneration_participants?.[needed[0]] || selection.participant_ids
+      const selection = completing?JSON.parse(JSON.stringify(completing.selection)):referenceSelection(profile,'安排今天的三餐',{today:date})
+      const needed = completing?selection.meal_types:revision ? [revision.mealType] : requiredMeals(plan)
+      const firstDiners = completing?.selection.participant_ids || revision?.participantIds || plan.regeneration_participants?.[needed[0]] || selection.participant_ids
       selection.meal_types = revision ? needed : needed.filter(type=>
         JSON.stringify([...(plan.regeneration_participants?.[type]||selection.participant_ids)].sort())===JSON.stringify([...firstDiners].sort()))
       selection.participant_ids = [...firstDiners].sort()
       selection.daily_base_version = plan.version
       const anchor = profile.members.find(member => selection.participant_ids.includes(member.id) && member.healthMemberId)
       if (!anchor) { fail(false,'所选就餐成员的档案关联尚未就绪，请重新读取家庭档案。',false,true); return }
+      if(selection.participant_ids.some(id=>profile.members.find(m=>m.id===id)?.planningCanRead===false)){fail(true,'参餐成员资料授权已变化，请重新选择。');return}
+      if(blockProfiles(profileProblems(selection),selection))return
       ownSelection = selection; ownMemberId = anchor.healthMemberId
       const owned = createFlow({storage:taskStorage,onChange: next => {
         if (current() && flow === owned && next.invalidated) fail(true)
@@ -307,7 +346,9 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
       if (!task.entry?.thread_id) await owned.createEntry()
       if (!current()) return
       task = owned.getState()
-      if (!task.entry?.thread_id || task.error || task.invalidated) { fail(!!task.invalidated); return }
+      if(task.businessCode==='profile_incomplete'&&blockProfiles(task.profileIssues,selection))return
+      if (!task.entry?.thread_id || task.error || task.invalidated) { fail(!!task.invalidated,taskNotice(task)); return }
+      pendingProfile=null
       const requestedMeals = selection.meal_types.map(type=>({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'})[type]).join('、')
       if (revision) revision.requested = true
       const accepted = await owned.submit(revision ? `按已选就餐成员重新安排${requestedMeals}，保留其他已保存餐次。` : `生成今日${requestedMeals}的参考餐单${selection.meal_types.length<3?'，保留其他已保存餐次。':'。'}`)
@@ -327,7 +368,8 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
     } catch (error) {
       if (!current()) { if (ticket === generation) clear(); return }
       const privateData = [401,403,404,410].includes(Number(error.code)) || !dinerChange && Number(error.code)===409
-      fail(privateData,dinerChange && !privateData ? error.message : '',!!dinerChange)
+      if(error.businessCode==='profile_incomplete'&&ownSelection&&blockProfiles(error.profileIssues,ownSelection))return
+      fail(privateData,!privateData&&(error.businessCode==='profile_incomplete'||dinerChange) ? error.message : '',!!dinerChange)
     }
   }
   function isGenerating() {
@@ -342,5 +384,5 @@ export function createTodayMealPlan({ state, onPlan = () => {}, read = readDaily
     menuCache.write(context(),profile,plan.date,plan)
     onPlan(plan)
   }
-  return {open,acceptSavedPlan,acceptConsent,isGenerating,pause:stop,clear,dispose(){stop();disposed=true;Object.assign(state,todayMealPlanState())}}
+  return {open,acceptSavedPlan,acceptConsent,isGenerating,pause:stop,clear,dispose(){pendingProfile=null;planningPause=null;stop();disposed=true;Object.assign(state,todayMealPlanState())}}
 }

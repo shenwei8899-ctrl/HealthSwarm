@@ -110,6 +110,22 @@ function detail(overrides={}){
   const page=new Function('deps',`const {${Object.keys(deps)}}=deps;${src};return {load,edit,save,hide,cancelEdit,section,conflictEdit,canEdit,profile,source,draft,error,busy,editing,requestClose,reload,writing,dirty,writeUncertain,report,reportError,reportBusy,reportHint,canOpenReport}`)(deps)
   return {...page,writes,changeAccount:()=>revision++}
 }
+test('completion opens the exact member in edit mode and targets the first missing field',async()=>{
+ const p=detail({defineProps:()=>({id:'mother',completeProfile:true,initialSection:'basic',initialField:'height_cm'}),nextTick:async()=>{}})
+ const scroll=[];globalThis.uni.pageScrollTo=options=>scroll.push(options)
+ await p.load()
+ assert.equal(p.draft.value.id,'mother');assert.equal(p.editing.value,true)
+ assert.equal(scroll[0].selector,'#field-height')
+ assert.match(p.error.value,/保存后返回餐单/)
+})
+test('read-only completion explains permission requirement without opening an editable draft',async()=>{
+ const raw={...source(),editable_fields:[]},m=member()
+ const p=detail({defineProps:()=>({id:'mother',completeProfile:true,initialSection:'health',initialField:'activity_level'}),
+  readMemberProfile:async()=>({profile:{householdId:'family',isOwner:false,members:[m]},member:m,source:raw})})
+ await p.load()
+ assert.equal(p.editing.value,false);assert.equal(p.draft.value,null)
+ assert.match(p.error.value,/有权限的家人/)
+})
 
 test('self report entry passes the person number without an enable request',async()=>{
   const opened=[]

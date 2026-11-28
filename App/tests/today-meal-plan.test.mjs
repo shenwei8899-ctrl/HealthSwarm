@@ -11,10 +11,110 @@ import {readDailyMealPlan} from '../src/services/daily-meal-plan.js'
 const date='2026-10-30'
 const profile={householdId:'family',selfMemberId:'self',members:[{id:'self',healthMemberId:'health-self'}]}
 const absent=()=>({status:'absent',date,version:0,meals:[]})
+const profileField={field:'height_cm',label:'身高',reason:'missing',message:'请填写身高',section:'basic'}
+function incompleteProfile(){return {...profile,defaultDiners:['self','relative'],members:[
+ {...profile.members[0],name:'合成甲',planningIssues:[],planningCanEdit:true},
+ {id:'relative',name:'合成乙',planningIssues:[profileField],planningCanEdit:true},
+]}}
+test('preflight blocks incomplete selected members before any task and returns to the same selection',async()=>{
+ const h=fixture(),p=incompleteProfile()
+ await h.client.open(p)
+ assert.equal(h.state.action,'complete-profile');assert.equal(h.state.profileIssues[0].name,'合成乙')
+ assert.equal(h.calls.some(c=>c[0]==='flow'),false);assert.equal(h.timers.size,0)
+ const fixed=structuredClone(p);fixed.members[1].planningIssues=[];fixed.defaultDiners=['self']
+ await h.client.open(fixed,{readOnly:true})
+ assert.equal(h.state.action,'continue-planning');assert.deepEqual(h.state.profileIssues,[])
+ assert.equal(h.calls.some(c=>c[0]==='entry'),false)
+ await h.client.open(fixed,{resumeProfile:true})
+ assert.deepEqual(h.calls.find(c=>c[0]==='open')[3].participant_ids,['relative','self'])
+ assert.equal(h.calls.filter(c=>c[0]==='submit').length,1)
+ h.client.dispose()
+})
+test('profile completion preserves an explicit retry after a failed or rejected prior task',async()=>{
+ for(const status of ['failed','rejected']){
+  const plan={...absent(),needs_regeneration:['breakfast','lunch','dinner'],pending:{status,request_id:'old'}}
+  const h=fixture({read:async()=>plan}),p=incompleteProfile()
+  await h.client.open(p,{retryFailed:true})
+  assert.equal(h.state.action,'complete-profile')
+  await h.client.open(p,{readOnly:true})
+  const fixed=structuredClone(p);fixed.members[1].planningIssues=[];fixed.defaultDiners=['self']
+  await h.client.open(fixed,{readOnly:true})
+  assert.equal(h.state.action,'continue-planning')
+  assert.equal(h.calls.filter(c=>c[0]==='submit').length,0)
+  await h.client.open(fixed,{resumeProfile:true})
+  assert.deepEqual(h.calls.find(c=>c[0]==='open')[3].participant_ids,['relative','self'])
+  assert.equal(h.calls.filter(c=>c[0]==='submit').length,1)
+  h.client.dispose()
+ }
+})
+
+test('chat-only clearing preserves scoped intent but discards old profile problem projections',async()=>{
+ const h=fixture(),p=incompleteProfile()
+ await h.client.open(p);h.client.clear({preserveProfileIntent:true})
+ assert.deepEqual(h.state.profileIssues,[]);assert.equal(h.state.plan,null)
+ const fixed=structuredClone(p);fixed.members[1].planningIssues=[];fixed.defaultDiners=['self']
+ await h.client.open(fixed)
+ assert.equal(h.state.action,'continue-planning');assert.equal(h.calls.some(c=>c[0]==='flow'),false)
+ await h.client.open(fixed,{resumeProfile:true})
+ assert.deepEqual(h.calls.find(c=>c[0]==='open')[3].participant_ids,['relative','self'])
+ h.client.dispose()
+})
+test('account and day changes discard completion intent even when chat recovery requests preservation',async()=>{
+ for(const change of ['account','day']){
+  const h=fixture(),p=incompleteProfile();await h.client.open(p)
+  if(change==='account')h.setOwner('other:family');else h.setDay('2026-10-31')
+  h.client.clear({preserveProfileIntent:true})
+  const fixed=structuredClone(p);fixed.members[1].planningIssues=[];fixed.defaultDiners=['self']
+  await h.client.open(fixed,{readOnly:true})
+  assert.notEqual(h.state.action,'continue-planning');assert.deepEqual(h.state.profileIssues,[])
+  h.client.dispose()
+ }
+})
+
+test('fresh permission denial discards preserved profile intent and never opens a task',async()=>{
+ const h=fixture(),p=incompleteProfile();await h.client.open(p)
+ h.client.clear({preserveProfileIntent:true})
+ p.members[1].planningCanRead=false;p.members[1].planningIssues=[]
+ await h.client.open(p)
+ assert.deepEqual(h.state.profileIssues,[]);assert.equal(h.state.plan,null)
+ assert.equal(h.calls.some(c=>c[0]==='flow'||c[0]==='submit'),false)
+ assert.notEqual(h.state.action,'continue-planning');h.client.dispose()
+})
+
+test('entry profile error shows all affected members instead of generic read error and never polls',async()=>{
+ const problems=[{member_id:'self',name:'合成甲',can_edit:true,fields:[profileField]},
+  {member_id:'relative',name:'合成乙',can_edit:false,fields:[profileField]}]
+ const h=fixture({entryError:{businessCode:'profile_incomplete',error:'请补齐资料',profileIssues:problems}})
+ await h.client.open(profile)
+ assert.deepEqual(h.state.profileIssues.map(p=>p.name),['合成甲','合成乙'])
+ assert.equal(h.state.action,'complete-profile');assert.doesNotMatch(h.state.notice,/暂未获取餐单结果/)
+ assert.equal(h.calls.some(c=>c[0]==='submit'),false);assert.equal(h.timers.size,0)
+ h.client.clear();assert.deepEqual(h.state.profileIssues,[])
+})
+test('existing menu survives profile blockage and account changes discard completion scope',async()=>{
+ const p=incompleteProfile(),h=fixture({read:async()=>({...ready(),needs_regeneration:['breakfast']})})
+ await h.client.open(p)
+ assert.equal(h.state.plan.meals.length,3);assert.equal(h.state.action,'complete-profile')
+ h.setOwner('different');h.client.clear()
+ assert.deepEqual(h.state.profileIssues,[]);assert.equal(h.state.plan,null)
+})
+test('completion keeps a lunch member revision actionable even when all old meals exist',async()=>{
+ const h=fixture({read:async()=>ready()}),p=incompleteProfile()
+ await h.client.open(p,{dinerChange:{mealType:'lunch',participantIds:['self','relative'],expected:{version:1,sourceId:'preview'}}})
+ assert.equal(h.state.action,'complete-profile')
+ const fixed=structuredClone(p);fixed.members[1].planningIssues=[]
+ await h.client.open(fixed,{readOnly:true})
+ assert.equal(h.state.action,'continue-planning');assert.equal(h.calls.some(c=>c[0]==='entry'),false)
+ await h.client.open(fixed,{resumeProfile:true})
+ const selected=h.calls.find(c=>c[0]==='open')[3]
+ assert.deepEqual(selected.meal_types,['lunch']);assert.deepEqual(selected.participant_ids,['relative','self'])
+ assert.equal(h.calls.filter(c=>c[0]==='submit').length,1)
+ h.client.dispose()
+})
 const ready=()=>({status:'ready',date,version:1,meals:['breakfast','lunch','dinner'].map(meal_type=>({meal_type,source:{kind:'reference',id:'preview'},meal:{dishes:[{name:'菜品一'},{name:'菜品二'}]}}))})
 const candidatePending=()=>({status:'reference_candidates',request_id:'original',thread_id:'original-thread',member_id:'health-self',
  selection:{mode:'reference',family_id:'family',participant_ids:['self'],plan_date:date,meal_types:['breakfast']}})
-function fixture({read=async()=>absent(),available=true,unknown=false,accepted=true,invalid=false,pollLimit,submittedState={},initialState,onPlan=()=>{}}={}){
+function fixture({read=async()=>absent(),available=true,unknown=false,accepted=true,invalid=false,pollLimit,submittedState={},initialState,onPlan=()=>{},entryError=null}={}){
  const state=initialState||todayMealPlanState(),calls=[],timers=new Map(),cache=new Map(),published=[],scheduledDelays=[]
  let owner='account:family',sequence=0,calendar=date,taskValue={},taskChanged=()=>{},accessible=available
  const client=createTodayMealPlan({state,day:()=>calendar,context:()=>owner,read:async(...args)=>{calls.push(['read',...args]);return read(...args)},
@@ -24,7 +124,7 @@ function fixture({read=async()=>absent(),available=true,unknown=false,accepted=t
    calls.push(['flow']);taskChanged=onChange
    return {getState:()=>taskValue,
     async open(member,type,selection,options){calls.push(['open',member,type,selection,options]);storage.setStorageSync('task',{member});taskValue={available:accessible,...(unknown?{requestId:'existing',submitUnknown:true}:{})};if(invalid){taskValue.invalidated=true;onChange(taskValue)}},
-    async createEntry(){calls.push(['entry']);taskValue.entry={thread_id:'thread'}},
+    async createEntry(){calls.push(['entry']);if(entryError){Object.assign(taskValue,entryError);return}taskValue.entry={thread_id:'thread'}},
     async submit(query){calls.push(['submit',query]);taskValue={...taskValue,requestId:'new',status:accepted?'queued':'',submitUnknown:!accepted,...submittedState};return accepted},
     pause(){calls.push(['pause']);onChange(taskValue)},
    }

@@ -2159,3 +2159,49 @@ test('multi-day handoff shows the exclusive plan entry without submitting a meal
   assert.equal(p.messages.value.findLast(message=>message.role==='user').status,'completed')
  }finally{p.dispose()}
 })
+
+test('chat source recovery keeps profile completion explicit and retains the original diners',async()=>{
+ for(const failureAt of ['snapshot','flow','history404','profileChanged']){
+  let fixed=false
+  const menu=automaticMenu(),p=workflow({todayMenu:menu.config,profile:value=>{
+   value.members.forEach(member=>{member.planningIssues=member.id==='father'&&!fixed?[{field:'height_cm',label:'身高',message:'请填写身高',section:'basic'}]:[];member.planningCanEdit=true})
+   if(fixed)value.defaultDiners=['self']
+  }})
+  try{
+   await p.load();await flush()
+   assert.equal(p.todayMenu.action,'complete-profile')
+   fixed=true
+   if(['snapshot','history404'].includes(failureAt)){
+    let fail=true
+    p.setSnapshot(async()=>{if(fail){fail=false;throw Object.assign(new Error('来源已变化'),{code:failureAt==='history404'?404:410,businessCode:failureAt==='history404'?'':'source_invalidated'})}return{messages:[],runs:[]}})
+   }else{
+    p.flow.resume=async()=>{p.publish({invalidated:true,available:false,failureStatus:410,failureCode:failureAt==='profileChanged'?'profile_source_changed':'source_invalidated'});return false}
+   }
+   await p.refreshReturn();await flush();await flush()
+   assert.equal(p.todayMenu.action,'continue-planning')
+   assert.deepEqual(p.todayMenu.profileIssues,[])
+   assert.equal(menu.calls.filter(call=>call[0]==='open'||call[0]==='submit').length,0)
+   await p.actTodayMenu();await flush()
+   assert.deepEqual(menu.calls.find(call=>call[0]==='open')[3].participant_ids,['father','self'])
+   assert.equal(menu.calls.filter(call=>call[0]==='submit').length,1)
+  }finally{p.dispose()}
+ }
+})
+
+test('permission loss during profile return clears old diners and waits for an explicit new arrangement',async()=>{
+ let fixed=false
+ const menu=automaticMenu(),p=workflow({todayMenu:menu.config,profile:value=>{
+  value.members.forEach(member=>{member.planningCanRead=!(fixed&&member.id==='father');member.planningIssues=member.id==='father'&&!fixed?[{field:'height_cm',label:'身高',message:'请填写身高',section:'basic'}]:[]})
+  if(fixed)value.defaultDiners=['self']
+ }})
+ try{
+  await p.load();await flush();assert.equal(p.todayMenu.action,'complete-profile');fixed=true
+  let fail=true;p.setSnapshot(async()=>{if(fail){fail=false;throw Object.assign(new Error('不可读取'),{code:404})}return{messages:[],runs:[]}})
+  await p.refreshReturn();await flush();await flush()
+  assert.deepEqual(p.todayMenu.profileIssues,[]);assert.equal(p.todayMenu.action,'regenerate')
+  assert.equal(menu.calls.some(call=>call[0]==='open'||call[0]==='submit'),false)
+  await p.actTodayMenu();await flush()
+  assert.deepEqual(menu.calls.find(call=>call[0]==='open')[3].participant_ids,['self'])
+  assert.equal(menu.calls.filter(call=>call[0]==='submit').length,1)
+ }finally{p.dispose()}
+})

@@ -17,7 +17,7 @@ from yuxi.services.health_meal_plan_service import require_planner_run
 from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.health_vision_service import health_vision_service
 from yuxi.services.health_vision_types import HealthVisionError, NUTRIENTS
-from yuxi.services.miniapp_profile_types import require_miniapp_profile
+from yuxi.services.miniapp_profile_types import require_complete_planning_profiles
 from yuxi.services.reference_cooking_water import cooking_water
 from yuxi.services.reference_catalog_recipe import (
     CATALOG_PREFIX,
@@ -79,17 +79,23 @@ async def reference_context_in_session(session, uid, anchor, selection, *, inclu
         raise HealthVisionError("consultation_unavailable", "参考餐单的配餐处理配置尚未就绪", 503)
     processing = {"model": model["model"], "processor": model["processor"], "policy_version": config["policy_version"]}
     members, sources, age_bands = [], {}, {}
+    authorized = []
     for mid in map(str, selected.participant_ids):
         member = await repo.member(family.id, mid)
         hid = await repo.linked_health_member(family.id, mid)
         if member is None or not member.is_active or hid is None:
             raise HealthVisionError("reference_member_unavailable", "所选成员尚未完成资料关联与授权", 409)
         allowed_fields = authorized_fields(family, member, uid, family_sharing=True)
-        if "dietary_details" not in allowed_fields:
+        if not {"sex", "birth_date", "height_cm", "activity_level", "dietary_details"} <= allowed_fields:
             raise HealthVisionError("not_authorized", "所选成员的饮食资料尚未授权", 403)
-        require_miniapp_profile(member)
         for scope in ("ai_use", "profile_view", "diet_edit"):
             await health.authorize(hid, uid, scope)
+        authorized.append((mid, member, hid))
+    if str(anchor) not in {hid for _, _, hid in authorized}:
+        raise HealthVisionError("reference_member_required", "入口成员必须包含在所选就餐者中", 422)
+    require_complete_planning_profiles([member for _, member, _ in authorized], family=family, uid=uid)
+    for mid, member, hid in authorized:
+        allowed_fields = authorized_fields(family, member, uid, family_sharing=True)
         await health.require_consent(hid, uid, "meal_plan", processing)
         p = member.profile or {}
         sources[mid] = {"health_member_id": hid, "version": member.version, "profile_hash": input_fingerprint(p)}
@@ -109,8 +115,6 @@ async def reference_context_in_session(session, uid, anchor, selection, *, inclu
                 "doctor_instructions": dietary.get("clinicianGuidance"),
             }
         )
-    if str(anchor) not in {v["health_member_id"] for v in sources.values()}:
-        raise HealthVisionError("reference_member_required", "入口成员必须包含在所选就餐者中", 422)
     return {
         "selection": selected.model_dump(mode="json", exclude_none=True),
         "members": members,

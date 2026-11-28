@@ -48,8 +48,9 @@ ReportPageErrorCode = Literal[
 class HealthVisionError(Exception):
     """仅携带可公开的错误代码，不包含模型或患者正文。"""
 
-    def __init__(self, code: str, message: str, status: int = 422):
+    def __init__(self, code: str, message: str, status: int = 422, *, profile_issues=None):
         self.code, self.message, self.status = code, message, status
+        self.profile_issues = profile_issues
         super().__init__(f"{code}: {message}")
 
 

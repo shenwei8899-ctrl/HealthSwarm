@@ -31,6 +31,7 @@ import {readDailyMealPlan} from '../services/daily-meal-plan.js'
 import {referenceSelection as chooseReference,isReferencePlan} from '../services/reference-meal-plan.js'
 import VoiceInput from './VoiceInput.vue'
 import AiAnswer from './AiAnswer.vue'
+import { profileCompletionUrl } from '../services/planning-profile-issues.js'
 import ChatReplyActions from './ChatReplyActions.vue'
 import ChatAssistantHeader from './ChatAssistantHeader.vue'
 import ChatFollowupSuggestions from './ChatFollowupSuggestions.vue'
@@ -146,11 +147,11 @@ function reconnectEntry(event){
  if(!entryReady.value)void load()
  else if(!returnVerified.value){returnRetryAttempt=0;void refreshReturn()}
 }
-function recoverEntry({resetConversation=false}={}){
+function recoverEntry({resetConversation=false,preserveProfileIntent=false}={}){
  if(entryRecovery)return entryRecovery
  const draft={text:question.value,image:draftImage.value,error:draftError.value}
  const conversation={id:conversationId.value,thread:conversationThreadId.value,date:conversationBusinessDate.value}
- clearPrivate();pageScope=storageContext();flowScope=pageScope;historyDenied=false
+ clearPrivate({preserveProfileIntent:preserveProfileIntent&&pageScope===storageContext()&&loadedDate===localDate(),preservePlanningPause:pageScope===storageContext()&&loadedDate===localDate()});pageScope=storageContext();flowScope=pageScope;historyDenied=false
  question.value=draft.text;draftImage.value=draft.image;draftError.value=draft.error
  if(resetConversation){
   // Do not resume the persisted pointer to the thread that just lost access.
@@ -574,7 +575,7 @@ function rememberMealAppearance({requestId,key}){
   const seen=mealAppearances[requestId]||(mealAppearances[requestId]=[])
   if(!seen.includes(key))seen.push(key)
 }
-function clearPrivate(){swapClient.clear();cancelHistorySelection();conversationHistory.clear();historyPreview.value=null;deniedHistoryThread.value='';todayMenuClient.clear();clearEntryRetry(false);selectionGeneration++;historyDenied=false;historyLoading.value=false;historyError.value='';historyNotice.value='';continuationChecking.value=false;continuationError.value='';pendingEntrySend.value=null;for(const key of Object.keys(mealAppearances))delete mealAppearances[key];clearReturnRetry();localSend.value=null;sendPhase.value='';scrollRevision++;latestAvailable.value=false;detailRef.value?.clear();resetEntryUI();onboardingPending.value=false;inlineTodayOpen.value=false;historyOpen.value=false;conversationId.value='';conversationThreadId.value='';conversationBusinessDate.value='';conversationDrafts.clear();entryReady.value=false;returnVerified.value=false;returning.value=false;returnError.value='';prompts.value=[];promptDate.value='';promptProfileKey.value='';mealsLoading.value=false;mealReadError.value='';latestReference.value=null;dailyPlans.value={};stopPlanTimers();referenceSelection=null;refreshedTerminal='';newConversationWelcome.value=false;preparedThreadId.value='';epoch++;sendGeneration++;sending.value=false;loading=null;returnFlight=null;profileLoading.value=false;flow.hide();client.reset();familyClient.reset();familyPanel.value=false;familySelection.value=null;messages.value=[];question.value='';chatError.value='';profile.value=null;task.value={};selectedMeal.value=null;removeDraft();pendingUser=null;submittedDraft=null;voiceRef.value?.cancel();voiceBusy.value=false;voiceMode.value=false;cardVisible.value=false}
+function clearPrivate({preserveProfileIntent=false,preservePlanningPause=false}={}){swapClient.clear();cancelHistorySelection();conversationHistory.clear();historyPreview.value=null;deniedHistoryThread.value='';todayMenuClient.clear({preserveProfileIntent,preservePlanningPause});clearEntryRetry(false);selectionGeneration++;historyDenied=false;historyLoading.value=false;historyError.value='';historyNotice.value='';continuationChecking.value=false;continuationError.value='';pendingEntrySend.value=null;for(const key of Object.keys(mealAppearances))delete mealAppearances[key];clearReturnRetry();localSend.value=null;sendPhase.value='';scrollRevision++;latestAvailable.value=false;detailRef.value?.clear();resetEntryUI();onboardingPending.value=false;inlineTodayOpen.value=false;historyOpen.value=false;conversationId.value='';conversationThreadId.value='';conversationBusinessDate.value='';conversationDrafts.clear();entryReady.value=false;returnVerified.value=false;returning.value=false;returnError.value='';prompts.value=[];promptDate.value='';promptProfileKey.value='';mealsLoading.value=false;mealReadError.value='';latestReference.value=null;dailyPlans.value={};stopPlanTimers();referenceSelection=null;refreshedTerminal='';newConversationWelcome.value=false;preparedThreadId.value='';epoch++;sendGeneration++;sending.value=false;loading=null;returnFlight=null;profileLoading.value=false;flow.hide();client.reset();familyClient.reset();familyPanel.value=false;familySelection.value=null;messages.value=[];question.value='';chatError.value='';profile.value=null;task.value={};selectedMeal.value=null;removeDraft();pendingUser=null;submittedDraft=null;voiceRef.value?.cancel();voiceBusy.value=false;voiceMode.value=false;cardVisible.value=false}
 function rememberThread({migrateLegacy=false}={}){
   if(flowScope!==storageContext()||props.route.taskType&&props.route.taskType!=='consultation'||!task.value.entry?.thread_id||!task.value.memberId)return
   const key=`homepage-chat-threads:${task.value.memberId}:${localDate()}`,old=scopedStorage.getStorageSync(key)||[]
@@ -916,7 +917,7 @@ async function refreshReturnState({skipOptional=false}={}){
     if(!skipOptional)void todayMenuClient.open(next,{readOnly:!!readDinerDraft(next)})
     const ok=await flow.resume()
     if(!current())return
-    if(task.value.invalidated){return await recoverEntry({resetConversation:true})}
+    if(task.value.invalidated){return await recoverEntry({resetConversation:true,preserveProfileIntent:Number(task.value.failureStatus)===410&&['source_invalidated','profile_source_changed'].includes(task.value.failureCode)})}
     if(!ok)throw new Error(task.value.error||task.value.notice||'咨询状态暂未确认，请重新读取。')
     if(task.value.entry?.thread_id){
       const id=task.value.memberId,currentThread=task.value.entry.thread_id
@@ -932,7 +933,8 @@ async function refreshReturnState({skipOptional=false}={}){
         invalid.push(pointers[index].thread_id)
       })
       if(invalid.includes(currentThread)){
-        flow.invalidateThread();return await recoverEntry({resetConversation:true})
+        const failure=snapshots[pointers.findIndex(pointer=>pointer.thread_id===currentThread)]?.reason
+        flow.invalidateThread();return await recoverEntry({resetConversation:true,preserveProfileIntent:Number(failure?.code)===404||Number(failure?.code)===410&&['source_invalidated','profile_source_changed'].includes(failure?.businessCode)})
       }
       if(invalid.length){
         messages.value=messages.value.filter(message=>!invalid.includes(message.threadId))
@@ -1472,9 +1474,16 @@ function confirmTodayDiners({mealType,participantIds}){
   setDinerDraft(draft)
   if(ready)void arrangeTodayDiners({version:plan.version,sourceId:item.source.id})
 }
+function completePlanningProfile(problem){
+  if(disposed||!visible||!profile.value||!todayMenu.profileIssues.some(row=>row.member_id===problem.member_id))return
+  const url=profileCompletionUrl(problem)
+  if(url)uni.navigateTo({url})
+}
 function actTodayMenu(){
   if(todayMenu.action==='consent'){void todayMenuClient.acceptConsent();return}
   if(disposed||!visible||voiceBusy.value||planPurchaseBusy.value||state.busy||dinerSaving.value||!profile.value)return
+  if(todayMenu.action==='continue-planning'){void todayMenuClient.open(profile.value,{resumeProfile:true});return}
+  if(todayMenu.action==='complete-profile'){void todayMenuClient.open(profile.value,{readOnly:true});return}
   if(['answer','candidates'].includes(todayMenu.action))void resumePlanQuestion(todayMenu.pending)
   else if(todayMenu.action==='refresh')void todayMenuClient.open(profile.value,{readOnly:true})
   else if(readDinerDraft(profile.value)||dinerDraft.value?.date===localDate()&&dinerDraft.value.familyId===profile.value.householdId)arrangeTodayDiners()
@@ -1666,7 +1675,7 @@ function openMealRegeneration(){
   <ChatWelcome refined :density="welcomeDensity" :prompts="prompts" :disabled="promptAskBusy" :shuffle-disabled="promptShuffleBusy" @ask="askPrompt" @shuffle="shufflePrompts"/>
  </template>
  <template #default>
-  <TodayMealPlanContent v-if="showConversationMealMenu" heading :state="todayMenu" :busy="planPurchaseBusy||state.busy" :interactive="!mealViewBlocked" @action="actTodayMenu" @detail="showTodayMeal" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
+  <TodayMealPlanContent @complete-profile="completePlanningProfile" v-if="showConversationMealMenu" heading :state="todayMenu" :busy="planPurchaseBusy||state.busy" :interactive="!mealViewBlocked" @action="actTodayMenu" @detail="showTodayMeal" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
   <view v-if="historyError" class="entry-status" role="alert" aria-live="polite"><text>{{historyError}}</text><button v-if="historyError&&!historyLoading" @click="retryHistory">重新读取历史</button></view>
   <text v-if="historyNotice" class="entry-status" role="status">{{historyNotice}}</text>
   <text v-if="entryView.phase==='composing'&&entryContext.eligible&&!chatBusy" class="entry-greeting">你好，想聊聊今天怎么吃？</text>
@@ -1721,7 +1730,7 @@ function openMealRegeneration(){
   <MealDetailSheet ref="detailRef" :members="profile?.members||[]" :reload="reloadDetailPlan" @open-change="detailOpen=$event"/>
   <ChatConversationPreview v-if="historyPreview" :row="historyPreview" :member-id="historyMemberId" :replying="replyPending" @close="historyPreview=null" @directory="historyOpen=true" @denied="deniedPreview"/>
   <ChatConversationDrawer :open="historyOpen" :member-id="historyMemberId" :active-thread-id="historyPreview?.thread_id||conversationThreadId" :new-busy="switchingConversation||!entryReady" :busy="conversationChangeBusy||!!pendingEntrySend" :browse-busy="voiceBusy||draftSaving" :denied-thread-id="deniedHistoryThread" :pending-thread-id="pendingHistoryThread" :selection-error="historySelectionError" :display-name="profile?.members.find(m=>m.id===profile.selfMemberId)?.name||'我的'" @close="closeHistoryDirectory" @ready="prefetchHistory" @new="newConversation" @select="browseConversation" @profile="closeHistoryDirectory();uni.navigateTo({url:'/pages/my/index'})"/>
-  <TodayMealPlanSheet :open="inlineTodayOpen" :state="todayMenu" :busy="planPurchaseBusy||state.busy||dinerSaving||todayMenuClient.isGenerating()" :interactive="!mealViewBlocked" :members="profile?.members" :default-diners="profile?.defaultDiners" :diner-draft="dinerDraft" @confirm-diners="confirmTodayDiners" @arrange-diners="arrangeTodayDiners()" @close="inlineTodayOpen=false" @action="actTodayMenu" @detail="showTodayMeal" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
+  <TodayMealPlanSheet @complete-profile="completePlanningProfile" :open="inlineTodayOpen" :state="todayMenu" :busy="planPurchaseBusy||state.busy||dinerSaving||todayMenuClient.isGenerating()" :interactive="!mealViewBlocked" :members="profile?.members" :default-diners="profile?.defaultDiners" :diner-draft="dinerDraft" @confirm-diners="confirmTodayDiners" @arrange-diners="arrangeTodayDiners()" @close="inlineTodayOpen=false" @action="actTodayMenu" @detail="showTodayMeal" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
   <DinerPicker :open="!!familySelection" :members="profile?.members||[]" :selected="familySelection?.ids||[]" :meal="({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'})[familySelection?.type]" @close="familySelection=null" @confirm="familyMembers"/>
   <DinerPicker :open="!!selectedMeal" :members="profile?.members||[]" :selected="selectedMeal?.members.map(m=>m.id)||[]" :meal="({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'})[selectedMeal?.type]" @close="selectedMeal=null" @confirm="members"/>
   <view v-if="communityOpen" class="sheet-mask" @click.self="communityOpen=false"><view class="sheet"><text class="section-title">加入社群</text><text class="composer-note">暂无可用社群二维码，请稍后再试。</text><button class="secondary-button" @click="communityOpen=false">关闭</button></view></view>

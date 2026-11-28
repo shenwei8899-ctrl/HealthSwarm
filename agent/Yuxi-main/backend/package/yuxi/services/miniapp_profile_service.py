@@ -13,6 +13,7 @@ from yuxi.services.health_nutrition_service import input_fingerprint
 from yuxi.services.miniapp_profile_types import (
     miniapp_onboarding_ready,
     miniapp_profile_complete,
+    miniapp_profile_issues,
     saved_miniapp_member,
 )
 from yuxi.storage.postgres.manager import pg_manager
@@ -330,6 +331,16 @@ async def profile_result(service, family):
                 "canConfirmAnalysis": member.is_active,
                 "confirmed": member.confirmed_version == member.version,
                 "editableFields": view["editable_fields"],
+                "planningCanRead": {"sex", "birth_date", "height_cm", "activity_level", "dietary_details"}
+                <= set(view["allowed_fields"]),
+                "planningIssues": miniapp_profile_issues(member)
+                if {"sex", "birth_date", "height_cm", "activity_level", "dietary_details"}
+                <= set(view["allowed_fields"])
+                else [],
+                "planningCanEdit": bool(
+                    view["editable_fields"]
+                    and (view.get("is_self") or view.get("is_guardian") or family.owner_uid == service.uid)
+                ),
                 "claimed": member.subject_uid is not None,
                 "name": member.name,
                 "relation": "本人" if member.subject_uid == service.uid else member.relationship,

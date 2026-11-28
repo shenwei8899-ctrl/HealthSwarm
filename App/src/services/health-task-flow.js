@@ -1,3 +1,4 @@
+import { planningProfileIssues } from './planning-profile-issues.js'
 import { normalizeFollowups } from './chat-followups.js'
 import { newHealthRequestId } from './health-request-id.js'
 export { newHealthRequestId } from './health-request-id.js'
@@ -63,7 +64,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
   let streams = [], streamKey = '', streamAttempts = 0, streamEpoch = 0, cursors = {}, pendingImages = []
   let pendingImageKeys = []
   let state = { memberId: '', taskType: '', title: '', loading: false, busy: false, refreshing: false, available: false, readOnly: false, finalMessageId: null,
-    consentOption: null, entry: null, requestId: '', runId: '', requests: [], submitUnknown: false, status: '', result: null, recordedMeals: [], error: '', notice: '', ...streamState() }
+    consentOption: null, entry: null, requestId: '', runId: '', requests: [], submitUnknown: false, status: '', result: null, recordedMeals: [], error: '', notice: '', profileIssues: [], businessCode: '', ...streamState() }
   let readFailures = 0, resultFailures = 0, pollingNotice = '', stopNetwork = null
   const emit = () => onChange({ ...state, canRetry: (!!pendingQuery || pendingImages.length > 0) && state.submitUnknown,
     pendingText:state.submitUnknown?pendingQuery:'',pendingImages:state.submitUnknown?[...pendingImages]:[],
@@ -89,6 +90,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
     forgetPrivate('这段对话的资料来源已变化，请开始新咨询，重新核对当前资料。',error)
   }
   function forgetPrivate(message, error = null) {
+    state.profileIssues=[];state.businessCode=''
     state.invalidatedThreadId = state.entry?.thread_id || ''
     epoch++; readVersion++; activeRead = null; state.busy = false; state.loading = false; state.refreshing = false; state.finalMessageId = null
     stop(); pendingQuery = ''; pendingImages = []; clearPendingImages(); state.entry = null; state.requestId = ''; state.submitUnknown = false
@@ -179,6 +181,8 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
       forgetPrivate('登录已过期，请重新登录后核对任务。',error); return
     }
     if (!current(ticket)) return
+    state.businessCode=error?.businessCode||''
+    state.profileIssues=state.businessCode==='profile_incomplete'?planningProfileIssues(error.profileIssues):[]
     if (privateFailure(error) || error?.code === 'TASK_MISMATCH' || error?.code === 'SESSION_CHANGED') {
       if ([409, 410].includes(Number(error?.code))) invalidateThread(error)
       else forgetPrivate('当前任务或成员已不可读取，请返回核对身份、授权和资料来源。',error)
@@ -365,6 +369,7 @@ export function createHealthTaskFlow({ send = request, session = getSession, rev
     finally { if (current(ticket)) { state.busy = false; emit() } }
   }
   async function createEntry() {
+    state.profileIssues=[];state.businessCode=''
     if (!state.available || state.busy || state.loading || state.entry?.thread_id) return
     const ticket = token(), id = state.memberId, type = state.taskType
     const clientId = state.entry?.client_request_id || newId()

@@ -4,7 +4,7 @@ import AppIcon from './AppIcon.vue'
 import { localDate } from '../utils/meal-state.js'
 
 const props = defineProps({ state: { type: Object, required: true }, busy: Boolean, heading: Boolean, interactive: { type: Boolean, default: true } })
-const emit = defineEmits(['action', 'detail', 'dish'])
+const emit = defineEmits(['action', 'detail', 'dish','complete-profile'])
 const meals = [
  {type:'breakfast',name:'早餐',icon:'sunrise'},
  {type:'lunch',name:'午餐',icon:'sun'},
@@ -15,7 +15,7 @@ const displayDate = computed(() => {
  return `${month}月${day}日 · 周${'日一二三四五六'[new Date(year,month-1,day).getDay()]}`
 })
 const loadingLabel = computed(() => props.state.label)
-const actionLabels = {refresh:'刷新状态',regenerate:'重新安排餐次',answer:'继续回答',candidates:'查看待核对候选'}
+const actionLabels = {refresh:'刷新状态',regenerate:'重新安排餐次',answer:'继续回答',candidates:'查看待核对候选','complete-profile':'重新核对资料','continue-planning':'继续配餐'}
 const mealEntries = computed(() => meals.map(meal => ({ ...meal,
  item: props.state.plan?.meals.find(item => item.meal_type === meal.type && item.meal?.dishes?.length),
 })))
@@ -27,8 +27,16 @@ function act() { if (!props.busy && props.interactive) emit('action') }
 <template>
  <view class="tm-body" :class="{'tm-inline':heading,'tm-body-paused':!interactive}">
   <view v-if="heading" class="tm-inline-heading"><text class="tm-inline-title">今日餐单</text><text class="tm-inline-date">{{displayDate}}</text></view>
-    <view v-if="state.plan&&state.notice" class="tm-status" role="status" aria-live="polite">
-     <text>{{state.notice}}</text>
+    <view v-if="state.profileIssues?.length" class="tm-error" role="alert">
+      <text class="tm-error-title">请先补齐参餐成员资料</text>
+      <view v-for="problem in state.profileIssues" :key="problem.member_id" class="tm-profile-problem">
+        <text>{{problem.name}}</text><text v-for="field in problem.fields" :key="field.field">{{field.message}}</text>
+        <button v-if="problem.can_edit" class="tm-retry" :disabled="busy||!interactive" @click="emit('complete-profile',problem)">去补齐</button>
+        <text v-else>请由本人或有权限的家人补齐资料。</text>
+      </view>
+    </view>
+    <view v-if="!state.profileIssues?.length&&state.plan&&state.notice" class="tm-status" role="status" aria-live="polite">
+     <text v-if="state.notice">{{state.notice}}</text>
      <text v-if="state.consentOption">处理方：{{state.consentOption.processor}}。政策版本：{{state.consentOption.policyVersion}}。</text>
      <text v-for="(question,index) in state.pending?.status==='needs_input'?state.pending.questions:[]" :key="index" class="tm-question">{{question}}</text>
      <button v-if="state.action" class="tm-retry" :disabled="busy" @click="act">{{actionLabels[state.action]}}</button>
@@ -40,13 +48,14 @@ function act() { if (!props.busy && props.interactive) emit('action') }
      </button>
     </view>
     <text v-if="state.plan&&missingMeals" class="tm-missing">{{missingMeals}}尚未安排</text>
-    <view v-if="!state.plan&&state.phase==='error'" class="tm-error" role="status" aria-live="polite"><text class="tm-error-title">{{state.consentOption?'确认配餐授权':state.pending?.status==='reference_candidates'?'待核对候选':state.generationFailed?'本次餐单未生成':'暂时无法读取餐单'}}</text><text>{{state.notice||'请稍后重试，我们会重新核对餐单状态。'}}</text><text v-if="state.consentOption">处理方：{{state.consentOption.processor}}。政策版本：{{state.consentOption.policyVersion}}。</text><text v-for="(question,index) in state.pending?.status==='needs_input'?state.pending.questions:[]" :key="index" class="tm-question">{{question}}</text><button class="tm-retry" :disabled="busy" @click="act">{{actionLabels[state.action]||'重新读取'}}</button></view>
-    <view v-else-if="!state.plan" class="tm-loading" :aria-busy="true">
+    <view v-if="!state.plan&&state.phase==='error'&&!state.profileIssues?.length" class="tm-error" role="status" aria-live="polite"><text class="tm-error-title">{{state.action==='continue-planning'?'资料已补齐':state.consentOption?'确认配餐授权':state.pending?.status==='reference_candidates'?'待核对候选':state.generationFailed?'本次餐单未生成':'暂时无法读取餐单'}}</text><text>{{state.notice||'请稍后重试，我们会重新核对餐单状态。'}}</text><text v-if="state.consentOption">处理方：{{state.consentOption.processor}}。政策版本：{{state.consentOption.policyVersion}}。</text><text v-for="(question,index) in state.pending?.status==='needs_input'?state.pending.questions:[]" :key="index" class="tm-question">{{question}}</text><button class="tm-retry" :disabled="busy" @click="act">{{actionLabels[state.action]||'重新读取'}}</button></view>
+    <view v-else-if="!state.plan&&!state.profileIssues?.length" class="tm-loading" :aria-busy="true">
      <view class="tm-loading-status" role="status" aria-live="polite"><view class="tm-pulse" aria-hidden="true"/><text>{{loadingLabel}}</text></view>
     </view>
  </view>
 </template>
 <style>
+.tm-profile-problem{display:flex;flex-direction:column;gap:8px;margin-top:14px}.tm-profile-problem>text:first-child{font-weight:600}
 .tm-body{padding:0 20px 20px;color:var(--ui-text,#35343f)}
 .tm-inline{margin:8px 0 16px;padding:10px 12px;border:0;border-radius:20px;background:var(--ui-surface,#fff)}
 .tm-inline-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}

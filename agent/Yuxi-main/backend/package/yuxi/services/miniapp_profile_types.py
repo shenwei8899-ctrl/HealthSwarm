@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 ActivityLevel = Literal["sedentary", "light", "moderate", "high"]
 
@@ -70,39 +70,9 @@ class MiniappMemberInput(BaseModel):
     @model_validator(mode="after")
     def complete_onboarding(self):
         """完整建档须明确作答必填信息，其他用途的共享字段模型保持兼容。"""
-        if self.birth_date > datetime.now(timezone(timedelta(hours=8))).date():
-            raise ValueError("出生日期不能在未来")
-        dietary = self.dietary
-        for state, field, label in (
-            ("healthStatus", "conditions", "已知基础病"),
-            ("allergyStatus", "allergies", "食物过敏"),
-            ("intoleranceStatus", "intolerances", "食物不耐受"),
-            ("avoidanceStatus", "avoidances", "饮食忌口"),
-            ("doctorStatus", "clinicianGuidance", "医生饮食要求"),
-        ):
-            status, value = getattr(dietary, state), getattr(dietary, field)
-            if status == "unknown":
-                raise ValueError(f"请选择{label}状态")
-            if status == "set" and not value:
-                raise ValueError(f"请补充具体{label}内容")
-        if dietary.healthStatus == "set" and "其他" in dietary.conditions and not dietary.otherCondition:
-            raise ValueError("请补充具体基础病")
-        for field, label in (("goals", "饮食目标"), ("tastePreferences", "口味偏好")):
-            values = getattr(dietary, field)
-            if not values or any(value in {"其他", "自定义"} for value in values):
-                raise ValueError(f"请选择或补充{label}")
-        # 原小程序将菜系列为可后补；空数组表示未填写，不自动推断为“无特别要求”。
-        if any(value in {"其他", "自定义"} for value in dietary.cuisines):
-            raise ValueError("请补充具体菜系偏好")
-        for state, field in (
-            ("allergyStatus", "allergies"),
-            ("intoleranceStatus", "intolerances"),
-            ("avoidanceStatus", "avoidances"),
-        ):
-            if getattr(dietary, state) == "set" and any(
-                value in {"其他", "自定义"} for value in getattr(dietary, field)
-            ):
-                raise ValueError("请补充具体食物或成分")
+        issues = onboarding_answer_issues(self.birth_date, self.dietary)
+        if issues:
+            raise ValueError("；".join(issue["message"] for issue in issues))
         return self
 
 
@@ -195,16 +165,196 @@ def require_miniapp_profile(member):
     """按成员名称和缺失字段解释资料错误，不要求档案主体本人确认。"""
     from yuxi.services.health_vision_types import HealthVisionError
 
+    issues = miniapp_profile_issues(member)
+    if issues:
+        raise HealthVisionError(
+            "profile_incomplete", f"请补充{member.name}的资料：" + "、".join(i["label"] for i in issues), 422
+        )
+
+
+def require_complete_planning_profiles(members, *, family, uid):
+    """在调用方核对全部成员访问权后，汇总不含原值的资料问题。"""
+    from yuxi.services.family_service import authorized_fields, guardian_active
+    from yuxi.services.health_vision_types import HealthVisionError
+
+    problems = []
+    for member in members:
+        issues = miniapp_profile_issues(member)
+        if not issues:
+            continue
+        editable = authorized_fields(family, member, uid, write=True, family_sharing=True)
+        may_edit = member.subject_uid == uid or family.owner_uid == uid or guardian_active(member, uid)
+        fields_editable = all(
+            (
+                issue["field"]
+                if issue["field"] in {"sex", "birth_date", "height_cm", "activity_level"}
+                else "dietary_details"
+            )
+            in editable
+            for issue in issues
+        )
+        problems.append(
+            {
+                "member_id": str(member.id),
+                "name": member.name,
+                "version": member.version,
+                "can_edit": bool(may_edit and fields_editable),
+                "fields": issues,
+            }
+        )
+    if problems:
+        message = "请先补齐参餐成员资料：" + "；".join(
+            item["name"] + "：" + "、".join(field["label"] for field in item["fields"]) for item in problems
+        )
+        raise HealthVisionError("profile_incomplete", message, 422, profile_issues=problems)
+
+
+def miniapp_profile_issues(member):
+    """复用保存契约检查全部基础字段，并独立收集饮食问项问题。"""
     labels = {
-        "birth_date": "出生日期", "sex": "性别", "height_cm": "身高",
-        "weight_kg": "体重", "activity_level": "日常活动量", "name": "姓名或称呼",
+        "birth_date": "出生日期",
+        "sex": "性别",
+        "height_cm": "身高",
+        "weight_kg": "体重",
+        "activity_level": "日常活动量",
+        "name": "姓名或称呼",
         "dietary": "饮食与健康资料",
+        "healthStatus": "已知基础病状态",
+        "conditions": "已知基础病",
+        "otherCondition": "其他基础病",
+        "allergyStatus": "食物过敏状态",
+        "allergies": "食物过敏",
+        "intoleranceStatus": "食物不耐受状态",
+        "intolerances": "食物不耐受",
+        "avoidanceStatus": "饮食忌口状态",
+        "avoidances": "饮食忌口",
+        "doctorStatus": "医生饮食要求状态",
+        "clinicianGuidance": "医生饮食要求",
+        "goals": "饮食目标",
+        "tastePreferences": "口味偏好",
+        "cuisines": "菜系偏好",
+        "statedWeightKg": "体重",
     }
+    issues = []
+    profile = member.profile or {}
     try:
         saved_miniapp_member(member)
     except ValidationError as exc:
-        fields = list(dict.fromkeys(labels.get(str(error["loc"][0]), "饮食与健康资料") for error in exc.errors()))
-        raise HealthVisionError("profile_incomplete", f"请补充{member.name}的资料：" + "、".join(fields), 422) from None
+        for error in exc.errors(include_input=False, include_context=False, include_url=False):
+            loc = error["loc"]
+            if not loc:
+                continue  # 业务问项由下面的同一规则逐项收集。
+            field = str(loc[1] if loc[0] == "dietary" and len(loc) > 1 else loc[0])
+            if field == "statedWeightKg":
+                field = "weight_kg"
+            label = labels.get(field, "饮食与健康资料")
+            dietary_values = profile.get("dietary_details")
+            dietary_values = dietary_values if isinstance(dietary_values, dict) else {}
+            value = (
+                dietary_values.get("statedWeightKg")
+                if field == "weight_kg"
+                else (dietary_values.get(field) if loc[0] == "dietary" else profile.get(field))
+            )
+            reason = "missing" if value is None or value == "" else "invalid"
+            section = (
+                "basic"
+                if field in {"name", "birth_date", "sex", "height_cm", "weight_kg"}
+                else "preferences"
+                if field in {"goals", "tastePreferences", "cuisines"}
+                else "health"
+                if field in {"healthStatus", "conditions", "otherCondition", "activity_level"}
+                else "restrictions"
+            )
+            issues.append(
+                {
+                    "field": field,
+                    "label": label,
+                    "reason": reason,
+                    "section": section,
+                    "message": ("请填写" if reason == "missing" else "请重新核对") + label,
+                }
+            )
+    dietary_data = profile.get("dietary_details") or {}
+    try:
+        dietary = DietaryDetails.model_validate(dietary_data)
+    except ValidationError as exc:
+        # 无效字段单独报错；在诊断副本中略过它们，使其他必填问项仍可完整检查。
+        invalid = {str(e["loc"][0]) for e in exc.errors(include_input=False) if e["loc"]}
+        if isinstance(dietary_data, dict):
+            invalid.update(
+                key
+                for key, values in dietary_data.items()
+                if isinstance(values, list)
+                and any(isinstance(v, str) and (not v.strip() or len(v.strip()) > 200) for v in values)
+            )
+            for key in sorted(invalid & set(labels)):
+                issues.append(
+                    {
+                        "field": "weight_kg" if key == "statedWeightKg" else key,
+                        "label": labels[key],
+                        "reason": "invalid",
+                        "section": "preferences"
+                        if key in {"goals", "tastePreferences", "cuisines"}
+                        else "basic"
+                        if key == "statedWeightKg"
+                        else "health"
+                        if key in {"healthStatus", "conditions", "otherCondition"}
+                        else "restrictions",
+                        "message": "请重新核对" + labels[key],
+                    }
+                )
+            dietary = DietaryDetails.model_validate({k: v for k, v in dietary_data.items() if k not in invalid})
+        else:
+            dietary = DietaryDetails()
+    try:
+        birth = TypeAdapter(date).validate_python(profile.get("birth_date"))
+    except ValidationError:
+        birth = None
+    if dietary is not None:
+        issues.extend(onboarding_answer_issues(birth, dietary))
+    unique = {}
+    for issue in issues:
+        unique.setdefault(issue["field"], issue)
+    return list(unique.values())
+
+
+def onboarding_answer_issues(birth, dietary):
+    """建档保存与配餐预检共用的完整性规则，一次列出所有未完成问项。"""
+    issues = []
+
+    def add(field, label, message, section, reason="missing"):
+        issues.append({"field": field, "label": label, "reason": reason, "message": message, "section": section})
+
+    if birth and birth > datetime.now(timezone(timedelta(hours=8))).date():
+        add("birth_date", "出生日期", "出生日期不能在未来", "basic", "invalid")
+    for state, field, label, section in (
+        ("healthStatus", "conditions", "已知基础病", "health"),
+        ("allergyStatus", "allergies", "食物过敏", "restrictions"),
+        ("intoleranceStatus", "intolerances", "食物不耐受", "restrictions"),
+        ("avoidanceStatus", "avoidances", "饮食忌口", "restrictions"),
+        ("doctorStatus", "clinicianGuidance", "医生饮食要求", "restrictions"),
+    ):
+        status, value = getattr(dietary, state), getattr(dietary, field)
+        if status == "unknown":
+            add(state, label + "状态", f"请选择{label}状态", section)
+        elif status == "set" and not value:
+            add(field, label, f"请补充具体{label}内容", section)
+        elif (
+            status == "set"
+            and isinstance(value, list)
+            and any(v in {"其他", "自定义"} for v in value)
+            and state != "healthStatus"
+        ):
+            add(field, label, "请补充具体食物或成分", section, "invalid")
+    if dietary.healthStatus == "set" and "其他" in dietary.conditions and not dietary.otherCondition:
+        add("otherCondition", "其他基础病", "请补充具体基础病", "health")
+    for field, label in (("goals", "饮食目标"), ("tastePreferences", "口味偏好")):
+        values = getattr(dietary, field)
+        if not values or any(v in {"其他", "自定义"} for v in values):
+            add(field, label, f"请选择或补充{label}", "preferences")
+    if any(v in {"其他", "自定义"} for v in dietary.cuisines):
+        add("cuisines", "菜系偏好", "请补充具体菜系偏好", "preferences", "invalid")
+    return issues
 
 
 def saved_miniapp_member(member, profile=None):

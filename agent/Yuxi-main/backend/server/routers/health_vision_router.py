@@ -226,6 +226,7 @@ class HealthRoute(APIRoute):
                         "message": exc.message,
                         "trace_id": trace_id,
                         "retryable": exc.status in {429, 503},
+                        **({"profile_issues": exc.profile_issues} if exc.code == "profile_incomplete" and exc.profile_issues else {}),
                     },
                 )
 

@@ -55,7 +55,7 @@ function dispatchRequest({ path, method = 'GET', data, headers = {}, timeout = 1
         if (response.statusCode < 200 || response.statusCode >= 300) {
           const detail = response.data?.detail
           const message = response.data?.message || (typeof detail === 'string' ? detail : detail?.message) || (response.statusCode === 401 ? '登录已过期，请重新登录' : '请求未完成，请重试')
-          reject(Object.assign(new Error(message), { code: response.statusCode, businessCode: response.data?.code || detail?.code, traceId, retryable: response.data?.retryable === true }))
+          reject(Object.assign(new Error(message), { code: response.statusCode, businessCode: response.data?.code || detail?.code, profileIssues: response.data?.code === 'profile_incomplete' ? response.data?.profile_issues : undefined, traceId, retryable: response.data?.retryable === true }))
         } else resolve({ data: response.data, traceId })
       },
       fail(error) {
