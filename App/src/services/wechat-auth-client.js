@@ -1,5 +1,5 @@
 // Dependency injection keeps credential exchange and account-switch races testable.
-export function createWechatAuthClient({ send, session, getCode, appId, isWechat, allowPasswordLogin = false }) {
+export function createWechatAuthClient({ send, session, getCode, appId, isWechat, allowPasswordLogin = false, referral }) {
   let generation = 0
   function ticket() { return { generation, revision: session.revision() } }
   function current(t) {
@@ -19,10 +19,14 @@ export function createWechatAuthClient({ send, session, getCode, appId, isWechat
     const data = { code }
     if (binding?.identifier) { data.identifier = binding.identifier; data.password = binding.password }
     if (binding?.serviceNotice) data.service_notice = binding.serviceNotice
+    const referralReceipt = await referral?.pending()
+    current(t)
+    if (referralReceipt) data.referral_receipt = referralReceipt
     const response = await send({ path: '/api/auth/wechat/login', method: 'POST', data, authenticated: false })
     current(t)
     const result = projectLogin(response.data)
     session.save(result)
+    referral?.consume(referralReceipt)
     return result
   }
   async function passwordLogin({ identifier, password }) {
@@ -71,7 +75,7 @@ export function createWechatAuthClient({ send, session, getCode, appId, isWechat
     session.save(result, { preserveRevision: true })
     return result
   }
-  function logout() { generation++; session.clear() }
+  function logout() { generation++; referral?.clear(); session.clear() }
   function cancelPending() { generation++ }
   return { login, passwordLogin, restore, selectFamily, logout, cancelPending }
 }

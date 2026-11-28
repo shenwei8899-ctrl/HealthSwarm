@@ -9,8 +9,15 @@ const props=defineProps({historyOpen:Boolean, followBottom:Boolean, latestAvaila
   welcomeMounted: Boolean, welcomeLeaving: Boolean, transitionTicket: Number,
   keyboardOpen: Boolean, viewportStyle: Object })
 const conversationTop=ref(0),restoreTop=ref(0)
-const emit=defineEmits(['history','profile','shortcut','welcomeFinished','readingChange','latest'])
+const emit=defineEmits(['history','profile','shortcut','welcomeFinished','readingChange','latest','selectionViewport'])
 const instance=getCurrentInstance()
+let conversationRect=null,conversationHeight=0
+function publishViewport(){if(conversationRect)emit('selectionViewport',{...conversationRect,scrollTop:conversationTop.value,scrollHeight:conversationHeight})}
+function scrollSelectionBy(delta){
+ if(props.scrollLocked||!conversationRect)return
+ restoreTop.value=Math.max(0,Math.min(conversationTop.value+delta,conversationHeight-conversationRect.height))
+}
+defineExpose({scrollSelectionBy})
 let savedTop=0,userScrolling=false,following=true,measureTimer=null,measureRead=false,layoutGeneration=0,alive=true
 function publish(){emit('readingChange',{following,scrollTop:conversationTop.value})}
 /** 只量布局节点，不把正文内容交给滚动控制器。 */
@@ -22,7 +29,7 @@ function measure(recompute=false){
   if(!alive||props.scrollLocked)return
   const query=uni.createSelectorQuery().in(instance.proxy)
   query.select('.conversation').boundingClientRect();query.select('#chat-bottom-anchor').boundingClientRect()
-  query.exec(rects=>{if(!alive||ticket!==layoutGeneration||props.scrollLocked)return;if(read&&rects[0]&&rects[1])following=rects[1].bottom-rects[0].bottom<=48;publish()})
+  query.exec(rects=>{if(!alive||ticket!==layoutGeneration||props.scrollLocked)return;if(rects[0]){conversationRect=rects[0];if(rects[1])conversationHeight=rects[1].bottom-rects[0].top+conversationTop.value;publishViewport()}if(read&&rects[0]&&rects[1])following=rects[1].bottom-rects[0].bottom<=48;publish()})
  },60)
 }
 watch(()=>props.scrollLocked,async locked=>{
@@ -40,6 +47,8 @@ function rememberScroll(event){
  const top=event.detail.scrollTop
  if(userScrolling&&top<conversationTop.value-2){following=false;publish()}
  conversationTop.value=top
+ conversationHeight=event.detail.scrollHeight||conversationHeight
+ publishViewport()
  if(userScrolling)measure(true)
 }
 onMounted(()=>measure())
@@ -68,8 +77,8 @@ function finishWelcome(event){
    <button class="profile-button" aria-label="我的" :disabled="voiceBusy" @click="openProfile"><view class="header-entry-icon" aria-hidden="true"><view class="profile-entry-glyph"><view class="profile-entry-head"/><view class="profile-entry-body"/></view></view></button>
   </view></AppNavBar>
   <view class="conversation-stage" :class="{'edge-fades':!welcomeMounted,'has-scrolled':conversationTop>2}">
-   <scroll-view class="conversation" :class="{'awaiting-welcome':entryTransition&&welcomeLeaving}" :scroll-y="!scrollLocked" :scroll-top="restoreTop" @scroll="rememberScroll" @touchstart="beginRead" @wheel="beginRead" :show-scrollbar="false" :scroll-into-view="scrollTarget"><slot/><view id="chat-bottom-anchor" class="conversation-spacer"/></scroll-view>
-   <scroll-view v-if="entryTransition&&welcomeMounted" :key="transitionTicket" id="chat-welcome-layer" class="welcome-layer" :class="{'is-leaving':welcomeLeaving}" :scroll-y="!welcomeLeaving" :show-scrollbar="false" :aria-hidden="welcomeLeaving" @animationend="finishWelcome"><slot name="welcome"/></scroll-view>
+   <scroll-view class="conversation" :enhanced="true" :class="{'awaiting-welcome':entryTransition&&welcomeLeaving}" :scroll-y="!scrollLocked" :scroll-top="restoreTop" @scroll="rememberScroll" @touchstart="beginRead" @wheel="beginRead" :show-scrollbar="false" :scroll-into-view="scrollTarget"><slot/><view id="chat-bottom-anchor" class="conversation-spacer"/></scroll-view>
+   <scroll-view v-if="entryTransition&&welcomeMounted" :enhanced="true" :key="transitionTicket" id="chat-welcome-layer" class="welcome-layer" :class="{'is-leaving':welcomeLeaving}" :scroll-y="!welcomeLeaving" :show-scrollbar="false" :aria-hidden="welcomeLeaving" @animationend="finishWelcome"><slot name="welcome"/></scroll-view>
    <button v-if="latestAvailable&&!scrollLocked" class="latest-reply-button" aria-label="查看最新回复" @click="$emit('latest')"><text>↓</text> 查看最新回复</button>
   </view>
   <view class="composer-wrap">

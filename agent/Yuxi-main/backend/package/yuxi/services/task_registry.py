@@ -44,7 +44,15 @@ class TaskDefinition:
 _TASK_DEFINITIONS = {
     definition.task_type: definition
     for definition in (
-        TaskDefinition('diet_stage_v1', 'yuxi.services.diet_stage_tasks', 'run_diet_stage', failure_function='fail_diet_stage'),
+        TaskDefinition(
+            "diet_stage_v1", "yuxi.services.diet_stage_tasks", "run_diet_stage", failure_function="fail_diet_stage"
+        ),
+        TaskDefinition(
+            "exclusive_roster_v1",
+            "yuxi.services.exclusive_roster_service",
+            "run_exclusive_roster",
+            failure_function="fail_exclusive_roster",
+        ),
         TaskDefinition(
             "nutrition_knowledge_prepare_v1", "yuxi.services.health_knowledge_import_service", "run_knowledge_nutrition"
         ),
@@ -59,6 +67,12 @@ _TASK_DEFINITIONS = {
             "yuxi.services.onboarding_preparation_service",
             "run_onboarding_preparation",
             failure_function="fail_onboarding_preparation",
+        ),
+        TaskDefinition(
+            "meal_roster_v1",
+            "yuxi.services.meal_roster_service",
+            "run_roster_update",
+            failure_function="fail_roster_update",
         ),
         TaskDefinition(
             "daily_arrangement_v1",

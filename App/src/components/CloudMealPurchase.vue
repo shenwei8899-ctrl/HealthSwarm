@@ -2,6 +2,7 @@
 import {referenceIngredientLabel,referenceGapDetail} from '../utils/meal-presentation.js'
 import FoodImageSlot from './FoodImageSlot.vue'
 import PurchaseCheckoutSheet from './PurchaseCheckoutSheet.vue'
+import ExclusivePurchaseConfirmation from './ExclusivePurchaseConfirmation.vue'
 import MealPurchasePanel from './MealPurchasePanel.vue'
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { openAddressPicker } from '../services/address-navigation.js'
@@ -9,16 +10,18 @@ import { onShow, onHide } from '@dcloudio/uni-app'
 import CommerceAccess from './CommerceAccess.vue'
 import { commerce } from '../services/commerce.js'
 import { useMealCommercePage } from '../services/meal-commerce-page.js'
-import { commerceMealView, nonnegativeInteger, productAmountCents, selectedSubtotalCents } from '../services/meal-commerce-state.js'
+import { commerceMealView, nonnegativeInteger, productAmountCents, selectedSubtotalCents, validMealDate, PLAN_DELIVERY_TIMES, deliverySlotTime } from '../services/meal-commerce-state.js'
 import { request } from '../services/request.js'
 import { getSession } from '../services/session.js'
 import { scopedStorage, storageContext } from '../services/storage.js'
+import { exclusiveDeliveryPreview } from '../services/exclusive-delivery-preview.js'
 
 // 微信原生宿主节点会截断插槽内的 flex 和百分比高度。
 defineOptions({options:{virtualHost:true}})
-const props = defineProps({ meal: Object, route: Object, embedded: Boolean, reference: Object, exclusive: Object, selection:Object, managed: Boolean, unified: Boolean, visible:{type:Boolean,default:true} })
-const emit=defineEmits(['checkout','ordered','scroll'])
+const props = defineProps({ meal: Object, route: Object, embedded: Boolean, reference: Object, exclusive: Object, exclusivePage:Boolean, selection:Object, managed: Boolean, unified: Boolean, visible:{type:Boolean,default:true} })
+const emit=defineEmits(['checkout','ordered','scroll','back'])
 const preview = ref(null), publication = ref(null), selected = ref([]), draftQuantities = ref({})
+const preferredTime = ref(PLAN_DELIVERY_TIMES[0])
 const writing=ref(false)
 const submitting=ref(false), quoteWaiting=ref(false)
 let quoteTimer=null
@@ -31,7 +34,8 @@ const page = useMealCommercePage(() => ({
   enabled: Boolean(publication.value), meal: props.route.meal, date: props.route.date,
   packageSn: publication.value?.package_sn, packageVersion: publication.value?.package_version,
   members: props.meal.members || [],
-  direct: direct.value, loadMenu: loadSelectedMenu,
+  direct: direct.value, exclusive: Boolean(props.exclusive), loadMenu: loadSelectedMenu,
+  preferredTime: props.exclusivePage ? preferredTime.value : undefined,
   initialChoices: () => {
     const saved = scopedStorage.getStorageSync(selectionKey())
     return saved?.known ? { selected: saved.selected || [], quantities: saved.quantities || {} } : null
@@ -53,6 +57,7 @@ const products = computed(() => props.reference && !state.ready ? (preview.value
 }).products.map(item=>({...item,quantity:draftQuantities.value[item.id]??item.quantity})))
 const productSpecSelection = computed(() => Boolean(props.reference?.items?.some(item => item?.product_id != null && Array.isArray(item.skus)) && preview.value && !state.ready))
 const picked = computed(() => state.ready ? state.selected : selected.value)
+const deliveryPreview = computed(() => props.exclusivePage ? exclusiveDeliveryPreview(preview.value?.delivery_suggestions||props.exclusive?.initialPurchase?.delivery_suggestions,products.value,picked.value,state.firstMealDate,preferredTime.value) : [])
 const total = computed(() => selectedSubtotalCents(products.value,picked.value))
 const totalKnown=computed(()=>!busy.value&&!state.busy&&!error.value&&!state.error&&purchaseReady.value&&products.value.length>0&&!(props.reference?.needsMatching&&!state.ready)&&total.value!==null)
 const money = cents => (Number(cents || 0) / 100).toFixed(2)
@@ -69,7 +74,7 @@ const scopeQuery=()=>'?version='+props.selection.version+(props.selection.dishKe
 const path = () => '/api/family/' + encodeURIComponent(getSession().householdId) + '/daily-arrangements/' + props.route.date + (props.route.meal === 'daily' ? '' : '/meals/' + props.route.meal) + '/purchase'
 const version = () => ({ arrangement_id: props.route.arrangement, version: Number(props.route.version), ...(props.route.daily_plan_version!=null?{daily_plan_version:Number(props.route.daily_plan_version)}:{}), ...(props.route.meal === 'daily' ? { meals: props.route.meals } : {}) })
 const selectionKey = () => (props.selection?'saved:'+props.selection.version+':'+(props.selection.dishKeys||[]).join(',')+':':'')+'meal-purchase-selection:' + props.route.arrangement + ':' + props.route.meal + ':' + (props.route.meals || []).join(',')
-function rememberSelection() { scopedStorage.setStorageSync(selectionKey(), { known: products.value.map(item => item.id), selected: [...picked.value], quantities: {...draftQuantities.value,...(state.ready?state.quantities:{})}, version: props.route.version, dailyPlanVersion: props.route.daily_plan_version }) }
+function rememberSelection() { scopedStorage.setStorageSync(selectionKey(), { known: products.value.map(item => item.id), selected: [...picked.value], quantities: {...draftQuantities.value,...(state.ready?state.quantities:{})}, firstMealDate:state.firstMealDate, preferredTime:preferredTime.value, version: props.route.version, dailyPlanVersion: props.route.daily_plan_version }) }
 function receipt(data) {
   if(props.selection){if(data.version!==props.selection.version||!Array.isArray(data.purchase?.items))throw new Error('餐单采购已变化，请重新读取。');return data.purchase}
   if (data.arrangement_id !== props.route.arrangement || data.version !== Number(props.route.version)) throw new Error('本餐已更新，请返回今日安排重新读取。')
@@ -131,7 +136,7 @@ async function loadSelectedPurchase(retryExpired = true) {
   if (state.pending || state.orderSn) { state.checkoutError='上次下单结果尚未确认，请先确认原订单。'; error.value=state.checkoutError; return }
   refreshRequested=false
   const revision = ++directRevision, scope = storageContext()
-  if(ownerScope!==scope){ownerScope=scope;page.reset();preview.value=null;publication.value=null}
+  if(ownerScope!==scope){ownerScope=scope;page.reset();preview.value=null;publication.value=null;preferredTime.value=PLAN_DELIVERY_TIMES[0]}
   const renewing = purchaseExpired(), previousIds = products.value.map(item => item.id)
   if (renewing) clearExpiredPurchase()
   page.invalidateQuote();error.value=''
@@ -174,7 +179,7 @@ async function verifyReference() {
 async function refresh(initial = false) {
   if (ownerScope !== storageContext()) {
     ownerScope = storageContext(); preview.value = null; publication.value = null; selected.value = []; draftQuantities.value={}
-    initialized = false; checkoutOpen.value = false; loginOpen.value = false; busy.value = false; page.reset()
+    initialized = false; checkoutOpen.value = false; loginOpen.value = false; busy.value = false; preferredTime.value=PLAN_DELIVERY_TIMES[0]; page.reset()
   }
   if (busy.value) return
   const scope = storageContext(); busy.value = true; error.value = ''; page.invalidateQuote()
@@ -186,7 +191,7 @@ async function refresh(initial = false) {
     if (!active(scope)) return
     preview.value = props.reference ? {available:referenceProducts.value.length>0||props.reference.needsMatching,items:[]} : receipt(data)
     if (!initialized) {
-      const saved = scopedStorage.getStorageSync(selectionKey()); if(saved?.version===props.route.version&&saved?.dailyPlanVersion===props.route.daily_plan_version)draftQuantities.value=saved.quantities||{}
+      const saved = scopedStorage.getStorageSync(selectionKey()); if(saved?.version===props.route.version&&saved?.dailyPlanVersion===props.route.daily_plan_version){draftQuantities.value=saved.quantities||{};if(props.exclusive&&validMealDate(saved.firstMealDate))state.firstMealDate=saved.firstMealDate;if(props.exclusivePage&&PLAN_DELIVERY_TIMES.includes(saved.preferredTime))preferredTime.value=saved.preferredTime}
       const defaults=props.reference?products.value.filter((item,index,all)=>item.saleStatus==='available'&&item.availableQuantity!==0&&all.findIndex(other=>(other.productId||other.id)===(item.productId||item.id)&&other.saleStatus==='available'&&other.availableQuantity!==0)===index):products.value
       selected.value = saved?.known ? products.value.filter(item => selectable(item)&&saved.known.includes(item.id)&&saved.selected.includes(item.id)).map(item => item.id) : defaults.map(item=>item.id)
       initialized = true
@@ -195,13 +200,13 @@ async function refresh(initial = false) {
     if (publication.value && commerce.session()?.token) {
       const slotId = state.slotId, addressId = state.address?.id
       await page.load()
-      if (active(scope) && addressId === state.address?.id && state.slots.some(slot => slot.id === slotId)) state.slotId = slotId
+      if (!props.exclusivePage && active(scope) && addressId === state.address?.id && state.slots.some(slot => slot.id === slotId)) state.slotId = slotId
     }
   } catch (e) { if(active(scope))preview.value=null;failure(e,scope) }
   finally { if (active(scope)) busy.value = false }
   if (!props.unified) await resumeCheckout(scope)
 }
-function toggle(id) { if (busy.value || state.busy) return; const target=products.value.find(item=>item.id===id);if(!target||!selectable(target))return;if (state.ready) page.toggle(id); else {selected.value = selected.value.includes(id) ? selected.value.filter(value => value !== id) : [...selected.value.filter(value=>!target.productId||products.value.find(item=>item.id===value)?.productId!==target.productId), id]}; rememberSelection();scheduleQuote() }
+function toggle(id) { if (busy.value || state.busy) return; const target=products.value.find(item=>item.id===id);if(!target||!picked.value.includes(id)&&!selectable(target))return;if (state.ready) page.toggle(id); else {selected.value = selected.value.includes(id) ? selected.value.filter(value => value !== id) : [...selected.value.filter(value=>!target.productId||products.value.find(item=>item.id===value)?.productId!==target.productId), id]}; rememberSelection();scheduleQuote() }
 async function prepareQuote(retryExpired = true) {
   if ((props.unified || direct.value) && (!props.visible || !state.ready || !state.address || !state.selected.length || !state.slots.some(slot=>String(slot.id)===String(state.slotId)) || state.pending || state.orderSn)) return
   await page.prepare(direct.value?{requireSlot:true}:props.unified?{reuseCart:true,requireSlot:true}:undefined)
@@ -211,7 +216,8 @@ async function prepareQuote(retryExpired = true) {
   }
 }
 function scheduleQuote() {
-  if (!props.unified) return
+  if (!props.unified && !props.exclusivePage) return
+  if(props.exclusivePage)state.mealDates=[]
   clearTimeout(quoteTimer); page.invalidateQuote(); quoteWaiting.value=true
   quoteTimer=setTimeout(async()=>{
     quoteTimer=null
@@ -296,16 +302,40 @@ async function recover() {
 }
 
 function changeQuantity(item,delta){if(busy.value||state.busy||!selectable(item))return;const value=item.quantity+delta;if(value<1||Number.isFinite(item.availableQuantity)&&value>item.availableQuantity)return;if(state.ready)page.quantity(item.id,value);draftQuantities.value={...draftQuantities.value,[item.id]:value};rememberSelection();scheduleQuote()}
-async function selectSlot(id){if(busy.value||state.busy||String(state.slotId)===String(id))return;state.slotId=id;page.invalidateQuote();if(props.unified)scheduleQuote();else await checkout()}
+async function selectSlot(id){
+  if(props.exclusivePage){
+    if(submitting.value||state.pending||state.orderSn||preferredTime.value===id||!PLAN_DELIVERY_TIMES.includes(id))return
+    preferredTime.value=id;state.slotId=state.slots.find(s=>deliverySlotTime(s)===id)?.id||0
+    page.invalidateQuote();rememberSelection()
+    if(!state.loading)await prepareQuote()
+    return
+  }
+  if(props.exclusive)id=state.slots.find(s=>deliverySlotTime(s)===id)?.id||id
+  if(busy.value||state.busy||String(state.slotId)===String(id))return;state.slotId=id;page.invalidateQuote();if(props.unified)scheduleQuote();else await checkout()
+}
+async function selectMealDate(date) {
+  if (submitting.value || state.pending || state.orderSn || !validMealDate(date) || date === state.firstMealDate) return
+  clearTimeout(quoteTimer);quoteWaiting.value=false
+  state.firstMealDate=date
+  page.invalidateQuote()
+  rememberSelection()
+  if(state.loading)return
+  await prepareQuote()
+}
 
 watch(checkoutOpen,value=>{emit('checkout',value);if(!value&&props.exclusive){directRevision++;page.suspend()}})
 defineExpose({refresh:()=>props.unified?refreshUnified():refresh(),closeCheckout:()=>{if(!writing.value)checkoutOpen.value=false},isBusy:computed(()=>props.unified?submitting.value:writing.value)})
 watch(()=>props.visible,(visible,previous)=>{if(!props.unified)return;if(!visible){clearTimeout(quoteTimer);quoteWaiting.value=false;if(direct.value){directRevision++;page.reset();preview.value=null;publication.value=null}else page.invalidateQuote()}else if(previous===false)void refreshUnified()})
 watch(()=>JSON.stringify([props.selection,props.exclusive?.path,props.exclusive?.scopeHash]),()=>{if(direct.value){directRevision++;page.reset();preview.value=null;publication.value=null;if(props.visible&&(!props.exclusive||checkoutOpen.value))void(props.exclusive?loadSelectedPurchase():refreshUnified())}},{flush:'sync'})
 watch(()=>[busy.value,state.busy,submitting.value],()=>{if(props.unified&&props.visible&&refreshRequested&&!busy.value&&!state.busy&&!submitting.value)void refreshUnified()})
-onMounted(()=>props.unified?refreshUnified():refresh(true))
+onMounted(async()=>{
+  if(props.exclusivePage&&props.exclusive){
+    await refresh(true)
+    if(alive&&props.visible&&!error.value&&props.exclusive.initialPurchase?.available!==false)await checkout()
+  }else return props.unified?refreshUnified():refresh(true)
+})
 // Exclusive procurement is reloaded by its parent page on every show.
-onShow(()=>{if(props.exclusive&&checkoutOpen.value){void loadSelectedPurchase();return}if(!props.embedded&&!props.exclusive)void(props.unified?refreshUnified():refresh())})
+onShow(()=>{if(props.exclusivePage&&!initialized)return;if(props.exclusive&&(checkoutOpen.value||props.exclusivePage)){void loadSelectedPurchase();return}if(!props.embedded&&!props.exclusive)void(props.unified?refreshUnified():refresh())})
 onHide(()=>{if(props.unified||props.exclusive){clearTimeout(quoteTimer);quoteWaiting.value=false;if(direct.value){directRevision++;page.suspend()}else page.invalidateQuote()}})
 onUnmounted(() => { alive = false; clearTimeout(quoteTimer); page.dispose() })
 
@@ -315,6 +345,7 @@ onUnmounted(() => { alive = false; clearTimeout(quoteTimer); page.dispose() })
    <view class="meal-purchase" :class="{'is-embedded':embedded,'is-exclusive':!!exclusive}">
   <MealPurchasePanel v-if="unified" :gaps="purchaseGaps" :products="products" :picked="picked" :address="state.address" :slots="state.slots" :slot-id="state.slotId" :quote="state.quote" :busy="busy||state.busy||submitting" :pricing="quoteWaiting||state.pricing" :independent="direct" :products-loading="state.productsLoading" :address-ready="state.addressReady" :address-loading="state.addressLoading" :slots-loading="state.slotsLoading" :address-error="state.addressError" :ready="unifiedReady" :choices-ready="productSpecSelection" :pending="!!(state.pending||state.orderSn)" :error="error||state.error||state.addressError||state.checkoutError||state.deliveryMessage" :access-required="loginOpen" :can-submit="!!canSubmit" @address="chooseAddress" @slot="selectSlot" @toggle="toggle" @quantity="changeQuantity" @confirm="submit" @recover="recover" @retry="refreshUnified" @scroll="emit('scroll',$event)"><template #access><CommerceAccess entry @ready="refreshUnified"/></template></MealPurchasePanel>
   <template v-else>
+  <template v-if="!exclusivePage">
   <scroll-view v-show="!embedded||!checkoutOpen" :scroll-y="embedded" :show-scrollbar="false" class="purchase-scroll">
   <view v-if="!exclusive" class="section-head"><text class="section-title">{{route.meal==='daily'&&route.meals?.length>1?'所选餐次食材汇总':'本餐所需食材'}}</text><text>家中已有可取消</text></view>
   <text v-if="!exclusive&&reference?.needsMatching&&!state.ready" class="safe-note">将按本餐核对商品；进入结算后可调整包装数量。</text><text v-if="reference&&!exclusive" class="safe-note">参考餐单用量未核算，请核对实际需要；未匹配的食材需自行准备。</text><text v-if="busy||state.busy" class="safe-note">正在核对商品与配送…</text>
@@ -323,7 +354,9 @@ onUnmounted(() => { alive = false; clearTimeout(quoteTimer); page.dispose() })
   <view class="products"><view v-for="item in products" :key="item.id" class="product"><button class="product-select" :disabled="busy||state.busy||!selectable(item)" :aria-pressed="picked.includes(item.id)" :aria-label="(picked.includes(item.id)?'取消选择':'选择')+item.name" @click="toggle(item.id)"><view class="check" :class="{selected:picked.includes(item.id)}">{{picked.includes(item.id)?'✓':''}}</view></button><view class="product-image"><FoodImageSlot :src="item.imageUrl" :label="item.name" :width="52" :height="60" :radius="15"/></view><view class="product-copy"><text class="product-name">{{item.name}}</text><text v-if="!exclusive">{{item.needLabel}}</text><text>{{item.packLabel}}</text><view class="quantity-control"><button :aria-label="'减少'+item.name+'数量'" :disabled="busy||state.busy||!selectable(item)||item.quantity<=1" @click="changeQuantity(item,-1)">−</button><text>{{item.quantity}} 包</text><button :aria-label="'增加'+item.name+'数量'" :disabled="busy||state.busy||!selectable(item)||(Number.isFinite(item.availableQuantity)&&item.quantity>=item.availableQuantity)" @click="changeQuantity(item,1)">＋</button></view><text v-if="!selectable(item)" class="stock-alert">暂不可选</text><text v-else-if="Number.isFinite(item.availableQuantity)&&item.availableQuantity<item.quantity" class="stock-alert">库存不足</text></view><text class="product-price">{{productAmountCents(item)!==null?'¥'+money(productAmountCents(item)):'待核价'}}</text></view></view>
   </scroll-view>
   <view v-show="!embedded||!checkoutOpen" class="meal-bottom-bar"><view class="selection-summary"><text>{{exclusive?'商品小计':route.meal==='daily'?(route.meals||[]).map(m=>({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}[m])).join('、')+' · 商品小计':'商品小计 · '+picked.length+' 项'}}</text><text class="amount">{{totalKnown?'¥'+money(total):'价格待核对'}}</text></view><button class="checkout-button" :disabled="busy||state.busy||!purchaseReady||(!picked.length&&!reference?.needsMatching)||!!error" @click="checkout">{{preview?.confirmation_pending?'确认上次采购结果':'去结算'}}<text v-if="!preview?.confirmation_pending">→</text></button></view>
-  <PurchaseCheckoutSheet :embedded="embedded" :open="checkoutOpen" :title="route.meal==='daily'&&route.meals?.length>1?'确认采购订单':'确认本餐订单'" :address="state.address" :slots="state.slots" :slot-id="state.slotId" :products="products.filter(p=>picked.includes(p.id))" :quote="state.quote" :busy="direct?(submitting||state.loading||state.pricing):busy||state.busy" :address-busy="direct?(submitting||!state.addressReady):undefined" :slots-busy="direct?(submitting||state.slotsLoading):undefined" :error="error||state.error||state.addressError||state.checkoutError||state.deliveryMessage" :pending="!!(state.pending||state.orderSn)" :access-required="loginOpen" @close="checkoutOpen=false" @address="chooseAddress" @slot="selectSlot" @confirm="submit" @recover="recover" @quote="checkout"><template #access><CommerceAccess entry @ready="checkout"/></template></PurchaseCheckoutSheet>
+  </template>
+  <ExclusivePurchaseConfirmation v-if="exclusive" :open="exclusivePage||checkoutOpen" :picked="picked" :subtotal="total" :editing-busy="busy||submitting||state.loading||state.busy||!!(state.pending||state.orderSn)" :gaps="exclusivePage?(reference?.gaps||[]):[]" :notice="exclusivePage?exclusive.initialPurchase?.notice:undefined" :quantity-warning="exclusivePage&&exclusive.initialPurchase?.items?.some(item=>item.quantity_confirmed===false)" :tier-name="exclusive.initialPurchase?.tier_name" :member-count="meal.members?.length" :address="state.address" :slot-id="exclusivePage?preferredTime:deliverySlotTime(state.slots.find(s=>String(s.id)===String(state.slotId))||{})" :dates="state.mealDates" :first-meal-date="state.firstMealDate" :products="exclusivePage?products:products.filter(p=>picked.includes(p.id))" :quote="state.quote" :preview-batches="deliveryPreview" :busy="busy||submitting||state.loading||state.pricing||quoteWaiting" :address-busy="submitting||!state.addressReady" :error="error||state.error||state.addressError||state.checkoutError||state.deliveryMessage" :pending="!!(state.pending||state.orderSn)" :access-required="loginOpen" @close="exclusivePage?emit('back'):checkoutOpen=false" @toggle="toggle" @quantity="changeQuantity" @address="chooseAddress" @slot="selectSlot" @date="selectMealDate" @retry="checkout" @recover="recover"><template #access><CommerceAccess entry @ready="checkout"/></template></ExclusivePurchaseConfirmation>
+  <PurchaseCheckoutSheet v-else :embedded="embedded" :open="checkoutOpen" :title="route.meal==='daily'&&route.meals?.length>1?'确认采购订单':'确认本餐订单'" :address="state.address" :slots="state.slots" :slot-id="state.slotId" :products="products.filter(p=>picked.includes(p.id))" :quote="state.quote" :busy="direct?(submitting||state.loading||state.pricing):busy||state.busy" :address-busy="direct?(submitting||!state.addressReady):undefined" :slots-busy="direct?(submitting||state.slotsLoading):undefined" :error="error||state.error||state.addressError||state.checkoutError||state.deliveryMessage" :pending="!!(state.pending||state.orderSn)" :access-required="loginOpen" @close="checkoutOpen=false" @address="chooseAddress" @slot="selectSlot" @confirm="submit" @recover="recover" @quote="checkout"><template #access><CommerceAccess entry @ready="checkout"/></template></PurchaseCheckoutSheet>
   </template>
  </view>
 </template>

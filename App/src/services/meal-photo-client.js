@@ -66,7 +66,10 @@ export function createMealPhotoClient({ state, send = request, upload = uploadMe
     try { await action(current) }
     catch (error) {
       if (!current()) return
-      if ([401, 403, 404, 410].includes(Number(error.code))) {
+      if (error.noticeRejected || ['SERVICE_NOTICE_REQUIRED','SERVICE_NOTICE_CHANGED'].includes(error.businessCode)) {
+        state.pending = null; state.calculation = null
+        state.error = error.message || '服务声明确认尚未保存，请重新确认后继续。'; checkpoint()
+      } else if ([401, 403, 404, 410].includes(Number(error.code))) {
         storage.setStorageSync(key(), null); discard(); state.error = '当前成员授权或来源已变化，请重新读取。'
       } else {
         state.error = error.message || '请求未完成'

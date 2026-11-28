@@ -2,8 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { parseAiAnswer } from '../utils/ai-answer.js'
 
-const props=defineProps({text:{type:String,default:''},messageId:{type:[String,Number],default:null},canQuote:{type:Boolean,default:true},appearance:{type:String,default:'default'}})
-const emit=defineEmits(['quote'])
+const props=defineProps({text:{type:String,default:''},messageId:{type:[String,Number],default:null},appearance:{type:String,default:'default'}})
 const error=ref('')
 watch(()=>props.messageId,()=>{error.value=''})
 const plainText=computed(()=>{
@@ -17,7 +16,6 @@ function copy(){if(!plainText.value)return;uni.setClipboardData({data:plainText.
   <view class="answer-tool-row" aria-label="回复操作">
    <view class="utility-actions">
     <button class="tool-button tool-with-label" aria-label="复制回复" :disabled="!plainText" @click="copy"><image class="tool-icon" src="/static/chat/reply-copy-v2.png" mode="aspectFit" aria-hidden="true"/><text class="tool-label">复制</text></button>
-    <button class="tool-button tool-with-label" aria-label="引用回复" :disabled="!canQuote||!plainText" @click="emit('quote',plainText)"><image class="tool-icon" src="/static/chat/reply-quote-v2.png" mode="aspectFit" aria-hidden="true"/><text class="tool-label">引用</text></button>
    </view>
   </view>
   <text v-if="error" class="tool-error" role="alert">{{error}}</text>

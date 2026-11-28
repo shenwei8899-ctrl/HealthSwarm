@@ -21,6 +21,12 @@ REFERENCE = "11111111-1111-1111-1111-111111111111"
 
 
 @pytest.fixture(autouse=True)
+def no_memory_dependencies(monkeypatch):
+    """此模块隔离空记忆依赖；真实记忆撤回由历史 HTTP 集成测试验证。"""
+    monkeypatch.setattr("yuxi.services.health_memory_context_service.validate_memory_publication", AsyncMock())
+
+
+@pytest.fixture(autouse=True)
 def controlled_read_mutation(monkeypatch):
     """只在测试进程副本移除最终来源读取gate，失效正文断言必须变红。"""
     mode = os.getenv("HEALTH_EVIDENCE_MUTATION")
@@ -268,8 +274,8 @@ async def test_generic_history_keeps_legacy_assistant_and_tool_messages(monkeypa
         get_messages=AsyncMock(return_value=messages), list_agent_runs_for_history=AsyncMock(return_value=[])
     )
     monkeypatch.setattr(conversation_service, "ConversationRepository", lambda db: repo)
-    authorize = AsyncMock(return_value=conv)
-    monkeypatch.setattr(conversation_service, "require_user_conversation", authorize)
+    authorize = AsyncMock(return_value=(conv, None, False))
+    monkeypatch.setattr(conversation_service, "require_history_conversation", authorize)
     monkeypatch.setattr(conversation_service, "_serialize_thread", AsyncMock(return_value={"id": "thread"}))
     gate = AsyncMock(side_effect=AssertionError("普通历史不得调用咨询来源gate"))
     monkeypatch.setattr(evidence, "read_public_consultation_answer", gate)
@@ -278,7 +284,7 @@ async def test_generic_history_keeps_legacy_assistant_and_tool_messages(monkeypa
         (42, "ai", "普通旧正文"),
         (43, "tool", "普通工具结果"),
     ]
-    authorize.assert_awaited_once_with(repo, "thread", "actor", allow_stale_reference_results=True)
+    authorize.assert_awaited_once_with(repo, "thread", "actor")
     gate.assert_not_awaited()
 
 

@@ -278,7 +278,7 @@ class HealthFamilyProfileRepository:
             .on_conflict_do_nothing()
         )
 
-    async def validate_history(self, uid, binding, *, lock=False, family_assistant=False):
+    async def validate_history(self, uid, binding, *, lock=False, family_assistant=False, history_view=False):
         """真实 Run 依赖重验所有派生轮次；改版后建立新咨询。"""
         uses = list(
             (
@@ -303,6 +303,8 @@ class HealthFamilyProfileRepository:
             await HealthVisionRepository(self.session).authorize(link.member_id, uid, "ai_use", lock=lock)
             current = await self.read(uid, link.member_id, lock=lock, audit=False, family_assistant=family_assistant)
             if current.get("source_hash") != use.payload_hash:
+                if history_view and current.get("status") == "ready":
+                    continue
                 raise HealthVisionError("profile_source_changed", "档案来源已变化，请建立新咨询读取当前版本", 410)
 
     async def validate_tool_payload(self, uid, binding, payload, *, family_assistant=False):

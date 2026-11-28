@@ -22,7 +22,7 @@ watch(() => props.receipt.source_version, () => {
 <template>
  <view class="chat-meal-record" aria-live="polite">
   <template v-if="state.record">
-   <view class="record-heading"><text>{{state.record.status==='withdrawn'?'已撤销这条饮食记录':'已记入饮食记录'}}</text><text>{{mealLabels[state.record.meal_type]}}</text></view>
+   <view class="record-heading"><text>{{state.record.status==='withdrawn'?'已撤销这条饮食记录':'已记入饮食记录'}}</text><text>{{mealLabels[state.record.meal_type]||'未注明'}}</text></view>
    <text class="record-subtitle">{{state.record.member_name}} · {{mealDay(state.record.eaten_at)}}</text>
    <view v-for="item in state.record.items" :key="item.name" class="record-food"><text>{{item.name}}</text><text>{{item.quantity_text||'份量未知'}}</text></view>
    <text class="record-note">{{state.record.status==='withdrawn'?'这条记录已从有效饮食记录和后续分析中排除。':'按实际自述保存，未知份量和营养数据保持未知。'}}</text>

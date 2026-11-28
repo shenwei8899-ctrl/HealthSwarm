@@ -1,6 +1,5 @@
 import { getSession, setSession } from './session.js'
 
-export const HOME_SERVICE_NOTICE = '饮食建议仅供参考，不能替代医疗建议、药物及医嘱。'
 export const isServiceNoticeError = error => ['SERVICE_NOTICE_REQUIRED','SERVICE_NOTICE_CHANGED'].includes(error?.businessCode)
 const presenters = []
 let pending = null

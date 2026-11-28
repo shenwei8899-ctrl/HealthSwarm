@@ -22,6 +22,7 @@ def family_schema_upgrade(monkeypatch):
 
     monkeypatch.setattr(storage_migration, "upgrade_family_archives", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_service_notice", upgrade)
+    monkeypatch.setattr(storage_migration, "upgrade_friend_referral", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_meal_archive", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_family_care", upgrade)
     monkeypatch.setattr(storage_migration, "upgrade_wechat_identity", upgrade)

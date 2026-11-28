@@ -227,3 +227,12 @@ test('supplement upload failure and quota rejection are shown beside the recogni
  const h=setup();await h.client.open();await h.client.start('lunch',meal.eaten_at)
  assert.match(h.state.error,/尚未上传成功/);assert.equal(h.calls.filter(c=>c.path.endsWith('/meal-photo-tasks')).length,0)
 })
+
+
+test('a notice rejection keeps the authorized member and uploaded photo available for recovery',async()=>{
+ const h=setup({send:o=>{if(o.path.endsWith('/meal-photo-tasks'))throw Object.assign(new Error('请先阅读并确认服务声明与健康提示'),{code:403,businessCode:'SERVICE_NOTICE_REQUIRED'})}})
+ await h.client.open();await h.client.addPhoto('local');h.client.setConsent(true);await h.client.start('lunch',meal.eaten_at)
+ assert.equal(h.state.memberId,'member');assert.equal(h.state.uploads[0].upload_id,'photo')
+ assert.equal(h.state.pending,null);assert.match(h.state.error,/服务声明/);assert.doesNotMatch(h.state.error,/成员授权或来源/)
+ assert.equal(h.state.busy,false)
+})

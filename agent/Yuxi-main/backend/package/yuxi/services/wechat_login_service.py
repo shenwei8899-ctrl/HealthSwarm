@@ -126,6 +126,10 @@ class WechatLoginService:
             self.db.add(user)
             await self.db.flush()
 
+            from yuxi.services.referral_service import bind_new_referral
+
+            await bind_new_referral(self.db, uid, getattr(payload, "referral_receipt", None))
+
         try:
             if not identity:
                 await self.repo.bind(self.settings.appid, digest, user)
@@ -199,8 +203,11 @@ class WechatLoginService:
                     "invitation_review_pending": bool(member and member.invitation_review_pending),
                 }
             )
-        return {"account": {"id": user.id, "uid": user.uid, "name": user.username}, "families": families,
-                "service_notice": await notice_status(self.db, user.uid)}
+        return {
+            "account": {"id": user.id, "uid": user.uid, "name": user.username},
+            "families": families,
+            "service_notice": await notice_status(self.db, user.uid),
+        }
 
     @staticmethod
     def require_user(user):

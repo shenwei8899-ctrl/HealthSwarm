@@ -34,6 +34,7 @@ class WechatPayService
         if ($openid === '') {
             throw new RuntimeException('微信用户 openid 不能为空', 422);
         }
+        \addons\shop\library\v5\PaymentService::assertDeliveryPaymentOpen($orderSn);
         $app = self::application($notifyUrl);
         self::prepareOrder($order);
         $response = $app->order->unify([

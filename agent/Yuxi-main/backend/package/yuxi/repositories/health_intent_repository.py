@@ -32,7 +32,7 @@ class HealthIntentRepository:
         conversation.extra_metadata = metadata
         return None
 
-    async def finish(self, conversation_id, request_id, result):
+    async def finish(self, conversation_id, request_id, result, *, reply_quote_dependencies=()):
         """仅更新已占位请求，保存有限分类结果。"""
         conversation = await self.session.scalar(
             select(Conversation)
@@ -43,6 +43,8 @@ class HealthIntentRepository:
         metadata = dict(conversation.extra_metadata or {})
         receipts = dict(metadata["health_intent_receipts"])
         receipts[request_id] = {**receipts[request_id], "result": result.model_dump(mode="json")}
+        if reply_quote_dependencies:
+            receipts[request_id]["reply_quote_dependencies"] = list(reply_quote_dependencies)
         metadata["health_intent_receipts"] = receipts
         conversation.extra_metadata = metadata
 
@@ -61,7 +63,7 @@ class HealthIntentRepository:
                 .limit(2)
             )
         )
-        return [{"role": row.role, "text": row.content[:800]} for row in reversed(rows)]
+        return list(reversed(rows))
 
     async def is_published_message(self, message):
         """仅公开与已提交分类回执完全一致的入口或追问。"""

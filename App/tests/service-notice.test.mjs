@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { setSession, getSession } from '../src/services/session.js'
-import { installNoticePresenter, ensureServiceNotice, readServiceNotice, viewNoticeDocument, viewServiceNotice, acknowledgeReadNotice, HOME_SERVICE_NOTICE } from '../src/services/service-notice.js'
+import { installNoticePresenter, ensureServiceNotice, readServiceNotice, viewNoticeDocument, viewServiceNotice, acknowledgeReadNotice } from '../src/services/service-notice.js'
 
 const document={version:'test-v1',content_hash:'a'.repeat(64),title:'服务声明',checkbox_text:'我已阅读',sections:[1,2,3].map(n=>({title:String(n),text:'合成提示'}))}
 const storage=new Map()
@@ -54,10 +54,9 @@ test('read-only statement viewing never changes confirmation',async()=>{
  const h=setup();let mode;const release=installNoticePresenter(async value=>{mode=value.mode;return false})
  try{await viewServiceNotice(h.send);assert.equal(mode,'read');assert.equal(h.posts,0)}finally{release();h.release()}
 })
-test('homepage displays the approved non-interactive short notice',()=>{
- assert.equal(HOME_SERVICE_NOTICE,'饮食建议仅供参考，不能替代医疗建议、药物及医嘱。')
+test('homepage omits the short notice while the account confirmation sheet remains available',()=>{
  const source=readFileSync(new URL('../src/components/ChatWelcome.vue',import.meta.url),'utf8')
- assert.match(source,/<text class="service-notice-summary">\{\{HOME_SERVICE_NOTICE\}\}<\/text>/)
+ assert.doesNotMatch(source,/service-notice-summary|HOME_SERVICE_NOTICE/)
  const sheet=readFileSync(new URL('../src/components/ServiceNoticeSheet.vue',import.meta.url),'utf8')
  assert.match(sheet,/checked=ref\(false\)/);assert.match(sheet,/:disabled="!checked"/)
 })

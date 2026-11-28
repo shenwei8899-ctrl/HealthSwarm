@@ -1,3 +1,5 @@
+import { useReplySelection } from '../src/composables/use-reply-selection.js'
+import { replyQuote } from '../src/utils/reply-selection.js'
 import { createDishSwap, dishSwapState, watchDishSwap } from '../src/services/dish-swap.js'
 import {chatPromptProfileKey} from '../src/services/chat-prompt-profile.js'
 import {syntheticIntent} from './fixtures/health-intent.mjs'
@@ -17,7 +19,7 @@ import {isReferencePlan} from '../src/services/reference-meal-plan.js'
 
 function setup({linked=true,available=true,entry=true,notice='',error='',prepared=true,initialized=true,initializationError='',tickOverride}={}){
   const toasts=[],submits=[],modals=[],submitCalls=[],refreshCalls=[],hooks={},identity={scope:'account:family'}
-  const deps={createDishSwap,dishSwapState,watchDishSwap,chatPromptProfileKey,todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),defineOptions(){},selectChatPrompts:()=>[],ensureServiceNotice:async()=>({acknowledged:true}),loadCloudProfile:async()=>{throw new Error('咨询资料读取失败，请重试。')},isReferencePlan,chatPresentation,createChatEntryTransition,createChatKeyboardLayout,watch,ref,computed,reactive,nextTick:tickOverride||nextTick,mealQuestionAction,listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,onShow:fn=>{hooks.show=fn},onHide:fn=>{hooks.hide=fn},onMounted(){},onUnmounted:fn=>{hooks.unmount=fn},defineProps:()=>({route:{}}),
+  const deps={useReplySelection,replyQuote,createDishSwap,dishSwapState,watchDishSwap,chatPromptProfileKey,todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),defineOptions(){},selectChatPrompts:()=>[],ensureServiceNotice:async()=>({acknowledged:true}),loadCloudProfile:async()=>{throw new Error('咨询资料读取失败，请重试。')},isReferencePlan,chatPresentation,createChatEntryTransition,createChatKeyboardLayout,watch,ref,computed,reactive,nextTick:tickOverride||nextTick,mealQuestionAction,listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,onShow:fn=>{hooks.show=fn},onHide:fn=>{hooks.hide=fn},onMounted(){},onUnmounted:fn=>{hooks.unmount=fn},defineProps:()=>({route:{}}),
     storageContext:()=>identity.scope,getSession:()=>({token:'synthetic',householdId:'family'}),
     dailyArrangementState:()=>({phase:prepared?'ready':'error',error:'配餐数据未就绪',busy:false}),
     createDailyArrangementClient:()=>({reset(){},dispose(){},pause(){}}),

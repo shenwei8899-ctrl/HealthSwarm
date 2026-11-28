@@ -7,7 +7,7 @@ import { backdropOpacity, clampDragOffset, shouldCloseDrawer, DRAWER_SETTLE_MS }
 import { storageContext } from '../services/storage.js'
 import { sessionRevision } from '../services/session.js'
 
-const props = defineProps({ open: Boolean, memberId: String, activeThreadId: String, busy: Boolean, browseBusy: Boolean, newBusy: Boolean, deniedThreadId: String, pendingThreadId: String, selectionError: String, displayName: String })
+const props = defineProps({ open: Boolean, memberId: String, activeThreadId: String, replyBadges: Object, busy: Boolean, browseBusy: Boolean, newBusy: Boolean, deniedThreadId: String, pendingThreadId: String, selectionError: String, displayName: String })
 const emit = defineEmits(['close', 'new', 'select', 'profile', 'ready'])
 // Drag-to-close from the panel's right edge. The grip is a narrow strip so vertical list scrolling is unaffected.
 const dragOffset = ref(0), dragPhase = ref('')
@@ -139,20 +139,26 @@ onUnmounted(() => { disposed = true; reset() })
     <button class="drawer-backdrop" :class="{'is-dragging':dragPhase==='dragging'}" :style="backdropStyle" aria-label="关闭对话列表" @click="close" @touchmove.stop.prevent/>
     <view class="drawer-panel" :class="{'is-dragging':dragPhase==='dragging','is-settling':dragPhase==='settling'}" :style="panelStyle" role="dialog" aria-modal="true" aria-label="对话列表" @tap.stop>
       <AppNavBar below-capsule><view class="drawer-heading"><text>对话</text><button class="drawer-new" :disabled="busy||newBusy" @click="newConversation"><view class="drawer-compose-icon" aria-hidden="true"><view/></view><text>新对话</text></button></view></AppNavBar>
-      <text v-if="busy" class="drawer-busy" role="status">当前对话处理中，仍可查看历史记录。</text>
       <scroll-view class="drawer-list" scroll-y :show-scrollbar="false" @scrolltolower="loadMore">
         <view v-for="group in groups" :key="group.date" class="drawer-group">
           <text class="drawer-date">{{group.label}}</text>
           <button v-for="row in group.rows" :key="row.thread_id" class="drawer-conversation" :class="{active:row.thread_id===activeThreadId,unavailable:row.unavailable}" :disabled="browseBusy||row.unavailable" :aria-label="row.title" :aria-current="row.thread_id===activeThreadId?'true':undefined" @click="select(row)">
-            <text>{{row.title}}</text><text v-if="row.thread_id===pendingThreadId" class="drawer-opening" role="status" aria-label="正在打开对话">…</text>
+            <text>{{row.title}}</text>
+            <view v-if="!row.unavailable" class="drawer-indicator">
+              <view v-if="row.thread_id===pendingThreadId||replyBadges?.[row.thread_id]==='generating'"
+                class="drawer-spinner" role="status" :aria-label="row.thread_id===pendingThreadId?'正在打开对话':'正在生成回复'"/>
+              <view v-else-if="replyBadges?.[row.thread_id]==='unread'" class="drawer-unread" role="status" aria-label="有未读回复"/>
+            </view>
           </button>
         </view>
-        <text v-if="loading" class="drawer-status" role="status">{{rows.length?'正在更新对话…':'正在读取对话…'}}</text>
+        <text v-if="loading" class="drawer-status" role="status">正在更新对话</text>
+        <template v-else>
         <text v-if="selectionError" class="drawer-error" role="alert">{{selectionError}}</text>
         <view v-if="error" class="drawer-error" role="alert"><text>{{error}}</text><button @click="retry">重新读取</button></view>
         <view v-if="notice" class="drawer-notice" role="status"><text>{{notice}}</text></view>
         <view v-if="!loading&&!error&&!rows.length" class="drawer-empty"><text>还没有对话</text><text>与你的家庭营养师聊聊，记录会保存在这里。</text></view>
-        <button v-if="hasMore&&!error" class="drawer-more" :disabled="loading" @click="loadMore">{{loading?'正在读取…':'更早的对话'}}</button>
+        <button v-if="hasMore&&!error" class="drawer-more" @click="loadMore">更早的对话</button>
+        </template>
       </scroll-view>
       <view class="drawer-footer"><button class="drawer-profile" @click="profile"><view class="drawer-avatar" aria-hidden="true"><view/><view/></view><text>{{displayName||'我的'}}</text></button><button class="drawer-settings" aria-label="我的与设置" @click="profile"><view class="drawer-settings-icon" aria-hidden="true"><view/></view></button></view>
       <view class="drawer-grip" aria-hidden="true" @touchstart="beginDrag" @touchmove.stop.prevent="moveDrag" @touchend="endDrag" @touchcancel="endDrag"/>
@@ -161,7 +167,12 @@ onUnmounted(() => { disposed = true; reset() })
 </template>
 
 <style scoped>
-.drawer-conversation>.drawer-opening{flex:none;min-width:18px;text-align:right;color:var(--ui-muted)}
+.drawer-indicator{display:flex;align-items:center;justify-content:center;flex:0 0 18px;margin-left:6px}
+.drawer-spinner,.drawer-unread{box-sizing:border-box;border-radius:50%}
+.drawer-spinner{width:14px;height:14px;border:1.5px solid #ded4eb;border-top-color:#785494;animation:drawer-spin .8s linear infinite}
+.drawer-unread{width:8px;height:8px;background:#dc4154}
+@keyframes drawer-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.drawer-spinner{animation:none}}
 
 .conversation-drawer{position:fixed;inset:0;z-index:900;overflow:hidden;color:#25262c}.drawer-backdrop{position:absolute;inset:0;width:100%;height:100%;padding:0;margin:0;border:0;border-radius:0;background:rgba(32,35,43,.34);animation:drawer-shade .18s ease-out}.drawer-backdrop:after{border:0}
 .drawer-panel{position:absolute;top:0;bottom:0;left:0;width:76vw;max-width:420px;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;padding:8px 16px calc(env(safe-area-inset-bottom) + 12px);background-color:var(--ui-canvas);

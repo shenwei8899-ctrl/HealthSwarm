@@ -32,7 +32,9 @@ class ChatMealStatement(HealthDTO):
         max_length=4000,
         description="原文中已经吃过的一餐的完整独立分句；混合咨询时只取实际进食分句，不截掉否定或疑问词。留空采用完整原文",
     )
-    meal_type: Literal["breakfast", "lunch", "dinner", "snack"]
+    meal_type: Literal["breakfast", "lunch", "dinner", "snack", "unknown"] = Field(
+        description="原文明确的餐次；未提餐次填unknown，不追问、不按时刻猜测"
+    )
     day_text: str = Field(
         default="", max_length=30, description="原文日期，例如今天、昨天、2026-11-02；未说默认陈述当天"
     )
@@ -112,7 +114,7 @@ def meal_from_statement(statement, sources, member_id):
         "dinner": r"晚餐|晚饭|晚上|今晚",
         "snack": r"加餐|零食|夜宵|下午茶",
     }
-    if not re.search(patterns[statement.meal_type], intake_text):
+    if statement.meal_type != "unknown" and not re.search(patterns[statement.meal_type], intake_text):
         raise HealthVisionError("meal_type_missing", "这是早餐、午餐、晚餐还是加餐？", 422)
     prefix = re.split(actual_pattern, report_text, maxsplit=1)[0]
     known_meals = [key for key, pattern in patterns.items() if re.search(pattern, prefix)]
@@ -180,7 +182,7 @@ def meal_from_statement(statement, sources, member_id):
             )
         )
     validate_report_clauses(statement, [dated_source.content, *followups], actual_pattern, patterns, subject_pattern)
-    hour = {"breakfast": 8, "lunch": 12, "dinner": 18, "snack": 15}[statement.meal_type]
+    hour = {"breakfast": 8, "lunch": 12, "dinner": 18, "snack": 15, "unknown": 12}[statement.meal_type]
     meal = MealPayload(
         meal_type=statement.meal_type,
         eaten_at=f"{day}T{hour:02d}:00:00+08:00",

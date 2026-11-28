@@ -34,6 +34,12 @@ PREVIEW_POLICY = REFERENCE_POLICY
 
 async def start_exclusive_plan(uid, fid, data, *, only_missing=False, required_member=None):
     """首开按语义依据复用；只有明确换一套才创建新推荐组。"""
+    if data.action == "retry" and data.group_id:
+        from yuxi.services.exclusive_roster_service import retry_exclusive_roster
+
+        pending_roster = await retry_exclusive_roster(uid, fid, data.group_id)
+        if pending_roster is not None:
+            return pending_roster
     policy = PREVIEW_POLICY
     task = None
     async with pg_manager.get_async_session_context() as session:
@@ -120,6 +126,8 @@ async def read_exclusive_plan(uid, fid, group_id=None, *, tier=None):
         row = await repo.find(group_id=group_id)
         if row is None:
             return {"status": "empty", "group_id": None, "plans": []}
+        if tier is None and row.progress.get("roster_update") and row.status in {"generating", "failed"}:
+            return project_group(row, row.sources)
         if row.policy.get("version") in {"agent-preview-v1", "exclusive-reference-v2"}:
             if tier is not None:
                 raise HealthVisionError("source_invalidated", "计划口径已更新，请重新准备", 410)
@@ -335,6 +343,7 @@ def project_preview(row, tier, sources, *, current=None):
                         "steps": dish["steps"],
                         "source": dish["source"],
                         "portion_note": dish.get("portion_note"),
+                        "roster_preserved": meal["meal_type"] in entry.get("roster_preserved_meals", []),
                         "recipe_snapshot": {key: dish.get(key) for key in ("image_url", "cooking_minutes", "source")},
                     }
                     for meal in entry["meals"]

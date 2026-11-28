@@ -404,10 +404,15 @@ export function createCommerceClient({
           })),
       });
     },
-    quoteRecommendation: (sn, version, addressId, slotId, items) => mutate('/checkout/preview', 'POST', {
+    exclusiveDates: (sn, version, addressId, slotId, items) => mutate('/checkout/exclusive-dates', 'POST', {
+      source_type:'recommendation_package', source_ref:sn, source_version:version,
+      address_id:addressId, delivery_slot_id:slotId, items,
+    }),
+    quoteRecommendation: (sn, version, addressId, slotId, items, options = {}) => mutate('/checkout/preview', 'POST', {
       source_type:'recommendation_package', source_ref:sn, source_version:version,
       address_id:addressId, delivery_slot_id:slotId,
       ...(items === undefined ? {} : { items }),
+      ...(options.firstMealDate ? { first_meal_date:options.firstMealDate } : {}),
     }),
     createOrder: (token) =>
       mutate("/orders", "POST", { checkout_token: token }),

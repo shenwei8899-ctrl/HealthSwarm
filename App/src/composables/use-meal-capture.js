@@ -1,3 +1,4 @@
+import { ensureMealItemIds, createCapturePortionDraft, confirmCapturePortions, selectedIntakeDishes, captureIntakeSummary } from '../services/meal-item-intake.js'
 import { computed,reactive,ref,watch,onMounted,onUnmounted } from 'vue'
 import { onShow,onHide,onUnload } from '@dcloudio/uni-app'
 import { createMealNutritionClient,mealNutritionState,recognizedMealDish,bindMealSource,exactMealSource } from '../services/meal-nutrition.js'
@@ -32,7 +33,7 @@ const membersLoading=ref(false),photoPreparing=ref(false),localPhotoPending=ref(
 const supplement=ref(null),editingRecord=ref(null),extraPhotos=ref([]),supplementSaver=createMealSupplementSaver()
 const vision=reactive(photoState()),photoClient=createMealPhotoClient({state:vision,namespace:()=>entryKey.value,sourceContext:()=>photoEntry?.sourceContext||null}),saver=createCloudMealSaver({entryKey:()=>entryKey.value})
 const nutrition=reactive(mealNutritionState()),nutritionClient=createMealNutritionClient({state:nutrition})
-const adjusting=ref(''),mapping=ref(''),sourceQuery=ref(''),gramInput=ref(''),portionCount=ref('1'),acceptMissing=ref(false),familyOpen=ref(false),photoOpen=ref(false)
+const adjusting=ref(''),mapping=ref(''),sourceQuery=ref(''),gramInput=ref(''),portionCount=ref('1'),acceptMissing=ref(!!props.embedded),familyOpen=ref(false),photoOpen=ref(false)
 const nutritionRows=computed(()=>saved.value?saved.value.rows.map(r=>({member_id:r.memberId,...r.record?.snapshot?.nutrition,meal:r.record?.snapshot?.meal})):nutrition.results)
 const preview=computed(()=>nutritionRows.value.length===1?nutritionRows.value[0]:null)
 const previewReady=computed(()=>!!preview.value&&!nutrition.busy&&!nutrition.error)
@@ -45,10 +46,10 @@ const manualOpen=ref(false),manualText=ref(''),manualError=ref(''),menuNotice=re
 const mealKeys=Object.keys(mealLabels),portions=['少量','一般','较多','不确定'],oils=['少油','一般','偏多','不确定']
 const locked=computed(()=>entryBlocked.value||busy.value||(vision.busy&&!photoPreparing.value)||localPhotoPending.value||!!vision.pending||!!supplementSaver.read()||(!!pendingGroup.value&&!pendingGroup.value.editable&&!saved.value)),selected=computed(()=>people.value.filter(p=>p.selected)),hasDishes=computed(()=>dishes.value.length>0)
 const captureLocked=computed(()=>locked.value||!!saved.value||manualOpen.value||!!supplement.value)
-const canSave=computed(()=>!entryBlocked.value&&!editing.value&&!manualOpen.value&&!supplement.value&&selected.value.length>0&&selected.value.every(p=>p.noneConfirmed||p.dishes.length)&&selected.value.some(p=>!p.noneConfirmed&&p.dishes.length))
+const canSave=computed(()=>!entryBlocked.value&&!editing.value&&!manualOpen.value&&!supplement.value&&selected.value.length>0&&selected.value.every(p=>p.noneConfirmed||selectedIntakeDishes(p,dishes.value).length)&&selected.value.some(p=>selectedIntakeDishes(p,dishes.value).length))
 let epoch=0,opening=false,scope='',loading=false,preparation=null,photoPreparation=null,entryDay=initialContext.date,photoVersion=0,pollTimer=null,nutritionTimer=null
-function queueNutrition(){clearTimeout(nutritionTimer);nutritionClient.invalidate();acceptMissing.value=false;if(!hasDishes.value||manualOpen.value||saved.value)return;const mine=epoch;nutritionTimer=setTimeout(()=>{if(mine===epoch)void refreshNutrition()},350)}
-async function refreshNutrition(){if(saved.value||manualOpen.value)return;try{const meals=selected.value.filter(p=>!p.noneConfirmed&&p.dishes.length).map(savedMeal);if(meals.length)await nutritionClient.preview(meals)}catch(e){error.value=e.message}}
+function queueNutrition(){clearTimeout(nutritionTimer);nutritionClient.invalidate();acceptMissing.value=!!props.embedded;if(!hasDishes.value||manualOpen.value||saved.value)return;const mine=epoch;nutritionTimer=setTimeout(()=>{if(mine===epoch)void refreshNutrition()},350)}
+async function refreshNutrition(){if(saved.value||manualOpen.value)return;try{const meals=selected.value.filter(p=>selectedIntakeDishes(p,dishes.value).length).map(savedMeal);if(meals.length)await nutritionClient.preview(meals)}catch(e){error.value=e.message}}
 function amount(code){const value=previewReady.value?preview.value.totals?.[code]:null;return value==null?'—':String(code==='energy_kcal'?Math.round(Number(value)):Math.round(Number(value)*10)/10)}
 function dishEnergy(dish){const row=nutritionRows.value[0],id=row?.meal?.items?.find(i=>i.item_id===dish.item_id||!dish.item_id&&i.name===dish.name)?.item_id;const value=row?.items?.find(i=>i.item_id===id)?.nutrients?.energy_kcal;return value==null?'—':String(Math.round(Number(value)))}
 function pollResult(){clearTimeout(pollTimer);if(!vision.job||!['pending','running'].includes(vision.job.execution_status))return;const mine=epoch;pollTimer=setTimeout(async()=>{if(mine!==epoch)return;if(vision.busy){pollResult();return}await job(vision.job.task_id);if(mine===epoch)pollResult()},1500)}
@@ -131,7 +132,7 @@ function load(){
   const pendingMeal=vision.pending&&(vision.meal||vision.pending.request?.data)
   if(pendingMeal?.eaten_at){date.value=mealDay(pendingMeal.eaten_at);time.value=new Date(Date.parse(pendingMeal.eaten_at)+8*3600000).toISOString().slice(11,16);mealType.value=pendingMeal.meal_type;notice.value='之前的照片请求尚待确认，请先核对原任务。'}
   if(selection===photoVersion&&vision.meal&&(!hasDishes.value||supplement.value?.phase==='upload'))useCandidates()
-  if(hasDishes.value&&source.value!=='当天食谱选菜'&&captureScope.value==='单人餐盘'&&!saved.value&&(!pendingGroup.value||pendingGroup.value.editable))selected.value.forEach(p=>{p.dishes=dishes.value.map(d=>d.name);p.noneConfirmed=false})
+  if(hasDishes.value&&source.value!=='当天食谱选菜'&&captureScope.value==='单人餐盘'&&!saved.value&&(!pendingGroup.value||pendingGroup.value.editable))selected.value.forEach(p=>{if(!p.itemIntakes){p.dishes=dishes.value.map(d=>d.name);p.noneConfirmed=false}})
   pollResult();queueNutrition()
  }catch(e){if(mine===epoch){error.value=e.message;busy.value=false}}finally{if(mine===epoch){loading=false;membersLoading.value=false;photoPreparing.value=false;store()}}})()
  return preparation
@@ -172,8 +173,19 @@ function handleBack(){
 }
 function setScope(value){if(captureLocked.value||editingRecord.value)return;captureScope.value=value;if(value==='单人餐盘'){const first=selected.value[0]||people.value[0];people.value.forEach(p=>p.selected=p===first)}}
 function toggleDish(p,name){if(sourcePhoto)p.grams='';p.dishes=p.dishes.includes(name)?p.dishes.filter(n=>n!==name):[...p.dishes,name];p.noneConfirmed=false}
-function openPortions(){if(manualOpen.value||saved.value||(pendingGroup.value&&!pendingGroup.value.editable))return;portionDraft.value=JSON.parse(JSON.stringify(selected.value));portionError.value='';editing.value=true}
-function applyPortions(){if(portionDraft.value.some(p=>!p.noneConfirmed&&!p.dishes.length)){portionError.value='请为每位成员选择实际吃过的菜，或确认本餐未吃';return}for(const row of portionDraft.value){const target=people.value.find(p=>p.memberId===row.memberId);if(target)Object.assign(target,row)}editing.value=false}
+function openPortions(){if(manualOpen.value||saved.value||vision.pending||supplement.value||(pendingGroup.value&&!pendingGroup.value.editable))return;ensureMealItemIds(dishes.value);portionDraft.value=createCapturePortionDraft(selected.value,dishes.value,captureScope.value==='单人餐盘'&&selected.value.length===1);portionError.value='';editing.value=true}
+function applyPortions(next){
+ if(scope!==storageContext()||busy.value||!editing.value){if(scope!==storageContext())hide();return}
+ try{
+  const confirmed=next||confirmCapturePortions(portionDraft.value,dishes.value)
+  const active=new Set(selected.value.map(p=>p.memberId))
+  if(confirmed.length!==active.size||new Set(confirmed.map(p=>p.memberId)).size!==active.size||confirmed.some(p=>!active.has(p.memberId)))throw new Error('成员已变化，请重新打开核对。')
+  for(const row of confirmed){const target=people.value.find(p=>p.memberId===row.memberId);Object.assign(target,row)}
+  editing.value=false;portionError.value='';queueNutrition();store()
+ }catch(e){portionError.value=e.message}
+}
+function captureDishLabel(dish){const person=selected.value[0],row=person?.itemIntakes?.[dish.item_id];if(person?.noneConfirmed)return '本餐未吃';if(person?.itemIntakes&&!row?.selected)return '未计入本餐';return row?.selected?(String(row.grams??'').trim()?row.grams+' 克':row.portion):dish.portion_confirmed?portionLabel(dish):'核对份量'}
+
 function manual(){
  if(captureLocked.value)return
  manualText.value=dishes.value.map(d=>d.name).join('\n');manualError.value='';manualOpen.value=true
@@ -195,7 +207,7 @@ function applyManual(){
    person.dishes=retained
  })
  source.value=origin.value&&source.value==='照片识别后核对'?'照片识别后核对':'手动填写'
- menuNotice.value='';uni.hideKeyboard?.();cancelManual();if(captureScope.value==='单人餐盘'){selected.value.forEach(p=>{p.dishes=names;p.noneConfirmed=false})}else openPortions()
+ menuNotice.value='';uni.hideKeyboard?.();cancelManual();if(captureScope.value==='单人餐盘'){selected.value.forEach(p=>{p.dishes=names;p.noneConfirmed=false})}openPortions()
 }
 async function fromMenu(){
  if(captureLocked.value)return
@@ -212,7 +224,7 @@ async function fromMenu(){
   const result=captureMenuDishes(plan,type);menuNotice.value=result.notice
   if(!result.dishes.length)return
   dishes.value=result.dishes;source.value='当天食谱选菜';origin.value=null;photo.value=''
-  people.value.forEach(p=>{p.dishes=[];p.grams='';p.portion='不确定';p.noneConfirmed=false})
+  people.value.forEach(p=>{delete p.itemIntakes;p.dishes=[];p.grams='';p.portion='不确定';p.noneConfirmed=false})
   openPortions()
  }catch(e){if(current())error.value=e.message}
  finally{if(mine===epoch)busy.value=false}
@@ -227,7 +239,7 @@ function chooseImage(which){
   localPhotoPending.value=true
   menuNotice.value=''
   if(adding){supplement.value={phase:'upload',photo:r.tempFilePaths[0],candidates:[],text:''}}
-  else {photo.value=r.tempFilePaths[0];origin.value=null;dishes.value=[];saved.value=null;source.value='照片待识别';notice.value='';people.value.forEach(p=>{p.dishes=[];p.grams='';p.noneConfirmed=false;p.portion='不确定'})}
+  else {photo.value=r.tempFilePaths[0];origin.value=null;dishes.value=[];saved.value=null;source.value='照片待识别';notice.value='';people.value.forEach(p=>{delete p.itemIntakes;p.dishes=[];p.grams='';p.noneConfirmed=false;p.portion='不确定'})}
   try{
    await preparation;await photoPreparation
    if(mine!==epoch||context!==storageContext()||version!==photoVersion)return
@@ -264,7 +276,7 @@ async function beginSupplement(row=null){
    captureScope.value='单人餐盘';people.value.forEach(p=>{p.selected=p.memberId===row.memberId;p.dishes=[]})
    const original=record.snapshot.meal;mealType.value=original.meal_type;date.value=mealDay(original.eaten_at);time.value=new Date(Date.parse(original.eaten_at)+8*3600000).toISOString().slice(11,16)
    dishes.value=original.items.filter(i=>!i.excluded).map(recognizedMealDish)
-   selected.value.forEach(p=>{p.dishes=dishes.value.map(d=>d.name);p.noneConfirmed=false})
+   selected.value.forEach(p=>{delete p.itemIntakes;p.portion='不确定';p.grams='';p.dishes=dishes.value.map(d=>d.name);p.noneConfirmed=false})
    await openPhotoClient(row.memberId)
    if(mine!==epoch||context!==storageContext())return
   }catch(e){if(mine===epoch)error.value=e.message;return}finally{if(mine===epoch)busy.value=false}
@@ -309,6 +321,7 @@ function joinSupplement(){
    existing=dishes.value.map(old=>{
     const match=supplement.value.candidates.find(row=>row.choice==='same'&&(row.matchKey===mealDishKey(old)||row.dish.name.trim().replace(/\s/g,'')===old.name.trim().replace(/\s/g,'')))
     if(!match)return old
+    if(old.item_id&&match.dish.item_id&&old.item_id!==match.dish.item_id)people.value.forEach(p=>{if(p.itemIntakes?.[old.item_id]){p.itemIntakes[match.dish.item_id]={...p.itemIntakes[old.item_id],originalAmount:null,originalGrams:''};delete p.itemIntakes[old.item_id]}})
     return {...old,name:match.dish.name,item_id:match.dish.item_id,photo_estimate:match.dish.photo_estimate,visible_ingredients:match.dish.visible_ingredients,uncertainties:match.dish.uncertainties,locations:match.dish.locations}
    })
   }
@@ -331,7 +344,7 @@ function joinSupplement(){
   dishes.value=merged
   if(captureScope.value==='单人餐盘')selected.value.forEach(p=>{p.dishes=dishes.value.map(d=>d.name);p.noneConfirmed=false})
   supplement.value=null;error.value='';notice.value='已加入这一餐，请核对后统一保存。';photoClient.resetSelection();store();queueNutrition();void matchCandidates()
-  if(captureScope.value==='家庭共享桌菜')openPortions()
+  openPortions()
  }catch(e){error.value=e.message}
 }
 async function cancelMealEdit(){
@@ -350,7 +363,7 @@ async function reestimate(){
  vision.uploads=origin.value.meal.photos.map(p=>({upload_id:p.upload_id}));await analyze()
 }
 async function analyze(){if(locked.value||saved.value||manualOpen.value)return;const mine=epoch,context=storageContext();await photoClient.start(mealType.value,`${date.value}T${time.value}:00+08:00`);if(mine!==epoch||context!==storageContext())return;if(!supplement.value&&vision.job&&['pending','running'].includes(vision.job.execution_status)){dishes.value=[];origin.value=null;notice.value=''}useCandidates();pollResult()}
-function useCandidates(){if(manualOpen.value||saved.value||!vision.meal||!vision.draft)return;if(supplement.value){if(supplement.value.phase==='upload'){supplement.value.candidates=supplementCandidates(dishes.value,vision.meal.items.filter(i=>!i.excluded).map(recognizedMealDish));supplement.value.phase='review';store()}return;}if(origin.value?.draft?.id===vision.draft.id&&origin.value?.draft?.version===vision.draft.version&&hasDishes.value)return;origin.value={memberId:vision.memberId,draft:JSON.parse(JSON.stringify(vision.draft)),meal:JSON.parse(JSON.stringify(vision.meal))};dishes.value=vision.meal.items.filter(i=>!i.excluded).map(recognizedMealDish);source.value='照片识别后核对';if(captureScope.value==='单人餐盘')selected.value.forEach(p=>{p.dishes=dishes.value.map(d=>d.name);p.noneConfirmed=false});else people.value.forEach(p=>{p.dishes=[];p.grams='';p.noneConfirmed=false;p.portion='不确定'});notice.value=captureScope.value==='家庭共享桌菜'?'已更新菜品，请重新核对每个人吃过的菜和份量。':'';queueNutrition();void matchCandidates()}
+function useCandidates(){if(manualOpen.value||saved.value||!vision.meal||!vision.draft)return;if(supplement.value){if(supplement.value.phase==='upload'){supplement.value.candidates=supplementCandidates(dishes.value,vision.meal.items.filter(i=>!i.excluded).map(recognizedMealDish));supplement.value.phase='review';store()}return;}if(origin.value?.draft?.id===vision.draft.id&&origin.value?.draft?.version===vision.draft.version&&hasDishes.value)return;origin.value={memberId:vision.memberId,draft:JSON.parse(JSON.stringify(vision.draft)),meal:JSON.parse(JSON.stringify(vision.meal))};dishes.value=vision.meal.items.filter(i=>!i.excluded).map(recognizedMealDish);source.value='照片识别后核对';if(captureScope.value==='单人餐盘')selected.value.forEach(p=>{delete p.itemIntakes;p.dishes=dishes.value.map(d=>d.name);p.noneConfirmed=false});else people.value.forEach(p=>{delete p.itemIntakes;p.dishes=[];p.grams='';p.noneConfirmed=false;p.portion='不确定'});notice.value=captureScope.value==='家庭共享桌菜'?'已更新菜品，请重新核对每个人吃过的菜和份量。':'';queueNutrition();void matchCandidates();openPortions()}
 async function job(id){if(locked.value||saved.value||manualOpen.value)return;const mine=epoch,context=storageContext();await photoClient.job(id);if(mine===epoch&&context===storageContext())useCandidates()}
 function savedMeal(person){
  if((props.embedded||sourcePhoto)&&String(person.grams??'').trim()&&(!Number.isFinite(Number(person.grams))||Number(person.grams)<=0||Number(person.grams)>10000))throw new Error('请填写大于 0 且不超过 10000 克的实际份量，或留空。')
@@ -365,7 +378,7 @@ function savedMeal(person){
   memberId:person.memberId,meal,
  }
 }
-async function save(chat=false){if(editingRecord.value){await saveSupplementedMeal();return}if(scope!==storageContext()){hide();void load();return}if(manualOpen.value||busy.value||((!saver.read()||saver.read().editable)&&!canSave.value))return;if((!saver.read()||saver.read().editable)&&incomplete.value&&!acceptMissing.value){error.value='部分营养或份量尚未补齐，请先补充，或明确选择仅保存已知内容';return}const mine=epoch,context=storageContext();busy.value=true;error.value='';try{let meals=[];if(!saver.read()||saver.read().editable)meals=selected.value.filter(p=>!p.noneConfirmed&&p.dishes.length).map(savedMeal);const group=await saver.save(meals,acceptMissing.value);if(mine!==epoch||context!==storageContext()||!group)return;saved.value=group;notice.value=`已保存${group.rows.length}位成员的实际记录。`;if(chat)chatWithSaved()}catch(e){if(mine===epoch)error.value=e.message}finally{if(mine===epoch){pendingGroup.value=saver.read();busy.value=false}}}
+async function save(chat=false){if(editingRecord.value){await saveSupplementedMeal();return}if(scope!==storageContext()){hide();void load();return}if(manualOpen.value||busy.value||((!saver.read()||saver.read().editable)&&!canSave.value))return;if((!saver.read()||saver.read().editable)&&incomplete.value&&!acceptMissing.value){error.value='部分营养或份量尚未补齐，请先补充，或明确选择仅保存已知内容';return}const mine=epoch,context=storageContext();busy.value=true;error.value='';try{let meals=[];if(!saver.read()||saver.read().editable)meals=selected.value.filter(p=>selectedIntakeDishes(p,dishes.value).length).map(savedMeal);const group=await saver.save(meals,acceptMissing.value);if(mine!==epoch||context!==storageContext()||!group)return;saved.value=group;notice.value=`已保存${group.rows.length}位成员的实际记录。`;if(chat)chatWithSaved()}catch(e){if(mine===epoch)error.value=e.message}finally{if(mine===epoch){pendingGroup.value=saver.read();busy.value=false}}}
 async function saveSupplementedMeal(){
  if(scope!==storageContext()||busy.value||vision.busy||supplement.value||manualOpen.value)return
  if(!supplementSaver.read()&&(!canSave.value||incomplete.value&&!acceptMissing.value))return
@@ -389,16 +402,16 @@ function newMeal(){
  if(!saved.value||busy.value)return
  entryKey.value=props.entry?.key||''
  supplement.value=null;editingRecord.value=null;extraPhotos.value=[];nutritionClient.invalidate()
- adjusting.value='';mapping.value='';acceptMissing.value=false;photoOpen.value=false;cancelManual();menuNotice.value=''
+ adjusting.value='';mapping.value='';acceptMissing.value=!!props.embedded;photoOpen.value=false;cancelManual();menuNotice.value=''
  saver.finish();photoClient.discard();photoVersion++
  const current=currentMealContext();entryDay=current.date;date.value=current.date;time.value=current.time
  mealType.value=mealKeys.includes(props.route.meal)?props.route.meal:current.meal
  pendingGroup.value=null;saved.value=null;origin.value=null;source.value='手动填写';dishes.value=[];photo.value=''
  if(props.embedded){dishes.value=JSON.parse(JSON.stringify(props.entry?.dishes||[]));source.value='菜品详情'}
- people.value.forEach(p=>{p.dishes=props.embedded&&p.selected?dishes.value.map(d=>d.name):[];p.portion='不确定';p.grams='';p.noneConfirmed=false})
+ people.value.forEach(p=>{delete p.itemIntakes;p.dishes=props.embedded&&p.selected?dishes.value.map(d=>d.name):[];p.portion='不确定';p.grams='';p.noneConfirmed=false})
  const first=selected.value[0];if(first)void openPhotoClient(first.memberId)
  store()
 }
 
- return {matchCarriedDish,removeCarriedDish,sourcePhoto,expectedDishes,entryKey,entryBlocked,uiKey,currentMealContext,initialContext,routeDate,members,people,dishes,captureScope,mealType,date,time,oil,photo,error,notice,busy,editing,source,saved,pendingGroup,membersLoading,photoPreparing,localPhotoPending,supplement,editingRecord,extraPhotos,supplementSaver,vision,photoClient,saver,nutrition,nutritionClient,adjusting,mapping,sourceQuery,gramInput,portionCount,acceptMissing,familyOpen,photoOpen,nutritionRows,preview,previewReady,incomplete,nutrients,consent,origin,portionDraft,portionError,manualOpen,manualText,manualError,menuNotice,mealKeys,portions,oils,locked,selected,hasDishes,captureLocked,canSave,epoch,opening,scope,loading,preparation,photoPreparation,entryDay,photoVersion,pollTimer,nutritionTimer,queueNutrition,refreshNutrition,amount,dishEnergy,pollResult,authorizeAndAnalyze,openMapping,searchSources,chooseSource,matchCandidates,applyServings,portionLabel,openAdjustment,applyWeight,applyReference,store,openPhotoClient,load,hide,togglePerson,toggleRecordPerson,viewRecords,isBusy,handleBack,setScope,toggleDish,openPortions,applyPortions,manual,cancelManual,applyManual,fromMenu,chooseImage,beginSupplement,cancelSupplement,switchSupplementToManual,prepareManualSupplement,joinSupplement,cancelMealEdit,reestimate,analyze,useCandidates,job,savedMeal,save,saveSupplementedMeal,recheckRejected,chatWithSaved,newMeal}
+ return {captureDishLabel,captureSummary:captureIntakeSummary,matchCarriedDish,removeCarriedDish,sourcePhoto,expectedDishes,entryKey,entryBlocked,uiKey,currentMealContext,initialContext,routeDate,members,people,dishes,captureScope,mealType,date,time,oil,photo,error,notice,busy,editing,source,saved,pendingGroup,membersLoading,photoPreparing,localPhotoPending,supplement,editingRecord,extraPhotos,supplementSaver,vision,photoClient,saver,nutrition,nutritionClient,adjusting,mapping,sourceQuery,gramInput,portionCount,acceptMissing,familyOpen,photoOpen,nutritionRows,preview,previewReady,incomplete,nutrients,consent,origin,portionDraft,portionError,manualOpen,manualText,manualError,menuNotice,mealKeys,portions,oils,locked,selected,hasDishes,captureLocked,canSave,epoch,opening,scope,loading,preparation,photoPreparation,entryDay,photoVersion,pollTimer,nutritionTimer,queueNutrition,refreshNutrition,amount,dishEnergy,pollResult,authorizeAndAnalyze,openMapping,searchSources,chooseSource,matchCandidates,applyServings,portionLabel,openAdjustment,applyWeight,applyReference,store,openPhotoClient,load,hide,togglePerson,toggleRecordPerson,viewRecords,isBusy,handleBack,setScope,toggleDish,openPortions,applyPortions,manual,cancelManual,applyManual,fromMenu,chooseImage,beginSupplement,cancelSupplement,switchSupplementToManual,prepareManualSupplement,joinSupplement,cancelMealEdit,reestimate,analyze,useCandidates,job,savedMeal,save,saveSupplementedMeal,recheckRejected,chatWithSaved,newMeal}
 }

@@ -117,6 +117,9 @@ class AgentMealSourceService
                 !in_array($list['status'], ['ready', 'confirmed'], true)) {
                 throw new DomainException('采购清单已变化或过期', 40906, 409);
             }
+            if ($list['source_type'] === 'recommendation_package' && ExclusivePurchaseDeliveryService::source($list['source_ref'])) {
+                throw new DomainException('请从7天计划采购入口核对配送后结算',40963,409);
+            }
             return $this->assertSource($userId, $list['source_type'], $list['source_ref'], $list['source_version']);
         }
         if ($type !== 'recommendation_package') {
@@ -286,6 +289,9 @@ class AgentMealSourceService
             $key = ($item['source_type'] ?? '') . ':' . ($item['source_ref'] ?? '') . ':' . ($item['source_version'] ?? 0);
             if (!array_key_exists($key, $sources)) {
                 $sources[$key] = $this->assertSource($userId, $item['source_type'] ?? '', $item['source_ref'] ?? '', $item['source_version'] ?? 0);
+                if (($item['source_type'] ?? '') === 'recommendation_package' && ExclusivePurchaseDeliveryService::source($item['source_ref'])) {
+                    throw new DomainException('请从7天计划采购入口核对配送后结算',40963,409);
+                }
             }
             if (is_array($sources[$key]) && !in_array((string)$item['sku_id'], $sources[$key], true)) {
                 throw new DomainException('商品不属于本次采购来源，请重新选择', 40301, 403);

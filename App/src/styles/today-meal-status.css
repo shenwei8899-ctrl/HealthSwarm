@@ -1,0 +1,10 @@
+.tm-plan-status{display:flex;flex:none;align-items:center;gap:4px;white-space:nowrap;color:#81768f;font-size:10px;line-height:16px}
+.tm-plan-status-failed{color:#95626d}
+.tm-plan-status-dot{flex:none;width:4px;height:4px;border-radius:50%;background:currentColor}
+.tm-plan-status-updating .tm-plan-status-dot{animation:tm-status-breathe 1.8s ease-in-out infinite}
+.tm-plan-status-action{display:flex;align-items:center;justify-content:center;gap:4px;min-width:44px;min-height:44px;margin:0;padding:0;background:transparent;color:inherit;font-size:inherit;line-height:16px}
+.tm-plan-status-action[disabled]{opacity:.5}
+.tm-plan-status-action:after{border:0}
+.tm-body-paused .tm-plan-status-dot,.tm-paused .tm-plan-status-dot{animation-play-state:paused}
+@keyframes tm-status-breathe{0%,100%{opacity:.55}50%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.tm-plan-status-dot{animation:none}}

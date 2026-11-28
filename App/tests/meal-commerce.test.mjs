@@ -2,8 +2,30 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import {ref,computed} from 'vue'
-import {newMealCommerceState,createMealCommerceController,commerceMealView} from '../src/services/meal-commerce-state.js'
+import {newMealCommerceState,createMealCommerceController,commerceMealView,mealDateStart,validMealDate} from '../src/services/meal-commerce-state.js'
 const copy=value=>structuredClone(value)
+
+test('purchase view uses mall specification and retains quantity suggestion without a fabricated pack unit',()=>{
+ const item={quantity:1,suggested_quantity:1,quantity_basis:'needs_confirmation',quantity_notice:'部分用量无法按商城规格换算，建议数量请按实际需要调整。',
+  sku:{sku_id:'milk',product_name:'合成牛奶',sku_name:'950毫升/瓶',net_content:{value:950,unit:'ml'},price_cent:1000,available_quantity:5}}
+ const menu={available:true,items:[item]}
+ const product=commerceMealView(menu,{quantities:{milk:2}}).products[0]
+ assert.equal(product.packLabel,'950毫升/瓶')
+ assert.equal(product.quantity,2)
+ assert.equal(product.suggestedQuantity,1)
+ assert.equal(product.quantityBasis,'needs_confirmation')
+ assert.match(product.quantityNotice,/按实际需要调整/)
+ assert.equal(product.valid,true)
+ delete item.sku.sku_name
+ assert.equal(commerceMealView(menu).products[0].packLabel,'950ml')
+})
+
+test('preferred date validation uses the China calendar and rejects invalid or past dates',()=>{
+ const now=Date.parse('2026-11-25T16:30:00Z')
+ assert.equal(mealDateStart(now),'2026-11-27')
+ assert.equal(validMealDate('2026-11-27',now),true)
+ for(const date of ['2026-11-26','2026-02-30','2026-13-01','2026-11-27junk',null,undefined])assert.equal(validMealDate(date,now),false)
+})
 
 test('structured unsupported delivery preserves meal display and does not change the cart', async () => {
   const f = fixture();

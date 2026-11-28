@@ -19,6 +19,7 @@ class WechatLoginInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     code: SecretStr = Field(min_length=1, max_length=256)
+    referral_receipt: str | None = Field(default=None, max_length=256)
     service_notice: NoticeAcknowledgement | None = None
     identifier: str | None = Field(default=None, min_length=1, max_length=100)
     password: SecretStr | None = Field(default=None, min_length=1, max_length=128)
@@ -63,8 +64,10 @@ async def wechat_session(request: Request, user: User = Depends(get_required_use
     """重新核对账号和当前可访问家庭，支持尚未建档的新用户。"""
     token = request.headers.get("authorization", "").removeprefix("Bearer ")
     claims = AuthUtils.decode_token(token) or {}
-    return {**await WechatLoginService(db).session_context(user),
-            "wechat_authenticated": claims.get("login_channel") == "wechat"}
+    return {
+        **await WechatLoginService(db).session_context(user),
+        "wechat_authenticated": claims.get("login_channel") == "wechat",
+    }
 
 
 @wechat_auth.post("/payment-identity")

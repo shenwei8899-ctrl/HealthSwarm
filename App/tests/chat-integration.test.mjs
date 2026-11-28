@@ -12,9 +12,18 @@ walk(baseParse(template))
 const directive=(node,name,arg)=>node.props.find(p=>p.type===7&&p.name===name&&(!arg||p.arg?.content===arg))?.exp?.content
 const attribute=(node,name)=>node.props.find(p=>p.type===6&&p.name===name)?.value?.content
 
+test('business cards receive the actual conversation read-only boundary',()=>{
+ const card=elements.find(node=>node.tag==='HealthChatBusinessCard')
+ assert.equal(directive(card,'bind','read-only'),'conversationReadOnly')
+})
+
+
 test('the rendered reply bubble follows real reply activity and excludes silent return errors',()=>{
- const reply=elements.find(n=>attribute(n,'id')==='stream-answer')
- assert.equal(directive(reply,'if'),'liveAnswer||entryReady&&!profileLoading&&replyPending')
+ const reply=elements.find(n=>directive(n,'bind','id')?.includes("'stream-answer'"))
+ assert.equal(directive(reply,'for'),'(message,messageIndex) in presentedMessages')
+ assert.match(source,/if\(!\(liveAnswer.value\|\|entryReady.value&&!profileLoading.value&&replyPending.value\)\)return rows/)
+ const progress=elements.find(n=>attribute(n,'id')==='reply-progress')
+ assert.equal(directive(progress,'if'),'message.streaming')
  assert.equal(elements.some(n=>attribute(n,'aria-label')==='咨询未完成'),false)
  assert.doesNotMatch(template,/查看该成员档案|showMemberArchive|重试连接/)
 })
@@ -121,4 +130,21 @@ test('selected menu replies use the dish grid and its verified plan for renderin
  assert.equal(directive(card,'bind','plan'),'message.menuView?verifiedMealView(message):dailyPlans[message.planDate]')
  assert.match(directive(card,'on','detail'),/verifiedMealView\(message\)/)
  assert.match(directive(card,'on','dish'),/verifiedMealView\(message\)/)
+})
+
+
+test('live turn keeps completed history while preparing the next question, then adopts its request key',()=>{
+ const start=source.indexOf('const presentedMessages=computed(()=>{')
+ const end=source.indexOf('const retryBusy=',start)
+ const evaluate=new Function('computed','visibleMessages','liveAnswer','entryReady','profileLoading','replyPending','task','conversationThreadId','pendingEntrySend','familyState','sending','localSend',
+  source.slice(start,end)+';return {rows:presentedMessages.value,key:messageRenderKey}')
+ const old={id:'old-answer',requestId:'old',threadId:'thread',role:'assistant',text:'旧答复'}
+ const state={value:{requestId:'old',result:{type:'answer'},entry:{thread_id:'thread'}}}
+ const local={value:{submitting:false}}
+ const run=()=>evaluate(fn=>({get value(){return fn()}}),{value:[old]},{value:false},{value:true},{value:false},{value:true},state,{value:'thread'},{value:null},{busy:false},{value:true},local)
+ let view=run();assert.equal(view.rows.length,2);assert.equal(view.rows[1].streaming,true);assert.equal(view.rows[1].text,'')
+ state.value={requestId:'new',streamText:'新答复',entry:{thread_id:'thread'}};local.value.submitting=true
+ view=run();assert.equal(view.rows.length,2);assert.equal(view.rows[1].text,'新答复')
+ assert.equal(view.key(view.rows[1]),view.key({id:'server-id',threadId:'thread',requestId:'new',role:'assistant'}))
+ state.value.result={type:'answer'};assert.equal(run().rows.length,1,'completion must not append another pending turn')
 })

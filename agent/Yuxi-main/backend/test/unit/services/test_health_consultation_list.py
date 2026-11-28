@@ -91,7 +91,8 @@ async def test_list_projects_only_metadata_and_uses_extra_row(list_dependencies,
         dependencies.threads.assert_not_awaited()
         dependencies.first_questions.assert_not_awaited()
     assert [(call.args, call.kwargs) for call in dependencies.history_validation.await_args_list] == [
-        (("actor", thread_id), {"preview_history": True}) for thread_id, _, _ in rows[:2]
+        (("actor", thread_id), {"preview_history": True, "allow_stale_reference_results": True})
+        for thread_id, _, _ in rows[:2]
     ]
 
 
@@ -133,7 +134,9 @@ async def test_legacy_processing_consent_does_not_block_directory_reads(list_dep
     dependencies.query.assert_awaited_once_with("actor", "member", limit=20, offset=0)
     dependencies.threads.assert_awaited_once_with("actor", ["thread"])
     dependencies.first_questions.assert_awaited_once_with([7])
-    dependencies.history_validation.assert_awaited_once_with("actor", "thread", preview_history=True)
+    dependencies.history_validation.assert_awaited_once_with(
+        "actor", "thread", preview_history=True, allow_stale_reference_results=True
+    )
     dependencies.cloud_configuration.assert_not_awaited()
 
 
@@ -149,9 +152,10 @@ async def test_unavailable_thread_keeps_page_without_reading_its_first_question(
         (SimpleNamespace(id=8, thread_id="valid-thread", extra_metadata={}), object()),
     ]
 
-    async def authorize_history(uid, thread_id, *, preview_history):
+    async def authorize_history(uid, thread_id, *, preview_history, allow_stale_reference_results):
         """失效线程拒绝读取，其他线程保留独立正控。"""
         assert uid == "actor" and preview_history is True
+        assert allow_stale_reference_results is True
         if thread_id == "revoked-thread":
             raise HealthVisionError("source_invalidated" if status == 410 else "not_found", "不可访问", status)
 

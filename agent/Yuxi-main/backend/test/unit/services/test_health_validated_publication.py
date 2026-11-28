@@ -665,7 +665,9 @@ async def test_published_health_history_does_not_expose_legacy_reasoning_metadat
         get_messages=AsyncMock(return_value=[message]), list_agent_runs_for_history=AsyncMock(return_value=[])
     )
     monkeypatch.setattr(conversation_service, "ConversationRepository", lambda db: repo)
-    monkeypatch.setattr(conversation_service, "require_user_conversation", AsyncMock(return_value=conv))
+    monkeypatch.setattr(
+        conversation_service, "require_history_conversation", AsyncMock(return_value=(conv, None, False))
+    )
     monkeypatch.setattr(conversation_service, "_consultation_message_is_public", AsyncMock(return_value=True))
     monkeypatch.setattr(conversation_service, "_serialize_thread", AsyncMock(return_value={"id": "thread"}))
     monkeypatch.setattr("yuxi.services.health_chat_meal_service.chat_meal_receipts", AsyncMock(return_value=[]))

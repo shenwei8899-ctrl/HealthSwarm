@@ -27,7 +27,8 @@ class ExclusivePlanBrowseRepository:
                 'content_version', encode(sha256(convert_to(e::text, 'UTF8')), 'hex'),
                 'sources', (SELECT jsonb_agg(d->'source')
                   FROM jsonb_array_elements(e->'meals') m,
-                       jsonb_array_elements(m->'dishes') d)
+                       jsonb_array_elements(m->'dishes') d
+                  WHERE NOT (COALESCE(e->'roster_preserved_meals', '[]'::jsonb) ? (m->>'meal_type')))
               ) ORDER BY (e->'day'->>'day_no')::int)
               FROM jsonb_array_elements(progress->'tiers'->:tier) e) AS days
             FROM health_exclusive_plan_group

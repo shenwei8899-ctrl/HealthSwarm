@@ -16,7 +16,7 @@ export function watchDishSwap({ client, plan, enabled, mealTypes }) {
   return () => { stop(); client.clear() }
 }
 
-export const dishSwapState = () => ({ loading:false, busy:false, open:false, error:'', entries:[], needsRegeneration:[], version:null, date:'', target:null, selected:'' })
+export const dishSwapState = () => ({ loading:false, busy:false, open:false, error:'', entries:[], version:null, date:'', target:null, selected:'' })
 
 /** 保留原候选和来源；占位译名不参与判重。 */
 function distinctSwapCandidates(candidates) {
@@ -53,7 +53,7 @@ export function createDishSwap({ state, send=request, context=storageContext, fa
     if(boundKey!==key){
       pause();boundKey=key;plan=value;owner=context()
       if(snapshot?.key!==key)snapshot=null
-      Object.assign(state,{entries:snapshot?.entries||[],version:value.version,date:value.date,needsRegeneration:snapshot?.needsRegeneration||[]})
+      Object.assign(state,{entries:snapshot?.entries||[],version:value.version,date:value.date})
     }else plan=value
     return true
   }
@@ -62,7 +62,7 @@ export function createDishSwap({ state, send=request, context=storageContext, fa
     if(!target||state.busy||attempted)return
     const entry=state.entries.find(e=>e.mealType===target.item.meal_type&&e.dishKey===dishKey(target.dish))
     const status=statuses.get(targetKey({mealType:target.item.meal_type,dishKey:dishKey(target.dish)}))||statuses.get(targetKey({mealType:target.item.meal_type}))||statuses.get(targetKey(null))
-    target.candidates=state.needsRegeneration.includes(target.item.meal_type)?[]:entry?.candidates||[]
+    target.candidates=entry?.candidates||[]
     target.status=status?.status==='error'?'error':status?.status==='ready'?(target.candidates.length?'ready':'empty'):'loading'
     target.error=status?.error||''
   }
@@ -86,13 +86,12 @@ export function createDishSwap({ state, send=request, context=storageContext, fa
       const query='?version='+value.version+(target?.mealType?'&meal_type='+encodeURIComponent(target.mealType):'')+(target?.dishKey?'&dish_key='+encodeURIComponent(target.dishKey):'')
       const {data}=await send({path:'/api/family/'+encodeURIComponent(familyId)+'/daily-meal-plans/'+value.date+'/dish-swap-candidates'+query})
       if(!current())return
-      if(data.date!==value.date||data.version!==value.version||!Array.isArray(data.meals)||(data.needs_regeneration!=null&&!Array.isArray(data.needs_regeneration)))throw Object.assign(Error('候选版本不一致，请刷新餐单。'),{code:409})
-      state.needsRegeneration=data.needs_regeneration||[]
+      if(data.date!==value.date||data.version!==value.version||!Array.isArray(data.meals))throw Object.assign(Error('候选版本不一致，请刷新餐单。'),{code:409})
       const entries=data.meals.flatMap(m=>(m.dishes||[]).map(d=>({mealType:m.meal_type,dishKey:d.dish_key,candidates:distinctSwapCandidates(d.candidates||[])})))
-      if(target?.dishKey&&!state.needsRegeneration.includes(target.mealType)&&!entries.some(e=>e.mealType===target.mealType&&e.dishKey===target.dishKey))throw Object.assign(Error('原菜已更新，请刷新餐单。'),{code:409})
+      if(target?.dishKey&&!entries.some(e=>e.mealType===target.mealType&&e.dishKey===target.dishKey))throw Object.assign(Error('原菜已更新，请刷新餐单。'),{code:409})
       state.entries=[...state.entries.filter(e=>target?.dishKey?e.mealType!==target.mealType||e.dishKey!==target.dishKey:target?.mealType?e.mealType!==target.mealType:false),...entries]
       state.version=data.version;state.date=data.date;statuses.set(key,{status:'ready'})
-      snapshot={key:boundKey,entries:state.entries,needsRegeneration:state.needsRegeneration};refreshTarget()
+      snapshot={key:boundKey,entries:state.entries};refreshTarget()
     }catch(error){
       if(!current())return
       if([401,403,404,410].includes(Number(error.code))){clear();return}
@@ -135,10 +134,10 @@ export function createDishSwap({ state, send=request, context=storageContext, fa
     }
   }
   function retry(){const target=state.target;if(target&&!state.busy)void load(target.plan,0,false,{mealType:target.item.meal_type,dishKey:dishKey(target.dish)})}
-  function close(){if(!state.busy){if(state.needsRegeneration.includes(state.target?.item.meal_type))state.error='';state.open=false;state.target=null}}
+  function close(){if(!state.busy){state.open=false;state.target=null}}
   async function choose(candidate) {
     const target=state.target
-    if(state.busy||!target||state.needsRegeneration.includes(target.item.meal_type)||target.status!=='ready'||!target.candidates.some(c=>c.candidate_id===candidate.candidate_id)||owner!==context()||plan.date!==day())return
+    if(state.busy||!target||target.status!=='ready'||!target.candidates.some(c=>c.candidate_id===candidate.candidate_id)||owner!==context()||plan.date!==day())return
     if(attempted&&attempted!==candidate.candidate_id)return
     attempted=candidate.candidate_id;requestId ||= newId()
     const ticket=generation,scope=owner,familyId=family()
@@ -154,16 +153,7 @@ export function createDishSwap({ state, send=request, context=storageContext, fa
       if(current())await prepare(data,[target.item.meal_type])
     } catch(error) {
       if(!current())return
-      if(error.businessCode==='swap_meal_needs_regeneration'){
-        const type=target.item.meal_type
-        state.needsRegeneration=[...new Set([...state.needsRegeneration,type])]
-        state.entries=state.entries.filter(entry=>entry.mealType!==type)
-        if(snapshot)snapshot={...snapshot,entries:state.entries,needsRegeneration:state.needsRegeneration}
-        state.target={...target,candidates:[],status:'empty'}
-        state.error=error.message
-      }else{
-        state.error=error.code===409?'餐单或候选已更新，请关闭后刷新餐单。':(error.message||'结果尚未确认，请重试同一道候选。')
-      }
+      state.error=error.code===409?'餐单或候选已更新，请关闭后刷新餐单。':(error.message||'结果尚未确认，请重试同一道候选。')
       // An unknown response keeps the same request key and candidate for a safe retry.
     } finally { if(current())state.busy=false }
   }

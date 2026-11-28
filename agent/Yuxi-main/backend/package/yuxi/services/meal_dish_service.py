@@ -25,6 +25,11 @@ async def add_saved_dish(uid, family_id, day, data):
     async with pg_manager.get_async_session_context() as session:
         row = await current_row(session, uid, family_id, day, lock=True)
         plan = await read_current_plan(uid, family_id, day, session=session)
+        from yuxi.services.meal_roster_service import current_roster
+
+        policy = (await current_roster(session, row, lock=True)).get(data.meal_type, {})
+        if policy.get("execution_locked") or policy.get("status") in {"pending", "failed"}:
+            raise HealthVisionError("roster_not_ready", "本餐已有记餐或成员正在更新，保留原安排", 409)
         target = next((m for m in plan["meals"] if m["meal_type"] == data.meal_type), None)
         if target and any(dish_key(d) == data.dish_key for d in target["meal"]["dishes"]):
             return plan
@@ -376,8 +381,9 @@ async def purchase_items(session, uid, family_id, dishes, catalog, *, resolved=N
     requirements, reference_items, gaps = [], {}, []
     current = {str(s["sku_id"]): s for s in catalog["items"]}
     for index, dish in enumerate(dishes):
-        original, original_meal, _, source = (resolved[index] if resolved is not None
-                                            else await read_origin(session, uid, family_id, dish["origin"]))
+        original, original_meal, _, source = (
+            resolved[index] if resolved is not None else await read_origin(session, uid, family_id, dish["origin"])
+        )
         if dish["origin"]["source"]["kind"] == "formal":
             rid = original["recipeVersion"]
             mapping = await session.get(HealthRecipeCommerceSource, rid)
@@ -465,11 +471,16 @@ async def purchase_items(session, uid, family_id, dishes, catalog, *, resolved=N
 def validate_purchase_restrictions(resolved, skus):
     """首次选包与商城回源均核对当前成员和记忆限制。"""
     from yuxi.services.reference_meal_plan_service import (
-        reference_member_restrictions, reference_product_composition, reference_restriction_conflict,
+        reference_member_restrictions,
+        reference_product_composition,
+        reference_restriction_conflict,
     )
 
-    restrictions = [restriction for _, _, members, source in resolved
-                    for restriction in reference_member_restrictions(members) + source.get("purchase_restrictions", [])]
+    restrictions = [
+        restriction
+        for _, _, members, source in resolved
+        for restriction in reference_member_restrictions(members) + source.get("purchase_restrictions", [])
+    ]
     for sku in skus:
         if reference_restriction_conflict(reference_product_composition(sku), restrictions):
             raise HealthVisionError("reference_restriction_conflict", "采购商品含当前明确限制的成分", 422)

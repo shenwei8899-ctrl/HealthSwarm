@@ -1,3 +1,5 @@
+import { useReplySelection } from '../src/composables/use-reply-selection.js'
+import { replyQuote } from '../src/utils/reply-selection.js'
 import { createDishSwap, dishSwapState, watchDishSwap } from '../src/services/dish-swap.js'
 import {createConversationHistoryCache} from '../src/services/conversation-history.js'
 import {syntheticIntent} from './fixtures/health-intent.mjs'
@@ -123,7 +125,7 @@ function workflow(options = {}) {
     }
     return flow
   }
-  const deps = {createDishSwap:config=>createDishSwap({...config,...options.swap}),dishSwapState,watchDishSwap,setTimeout:options.schedule||setTimeout,clearTimeout:options.cancel||clearTimeout,todayMealPlanState,createTodayMealPlan:config=>options.todayMenu?createTodayMealPlan({...config,...options.todayMenu}):({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}), defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatPromptProfileKey,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
+  const deps = {useReplySelection,replyQuote,createDishSwap:config=>createDishSwap({...config,...options.swap}),dishSwapState,watchDishSwap,setTimeout:options.schedule||setTimeout,clearTimeout:options.cancel||clearTimeout,todayMealPlanState,createTodayMealPlan:config=>options.todayMenu?createTodayMealPlan({...config,...options.todayMenu}):({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}), defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatPromptProfileKey,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
     onMounted: fn => { hooks.mount = fn }, onUnmounted: fn => { hooks.unmount = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn },
     dishTitle,mealLabels,mealPairingText,chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,
     newHealthRequestId: id, storageContext: () => identity.scope, getSession: () => ({ ...identity }), scopedStorage,
@@ -155,50 +157,134 @@ function workflow(options = {}) {
   const readOnlyBinding=source.match(/<TodayMealPlanSheet\b[^>]*?:read-only="([^"]+)"/)?.[1]||'false'
   const code = source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {pendingHistoryThread,historySelectionError,closeHistoryDirectory,prefetchHistory,prompts,shufflePrompts,promptAskBusy,promptShuffleBusy,composerPlaceholder,returning,browseConversation,historyPreview,deniedHistoryThread,deniedPreview,reading,rememberReading,latestAvailable,readingSuspended,showTodayMeal,verifiedMealView,mealViewText,restoreChat,scrollTarget,loadDailyPlan,currentEpoch:()=>epoch,history,visibleMessages,todayMenu,dishSwap,swapEnabled,openDishSwap,actTodayMenu,reloadToday,openDailyMeal,openDailyDish,todayMenuReadOnly:()=>{const value=(${readOnlyBinding});return value&&typeof value==='object'&&'value' in value?value.value:value},latestReference,shortcut,inlineTodayOpen,messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
+  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {pendingHistoryThread,historySelectionError,closeHistoryDirectory,prefetchHistory,prompts,shufflePrompts,promptAskBusy,promptShuffleBusy,composerPlaceholder,returning,browseConversation,replyBadges,deniedHistoryThread,activeFlow:()=>flow,reading,rememberReading,latestAvailable,readingSuspended,showTodayMeal,verifiedMealView,mealViewText,restoreChat,scrollTarget,loadDailyPlan,currentEpoch:()=>epoch,history,visibleMessages,todayMenu,dishSwap,swapEnabled,openDishSwap,actTodayMenu,reloadToday,openDailyMeal,openDailyDish,todayMenuReadOnly:()=>{const value=(${readOnlyBinding});return value&&typeof value==='object'&&'value' in value?value.value:value},latestReference,shortcut,inlineTodayOpen,messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
   const historyRow = threadId => { const row = threads.get(threadId); return { thread_id: threadId, member_id: row.memberId, agent_slug: row.agent, business_date: row.businessDate } }
   return { ...page, calls, writes, identity, clock, hooks, scopedStorage, threads, addThread, historyRow,
-    get flow(){return flow},
-    publish: value => flow.publish(value), setSnapshot: value => { snapshotOverride = value },
+    get flow(){return page.activeFlow()},
+    publish: value => page.activeFlow().publish(value), setSnapshot: value => { snapshotOverride = value },
     dispose() { hooks.unmount?.(); scope.stop() },
   }
 }
 
-test('browsing history during a reply preserves its task, draft, and final answer',async()=>{
+test('server archived history shows saved replies without restoring execution, and a new chat unlocks input',async()=>{
+  const p=workflow(),archived=uuid(9910)
+  try{
+    await p.load()
+    p.addThread(archived,{messages:[{id:'past-answer',role:'assistant',text:'当时的建议',createdAt:'2026-10-28T08:00:00+08:00'}]})
+    p.setSnapshot(async threadId=>({messages:clone(p.threads.get(threadId)?.messages||[]),runs:[],thread:{
+      id:threadId,agentId:'health-consultation',...(threadId===archived?{historyReadOnly:true,historyNotice:'资料已更新，仅供回看'}:{}),
+    }}))
+    const before=p.calls.filter(call=>call.action==='open').length
+    await p.selectConversation(p.historyRow(archived))
+    assert.equal(p.conversationReadOnly.value,true)
+    assert.ok(p.visibleMessages.value.some(message=>message.text==='当时的建议'))
+    assert.equal(p.calls.filter(call=>call.action==='open').length,before)
+    p.question.value='不能在这里继续'
+    await p.sendQuestion()
+    assert.equal(p.calls.some(call=>call.action==='send'&&call.text==='不能在这里继续'),false)
+    await p.newConversation()
+    assert.equal(p.conversationReadOnly.value,false)
+  }finally{p.dispose()}
+})
+
+test('a cached editable snapshot cannot resume before the refreshed history authorization',async()=>{
+  const p=workflow(),archived=uuid(9911),gate=deferred()
+  try{
+    await p.load()
+    p.addThread(archived,{messages:[{id:'answer',role:'assistant',text:'历史建议',createdAt:'2026-10-28T08:00:00+08:00'}]})
+    await p.selectConversation(p.historyRow(archived))
+    await p.newConversation()
+    p.setSnapshot(threadId=>threadId===archived?gate.promise:Promise.resolve({messages:[],runs:[]}))
+    const before=p.calls.filter(call=>call.action==='open').length
+    const selecting=p.selectConversation(p.historyRow(archived));await flush()
+    assert.equal(p.calls.filter(call=>call.action==='open').length,before)
+    gate.resolve({messages:p.threads.get(archived).messages,runs:[],thread:{id:archived,historyReadOnly:true,historyNotice:'仅供历史回看'}})
+    await selecting
+    assert.equal(p.conversationReadOnly.value,true)
+    assert.equal(p.calls.filter(call=>call.action==='open').length,before)
+  }finally{p.dispose()}
+})
+
+test('a stored archived chat reopens without restoring execution and clears cached content on revocation',async()=>{
+  const p=workflow(),archived=uuid(9912)
+  try{
+    p.addThread(archived,{messages:[{id:'saved',role:'assistant',text:'可回看的原答复',createdAt:'2026-10-28T08:00:00+08:00'}]})
+    p.scopedStorage.setStorageSync('homepage-conversation',{id:archived,threadId:archived,memberId:member})
+    p.setSnapshot(async threadId=>({messages:p.threads.get(threadId)?.messages||[],runs:[],thread:{id:threadId,historyReadOnly:true,historyNotice:'只读历史'}}))
+    await p.load()
+    assert.equal(p.conversationReadOnly.value,true)
+    assert.ok(p.visibleMessages.value.some(message=>message.text==='可回看的原答复'))
+    assert.equal(p.calls.some(call=>call.action==='open'),false)
+    p.setSnapshot(async()=>{throw Object.assign(new Error('已撤权'),{code:404})})
+    await p.refreshReturn({skipOptional:true})
+    assert.equal(p.visibleMessages.value.some(message=>message.text==='可回看的原答复'),false)
+    assert.equal(p.calls.some(call=>call.action==='open'),false)
+  }finally{p.dispose()}
+})
+
+test('returning to readonly history removes an answer withdrawn inside a successful snapshot',async()=>{
+  const p=workflow(),archived=uuid(9913)
+  try{
+    p.addThread(archived)
+    p.scopedStorage.setStorageSync('homepage-conversation',{id:archived,threadId:archived,memberId:member})
+    const question={id:'question',role:'user',text:'保存的提问',createdAt:'2026-10-28T08:00:00+08:00'}
+    const answer={id:'answer',role:'assistant',text:'随后撤回的答复',createdAt:'2026-10-28T08:01:00+08:00'}
+    let visible=[question,answer]
+    p.setSnapshot(async threadId=>({messages:clone(visible),runs:[],thread:{id:threadId,historyReadOnly:true,historyNotice:'只读历史'}}))
+    await p.load()
+    assert.ok(p.visibleMessages.value.some(message=>message.text===answer.text))
+    visible=[question]
+    await p.refreshReturn({skipOptional:true})
+    assert.equal(p.visibleMessages.value.some(message=>message.text===answer.text),false)
+    assert.ok(p.visibleMessages.value.some(message=>message.text===question.text))
+    assert.equal(p.calls.some(call=>call.action==='open'),false)
+  }finally{p.dispose()}
+})
+
+test('a historical conversation accepts a follow-up while the original reply continues',async()=>{
   const p=workflow(),other=uuid(9900),request=uuid(9901)
   try{
     await p.load();const original=p.conversationThreadId.value
     p.addThread(other);p.question.value='原对话草稿'
-    p.publish({status:'running',requestId:request,streamText:'原对话正在回复',result:null})
-    const calls=p.calls.length,writes=p.writes.length
+    const originalFlow=p.flow
+    originalFlow.publish({status:'running',requestId:request,result:null})
+    assert.equal(p.replyBadges.value[original],'generating')
     p.history();await p.browseConversation(p.historyRow(other))
-    assert.equal(p.historyPreview.value.thread_id,other);assert.equal(p.readingSuspended.value,true)
-    assert.equal(p.conversationThreadId.value,original);assert.equal(p.task.value.requestId,request)
-    assert.equal(p.task.value.streamText,'原对话正在回复');assert.equal(p.question.value,'原对话草稿')
-    assert.ok(p.calls.slice(calls).every(call=>call.action==='snapshot'));assert.equal(p.writes.length,writes)
-    p.publish({status:'completed',result:{type:'answer',text:'原对话最终回复',citations:[]}})
-    assert.equal(p.historyPreview.value.thread_id,other)
-    assert.ok(p.messages.value.some(message=>message.requestId===request&&message.text==='原对话最终回复'))
-    p.browseConversation(p.historyRow(original));assert.equal(p.historyPreview.value,null)
+    assert.equal(p.conversationThreadId.value,other);assert.equal(p.readingSuspended.value,false)
+    assert.equal(p.question.value,'')
+    p.question.value='鸡蛋有什么营养';await p.sendQuestion()
+    const followUp=p.calls.find(call=>call.action==='submit')
+    assert.equal(followUp.threadId,other);assert.equal(followUp.text,'鸡蛋有什么营养')
+    originalFlow.publish({streamText:'原对话正在回复',streamOffset:7})
+    assert.equal(p.replyBadges.value[original],'unread')
+    originalFlow.publish({status:'completed',result:{type:'answer',text:'原对话最终回复',citations:[]}})
+    assert.equal(p.conversationThreadId.value,other)
+    assert.ok(!p.messages.value.some(message=>message.requestId===request))
+    await p.browseConversation(p.historyRow(original))
     assert.equal(p.task.value.requestId,request);assert.equal(p.question.value,'原对话草稿')
+    assert.ok(p.messages.value.some(message=>message.requestId===request&&message.text==='原对话最终回复'))
   }finally{p.dispose()}
 })
 
-test('a denied preview does not invalidate the unrelated active reply and hides with its page',async()=>{
+test('denied history leaves the active reply in its own conversation',async()=>{
   const p=workflow(),other=uuid(9902),request=uuid(9903)
   try{
     await p.load();p.addThread(other);p.publish({status:'running',requestId:request,result:null})
-    await p.browseConversation(p.historyRow(other));p.deniedPreview({threadId:other,status:403})
+    p.setSnapshot(async threadId=>{assert.equal(threadId,other);throw Object.assign(new Error('不可访问'),{code:403})})
+    p.history();await p.browseConversation(p.historyRow(other))
     assert.equal(p.deniedHistoryThread.value,other);assert.equal(p.task.value.requestId,request)
-    assert.equal(p.task.value.status,'running');p.hooks.hide();assert.equal(p.historyPreview.value,null)
+    assert.equal(p.task.value.status,'running');p.hooks.hide();assert.equal(p.historyOpen.value,false)
   }finally{p.dispose()}
 })
 
-test('an uncertain submission permits preview without changing its request identity',async()=>{
+test('switching during an uncertain submission preserves the original request identity',async()=>{
   const p=workflow(),other=uuid(9904),request=uuid(9905)
   try{
-    await p.load();p.addThread(other);p.publish({requestId:request,submitUnknown:true,status:'提交中'})
-    await p.browseConversation(p.historyRow(other));assert.equal(p.historyPreview.value.thread_id,other)
+    await p.load();const original=p.conversationThreadId.value
+    p.addThread(other);p.publish({requestId:request,submitUnknown:true,status:'提交中'})
+    await p.browseConversation(p.historyRow(other));assert.equal(p.conversationThreadId.value,other)
+    assert.equal(p.replyBadges.value[original],'generating');assert.ok(!p.task.value.requestId)
+    await p.browseConversation(p.historyRow(original))
     assert.equal(p.task.value.requestId,request);assert.equal(p.task.value.submitUnknown,true)
   }finally{p.dispose()}
 })
@@ -1338,13 +1424,12 @@ test('selecting another thread never merges conversations and restores the separ
 })
 
 for (const blocked of [{ status: 'running' }, { busy: true }, { submitUnknown: true, canRetry: true }]) {
-  test(`an active or uncertain request cannot change threads or replace the current draft: ${JSON.stringify(blocked)}`, async () => {
-    const p = workflow(), second = uuid(2)
-    p.addThread(second)
+  test(`an active or uncertain request blocks creating a new thread: ${JSON.stringify(blocked)}`, async () => {
+    const p = workflow()
     try {
       await p.load(); const before = p.conversationId.value, callCount = p.calls.length, writes = p.writes.length
       p.question.value = '尚未确认结果的问题'; p.publish(blocked)
-      await p.newConversation(); await p.selectConversation(p.historyRow(second))
+      await p.newConversation()
       assert.equal(p.conversationId.value, before); assert.equal(p.question.value, '尚未确认结果的问题')
       assert.equal(p.calls.length, callCount); assert.equal(p.writes.length, writes)
     } finally { p.dispose() }
@@ -1425,8 +1510,9 @@ test('a relative meal task preserves its self-owned conversation and both actors
     p.question.value='给父亲安排今天午餐';await p.sendQuestion('reference_meal_preview')
     assert.equal(p.calls.filter(call=>call.action==='submit').at(-1).memberId,relative)
     assert.equal(p.scopedStorage.getStorageSync('conversation-index:'+anchor).memberId,member)
-    assert.equal(p.scopedStorage.getStorageSync('homepage-chat-task').memberId,member)
-    assert.equal(p.scopedStorage.getStorageSync('homepage-chat-task').taskMemberId,relative)
+    const receipt=p.scopedStorage.getStorageSync('homepage-chat-task:'+p.conversationId.value)
+    assert.equal(receipt.memberId,member)
+    assert.equal(receipt.taskMemberId,relative)
     await p.selectConversation(p.historyRow(p.identity.dailyThread));await p.selectConversation(p.historyRow(anchor))
     assert.equal(p.conversationId.value,group)
     assert.equal(p.messages.value.find(message=>message.text==='本人的咨询').memberId,member)
@@ -1442,7 +1528,7 @@ test('a relative needs-input meal question reenters within its original conversa
     p.addThread(reference,{memberId:relative,taskType:'reference_meal_preview',agent:'health-meal-planner'})
     p.dailyPlans.value[p.clock.day]={date:p.clock.day,status:'absent',version:0,meals:[],pending:{status:'needs_input',member_id:relative,thread_id:reference,request_id:request,questions:['合成待补充问题'],selection:{mode:'reference',family_id:'family-a',plan_date:p.clock.day,participant_ids:['father'],meal_types:['lunch'],daily_base_version:0}}}
     await p.resumePlanQuestion()
-    assert.equal(p.scopedStorage.getStorageSync('homepage-chat-task').conversationId,group)
+    assert.equal(p.scopedStorage.getStorageSync('homepage-chat-task:'+group).conversationId,group)
     await p.load()
     assert.equal(p.conversationId.value,group);assert.equal(p.task.value.taskType,'reference_meal_preview')
     assert.equal(p.task.value.entry.thread_id,reference)

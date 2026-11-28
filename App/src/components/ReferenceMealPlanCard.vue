@@ -9,16 +9,16 @@ const props=defineProps({plan:{type:Object,required:true},detailMode:Boolean,rea
 const emit=defineEmits(['detail'])
 const expanded=ref(false),busy=ref(false),error=ref(''),resolved=ref(null),displayError=ref('')
 const plan=computed(()=>resolved.value||props.plan)
-const purchaseComplete=computed(()=>plan.value.purchase_ready===true||plan.value.purchase_validation_version===1)
+const purchaseComplete=computed(()=>plan.value.purchase_ready===true||plan.value.purchase_validation_version===1||props.readOnly&&plan.value.history_read_only===true)
 const labels=computed(()=>ingredientLabels((plan.value.meals||[]).flatMap(m=>m.dishes||[])))
 const names={breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}
 const gapNames={no_match:'自行购买 · 暂无价格',needs_confirmation:'自行购买 · 暂无价格',not_sold:'自行准备',catalog_unavailable:'商品目录暂不可用'}
 let alive=true,revision=0
 const scope=storageContext(),current=()=>alive&&scope===storageContext()
 onUnmounted(()=>{alive=false;revision++})
-watch(()=>props.plan,async original=>{
+watch(()=>[props.plan,props.readOnly],async ([original,readOnly])=>{
   const ticket=++revision;resolved.value=null;displayError.value=''
-  if(!original?.preview_id||!current())return
+  if(readOnly||!original?.preview_id||!current())return
   try{
     const {data}=await request({path:'/api/health/v1/reference-meal-plans/'+encodeURIComponent(original.preview_id)})
     if(!current()||ticket!==revision)return

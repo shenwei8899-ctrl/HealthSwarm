@@ -4,6 +4,7 @@ import { createWechatAuthClient } from './wechat-auth-client.js'
 import { canUsePasswordLogin, canUseBusinessLogin } from './config.js'
 import { createBusinessAuthClient } from './business-auth-client.js'
 import { createSharedSessionRestore } from './session-restore.js'
+import { referralEntry } from './referral-entry.js'
 
 let isWechat = false
 // #ifdef MP-WEIXIN
@@ -12,6 +13,7 @@ isWechat = true
 
 const client = createWechatAuthClient({
   send: request,
+  referral: referralEntry,
   session: { read: getSession, save: setSession, clear: clearSession, revision: sessionRevision },
   appId: (import.meta.env || {}).VITE_WECHAT_APPID || '',
   isWechat,

@@ -167,14 +167,32 @@ class HealthConsultationRepository:
         health = HealthVisionRepository(self.session)
         await health.authorize(member_id, uid, "ai_use", lock=lock)
         member = await health.authorize(member_id, uid, "profile_view")
-        if (
-            member.owner_uid != uid or member.relationship_label != "本人"
-        ) and not await health.authorize_family_link(member_id, uid, lock=lock):
+        if (member.owner_uid != uid or member.relationship_label != "本人") and not await health.authorize_family_link(
+            member_id, uid, lock=lock
+        ):
             raise HealthVisionError("not_found", "指标记录助手仅支持自己的本人记录", 404)
         return member
 
+    async def authorize_history(self, uid, thread_id):
+        """仅历史读取允许已改版但仍获授权的来源，执行入口保持严格。"""
+        from yuxi.services.reference_meal_plan_service import ReferencePlanSourceChanged
+
+        try:
+            return await self.authorize(uid, thread_id, preview_history=True, allow_stale_reference_results=True), False
+        except HealthVisionError as error:
+            if error.code != "profile_source_changed" and not isinstance(error, ReferencePlanSourceChanged):
+                raise
+        return await self.authorize(uid, thread_id, preview_history=True, history_view=True), True
+
     async def authorize(
-        self, uid, thread_id, *, lock=False, preview_history=False, allow_stale_reference_results=False
+        self,
+        uid,
+        thread_id,
+        *,
+        lock=False,
+        preview_history=False,
+        allow_stale_reference_results=False,
+        history_view=False,
     ):
         """逐次验证会话、项目、账号及成员 grant，成员锁与撤回排序。"""
         binding = await self.session.scalar(
@@ -274,12 +292,15 @@ class HealthConsultationRepository:
             if conversation.agent_id != PLANNER_SLUG or binding.family_planner_selection is not None:
                 raise HealthVisionError("source_invalidated", "初始选择不属于唯一配餐模式", 410)
             if reference_binding(binding):
-                await bound_reference_context(self.session, uid, binding)
+                await bound_reference_context(self.session, uid, binding, history_view=history_view)
                 if preview_history:
                     from yuxi.services.reference_meal_plan_service import validate_reference_history
 
                     await validate_reference_history(
-                        self.session, binding, allow_stale_results=allow_stale_reference_results
+                        self.session,
+                        binding,
+                        allow_stale_results=allow_stale_reference_results,
+                        history_view=history_view,
                     )
             else:
                 await authorize_initial_planner_binding(self.session, binding)
@@ -362,7 +383,11 @@ class HealthConsultationRepository:
             from yuxi.repositories.health_blood_lipids_repository import HealthBloodLipidsRepository
 
             await HealthFamilyProfileRepository(self.session).validate_history(
-                uid, binding, lock=lock, family_assistant=conversation.agent_id == CONSULTATION_SLUG
+                uid,
+                binding,
+                lock=lock,
+                family_assistant=conversation.agent_id == CONSULTATION_SLUG,
+                history_view=history_view,
             )
             from yuxi.services.conversation_purchase_service import validate_catalog_profile_history
 

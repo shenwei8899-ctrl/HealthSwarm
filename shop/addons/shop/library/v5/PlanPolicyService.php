@@ -55,6 +55,14 @@ class PlanPolicyService
         } catch (\Throwable $error) {Db::rollback();throw $error;}
     }
 
+    /** 商品目录仅输出已发布政策中的审核规则，缺失不按商品名称推断。 */
+    public function skuStorageRule($skuId)
+    {
+        try { $policy = $this->current(); }
+        catch (DomainException $error) { if ($error->getCode() === 50317) return null; throw $error; }
+        return $policy['config']['delivery']['storage_rules'][(string)$skuId] ?? null;
+    }
+
     /** 预算只核对真实计算金额，绝不据此降低成员份量。 */
     public static function assertBudget(array $tier, $members, $goods, $service, $shipping = null)
     {
@@ -106,6 +114,14 @@ class PlanPolicyService
             }
         }
         $delivery = $config['delivery'];
+        if (isset($delivery['storage_rules']) && !is_array($delivery['storage_rules'])) self::invalid('delivery.storage_rules');
+        foreach ($delivery['storage_rules'] ?? [] as $skuId => $rule) {
+            if (!ctype_digit((string)$skuId) || (int)$skuId < 1 || !is_array($rule) ||
+                array_diff(array_keys($rule), ['review_status','condition','max_days','source','version']) ||
+                ($rule['review_status'] ?? '') !== 'approved' || !in_array($rule['condition'] ?? '', ['ambient','refrigerated','frozen'], true) ||
+                !is_int($rule['max_days'] ?? null) || $rule['max_days'] < 1 ||
+                !is_string($rule['source'] ?? null) || !trim($rule['source']) || !is_string($rule['version'] ?? null) || !trim($rule['version'])) self::invalid('delivery.storage_rules.'.$skuId);
+        }
         foreach (['first_lead_days','resume_lead_days','cutoff_lead_days','pause_max_days','booking_horizon_days'] as $key) {
             if (!isset($delivery[$key]) || !is_int($delivery[$key]) || $delivery[$key] < ($key === 'cutoff_lead_days' ? 0 : 1)) self::invalid('delivery.'.$key);
         }

@@ -11,6 +11,19 @@ import {sourceTitle} from '../src/utils/ai-answer.js'
 const profile={householdId:'family',selfMemberId:'self',members:[{id:'self',healthMemberId:'health-self'},{id:'mother',healthMemberId:'health-mother'}]}
 const dates={today:'2026-10-26',tomorrow:'2026-10-27'}
 
+test('frozen history stays in its own business card when the current daily menu is absent or replaced',()=>{
+ const frozen={scope:'daily_reference',status:'reference_ready',preview_id:'saved-old',plan_date:dates.today,
+   history_read_only:true,purchase_ready:false,meals:[{meal_type:'breakfast',dishes:[{name:'原来的早餐'}]}]}
+ const [message]=chatMessages({history:[{id:1,type:'ai',content:JSON.stringify(frozen)}]})
+ for(const current of [null,{status:'ready',meals:[{name:'新的早餐'}]}]){
+   const dailyPlans={[dates.today]:current}
+   assert.equal(message.planDate,undefined)
+   assert.equal(dailyPlans[message.planDate],undefined)
+   assert.equal(message.business.data.preview_id,'saved-old')
+   assert.equal(message.business.data.meals[0].dishes[0].name,'原来的早餐')
+ }
+})
+
 test('source-based candidates retain their date, breakfast, restrictions and material gaps without becoming a saved daily plan',()=>{
  const data=mealCandidates('2026-10-27')
  assert.equal(isMealPlanCandidates(data),true);assert.equal(isReferencePlan(data),false)
@@ -116,16 +129,24 @@ test('reference followup questions restore as readable text after reopening',()=
  const [message]=chatMessages({history:[{id:1,type:'assistant',content:JSON.stringify({status:'needs_input',questions:['早餐需要几人食用？']})}]})
  assert.equal(message.text,'早餐需要几人食用？');assert.equal(message.business,null)
 })
-function card({scopeChange=false,planChange=false,version=2,available=true}={}){
- const calls=[],props={plan:{preview_id:'preview'}},hooks={};let scope='A'
+function card({scopeChange=false,planChange=false,version=2,available=true,readOnly=false}={}){
+ const calls=[],props={readOnly,plan:{preview_id:'preview',...(readOnly?{history_read_only:true}:{})}},hooks={};let scope='A',reads=0
  const deps={ref,computed,watch,ingredientLabels,defineEmits:()=>()=>{},defineProps:()=>props,onUnmounted:fn=>hooks.unmount=fn,storageContext:()=>scope,
-  request:async options=>{if(!options.method)return {data:props.plan};calls.push('publish');return {data:{preview_id:'preview',package:{package_sn:'package',package_version:version}}}},
+  request:async options=>{if(!options.method){reads++;return {data:props.plan}};calls.push('publish');return {data:{preview_id:'preview',package:{package_sn:'package',package_version:version}}}},
   commerce:{connect:async()=>{if(scopeChange)scope='B';if(planChange)props.plan={preview_id:'new-preview'}},mealPackage:async(sn,v)=>{calls.push(['read',sn,v]);return {package_sn:sn,package_version:v,scope:'daily_reference',available}},addMeal:async menu=>calls.push(['cart',menu.package_version])},
   uni:{navigateTo:o=>calls.push(['route',o.url])}}
  const source=readFileSync(new URL('../src/components/ReferenceMealPlanCard.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
- const page=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {purchase,error}`)(deps)
- return {page,calls,hooks}
+ const page=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {purchase,error,purchaseComplete}`)(deps)
+ return {page,calls,hooks,get reads(){return reads}}
 }
+
+test('an authorized archived card renders its saved snapshot without fetching or purchasing a current plan',async()=>{
+ const h=card({readOnly:true})
+ assert.equal(h.page.purchaseComplete.value,true)
+ assert.equal(h.reads,0)
+ await h.page.purchase()
+ assert.deepEqual(h.calls,[])
+})
 test('explicit reference purchase uses returned package version and actual cart route',async()=>{
  const h=card();await h.page.purchase()
  assert.deepEqual(h.calls,['publish',['read','package',2],['cart',2],['route','/pages/shop/index?commerce=1&cart=1']])

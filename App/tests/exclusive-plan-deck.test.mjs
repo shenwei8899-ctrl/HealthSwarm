@@ -94,8 +94,8 @@ test('the current tier and unknown values never create a transition', () => {
 function cardView(props) {
   const source=readFileSync(new URL('../src/components/ExclusivePlanDeck.vue',import.meta.url),'utf8')
   const script=source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
-  const setup=new Function('defineProps','defineEmits','planTierNames','planTierReferencePrices','planTierReferenceRanges',script+';return {tierArt,tierCopy}')
-    (()=>{},()=>()=>{},planTierNames,planTierReferencePrices,planTierReferenceRanges)
+  const setup=new Function('defineProps','defineEmits','planTierNames','planTierReferencePrices','planTierReferenceRanges','Vue','const {reactive,nextTick}=Vue;const onUnmounted=()=>{};'+script+';return {tierArt,tierCopy,artState,artLoaded,artError}')
+    (()=>{},()=>()=>{},planTierNames,planTierReferencePrices,planTierReferenceRanges,Vue)
   const template=source.match(/<template>([\s\S]*?)<\/template>/)[1]
   const {code}=compile(template,{mode:'function',isCustomElement:tag=>['view','text','image'].includes(tag)})
   const render=new Function('Vue',code)(Vue)
@@ -112,7 +112,7 @@ test('tier reference ranges retain the established wording and never become a pl
 test('all three cards render their own tier art, descriptive label and reference range',async()=>{
  const html=await cardView({plans:['economy','standard','premium'].map(tier_code=>({tier_code})),actionLabel:'查看计划',disabled:false})
  for(const [tier,name] of Object.entries(planTierNames)){
-  assert.ok(html.includes(name));assert.ok(html.includes(`/static/plans/${tier}-v3.webp`))
+  assert.ok(html.includes(name));assert.ok(html.includes(`/pages/exclusive-plans/static/${tier}-v4.jpg`))
   assert.ok(html.includes(`${planTierReferenceRanges[tier].min}–${planTierReferenceRanges[tier].max}`))
  }
  for(const label of ['日常实惠','日常之选','品质之选','参考','/人/天'])assert.ok(html.includes(label))

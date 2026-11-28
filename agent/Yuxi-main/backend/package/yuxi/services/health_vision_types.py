@@ -25,7 +25,7 @@ FAMILY_AI_PURPOSES = frozenset(
 )
 NUTRIENTS = {"energy_kcal": "kcal", "protein_g": "g", "fat_g": "g", "carbohydrate_g": "g", "sodium_mg": "mg"}
 HEALTH_TASK_TYPES = {
-    'diet_stage_v1',
+    "diet_stage_v1",
     "onboarding_preparation_v1",
     "report_extract_v1",
     "meal_recognize_v1",
@@ -478,7 +478,7 @@ class MealItem(HealthDTO):
 
 
 class MealPayload(HealthDTO):
-    meal_type: Literal["breakfast", "lunch", "dinner", "snack"]
+    meal_type: Literal["breakfast", "lunch", "dinner", "snack", "unknown"]
     eaten_at: datetime
     items: list[MealItem] = Field(default_factory=list, max_length=30)
     photos: list[MealPhoto] = Field(default_factory=list, max_length=3)

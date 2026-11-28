@@ -69,18 +69,26 @@ function refreshRejectedNotice(){
   clearNoticeSelection();noticeDocument.value=null
   if(visible)void loadLoginNotice().catch(()=>{})
 }
+async function saveLoginNotice(account, notice, login = false) {
+  if(!account?.token||account.accountId!==getSession()?.accountId||account.token!==getSession()?.token)
+    throw Object.assign(new Error('登录账号已变化，请重新操作'),{code:'SESSION_CHANGED'})
+  if(account.serviceNotice?.acknowledged&&(!notice||account.serviceNotice.version===notice.version&&account.serviceNotice.content_hash===notice.content_hash))return account
+  // 恢复旧会话不等于确认；只有本页明确勾选的版本才能提交。
+  if(!notice||notice!==loginNotice.value||!login&&!requireLoginNotice())
+    throw Object.assign(new Error('请先阅读并勾选下方的服务声明与健康提示，再点击微信登录。'),{code:'LOGIN_NOTICE_REQUIRED'})
+  const status=await acknowledgeReadNotice(request,notice)
+  return {...account,serviceNotice:status}
+}
 let phoneFlow = null
 function phoneLogin() {
   if (!phoneFlow) phoneFlow = createPhoneLogin({
     auth: { restore: async () => {
       const notice=loginNotice.value,account=await wechatAuth.restore()
-      if(notice&&notice===loginNotice.value&&account?.token&&
-        !(account.serviceNotice?.acknowledged&&account.serviceNotice.version===notice.version&&account.serviceNotice.content_hash===notice.content_hash))
-        await acknowledgeReadNotice(request,notice)
-      return account
-    }, login: () => {
+      return account?.token?saveLoginNotice(account,notice):account
+    }, login: async () => {
       if(!requireLoginNotice())throw new Error(loginError.value)
-      return service.login({serviceNotice:loginNotice.value})
+      const notice=loginNotice.value,account=await service.login({serviceNotice:notice})
+      return saveLoginNotice(account,notice,true)
     } },
     session: getSession, commerce, accountContext: storageContext,
     appId: wechatAppId,
@@ -108,7 +116,9 @@ async function restore() {
   if (isPhoneLogin) { await phoneLogin().restore(); return }
   if (isMockMode || !getSession()?.token || loggingIn.value) return
   const mine = generation; loggingIn.value = true; loginError.value = ''
-  try { const url = await loginDestination(); if (visible && mine === generation && url !== '/pages/index/index') await openEntry(url) }
+  try {
+    if(!canUseBusinessLogin){const account=await wechatAuth.restore();if(account?.token)await saveLoginNotice(account,loginNotice.value)}
+    const url = await loginDestination(); if (visible && mine === generation && url !== '/pages/index/index') await openEntry(url) }
   catch (e) { if (visible && mine === generation) loginError.value = e.message }
   finally { if (visible && mine === generation) loggingIn.value = false }
 }
@@ -122,7 +132,8 @@ async function continueLogin() {
   if(!isMockMode&&!canUseBusinessLogin&&!requireLoginNotice())return
   const mine = generation; loggingIn.value = true; loginError.value = ''
   try {
-    await service.login(isMockMode ? testAccount.value : canUseBusinessLogin ? { identifier: identifier.value, password: password.value } : {serviceNotice:loginNotice.value})
+    const account=await service.login(isMockMode ? testAccount.value : canUseBusinessLogin ? { identifier: identifier.value, password: password.value } : {serviceNotice:loginNotice.value})
+    if(!isMockMode&&!canUseBusinessLogin)await saveLoginNotice(account,loginNotice.value,true)
     password.value = ''
     if (!visible || mine !== generation) return
     let url
@@ -150,7 +161,7 @@ async function continueLogin() {
 <button v-if="isPhoneLogin && loginNotice && !needsPhoneAuthorization" class="primary-button" :disabled="loggingIn || phoneUncertain || noticeLoading || noticeViewing" :loading="loggingIn" @click="loginWechatAccount">{{loggingIn?'正在登录…':'微信登录，开始使用'}}</button>
 <!-- #endif -->
 <button v-if="!isPhoneLogin" class="primary-button" :disabled="loggingIn || noticeLoading || noticeViewing" @click="start">{{loggingIn?'正在登录…':canUseBusinessLogin?'测试账号登录，开始使用':'微信登录，开始使用'}}</button>
-<checkbox-group v-if="!isMockMode&&!canUseBusinessLogin" class="login-notice" @change="changeLoginNotice"><view class="login-notice-row"><label class="login-notice-toggle"><checkbox value="yes" :checked="!!loginNotice" :disabled="loggingIn||awaitingPhoneAuthorization||noticeLoading||noticeViewing||!noticeDocument" color="#292d20" aria-label="确认已阅读并理解服务声明与健康提示"/></label><view class="login-notice-copy"><text>{{noticeDocument?.checkbox_text||'请阅读并理解服务声明与健康提示后勾选确认。'}}</text><button class="login-notice-link" :disabled="loggingIn||awaitingPhoneAuthorization||noticeViewing" @tap.stop="showLoginNotice">《服务声明与健康提示》</button></view></view></checkbox-group>
+<checkbox-group v-if="!isMockMode&&!canUseBusinessLogin" class="login-notice" @change="changeLoginNotice"><view class="login-notice-row"><label class="login-notice-toggle"><checkbox value="yes" :checked="!!loginNotice" :disabled="loggingIn||awaitingPhoneAuthorization||noticeLoading||noticeViewing||!noticeDocument" color="#292d20" aria-label="确认已阅读并理解服务声明与健康提示"/></label><view class="login-notice-copy"><text>我已阅读并理解</text><button class="login-notice-link" :disabled="loggingIn||awaitingPhoneAuthorization||noticeViewing" @tap.stop="showLoginNotice">《服务声明与健康提示》</button></view></view></checkbox-group>
 <text v-if="loginError" class="login-error" role="alert">{{loginError}}</text><button v-if="isPhoneLogin && (loginError || phoneUncertain)" class="secondary-button" :disabled="loggingIn" @click="retryPhoneLogin">重新检查登录状态</button><text v-if="isPhoneLogin" class="safe-note">微信授权手机号后继续使用，手机号绑定到当前账号。</text><text v-if="phoneBindingDemo" class="safe-note">隔离环境演示</text><text v-if="canUseBusinessLogin" class="safe-note">{{canUseH5TestLogin?'功能测试 · 使用独立测试账号':'本机联调 · 使用真实业务账号'}}</text><text v-if="isMockMode" class="safe-note">前端体验版 · 登录、推荐与交易均为模拟</text></view><view v-if="loginOpen && canUseBusinessLogin" class="sheet-mask" @click="closeLoginSheet"><view class="sheet" @click.stop><view class="sheet-head"><text class="section-title">测试账号登录</text><button aria-label="关闭登录" @click="closeLoginSheet">×</button></view><text class="demo-label">使用业务账号连接真实服务，资料会保存到服务端。</text><input v-model="identifier" class="field-input" maxlength="100" placeholder="业务测试账号" aria-label="业务测试账号" :disabled="loggingIn"/><input v-model="password" class="field-input" password maxlength="128" placeholder="密码" aria-label="密码" :disabled="loggingIn" confirm-type="done" @confirm="continueLogin"/><text v-if="loginError" class="login-error" role="alert">{{loginError}}</text><button class="primary-button" :disabled="loggingIn || !identifier.trim() || !password" @click="continueLogin">{{loggingIn?'正在登录…':'登录并继续'}}</button></view></view><view v-if="loginOpen && isMockMode" class="sheet-mask" @click="closeLoginSheet"><view class="sheet" @click.stop><view class="sheet-head"><text class="section-title">模拟微信登录</text><button @click="closeLoginSheet">×</button></view><text class="demo-label">此处仅创建本机测试身份，不是真实微信授权。</text><input v-model="testAccount" class="field-input" maxlength="40" placeholder="测试账号名称"/><text v-if="loginError" class="login-error" role="alert">{{loginError}}</text><button class="primary-button" :disabled="loggingIn" :loading="loggingIn" @click="continueLogin">{{loggingIn?'正在登录…':'模拟登录并继续'}}</button></view></view></view>
 </template>
 <style scoped>
@@ -167,7 +178,7 @@ async function continueLogin() {
 .login-panel>.primary-button{width:100%;min-height:108rpx;padding:24rpx 20rpx;border:1rpx solid rgba(255,255,255,.12);border-radius:999rpx;background:#111;color:#fff;font-size:31rpx;font-weight:500;line-height:1.5;letter-spacing:1rpx;box-shadow:0 8rpx 30rpx rgba(0,0,0,.1)}
 .login-panel>.primary-button:active{background:#24211e}
 .login-panel>.primary-button[disabled]{opacity:.65}
-.login-notice{display:block;margin-top:22rpx;padding:16rpx 16rpx 12rpx;border-radius:16rpx;background:rgba(25,29,15,.62);color:#fff}.login-notice-row{display:flex;align-items:flex-start;gap:8rpx}.login-notice-toggle{display:flex;align-items:flex-start;justify-content:center;width:48rpx;min-height:48rpx;flex-shrink:0}.login-notice-toggle checkbox{transform:scale(.8);transform-origin:top center}.login-notice-copy{flex:1;min-width:0;font-size:23rpx;line-height:1.7;text-align:left}.login-notice-link{display:inline-block;width:auto;margin:4rpx 0 0;padding:4rpx 0;min-height:44rpx;border:0;border-radius:0;background:transparent;color:#fff;font-size:24rpx;line-height:1.5;text-decoration:underline;text-underline-offset:4rpx;text-align:left}.login-notice-link:after{border:0}.login-notice-link[disabled]{background:transparent;color:rgba(255,255,255,.65)}
+.login-notice{display:block;margin-top:22rpx;padding:16rpx 16rpx 12rpx;border-radius:16rpx;background:rgba(25,29,15,.62);color:#fff}.login-notice-row{display:flex;align-items:center;gap:8rpx}.login-notice-toggle{display:flex;align-items:center;justify-content:center;width:48rpx;min-height:48rpx;flex-shrink:0}.login-notice-toggle checkbox{transform:scale(.8);transform-origin:center}.login-notice-copy{display:flex;align-items:center;flex-wrap:wrap;flex:1;min-width:0;font-size:23rpx;line-height:1.7;text-align:left}.login-notice-link{display:inline-flex;align-items:center;width:auto;margin:0;padding:0;min-height:44rpx;border:0;border-radius:0;background:transparent;color:#fff;font-size:inherit;line-height:inherit;white-space:nowrap;text-decoration:underline;text-underline-offset:4rpx;text-align:left}.login-notice-link:after{border:0}.login-notice-link[disabled]{background:transparent;color:rgba(255,255,255,.65)}
 .login-panel>.secondary-button{margin-top:18rpx;background:rgba(255,255,255,.96);color:#30251f;border-color:transparent;border-radius:16rpx;font-size:28rpx}
 .login-panel>.login-error{display:block;margin-top:18rpx;padding:16rpx 20rpx;background:rgba(42,18,12,.86);border:1rpx solid rgba(255,255,255,.25);border-radius:12rpx;color:#fff;font-size:27rpx;line-height:1.6;overflow-wrap:anywhere}
 .login-panel>.safe-note{display:block;margin-top:20rpx;color:rgba(255,255,255,.94);font-size:24rpx;line-height:1.6;text-align:center}

@@ -56,8 +56,6 @@ const day = computed(() => browseMode.value?currentDayState.value?.data:selected
 const meals = computed(() => dayMeals(day.value))
 const meal = computed(() => meals.value.find(item => item.type === mealType.value))
 const dayLabels = computed(() => (plan.value?.days || []).map(item => '第 ' + item.day_no + ' 天'))
-const delivery = computed(() => purchaseData.value?.delivery_suggestions)
-const storageLabels = {ambient:'常温存放',refrigerated:'需冷藏',frozen:'需冷冻'}
 const period = computed(() => plan.value?.days?.length || 0)
 const panelRecipe = computed(() => {
   const dish = meal.value?.dishes.find(item => item.id === selectedDishId.value)
@@ -127,11 +125,12 @@ function load() {
   closePanel()
   imageFlow.stop()
   return run(async active => {
-    plan.value = null
-    purchaseData.value = null
+    if(!purchasing.value){plan.value = null;purchaseData.value = null}
     const {groupId, tier, sn, version} = route.value
     if (purchasing.value && groupId) {
-      const {data} = await request({path:purchasePath.value})
+      let data
+      try { ({data} = await request({path:purchasePath.value})) }
+      catch(e){if(active()){plan.value=null;purchaseData.value=null}throw e}
       if (active()) {
         plan.value = {tier_name:data.tier_name,members:data.members}
         purchaseData.value = data
@@ -156,27 +155,10 @@ const back = () => uni.navigateBack()
 </script>
 <template>
   <view class="screen exclusive-screen detail-screen" :class="{'plan-preview':!purchasing}">
-    <AppNavBar :title="purchasing?'计划采购':'计划详情'"><template #left><button class="icon-button" aria-label="返回" @click="back">‹</button></template></AppNavBar>
+    <AppNavBar v-if="!purchasing||!purchaseData" :title="purchasing?'确认采购':'计划详情'"><template #left><button class="icon-button" aria-label="返回" @click="back">‹</button></template></AppNavBar>
     <view v-if="pageError&&!plan" class="plan-surface plan-empty"><text class="plan-caption">{{pageError}}</text><button class="plan-secondary" :disabled="busy" @click="load">重新读取</button><button class="plan-text-link" @click="back">返回选择计划</button></view>
     <text v-else-if="pageLoading && !plan" class="plan-notice">正在读取计划…</text>
-    <template v-if="plan && purchasing">
-      <view class="plan-heading"><text class="plan-title">{{plan.tier_name}}</text><text class="plan-caption">一周 7 天计划</text></view>
-      <template v-if="purchaseData">
-        <text class="plan-notice purchase-coverage">{{purchaseData.notice}}</text>
-        <text v-if="purchaseData.items.some(item=>item.quantity_confirmed===false)" class="plan-notice quantity-warning">部分商品包装数量待确认，请按家庭实际需要调整，当前数量不能视为足够一周。</text>
-        <view v-if="purchaseData.gaps?.length" class="plan-surface purchase-coverage-gaps"><text class="plan-notice">未匹配食材需自行准备：</text><text v-for="(gap,index) in purchaseData.gaps" :key="index" class="plan-notice">{{gap.label||gap.ingredient}}：{{gap.detail}}</text></view>
-        <view v-if="delivery" class="weekly-delivery">
-          <view class="plan-surface"><text class="plan-caption">本周配送建议</text><text class="plan-notice">{{delivery.notice}}</text><view class="plan-row"><text>配送费</text><text>待定</text></view><text class="plan-notice">实际送达安排待供应商确认。</text></view>
-          <view v-for="batch in delivery.batches" :key="batch.batch_no" class="plan-surface delivery-batch">
-            <text class="plan-caption">第 {{batch.batch_no}} 趟 · 第 {{batch.day_no}} 天用餐前</text><text class="plan-notice">{{batch.timing}}</text>
-            <view v-for="item in batch.items" :key="item.food" class="delivery-item"><text>{{item.food}} · {{item.quantity_g===null?'包装数量可调整':'原谱参考 '+item.quantity_g+'g'}}</text><text>用于第 {{item.use_days.join('、')}} 天 · {{storageLabels[item.storage_condition]||'按使用日安排'}}</text></view>
-          </view>
-          <view v-if="!delivery.batches.length" class="plan-surface"><text class="plan-notice">未匹配食材需自行准备；已匹配商品可在下方选择包装数量。</text></view>
-        </view>
-        <CloudMealPurchase v-if="purchaseData.available" :key="purchaseData.scope_hash" :meal="{members:plan.members}" :route="purchaseRoute" :reference="purchaseReference" :exclusive="{path:purchasePath,scopeHash:purchaseData.scope_hash,initialPurchase:purchaseData}"/>
-        <view v-else class="plan-surface plan-empty"><text class="plan-caption">暂无可购买商品</text><button class="plan-secondary" :disabled="busy" @click="load">重新核对</button></view>
-      </template>
-    </template>
+    <CloudMealPurchase v-if="plan&&purchasing&&purchaseData" :key="purchaseData.scope_hash" exclusive-page :meal="{members:plan.members}" :route="purchaseRoute" :reference="purchaseReference" :exclusive="{path:purchasePath,scopeHash:purchaseData.scope_hash,initialPurchase:purchaseData}" @back="back"/>
     <text v-if="pageError&&plan" class="plan-notice">{{pageError}}</text>
     <template v-if="plan && !purchasing">
       <view class="preview-heading">

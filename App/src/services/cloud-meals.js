@@ -1,3 +1,4 @@
+import { selectedIntakeDishes, applyPersonalItemAmount } from './meal-item-intake.js'
 import { request } from './request.js'
 import { sessionRevision } from './session.js'
 import { scopedStorage } from './storage.js'
@@ -24,7 +25,7 @@ export async function readDietRecord(memberId,id,send=request){
 export function portionNote(item){return (item.uncertainties||[]).find(s=>s.startsWith('本人粗略份量：'))?.slice(7)||'不确定'}
 export function personalMeal(dishes,person,{mealType,eatenAt,captureScope,oil='不确定'},newId=newHealthRequestId){
   if(!mealLabels[mealType]||!Number.isFinite(Date.parse(eatenAt)))throw new Error('请选择有效的餐次和日期')
-  const items=dishes.filter(d=>person.dishes.includes(d.name)).map(d=>({item_id:d.item_id||newId(),name:d.name,
+  const items=selectedIntakeDishes(person,dishes).map(d=>{const item=({item_id:d.item_id||newId(),name:d.name,
     recipe_version_id:d.recipe_version_id||null,food_id:d.food_id||null,
     nutrition_source:d.nutrition_source||null,
     photo_estimate:d.photo_estimate?copy(d.photo_estimate):null,
@@ -38,7 +39,7 @@ export function personalMeal(dishes,person,{mealType,eatenAt,captureScope,oil='�
     }:{servings:null,grams:d.source_basis!=='per_serving'&&person.dishes.length===1&&Number(person.grams)>0?Number(person.grams):null,portion_reference_id:null,portion_count:null,
       share_ratio:person.dishes.length===1&&Number(person.grams)>0?1:null,portion_source:person.dishes.length===1&&Number(person.grams)>0?'manual':'unknown'}),
     uncertainties:[`本人粗略份量：${person.portion||'不确定'}`,`记录方式：${captureScope}`,`烹饪用油：${oil}`,
-      ...(person.dishes.length>1&&Number(person.grams)>0?[`本人所选菜品合计重量：${Number(person.grams)}g；各菜重量未知`]:[])]}))
+      ...(person.dishes.length>1&&Number(person.grams)>0?[`本人所选菜品合计重量：${Number(person.grams)}g；各菜重量未知`]:[])]});return person.itemIntakes?applyPersonalItemAmount(item,d,person.itemIntakes[d.item_id]):item})
   if(!items.length)throw new Error('请确认本人实际吃过的菜；未吃的成员不创建摄入记录')
   return {meal_type:mealType,eaten_at:eatenAt,items,photos:[]}
 }

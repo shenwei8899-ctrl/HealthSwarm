@@ -1,3 +1,5 @@
+import { useReplySelection } from '../src/composables/use-reply-selection.js'
+import { replyQuote } from '../src/utils/reply-selection.js'
 import { createDishSwap, dishSwapState, watchDishSwap } from '../src/services/dish-swap.js'
 import {chatPromptProfileKey} from '../src/services/chat-prompt-profile.js'
 import {createConversationHistoryCache} from '../src/services/conversation-history.js'
@@ -18,7 +20,7 @@ const member='11111111-1111-4111-8111-111111111111',thread='22222222-2222-4222-8
 const rid='33333333-3333-4333-8333-333333333333',newThread='44444444-4444-4444-8444-444444444444'
 const date='2026-10-27',type='reference_meal_preview'
 const selection={family_id:'family',participant_ids:['self'],plan_date:date,meal_types:['breakfast']}
-function fixture({cached=true,createFailure=false}={}){
+function fixture({cached=true,createFailure=false,replyQuote:failedQuote=null}={}){
  const values=new Map(),calls=[],historyReads=[],hooks={}
  let account='synthetic',createAttempts=0,pendingOpen=null,idCount=0
  const storage={getStorageSync:k=>structuredClone(values.get(k)),setStorageSync:(k,v)=>values.set(k,structuredClone(v))}
@@ -44,19 +46,19 @@ function fixture({cached=true,createFailure=false}={}){
   if(o.path.includes('/reference-meal-plans/')||o.path.includes('/daily-arrangements/'))return {data:{status:'absent'}}
   throw new Error('Unexpected endpoint '+o.path)
  }
- const deps={ensureServiceNotice:async()=>({acknowledged:true}),createDishSwap,dishSwapState,watchDishSwap,chatPromptProfileKey,todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),defineOptions(){},createChatEntryTransition,createChatKeyboardLayout,watch,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,HEALTH_TEXT_TASKS,chatPresentation,chatTimestamp,chatBusinessDate,isReferencePlan:()=>false,
+ const deps={useReplySelection,replyQuote,ensureServiceNotice:async()=>({acknowledged:true}),createDishSwap,dishSwapState,watchDishSwap,chatPromptProfileKey,todayMealPlanState,createTodayMealPlan:()=>({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}),defineOptions(){},createChatEntryTransition,createChatKeyboardLayout,watch,selectChatPrompts,rememberChatEntry:()=>{},ref,reactive,computed,nextTick,HEALTH_TEXT_TASKS,chatPresentation,chatTimestamp,chatBusinessDate,isReferencePlan:()=>false,
   defineProps:()=>({route:{entry:'conversation'}}),onMounted:f=>hooks.mount=f,onShow:f=>hooks.show=f,onHide:f=>hooks.hide=f,onUnmounted:f=>hooks.unmount=f,
   storageContext:()=>account,scopedStorage:storage,getSession:session,localDate:()=>date,newHealthRequestId:()=>rid,
   loadCloudProfile:async()=>({onboarded:true,householdId:'family',selfMemberId:'self',members:[{id:'self',relation:'本人',healthMemberId:member}]}),
   dailyArrangementState:()=>({phase:'idle',busy:false}),createDailyArrangementClient:()=>({pause(){},reset(){},dispose(){}}),
   readCurrentPreparation:async()=>({status:'absent'}),request:send,
   createHealthTaskFlow:opts=>createHealthTaskFlow({...opts,send,session,revision:()=>1,storage,newId:()=>`55555555-5555-4555-8555-${String(++idCount).padStart(12,'0')}`,day:()=>date,subscribe:()=>()=>{}}),
-  readChatSnapshot:async id=>{historyReads.push(id);return {messages:id===thread?[{id:'original',role:'user',requestId:rid,text:'请安排今天早餐',createdAt:'2026-10-26T18:05:40.501841',status:'failed'}]:[],runs:[]}},
+  readChatSnapshot:async id=>{historyReads.push(id);return {messages:id===thread?[{id:'original',role:'user',requestId:rid,text:'请安排今天早餐',replyQuote:failedQuote,createdAt:'2026-10-26T18:05:40.501841',status:'failed'}]:[],runs:[]}},
   uni:{redirectTo(){},reLaunch(){},showToast(){}},
  }
  deps.conversationHistory=createConversationHistoryCache({read:deps.readChatSnapshot,context:deps.storageContext})
  const script=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
- const scope=effectScope(),page=scope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${script};return {load,messages,visibleMessages,failedQuestion,failedTask,question,draftImage,task,flow,presentation,entryReady,restartChat,editFailedQuestion,entryError,entryRecovering,reenter,requireLogin,watchEntryStall,clearStall,loginState:()=>loginRedirecting}`)(deps))
+ const scope=effectScope(),page=scope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${script};return {load,messages,visibleMessages,failedQuestion,failedTask,question,quoteDraft,draftImage,task,get flow(){return flow},conversationId,presentation,entryReady,restartChat,editFailedQuestion,entryError,entryRecovering,reenter,requireLogin,watchEntryStall,clearStall,loginState:()=>loginRedirecting}`)(deps))
  return {page,calls,storage,historyReads,hooks,get idCount(){return idCount},changeAccount(){account='other'},pauseOpen(){let release;pendingOpen=new Promise(r=>release=r);return ()=>{pendingOpen=null;release()}},dispose(){hooks.unmount?.();scope.stop()}}
 }
 
@@ -94,7 +96,7 @@ test('editing a failed question opens ordinary chat and restores text without su
 })
 test('a new consultation stays on its own thread after reentering and retains an edited draft',async()=>{
  const h=fixture();await h.page.load();h.page.question.value='我的修改';await h.page.restartChat()
- assert.equal(h.page.question.value,'我的修改');assert.equal(h.storage.getStorageSync('homepage-chat-task').type,'consultation')
+ assert.equal(h.page.question.value,'我的修改');assert.equal(h.storage.getStorageSync('homepage-chat-task:'+h.page.conversationId.value).type,'consultation')
  assert.equal(h.calls.some(c=>c.method==='POST'),false)
  await h.page.flow.createEntry()
  h.storage.setStorageSync('homepage-chat-task',{memberId:member,type:'consultation',date,newConversation:true})
@@ -165,4 +167,12 @@ test('reenter clears the stall error and drives the entry again', async () => {
     assert.equal(h.page.entryRecovering.value, false)
     assert.ok(notBlank(h.page), '重新进入后不允许停在白屏')
   } finally { h.dispose() }
+})
+
+
+test('editing a failed quoted question restores its source snapshot independently of the draft',async()=>{
+ const quote={source_thread_id:thread,source_message_id:42,text:'份量按实际需要调整。'}
+ const h=fixture({replyQuote:quote});await h.page.load();await h.page.editFailedQuestion()
+ assert.equal(h.page.question.value,'请安排今天早餐');assert.deepEqual(h.page.quoteDraft.value,quote)
+ assert.equal(h.calls.some(c=>c.path==='/api/agent/runs'),false);h.dispose()
 })

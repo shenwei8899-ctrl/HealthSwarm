@@ -62,7 +62,8 @@ export function commerceMealView(menu, { members = [], meal = 'dinner', quantiti
     return {
       id, skuId: id, name: sku.product_name, skuName: sku.sku_name || '', icon: '食材', imageUrl: sku.image_url || '',
       need: required, needLabel: required === null ? '用量待确认' : required + (units[requirements[0].required_unit] || requirements[0].required_unit),
-      pack: Number(sku.net_content?.value) || null, unit, packLabel: sku.net_content?.value ? Number(sku.net_content.value) + unit + '/包' : sku.sku_name || '规格待确认',
+      pack: Number(sku.net_content?.value) || null, unit, packLabel: sku.sku_name || (sku.net_content?.value ? Number(sku.net_content.value) + unit : '规格待确认'),
+      suggestedQuantity: item.suggested_quantity ?? null, quantityBasis: item.quantity_basis || '', quantityNotice: item.quantity_notice || '',
       quantity, priceCents, availableQuantity,
       valid: productAmountCents({priceCents,quantity}) !== null && availableQuantity !== null && quantity <= availableQuantity,
     }
@@ -70,8 +71,16 @@ export function commerceMealView(menu, { members = [], meal = 'dinner', quantiti
   return plan
 }
 
+// 配送业务按北京时间计算；此边界仅限制期望日期，实际可约性仍由服务端核验。
+export const PLAN_DELIVERY_TIMES = ['10:00–11:00','11:00–12:00','12:00–13:00']
+export const deliverySlotTime = slot => slot.start_time && slot.end_time ? slot.start_time+'–'+slot.end_time : (slot.name || '').replace(/\s*[-—–]\s*/g,'–') || String(slot.id)
+export const mealDateStart = (now = Date.now()) => new Date(now + 32 * 3600000).toISOString().slice(0,10)
+export function validMealDate(value, now) {
+  const stamp = Date.parse(value+'T00:00:00Z')
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(stamp) && new Date(stamp).toISOString().slice(0,10) === value && value >= mealDateStart(now)
+}
 export function newMealCommerceState() {
-  return { menu: null, cart: [], address: null, preferredAddressId: '', slots: [], slotId: 0, quote: null, selected: [], quantities: {}, ready: false, busy: false, loading: false, productsLoading: false, addressLoading: false, addressReady: false, slotsLoading: false, pricing: false, addressError: '', timings: {}, error: '', checkoutError: '', sourceExpired: false, deliveryMessage: '', deliverySupported: null, contextIssue: '', baselineMembers: '', baselineProfile: '', pending: null, orderSn: '' }
+  return { menu: null, cart: [], address: null, preferredAddressId: '', slots: [], slotId: 0, firstMealDate: '', mealDates: [], quote: null, selected: [], quantities: {}, ready: false, busy: false, loading: false, productsLoading: false, addressLoading: false, addressReady: false, slotsLoading: false, pricing: false, addressError: '', timings: {}, error: '', checkoutError: '', sourceExpired: false, deliveryMessage: '', deliverySupported: null, contextIssue: '', baselineMembers: '', baselineProfile: '', pending: null, orderSn: '' }
 }
 
 export function createMealCommerceController({ state, api, scope, context }) {
@@ -116,7 +125,7 @@ export function createMealCommerceController({ state, api, scope, context }) {
     const previousAddress = state.address?.id, previousSlot = state.slotId
     invalidateQuote(); state.loading = true; state.productsLoading = true; state.addressLoading = !state.address
     state.addressReady = Boolean(state.address); state.slotsLoading = false; state.error = ''; state.addressError = ''
-    state.deliverySupported = null; state.deliveryMessage = ''; state.slots = []; state.slotId = 0
+    state.deliverySupported = null; state.deliveryMessage = ''; state.slots = []; state.slotId = 0; state.mealDates = []
     state.pending = api.pendingOrder()
     const timed = async (stage, work) => {
       const start = Date.now()
@@ -163,12 +172,13 @@ export function createMealCommerceController({ state, api, scope, context }) {
         if (!state.address) return
         const addressId = state.address.id
         state.slotsLoading = true
-        const result = await timed('delivery', () => api.slots(addressId))
+        const result = await timed('delivery', () => api.slots(addressId, input.exclusive ? 'plan' : undefined))
         if (!active() || !same(state.address?.id, addressId)) return
         state.deliverySupported = result.supported !== false
         state.deliveryMessage = state.deliverySupported ? '' : (result.message || '当前地址暂不支持配送，请更换收货地址')
         state.slots = state.deliverySupported ? result.items.filter(s => s.available) : []
-        state.slotId = same(previousAddress, addressId) && state.slots.some(s => same(s.id, previousSlot)) ? previousSlot : state.slots[0]?.id || 0
+        const preferred = context().preferredTime
+        state.slotId = preferred ? state.slots.find(s => deliverySlotTime(s) === preferred)?.id || 0 : same(previousAddress, addressId) && state.slots.some(s => same(s.id, previousSlot)) ? previousSlot : state.slots[0]?.id || 0
       } catch (error) { fail(error, 'addressError') }
       finally { if (active()) { state.addressLoading = false; state.slotsLoading = false } }
     })()
@@ -250,13 +260,26 @@ export function createMealCommerceController({ state, api, scope, context }) {
       if (state.deliverySupported !== true) throw new Error(state.deliveryMessage || '请先确认配送状态。')
       if (requireSlot && !state.slots.some(s => same(s.id, state.slotId))) throw new Error('请选择可用的配送时段。')
       const items = state.selected.map(id => ({ sku_id: String(id), quantity: state.quantities[String(id)] }))
-      const result = await api.quoteRecommendation(state.menu.package_sn, state.menu.package_version, state.address.id, state.slotId, items)
+      if (context().exclusive) {
+        state.mealDates = []
+        const dates = await api.exclusiveDates(state.menu.package_sn, state.menu.package_version, state.address.id, state.slotId, items)
+        if (!active()) return null
+        if (!Array.isArray(dates.items) || dates.items.some(date => typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date))) throw new Error('可预约日期无法核对，请重新读取。')
+        state.mealDates = dates.items
+        if (!state.mealDates.length) throw new Error(dates.message || '当前地址和时段暂无可预约日期，请调整后重试。')
+        if (!state.firstMealDate) state.firstMealDate = state.mealDates[0]
+        if (!state.mealDates.includes(state.firstMealDate)) throw new Error('所选开始用餐日期已不可预约，请重新选择日期。')
+      }
+      if (!active()) return null
+      const result = await api.quoteRecommendation(state.menu.package_sn, state.menu.package_version, state.address.id, state.slotId, items, context().exclusive ? { firstMealDate:state.firstMealDate } : undefined)
+      if (context().exclusive && active() && (result?.exclusive_delivery?.first_meal_date !== state.firstMealDate || !Array.isArray(result.delivery_batches) || !result.delivery_batches.length)) throw new Error('配送报价不完整，请重新核对。')
       if (active()) { state.quote = result; state.orderSn = ''; return result }
     } catch (error) {
       if (active()) {
+        state.quote = null
         if (Number(error.status ?? error.code) === 409 && error.details?.reason === 'source_expired') {
           state.quote = null; state.sourceExpired = true
-        } else if ([401,403,404,409,410].includes(Number(error.status ?? error.code)) || error.code === 'SESSION_CHANGED') reset()
+        } else if ([401,403,404,410].includes(Number(error.status ?? error.code)) || Number(error.status ?? error.code) === 409 && (!context().exclusive || ![40961,40963,40915,40916].includes(Number(error.code))) || error.code === 'SESSION_CHANGED') reset()
         state.checkoutError = error.message
       }
     } finally {

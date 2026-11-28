@@ -1,5 +1,6 @@
 import { createSSRApp } from 'vue'
 import App from './App.vue'
+import { referralEntry } from './services/referral-entry.js'
 import { installRouteGuards, guardInitialH5Route } from './services/navigation.js'
 import AppNavBar from './components/AppNavBar.vue'
 import AppIcon from './components/AppIcon.vue'
@@ -13,6 +14,8 @@ export function createApp() {
   registerApiAdapters({ transcribeVoice: uploadVoice })
   // #endif
   // #ifdef H5
+  const referral = window.location.hash.match(/[?&]ref=([A-Za-z0-9_-]{24})(?:&|$)/)
+  if (referral) void referralEntry.capture({query:{ref:referral[1]}})
   guardInitialH5Route(window.location, window.history)
   // #endif
   const app = createSSRApp(App)

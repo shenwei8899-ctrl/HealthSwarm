@@ -1,3 +1,5 @@
+import { useReplySelection } from '../src/composables/use-reply-selection.js'
+import { replyQuote } from '../src/utils/reply-selection.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
@@ -40,7 +42,7 @@ test('explicit task entries reserve the conversation view even with no messages'
 function layout(){
  const emitted=[],props=reactive({followBottom:true});let dispose=()=>{}
  const source=readFileSync(new URL('../src/components/NutritionistLayout.vue',import.meta.url),'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
- const deps={defineOptions(){},getCurrentInstance:()=>({proxy:{}}),onMounted(){},onUnmounted:f=>dispose=f,ref,watch,nextTick,defineProps:()=>props,defineEmits:()=>(...args)=>emitted.push(args)}
+ const deps={useReplySelection,replyQuote,defineOptions(){},defineExpose(){},getCurrentInstance:()=>({proxy:{}}),onMounted(){},onUnmounted:f=>dispose=f,ref,watch,nextTick,defineProps:()=>props,defineEmits:()=>(...args)=>emitted.push(args)}
  const value=new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {shortcuts,choose,openProfile,beginRead}`)(deps)
  return {...value,emitted,props,dispose:()=>dispose()}
 }

@@ -34,6 +34,27 @@ class MealRecordingInput(HealthDTO):
         return self
 
 
+class JournalMealRecordingInput(MealRecordingInput):
+    """用户手动补记允许重量未知，但不接受照片证据或整桌份量。"""
+
+    @model_validator(mode="after")
+    def actual_intake(self):
+        """保持未知为未知，明确克数只能表示个人实际摄入。"""
+        if (
+            self.meal.photos
+            or not self.meal.items
+            or any(
+                item.locations
+                or item.excluded
+                or (item.grams is not None and (item.share_ratio != 1 or item.portion_source != "manual"))
+                or (item.grams is None and (item.share_ratio is not None or item.portion_source != "unknown"))
+                for item in self.meal.items
+            )
+        ):
+            raise ValueError("请填写个人实际吃过的食物；未知克数保持空白，不填写照片位置或整桌份量")
+        return self
+
+
 class FamilyMealRecordingInput(HealthDTO):
     """批次稳定，重试可只包含失败成员；不参加者不提交。"""
 

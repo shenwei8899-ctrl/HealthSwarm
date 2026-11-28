@@ -10,7 +10,7 @@ import {storageContext} from '../services/storage.js'
 import {getSession} from '../services/session.js'
 import {request} from '../services/request.js'
 const props=defineProps({shareState:Object})
-const emit=defineEmits(['prepare-invites','revoke-invite','discard-invites'])
+const emit=defineEmits(['prepare-invites','revoke-invite','discard-invites','dragging'])
 const inviteOpen=ref(false)
 function openInvites(){if(!owner.value||profileContext.value!==storageContext())return;inviteOpen.value=true;emit('prepare-invites')}
 function prepareInvite(){if(owner.value)emit('prepare-invites')}
@@ -93,7 +93,7 @@ onUnmounted(()=>{remembered=null;clearSheet();discard()})
      <button v-if="transfer&&!transfer.accepted" class="retry-button" :disabled="transferBusy" @click="confirmTransfer">同意接手</button>
      <button v-else-if="!transfer&&transferError" class="retry-button" @click="load">重新读取</button>
     </view>
-    <FamilyMemberDeck v-if="profile.members.length" :members="profile.members" :scope="profileContext" :self-id="profile.selfMemberId" :preferred-id="selectedId" :can-manage="owner" @selected="select" @open="detail" @manage="manage"/>
+    <FamilyMemberDeck v-if="profile.members.length" :members="profile.members" :scope="profileContext" :self-id="profile.selfMemberId" :preferred-id="selectedId" :can-manage="owner" @dragging="emit('dragging',$event)" @selected="select" @open="detail" @manage="manage"/>
     <view v-else class="family-notice"><text class="notice-title">先为家人留一个位置</text><text class="notice-copy">{{owner?'添加成员后，就能查看每位家人的健康档案。':'请家庭管理员添加成员，再查看每位家人的健康档案。'}}</text><button v-if="owner" class="retry-button" @click="manage">添加家庭成员</button></view>
    </template>
   </view>

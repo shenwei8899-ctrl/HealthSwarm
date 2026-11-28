@@ -67,7 +67,7 @@ try{
   await fs.writeFile(path.join(evidence,'failure.json'),JSON.stringify({url:page.url(),text:await page.locator('body').innerText(),errors,requests,networkErrors,results},null,2))
   throw error
 }finally{
-  for(const stream of streams)stream.end()
+  for(const stream of streams)stream.res.end()
   await browser.close()
   await new Promise(resolve=>server.close(resolve))
 }

@@ -1,10 +1,12 @@
 <script setup>
 import { computed } from 'vue'
 import AppIcon from './AppIcon.vue'
+import MealRosterControl from './MealRosterControl.vue'
 import { localDate } from '../utils/meal-state.js'
+import { todayMealPlanPresentation } from '../services/today-meal-plan-presentation.js'
 
-const props = defineProps({ state: { type: Object, required: true }, busy: Boolean, heading: Boolean, interactive: { type: Boolean, default: true } })
-const emit = defineEmits(['action', 'detail', 'dish','complete-profile'])
+const props = defineProps({ state: { type: Object, required: true }, familyId:String,rosterExternal:Boolean, members:{type:Array,default:()=>[]}, busy: Boolean, updating: Boolean, heading: Boolean, interactive: { type: Boolean, default: true } })
+const emit = defineEmits(['action', 'detail', 'dish', 'roster-updated','roster-open','complete-profile'])
 const meals = [
  {type:'breakfast',name:'早餐',icon:'sunrise'},
  {type:'lunch',name:'午餐',icon:'sun'},
@@ -12,9 +14,10 @@ const meals = [
 ]
 const displayDate = computed(() => {
  const [year, month, day] = (props.state.date || localDate()).split('-').map(Number)
- return `${month}月${day}日 · 周${'日一二三四五六'[new Date(year,month-1,day).getDay()]}`
+ return `${month}月${day}日·周${'日一二三四五六'[new Date(year,month-1,day).getDay()]}`
 })
 const loadingLabel = computed(() => props.state.label)
+const presentation = computed(() => todayMealPlanPresentation(props.state, props.updating))
 const actionLabels = {refresh:'刷新状态',regenerate:'重新安排餐次',answer:'继续回答',candidates:'查看待核对候选','complete-profile':'重新核对资料','continue-planning':'继续配餐'}
 const mealEntries = computed(() => meals.map(meal => ({ ...meal,
  item: props.state.plan?.meals.find(item => item.meal_type === meal.type && item.meal?.dishes?.length),
@@ -26,7 +29,16 @@ function act() { if (!props.busy && props.interactive) emit('action') }
 </script>
 <template>
  <view class="tm-body" :class="{'tm-inline':heading,'tm-body-paused':!interactive}">
-  <view v-if="heading" class="tm-inline-heading"><text class="tm-inline-title">今日餐单</text><text class="tm-inline-date">{{displayDate}}</text></view>
+  <view v-if="heading" class="tm-inline-heading">
+   <view class="tm-inline-heading-main">
+    <text class="tm-inline-title">今日餐单</text>
+    <view v-if="presentation.kind" class="tm-plan-status" :class="'tm-plan-status-'+presentation.kind" role="status" aria-live="polite">
+     <button v-if="presentation.retry" class="tm-plan-status-action" :disabled="busy||!interactive" :aria-label="'餐单更新未完成，'+actionLabels[state.action]" @click.stop="act"><view class="tm-plan-status-dot" aria-hidden="true"/><text>{{presentation.label}}</text></button>
+     <template v-else><view class="tm-plan-status-dot" aria-hidden="true"/><text>{{presentation.label}}</text></template>
+    </view>
+   </view>
+   <view class="tm-inline-controls"><text class="tm-inline-date">{{displayDate}}</text><MealRosterControl :entry-only="rosterExternal" @open="emit('roster-open')" :plan="state.plan" :family-id="familyId" :members="members" :busy="busy||!interactive" @updated="emit('roster-updated')"/></view>
+  </view>
     <view v-if="state.profileIssues?.length" class="tm-error" role="alert">
       <text class="tm-error-title">请先补齐参餐成员资料</text>
       <view v-for="problem in state.profileIssues" :key="problem.member_id" class="tm-profile-problem">
@@ -35,7 +47,7 @@ function act() { if (!props.busy && props.interactive) emit('action') }
         <text v-else>请由本人或有权限的家人补齐资料。</text>
       </view>
     </view>
-    <view v-if="!state.profileIssues?.length&&state.plan&&state.notice" class="tm-status" role="status" aria-live="polite">
+    <view v-if="!state.profileIssues?.length&&presentation.showNotice" class="tm-status" role="status" aria-live="polite">
      <text v-if="state.notice">{{state.notice}}</text>
      <text v-if="state.consentOption">处理方：{{state.consentOption.processor}}。政策版本：{{state.consentOption.policyVersion}}。</text>
      <text v-for="(question,index) in state.pending?.status==='needs_input'?state.pending.questions:[]" :key="index" class="tm-question">{{question}}</text>
@@ -55,12 +67,15 @@ function act() { if (!props.busy && props.interactive) emit('action') }
  </view>
 </template>
 <style>
+@import '../styles/today-meal-status.css';
 .tm-profile-problem{display:flex;flex-direction:column;gap:8px;margin-top:14px}.tm-profile-problem>text:first-child{font-weight:600}
 .tm-body{padding:0 20px 20px;color:var(--ui-text,#35343f)}
 .tm-inline{margin:8px 0 16px;padding:10px 12px;border:0;border-radius:20px;background:var(--ui-surface,#fff)}
-.tm-inline-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
-.tm-inline-title{font-size:14px;font-weight:600;line-height:20px}
-.tm-inline-date{flex-shrink:0;font-size:10px;line-height:16px;color:#9690a3}
+.tm-inline-heading{display:flex;flex-wrap:nowrap;align-items:center;justify-content:space-between;gap:6px;min-width:0;margin-bottom:6px}
+.tm-inline-heading-main{display:flex;flex:1;align-items:center;gap:6px;min-width:0}
+.tm-inline-title{flex:none;white-space:nowrap;font-size:14px;font-weight:600;line-height:20px}
+.tm-inline-controls{display:flex;flex:none;align-items:center;gap:6px}
+.tm-inline-date{flex:none;white-space:nowrap;font-size:10px;line-height:16px;color:#9690a3}
 .tm-meal-entries{display:flex;align-items:stretch;gap:12px}
 .tm-meal-entry{
  display:flex;
