@@ -123,7 +123,7 @@ function workflow(options = {}) {
     }
     return flow
   }
-  const deps = {createDishSwap,dishSwapState,watchDishSwap,setTimeout:options.schedule||setTimeout,clearTimeout:options.cancel||clearTimeout,todayMealPlanState,createTodayMealPlan:config=>options.todayMenu?createTodayMealPlan({...config,...options.todayMenu}):({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}), defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatPromptProfileKey,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
+  const deps = {createDishSwap:config=>createDishSwap({...config,...options.swap}),dishSwapState,watchDishSwap,setTimeout:options.schedule||setTimeout,clearTimeout:options.cancel||clearTimeout,todayMealPlanState,createTodayMealPlan:config=>options.todayMenu?createTodayMealPlan({...config,...options.todayMenu}):({open:async()=>{},isGenerating:()=>false,pause(){},clear(){},dispose(){}}), defineOptions(){}, watch,createChatEntryTransition,createChatKeyboardLayout, mealQuestionAction,readDailyMealPlan:options.readDailyMealPlan|| (async(_family,date)=>({date,status:'absent',version:0,meals:[]})),selectChatPrompts,chatPromptProfileKey,chatTimestamp,chatBusinessDate,rememberChatEntry(){},computed, reactive, ref, nextTick:options.nextTick||nextTick, defineProps: () => ({ route }),
     onMounted: fn => { hooks.mount = fn }, onUnmounted: fn => { hooks.unmount = fn }, onShow: fn => { hooks.show = fn }, onHide: fn => { hooks.hide = fn },
     dishTitle,mealLabels,mealPairingText,chatPresentation, chooseReference, isReferencePlan, HEALTH_TEXT_TASKS, listWeeklyMealPlans:async()=>[],parseMultiDayMealIntent,parseChatMealIntent,isMealPlanningCancelled,
     newHealthRequestId: id, storageContext: () => identity.scope, getSession: () => ({ ...identity }), scopedStorage,
@@ -155,7 +155,7 @@ function workflow(options = {}) {
   const readOnlyBinding=source.match(/<TodayMealPlanSheet\b[^>]*?:read-only="([^"]+)"/)?.[1]||'false'
   const code = source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const scope = effectScope()
-  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {pendingHistoryThread,historySelectionError,closeHistoryDirectory,prefetchHistory,prompts,shufflePrompts,promptAskBusy,promptShuffleBusy,composerPlaceholder,returning,browseConversation,historyPreview,deniedHistoryThread,deniedPreview,reading,rememberReading,latestAvailable,readingSuspended,showTodayMeal,verifiedMealView,mealViewText,restoreChat,scrollTarget,loadDailyPlan,currentEpoch:()=>epoch,history,visibleMessages,todayMenu,actTodayMenu,reloadToday,openDailyMeal,openDailyDish,todayMenuReadOnly:()=>{const value=(${readOnlyBinding});return value&&typeof value==='object'&&'value' in value?value.value:value},latestReference,shortcut,inlineTodayOpen,messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
+  const page = scope.run(() => new Function('deps', `const {${Object.keys(deps).join(',')}}=deps;${code};return {pendingHistoryThread,historySelectionError,closeHistoryDirectory,prefetchHistory,prompts,shufflePrompts,promptAskBusy,promptShuffleBusy,composerPlaceholder,returning,browseConversation,historyPreview,deniedHistoryThread,deniedPreview,reading,rememberReading,latestAvailable,readingSuspended,showTodayMeal,verifiedMealView,mealViewText,restoreChat,scrollTarget,loadDailyPlan,currentEpoch:()=>epoch,history,visibleMessages,todayMenu,dishSwap,swapEnabled,openDishSwap,actTodayMenu,reloadToday,openDailyMeal,openDailyDish,todayMenuReadOnly:()=>{const value=(${readOnlyBinding});return value&&typeof value==='object'&&'value' in value?value.value:value},latestReference,shortcut,inlineTodayOpen,messageStatus,historyLoading,historyError,continuationChecking,continuationError,replyPending,returnVerified,returnError,refreshReturn,primaryMode,preparingSend,stopQuestion,sendPhase,entryView,welcomeMounted,askPrompt,dailyPlans,resumePlanQuestion,load,profile,task,question,messages,entryReady,presentation,state,chatBusy,retryBusy,chatError,draftImage,draftError,draftSaving,voiceBusy,historyOpen,conversationId,conversationThreadId,conversationBusinessDate,conversationReadOnly,newConversationWelcome,newConversation,selectConversation,sendQuestion}`)(deps))
   const historyRow = threadId => { const row = threads.get(threadId); return { thread_id: threadId, member_id: row.memberId, agent_slug: row.agent, business_date: row.businessDate } }
   return { ...page, calls, writes, identity, clock, hooks, scopedStorage, threads, addThread, historyRow,
     get flow(){return flow},
@@ -2204,4 +2204,25 @@ test('permission loss during profile return clears old diners and waits for an e
   assert.deepEqual(menu.calls.find(call=>call[0]==='open')[3].participant_ids,['self'])
   assert.equal(menu.calls.filter(call=>call[0]==='submit').length,1)
  }finally{p.dispose()}
+})
+
+
+test('verified current menu starts swap reads and opens a loading sheet while chat restoration is unresolved',async()=>{
+ const menu=automaticMenu(),gate=deferred(),calls=[];menu.setPlan(menu.ready())
+ const p=workflow({route:{},todayMenu:menu.config,beforeOpen:()=>gate.promise,swap:{
+  context:()=> 'account-a',family:()=> 'family-a',day:()=> '2026-10-28',
+  send:options=>{calls.push(options);return new Promise(()=>{})},
+ }})
+ let loading
+ try{
+  loading=p.load();await flush();await flush()
+  assert.equal(p.entryReady.value,false);assert.equal(p.todayMenu.verified,true)
+  assert.equal(p.swapEnabled.value,true);assert.equal(calls.length,0)
+  const plan=p.todayMenu.plan,item=plan.meals[0],dish=item.meal.dishes[0]
+  await p.showTodayMeal(item);await flush()
+  assert.match(calls[0].path,/meal_type=breakfast/)
+  p.openDishSwap({item,dish,plan})
+  assert.equal(p.dishSwap.open,true);assert.equal(p.dishSwap.target.status,'loading')
+  await flush();assert.equal(calls.length,2)
+ }finally{gate.resolve();if(loading)await loading;p.dispose()}
 })

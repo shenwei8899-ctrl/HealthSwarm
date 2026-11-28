@@ -2,19 +2,24 @@
 import { recipeTime } from '../utils/dish-commerce-presentation.js'
 import FoodImageSlot from './FoodImageSlot.vue'
 import AppIcon from './AppIcon.vue'
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import { dishTitle, dishKey, mealTypes as allTypes } from '../utils/meal-presentation.js'
 import { recipeCover } from '../utils/recipe-cover.js'
 import { localDate } from '../utils/meal-state.js'
-const props=defineProps({plan:{type:Object,required:true},busy:Boolean,detailMode:Boolean,workspace:Boolean,compact:Boolean,dishGrid:Boolean,interactive:{type:Boolean,default:true},mealTypes:Array,swapEntries:{type:Array,default:()=>[]},swapNeedsRegeneration:{type:Array,default:()=>[]},swapVersion:Number,swapDate:String,swapBusy:Boolean})
-const emit=defineEmits(['open','members','shop','detail','all','dish','swap','regenerate'])
+const props=defineProps({plan:{type:Object,required:true},busy:Boolean,detailMode:Boolean,workspace:Boolean,compact:Boolean,dishGrid:Boolean,interactive:{type:Boolean,default:true},mealTypes:Array,swapEntries:{type:Array,default:()=>[]},swapNeedsRegeneration:{type:Array,default:()=>[]},swapVersion:Number,swapDate:String,swapBusy:Boolean,swapAllowed:Boolean})
+const emit=defineEmits(['open','members','shop','detail','all','dish','swap','regenerate','prefetch'])
 const visibleTypes=computed(()=>allTypes.filter(type=>!props.mealTypes?.length||props.mealTypes.includes(type)))
 const names={breakfast:'早餐',lunch:'午餐',dinner:'晚餐'}
+watch(()=>[props.swapAllowed,props.plan,props.mealTypes],()=>{if(props.swapAllowed)emit('prefetch',{plan:props.plan,mealTypes:visibleTypes.value.filter(type=>props.plan.meals.some(meal=>meal.meal_type===type))})},{immediate:true})
 function openDetail(item){if(props.interactive)emit('detail',item)}
 function openDish(item,dishIndex){if(props.interactive)emit('dish',{item,dishIndex})}
 function needsRegeneration(type){
  return props.plan.needs_regeneration?.includes(type)||
   props.plan.date===props.swapDate&&props.plan.version===props.swapVersion&&props.swapNeedsRegeneration?.includes(type)
+}
+function canSwap(item,dish){
+ return props.swapAllowed&&props.plan.date===localDate()&&!needsRegeneration(item.meal_type)&&
+  (dish.origin?.source?.kind==='reference'||dish.origin?.source?.kind==='replacement'&&dish.origin?.anchor?.source?.kind==='reference')
 }
 function swapOptions(item,dish){
  if(!props.interactive||props.plan.date!==localDate()||props.plan.date!==props.swapDate||props.plan.version!==props.swapVersion||needsRegeneration(item.meal_type))return []
@@ -38,7 +43,7 @@ function swapOptions(item,dish){
        <FoodImageSlot :src="recipeCover(dish)?.image_url" :label="dishTitle(dish)" width="100%" height="96px" :radius="12"/>
        <text class="dish-tile-name">{{dishTitle(dish)}}</text>
       </button>
-      <button v-if="swapOptions(item,dish).length" class="dish-swap" :disabled="busy||swapBusy" :aria-label="'替换'+dishTitle(dish)" @click="$emit('swap',{item,dish,plan})">换一换</button>
+      <button v-if="canSwap(item,dish)" class="dish-swap" :disabled="busy||swapBusy" :aria-label="'替换'+dishTitle(dish)" @click="$emit('swap',{item,dish,plan})">换一换</button>
       </view>
      </view>
      <button class="meal-ingredients" :disabled="!interactive" @click="openDetail(item)">查看全部{{names[type]}}食材 <text aria-hidden="true">→</text></button>

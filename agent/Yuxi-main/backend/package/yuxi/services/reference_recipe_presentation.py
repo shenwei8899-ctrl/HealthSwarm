@@ -1,5 +1,7 @@
 """菜谱展示资料保持原文、商城食材和生成示意图各自的来源。"""
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import asyncio
 import base64
 import hashlib
@@ -126,10 +128,40 @@ async def prepare_recipe_images(meals):
         return [False]
 
 
+_deferred_recipe_images = ContextVar("deferred_recipe_images", default=False)
+
+
+@contextmanager
+def defer_recipe_images():
+    """换菜请求只返回已核验来源的图片地址，任务结束后恢复普通图片查询。"""
+    token = _deferred_recipe_images.set(True)
+    try:
+        yield
+    finally:
+        _deferred_recipe_images.reset(token)
+
+
+
+def recipe_image_address(dish):
+    """只为已核验原谱计算公开图片地址，由展示组件异步加载并处理缺图。"""
+    return {
+        "image_url": "/minio/public/" + recipe_image_key(dish),
+        "image_source": {"image_role": "ai_generated", "label": "AI 生成示意图"},
+    }
+
+
+
 async def generated_recipe_image(dish, *, strict=False):
     """只读查询已存在的成品图；不存在时由调用方保留原谱图或无图状态。"""
+    if _deferred_recipe_images.get() and not strict:
+        return {} if dish.get("image_url") else recipe_image_address(dish)
+    return await stored_recipe_image(recipe_image_key(dish), strict=strict)
+
+
+
+async def stored_recipe_image(key, *, strict=False):
+    """只读查询已存在的成品图；不存在时由调用方保留原谱图或无图状态。"""
     client = get_minio_client()
-    key = recipe_image_key(dish)
     try:
         probe = Minio(
             client.endpoint.split("://")[-1].rstrip("/"),

@@ -530,17 +530,34 @@ async def current_daily_meal_plan(family_id: UUID, plan_date: date, user=Depends
     return daily_plan_response(await read_current_plan(str(user.uid), str(family_id), plan_date))
 
 
-@daily_arrangement.get("/family/{family_id}/daily-meal-plans/{plan_date}/dish-swap-candidates")
+@daily_arrangement.get(
+    "/family/{family_id}/daily-meal-plans/{plan_date}/dish-swap-candidates"
+)
 async def daily_dish_candidates(
-    family_id: UUID, plan_date: date, version: int = Query(ge=0), user=Depends(get_required_user)
+    family_id: UUID,
+    plan_date: date,
+    version: int = Query(ge=0),
+    meal_type: Literal["breakfast", "lunch", "dinner"] | None = Query(default=None),
+    dish_key: str | None = Query(default=None, min_length=1, max_length=500),
+    user=Depends(get_required_user),
 ):
     """批量返回公开候选卡，不公开成员授权来源或采购内部快照。"""
     from yuxi.services.daily_dish_swap_service import swap_candidates
 
-    result = await swap_candidates(str(user.uid), str(family_id), plan_date, version)
+    result = await swap_candidates(
+        str(user.uid),
+        str(family_id),
+        plan_date,
+        version,
+        meal_type=meal_type,
+        dish_key_filter=dish_key,
+    )
     for meal in result["meals"]:
         for dish in meal["dishes"]:
-            dish["candidates"] = [{"candidate_id": c["candidate_id"], "dish": c["dish"]} for c in dish["candidates"]]
+            dish["candidates"] = [
+                {"candidate_id": c["candidate_id"], "dish": c["dish"]}
+                for c in dish["candidates"]
+            ]
     return result
 
 

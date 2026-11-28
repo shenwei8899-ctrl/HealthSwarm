@@ -8,9 +8,9 @@ import { watch } from 'vue'
 import { readDailyMealPlan } from './daily-meal-plan.js'
 
 // Visibility is an input: returning to the same plan version must reload candidates.
-export function watchDishSwap({ client, plan, enabled }) {
-  const stop = watch([plan, enabled], ([value, active]) => {
-    if (active && value) void client.load(value)
+export function watchDishSwap({ client, plan, enabled, mealTypes }) {
+  const stop = watch([plan, enabled, () => mealTypes?.()], ([value, active, types]) => {
+    if (active && value) void (mealTypes?client.prepare(value,types):client.load(value))
     else client.pause()
   }, { immediate:true })
   return () => { stop(); client.clear() }
@@ -34,80 +34,111 @@ function distinctSwapCandidates(candidates) {
   return result
 }
 
-export function createDishSwap({ state, send=request, context=storageContext, family=()=>getSession().householdId,
+export function createDishSwap({ state, send=request, context=storageContext, family=()=>getSession()?.householdId,
   day=localDate, newId=newHealthRequestId, onPlan=()=>{}, readPlan=(familyId,date)=>readDailyMealPlan(familyId,date,send,{fresh:true}), schedule=setTimeout, cancel=clearTimeout }) {
-  let generation=0, plan=null, owner='', requestId='', attempted='', retryTimer=null, snapshot=null
+  let generation=0, plan=null, owner='', requestId='', attempted='', snapshot=null, boundKey=''
+  const pending=new Map(), timers=new Map(), statuses=new Map()
+  const scopeKey=value=>JSON.stringify([context(),family(),day(),value?.date,value?.version])
+  const targetKey=target=>JSON.stringify([target?.mealType||'',target?.dishKey||''])
   function pause() {
-    if(retryTimer!==null){cancel(retryTimer);retryTimer=null}
-    generation++;plan=null;owner='';requestId='';attempted='';Object.assign(state,dishSwapState())
+    for(const timer of timers.values())cancel(timer)
+    timers.clear();pending.clear();statuses.clear()
+    generation++;plan=null;owner='';boundKey='';requestId='';attempted=''
+    Object.assign(state,dishSwapState())
   }
-  function clear() { pause(); snapshot=null }
-  function scopeKey(value) { return JSON.stringify([context(),family(),day(),value?.date,value?.version]) }
-  async function load(value, retryAttempt=0, refresh=false) {
-    pause()
-    if(value?.date!==day()||value.status!=='ready'){snapshot=null;return}
+  function clear(){pause();snapshot=null}
+  function bind(value){
+    if(value?.date!==day()||value.status!=='ready'){clear();return false}
     const key=scopeKey(value)
-    if(snapshot?.key!==key)snapshot=null
-    plan=value;owner=context()
-    if(snapshot)Object.assign(state,{entries:snapshot.entries,version:value.version,date:value.date,needsRegeneration:snapshot.needsRegeneration})
-    const ticket=generation, familyId=family(), scope=owner
+    if(boundKey!==key){
+      pause();boundKey=key;plan=value;owner=context()
+      if(snapshot?.key!==key)snapshot=null
+      Object.assign(state,{entries:snapshot?.entries||[],version:value.version,date:value.date,needsRegeneration:snapshot?.needsRegeneration||[]})
+    }else plan=value
+    return true
+  }
+  function refreshTarget(){
+    const target=state.target
+    if(!target||state.busy||attempted)return
+    const entry=state.entries.find(e=>e.mealType===target.item.meal_type&&e.dishKey===dishKey(target.dish))
+    const status=statuses.get(targetKey({mealType:target.item.meal_type,dishKey:dishKey(target.dish)}))||statuses.get(targetKey({mealType:target.item.meal_type}))||statuses.get(targetKey(null))
+    target.candidates=state.needsRegeneration.includes(target.item.meal_type)?[]:entry?.candidates||[]
+    target.status=status?.status==='error'?'error':status?.status==='ready'?(target.candidates.length?'ready':'empty'):'loading'
+    target.error=status?.error||''
+  }
+  async function load(value,retryAttempt=0,refresh=false,target=null){
+    if(!bind(value))return
+    const key=targetKey(target)
+    if(pending.has(key))return pending.get(key)
+    if(timers.has(key)){cancel(timers.get(key));timers.delete(key)}
+    const ticket=generation,scope=owner,familyId=family()
     const current=()=>ticket===generation&&scope===context()&&value.date===day()&&familyId===family()
-    state.loading=true
-    try {
+    statuses.set(key,{status:'loading'});state.loading=true;refreshTarget()
+    const flight=Promise.resolve().then(async()=>{try{
       if(refresh){
         const latest=await readPlan(familyId,value.date)
         if(!current())return
         if(latest.date!==value.date||latest.status!=='ready'||!Number.isInteger(latest.version)||latest.version<value.version)throw Error('餐单尚未核对完成')
-        if(latest.version>value.version)await onPlan(latest)
-        if(current())await load(latest,retryAttempt+1)
+        if(latest.version>value.version){await onPlan(latest);if(current()){pending.delete(key);return await load(latest,retryAttempt+1,false,target)}}
+        else{pending.delete(key);return await load(latest,retryAttempt+1,false,target)}
         return
       }
-      const {data}=await send({path:'/api/family/'+encodeURIComponent(familyId)+'/daily-meal-plans/'+value.date+'/dish-swap-candidates?version='+value.version})
+      const query='?version='+value.version+(target?.mealType?'&meal_type='+encodeURIComponent(target.mealType):'')+(target?.dishKey?'&dish_key='+encodeURIComponent(target.dishKey):'')
+      const {data}=await send({path:'/api/family/'+encodeURIComponent(familyId)+'/daily-meal-plans/'+value.date+'/dish-swap-candidates'+query})
       if(!current())return
       if(data.date!==value.date||data.version!==value.version||!Array.isArray(data.meals)||(data.needs_regeneration!=null&&!Array.isArray(data.needs_regeneration)))throw Object.assign(Error('候选版本不一致，请刷新餐单。'),{code:409})
       state.needsRegeneration=data.needs_regeneration||[]
-      state.entries=data.meals.flatMap(m=>(m.dishes||[]).map(d=>({mealType:m.meal_type,dishKey:d.dish_key,candidates:distinctSwapCandidates(d.candidates||[])})))
-      state.version=data.version;state.date=data.date
-      snapshot={key,entries:state.entries,needsRegeneration:state.needsRegeneration}
-    } catch(error) {
-      // Candidate reads are background work; recover quietly while this page and plan remain current.
+      const entries=data.meals.flatMap(m=>(m.dishes||[]).map(d=>({mealType:m.meal_type,dishKey:d.dish_key,candidates:distinctSwapCandidates(d.candidates||[])})))
+      if(target?.dishKey&&!state.needsRegeneration.includes(target.mealType)&&!entries.some(e=>e.mealType===target.mealType&&e.dishKey===target.dishKey))throw Object.assign(Error('原菜已更新，请刷新餐单。'),{code:409})
+      state.entries=[...state.entries.filter(e=>target?.dishKey?e.mealType!==target.mealType||e.dishKey!==target.dishKey:target?.mealType?e.mealType!==target.mealType:false),...entries]
+      state.version=data.version;state.date=data.date;statuses.set(key,{status:'ready'})
+      snapshot={key:boundKey,entries:state.entries,needsRegeneration:state.needsRegeneration};refreshTarget()
+    }catch(error){
       if(!current())return
       if([401,403,404,410].includes(Number(error.code))){clear();return}
       if(Number(error.code)===409){
         snapshot=null;state.entries=[];state.version=null;state.date=''
-        // Fetch the current plan before asking for candidates again.
-        if(!refresh&&retryAttempt===0)return await load(value,retryAttempt,true)
+        if(!refresh&&retryAttempt===0){pending.delete(key);return await load(value,retryAttempt,true,target)}
         refresh=true
       }
-      if(current()){
-        const delays=[2000,5000,10000,30000,60000]
-        retryTimer=schedule(()=>{
-          retryTimer=null
-          if(current())void load(value,retryAttempt+1,refresh)
-        },delays[Math.min(retryAttempt,delays.length-1)])
-        retryTimer?.unref?.()
-      }
-    }
-    finally { if(current())state.loading=false }
+      statuses.set(key,{status:'error',error:error.message||'候选暂未读取成功，请重试。'});refreshTarget()
+      const delays=[2000,5000,10000,30000,60000]
+      timers.set(key,schedule(()=>{timers.delete(key);if(current())void load(value,retryAttempt+1,refresh,target)},delays[Math.min(retryAttempt,delays.length-1)]))
+      timers.get(key)?.unref?.()
+    }finally{
+      if(current()&&pending.get(key)===flight){pending.delete(key);state.loading=pending.size>0}
+    }})
+    pending.set(key,flight)
+    return flight
   }
-  function candidates(item,dish,value=plan) {
+  async function prepare(value,mealTypes){
+    if(!bind(value))return
+    const types=[...new Set(mealTypes??value.meals?.map(m=>m.meal_type)??[])]
+    const ticket=generation
+    for(const mealType of types){
+      if(ticket!==generation||owner!==context())return
+      const key=targetKey({mealType})
+      if(statuses.get(key)?.status==='ready')continue
+      await load(value,0,false,{mealType})
+    }
+  }
+  function candidates(item,dish,value=plan){
     if(owner!==context()||!plan||snapshot?.key!==scopeKey(plan)||plan.date!==day()||value?.version!==plan.version||value.date!==plan.date)return []
-    if(value.needs_regeneration?.includes(item.meal_type)||state.needsRegeneration.includes(item.meal_type))return []
     return state.entries.find(e=>e.mealType===item.meal_type&&e.dishKey===dishKey(dish))?.candidates||[]
   }
-  function open(item,dish,value) {
-    if(state.busy||state.loading||!candidates(item,dish,value).length)return
-    state.target={item,dish,plan:value,candidates:candidates(item,dish,value)}
-    state.open=true;state.error='';state.selected='';requestId='';attempted=''
+  function open(item,dish,value){
+    if(state.busy||!bind(value))return
+    state.target={item,dish,plan:value,candidates:[],status:'loading',error:''}
+    state.open=true;state.error='';state.selected='';requestId='';attempted='';refreshTarget()
+    if(state.target.status==='loading'){
+      if(!pending.has(targetKey(null)))void load(value,0,false,{mealType:item.meal_type,dishKey:dishKey(dish)})
+    }
   }
-  function close() {
-    if(state.busy)return
-    if(state.needsRegeneration.includes(state.target?.item.meal_type))state.error=''
-    state.open=false;state.target=null
-  }
+  function retry(){const target=state.target;if(target&&!state.busy)void load(target.plan,0,false,{mealType:target.item.meal_type,dishKey:dishKey(target.dish)})}
+  function close(){if(!state.busy){if(state.needsRegeneration.includes(state.target?.item.meal_type))state.error='';state.open=false;state.target=null}}
   async function choose(candidate) {
     const target=state.target
-    if(state.busy||!target||!target.candidates.some(c=>c.candidate_id===candidate.candidate_id)||owner!==context()||plan.date!==day())return
+    if(state.busy||!target||state.needsRegeneration.includes(target.item.meal_type)||target.status!=='ready'||!target.candidates.some(c=>c.candidate_id===candidate.candidate_id)||owner!==context()||plan.date!==day())return
     if(attempted&&attempted!==candidate.candidate_id)return
     attempted=candidate.candidate_id;requestId ||= newId()
     const ticket=generation,scope=owner,familyId=family()
@@ -120,7 +151,7 @@ export function createDishSwap({ state, send=request, context=storageContext, fa
       if(data.date!==plan.date||data.status!=='ready'||!Number.isInteger(data.version)||data.version<=plan.version)throw Error('换菜结果尚未确认，请刷新餐单。')
       state.open=false;state.target=null
       await onPlan(data)
-      if(current())await load(data)
+      if(current())await prepare(data,[target.item.meal_type])
     } catch(error) {
       if(!current())return
       if(error.businessCode==='swap_meal_needs_regeneration'){
@@ -128,7 +159,7 @@ export function createDishSwap({ state, send=request, context=storageContext, fa
         state.needsRegeneration=[...new Set([...state.needsRegeneration,type])]
         state.entries=state.entries.filter(entry=>entry.mealType!==type)
         if(snapshot)snapshot={...snapshot,entries:state.entries,needsRegeneration:state.needsRegeneration}
-        state.target={...target,candidates:[]}
+        state.target={...target,candidates:[],status:'empty'}
         state.error=error.message
       }else{
         state.error=error.code===409?'餐单或候选已更新，请关闭后刷新餐单。':(error.message||'结果尚未确认，请重试同一道候选。')
@@ -136,5 +167,5 @@ export function createDishSwap({ state, send=request, context=storageContext, fa
       // An unknown response keeps the same request key and candidate for a safe retry.
     } finally { if(current())state.busy=false }
   }
-  return {load,pause,clear,candidates,open,close,choose}
+  return {load,prepare,pause,clear,candidates,open,close,choose,retry}
 }

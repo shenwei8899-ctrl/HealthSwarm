@@ -18,13 +18,13 @@ function harness(options={}) {
 test('same-version reload and verified return retain buttons while disabling stale actions',async()=>{
  let resolve
  const h=harness({send:()=>new Promise(r=>{resolve=r})})
- let pending=h.client.load(plan);resolve(reply());await pending
+ let pending=h.client.load(plan);await Promise.resolve();resolve(reply());await pending
  for(const pause of [false,true]){
   if(pause){h.client.pause();assert.equal(h.state.entries.length,0)}
-  pending=h.client.load({...plan})
+  pending=h.client.load({...plan});await Promise.resolve()
   assert.equal(h.client.candidates(item,dish,plan).length,1)
   assert.equal(h.state.loading,true)
-  h.client.open(item,dish,plan);assert.equal(h.state.open,false)
+  h.client.open(item,dish,plan);assert.equal(h.state.open,true)
   resolve(reply());await pending
   assert.equal(h.state.loading,false)
  }
@@ -46,7 +46,7 @@ test('temporary read failure keeps verified same-version candidates, authoritati
 for(const change of ['account','family','date','version','clear'])test(`cached candidates never cross ${change}`,async()=>{
  let owner='A',family='family',date=day,resolve
  const h=harness({context:()=>owner,family:()=>family,day:()=>date,send:()=>new Promise(r=>{resolve=r})})
- let pending=h.client.load(plan);resolve(reply());await pending
+ let pending=h.client.load(plan);await Promise.resolve();resolve(reply());await pending
  h.client.pause()
  if(change==='account')owner='B'
  if(change==='family')family='other'
@@ -55,7 +55,7 @@ for(const change of ['account','family','date','version','clear'])test(`cached c
  const next=change==='version'?{...plan,version:4}:plan
  pending=h.client.load(next)
  assert.equal(h.client.candidates(item,dish,next).length,0)
- if(change!=='date'){resolve(reply(next.version));await pending}
+ if(change!=='date'){await Promise.resolve();resolve(reply(next.version));await pending}
  h.client.clear()
 })
 
@@ -104,10 +104,10 @@ test('late plan refresh after pause cannot restore candidates or adopt a plan',a
 test('revoked access discards cached candidates rather than restoring them on return',async()=>{
  let deny=false,resolve
  const h=harness({send:()=>deny?Promise.reject(Object.assign(Error('denied'),{code:403})):new Promise(r=>{resolve=r})})
- let pending=h.client.load(plan);resolve(reply());await pending
+ let pending=h.client.load(plan);await Promise.resolve();resolve(reply());await pending
  deny=true;await h.client.load(plan);assert.equal(h.state.entries.length,0)
  deny=false;pending=h.client.load(plan);assert.equal(h.state.entries.length,0)
- resolve(reply());await pending;h.client.clear()
+ await Promise.resolve();resolve(reply());await pending;h.client.clear()
 })
 
 

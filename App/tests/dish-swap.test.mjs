@@ -50,11 +50,11 @@ for(const n of [0,1,2,3])test(`shows actual ${n} candidates and only enables tha
  const h=harness(async()=>receipt(n));await h.client.load(plan)
  assert.equal(h.client.candidates(item,dish,plan).length,n)
  assert.equal(h.client.candidates(item,other,plan).length,0)
- h.client.open(item,dish,plan);assert.equal(h.state.open,n>0)
+ h.client.open(item,dish,plan);assert.equal(h.state.open,true);assert.equal(h.state.target.status,n>0?'ready':'empty')
  assert.equal(h.client.candidates(item,dish,{...plan,version:2}).length,0)
 })
 test('late candidate replies cannot cross an account switch or a newer load',async()=>{
- let resolve;const h=harness(()=>new Promise(r=>resolve=r));const pending=h.client.load(plan);h.switchOwner();resolve(receipt(3));await pending
+ let resolve;const h=harness(()=>new Promise(r=>resolve=r));const pending=h.client.load(plan);await Promise.resolve();h.switchOwner();resolve(receipt(3));await pending
  assert.equal(h.client.candidates(item,dish,plan).length,0)
  assert.equal(h.state.open,false)
 })
@@ -74,7 +74,7 @@ test('candidate read failure is silent and automatically recovers',async()=>{
  const clock=timers();let reads=0
  const h=harness(async()=>{if(++reads===1)throw Error('候选读取失败');return receipt(3)},clock)
  await h.client.load(plan);assert.equal(h.state.error,'');assert.equal(h.state.loading,false)
- h.client.open(item,dish,plan);assert.equal(h.state.open,false);assert.deepEqual(clock.delays,[2000])
+ h.client.open(item,dish,plan);assert.equal(h.state.open,true);assert.deepEqual(clock.delays,[2000])
  await clock.tick();assert.equal(reads,2);assert.equal(h.client.candidates(item,dish,plan).length,3)
  assert.equal(clock.pending.size,0);assert.equal(h.state.error,'')
 })

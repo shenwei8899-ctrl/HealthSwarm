@@ -1,7 +1,7 @@
 """单菜候选不依赖营养热量，类型与硬限制决定资格。"""
 
 from collections import Counter
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -146,8 +146,11 @@ async def test_candidate_batch_uses_actual_meal_members_and_caps_three(
         else ["清炒菠菜", "炒西兰花", "炒白菜", "炒豆腐"]
     )
 
+    reads = []
+
     async def full_document(_, fid, cid):
         """模拟一个完整原文与索引分片不一致的候选。"""
+        reads.append((fid, cid))
         found = next({**d["source"], **d} for d in docs if d["source"]["file_id"] == fid)
         if malformed and fid == "0":
             extra = "牛肉" if restriction == ["牛肉"] else "花生"
@@ -163,8 +166,9 @@ async def test_candidate_batch_uses_actual_meal_members_and_caps_three(
         }
     )
     monkeypatch.setattr(swap, "meal_context", context)
+    swap.prepared_swap_documents.cache_clear()
     monkeypatch.setattr(index, "reference_recipe_rows", AsyncMock(return_value=[]))
-    monkeypatch.setattr(index, "prepare_reference_documents", lambda _: docs)
+    monkeypatch.setattr(index, "prepare_reference_documents", lambda _, **kwargs: docs)
     monkeypatch.setattr(commerce, "current_product_catalog", AsyncMock(return_value={"items": []}))
     monkeypatch.setattr(history, "reference_history", AsyncMock(return_value=[]))
     monkeypatch.setattr(
@@ -192,6 +196,8 @@ async def test_candidate_batch_uses_actual_meal_members_and_caps_three(
         c["dish"]["file_id"] for c in result[0]["dishes"][1]["candidates"]
     ]
     assert len(result[0]["dishes"][0]["candidates"]) == count
+    assert len(reads) == len(set(reads))
+    reference.reference_meal_media.assert_not_awaited()
     chosen = [c["dish"] for c in result[0]["dishes"][0]["candidates"]]
     assert len({d["name"] for d in chosen}) == count
     if duplicates:
@@ -253,8 +259,9 @@ async def test_account_restriction_filters_beef_candidate_with_unrestricted_prof
             }
         ),
     )
+    swap.prepared_swap_documents.cache_clear()
     monkeypatch.setattr(index, "reference_recipe_rows", AsyncMock(return_value=[]))
-    monkeypatch.setattr(index, "prepare_reference_documents", lambda _: docs)
+    monkeypatch.setattr(index, "prepare_reference_documents", lambda _, **kwargs: docs)
     monkeypatch.setattr(commerce, "current_product_catalog", AsyncMock(return_value={"items": []}))
     monkeypatch.setattr(history, "reference_history", AsyncMock(return_value=[]))
     monkeypatch.setattr(
@@ -277,3 +284,149 @@ async def test_account_restriction_filters_beef_candidate_with_unrestricted_prof
         },
     )
     assert [item["dish"]["name"] for item in result[0]["dishes"][0]["candidates"]] == ["清蒸鸡肉"]
+
+
+@pytest.mark.asyncio
+async def test_scoped_candidates_skip_other_meals_share_matching_and_never_probe_images(monkeypatch):
+    """单菜只核目标成员；公共原文和匹配复用，图片探测不进入读取链路。"""
+    from yuxi.services import daily_dish_swap_service as swap
+    from yuxi.services import reference_recipe_index as index
+    from yuxi.services import reference_meal_plan_service as reference
+    from yuxi.services import reference_recipe_presentation as media
+    from yuxi.services import reference_recipe_matching as matching
+    from yuxi.services import daily_commerce_service as commerce
+    from yuxi.repositories import reference_variety_repository as history
+
+    docs = documents(["炒西兰花", "炒白菜", "炒豆腐"])
+    original = {"dish_key": "spinach", "name": "清炒菠菜", "origin": {"source": {"kind": "reference", "id": "source"}}}
+    plan = {
+        "date": "2026-11-28",
+        "version": 1,
+        "meals": [
+            {"meal_type": "breakfast", "members": [{"id": "first"}], "meal": {"dishes": [original]}},
+            {"meal_type": "dinner", "members": [{"id": "other"}], "meal": {"dishes": [original]}},
+        ],
+    }
+    swap.prepared_swap_documents.cache_clear()
+    monkeypatch.setattr(index, "reference_recipe_rows", AsyncMock(return_value=[]))
+    monkeypatch.setattr(index, "prepare_reference_documents", lambda _, **kwargs: docs)
+    monkeypatch.setattr(commerce, "current_product_catalog", AsyncMock(return_value={"items": []}))
+    monkeypatch.setattr(history, "reference_history", AsyncMock(return_value=[]))
+    context = AsyncMock(
+        return_value={
+            "members": [{"id": "first"}],
+            "selection": {"family_id": "family", "plan_date": "2026-11-28"},
+            "sources": {},
+        }
+    )
+    monkeypatch.setattr(swap, "meal_context", context)
+    monkeypatch.setattr(
+        reference,
+        "recipe_document",
+        AsyncMock(
+            side_effect=lambda _, fid, cid: next({**d["source"], **d} for d in docs if d["source"]["file_id"] == fid)
+        ),
+    )
+    monkeypatch.setattr(
+        media, "stored_recipe_image", AsyncMock(side_effect=AssertionError("image storage must not be queried"))
+    )
+    matches = matching.reference_ingredient_matches
+    monkeypatch.setattr(matching, "reference_ingredient_matches", count_matches := Mock(wraps=matches))
+    result = await swap.plan_candidates(None, "actor", "family", plan, meal_type="breakfast", dish_key_filter="spinach")
+    assert [m["meal_type"] for m in result] == ["breakfast"]
+    assert context.await_count == 1 and context.call_args.args[-1] == [{"id": "first"}]
+    assert count_matches.call_count == 1
+    assert len(result[0]["dishes"][0]["candidates"]) == 3
+    assert all(
+        c["dish"]["image_url"].startswith("/minio/public/recipe-illustrations/")
+        for c in result[0]["dishes"][0]["candidates"]
+    )
+    media.stored_recipe_image.assert_not_awaited()
+    with pytest.raises(HealthVisionError, match="swap_target_changed"):
+        await swap.plan_candidates(None, "actor", "family", plan, meal_type="breakfast", dish_key_filter="missing")
+    with pytest.raises(HealthVisionError, match="swap_target_invalid"):
+        await swap.plan_candidates(None, "actor", "family", plan, dish_key_filter="spinach")
+    assert context.await_count == 1
+
+
+def test_public_prepared_recipe_cache_changes_with_content(monkeypatch):
+    """相同公开分片只准备一次，原文变化不复用旧结果。"""
+    from yuxi.services import daily_dish_swap_service as swap
+    from yuxi.services import reference_recipe_index as index
+    from unittest.mock import Mock
+
+    swap.prepared_swap_documents.cache_clear()
+    prepare = Mock(return_value=[])
+    monkeypatch.setattr(index, "prepare_reference_documents", prepare)
+    rows = (("file", "kb", "recipe", "hash", "chunk", "first"),)
+    swap.prepared_swap_documents(rows)
+    swap.prepared_swap_documents(rows)
+    assert prepare.call_count == 1
+    swap.prepared_swap_documents(((*rows[0][:-1], "changed"),))
+    assert prepare.call_count == 2
+    swap.prepared_swap_documents.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_image_deferral_is_scoped_and_does_not_skip_strict_existence_checks(monkeypatch):
+    """并行普通读取和生成前严格检查不继承另一个请求的图片延后模式。"""
+    import asyncio
+    from yuxi.services import reference_recipe_presentation as media
+
+    probe = AsyncMock(return_value={"image_url": "checked"})
+    monkeypatch.setattr(media, "stored_recipe_image", probe)
+    dish = {"name": "合成菜", "ingredients": [], "steps": [], "source": {}}
+    ready = asyncio.Event()
+
+    async def deferred_read():
+        with media.defer_recipe_images():
+            ready.set()
+            await asyncio.sleep(0)
+            assert (await media.generated_recipe_image(dish))["image_url"].startswith("/minio/public/")
+            assert (await media.generated_recipe_image(dish, strict=True))["image_url"] == "checked"
+
+    async def ordinary_read():
+        await ready.wait()
+        assert (await media.generated_recipe_image(dish))["image_url"] == "checked"
+
+    await asyncio.gather(deferred_read(), ordinary_read())
+    assert probe.await_count == 2
+    try:
+        with media.defer_recipe_images():
+            raise RuntimeError("cancelled")
+    except RuntimeError:
+        pass
+    assert (await media.generated_recipe_image(dish))["image_url"] == "checked"
+    assert probe.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_candidate_entry_defers_images_during_current_plan_read(monkeypatch):
+    """从实际候选入口验证前置餐单回读也不访问图片对象存储。"""
+    from contextlib import asynccontextmanager
+    from yuxi.services import daily_dish_swap_service as swap
+    from yuxi.services import daily_meal_plan_service as daily
+    from yuxi.services import reference_recipe_presentation as media
+    from yuxi.storage.postgres.manager import pg_manager
+
+    @asynccontextmanager
+    async def session():
+        yield None
+
+    async def read(*args, **kwargs):
+        result = await media.generated_recipe_image({"name": "合成菜", "source": {}})
+        assert result["image_url"].startswith("/minio/public/")
+        return {"version": 3, "meals": []}
+
+    monkeypatch.setattr(swap, "require_today", lambda day: None)
+    monkeypatch.setattr(pg_manager, "get_async_session_context", session)
+    monkeypatch.setattr(daily, "read_current_plan", read)
+    monkeypatch.setattr(media, "stored_recipe_image", AsyncMock(side_effect=AssertionError("must not probe")))
+    selected = AsyncMock(return_value=[])
+    monkeypatch.setattr(swap, "plan_candidates", selected)
+    result = await swap.swap_candidates(
+        "actor", "family", "2026-11-28", 3, meal_type="breakfast", dish_key_filter="rice"
+    )
+    assert result == {"date": "2026-11-28", "version": 3, "meals": [], "needs_regeneration": []}
+    assert selected.call_args.kwargs == {"meal_type": "breakfast", "dish_key_filter": "rice"}
+    media.stored_recipe_image.assert_not_awaited()

@@ -5,7 +5,7 @@ import {reactive,ref,nextTick,compile,createSSRApp} from 'vue'
 import {renderToString} from 'vue/server-renderer'
 import {createDishSwap,dishSwapState,watchDishSwap} from '../src/services/dish-swap.js'
 
-const day='2026-11-18',dish={dish_key:'dish-1',name:'合成炒饭'}
+const day='2026-11-18',dish={dish_key:'dish-1',name:'合成炒饭',origin:{source:{kind:'reference'}}}
 const item={meal_type:'lunch',source:{kind:'reference',id:'source-1'},meal:{dishes:[dish]}}
 const plan={date:day,status:'ready',version:3,meals:[item]}
 const settle=async()=>{await nextTick();await nextTick()}
@@ -49,22 +49,22 @@ test('read errors can retry; account changes and midnight invalidate old candida
 })
 test('grid card reacts to candidate data and emits swap only from its own button',async()=>{
  const text=readFileSync(new URL('../src/components/DailyMealPlanCard.vue',import.meta.url),'utf8')
- const props=reactive({plan,dishGrid:true,workspace:false,compact:false,busy:false,swapBusy:false,interactive:true,swapEntries:[],swapVersion:3,swapDate:day})
+ const props=reactive({plan,dishGrid:true,workspace:false,compact:false,busy:false,swapBusy:false,interactive:true,swapAllowed:true,swapEntries:[],swapVersion:3,swapDate:day})
  const events=[]
  const script=text.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
  const {computed}=await import('vue')
- const panel=new Function('computed','defineProps','defineEmits','dishKey','localDate','allTypes',script+';return {emit,needsRegeneration,swapOptions,visibleTypes,names,openDish,openDetail}')(computed,()=>props,()=> (...args)=>events.push(args),d=>d.dish_key,()=>day,['lunch','dinner'])
+ const panel=new Function('computed','watch','defineProps','defineEmits','dishKey','localDate','allTypes',script+';return {canSwap,emit,needsRegeneration,swapOptions,visibleTypes,names,openDish,openDetail}')(computed,()=>{},()=>props,()=> (...args)=>events.push(args),d=>d.dish_key,()=>day,['lunch','dinner'])
  const render=compile(text.match(/<template>([\s\S]*?)<\/template>\s*<style/)[1])
  const context=()=>({...props,...panel,visibleTypes:panel.visibleTypes.value,dishTitle:d=>d.name,dishKey:d=>d.dish_key,recipeCover:()=>null,localDate:()=>day,$emit:(...args)=>events.push(args)})
  const html=()=>renderToString(createSSRApp({render,setup:context}))
- assert.doesNotMatch(await html(),/换一换/)
+ assert.match(await html(),/换一换/)
  props.swapEntries=[{mealType:'lunch',dishKey:'dish-1',candidates:[{candidate_id:'c1'}]}]
  assert.match(await html(),/换一换/)
  const node=render(context(),[])
  function find(n){if(n?.type==='button'&&n.props?.['aria-label']==='替换合成炒饭')return n;for(const child of Array.isArray(n?.children)?n.children:[]){const found=find(child);if(found)return found}}
  const button=find(node);assert.ok(button);button.props.onClick();assert.equal(events[0][0],'swap')
- props.swapVersion=2;assert.doesNotMatch(await html(),/换一换/)
- props.swapVersion=3;props.interactive=false;assert.doesNotMatch(await html(),/换一换/)
+ props.swapAllowed=false;assert.doesNotMatch(await html(),/换一换/)
+ props.swapAllowed=true;props.interactive=false;assert.match(await html(),/换一换/)
  props.interactive=true
  props.plan={...plan,meals:[item,{...item,meal_type:'dinner'}]}
  props.swapNeedsRegeneration=['lunch']

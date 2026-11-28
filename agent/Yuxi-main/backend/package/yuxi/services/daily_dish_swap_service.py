@@ -1,5 +1,6 @@
 """参考餐单按原位置换一道菜，不重排整餐。"""
 
+from functools import lru_cache
 import copy
 import asyncio
 import re
@@ -12,88 +13,98 @@ from yuxi.services.health_vision_types import HealthVisionError
 from yuxi.services.meal_dish_service import dish_key, freeze_origin, read_origin
 
 
-async def swap_candidates(uid, family_id, day, version):
+async def swap_candidates(uid, family_id, day, version, *, meal_type=None, dish_key_filter=None):
     """一次回读全日候选，调用方按菜展示零至三张卡。"""
-    from yuxi.services.daily_meal_plan_service import read_current_plan
-    from yuxi.storage.postgres.manager import pg_manager
+    from yuxi.services.reference_recipe_presentation import defer_recipe_images
 
-    require_today(day)
-    async with pg_manager.get_async_session_context() as session:
-        plan = await read_current_plan(uid, family_id, day, session=session)
-        require_version(plan, version)
-        return {
-            "date": str(day),
-            "version": version,
-            "needs_regeneration": plan["needs_regeneration"],
-            "meals": await plan_candidates(session, uid, family_id, plan),
-        }
+    with defer_recipe_images():
+        from yuxi.services.daily_meal_plan_service import read_current_plan
+        from yuxi.storage.postgres.manager import pg_manager
+
+        require_today(day)
+        async with pg_manager.get_async_session_context() as session:
+            plan = await read_current_plan(uid, family_id, day, session=session)
+            require_version(plan, version)
+            return {
+                "date": str(day),
+                "version": version,
+                "needs_regeneration": plan.get("needs_regeneration", []),
+                "meals": await plan_candidates(
+                    session, uid, family_id, plan, meal_type=meal_type, dish_key_filter=dish_key_filter
+                ),
+            }
 
 
 async def replace_dish(uid, family_id, day, data):
     """锁住当前日计划，只更新选中位置并保留幂等回执。"""
-    from yuxi.services.daily_meal_plan_service import current_row, read_current_plan
-    from yuxi.storage.postgres.manager import pg_manager
-    from yuxi.utils.datetime_utils import utc_now_naive
+    from yuxi.services.reference_recipe_presentation import defer_recipe_images
 
-    require_today(day)
-    fingerprint = input_fingerprint(data.model_dump(mode="json", exclude={"client_request_id"}))
-    async with pg_manager.get_async_session_context() as session:
-        row = await current_row(session, uid, family_id, day, lock=True)
-        plan = await read_current_plan(uid, family_id, day, session=session)
-        refs = copy.deepcopy(row.meal_sources) if row else {}
-        receipts = refs.get("_swap_receipts", {})
-        key = uid + ":" + str(data.client_request_id)
-        if key in receipts:
-            if receipts[key] != fingerprint:
-                raise HealthVisionError("swap_request_conflict", "同一换菜请求不能改选其他菜", 409)
-            return plan
-        require_version(plan, data.version)
-        if data.meal_type in plan["needs_regeneration"]:
-            raise HealthVisionError("swap_meal_needs_regeneration", "本餐资料已更新，请先重新安排", 409)
-        choices = await plan_candidates(session, uid, family_id, plan)
-        choice = next(
-            (
-                c
-                for m in choices
-                if m["meal_type"] == data.meal_type
-                for d in m["dishes"]
-                if d["dish_key"] == data.dish_key
-                for c in d["candidates"]
-                if c["candidate_id"] == data.candidate_id
-            ),
-            None,
-        )
-        if choice is None:
-            raise HealthVisionError("swap_candidate_changed", "候选已变化，请重新打开换一换", 409)
-        meal = next(m for m in plan["meals"] if m["meal_type"] == data.meal_type)
-        origins = [await freeze_origin(session, d["origin"]) for d in meal["meal"]["dishes"]]
-        position = next(i for i, d in enumerate(meal["meal"]["dishes"]) if dish_key(d) == data.dish_key)
-        anchor = origins[position]
-        if anchor["source"]["kind"] == "replacement":
-            anchor = anchor["anchor"]
-        origins[position] = {
-            "source": {"kind": "replacement", "id": str(uuid4()), "version": data.version + 1},
-            "date": str(day),
-            "meal_type": data.meal_type,
-            "dish_key": dish_key(choice["dish"]),
-            "anchor": anchor,
-            "actor_uid": uid,
-            "snapshot": choice["snapshot"],
-        }
-        refs[data.meal_type] = {
-            "kind": "selection",
-            "id": str(uuid4()),
-            "version": data.version + 1,
-            "dish_sources": origins,
-            "member_ids": [m["id"] for m in meal["members"]],
-        }
-        receipts[key] = fingerprint
-        refs["_swap_receipts"] = receipts
-        row.meal_sources, row.version, row.updated_at = refs, data.version + 1, utc_now_naive()
-        await session.flush()
-        result = await read_current_plan(uid, family_id, day, session=session)
-        await session.commit()
-        return result
+    with defer_recipe_images():
+        from yuxi.services.daily_meal_plan_service import current_row, read_current_plan
+        from yuxi.storage.postgres.manager import pg_manager
+        from yuxi.utils.datetime_utils import utc_now_naive
+
+        require_today(day)
+        fingerprint = input_fingerprint(data.model_dump(mode="json", exclude={"client_request_id"}))
+        async with pg_manager.get_async_session_context() as session:
+            row = await current_row(session, uid, family_id, day, lock=True)
+            plan = await read_current_plan(uid, family_id, day, session=session)
+            refs = copy.deepcopy(row.meal_sources) if row else {}
+            receipts = refs.get("_swap_receipts", {})
+            key = uid + ":" + str(data.client_request_id)
+            if key in receipts:
+                if receipts[key] != fingerprint:
+                    raise HealthVisionError("swap_request_conflict", "同一换菜请求不能改选其他菜", 409)
+                return plan
+            require_version(plan, data.version)
+            if data.meal_type in plan.get("needs_regeneration", []):
+                raise HealthVisionError("swap_meal_needs_regeneration", "本餐资料已更新，请先重新安排", 409)
+            choices = await plan_candidates(
+                session, uid, family_id, plan, meal_type=data.meal_type, dish_key_filter=data.dish_key
+            )
+            choice = next(
+                (
+                    c
+                    for m in choices
+                    if m["meal_type"] == data.meal_type
+                    for d in m["dishes"]
+                    if d["dish_key"] == data.dish_key
+                    for c in d["candidates"]
+                    if c["candidate_id"] == data.candidate_id
+                ),
+                None,
+            )
+            if choice is None:
+                raise HealthVisionError("swap_candidate_changed", "候选已变化，请重新打开换一换", 409)
+            meal = next(m for m in plan["meals"] if m["meal_type"] == data.meal_type)
+            origins = [await freeze_origin(session, d["origin"]) for d in meal["meal"]["dishes"]]
+            position = next(i for i, d in enumerate(meal["meal"]["dishes"]) if dish_key(d) == data.dish_key)
+            anchor = origins[position]
+            if anchor["source"]["kind"] == "replacement":
+                anchor = anchor["anchor"]
+            origins[position] = {
+                "source": {"kind": "replacement", "id": str(uuid4()), "version": data.version + 1},
+                "date": str(day),
+                "meal_type": data.meal_type,
+                "dish_key": dish_key(choice["dish"]),
+                "anchor": anchor,
+                "actor_uid": uid,
+                "snapshot": choice["snapshot"],
+            }
+            refs[data.meal_type] = {
+                "kind": "selection",
+                "id": str(uuid4()),
+                "version": data.version + 1,
+                "dish_sources": origins,
+                "member_ids": [m["id"] for m in meal["members"]],
+            }
+            receipts[key] = fingerprint
+            refs["_swap_receipts"] = receipts
+            row.meal_sources, row.version, row.updated_at = refs, data.version + 1, utc_now_naive()
+            await session.flush()
+            result = await read_current_plan(uid, family_id, day, session=session)
+            await session.commit()
+            return result
 
 
 async def read_replacement(session, uid, family_id, origin):
@@ -128,7 +139,7 @@ async def read_replacement(session, uid, family_id, origin):
     return meal["dishes"][0], meal, context["members"], source
 
 
-async def plan_candidates(session, uid, family_id, plan):
+async def plan_candidates(session, uid, family_id, plan, *, meal_type=None, dish_key_filter=None):
     """每餐只为真实参考菜寻找同类型替代，不更改其他菜的验重规则。"""
     from yuxi.repositories.reference_variety_repository import reference_history
     from yuxi.services.daily_commerce_service import current_product_catalog
@@ -137,21 +148,29 @@ async def plan_candidates(session, uid, family_id, plan):
         reference_member_restrictions,
         reference_restriction_conflict,
         unverified_reference_restrictions,
-        reference_meal_media,
+        reference_recipe_media,
     )
-    from yuxi.services.reference_recipe_index import reference_recipe_rows, prepare_reference_documents
+    from yuxi.services.reference_recipe_index import reference_recipe_rows
     from yuxi.services.reference_recipe_variety import variety_context, dish_keys
 
-    stale_meals = set(plan.get("needs_regeneration", ()))
-    if all(meal["meal_type"] in stale_meals for meal in plan["meals"]):
-        return [{"meal_type": meal["meal_type"], "dishes": []} for meal in plan["meals"]]
-
-    documents = prepare_reference_documents(await reference_recipe_rows(session))
+    selected_meals = [meal for meal in plan["meals"] if meal_type is None or meal["meal_type"] == meal_type]
+    if dish_key_filter and not meal_type:
+        raise HealthVisionError("swap_target_invalid", "请指定要换菜的餐次", 422)
+    if (
+        meal_type
+        and not selected_meals
+        or dish_key_filter
+        and not any(dish_key(dish) == dish_key_filter for meal in selected_meals for dish in meal["meal"]["dishes"])
+    ):
+        raise HealthVisionError("swap_target_changed", "原菜或餐次已变化，请重新读取餐单", 409)
+    rows = await reference_recipe_rows(session)
+    documents = await asyncio.to_thread(prepared_swap_documents, tuple(tuple(row) for row in rows))
+    verified_documents = {}
     products = (await current_product_catalog())["items"]
     occupied = set().union(*(dish_keys(d) for m in plan["meals"] for d in m["meal"]["dishes"]))
     result = []
-    for meal in plan["meals"]:
-        if meal["meal_type"] in stale_meals:
+    for meal in selected_meals:
+        if meal["meal_type"] in plan.get("needs_regeneration", []):
             result.append({"meal_type": meal["meal_type"], "dishes": []})
             continue
         anchors = [d["origin"].get("anchor", d["origin"]) for d in meal["meal"]["dishes"]]
@@ -170,8 +189,14 @@ async def plan_candidates(session, uid, family_id, plan):
             if not unverified_reference_restrictions(restrictions)
             and not reference_restriction_conflict(str(p), restrictions)
         ]
+        from yuxi.services.reference_recipe_matching import ReferenceProductIndex
+
+        product_index = ReferenceProductIndex(safe_products)
+        match_cache = {}
         rows = []
         for original in meal["meal"]["dishes"]:
+            if dish_key_filter and dish_key(original) != dish_key_filter:
+                continue
             candidates = []
             seen = set()
             anchor = original["origin"]
@@ -179,13 +204,23 @@ async def plan_candidates(session, uid, family_id, plan):
                 anchor = anchor["anchor"]
             if anchor["source"]["kind"] == "reference" and not unverified_reference_restrictions(restrictions):
                 ranked = await asyncio.to_thread(
-                    rank_candidates, original, documents, safe_products, restrictions, policy
+                    rank_candidates,
+                    original,
+                    documents,
+                    safe_products,
+                    restrictions,
+                    policy,
+                    product_index=product_index,
+                    match_cache=match_cache,
                 )
                 for candidate in ranked:
                     keys = dish_keys(candidate["dish"])
                     if keys & seen:
                         continue
-                    doc = await recipe_document(session, candidate["dish"]["file_id"], candidate["dish"]["chunk_id"])
+                    document_key = (candidate["dish"]["file_id"], candidate["dish"]["chunk_id"])
+                    if document_key not in verified_documents:
+                        verified_documents[document_key] = await recipe_document(session, *document_key)
+                    doc = verified_documents[document_key]
                     if any(doc[k] != candidate["dish"]["source"][k] for k in ("file_hash", "chunks_hash")):
                         continue
                     if reference_restriction_conflict(doc["content"], restrictions):
@@ -196,8 +231,11 @@ async def plan_candidates(session, uid, family_id, plan):
                         if error.code != "swap_recipe_changed":
                             raise
                         continue
-                    display = await reference_meal_media(session, {"dishes": [candidate["dish"]]})
-                    candidate["dish"] = display["dishes"][0]
+                    from yuxi.services.reference_recipe_presentation import recipe_image_address
+
+                    candidate["dish"].update(reference_recipe_media(doc["content"], candidate["dish"]["steps"], doc))
+                    if not candidate["dish"].get("image_url"):
+                        candidate["dish"].update(recipe_image_address(candidate["dish"]))
                     candidate["snapshot"] = {
                         **candidate["snapshot"],
                         "dish": candidate["dish"],
@@ -225,16 +263,27 @@ async def plan_candidates(session, uid, family_id, plan):
     return result
 
 
-def rank_candidates(original, documents, products, restrictions, policy):
+@lru_cache(maxsize=2)
+def prepared_swap_documents(rows):
+    """仅按公共菜谱分片内容复用准备结果，不缓存家庭限制和候选。"""
+    from yuxi.services.reference_recipe_index import prepare_reference_documents
+
+    return tuple(prepare_reference_documents(rows, include_recall=False))
+
+
+
+def rank_candidates(original, documents, products, restrictions, policy, *, product_index=None, match_cache=None):
     """只按菜品类型和现实准备条件排序，不读取热量或营养数据。"""
     from yuxi.services.reference_meal_plan_service import reference_restriction_conflict, reference_product_group
-    from yuxi.services.reference_recipe_matching import reference_ingredient_matches
+    from yuxi.services.reference_recipe_matching import ReferenceProductIndex, reference_ingredient_matches
     from yuxi.services.reference_recipe_variety import dish_keys, candidate_priority
     from yuxi.services.reference_meal_composition import is_plain_reference_staple
 
     kind = recipe_kind(original["name"], original.get("ingredients", []))
     if not kind:
         return []
+    product_index = product_index or ReferenceProductIndex(products)
+    match_cache = {} if match_cache is None else match_cache
     ranked = []
     for document in documents:
         parsed = document["parsed"]
@@ -256,7 +305,12 @@ def rank_candidates(original, documents, products, restrictions, policy):
         minutes = explicit_minutes(document["content"])
         if minutes:
             dish["cooking_minutes"] = minutes
-        matches = reference_ingredient_matches(parsed.ingredients, products)
+        ingredient_key = tuple(parsed.ingredients)
+        if ingredient_key not in match_cache:
+            match_cache[ingredient_key] = reference_ingredient_matches(
+                parsed.ingredients, products, index=product_index
+            )
+        matches = match_cache[ingredient_key]
         mapped, gaps, cost = {}, [], 0
         for match in matches:
             product = next(

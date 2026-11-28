@@ -750,7 +750,7 @@ test('WeChat sheet controls receive taps independently from the header drag regi
 
 test('card handlers enforce the preview interaction gate even when invoked directly',()=>{
  const source=readFileSync(new URL('../src/components/DailyMealPlanCard.vue',import.meta.url),'utf8').split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm,'')
- const props={interactive:false},events=[],deps={computed,allTypes:['breakfast','lunch','dinner'],defineProps:()=>props,defineEmits:()=> (...args)=>events.push(args)}
+ const props={interactive:false},events=[],deps={computed,watch:()=>{},allTypes:['breakfast','lunch','dinner'],defineProps:()=>props,defineEmits:()=> (...args)=>events.push(args)}
  const card=new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {openDetail,openDish}`)(deps),item=ready().meals[0]
  card.openDetail(item);card.openDish(item,0);assert.equal(events.length,0)
  props.interactive=true;card.openDetail(item);card.openDish(item,0)
