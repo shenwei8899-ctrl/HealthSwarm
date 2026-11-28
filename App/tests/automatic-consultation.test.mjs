@@ -1,3 +1,5 @@
+import { useReplySelection } from '../src/composables/use-reply-selection.js'
+import { replyQuote } from '../src/utils/reply-selection.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
@@ -6,7 +8,7 @@ import {createEntryResolver} from '../src/services/entry-routing.js'
 function client({complete=true,enabled=true,switchDuringOpen=false,invitationAnalysisPending=false}={}){
  const calls=[],saved=[];let revision=1
  const source={source:'api',householdId:'family',selfMemberId:'self',onboarded:complete,completeProfile:complete,invitationAnalysisPending,members:[{id:'self',version:3,relation:'爸爸'}]}
- const deps={getSession:()=>({token:'synthetic',householdId:'family'}),sessionRevision:()=>revision,pendingInvitation:()=>null,
+ const deps={useReplySelection,replyQuote,getSession:()=>({token:'synthetic',householdId:'family'}),sessionRevision:()=>revision,pendingInvitation:()=>null,
  normalizeProfile:p=>structuredClone(p),saveProfile:p=>saved.push(p),newHealthRequestId:()=> 'request',
  scopedStorage:{getStorageSync:()=>null,setStorageSync(){}},
  request:async o=>{calls.push(structuredClone(o));
@@ -38,12 +40,9 @@ test('entry-only profile read does not wait for model configuration or start con
 test('account switch during automatic opening cannot cache the prior private profile',async()=>{
  const c=client({switchDuringOpen:true});await assert.rejects(c.load(),/账号已变化/);assert.equal(c.saved.length,0)
 })
-test('a reviewed invitation waiting for AI consent exposes confirmation without opening consultation',async()=>{
- const c=client({invitationAnalysisPending:true})
- const result=await c.load()
- assert.equal(result.consultationConsentRequired,true)
- assert.match(result.consultationError,/本人.*确认/)
- assert.equal(c.calls.filter(o=>o.method==='POST').length,0)
+test('completed invited profile also opens consultation without another consent step',async()=>{
+ const c=client({invitationAnalysisPending:true});await c.load()
+ assert.equal(c.calls.filter(o=>o.method==='POST').length,1)
 })
 test('onboarding and profile detail have no separate consultation consent or revocation step',()=>{
  const onboarding=readFileSync(new URL('../src/pages/onboarding/index.vue',import.meta.url),'utf8')
@@ -59,8 +58,6 @@ test('complete profile opens chat without requiring meal preparation or another 
  const resolve=createEntryResolver({auth:{restore:async()=>session},session:()=>session,readProfile:async()=>({householdId:'family',completeProfile:true,onboarded:false})})
  assert.equal(await resolve(),'/pages/chat/index')
  const chat=readFileSync(new URL('../src/components/CloudNutritionChat.vue',import.meta.url),'utf8')
- const check=chat.match(/if\(([^\n]+)\)\{uni\.redirectTo\(\{url:'\/pages\/onboarding\/index'\}\);return\}/)[1]
- const needsReview=new Function('next',`return ${check}`)
- assert.equal(needsReview({completeProfile:true,onboarded:false}),false)
- assert.equal(needsReview({completeProfile:true,onboarded:false,invitationReviewPending:true}),true)
+ const check=chat.match(/if\((!next\.completeProfile&&!next\.onboarded)\)\{uni\.redirectTo/)[1]
+ assert.equal(new Function('next',`return ${check}`)({completeProfile:true,onboarded:false}),false)
 })

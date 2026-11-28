@@ -259,7 +259,9 @@ async def test_derived_consultation_without_new_tool_and_final_publication_reche
         monkeypatch.setattr(repository, "validate_history", guard)
     await HealthConsultationRepository(session).authorize("actor", "thread")
     for index, guard in enumerate(guards[:-1]):
-        guard.assert_awaited_once_with("actor", binding, lock=False, **({"family_assistant": True} if index == 0 else {}))
+        guard.assert_awaited_once_with(
+            "actor", binding, lock=False, **({"family_assistant": True, "history_view": False} if index == 0 else {})
+        )
 
     @asynccontextmanager
     async def transaction():
@@ -387,6 +389,7 @@ def isolate_account_memory_context(monkeypatch):
     """本组验证既有图协议；账号记忆在独立真实 PG/HTTP 测试覆盖。"""
     from unittest.mock import AsyncMock
     from yuxi.agents.middlewares import health_memory_context
+
     monkeypatch.setattr(health_memory_context, "process_memory_for_run", AsyncMock(return_value={}))
     monkeypatch.setattr(health_memory_context, "memory_context_for_run", AsyncMock(return_value={}))
 
@@ -395,6 +398,7 @@ def isolate_account_memory_context(monkeypatch):
 def isolate_structured_citation_storage(monkeypatch):
     """图装配验证隔离引用存储，引用真实校验在独立接口测试覆盖。"""
     from yuxi.services import health_evidence_service
+
     monkeypatch.setattr(health_evidence_service, "validate_nutrition_answer", AsyncMock())
 
 

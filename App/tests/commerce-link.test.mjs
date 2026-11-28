@@ -16,6 +16,20 @@ function fixture(handler = () => ({ statusCode: 200, data: { code: 0, data: {} }
 }
 const loginResponse = (id = 1) => ({ statusCode: 200, data: { code: 0, data: { user: { id, token: 'token-' + id } } } })
 
+test('exclusive dates and quote bind identical products, address and slot without changing ordinary requests',async()=>{
+  const f=fixture(options=>options.url.endsWith('/session/login')?loginResponse():{statusCode:200,data:{code:0,data:{items:[]}}})
+  await f.client.login({account:'synthetic',password:'synthetic-only'})
+  const items=[{sku_id:'101',quantity:3}]
+  await f.client.exclusiveDates('weekly',2,'address',17,items)
+  await f.client.quoteRecommendation('weekly',2,'address',17,items,{firstMealDate:'2026-12-01'})
+  const dates=f.calls.find(call=>call.url.endsWith('/checkout/exclusive-dates'))
+  const quote=f.calls.find(call=>call.url.endsWith('/checkout/preview'))
+  assert.deepEqual(quote.data,{...dates.data,first_meal_date:'2026-12-01'})
+  assert.equal(dates.method,'POST')
+  await f.client.quoteRecommendation('ordinary',1,'address',17,items)
+  assert.equal('first_meal_date' in f.calls.at(-1).data,false)
+})
+
 function unified(handler) {
   let account = { accountId: '17', token: 'agent-17' }, revision = 1, key = 0
   const storage = new Map(), calls = []

@@ -45,7 +45,7 @@ from yuxi.workspace.workdir import Workdir
 MESSAGE_AUDIT_LIMIT = 500
 AGENT_RUN_TRACE_LIMIT = 500
 MODEL_HISTORY_METADATA_KEYS = frozenset(
-    {"attachments", "source", "error_type", "error_message", "langfuse_trace_id", "model"}
+    {"attachments", "source", "error_type", "error_message", "langfuse_trace_id", "model", "reply_quote"}
 )
 
 
@@ -66,6 +66,20 @@ async def require_user_conversation(
         except HealthVisionError as exc:
             raise HTTPException(status_code=404, detail="对话线程不存在或无权访问") from exc
     return conversation
+
+
+async def require_history_conversation(conv_repo, thread_id, uid):
+    """正文历史单独授权；资料改版不授予续聊或审计访问。"""
+    conversation = await conv_repo.get_conversation_by_thread_id(thread_id)
+    if not conversation or conversation.uid != str(uid) or conversation.status == "deleted":
+        raise HTTPException(status_code=404, detail="对话线程不存在")
+    if conversation.agent_id not in HEALTH_AGENT_BACKENDS:
+        return conversation, None, False
+    try:
+        binding, read_only = await HealthConsultationRepository(conv_repo.db).authorize_history(str(uid), thread_id)
+    except HealthVisionError as error:
+        raise HTTPException(status_code=404, detail="对话线程不存在或无权访问") from error
+    return conversation, binding, read_only
 
 
 async def get_thread_message_audits_view(
@@ -445,7 +459,7 @@ async def mark_thread_viewed_view(
 ) -> dict:
     """记录用户已查看该线程的最新顶层 run，使未读状态转为已读。"""
     conv_repo = ConversationRepository(db)
-    conversation = await require_user_conversation(conv_repo, thread_id, str(current_uid))
+    conversation, _, _ = await require_history_conversation(conv_repo, thread_id, str(current_uid))
 
     run_repo = AgentRunRepository(db)
     run_map = await run_repo.get_latest_top_level_runs_for_threads(str(current_uid), [thread_id])
@@ -469,8 +483,8 @@ async def get_thread_history_view(
 ) -> dict:
     """读取线程、Run 与历史消息，保留独立的已读写操作。"""
     conv_repo = ConversationRepository(db)
-    conversation = await require_user_conversation(
-        conv_repo, thread_id, str(current_uid), allow_stale_reference_results=True
+    conversation, history_binding, history_read_only = await require_history_conversation(
+        conv_repo, thread_id, str(current_uid)
     )
 
     messages = await conv_repo.get_messages(conversation.id)
@@ -481,6 +495,14 @@ async def get_thread_history_view(
     ]
 
     runs = await conv_repo.list_agent_runs_for_history(conversation.id)
+    if history_read_only and conversation.agent_id == "health-meal-planner":
+        published = {run.output_message_id for run in runs if run.status == "completed"}
+        messages = [
+            message
+            for message in messages
+            if message.message_type not in AUDIT_MESSAGE_TYPES
+            and (message.role == "user" or message.role == "assistant" and message.id in published)
+        ]
     unverified_reference_runs = set()
     reference_displays = {}
     if conversation.agent_id == "health-meal-planner" and runs:
@@ -514,12 +536,19 @@ async def get_thread_history_view(
             preview = reference_previews.get(str(payload.get("preview_id"))) if isinstance(payload, dict) else None
             if preview is None:
                 continue
-            if (preview.snapshot or {}).get("catalog_chain_version") != REFERENCE_CATALOG_CHAIN_VERSION:
+            if (
+                not history_read_only
+                and (preview.snapshot or {}).get("catalog_chain_version") != REFERENCE_CATALOG_CHAIN_VERSION
+            ):
                 unverified_reference_runs.add(run.id)
                 continue
             try:
-                _, verified = await read_reference_plan_in_session(db, str(current_uid), preview.id)
-                reference_displays[message.id] = await reference_plan_display(db, verified)
+                _, verified = await read_reference_plan_in_session(
+                    db, str(current_uid), preview.id, history_view=history_read_only
+                )
+                reference_displays[message.id] = await reference_plan_display(
+                    db, verified, history_view=history_read_only
+                )
             except HealthVisionError:
                 unverified_reference_runs.add(run.id)
     source_titles = {}
@@ -528,7 +557,12 @@ async def get_thread_history_view(
         public_messages = []
         for message in messages:
             if await _consultation_message_is_public(
-                db, message, str(current_uid), run=run_map.get(message.run_id), source_titles=source_titles
+                db,
+                message,
+                str(current_uid),
+                run=run_map.get(message.run_id),
+                source_titles=source_titles,
+                binding=history_binding,
             ):
                 public_messages.append(message)
         messages = public_messages
@@ -543,6 +577,9 @@ async def get_thread_history_view(
         ),
         db=db,
     )
+    thread["history_read_only"] = history_read_only
+    if history_read_only:
+        thread["history_notice"] = "此对话使用的资料已更新，仅供历史回看。请新建对话继续。"
     messages.sort(
         key=lambda message: (
             run_created_at.get(message.run_id) or message.created_at,
@@ -582,9 +619,24 @@ async def get_thread_history_view(
                     }
                     break
 
-        health_answer = conversation.agent_id in EDUCATION_HEALTH_AGENTS and msg.role == "assistant"
+        health_answer = msg.role == "assistant" and (
+            conversation.agent_id in EDUCATION_HEALTH_AGENTS
+            or history_read_only
+            and conversation.agent_id == "health-meal-planner"
+        )
         unverified_reference = msg.role == "assistant" and msg.run_id in unverified_reference_runs
         extra_metadata = {} if health_answer or unverified_reference else _serialize_history_metadata(msg)
+        if msg.role == "user" and extra_metadata.get("reply_quote"):
+            from yuxi.services.health_reply_quote_service import resolve_reply_quote
+            from pydantic import ValidationError
+
+            try:
+                extra_metadata["reply_quote"] = await resolve_reply_quote(
+                    db, str(current_uid), thread_id, extra_metadata["reply_quote"]
+                )
+            except (HealthVisionError, HTTPException, ValidationError):
+                extra_metadata["reply_quote"] = {"unavailable": True, "text": "原引用内容当前不可用"}
+                extra_metadata.pop("raw_message", None)
         request_id = extra_metadata.get("request_id")
         if msg.role == "user" and request_id and not extra_metadata.get("attachments"):
             extra_metadata["attachments"] = attachments_by_request_id.get(str(request_id), [])
@@ -628,7 +680,7 @@ async def get_thread_history_view(
             msg_dict["content"] = json.dumps(reference_displays[msg.id], ensure_ascii=False)
         history.append(msg_dict)
 
-    if conversation.agent_id == "health-consultation":
+    if conversation.agent_id == "health-consultation" and not history_read_only:
         from yuxi.services.health_chat_meal_service import chat_meal_receipts
 
         meals = await chat_meal_receipts(db, str(current_uid), {"thread_id": thread_id})
@@ -738,7 +790,7 @@ async def _search_with_public_consultations(conv_repo, db, uid, query, *, agent_
     return visible_items[offset : offset + limit], len(visible_items) > offset + limit
 
 
-async def _consultation_message_is_public(db, message, uid, *, run=None, source_titles=None):
+async def _consultation_message_is_public(db, message, uid, *, run=None, source_titles=None, binding=None):
     """公开咨询历史只含用户输入与当前有效的权威最终答复。"""
     if message.message_type in AUDIT_MESSAGE_TYPES:
         return False
@@ -747,7 +799,17 @@ async def _consultation_message_is_public(db, message, uid, *, run=None, source_
     if message.role == "assistant" and not message.run_id and message.delivery_status == "complete":
         from yuxi.repositories.health_intent_repository import HealthIntentRepository
 
-        return await HealthIntentRepository(db).is_published_message(message)
+        if not await HealthIntentRepository(db).is_published_message(message):
+            return False
+        from yuxi.services.health_reply_quote_service import validate_intent_reply_dependencies
+        from yuxi.storage.postgres.models_business import Conversation
+
+        try:
+            conversation = await db.get(Conversation, message.conversation_id)
+            await validate_intent_reply_dependencies(db, message, uid, conversation.thread_id)
+        except HealthVisionError:
+            return False
+        return True
     if message.role != "assistant" or not message.run_id:
         return False
     run = run or await db.get(AgentRun, message.run_id)
@@ -756,7 +818,9 @@ async def _consultation_message_is_public(db, message, uid, *, run=None, source_
     from yuxi.services.health_evidence_service import read_public_consultation_answer
 
     try:
-        answer = await read_public_consultation_answer(db, run, uid, source_titles=source_titles)
+        answer = await read_public_consultation_answer(
+            db, run, uid, binding=binding, source_titles=source_titles, history_view=binding is not None
+        )
     except HealthVisionError:
         return False
     return answer.id == message.id

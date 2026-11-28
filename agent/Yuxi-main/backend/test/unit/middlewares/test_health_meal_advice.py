@@ -253,7 +253,7 @@ async def test_reference_source_gap_keeps_explicit_needs_input_without_saving():
     result = await namespace["reference_answer_in_session"]("synthetic-session", run, "synthetic-binding", answer)
 
     assert result == {"status": "needs_input", "questions": answer.questions}
-    authorization.assert_awaited_once_with("synthetic-session", run.uid, "synthetic-binding")
+    authorization.assert_awaited_once_with("synthetic-session", run.uid, "synthetic-binding", history_view=False)
     read_saved.assert_not_awaited()
 
 
@@ -372,5 +372,6 @@ def isolate_account_memory_publication(monkeypatch):
     """本组验证既有业务 Owner；账号记忆发布边界由真实 PG/HTTP 测试覆盖。"""
     from unittest.mock import AsyncMock
     from yuxi.services import health_memory_context_service
+
     monkeypatch.setattr(health_memory_context_service, "validate_memory_publication", AsyncMock())
     monkeypatch.setattr(health_memory_context_service, "memory_restrictions_for_plan", AsyncMock(return_value=[]))

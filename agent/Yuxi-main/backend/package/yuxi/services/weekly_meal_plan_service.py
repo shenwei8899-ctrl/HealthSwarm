@@ -285,6 +285,20 @@ async def _set_group_status(uid, family_id, group_id, status):
 
 async def _bound_day(uid, family_id, day, ref):
     """来源失效或版本变化时拒绝旧组展示新结果。"""
+    from yuxi.services.daily_meal_plan_service import current_row, read_current_plan
+
+    async with pg_manager.get_async_session_context() as session:
+        indexed = await current_row(session, uid, family_id, day)
+        roster = (indexed.meal_sources or {}).get("_roster", {}) if indexed else {}
+        if roster:
+            if any(roster.get(m, {}).get("status") == "failed" for m in ("breakfast", "lunch", "dinner")):
+                return {"status": "failed", "date": str(day)}
+            if any(roster.get(m, {}).get("status") == "pending" for m in ("breakfast", "lunch", "dinner")):
+                return {"status": "generating", "date": str(day)}
+            plan = await read_current_plan(uid, family_id, day, session=session)
+            if plan.get("needs_regeneration"):
+                return {"status": "stale", "date": str(day)}
+            return {**plan, "meals": [{**item["meal"], "type": item["meal_type"]} for item in plan["meals"]]}
     current = await read_daily_arrangement(uid, family_id, day)
     version = current.get("update", {}).get("version", current.get("version"))
     if current.get("id") != ref["id"] or version != ref["version"] or current["status"] == "stale":

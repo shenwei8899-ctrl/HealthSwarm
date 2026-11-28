@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { createPartnerApplication, partnerPolicyVersion } from '../src/services/partner-application.js'
 import { createCommerceClient } from '../src/services/commerce-client.js'
 import { readFileSync } from 'node:fs'
-import { ref, computed } from 'vue'
+import { ref, reactive, computed } from 'vue'
 
 function fixture(send = async () => ({})) {
   let account = 'A', count = 0
@@ -96,7 +96,8 @@ test('partner route is admitted for logged-in applicants without requiring a hea
 test('the actual My page opens the partner form and keeps other unavailable services guarded', () => {
   const source = readFileSync(new URL('../src/components/CloudMyProfile.vue', import.meta.url), 'utf8').match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
   const routes = [], modals = []
-  const deps = { ref, computed, onMounted: () => {}, onShow: () => {}, onHide: () => {}, isCommerceEnabled: true,
+  const deps = { ref, reactive, computed, onMounted: () => {}, onShow: () => {}, onHide: () => {}, onUnmounted: () => {}, isCommerceEnabled: true,
+    createMyProfileLoader: () => ({}), getSession: () => null, storageContext: () => 'synthetic',
     uni: { navigateTo: value => routes.push(value.url), showModal: value => modals.push(value.title) } }
   const page = new Function('deps', `const {${Object.keys(deps)}}=deps;${source};return {go,serviceItems}`)(deps)
   assert.ok(page.serviceItems.every(Boolean))

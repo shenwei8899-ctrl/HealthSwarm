@@ -49,7 +49,7 @@ for(const failedRead of ['task','draft'])test(`re-recognition recovers ${failedR
 
 test('a fresh shared-table recognition clears previous personal dishes and combined grams',()=>{
  const person={dishes:['鱼','饭'],grams:200,noneConfirmed:false,portion:'一般'}
- const deps={supplement:{value:null},locked:{value:false},manualOpen:{value:false},saved:{value:null},manualOpen:{value:false},saved:{value:null},vision:{memberId:'member',meal:{items:[{item_id:'chicken',name:'鸡肉',photo_estimate:estimate}]},draft:{id:'new',version:1}},origin:{value:{draft:{id:'old',version:1}}},hasDishes:{value:true},dishes:{value:[]},source:{value:''},captureScope:{value:'家庭共享桌菜'},selected:{value:[person]},people:{value:[person]},notice:{value:''},recognizedMealDish,queueNutrition:()=>{},matchCandidates:()=>{}}
+ const deps={supplement:{value:null},locked:{value:false},manualOpen:{value:false},saved:{value:null},manualOpen:{value:false},saved:{value:null},vision:{memberId:'member',meal:{items:[{item_id:'chicken',name:'鸡肉',photo_estimate:estimate}]},draft:{id:'new',version:1}},origin:{value:{draft:{id:'old',version:1}}},hasDishes:{value:true},dishes:{value:[]},source:{value:''},captureScope:{value:'家庭共享桌菜'},selected:{value:[person]},people:{value:[person]},notice:{value:''},recognizedMealDish,queueNutrition:()=>{},matchCandidates:()=>{},openPortions:()=>{}}
  const body=component.slice(component.indexOf('function useCandidates(){'),component.indexOf('async function job('))
  new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${body};useCandidates()`)(deps)
  assert.deepEqual(person.dishes,[]);assert.equal(person.grams,'');assert.equal(deps.dishes.value[0].name,'鸡肉')

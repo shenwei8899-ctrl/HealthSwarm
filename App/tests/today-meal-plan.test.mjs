@@ -1,3 +1,4 @@
+import { todayMealPlanPresentation } from '../src/services/today-meal-plan-presentation.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
@@ -579,7 +580,7 @@ test('an authoritative absent menu replaces its preview without restoring it or 
 function contentFixture(state=reactive(todayMealPlanState())){
  const source=readFileSync(new URL('../src/components/TodayMealPlanContent.vue',import.meta.url),'utf8').split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm,'')
  const props=reactive({state,busy:false,interactive:true}),events=[]
- const deps={computed,defineProps:()=>props,defineEmits:()=> (...args)=>events.push(args),localDate:()=>date}
+ const deps={computed,todayMealPlanPresentation,defineProps:()=>props,defineEmits:()=> (...args)=>events.push(args),localDate:()=>date}
  const view=new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {mealEntries,missingMeals,displayDate,loadingLabel,detail,dish,act}`)(deps)
  return {view,props,events}
 }
@@ -591,7 +592,7 @@ function sheetFixture({clientOptions,readOnly=false}={}){
  const client=clientFixture?.client||{open:()=>calls.push('open'),pause:()=>calls.push('pause'),clear:()=>calls.push('clear'),dispose:()=>calls.push('dispose')}
  const load=()=>{if(!props.profile||props.unavailable){client.clear();return}if(!props.open){client.pause();return}void client.open(props.profile,{readOnly:props.readOnly})}
  const handle=(...args)=>{if(args[0]!=='action'){events.push(args);return}if(['answer','candidates'].includes(state.action))events.push(['continue',state.pending]);else void client.open(props.profile,{readOnly:props.readOnly||state.action==='refresh'})}
- const deps={computed,ref,watch,defineProps:()=>props,defineEmits:()=>handle,localDate:()=>date,detailGesture}
+ const deps={computed,ref,watch,todayMealPlanPresentation,defineProps:()=>props,defineEmits:()=>handle,localDate:()=>date,detailGesture}
  const view=scope.run(()=>{
   watch(()=>[props.open,props.profile,props.unavailable,props.readOnly],load,{immediate:true})
   return new Function('deps',`const {${Object.keys(deps)}}=deps;${source};return {expanded,displayDate,start,cancelTouch,end,detail,dish,act,startEditing,selectMeal,confirm,toggleMember,dismiss,editing}`)(deps)
@@ -686,7 +687,7 @@ test('closing the actual sheet pauses instead of discarding its menu; removing t
 
 test('the actual sheet exposes separate reading and generating copy with a compact local date',()=>{
  const h=sheetFixture();try{
-  assert.equal(h.view.displayDate.value,'10月30日 · 周五')
+  assert.equal(h.view.displayDate.value,'10月30日·周五')
   assert.equal(h.view.loadingLabel.value,'正在读取今日餐单')
   h.view.state.phase='generating';h.view.state.label='正在搭配今天的三餐';assert.equal(h.view.loadingLabel.value,'正在搭配今天的三餐')
   h.view.state.label='三餐仍在生成，请稍候';assert.equal(h.view.loadingLabel.value,'三餐仍在生成，请稍候')
@@ -736,7 +737,10 @@ test('WeChat sheet controls receive taps independently from the header drag regi
    slot:{fallbackContent:false,dynamicSlotNames:true},emitFile:asset=>assets.push(asset)},
  })
  const wxml=String(assets[0].source)
- const tag=name=>wxml.match(new RegExp(`<[^>]+class="${name}"[^>]*>`))?.[0]||''
+ const tag=name=>(wxml.match(/<[^>]+>/g)||[]).find(value=>{
+  const classes=value.match(/\bclass="([^"]+)"/)?.[1]||''
+  return classes.split(/[\s'\[\],{}]+/).includes(name)
+ })||''
  for(const name of ['tm-header','tm-controls']){
   assert.ok(tag(name),`${name} must exist`)
   assert.doesNotMatch(tag(name),/\b(?:bind|catch)touch/)
@@ -746,6 +750,8 @@ test('WeChat sheet controls receive taps independently from the header drag regi
  }
  assert.equal(tag('tm-expand'),'')
  assert.match(tag('tm-close'),/\bbindtap=/)
+ assert.match(tag('tm-plan-status-action'),/\bcatchtap=/)
+ assert.doesNotMatch(tag('tm-plan-status-action'),/\b(?:bind|catch)touch/)
 })
 
 test('card handlers enforce the preview interaction gate even when invoked directly',()=>{
@@ -842,4 +848,14 @@ test('an unavailable selected diner task can be retried without submitting a dif
  await h.client.open(profile,{dinerChange:{mealType:'dinner',participantIds:['self']},retryFailed:true})
  assert.equal(h.state.action,'regenerate')
  assert.equal(h.calls.some(call=>call[0]==='submit'),false)
+})
+
+
+test('server roster updates are polled without generating another client task',async()=>{
+ let plan=ready();plan.roster={lunch:{status:'pending',target_ids:['self','relative']}}
+ const h=fixture({read:async()=>plan});await h.client.open(profile)
+ assert.equal(h.calls.some(c=>c[0]==='flow'),false);assert.equal(h.timers.size,1)
+ assert.match(h.state.notice,/就餐成员/)
+ plan={...ready(),version:2,roster:{lunch:{status:'ready',target_ids:['self','relative']}}}
+ await h.tick();assert.equal(h.state.plan.version,2);assert.equal(h.timers.size,0)
 })

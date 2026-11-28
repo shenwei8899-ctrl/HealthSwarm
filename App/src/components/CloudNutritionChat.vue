@@ -7,7 +7,6 @@ import { computed, reactive, ref, nextTick, watch, onMounted, onUnmounted } from
 import { onShow, onHide } from '@dcloudio/uni-app'
 import NutritionistLayout from './NutritionistLayout.vue'
 import ChatConversationDrawer from './ChatConversationDrawer.vue'
-import ChatConversationPreview from './ChatConversationPreview.vue'
 import MealDetailSheet from './MealDetailSheet.vue'
 import ChatMealRecordCard from './ChatMealRecordCard.vue'
 import {mealTarget,openMealPage} from '../services/meal-workspace.js'
@@ -26,12 +25,16 @@ import { createDishSwap, dishSwapState, watchDishSwap } from '../services/dish-s
 import WeeklyMealPlanCard from './WeeklyMealPlanCard.vue'
 import TodayMealPlanContent from './TodayMealPlanContent.vue'
 import TodayMealPlanSheet from './TodayMealPlanSheet.vue'
+import MealRosterControl from './MealRosterControl.vue'
 import { todayMealPlanState, createTodayMealPlan } from '../services/today-meal-plan.js'
 import {readDailyMealPlan} from '../services/daily-meal-plan.js'
 import {referenceSelection as chooseReference,isReferencePlan} from '../services/reference-meal-plan.js'
 import VoiceInput from './VoiceInput.vue'
 import AiAnswer from './AiAnswer.vue'
+import ReplySelectionOverlay from './ReplySelectionOverlay.vue'
 import { profileCompletionUrl } from '../services/planning-profile-issues.js'
+import { useReplySelection } from '../composables/use-reply-selection.js'
+import { replyQuote } from '../utils/reply-selection.js'
 import ChatReplyActions from './ChatReplyActions.vue'
 import ChatAssistantHeader from './ChatAssistantHeader.vue'
 import ChatFollowupSuggestions from './ChatFollowupSuggestions.vue'
@@ -72,11 +75,22 @@ function selfProfileMember(value) {
 }
 const needsProfileLink=computed(()=>!!profile.value&&!props.route.memberId&&!selfProfileMember(profile.value)?.healthMemberId)
 const question=ref(''),chatError=ref(''),messages=ref([]),task=ref({}),consentChecked=ref(false)
+const quoteDraft=ref(null)
+let quoteVersion=0
+watch(quoteDraft,()=>{quoteVersion++},{flush:'sync'})
+const conversationLayout=ref(null)
+const selection=useReplySelection((source,text)=>{quoteDraft.value=replyQuote(source,text,conversationThreadId.value);voiceMode.value=false;textFocusRequested.value=true},delta=>conversationLayout.value?.scrollSelectionBy(delta))
+function selectableReply(message){
+ const id=Number(message.serverMessageId||message.id)
+ return !message.business && message.quoteSelectable!==false && (Number.isSafeInteger(id) && id>0 || message.quoteSourceRequest===true)
+}
+function beginReplySelection(message,event){if(chatBusy.value||inputBusy.value||voiceBusy.value||!selectableReply(message))return;selection.begin(message,event)}
 const weeklyOpenDate=ref(''),weeklyOpenGroup=ref(''),weeklyDetail=ref(null),weeklyBusy=ref(false)
 let weeklyTimers={},weeklyRetryGeneration=0
 // 跨流式区和最终消息保留已出现餐次；历史读取默认不播放入场动画。
 const localSend=ref(null),sendPhase=ref('')
 const voiceMode=ref(false),voiceBusy=ref(false),voiceRef=ref(null),communityOpen=ref(false),scrollTarget=ref(''),inlineTodayOpen=ref(false)
+const rosterOpen=ref(false),rosterRetainsConversation=ref(false)
 const draftImage=ref(null),draftSaving=ref(false),draftError=ref('')
 const keyboardFocused=ref(false)
 const familyState=reactive(dailyArrangementState()),familyPanel=ref(false),familySelection=ref(null),familyIntent=ref('')
@@ -146,13 +160,14 @@ function reconnectEntry(event){
  if(!event.isConnected||disposed||!visible||loginRedirecting)return
  if(!entryReady.value)void load()
  else if(!returnVerified.value){returnRetryAttempt=0;void refreshReturn()}
+ else if(pageScope===storageContext())recoverParkedChats()
 }
 function recoverEntry({resetConversation=false,preserveProfileIntent=false}={}){
  if(entryRecovery)return entryRecovery
  const draft={text:question.value,image:draftImage.value,error:draftError.value}
  const conversation={id:conversationId.value,thread:conversationThreadId.value,date:conversationBusinessDate.value}
  clearPrivate({preserveProfileIntent:preserveProfileIntent&&pageScope===storageContext()&&loadedDate===localDate(),preservePlanningPause:pageScope===storageContext()&&loadedDate===localDate()});pageScope=storageContext();flowScope=pageScope;historyDenied=false
- question.value=draft.text;draftImage.value=draft.image;draftError.value=draft.error
+ question.value=draft.text;draftImage.value=draft.image;draftError.value=draft.error;quoteDraft.value=draft.quote||null
  if(resetConversation){
   // Do not resume the persisted pointer to the thread that just lost access.
   // Reserve a fresh local conversation; no server task or question is submitted.
@@ -200,13 +215,14 @@ const todayMenuClient=createTodayMealPlan({state:todayMenu,onPlan:acceptTodayPla
 const dailyPlans=ref({}),todayPlan=computed(()=>dailyPlans.value[localDate()]||null)
 const activePlanStatus=status=>['queued','dispatched','pending','running','recovering','cancel_requested'].includes(status)
 const planRunning=computed(()=>activePlanStatus(todayPlan.value?.pending?.status)||task.value.taskType==='reference_meal_preview'&&referenceSelection?.plan_date===localDate()&&activePlanStatus(task.value.status))
-const historyPreview=ref(null),deniedHistoryThread=ref('')
+const deniedHistoryThread=ref('')
 const pendingHistoryThread=ref(''),historySelectionError=ref('')
 let historyIntent=0
 const historyOpen=ref(false),conversationId=ref(''),conversationThreadId=ref(''),conversationBusinessDate=ref(''),switchingConversation=ref(false)
 const historyLoading=ref(false),historyError=ref(''),historyNotice=ref(''),continuationChecking=ref(false),continuationError=ref('')
 let selectionGeneration=0,historyDenied=false
-const conversationReadOnly=computed(()=>!!task.value.readOnly||!!conversationBusinessDate.value&&conversationBusinessDate.value<localDate())
+const historyReadOnly=ref(false)
+const conversationReadOnly=computed(()=>historyReadOnly.value||!!task.value.readOnly||!!conversationBusinessDate.value&&conversationBusinessDate.value<localDate())
 const mealViewBlocked = computed(() => historyLoading.value || switchingConversation.value ||
  continuationChecking.value || historyDenied || !!historyError.value || voiceBusy.value || conversationReadOnly.value)
 const dishSwap=reactive(dishSwapState()),swapVisible=ref(true)
@@ -219,6 +235,7 @@ function openDishSwap({item,dish,plan}){
  swapClient.open(item,dish,plan)
 }
 const conversationDrafts=new Map()
+const parkedChats=new Map(),replyActivity=ref({})
 const historyMemberId=computed(()=>selfProfileMember(profile.value)?.healthMemberId||'')
 const mealReplyActions=computed(()=>{
   const last=messages.value.at(-1),user=messages.value.filter(m=>m.role==='user').at(-1)
@@ -270,14 +287,35 @@ const promptAskBusy=computed(()=>inputBusy.value||sending.value||voiceBusy.value
 const promptShuffleBusy=computed(()=>sending.value||!!pendingEntrySend.value||voiceBusy.value||entryView.value.phase==='leaving')
 const conversationChangeBusy=computed(()=>sending.value||task.value.busy||task.value.submitUnknown||['queued','dispatched','pending','running','recovering','cancel_requested'].includes(task.value.status))
 const sending=ref(false),hasDraftContent=computed(()=>!!question.value.trim()||!!draftImage.value)
+// Preparation still owns the visible composer. Once it settles, the task flow
+// can keep observing the request while the user switches conversations.
+const historySwitchBlocked=computed(()=>sending.value||!!pendingEntrySend.value||voiceBusy.value||draftSaving.value||
+  returning.value||!!familyState.busy)
 // 页面恢复和历史读取只约束操作，不作为营养师正在回复的依据。
 const replyPending=computed(()=>!!pendingEntrySend.value||sending.value||familyState.busy||!!task.value.requestId&&!task.value.submitUnknown&&activePlanStatus(task.value.status))
+// The live turn is presentation only: it never enters saved history. A stable
+// request key lets the same answer component receive the final Task result.
+const presentedMessages=computed(()=>{
+ const rows=visibleMessages.value
+ if(!(liveAnswer.value||entryReady.value&&!profileLoading.value&&replyPending.value))return rows
+ const preparing=!!pendingEntrySend.value||familyState.busy||sending.value&&localSend.value&&!localSend.value.submitting
+ if(task.value.result&&!preparing)return rows
+ const requestId=task.value.result?'':task.value.requestId
+ if(requestId&&rows.some(row=>row.role==='assistant'&&row.requestId===requestId))return rows
+ return [...rows,{id:requestId?requestId+'-answer':'pending-answer',
+  requestId,threadId:task.value.entry?.thread_id||conversationThreadId.value,
+  role:'assistant',streaming:true,text:requestId?task.value.streamText||'':''}]
+})
+function messageRenderKey(message){
+ return message.role==='assistant'&&message.requestId
+  ?`${message.threadId||conversationThreadId.value}:${message.requestId}:assistant`:message.id
+}
 const retryBusy=computed(()=>sending.value||switchingConversation.value||!entryReady.value||task.value.busy||task.value.loading||task.value.refreshing)
 const canCancel=computed(()=>task.value.requestId&&!task.value.submitUnknown&&['queued','dispatched','pending','running','recovering','cancel_requested'].includes(task.value.status))
 const preparingSend=computed(()=>sending.value&&!!localSend.value&&!localSend.value.submitting)
 // 未确认标记也保护正在发送的请求；只有发送结束后才显示待核对状态。
 const submitting=computed(()=>task.value.submitUnknown&&task.value.status==='提交中'&&task.value.busy)
-const readingSuspended=computed(()=>detailOpen.value||historyOpen.value||!!historyPreview.value||inlineTodayOpen.value||communityOpen.value)
+const readingSuspended=computed(()=>detailOpen.value||historyOpen.value||inlineTodayOpen.value||rosterOpen.value||communityOpen.value)
 const primaryMode=computed(()=>pendingEntrySend.value||submitting.value?'submitting':task.value.submitUnknown||task.value.readUnavailable?'check':task.value.cancelPhase==='unknown'?'check':['requesting','confirming'].includes(task.value.cancelPhase)||task.value.status==='cancel_requested'?'stopping':preparingSend.value||canCancel.value?'stop':voiceMode.value?'keyboard':hasDraftContent.value?'send':'voice')
 const canCheckTask=computed(()=>!disposed&&visible&&flowScope===storageContext()&&returnVerified.value&&!task.value.invalidated&&!!task.value.requestId&&(task.value.submitUnknown||task.value.readUnavailable||task.value.cancelPhase==='unknown')&&!retryBusy.value)
 async function checkTaskStatus(){if(canCheckTask.value)await flow.refresh()}
@@ -288,10 +326,11 @@ const recoveryNotice=computed(()=>{
 })
 watch(question,()=>{textVersion++},{flush:'sync'})
 function markDraftInput(){textVersion++}
-function captureDraft(){return {scope:storageContext(),conversation:conversationId.value,text:question.value,textVersion,imageVersion:draftVersion,path:draftImage.value?.localPath||draftImage.value?.path||''}}
+function captureDraft(){return {scope:storageContext(),conversation:conversationId.value,text:question.value,textVersion,quote:quoteDraft.value,quoteVersion,imageVersion:draftVersion,path:draftImage.value?.localPath||draftImage.value?.path||''}}
 function settleDraft(snapshot){
  if(!snapshot||snapshot.consumeDraft===false||snapshot.scope!==storageContext()||snapshot.conversation!==conversationId.value||snapshot.requestId&&snapshot.requestId!==task.value.requestId)return
  if(snapshot.textVersion===textVersion&&question.value===snapshot.text){question.value='';uni.hideKeyboard?.()}
+ if(snapshot.quoteVersion===quoteVersion)quoteDraft.value=null
  if(snapshot.path&&snapshot.imageVersion===draftVersion&&(draftImage.value?.localPath||draftImage.value?.path)===snapshot.path)removeDraft()
 }
 function failLocalSend(operation=localSend.value){
@@ -299,7 +338,7 @@ function failLocalSend(operation=localSend.value){
  // A failed local preparation may restore only the untouched composer it cleared.
  if(!operation||disposed||operation.scope!==storageContext()||operation.epoch!==epoch||operation.generation!==sendGeneration||task.value.invalidated||!messages.value.includes(operation.message)||operation.message.requestId&&task.value.submitUnknown)return
  operation.message.status='failed'
- if(operation.consumeDraft!==false&&question.value===''&&textVersion===operation.clearedVersion)question.value=operation.message.text
+ if(operation.consumeDraft!==false&&question.value===''&&textVersion===operation.clearedVersion){question.value=operation.message.text;quoteDraft.value=operation.message.replyQuote||null}
 }
 function stopQuestion(){
  if(!preparingSend.value)return flow.cancelRequest()
@@ -311,7 +350,12 @@ function stopQuestion(){
  epoch++;sendGeneration++;localSend.value=null;sendPhase.value='';pendingUser=null;submittedDraft=null
  sending.value=false;restoring=false;chatError.value='';flow.pause()
 }
-function rememberReading(value){if(!readingSuspended.value){reading.value=value;if(value.following)latestAvailable.value=false;else{scrollRevision++;scrollTarget.value=''}}}
+function rememberReading(value){
+  if(readingSuspended.value)return
+  reading.value=value
+  if(value.following){latestAvailable.value=false;markReplySeen()}
+  else{scrollRevision++;scrollTarget.value=''}
+}
 watch(readingSuspended,locked=>{scrollRevision++;if(locked)reading.value={...reading.value,following:false}},{flush:'sync'})
 function canRetryMessage(message){
  return !disposed&&visible&&flowScope===storageContext()&&returnVerified.value&&message.role==='user'&&message.status==='unknown'&&!!message.requestId&&message.requestId===task.value.requestId&&task.value.submitUnknown&&task.value.canRetry&&!retryBusy.value
@@ -343,13 +387,13 @@ const keyboardView=ref({height:0,offsetTop:0,keyboardOpen:false,homeHeight:0})
 watch(()=>keyboardView.value.height,()=>{if(reading.value.following)queueScroll()})
 let intentTimer,blurTimer,intentGeneration=0
 // Opening the history drawer preserves the underlying welcome view.
-const entryBlocked=computed(()=>!!(historyLoading.value||historyError.value||historyNotice.value||continuationChecking.value||continuationError.value||detailOpen.value||props.route.taskType||presentation.value.initialResults||failedTask.value||onboardingPending.value||entryError.value||chatError.value||familyPanel.value||inlineTodayOpen.value||communityOpen.value||task.value.error||task.value.notice||task.value.canRetry||task.value.invalidated||task.value.consentOption||task.value.result?.type==='needs_input'||needsProfileLink.value))
+const entryBlocked=computed(()=>!!(historyLoading.value||historyError.value||historyNotice.value||continuationChecking.value||continuationError.value||detailOpen.value||props.route.taskType||presentation.value.initialResults||failedTask.value||onboardingPending.value||entryError.value||chatError.value||familyPanel.value||inlineTodayOpen.value||rosterOpen.value||communityOpen.value||task.value.error||task.value.notice||task.value.canRetry||task.value.invalidated||task.value.consentOption||task.value.result?.type==='needs_input'||needsProfileLink.value))
 const entryContext=computed(()=>({
   eligible:(entryReady.value||!props.route.taskType&&props.route.entry!=='conversation'&&props.route.from!=='onboarding'&&!props.route.preparation)&&presentation.value.welcome&&!entryBlocked.value,
   hasMessages:messages.value.length>0,hasDraft:hasDraftContent.value||!!draftError.value,
   blocked:entryBlocked.value,busy:chatBusy.value||voiceBusy.value||draftSaving.value||cameraPending.value,
   focused:inputFocused.value||textFocusRequested.value,keyboardOpen:keyboardView.value.keyboardOpen,
-  voiceMode:voiceMode.value,intent:composerIntent.value,
+  voiceMode:voiceMode.value,intent:composerIntent.value||rosterRetainsConversation.value,
 }))
 const entryMotion=createChatEntryTransition({read:()=>entryContext.value,onChange:value=>{entryView.value=value}})
 let keyboardPlatform='native',keyboardBrowser
@@ -367,7 +411,7 @@ const welcomeDensity=computed(()=>keyboardView.value.homeHeight>0?(keyboardView.
 watch(entryContext,()=>entryMotion.reconcile())
 watch(()=>entryView.value.phase,phase=>keyboardLayout.freeze(phase!=='home'))
 function handleInputFocus(event){
-  clearTimeout(blurTimer);entryMotion.enter();inputFocused.value=true;keyboardLayout.focus(true)
+  clearTimeout(blurTimer);inputFocused.value=true;rosterRetainsConversation.value=false;entryMotion.enter();keyboardLayout.focus(true)
   // Focus can carry the first keyboard height before the global height callback.
   const height=Number(event?.detail?.height ?? event?.height)
   if(Number.isFinite(height)&&height>0)keyboardLayout.keyboard({height})
@@ -392,8 +436,152 @@ function settleComposerPress(){
 }
 function resumeEntryUI(){cameraPending.value=false;keyboardLayout.start();entryMotion.resume();keyboardLayout.refresh()}
 function pauseEntryUI(){clearTimeout(blurTimer);releaseComposerIntent();entryMotion.pause();inputFocused.value=false;textFocusRequested.value=false;keyboardLayout.stop()}
-function resetEntryUI(){clearTimeout(blurTimer);releaseComposerIntent();inputFocused.value=false;textFocusRequested.value=false;cameraPending.value=false;entryMotion.reset()}
-const flow=createHealthTaskFlow({daily:true,onChange:next=>{
+function openRoster(){
+ if(mealViewBlocked.value||!todayMenu.plan)return
+ rosterRetainsConversation.value=!welcomeMounted.value;rosterOpen.value=true
+}
+function resetEntryUI(){rosterOpen.value=false;rosterRetainsConversation.value=false;clearTimeout(blurTimer);releaseComposerIntent();inputFocused.value=false;textFocusRequested.value=false;cameraPending.value=false;entryMotion.reset()}
+function createChatSession(scope=storageContext()){
+  const session={scope}
+  session.flow=createHealthTaskFlow({daily:true,onChange:next=>{
+    if(disposed||session.scope!==storageContext())return
+    if(session===activeChat){
+      if(next.invalidated)forgetConversationActivity(conversationThreadId.value)
+      applyChatTask(next)
+      if(!historyDenied)updateReplyActivity(conversationThreadId.value,next,{
+        id:conversationId.value,selection:referenceSelection,memberId:historyMemberId.value,
+      })
+    }else if(session.memberId===historyMemberId.value&&parkedChats.get(session.threadId)===session){
+      session.state=next
+      if(next.invalidated){
+        parkedChats.delete(session.threadId);session.view=null
+        conversationHistory.invalidate(next.invalidatedThreadId||session.threadId,session.memberId)
+      }
+      updateReplyActivity(session.threadId,next,session)
+    }
+  }})
+  return session
+}
+let activeChat=createChatSession(),flow=activeChat.flow
+let activityScope='',activityMember='',activityTimer=null
+const replyBadges=computed(()=>Object.fromEntries(Object.entries(replyActivity.value)
+  .filter(([,item])=>item.length>item.seen||item.running&&!item.length)
+  .map(([id,item])=>[id,item.length>item.seen?'unread':'generating'])))
+
+function flushReplyActivity(){
+  if(activityTimer!==null)clearTimeout(activityTimer)
+  activityTimer=null
+  if(!activityMember||activityScope!==storageContext())return
+  const recent=Object.entries(replyActivity.value).slice(-100)
+  try{scopedStorage.setStorageSync('conversation-reply-activity:'+activityMember,Object.fromEntries(recent))}catch{}
+}
+function syncReplyActivity(memberId){
+  const scope=storageContext()
+  if(scope===activityScope&&memberId===activityMember)return
+  flushReplyActivity()
+  if(activityMember&&memberId!==activityMember)releaseParkedChats()
+  activityScope=scope;activityMember=memberId
+  const saved=memberId&&scopedStorage.getStorageSync('conversation-reply-activity:'+memberId)
+  replyActivity.value=saved&&typeof saved==='object'&&!Array.isArray(saved)?saved:{}
+}
+function storeReplyActivity(threadId,item){
+  const updated={...replyActivity.value}
+  delete updated[threadId]
+  if(item)updated[threadId]=item
+  replyActivity.value=updated
+  if(activityTimer===null)activityTimer=setTimeout(flushReplyActivity,240)
+}
+function forgetConversationActivity(threadId){
+  const parked=parkedChats.get(threadId)
+  if(parked){
+    parkedChats.delete(threadId)
+    parked.flow.hide()
+  }
+  if(replyActivity.value[threadId])storeReplyActivity(threadId,null)
+}
+function updateReplyActivity(threadId,next,owner){
+  if(!threadId||!owner.memberId||props.route.taskType)return
+  syncReplyActivity(owner.memberId)
+  const previous=replyActivity.value[threadId]
+  if(next.invalidated){if(previous)storeReplyActivity(threadId,null);return}
+  if(!next.requestId||!next.entry?.thread_id)return
+  const running=!!next.submitUnknown||activePlanStatus(next.status)
+  const same=previous?.requestId===next.requestId
+  if(!running&&!same)return // Viewing a completed history item does not make it unread.
+  const terminal=['completed','failed','rejected','interrupted','cancelled'].includes(next.status)
+  if(!terminal&&!running)return
+  const result=next.result
+  const streamed=next.streamText?.trim()?next.streamOffset||Array.from(next.streamText).length:0
+  const streamMessage=streamed?next.streamMessageId:same?previous.streamMessage:''
+  const sameBody=same&&(!streamMessage||!previous.streamMessage||streamMessage===previous.streamMessage)
+  const finalBody=result?.type==='answer'?Array.from(result.text.trim()).length:
+    result?.type==='needs_input'?Array.from(result.questions.join('\n').trim()).length:result?.type==='business'?1:0
+  const length=terminal?finalBody:Math.max(streamed,sameBody?previous.length:0)
+  const seen=sameBody?Math.min(previous.seen,length):0
+  if(same&&streamMessage===previous.streamMessage&&running===previous.running&&length===previous.length&&seen===previous.seen)return
+  storeReplyActivity(threadId,{requestId:next.requestId,streamMessage,running,length,seen,id:owner.id,
+    taskThread:next.entry.thread_id,taskType:next.taskType,taskMember:next.memberId,
+    ...(next.taskType==='reference_meal_preview'?{selection:owner.selection}:{})})
+}
+function markReplySeen(){
+  const threadId=conversationThreadId.value,item=replyActivity.value[threadId],next=task.value
+  if(!item||item.seen===item.length||item.requestId!==next.requestId||!visible||
+     historyDenied||readingSuspended.value||!reading.value.following||!liveAnswer.value&&!next.result)return
+  storeReplyActivity(threadId,{...item,seen:item.length})
+}
+function activateChat(session){
+  activeChat=session;flow=session.flow
+}
+function releaseParkedChats(){
+  const sessions=[...parkedChats.values()]
+  parkedChats.clear()
+  for(const session of sessions)session.flow.hide()
+}
+function pauseParkedChats(){
+  for(const session of parkedChats.values())if(replyActivity.value[session.threadId]?.running){
+    if(!session.state?.requestId){
+      parkedChats.delete(session.threadId);session.flow.hide();continue
+    }
+    session.paused=true;session.flow.pause()
+  }
+  flushReplyActivity()
+}
+function trimParkedChats(){
+  const settled=[...parkedChats.values()].filter(session=>!replyActivity.value[session.threadId]?.running)
+  for(const session of settled.slice(0,-8)){
+    parkedChats.delete(session.threadId)
+    session.flow.hide()
+  }
+}
+function recoverParkedChats(){
+  if(props.route.taskType||!historyMemberId.value)return
+  const memberId=historyMemberId.value
+  syncReplyActivity(memberId)
+  for(const [threadId,item] of Object.entries(replyActivity.value)){
+    if(!item.running||threadId===conversationThreadId.value)continue
+    const existing=parkedChats.get(threadId)
+    if(existing&&(existing.state?.requestId||existing.state?.loading)){
+      if(existing.paused){existing.paused=false;void existing.flow.resume()}
+      continue
+    }
+    if(existing){parkedChats.delete(threadId);existing.flow.hide()}
+    const taskType=item.taskType,selection=item.selection
+    if(taskType!=='consultation'&&!(taskType==='reference_meal_preview'&&selection?.family_id===profile.value?.householdId))continue
+    if(taskType==='consultation'&&(item.taskMember!==memberId||threadId!==item.taskThread))continue
+    const session=Object.assign(createChatSession(),{threadId,memberId,id:item.id,selection})
+    parkedChats.set(threadId,session)
+    const identity=taskType==='consultation'?{threadId}:{rootThreadId:threadId}
+    void session.flow.open(item.taskMember,taskType,selection,{conversationId:item.id,...identity}).then(()=>{
+      if(parkedChats.get(threadId)!==session||!visible||session.scope!==storageContext())return
+      const next=session.state
+      if(!next?.requestId&&next?.available){
+        if(taskType==='consultation')return session.flow.restoreRequest(item.requestId,{preferActive:true})
+        return session.flow.restoreReferenceRequest(item.taskThread,item.requestId)
+      }
+    }).catch(()=>{})
+  }
+}
+function applyChatTask(next){
   if(!disposed&&visible&&next.invalidated&&Number(next.failureStatus)===401&&(!getSession()?.token||flowScope===storageContext())){requireLogin();return}
   if(disposed||flowScope!==storageContext()||historyDenied)return
   task.value=next
@@ -425,7 +613,7 @@ const flow=createHealthTaskFlow({daily:true,onChange:next=>{
   if(pendingUser&&next.requestId){pendingUser.requestId=next.requestId;pendingUser.localOnly=false;pendingUser.status=next.status||'sending';sendPhase.value=''}
   if(submittedDraft&&!submittedDraft.requestId&&pendingUser&&next.requestId)submittedDraft.requestId=next.requestId
   if(next.submitUnknown&&next.requestId&&!messages.value.some(m=>m.role==='user'&&m.requestId===next.requestId)){
-    messages.value.push({threadId:next.entry?.thread_id||conversationThreadId.value,id:'pending-'+next.requestId,role:'user',requestId:next.requestId,text:next.pendingText||'',status:'unknown',...(next.pendingImages?.[0]?{image:{localPath:next.pendingImages[0]}}:{})})
+    messages.value.push({threadId:next.entry?.thread_id||conversationThreadId.value,id:'pending-'+next.requestId,role:'user',requestId:next.requestId,text:next.pendingText||'',...(next.pendingQuote?{replyQuote:next.pendingQuote}:{}),status:'unknown',...(next.pendingImages?.[0]?{image:{localPath:next.pendingImages[0]}}:{})})
   }
   const outgoing=messages.value.find(m=>m.role==='user'&&m.requestId===next.requestId)
   if(outgoing){
@@ -445,11 +633,11 @@ const flow=createHealthTaskFlow({daily:true,onChange:next=>{
     if(result.type==='business'&&isReferencePlan(result.data)){
       latestReference.value=result.data
     }
-    const message={historyCached:false,threadId:next.entry?.thread_id||conversationThreadId.value,id:messages.value[index]?.id||id,serverMessageId:next.finalMessageId,requestId:next.requestId,role:'assistant',createdAt:messages.value[index]?.createdAt||new Date().toISOString(),citations:result.citations||[],followups:result.followups||[],
+    const message={historyCached:false,threadId:next.entry?.thread_id||conversationThreadId.value,id:messages.value[index]?.id||id,serverMessageId:next.finalMessageId,quoteSelectable:result.type==='answer',requestId:next.requestId,role:'assistant',createdAt:messages.value[index]?.createdAt||new Date().toISOString(),citations:result.citations||[],followups:result.followups||[],
       text:result.type==='answer'?result.text:result.type==='needs_input'?result.questions.join('\n'):result.type==='error'?(result.message||failureText[result.code]||'这次处理未能完成，请重新读取或编辑问题后再试。'):candidates?'待核对候选已返回，个人适用性尚未确认。':isReferencePlan(result.data)?mealPairingText(result.data):'餐单结果已返回，请核对后决定是否使用。',
-      memberId:next.memberId,recordedMeals:candidates?[]:continuationChecking.value&&!result.recordedMeals?.length?(messages.value[index]?.recordedMeals||[]):result.recordedMeals||messages.value[index]?.recordedMeals||[],mealEnter:messages.value[index]?.mealEnter??(index<0&&!restoring&&!returning.value&&visible),purchaseOffers:candidates?[]:result.purchaseOffers||[],error:result.type==='error',errorCode:result.code,retryable:result.retryable===true,business:result.type==='business'?result:null,planDate:!candidates&&isReferencePlan(result.data)?result.data.plan_date:'',planMeals:!candidates&&isReferencePlan(result.data)?(result.data.meals||[]).map(meal=>meal.meal_type):undefined}
+      memberId:next.memberId,recordedMeals:candidates?[]:continuationChecking.value&&!result.recordedMeals?.length?(messages.value[index]?.recordedMeals||[]):result.recordedMeals||messages.value[index]?.recordedMeals||[],purchaseOffers:candidates?[]:result.purchaseOffers||[],error:result.type==='error',errorCode:result.code,retryable:result.retryable===true,business:result.type==='business'?result:null,planDate:!candidates&&isReferencePlan(result.data)?result.data.plan_date:'',planMeals:!candidates&&isReferencePlan(result.data)?(result.data.meals||[]).map(meal=>meal.meal_type):undefined}
     if(index<0)messages.value.push(message);else messages.value[index]={...messages.value[index],...message,historyCached:false}
-    if(!restoring&&!returning.value&&visible)void scrollLatest()
+    if(!restoring&&!returning.value&&visible)queueScroll()
   }
   if(next.result?.kind!=='meal_plan_candidates'&&next.requestId&&Array.isArray(next.recordedMeals)&&(!continuationChecking.value||next.recordedMeals.length)){
     const turns=messages.value.filter(row=>row.requestId===next.requestId)
@@ -457,7 +645,7 @@ const flow=createHealthTaskFlow({daily:true,onChange:next=>{
     const target=turns.find(row=>row.role==='assistant')||turns.find(row=>row.role==='user')
     if(target)target.recordedMeals=next.recordedMeals
   }
-}})
+}
 const client=createDailyArrangementClient({state,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId,beforeStart:requirePlanningReady})
 const familyClient=createDailyArrangementClient({state:familyState,send:request,context:()=>({scope:storageContext(),familyId:getSession()?.householdId}),storage:scopedStorage,newId:newHealthRequestId,beforeStart:requirePlanningReady})
 function updateMealReceipt(record){
@@ -497,13 +685,14 @@ function openFamilyMeal(meal){openFormalDetail(meal,familyState.arrangement,fami
 /** 自动跟随只作用于当前对话；每次渲染等待后重新检查阅读状态。 */
 async function scrollLatest({force=false}={}){
  const mine=++scrollRevision,scope=storageContext(),conversation=conversationId.value
- const valid=()=>!disposed&&visible&&mine===scrollRevision&&scope===storageContext()&&conversation===conversationId.value&&!readingSuspended.value&&(force||reading.value.following)
+ const valid=()=>!disposed&&visible&&mine===scrollRevision&&scope===storageContext()&&conversation===conversationId.value&&!readingSuspended.value&&!selection.state.owner&&(force||reading.value.following)
  if(!valid()){if(!disposed&&visible)latestAvailable.value=true;return}
  if(force){reading.value={...reading.value,following:true};latestAvailable.value=false}
  await nextTick();if(!valid())return
  scrollTarget.value=''
  await nextTick();if(!valid())return
  scrollTarget.value='chat-bottom-anchor';latestAvailable.value=false
+ markReplySeen()
 }
 function queueScroll(){
  if(disposed||!visible||!messages.value.length&&!liveAnswer.value)return
@@ -572,13 +761,7 @@ async function retryWeeklyPlan(plan){
   catch(error){if(current())chatError.value=error.message||'重试未完成，请稍后再试。'}
   finally{if(ticket===weeklyRetryGeneration)weeklyBusy.value=false}
 }
-const mealAppearances=reactive({})
-function rememberMealAppearance({requestId,key}){
-  if(!requestId)return
-  const seen=mealAppearances[requestId]||(mealAppearances[requestId]=[])
-  if(!seen.includes(key))seen.push(key)
-}
-function clearPrivate({preserveProfileIntent=false,preservePlanningPause=false}={}){swapClient.clear();cancelHistorySelection();conversationHistory.clear();historyPreview.value=null;deniedHistoryThread.value='';todayMenuClient.clear({preserveProfileIntent,preservePlanningPause});clearEntryRetry(false);selectionGeneration++;historyDenied=false;historyLoading.value=false;historyError.value='';historyNotice.value='';continuationChecking.value=false;continuationError.value='';pendingEntrySend.value=null;for(const key of Object.keys(mealAppearances))delete mealAppearances[key];clearReturnRetry();localSend.value=null;sendPhase.value='';scrollRevision++;latestAvailable.value=false;detailRef.value?.clear();resetEntryUI();onboardingPending.value=false;inlineTodayOpen.value=false;historyOpen.value=false;conversationId.value='';conversationThreadId.value='';conversationBusinessDate.value='';conversationDrafts.clear();entryReady.value=false;returnVerified.value=false;returning.value=false;returnError.value='';prompts.value=[];promptDate.value='';promptProfileKey.value='';mealsLoading.value=false;mealReadError.value='';latestReference.value=null;dailyPlans.value={};stopPlanTimers();referenceSelection=null;refreshedTerminal='';newConversationWelcome.value=false;preparedThreadId.value='';epoch++;sendGeneration++;sending.value=false;loading=null;returnFlight=null;profileLoading.value=false;flow.hide();client.reset();familyClient.reset();familyPanel.value=false;familySelection.value=null;messages.value=[];question.value='';chatError.value='';profile.value=null;task.value={};selectedMeal.value=null;removeDraft();pendingUser=null;submittedDraft=null;voiceRef.value?.cancel();voiceBusy.value=false;voiceMode.value=false;cardVisible.value=false}
+function clearPrivate({preserveProfileIntent=false,preservePlanningPause=false}={}){rosterOpen.value=false;selection.close();quoteDraft.value=null;swapClient.clear();cancelHistorySelection();conversationHistory.clear();deniedHistoryThread.value='';todayMenuClient.clear({preserveProfileIntent,preservePlanningPause});clearEntryRetry(false);selectionGeneration++;historyDenied=false;historyReadOnly.value=false;historyLoading.value=false;historyError.value='';historyNotice.value='';continuationChecking.value=false;continuationError.value='';pendingEntrySend.value=null;clearReturnRetry();localSend.value=null;sendPhase.value='';scrollRevision++;latestAvailable.value=false;detailRef.value?.clear();resetEntryUI();onboardingPending.value=false;inlineTodayOpen.value=false;historyOpen.value=false;conversationId.value='';conversationThreadId.value='';conversationBusinessDate.value='';conversationDrafts.clear();releaseParkedChats();syncReplyActivity('');entryReady.value=false;returnVerified.value=false;returning.value=false;returnError.value='';prompts.value=[];promptDate.value='';promptProfileKey.value='';mealsLoading.value=false;mealReadError.value='';latestReference.value=null;dailyPlans.value={};stopPlanTimers();referenceSelection=null;refreshedTerminal='';newConversationWelcome.value=false;preparedThreadId.value='';epoch++;sendGeneration++;sending.value=false;loading=null;returnFlight=null;profileLoading.value=false;const previousChat=activeChat;activateChat(createChatSession());previousChat.flow.hide();client.reset();familyClient.reset();familyPanel.value=false;familySelection.value=null;messages.value=[];question.value='';chatError.value='';profile.value=null;task.value={};selectedMeal.value=null;removeDraft();pendingUser=null;submittedDraft=null;voiceRef.value?.cancel();voiceBusy.value=false;voiceMode.value=false;cardVisible.value=false}
 function rememberThread({migrateLegacy=false}={}){
   if(flowScope!==storageContext()||props.route.taskType&&props.route.taskType!=='consultation'||!task.value.entry?.thread_id||!task.value.memberId)return
   const key=`homepage-chat-threads:${task.value.memberId}:${localDate()}`,old=scopedStorage.getStorageSync(key)||[]
@@ -605,6 +788,15 @@ function saveConversation(){
   const value={id:conversationId.value,threadId:conversationThreadId.value,memberId,businessDate:conversationBusinessDate.value,scope:storageContext()}
   scopedStorage.setStorageSync('homepage-conversation',value)
   if(value.threadId)scopedStorage.setStorageSync('conversation-index:'+value.threadId,value)
+}
+function readConversationTask(id){
+  const legacy=scopedStorage.getStorageSync('homepage-chat-task')
+  return (id&&scopedStorage.getStorageSync('homepage-chat-task:'+id))||
+    (!id||legacy?.conversationId===id?legacy:null)
+}
+function saveConversationTask(value){
+  if(value.conversationId&&!props.route.taskType)scopedStorage.setStorageSync('homepage-chat-task:'+value.conversationId,value)
+  else scopedStorage.setStorageSync('homepage-chat-task',value)
 }
 function rememberSpecialTask(next){
   if(props.route.taskType&&props.route.taskType!=='consultation'||!conversationId.value||next.taskType!=='reference_meal_preview')return
@@ -669,6 +861,7 @@ async function restoreChat(type=desiredType,{fresh=false,pending=null,preserveVi
   try{
     const options=(!props.route.taskType||props.route.taskType==='consultation')&&conversationId.value?{conversationId:conversationId.value,...(type==='consultation'&&conversationThreadId.value?{threadId:conversationThreadId.value}:type==='reference_meal_preview'&&conversationThreadId.value?{rootThreadId:conversationThreadId.value}:{})}:undefined
     await flow.open(id,type,selection,{...options,fresh})
+    if(disposed||ticket!==epoch||scope!==storageContext())return
     if(verifyEntry&&!task.value.available&&!task.value.invalidated&&!task.value.consentOption){
       throw Object.assign(new Error('咨询连接暂不可用'),{code:'CONSULTATION_UNAVAILABLE'})
     }
@@ -716,7 +909,7 @@ function load(){
   clearEntryRetry();clearStall();stallAttempts=0;entryRecovering.value=false
   loginRedirecting=false
   if(loginUnlockTimer!==null){clearTimeout(loginUnlockTimer);loginUnlockTimer=null}
-  selectionGeneration++;historyDenied=false;historyLoading.value=false;historyError.value='';historyNotice.value='';continuationChecking.value=false;continuationError.value='';switchingConversation.value=false
+  selectionGeneration++;historyDenied=false;historyReadOnly.value=false;historyLoading.value=false;historyError.value='';historyNotice.value='';continuationChecking.value=false;continuationError.value='';switchingConversation.value=false
   clearReturnRetry()
   visible=true
   resumeEntryUI()
@@ -737,9 +930,9 @@ async function loadEntry(recoveries,{skipOptional=false}={}){
     // Discard every result from the previous scope before a bounded reread.
     const current=getSession()
     const sameIdentity=current?.token&&current.accountId===account?.accountId&&(!account?.householdId||current.householdId===account.householdId)
-    const draft=sameIdentity?{text:question.value,image:draftImage.value,error:draftError.value}:null
+    const draft=sameIdentity?{text:question.value,image:draftImage.value,error:draftError.value,quote:quoteDraft.value}:null
     clearPrivate();pageScope=storageContext();flowScope=pageScope
-    if(draft){question.value=draft.text;draftImage.value=draft.image;draftError.value=draft.error}
+    if(draft){question.value=draft.text;draftImage.value=draft.image;draftError.value=draft.error;quoteDraft.value=draft.quote||null}
     if(!current?.token||current.accountId!==account?.accountId||account?.householdId&&current.householdId!==account.householdId){
       requireLogin()
       return
@@ -760,15 +953,15 @@ async function loadEntry(recoveries,{skipOptional=false}={}){
     chatError.value=''
     if(props.route.question&&!question.value)question.value=String(props.route.question).slice(0,4000)
     if(props.route.indicatorChoice==='1'&&!question.value)question.value='请回顾我选择的实测记录，说明还需要补充哪些测量信息。'
-    if(next.invitationReviewPending||!next.completeProfile&&!next.onboarded){uni.redirectTo({url:'/pages/onboarding/index'});return}
+    if(!next.completeProfile&&!next.onboarded){uni.redirectTo({url:'/pages/onboarding/index'});return}
     syncProfilePrompts()
     void todayMenuClient.open(next,{readOnly:!!next.consultationConsentRequired||!!readDinerDraft(next)})
     if(next.consultationConsentRequired){entryError.value=next.consultationError;return}
     // A plain entry is the product home. Only an explicitly selected existing
     // conversation may recover the previous pointer or legacy daily task.
     const resumePrevious=props.route.entry==='conversation'||props.route.from==='onboarding'||!!props.route.preparation
-    const resume=resumePrevious?scopedStorage.getStorageSync('homepage-chat-task'):null
     const selfId=selfProfileMember(next)?.healthMemberId
+    syncReplyActivity(selfId||'')
     const current=resumePrevious?scopedStorage.getStorageSync('homepage-conversation'):null
     if(!props.route.taskType&&!conversationId.value&&current&&current.memberId===selfId&&(!current.scope||current.scope===scope)){conversationId.value=current.id||'';conversationThreadId.value=current.threadId||'';conversationBusinessDate.value=current.businessDate||''}
     if(!props.route.taskType&&!conversationId.value&&!resumePrevious){
@@ -776,14 +969,18 @@ async function loadEntry(recoveries,{skipOptional=false}={}){
       // the saved history selection. This also prevents the daily-thread fallback.
       conversationId.value=newHealthRequestId();newConversationWelcome.value=true
     }
-    if(!props.route.taskType&&props.route.newConversation==='1'&&!startNewHandled){startNewHandled=true;conversationId.value=newHealthRequestId();conversationThreadId.value='';conversationBusinessDate.value='';newConversationWelcome.value=true;saveConversation(selfId)}
+    const resume=resumePrevious?readConversationTask(conversationId.value):null
+    if(!props.route.taskType&&props.route.newConversation==='1'&&!startNewHandled){startNewHandled=true;conversationId.value=newHealthRequestId();conversationThreadId.value='';conversationBusinessDate.value='';historyReadOnly.value=false;newConversationWelcome.value=true;saveConversation(selfId)}
     desiredType=Object.hasOwn(HEALTH_TEXT_TASKS,props.route.taskType)?props.route.taskType:'consultation'
     latestReference.value=null;preparedThreadId.value=''
     const legacyReference=!conversationId.value&&resume?.memberId===selfId&&resume?.date===localDate()&&resume.type==='reference_meal_preview'&&resume.selection?.family_id===next.householdId
     if(legacyReference){referenceSelection=resume.selection;desiredType=resume.type}
     newConversationWelcome.value=!!conversationId.value&&!conversationThreadId.value
-    await restoreChat(desiredType,{fresh:newConversationWelcome.value&&resume?.fresh===true,preserveView,verifyEntry:true})
-    if(!disposed&&visible&&mine===epoch&&scope===storageContext()&&(!props.route.taskType||props.route.taskType==='consultation'))await restoreSpecialTask(resume)
+    const archived=await restoreReadOnlyHistory(selfId,()=>!disposed&&visible&&mine===epoch&&scope===storageContext())
+    if(!archived){
+      await restoreChat(desiredType,{fresh:newConversationWelcome.value&&resume?.fresh===true,preserveView,verifyEntry:true})
+      if(!disposed&&visible&&mine===epoch&&scope===storageContext()&&(!props.route.taskType||props.route.taskType==='consultation'))await restoreSpecialTask(resume)
+    }
     if(disposed||!visible||mine!==epoch)return
     if(scope!==storageContext())return await recoverSession()
     if(task.value.invalidated){entryError.value='连接暂不可用';retryEntryInBackground();return}
@@ -791,6 +988,7 @@ async function loadEntry(recoveries,{skipOptional=false}={}){
     clearStall();stallAttempts=0;entryRecovering.value=false
     clearEntryRetry()
     rememberChatEntry(next)
+    recoverParkedChats()
     if(!prompts.value.length||promptDate.value!==localDate())refreshPrompts()
     if(!skipOptional)void loadOptionalMeals(next.householdId,mine,scope)
   }catch(e){
@@ -914,11 +1112,12 @@ async function refreshReturnState({skipOptional=false}={}){
   try{
     const next=await loadCloudProfile({openConsultation:true})
     if(!current())return
-    if(next.invitationReviewPending||!next.completeProfile&&!next.onboarded){clearPrivate();uni.redirectTo({url:'/pages/onboarding/index'});return}
+    if(!next.completeProfile&&!next.onboarded){clearPrivate();uni.redirectTo({url:'/pages/onboarding/index'});return}
     profile.value=next
     syncProfilePrompts()
     if(!skipOptional)void todayMenuClient.open(next,{readOnly:!!readDinerDraft(next)})
-    const ok=await flow.resume()
+    const archived=await restoreReadOnlyHistory(selfProfileMember(next)?.healthMemberId,current)
+    const ok=archived||await flow.resume()
     if(!current())return
     if(task.value.invalidated){return await recoverEntry({resetConversation:true,preserveProfileIntent:Number(task.value.failureStatus)===410&&['source_invalidated','profile_source_changed'].includes(task.value.failureCode)})}
     if(!ok)throw new Error(task.value.error||task.value.notice||'咨询状态暂未确认，请重新读取。')
@@ -952,6 +1151,7 @@ async function refreshReturnState({skipOptional=false}={}){
       }
     }
     returnVerified.value=true
+    recoverParkedChats()
     clearReturnRetry()
     rememberChatEntry(next)
     if(!skipOptional)void loadOptionalMeals(next.householdId,mine,scope,{preserve:true})
@@ -977,8 +1177,8 @@ onMounted(()=>{keyboardLayout.start();uni.onNetworkStatusChange?.(reconnectEntry
   resumeEntryUI()
   if(entryReady.value){void refreshReturn().then(()=>restoreWeeklyPlans())}else void load()
 })
-onHide(()=>{swapVisible.value=false;swapClient.pause();cancelHistorySelection();historyPreview.value=null;todayMenuClient.pause();todayMenu.verified=false;clearEntryRetry();entryRecovery=null;if(historyLoading.value||continuationChecking.value)entryReady.value=false;selectionGeneration++;historyLoading.value=false;continuationChecking.value=false;switchingConversation.value=false;clearReturnRetry();if(pendingEntrySend.value){messages.value=messages.value.filter(message=>message!==pendingEntrySend.value.message);pendingEntrySend.value=null}if(localSend.value?.message.localOnly)failLocalSend();localSend.value=null;sendPhase.value='';scrollRevision++;pauseEntryUI();historyOpen.value=false;if(scrollTimer!==null)clearTimeout(scrollTimer);scrollTimer=null;visible=false;suspended=true;epoch++;sendGeneration++;loading=null;returnFlight=null;profileLoading.value=false;returning.value=false;restoring=false;returnVerified.value=false;mealsLoading.value=false;stopPlanTimers();voiceRef.value?.cancel();flow.pause();pendingUser=null;sending.value=false;client.pause();familyClient.pause();familyPanel.value=false;familySelection.value=null})
-onUnmounted(()=>{stopDishSwap();swapClient.clear();todayMenuClient.dispose();uni.offNetworkStatusChange?.(reconnectEntry);clearEntryRetry();entryRecovery=null;selectionGeneration++;clearReturnRetry();scrollRevision++;pauseEntryUI();entryMotion.dispose();if(scrollTimer!==null)clearTimeout(scrollTimer);disposed=true;returnFlight=null;epoch++;draftVersion++;stopPlanTimers();client.dispose();familyClient.dispose();flow.hide()})
+onHide(()=>{selection.close();swapVisible.value=false;swapClient.pause();cancelHistorySelection();todayMenuClient.pause();todayMenu.verified=false;clearEntryRetry();entryRecovery=null;if(historyLoading.value||continuationChecking.value)entryReady.value=false;selectionGeneration++;historyLoading.value=false;continuationChecking.value=false;switchingConversation.value=false;clearReturnRetry();if(pendingEntrySend.value){messages.value=messages.value.filter(message=>message!==pendingEntrySend.value.message);pendingEntrySend.value=null}if(localSend.value?.message.localOnly)failLocalSend();localSend.value=null;sendPhase.value='';scrollRevision++;pauseEntryUI();historyOpen.value=false;if(scrollTimer!==null)clearTimeout(scrollTimer);scrollTimer=null;visible=false;suspended=true;pauseParkedChats();epoch++;sendGeneration++;loading=null;returnFlight=null;profileLoading.value=false;returning.value=false;restoring=false;returnVerified.value=false;mealsLoading.value=false;stopPlanTimers();voiceRef.value?.cancel();flow.pause();pendingUser=null;sending.value=false;client.pause();familyClient.pause();familyPanel.value=false;familySelection.value=null})
+onUnmounted(()=>{selection.close();stopDishSwap();swapClient.clear();todayMenuClient.dispose();uni.offNetworkStatusChange?.(reconnectEntry);clearEntryRetry();entryRecovery=null;selectionGeneration++;clearReturnRetry();scrollRevision++;pauseEntryUI();entryMotion.dispose();if(scrollTimer!==null)clearTimeout(scrollTimer);disposed=true;returnFlight=null;epoch++;draftVersion++;stopPlanTimers();client.dispose();familyClient.dispose();flushReplyActivity();releaseParkedChats();flow.hide()})
 async function openFormalDetail(meal,arrangement,date,extra={}){
  if(voiceBusy.value||!arrangement||!profile.value)return
  const scope=storageContext(),mine=epoch
@@ -1053,6 +1253,7 @@ function openDailyDish(value,date,plan=dailyPlans.value[date]){if(voiceBusy.valu
 function buyAllMeals(plan){if(voiceBusy.value||planPurchaseBusy.value||!canPurchaseAllMeals(plan))return;openMealPage({date:plan.date,version:plan.version},{all:true})}
 
 async function openReferencePlan(value){
+ if(conversationReadOnly.value)return
  const source=value.plan||value,meal=source.meals?.[0]
  if(!meal||!profile.value||voiceBusy.value)return
  const scope=storageContext(),mine=epoch
@@ -1086,12 +1287,13 @@ async function sendQuestion(promptAction='',outgoing=null){
   const consumeDraft=!['voice','followup'].includes(outgoing?.source)
   const outgoingText=consumeDraft?question.value:String(outgoing.text||'').trim()
   const outgoingImage=consumeDraft?draftImage.value:null
+  const outgoingQuote=consumeDraft?quoteDraft.value:null
   const hasContent=!!outgoingText.trim()||!!outgoingImage
   if(conversationReadOnly.value){chatError.value='这段每日对话已归档，请新建对话继续。';return}
   if(!hasContent||consumeDraft&&(draftSaving.value||draftError.value)||pendingEntrySend.value||inputBusy.value)return
   if(!entryReady.value||!returnVerified.value){
     entryMotion.enter();releaseComposerIntent()
-    const pending=reactive({scope:storageContext(),text:outgoingText,image:outgoingImage,message:reactive({id:newHealthRequestId(),role:'user',text:outgoingText.trim(),createdAt:new Date().toISOString(),status:'sending',localOnly:true,...(outgoingImage?{image:{...outgoingImage}}:{})})})
+    const pending=reactive({scope:storageContext(),text:outgoingText,image:outgoingImage,message:reactive({id:newHealthRequestId(),role:'user',text:outgoingText.trim(),...(outgoingQuote?{replyQuote:outgoingQuote}:{}),createdAt:new Date().toISOString(),status:'sending',localOnly:true,...(outgoingImage?{image:{...outgoingImage}}:{})})})
     pendingEntrySend.value=pending;messages.value.push(pending.message)
     const flight=loading||returnFlight||(entryReady.value?refreshReturn({skipOptional:true}):loadEntry(0,{skipOptional:true}));pending.ticket=epoch
     try{
@@ -1128,7 +1330,7 @@ async function sendQuestion(promptAction='',outgoing=null){
     // Every send uses the same local message and releases only the captured text.
     // Keep pendingUser unbound until flow.submit publishes this request's own ID.
     stage='queue-message'
-    user=reactive({id:newHealthRequestId(),role:'user',text,createdAt:new Date().toISOString(),status:'sending',localOnly:true,...(image?{image}:{})})
+    user=reactive({id:newHealthRequestId(),role:'user',text,...(outgoingQuote?{replyQuote:outgoingQuote}:{}),createdAt:new Date().toISOString(),status:'sending',localOnly:true,...(image?{image}:{})})
     localOperation=reactive({message:user,scope,epoch:mine,generation:sendTicket,consumeDraft,clearedVersion:0,submitting:false})
     localSend.value=localOperation;messages.value.push(user)
     if(consumeDraft){question.value='';localOperation.clearedVersion=textVersion;uni.hideKeyboard?.()}
@@ -1148,7 +1350,7 @@ async function sendQuestion(promptAction='',outgoing=null){
         if(!conversationThreadId.value)throw new Error(task.value.error||task.value.notice||'咨询连接尚未建立，原问题已保留。')
       }
       stage='classify-intent';sendPhase.value='正在理解问题'
-      const {data}=await request({path:'/api/health/v1/chat-intent',method:'POST',timeout:18000,data:{text,client_request_id:user.id,thread_id:conversationThreadId.value||null,previous_date:referenceSelection?.plan_date||null,previous_meals:referenceSelection?.meal_types||[],awaiting_meal_details:task.value.taskType==='reference_meal_preview'&&task.value.result?.type==='needs_input'}})
+      const {data}=await request({path:'/api/health/v1/chat-intent',method:'POST',timeout:18000,data:{text,...(outgoingQuote?{reply_quote:outgoingQuote}:{}),client_request_id:user.id,thread_id:conversationThreadId.value||null,previous_date:referenceSelection?.plan_date||null,previous_meals:referenceSelection?.meal_types||[],awaiting_meal_details:task.value.taskType==='reference_meal_preview'&&task.value.result?.type==='needs_input'}})
       if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration)return
       if(!['nutrition_consultation','single_day_meal','exclusive_plan','needs_clarification'].includes(data?.route))throw new Error('问题分类结果无法读取，原问题已保留。')
       intent=data
@@ -1156,7 +1358,7 @@ async function sendQuestion(promptAction='',outgoing=null){
       if(intent.route==='exclusive_plan'||intent.route==='needs_clarification'){
         const now=new Date().toISOString()
         user.status='completed';user.requestId=String(user.id);snapshot.conversation=conversationId.value
-        messages.value.push({id:newHealthRequestId(),requestId:user.id,role:'assistant',text:intent.message||'请说明想咨询营养，还是安排哪一天的餐单。',createdAt:now,localOnly:true,exclusivePlanEntry:intent.route==='exclusive_plan'})
+        messages.value.push({id:newHealthRequestId(),requestId:user.id,role:'assistant',text:intent.message||'请说明想咨询营养，还是安排哪一天的餐单。',createdAt:now,localOnly:true,quoteSourceRequest:true,exclusivePlanEntry:intent.route==='exclusive_plan'})
         user.localOnly=true;settleDraft(snapshot);await scrollLatest({force:true});return
       }
     }
@@ -1251,13 +1453,13 @@ async function sendQuestion(promptAction='',outgoing=null){
     snapshot.conversation=conversationId.value;snapshot.requestId='';submittedDraft=snapshot
     rememberThread()
     stage='save-draft'
-    scopedStorage.setStorageSync('homepage-chat-task',{memberId:historyMemberId.value||task.value.memberId,taskMemberId:task.value.memberId,type,date:localDate(),newConversation:newConversationWelcome.value,conversationId:conversationId.value,...(type==='reference_meal_preview'?{selection:referenceSelection}:{})});desiredType=type
+    saveConversationTask({memberId:historyMemberId.value||task.value.memberId,taskMemberId:task.value.memberId,type,date:localDate(),newConversation:newConversationWelcome.value,conversationId:conversationId.value,...(type==='reference_meal_preview'?{selection:referenceSelection}:{})});desiredType=type
     stage='scroll-message'
     await scrollLatest({force:true})
     if(disposed||!visible||mine!==epoch||scope!==storageContext()||sendTicket!==sendGeneration)return
     stage='submit-task'
     pendingUser=user;localOperation.submitting=true;sendPhase.value='正在提交问题'
-    const accepted=await flow.submit(text,false,images)
+    const accepted=await flow.submit(text,false,images,outgoingQuote)
     if(disposed||!visible||mine!==epoch||scope!==storageContext())return
     if(!accepted&&action==='generate'&&type==='reference_meal_preview'&&task.value.submitRejected&&[409,423].includes(Number(task.value.failureStatus))){
       const plan=await loadDailyPlan(profile.value.householdId,referenceSelection.plan_date,epoch,scope)
@@ -1304,7 +1506,7 @@ async function resumePlanQuestion(pending=todayPlan.value?.pending){
     referenceSelection=pending.selection;desiredType='reference_meal_preview';chatError.value=''
     await restoreChat(desiredType,{pending})
     if(disposed||!visible||mine!==epoch||scope!==storageContext())return
-    scopedStorage.setStorageSync('homepage-chat-task',{memberId:historyMemberId.value||pending.member_id,taskMemberId:pending.member_id,type:desiredType,date:localDate(),conversationId:conversationId.value,selection:referenceSelection})
+    saveConversationTask({memberId:historyMemberId.value||pending.member_id,taskMemberId:pending.member_id,type:desiredType,date:localDate(),conversationId:conversationId.value,selection:referenceSelection})
     rememberThread();await scrollLatest()
   }catch(e){if(!disposed&&visible&&mine===epoch&&scope===storageContext())chatError.value=e.message}
 }
@@ -1320,10 +1522,10 @@ async function restartChat(){
 async function editFailedQuestion(){
   const original=failedQuestion.value
   if(!original||chatBusy.value||draftSaving.value)return
-  const scope=storageContext(),ticket=epoch,text=original.text||'',image=original.image&&{...original.image}
+  const scope=storageContext(),ticket=epoch,text=original.text||'',image=original.image&&{...original.image},quote=original.replyQuote||null
   await restartChat()
   if(disposed||!visible||scope!==storageContext()||ticket!==epoch)return
-  question.value=text;draftImage.value=image||null;draftError.value=''
+  question.value=text;draftImage.value=image||null;draftError.value='';quoteDraft.value=quote
 }
 async function consent(){if(!consentChecked.value)return;consentChecked.value=false;await flow.acceptConsent(true);await sendQuestion(task.value.taskType==='reference_meal_preview'?'reference_meal_preview':undefined)}
 function confirmConsultation(){
@@ -1410,6 +1612,30 @@ async function readHistoryStart(row,memberId){
   }
   return prepared
 }
+async function restoreReadOnlyHistory(memberId,current){
+  if(props.route.taskType||!conversationThreadId.value||!memberId)return false
+  const row={thread_id:conversationThreadId.value}
+  let prepared
+  try{prepared=await readHistoryStart(row,memberId)}catch(error){
+    if(!current())return true
+    if([401,403,404,409,410].includes(Number(error.code))){
+      conversationHistory.invalidate(row.thread_id,memberId);historyDenied=true;messages.value=[]
+      historyError.value='这段对话已不可访问，请重新核对登录与授权。'
+      flow.hide();task.value={}
+      if(Number(error.code)!==401)return true
+    }
+    if(Number(error.code)===401)throw error
+    return false
+  }
+  if(!current())return true
+  const archived=prepared.snapshots.find(snapshot=>snapshot.thread?.historyReadOnly)
+  if(!archived)return false
+  flow.hide();task.value={};historyReadOnly.value=true;historyNotice.value=archived.thread.historyNotice
+  historyLoading.value=true;historyError.value='';continuationError.value=''
+  try{await readSelectedHistory(row,memberId,current,new Map(),prepared)}
+  finally{if(current())historyLoading.value=false}
+  return true
+}
 async function prepareHistory(row,commit){
   const memberId=historyMemberId.value,scope=storageContext(),intent=++historyIntent
   const current=()=>!disposed&&visible&&intent===historyIntent&&scope===storageContext()&&memberId===historyMemberId.value
@@ -1424,20 +1650,51 @@ async function prepareHistory(row,commit){
     if(current()){
       pendingHistoryThread.value=''
       historySelectionError.value='这段对话暂时无法打开，请再点一次重试。'
-      if([403,404,409,410].includes(Number(error.code)))deniedHistoryThread.value=row.thread_id
+      if([403,404,409,410].includes(Number(error.code))){
+        deniedHistoryThread.value=row.thread_id;forgetConversationActivity(row.thread_id)
+      }
       if(Number(error.code)===401)requireLogin()
     }else if(intent===historyIntent&&scope!==storageContext()&&pageScope===scope){clearPrivate();pageScope=storageContext();flowScope=pageScope}
   }
 }
 async function prefetchHistory(rows){
   const scope=storageContext(),memberId=historyMemberId.value
+  for(const row of rows)if(row.unavailable)forgetConversationActivity(row.thread_id)
   for(const row of rows.filter(row=>!row.unavailable&&row.member_id===memberId&&row.thread_id!==conversationThreadId.value).slice(0,2)){
     if(!historyOpen.value||scope!==storageContext())return
-    if(!cachedHistoryStart(row,memberId))try{await readHistoryStart(row,memberId)}catch(error){if(scope===storageContext()&&[403,404,409,410].includes(Number(error.code)))deniedHistoryThread.value=row.thread_id}
+    if(!cachedHistoryStart(row,memberId))try{await readHistoryStart(row,memberId)}catch(error){
+      if(scope===storageContext()&&[403,404,409,410].includes(Number(error.code))){
+        deniedHistoryThread.value=row.thread_id;forgetConversationActivity(row.thread_id)
+      }
+    }
   }
 }
-function stashConversationDraft(){if(conversationId.value)conversationDrafts.set(conversationId.value,{text:question.value,image:draftImage.value,error:draftError.value})}
-function resetConversationView(){cancelHistorySelection();historyPreview.value=null;selectionGeneration++;historyDenied=false;historyLoading.value=false;historyError.value='';historyNotice.value='';continuationChecking.value=false;continuationError.value='';for(const key of Object.keys(mealAppearances))delete mealAppearances[key];localSend.value=null;sendPhase.value='';scrollRevision++;reading.value={following:true};latestAvailable.value=false;detailRef.value?.clear();resetEntryUI();flow.hide();messages.value=[];question.value='';removeDraft();submittedDraft=null;pendingUser=null;referenceSelection=null;latestReference.value=null;familyPanel.value=false;inlineTodayOpen.value=false;chatError.value='';desiredType='consultation';scrollTarget.value=''}
+function stashConversationDraft(){if(conversationId.value)conversationDrafts.set(conversationId.value,{text:question.value,image:draftImage.value,error:draftError.value,quote:quoteDraft.value})}
+function switchChatSession(targetThread=''){
+  stashConversationDraft()
+  const previous=activeChat,threadId=conversationThreadId.value,memberId=historyMemberId.value
+  const next=parkedChats.get(targetThread)
+  if(next)parkedChats.delete(targetThread)
+  activateChat(next||createChatSession())
+  const item=replyActivity.value[threadId]
+  if(threadId&&threadId!==targetThread&&memberId&&item&&(item.running||item.length>item.seen)){
+    Object.assign(previous,{threadId,memberId,id:conversationId.value,selection:referenceSelection,state:task.value,
+      view:{messages:messages.value,pendingUser,submittedDraft,desiredType,latestReference:latestReference.value,
+        imageUnchanged:submittedDraft?.imageVersion===draftVersion,quoteUnchanged:submittedDraft?.quoteVersion===quoteVersion,
+        textUnchanged:submittedDraft?.textVersion===textVersion}})
+    parkedChats.set(threadId,previous)
+  }else previous.flow.hide()
+  trimParkedChats()
+  resetConversationView()
+  flowScope=activeChat.scope
+}
+function restoreConversationDraft(view){
+  const draft=conversationDrafts.get(conversationId.value)
+  if(draft&&!conversationReadOnly.value){question.value=draft.text;draftImage.value=draft.image;draftError.value=draft.error;quoteDraft.value=draft.quote||null}
+  if(view?.submittedDraft)submittedDraft={...view.submittedDraft,imageVersion:view.imageUnchanged?draftVersion:-1,
+    quoteVersion:view.quoteUnchanged?quoteVersion:-1,textVersion:view.textUnchanged?textVersion:-1}
+}
+function resetConversationView(){selection.close();quoteDraft.value=null;cancelHistorySelection();selectionGeneration++;historyDenied=false;historyReadOnly.value=false;historyLoading.value=false;historyError.value='';historyNotice.value='';continuationChecking.value=false;continuationError.value='';localSend.value=null;sendPhase.value='';scrollRevision++;reading.value={following:true};latestAvailable.value=false;detailRef.value?.clear();resetEntryUI();task.value={};messages.value=[];question.value='';removeDraft();submittedDraft=null;pendingUser=null;referenceSelection=null;latestReference.value=null;familyPanel.value=false;inlineTodayOpen.value=false;chatError.value='';desiredType='consultation';scrollTarget.value=''}
 function generateReference(){if(!voiceBusy.value)inlineTodayOpen.value=true}
 const dinerDraftKey='today-menu:diner-draft'
 function readDinerDraft(currentProfile,date=localDate()){
@@ -1463,6 +1720,10 @@ async function changeTodayFormalMembers(plan,item,ids){
     throw new Error('本餐版本已变化，请刷新后重新核对。')
   await client.changeMembers(item.meal_type,ids,{dailyPlanVersion:plan.version})
   if(state.error)throw new Error(state.error)
+}
+async function refreshTodayRoster(){
+ if(!profile.value)return
+ await todayMenuClient.open(profile.value,{readOnly:true})
 }
 function confirmTodayDiners({mealType,participantIds}){
   if(!profile.value||mealViewBlocked.value||planPurchaseBusy.value||state.busy||dinerSaving.value||todayMenuClient.isGenerating())return
@@ -1516,12 +1777,12 @@ function acceptTodayPlan(plan){
   }
 }
 async function newConversation(){
-  if(conversationChangeBusy.value||switchingConversation.value||!entryReady.value||voiceBusy.value||draftSaving.value)return
+  if(conversationChangeBusy.value||historySwitchBlocked.value||switchingConversation.value||!entryReady.value)return
   if(props.route.taskType){uni.reLaunch({url:'/pages/chat/index?newConversation=1'});return}
-  stashConversationDraft();resetConversationView();refreshPrompts()
-  conversationId.value=newHealthRequestId();conversationThreadId.value='';conversationBusinessDate.value='';newConversationWelcome.value=true
+  switchChatSession();refreshPrompts()
+  conversationId.value=newHealthRequestId();conversationThreadId.value='';conversationBusinessDate.value='';historyReadOnly.value=false;newConversationWelcome.value=true
   const id=selfProfileMember(profile.value)?.healthMemberId
-  if(id){saveConversation();scopedStorage.setStorageSync('homepage-chat-task',{memberId:id,type:'consultation',date:localDate(),conversationId:conversationId.value,newConversation:true})}
+  if(id){saveConversation();saveConversationTask({memberId:id,type:'consultation',date:localDate(),conversationId:conversationId.value,newConversation:true})}
   historyOpen.value=false;switchingConversation.value=true
   try{await restoreChat('consultation')}finally{switchingConversation.value=false}
 }
@@ -1538,8 +1799,9 @@ async function readSelectedHistory(row,memberId,current,snapshots,prepared=null)
         const snapshot=initial||await conversationHistory.read(pointer.thread_id,memberId,{refresh:true})
         if(!current()||historyDenied)return
         snapshots.set(pointer.thread_id,{...snapshot,threadId:pointer.thread_id})
+        if(snapshot.thread?.historyReadOnly){historyReadOnly.value=true;historyNotice.value=snapshot.thread.historyNotice;continuationError.value=''}
         const saved=snapshot.messages.filter(m=>visibleConversationMessage(m,true)).map(m=>({...m,threadId:pointer.thread_id,memberId:pointer.memberId||memberId}))
-        messages.value=messages.value.filter(old=>old.threadId!==pointer.thread_id||!old.historyCached||saved.some(m=>m.id===old.id||m.requestId&&m.requestId===old.requestId&&m.role===old.role))
+        messages.value=messages.value.filter(old=>old.threadId!==pointer.thread_id||!historyReadOnly.value&&!old.historyCached||saved.some(m=>m.id===old.id||m.requestId&&m.requestId===old.requestId&&m.role===old.role))
         for(const message of saved){
           const index=messages.value.findIndex(old=>old.threadId===message.threadId&&(old.id===message.id||message.requestId&&old.requestId===message.requestId&&old.role===message.role))
           if(index<0)messages.value.push(message)
@@ -1578,54 +1840,65 @@ async function readSelectedHistory(row,memberId,current,snapshots,prepared=null)
   await Promise.all(pointers.map(readOne))
   if(current()&&!historyDenied&&failures.size)historyError.value='部分历史记录暂未读取成功，请重试。'
 }
-/** 回复期间只打开预览，不改变主会话或正在生成的请求。 */
 function browseConversation(row){
-  if(voiceBusy.value||draftSaving.value||row.unavailable||row.member_id!==historyMemberId.value||row.agent_slug!=='health-consultation')return
-  if(row.thread_id===conversationThreadId.value){closeHistoryDirectory();historyPreview.value=null;return}
-  if(conversationChangeBusy.value||pendingEntrySend.value||historyPreview.value||props.route.taskType)return prepareHistory(row,prepared=>{closeHistoryDirectory();historyPreview.value={...row,prepared}})
+  if(historySwitchBlocked.value||row.unavailable||row.member_id!==historyMemberId.value||row.agent_slug!=='health-consultation')return
+  if(row.thread_id===conversationThreadId.value){closeHistoryDirectory();void scrollLatest({force:true});return}
   return selectConversation(row)
 }
-function deniedPreview({threadId,status}){
-  if(status===401){requireLogin();return}
-  deniedHistoryThread.value=threadId
-}
 async function selectConversation(row,prepared=null){
-  if(conversationChangeBusy.value||voiceBusy.value||draftSaving.value||row.unavailable)return
+  if(historySwitchBlocked.value||row.unavailable)return
   const id=selfProfileMember(profile.value)?.healthMemberId
   if(!id||row.member_id!==id||row.agent_slug!=='health-consultation')return
-  if(!prepared)return prepareHistory(row,value=>{if(conversationChangeBusy.value||pendingEntrySend.value){closeHistoryDirectory();historyPreview.value={...row,prepared:value};return}return selectConversation(row,value)})
+  if(!prepared)return prepareHistory(row,value=>selectConversation(row,value))
   if(props.route.taskType){scopedStorage.setStorageSync('homepage-conversation',{id:row.thread_id,threadId:row.thread_id,memberId:id,businessDate:row.business_date||''});uni.reLaunch({url:'/pages/chat/index?entry=conversation'});return}
-  epoch++;stashConversationDraft();resetConversationView();refreshPrompts()
+  epoch++;switchChatSession(row.thread_id);refreshPrompts()
+  const resumed=activeChat.threadId===row.thread_id,view=activeChat.view
   const scope=storageContext(),mine=epoch,generation=selectionGeneration
   const current=()=>{
     if(scope!==storageContext()&&pageScope===scope){clearPrivate();pageScope=storageContext();flowScope=pageScope;return false}
     return !disposed&&visible&&scope===storageContext()&&mine===epoch&&generation===selectionGeneration
   }
   const saved=scopedStorage.getStorageSync('conversation-index:'+row.thread_id)
-  const resume=scopedStorage.getStorageSync('homepage-chat-task'),snapshots=new Map()
+  const snapshots=new Map()
   conversationId.value=saved?.memberId===id?saved.id:row.thread_id
   conversationThreadId.value=row.thread_id;conversationBusinessDate.value=row.business_date||'';newConversationWelcome.value=false
-  messages.value=prepared.snapshots.flatMap(p=>p.messages.filter(m=>visibleConversationMessage(m,true)).map(m=>({...m,threadId:p.threadId,memberId:p.memberId||id,historyCached:prepared.fromCache}))).sort((a,b)=>(Date.parse(a.createdAt)||0)-(Date.parse(b.createdAt)||0))
-  historyNotice.value=prepared.notice||''
+  messages.value=view?.messages||prepared.snapshots.flatMap(p=>p.messages.filter(m=>visibleConversationMessage(m,true)).map(m=>({...m,threadId:p.threadId,memberId:p.memberId||id,historyCached:prepared.fromCache}))).sort((a,b)=>(Date.parse(a.createdAt)||0)-(Date.parse(b.createdAt)||0))
+  historyReadOnly.value=prepared.snapshots.some(snapshot=>snapshot.thread?.historyReadOnly)
+  historyNotice.value=prepared.snapshots.find(snapshot=>snapshot.thread?.historyReadOnly)?.thread.historyNotice||prepared.notice||''
   saveConversation();historyOpen.value=false;switchingConversation.value=true;historyLoading.value=true;continuationChecking.value=true
+  if(resumed){
+    referenceSelection=activeChat.selection||null
+    desiredType=view?.desiredType||activeChat.state?.taskType||'consultation'
+    latestReference.value=view?.latestReference||null
+    pendingUser=view?.pendingUser||null
+    restoreConversationDraft(view)
+    activeChat.view=null
+    if(activeChat.state)applyChatTask(activeChat.state)
+  }
   void scrollLatest({force:true})
   const history=readSelectedHistory(row,id,current,snapshots,prepared).finally(()=>{if(current())historyLoading.value=false})
   const continuation=(async()=>{
-    await restoreChat('consultation',{readHistory:false})
-    if(!current()||historyDenied)return
-    await restoreSpecialTask(resume,{readHistory:false})
+    await history
+    if(!current()||historyDenied||historyReadOnly.value||historyError.value)return
+    if(resumed&&activeChat.state?.available){
+      if(activeChat.paused){activeChat.paused=false;await flow.resume()}
+    }else{
+      await restoreChat('consultation',{readHistory:false})
+      if(!current()||historyDenied)return
+      await restoreSpecialTask(readConversationTask(conversationId.value),{readHistory:false})
+    }
     if(!current()||historyDenied)return
     continuationError.value=task.value.error||(!task.value.available?task.value.notice||'续聊状态暂未确认，请重试。':'')
-    if(!continuationError.value)scopedStorage.setStorageSync('homepage-chat-task',{memberId:historyMemberId.value||task.value.memberId,taskMemberId:task.value.memberId,type:task.value.taskType,date:localDate(),conversationId:conversationId.value,...(task.value.taskType==='reference_meal_preview'?{selection:referenceSelection}:{})})
+    if(!continuationError.value)saveConversationTask({memberId:historyMemberId.value||task.value.memberId,taskMemberId:task.value.memberId,type:task.value.taskType,date:localDate(),conversationId:conversationId.value,...(task.value.taskType==='reference_meal_preview'?{selection:referenceSelection}:{})})
   })().catch(error=>{if(current())continuationError.value=error.message||'续聊状态暂未确认，请重试。'}).finally(()=>{if(current())continuationChecking.value=false})
   try{
     await Promise.all([history,continuation])
+    if(historyReadOnly.value)return
     if(!current()||historyDenied||task.value.invalidated)return
     const active=snapshots.get(task.value.entry?.thread_id)?.runs.find(r=>['queued','dispatched','pending','running','cancel_requested'].includes(r.status))
-    if(active?.request_id&&!task.value.submitUnknown)await flow.restoreRequest(active.request_id,{preferActive:true})
+    if(!resumed&&active?.request_id&&!task.value.submitUnknown)await flow.restoreRequest(active.request_id,{preferActive:true})
     if(!current()||historyDenied)return
-    const draft=conversationDrafts.get(conversationId.value)
-    if(draft&&!conversationReadOnly.value){question.value=draft.text;draftImage.value=draft.image;draftError.value=draft.error}
+    if(!resumed)restoreConversationDraft()
     void restoreWeeklyPlans()
   }finally{if(current())switchingConversation.value=false}
 }
@@ -1658,27 +1931,24 @@ async function askPrompt(prompt){
   question.value=text
   await sendQuestion(action||'')
 }
+watch(conversationId,()=>selection.close())
 function quoteReply(text){if(chatBusy.value||conversationReadOnly.value)return;question.value=`关于你刚才提到的“${text.slice(0,600)}”，`}
 function messageTime(message,index){
+   if(message.streaming)return ''
   const now=Date.parse(chatTimestamp(message.createdAt)),previous=Date.parse(chatTimestamp(visibleMessages.value[index-1]?.createdAt))
   if(!Number.isFinite(now)||index>0&&Number.isFinite(previous)&&now-previous<5*60000)return ''
   const date=new Date(now),time=String(date.getHours()).padStart(2,'0')+':'+String(date.getMinutes()).padStart(2,'0')
   return localDate(date)===localDate()?time:`${date.getMonth()+1}月${date.getDate()}日 ${time}`
 }
 
-function openMealRegeneration(){
- if(!profile.value||mealViewBlocked.value||planPurchaseBusy.value||state.busy)return
- inlineTodayOpen.value=true
- if(!todayMenuClient.isGenerating())void todayMenuClient.open(profile.value,{readOnly:true})
-}
 </script>
 <template>
-<NutritionistLayout :history-open="historyOpen" :scroll-locked="readingSuspended" :follow-bottom="reading.following" :latest-available="latestAvailable" @reading-change="rememberReading" @latest="scrollLatest({force:true})" entry-transition :welcome-mounted="welcomeMounted" :welcome-leaving="entryView.phase==='leaving'" :transition-ticket="entryView.generation" :keyboard-open="keyboardView.keyboardOpen" :viewport-style="viewportStyle" @welcome-finished="entryMotion.finish" :voice-busy="voiceBusy" :scroll-target="scrollTarget" @history="history" @profile="uni.navigateTo({url:'/pages/my/index'})" @shortcut="shortcut">
+<NutritionistLayout ref="conversationLayout" @selection-viewport="selection.viewport" :history-open="historyOpen" :scroll-locked="readingSuspended" :follow-bottom="reading.following" :latest-available="latestAvailable" @reading-change="rememberReading" @latest="scrollLatest({force:true})" entry-transition :welcome-mounted="welcomeMounted" :welcome-leaving="entryView.phase==='leaving'" :transition-ticket="entryView.generation" :keyboard-open="keyboardView.keyboardOpen" :viewport-style="viewportStyle" @welcome-finished="entryMotion.finish" :voice-busy="voiceBusy" :scroll-target="scrollTarget" @history="history" @profile="uni.navigateTo({url:'/pages/my/index'})" @shortcut="shortcut">
  <template #welcome>
   <ChatWelcome refined :density="welcomeDensity" :prompts="prompts" :disabled="promptAskBusy" :shuffle-disabled="promptShuffleBusy" @ask="askPrompt" @shuffle="shufflePrompts"/>
  </template>
  <template #default>
-  <TodayMealPlanContent @complete-profile="completePlanningProfile" v-if="showConversationMealMenu" heading :state="todayMenu" :busy="planPurchaseBusy||state.busy" :interactive="!mealViewBlocked" @action="actTodayMenu" @detail="showTodayMeal" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
+  <TodayMealPlanContent roster-external @complete-profile="completePlanningProfile" @roster-open="openRoster" :updating="todayMenuClient.isGenerating()" :family-id="profile?.householdId" :members="profile?.members" @roster-updated="refreshTodayRoster" v-if="showConversationMealMenu" heading :state="todayMenu" :busy="planPurchaseBusy||state.busy" :interactive="!mealViewBlocked" @action="actTodayMenu" @detail="showTodayMeal" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
   <view v-if="historyError" class="entry-status" role="alert" aria-live="polite"><text>{{historyError}}</text><button v-if="historyError&&!historyLoading" @click="retryHistory">重新读取历史</button></view>
   <text v-if="historyNotice" class="entry-status" role="status">{{historyNotice}}</text>
   <text v-if="entryView.phase==='composing'&&entryContext.eligible&&!chatBusy" class="entry-greeting">你好，想聊聊今天怎么吃？</text>
@@ -1686,26 +1956,27 @@ function openMealRegeneration(){
   <view v-if="presentation.initialResults" class="analysis-message"><ChatAssistantHeader/><AiAnswer :text="state.arrangement.analysis.text" compact/></view>
   <DailyArrangementCard v-if="cardVisible && presentation.initialResults" :arrangement="state.arrangement" :disabled="state.busy" @open="openMeal" @members="openFormalDetail($event,state.arrangement,state.date,{initialView:'members'})"/>
    <ChatWelcome v-if="!welcomeMounted&&presentation.welcome&&(failedTask||!entryReady)&&!entryView.engaged" :compact="failedTask" :prompts="prompts" :disabled="promptAskBusy" :shuffle-disabled="promptShuffleBusy" @ask="askPrompt" @shuffle="shufflePrompts"/>
-  <view v-for="(message,messageIndex) in visibleMessages" :id="'message-'+message.id" :key="message.id" class="message-turn">
+  <view v-for="(message,messageIndex) in presentedMessages" :id="message.streaming?'stream-answer':'message-'+message.id" :key="messageRenderKey(message)" class="message-turn">
    <view v-if="messageTime(message,messageIndex)" class="message-time"><text>{{messageTime(message,messageIndex)}}</text></view>
-   <view v-if="!message.weeklyPlan" class="message-row" :class="message.role"><button v-if="hasMessageIssue(message)||message.role==='user'&&message.status==='unknown'" class="message-issue" :class="{'is-unconfirmed':message.status==='unknown'}" role="button" tabindex="0" :aria-label="message.status==='unknown'?'消息状态待确认':'查看消息失败原因'" @click="messageStatus(message)" @keydown.enter.prevent.stop @keyup.enter.prevent.stop="messageStatus(message)" @keydown.space.prevent.stop @keyup.space.prevent.stop="messageStatus(message)"><text class="issue-mark" aria-hidden="true">{{message.status==='unknown'?'?':'!'}}</text></button><view class="message-content"><view class="bubble"><ChatAssistantHeader v-if="message.role==='assistant'" :state="message.business&&isReferencePlan(message.business.data)?'success':'idle'"/><view class="bubble-body"><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><text v-if="message.menuView" selectable>{{mealViewText(message)}}</text><AiAnswer v-else-if="message.role==='assistant'&&message.text" :text="message.text" :citations="message.citations||[]" :message-key="message.requestId" :shown-meals="mealAppearances[message.requestId]||[]" :animate-meals="!!message.mealEnter" @meal-shown="rememberMealAppearance" compact/><text v-else-if="message.text" selectable>{{message.text}}</text>
-   <button v-if="message.exclusivePlanEntry" @click="uni.navigateTo({url:'/pages/exclusive-plans/index'})">查看 AI 专属计划</button></view></view><text v-if="message.role==='user'&&message.status==='cancelled'" class="message-status-note">已停止</text><DailyMealPlanCard :swap-allowed="swapEnabled&&message.menuView&&todayMenu.plan?.version===(message.menuView?verifiedMealView(message):dailyPlans[message.planDate])?.version" :interactive="!mealViewBlocked" :swap-entries="swapEnabled?dishSwap.entries:[]" :swap-needs-regeneration="dishSwap.needsRegeneration" :swap-version="dishSwap.version" :swap-date="dishSwap.date" :swap-busy="dishSwap.busy" @swap="openDishSwap" @prefetch="prefetchDishSwaps" @regenerate="openMealRegeneration" :meal-types="message.planMeals" @dish="openDailyDish($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" @detail="openDailyMeal($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" detail-mode v-if="message.planDate&&(message.menuView?verifiedMealView(message):dailyPlans[message.planDate])?.status==='ready'" :plan="message.menuView?verifiedMealView(message):dailyPlans[message.planDate]" :dish-grid="!!message.menuView" :busy="planPurchaseBusy" @open="openDailyMeal($event,message.planDate)" @members="selectDailyMembers($event,message.planDate)"/><HealthChatBusinessCard detail-mode @detail="openReferencePlan" v-else-if="message.business&&!message.planDate" :result="message.business" :member-id="message.memberId||task.memberId"/><ChatMealRecordCard v-for="receipt in message.recordedMeals||[]" :key="receipt.id" :receipt="receipt" @changed="updateMealReceipt"/><ChatReplyActions appearance="subtle" v-if="message.role==='assistant'&&message.text&&!message.error" :text="message.text" :message-id="message.serverMessageId||message.id" :can-quote="!chatBusy&&!conversationReadOnly" @quote="quoteReply"/></view></view>
+   <view v-if="!message.weeklyPlan" class="message-row" :class="[message.role,{'live-answer':message.streaming,'is-pending':message.streaming&&!message.text}]"><button v-if="hasMessageIssue(message)||message.role==='user'&&message.status==='unknown'" class="message-issue" :class="{'is-unconfirmed':message.status==='unknown'}" role="button" tabindex="0" :aria-label="message.status==='unknown'?'消息状态待确认':'查看消息失败原因'" @click="messageStatus(message)" @keydown.enter.prevent.stop @keyup.enter.prevent.stop="messageStatus(message)" @keydown.space.prevent.stop @keyup.space.prevent.stop="messageStatus(message)"><text class="issue-mark" aria-hidden="true">{{message.status==='unknown'?'?':'!'}}</text></button><view class="message-content"><view class="bubble"><ChatAssistantHeader v-if="message.role==='assistant'" :state="message.streaming?(task.taskType==='reference_meal_preview'?'planning':'thinking'):message.business&&isReferencePlan(message.business.data)?'success':'idle'"/><view class="bubble-body"><view v-if="message.replyQuote" class="reply-quote-preview sent-quote"><text class="quote-caption">引用 · 家庭营养师</text><text class="quote-excerpt">{{message.replyQuote.text}}</text></view><image v-if="message.image" class="chat-message-image" :src="message.image.localPath" mode="widthFix" @click="previewChatImage(message.image)"/><text v-if="message.menuView" selectable>{{mealViewText(message)}}</text><AiAnswer v-else-if="message.role==='assistant'&&(message.text||message.streaming)" :streaming="!!message.streaming" :text="message.text" :citations="message.citations||[]" :quote-enabled="!message.streaming && selectableReply(message) && !chatBusy && !inputBusy && !conversationReadOnly" :selection-active="selection.state.owner===String(message.id)" :selection-start="selection.state.start" :selection-end="selection.state.end" :selection-viewport="selection.state.viewport" :selection-revision="selection.state.revision" @selection-press="beginReplySelection(message,$event)" @selection-geometry="selection.geometry(message,$event)" @growth="message.streaming&&queueScroll()" compact/><text v-else-if="message.text" selectable>{{message.text}}</text>
+   <view v-if="message.streaming" id="reply-progress" class="reply-progress" :class="{'has-answer':!!message.text}" role="status" aria-live="polite"><view class="progress-dot"/><text class="progress-label">{{progressText}}</text></view>
+    <button v-if="message.exclusivePlanEntry" @click="uni.navigateTo({url:'/pages/exclusive-plans/index'})">查看 AI 专属计划</button></view></view><text v-if="message.role==='user'&&message.status==='cancelled'" class="message-status-note">已停止</text><DailyMealPlanCard :swap-allowed="swapEnabled&&message.menuView&&todayMenu.plan?.version===(message.menuView?verifiedMealView(message):dailyPlans[message.planDate])?.version" :interactive="!mealViewBlocked" :swap-entries="swapEnabled?dishSwap.entries:[]" :swap-version="dishSwap.version" :swap-date="dishSwap.date" :swap-busy="dishSwap.busy" @swap="openDishSwap" @prefetch="prefetchDishSwaps" :meal-types="message.planMeals" @dish="openDailyDish($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" @detail="openDailyMeal($event,message.planDate,message.menuView?verifiedMealView(message):dailyPlans[message.planDate])" detail-mode v-if="message.planDate&&(message.menuView?verifiedMealView(message):dailyPlans[message.planDate])?.status==='ready'" :plan="message.menuView?verifiedMealView(message):dailyPlans[message.planDate]" :dish-grid="!!message.menuView" :busy="planPurchaseBusy" @open="openDailyMeal($event,message.planDate)" @members="selectDailyMembers($event,message.planDate)"/><HealthChatBusinessCard :read-only="conversationReadOnly" detail-mode @detail="openReferencePlan" v-else-if="message.business&&!message.planDate" :result="message.business" :member-id="message.memberId||task.memberId"/><ChatMealRecordCard v-for="receipt in message.recordedMeals||[]" :key="receipt.id" :receipt="receipt" @changed="updateMealReceipt"/><ChatReplyActions appearance="subtle" v-if="message.role==='assistant'&&message.text&&!message.error&&!message.streaming" :text="message.text" :message-id="message.serverMessageId||message.id"/></view></view>
    <view v-if="message.weeklyPlan" class="message-row assistant"><view class="message-content"><ChatAssistantHeader/><WeeklyMealPlanCard :plan="message.weeklyPlan" :busy="weeklyBusy" :open-date="weeklyOpenGroup===message.weeklyPlan.group_id?weeklyOpenDate:''" :detail="weeklyOpenGroup===message.weeklyPlan.group_id?weeklyDetail:null" @day="openWeeklyDay($event,message.weeklyPlan.group_id)" @retry="retryWeeklyPlan(message.weeklyPlan)" @exclusive="uni.navigateTo({url:'/pages/exclusive-plans/index'})"/></view></view>
   </view>
   <ChatFollowupSuggestions v-if="followupTarget" :key="followupTarget.threadId+':'+followupTarget.messageId" :thread-id="followupTarget.threadId" :message-id="followupTarget.messageId" :saved="followupTarget.saved" :disabled="chatBusy||inputBusy||voiceBusy" @ask="sendFollowup" @ready="queueScroll"/>
   <view v-if="mealReplyActions&&!chatBusy&&!conversationReadOnly" class="reply-actions" aria-label="继续安排饮食">
    <button @click="generateReference"><text>整理成今日餐单</text><AppIcon name="arrow" :size="23"/></button>
   </view>
-  <view v-if="liveAnswer||entryReady&&!profileLoading&&replyPending" id="stream-answer" class="message-row assistant live-answer" :class="{'is-pending':!liveAnswer}"><view class="message-content"><view class="bubble"><ChatAssistantHeader :state="task.taskType==='reference_meal_preview'?'planning':'thinking'"/><view class="bubble-body"><AiAnswer v-if="liveAnswer" :text="task.streamText" :message-key="task.requestId" :shown-meals="mealAppearances[task.requestId]||[]" :animate-meals="visible&&!restoring&&!returning" @meal-shown="rememberMealAppearance" streaming compact/><view v-if="!liveAnswer" id="reply-progress" class="reply-progress" role="status" aria-live="polite"><view class="progress-dot"/><text class="progress-label">{{progressText}}</text></view></view></view></view></view>
   <view v-if="familyPanel" class="dialogue-status"><text>家庭餐单 · {{familyState.date}}</text><text>按这餐实际参加的成员核对家庭安排，每位成员的资料和权限由服务端检查。</text><text v-if="familyState.busy">正在读取家庭安排…</text><text v-if="familyState.error" class="chat-error">{{familyState.error}}</text><button v-if="familyState.error" :disabled="familyState.busy" @click="familyPlan('',true)">重新读取家庭餐单</button><DailyArrangementCard v-if="familyState.phase==='ready'" :arrangement="familyState.arrangement" family :disabled="familyState.busy" @open="openFamilyMeal" @members="openFormalDetail($event,familyState.arrangement,familyState.date,{initialView:'members'})"/><button @click="familyPanel=false">收起家庭餐单</button></view>
   <view v-if="task.consentOption" class="dialogue-status"><text>本次咨询处理方：{{task.consentOption.processor}}；政策版本：{{task.consentOption.policyVersion}}。</text><checkbox-group @change="consentChecked=$event.detail.value.includes('yes')"><label><checkbox value="yes" :checked="consentChecked"/>同意本次咨询的数据处理</label></checkbox-group><button :disabled="!consentChecked||chatBusy" @click="consent">同意并继续咨询</button></view>
  </template>
  <template #composer>
+  <view v-if="quoteDraft" class="reply-quote-preview"><view><text class="quote-caption">引用 · 家庭营养师</text><text class="quote-excerpt">{{quoteDraft.text}}</text></view><button aria-label="取消引用" @click="quoteDraft=null">×</button></view>
   <view v-if="continuationError" class="composer-note" role="status"><text>暂时无法继续发送，历史内容仍可阅读。</text><button @click="retrySelectedConversation">重试</button></view>
   <view v-if="!entryReady&&profileLoading" class="entry-status" role="status"><text>正在读取档案并连接营养师…</text></view>
   <view v-if="!entryReady&&entryRecovering" class="entry-status" role="status"><text>正在重新连接…</text></view>
   <view v-if="!entryReady&&entryError&&!profileLoading&&!task.consentOption" class="entry-status" role="alert"><text>{{task.notice||entryError||profile?.consultationError}}</text><button v-if="profile?.consultationConsentRequired" @click="confirmConsultation">查看并确认咨询授权</button><button v-else :disabled="conversationChangeBusy||returning||pendingEntrySend||voiceBusy||draftSaving" @click="load">重新连接营养师</button><button :disabled="conversationChangeBusy||returning||pendingEntrySend||voiceBusy||draftSaving" @click="reenter">重新进入</button></view>
-  <view v-if="conversationReadOnly" class="archived-conversation"><text>这段每日对话已归档，记录仍可查看。</text><button :disabled="chatBusy" @click="newConversation">新对话继续聊</button></view>
+  <view v-if="conversationReadOnly" class="archived-conversation"><text>{{historyReadOnly?historyNotice||'此对话仅供历史回看，请新建对话继续。':'这段每日对话已归档，记录仍可查看。'}}</text><button :disabled="chatBusy" @click="newConversation">新对话继续聊</button></view>
   <template v-else>
 
 
@@ -1729,11 +2000,12 @@ function openMealRegeneration(){
   <text class="ai-content-note">内容由 AI 生成，请结合自身情况核对</text>
  </template>
  <template #overlays>
+  <ReplySelectionOverlay :position="selection.position.value" :dragging="selection.state.dragging" @close="selection.close" @quote="selection.quote" @drag="selection.drag" @drag-end="selection.dragEnd"/>
   <DishSwapSheet :state="dishSwap" @close="swapClient.close" @choose="swapClient.choose" @retry="swapClient.retry"/>
   <MealDetailSheet ref="detailRef" :members="profile?.members||[]" :reload="reloadDetailPlan" @open-change="detailOpen=$event"/>
-  <ChatConversationPreview v-if="historyPreview" :row="historyPreview" :member-id="historyMemberId" :replying="replyPending" @close="historyPreview=null" @directory="historyOpen=true" @denied="deniedPreview"/>
-  <ChatConversationDrawer :open="historyOpen" :member-id="historyMemberId" :active-thread-id="historyPreview?.thread_id||conversationThreadId" :new-busy="switchingConversation||!entryReady" :busy="conversationChangeBusy||!!pendingEntrySend" :browse-busy="voiceBusy||draftSaving" :denied-thread-id="deniedHistoryThread" :pending-thread-id="pendingHistoryThread" :selection-error="historySelectionError" :display-name="profile?.members.find(m=>m.id===profile.selfMemberId)?.name||'我的'" @close="closeHistoryDirectory" @ready="prefetchHistory" @new="newConversation" @select="browseConversation" @profile="closeHistoryDirectory();uni.navigateTo({url:'/pages/my/index'})"/>
-  <TodayMealPlanSheet @complete-profile="completePlanningProfile" :open="inlineTodayOpen" :state="todayMenu" :busy="planPurchaseBusy||state.busy||dinerSaving||todayMenuClient.isGenerating()" :interactive="!mealViewBlocked" :members="profile?.members" :default-diners="profile?.defaultDiners" :diner-draft="dinerDraft" @confirm-diners="confirmTodayDiners" @arrange-diners="arrangeTodayDiners()" @close="inlineTodayOpen=false" @action="actTodayMenu" @detail="showTodayMeal" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
+  <ChatConversationDrawer :open="historyOpen" :member-id="historyMemberId" :active-thread-id="conversationThreadId" :reply-badges="replyBadges" :new-busy="switchingConversation||!entryReady" :busy="conversationChangeBusy||historySwitchBlocked" :browse-busy="historySwitchBlocked" :denied-thread-id="deniedHistoryThread" :pending-thread-id="pendingHistoryThread" :selection-error="historySelectionError" :display-name="profile?.members.find(m=>m.id===profile.selfMemberId)?.name||'我的'" @close="closeHistoryDirectory" @ready="prefetchHistory" @new="newConversation" @select="browseConversation" @profile="closeHistoryDirectory();uni.navigateTo({url:'/pages/my/index'})"/>
+  <MealRosterControl v-if="rosterOpen" overlay-only :plan="todayMenu.plan" :family-id="profile?.householdId" :members="profile?.members" @close="rosterOpen=false" @updated="refreshTodayRoster"/>
+  <TodayMealPlanSheet roster-external @complete-profile="completePlanningProfile" @roster-open="openRoster" :updating="todayMenuClient.isGenerating()" :family-id="profile?.householdId" @roster-updated="refreshTodayRoster" :open="inlineTodayOpen" :state="todayMenu" :busy="planPurchaseBusy||state.busy||dinerSaving||todayMenuClient.isGenerating()" :interactive="!mealViewBlocked" :members="profile?.members" :default-diners="profile?.defaultDiners" :diner-draft="dinerDraft" @confirm-diners="confirmTodayDiners" @arrange-diners="arrangeTodayDiners()" @close="inlineTodayOpen=false" @action="actTodayMenu" @detail="showTodayMeal" @dish="openDailyDish($event,todayMenu.date,todayMenu.plan)"/>
   <DinerPicker :open="!!familySelection" :members="profile?.members||[]" :selected="familySelection?.ids||[]" :meal="({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'})[familySelection?.type]" @close="familySelection=null" @confirm="familyMembers"/>
   <DinerPicker :open="!!selectedMeal" :members="profile?.members||[]" :selected="selectedMeal?.members.map(m=>m.id)||[]" :meal="({breakfast:'早餐',lunch:'午餐',dinner:'晚餐'})[selectedMeal?.type]" @close="selectedMeal=null" @confirm="members"/>
   <view v-if="communityOpen" class="sheet-mask" @click.self="communityOpen=false"><view class="sheet"><text class="section-title">加入社群</text><text class="composer-note">暂无可用社群二维码，请稍后再试。</text><button class="secondary-button" @click="communityOpen=false">关闭</button></view></view>
@@ -1741,6 +2013,8 @@ function openMealRegeneration(){
 </NutritionistLayout>
 </template>
 <style scoped>
+.reply-quote-preview{display:flex;align-items:flex-start;gap:8px;padding:11px 13px;margin:0 0 8px;border:1px solid rgba(255,255,255,.9);border-radius:16px;background:rgba(235,226,248,.65);color:#847194;font-size:12px;line-height:1.7}.reply-quote-preview>view{flex:1;min-width:0;border-left:3px solid #b99adb;padding-left:10px}.quote-caption{display:block;color:#78618f;font-size:12px}.quote-excerpt{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere}.reply-quote-preview button{margin:0;padding:0;flex:none;width:30px;min-height:30px;font-size:23px;line-height:30px;background:transparent;color:#8a779d}.reply-quote-preview button:after{border:0}.sent-quote{display:block;border:0;border-left:3px solid #b99adb;border-radius:0;background:transparent;margin:0 0 9px;padding:0 0 7px 10px}
+
 
 .entry-greeting{display:block;margin-top:24px;font-size:16px;line-height:1.8;color:#555}
 .message-issue{display:flex;align-items:center;justify-content:center;align-self:center;flex:0 0 18px;width:18px;height:18px;margin-right:10px;border-radius:50%;background:#d83a3a;color:#fff;font-size:13px;font-weight:700;line-height:18px}.message-issue.is-unconfirmed{background:#eef0f2;color:#687078}.message-status-note{display:block;margin-top:6px;text-align:right;color:var(--ui-muted);font-size:12px;line-height:1.5}
@@ -1750,8 +2024,10 @@ function openMealRegeneration(){
 .dialogue-status{padding:14px 0;margin:18px 0;border-bottom:1px solid #ededed;background:transparent;font-size:14px;line-height:1.8;color:#666}.dialogue-status>text{display:block}.dialogue-status button,.secondary-button{display:inline-flex;align-items:center;justify-content:center;min-height:44px;font-size:14px;color:#333;background:transparent;border:1px solid #ddd;border-radius:8px;margin:10px 10px 0 0;padding:7px 12px;line-height:1.5}.dialogue-status button:after,.secondary-button:after{border:0}.reply-progress{display:flex;align-items:center;gap:9px;min-height:28px;margin:22px 0;font-size:14px;line-height:1.6;color:#888}.chat-error{display:block;margin-top:12px;font-size:13px;line-height:1.7;color:#8d4c40}
 .composer{position:relative;display:flex;align-items:center;gap:4px;width:100%;min-height:54px;box-sizing:border-box;padding:4px 6px;background:var(--chat-composer-background,linear-gradient(180deg,rgba(255,255,255,.30),rgba(255,255,255,.96)));border:1px solid var(--chat-composer-border,rgba(255,255,255,.88));border-radius:28px;box-shadow:var(--chat-composer-shadow,inset 0 1px 0 #fff)}
 .composer:focus-within{border-color:#fff;box-shadow:inset 0 1px 0 #fff,0 0 0 1px rgba(121,100,200,.10)}
-.composer input{flex:1;min-width:0;width:0;height:44px;box-sizing:border-box;padding:0 6px;border:0;border-radius:0;background:transparent;color:var(--ui-text);font-size:16px;line-height:1.5;outline:none}
-.input-icon,.send-button{display:flex;flex-shrink:0;align-items:center;justify-content:center;min-width:44px;width:44px;min-height:44px;height:44px;box-sizing:border-box;margin:0;padding:0;border:0;border-radius:50%;background:transparent;color:#303739}
+.composer input{flex:1;min-width:0;width:0;height:44px;box-sizing:border-box;padding:0 6px 2px;border:0;border-radius:0;background:transparent;color:var(--ui-text);font-size:16px;line-height:1.5;outline:none}
+.input-icon,.send-button{display:flex;flex-shrink:0;align-items:center;justify-content:center;min-width:44px;width:44px;min-height:44px;height:44px;box-sizing:border-box;margin:0;padding:0;border:0;border-radius:50%;background:transparent;color:#303739;line-height:1}
+/* Optical alignment keeps the 44px hit areas fixed: camera down 1px, text up 1px. */
+.camera-button{padding-top:2px}
 .input-icon{position:relative}.voice-mode-face{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;background:#f5f0fa;color:#947aaa}.input-icon:after,.send-button:after{border:0}.input-icon:active{background:#eceef1}.input-icon[disabled],.send-button[disabled]{opacity:.4}
 .send-button{color:#fff;background:var(--ui-accent,#303739);border-radius:50%}.send-button:active{background:var(--ui-accent-pressed,#202628)}.send-button[disabled]{background:var(--ui-accent,#303739);color:#fff;opacity:1}
 .voice-input-slot{display:flex;align-items:center;flex:1;min-width:0;height:44px}
@@ -1767,7 +2043,7 @@ function openMealRegeneration(){
 .composer-note{display:block;font-size:12px;color:var(--ui-muted);line-height:1.7;margin-top:8px}.section-title{font-size:18px}.sheet-mask .sheet{color:var(--ui-text)}.sheet-mask .composer-note{text-align:left}
 
 
-.composer-primary-slot{display:flex;flex:0 0 44px;width:44px;height:44px}.composer-primary-slot .send-button>text{font-size:12px}.primary-spinner{width:17px;height:17px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:primary-spin 800ms linear infinite}.message-issue[role="button"]{cursor:pointer}@keyframes primary-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.primary-spinner{animation:none}}
+.composer-primary-slot{display:flex;align-items:center;justify-content:center;flex:0 0 44px;width:44px;height:44px}.composer-primary-slot .send-button>text{font-size:12px}.primary-spinner{width:17px;height:17px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:primary-spin 800ms linear infinite}.message-issue[role="button"]{cursor:pointer}@keyframes primary-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.primary-spinner{animation:none}}
 
 /* Plain replies sit on the page; structured meal content owns its white card. */
 .assistant .bubble,.analysis-message{padding:4px 2px;background:transparent;border-radius:0;box-shadow:none;color:#575268}.message-row.assistant{margin-top:22px}.message-turn>.message-row.assistant{margin:0}.live-answer .bubble{min-height:70px}.reply-actions{margin-left:4px}.ai-content-note{padding-top:10px;font-size:11px;line-height:1.5}.image-draft{padding-left:6px}.sheet-mask .sheet{background:var(--ui-surface);border-radius:28px 28px 0 0}.message-content>.answer-tools{padding-left:4px}
@@ -1776,6 +2052,10 @@ function openMealRegeneration(){
 /* Before the first public text arrives, the progress bubble follows its content. */
 .live-answer.is-pending .message-content{width:auto;max-width:90%;flex:0 1 auto}.live-answer.is-pending .bubble{min-height:0;padding:12px 2px;border-radius:0;white-space:normal}.live-answer.is-pending .reply-progress{margin:0;min-height:22px}.live-answer.is-pending .reply-progress text{min-width:0;overflow-wrap:anywhere}
 
+/* One quiet status line remains below the public text until Task completion. */
+.live-answer .reply-progress.has-answer{margin:10px 0 0;min-height:22px;font-size:12px;color:#978ba4;white-space:normal}
+.live-answer .reply-progress.has-answer .progress-dot{width:4px;height:4px;background:#aa96c5}
+.live-answer .reply-progress.has-answer .progress-label{font-weight:400}
 /* Keep progress motion local to the waiting state and leave the bubble still. */
 .live-answer.is-pending .progress-dot{animation:chat-progress-dot 1.4s ease-in-out infinite}
 .live-answer.is-pending .progress-label{color:#666;font-weight:500;animation:chat-progress-label 1.4s ease-in-out infinite}
@@ -1795,6 +2075,8 @@ function openMealRegeneration(){
 </style>
 
 <style scoped>
+.reply-quote-preview{display:flex;align-items:flex-start;gap:8px;padding:11px 13px;margin:0 0 8px;border:1px solid rgba(255,255,255,.9);border-radius:16px;background:rgba(235,226,248,.65);color:#847194;font-size:12px;line-height:1.7}.reply-quote-preview>view{flex:1;min-width:0;border-left:3px solid #b99adb;padding-left:10px}.quote-caption{display:block;color:#78618f;font-size:12px}.quote-excerpt{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere}.reply-quote-preview button{margin:0;padding:0;flex:none;width:30px;min-height:30px;font-size:23px;line-height:30px;background:transparent;color:#8a779d}.reply-quote-preview button:after{border:0}.sent-quote{display:block;border:0;border-left:3px solid #b99adb;border-radius:0;background:transparent;margin:0 0 9px;padding:0 0 7px 10px}
+
 
 .message-issue{display:flex;align-items:center;justify-content:center;align-self:center;flex:0 0 44px;width:44px;min-width:44px;height:44px;min-height:44px;margin:0;padding:0;border:0;border-radius:50%;background:transparent}
 .message-issue.is-unconfirmed .issue-mark{background:#eef0f2;color:#687078}

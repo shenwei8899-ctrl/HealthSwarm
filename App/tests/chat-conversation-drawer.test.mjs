@@ -13,6 +13,15 @@ let revision = 'synthetic-session'
 globalThis.uni = { getStorageSync: () => ({ clientRevision: revision }), getSystemInfoSync: () => ({ windowWidth: 375 }) }
 const pageResponse = (items, extra = {}) => ({ data: { items, has_more: false, next_offset: null, ...extra } })
 const turn = () => new Promise(resolve => setImmediate(resolve))
+
+test('history snapshots preserve the server read-only decision without trusting truthy strings', async () => {
+  const read = value => readChatSnapshot(thread(1), async () => ({ data: {
+    thread: { id: thread(1), history_read_only: value, history_notice: '此对话仅供历史回看' }, history: [], runs: [],
+  } }))
+  assert.equal((await read(true)).thread.historyReadOnly, true)
+  assert.equal((await read(true)).thread.historyNotice, '此对话仅供历史回看')
+  assert.equal((await read('true')).thread.historyReadOnly, undefined)
+})
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 
 test('conversation directory uses only GET and projects the member-bound consultation fields', async () => {

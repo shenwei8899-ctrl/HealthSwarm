@@ -33,7 +33,7 @@ onUnmounted(client.dispose)
         <text v-else-if="message.text" class="preview-text" selectable>{{message.text}}</text>
         <HealthChatBusinessCard v-if="message.business" read-only :result="message.business" :member-id="memberId"/>
         <ChatMealRecordCard v-for="receipt in message.recordedMeals||[]" :key="receipt.id" read-only :receipt="receipt"/>
-        <ChatReplyActions v-if="message.role==='assistant'&&message.text" :text="message.text" :can-quote="false"/>
+        <ChatReplyActions v-if="message.role==='assistant'&&message.text" :text="message.text"/>
       </view>
       <text v-if="state.notice" class="preview-status" role="status">{{state.notice}}</text>
       <view v-if="state.error||state.notice" class="preview-error" role="status"><text>{{state.error}}</text><button :disabled="state.loading" @click="load">重新读取</button></view>

@@ -8,7 +8,8 @@ export const mealNutritionState = () => ({ results: [], sources: [], portions: [
 export function recognizedMealDish(item) {
   const ratio=Number(item.share_ratio),known=item.share_ratio!=null&&ratio>0&&ratio<=1&&item.portion_source!=='unknown'
   const estimate=item.photo_estimate,initial=!known&&item.grams==null&&!!estimate?.draft_id
-  return { item_id:item.item_id,name:item.name,food_id:item.food_id,recipe_version_id:item.recipe_version_id,nutrition_source:item.nutrition_source,photo_estimate:estimate||null,
+  const notes=item.uncertainties||[],legacyShared=notes.includes('记录方式：家庭共享桌菜')&&!notes.includes('本人逐菜核对：是')
+  return { coarse_portion:legacyShared?'不确定':notes.find(value=>value.startsWith('本人粗略份量：'))?.slice(7)||'不确定',item_id:item.item_id,name:item.name,food_id:item.food_id,recipe_version_id:item.recipe_version_id,nutrition_source:item.nutrition_source,photo_estimate:estimate||null,
     servings:known&&item.servings!=null?Number(item.servings)*ratio:null,source_basis:item.servings!=null?'per_serving':'per100g',
     grams:known&&item.grams!=null?Number(item.grams)*ratio:initial?Number(estimate.grams):null,
     portion_reference_id:known?item.portion_reference_id:null,

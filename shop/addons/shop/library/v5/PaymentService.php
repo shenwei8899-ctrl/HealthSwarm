@@ -18,6 +18,7 @@ class PaymentService
             if (!$order) throw new DomainException('订单不存在',40409,404);
             if ((int)$order['paystate']===1) throw new DomainException('订单已支付',40923,409);
             if ((int)$order['orderstate']!==0 || (int)$order['expiretime']<=time()) throw new DomainException('订单已失效',40924,409);
+            self::assertDeliveryPaymentOpen($orderSn);
             if ($order['order_type']==='plan') (new PlanOrderService())->assertPayable($order);
             $latest=Db::name('shop_payment_record')->where('order_sn',$orderSn)->order('id','desc')->find();
             if ($latest && ($latest['channel']!=='wechat' || $latest['status']==='closed')) throw new DomainException('支付单已关闭或渠道不同，请重新下单',40938,409);
@@ -64,6 +65,13 @@ class PaymentService
         }
     }
 
+    /** 分趟参考采购仅开放核价，普通整单付款通道不能代替分趟履约。 */
+    public static function assertDeliveryPaymentOpen($orderSn)
+    {
+        $pricing = Json::decode(Db::name('shop_order_ext')->where('order_sn',$orderSn)->value('pricing_snapshot_json'), []);
+        if (!empty($pricing['exclusive_delivery'])) throw new DomainException('整周配送采购暂未开放支付',50318,503,['reason'=>'exclusive_delivery_payment_unavailable']);
+    }
+
     public function hasPending($orderSn)
     {
         return (bool)Db::name('shop_payment_record')->where('order_sn',$orderSn)->where('status','in',['created','paying'])->count();
@@ -88,6 +96,7 @@ class PaymentService
         if (!$ext) {
             return false;
         }
+        if ($channel === 'local_test') self::assertDeliveryPaymentOpen($orderSn);
         Db::startTrans();
         try {
             $order=Db::name('shop_order')->where('id',$order['id'])->lock(true)->find();

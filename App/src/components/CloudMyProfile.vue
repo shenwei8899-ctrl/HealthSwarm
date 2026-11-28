@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { onShow, onHide } from '@dcloudio/uni-app'
 import AppNavBar from './AppNavBar.vue'
 import AppIcon from './AppIcon.vue'
@@ -9,12 +9,13 @@ import { getSession } from '../services/session.js'
 import { accountSettings } from '../services/account-settings.js'
 import { wechatAuth } from '../services/wechat-auth.js'
 import { isCommerceEnabled } from '../services/config.js'
-const profile=ref(null),busy=ref(false),error=ref(''),avatar=ref(''),accountNickname=ref('')
-let avatarEpoch=0
-async function loadAvatar(){const mine=++avatarEpoch;try{const result=await accountSettings.profile();if(mine===avatarEpoch){avatar.value=result.avatar;accountNickname.value=result.nickname}}catch{if(mine===avatarEpoch){avatar.value='';accountNickname.value=''}}}
+import { scopedStorage, storageContext } from '../services/storage.js'
+import { createMyProfileLoader } from '../services/my-profile-loader.js'
+const page=reactive({profile:null,busy:false,error:'',avatar:'',nickname:''})
+const [profile,busy,error,avatar,accountNickname]=['profile','busy','error','avatar','nickname'].map(key=>computed({get:()=>page[key],set:value=>page[key]=value}))
 const entering=ref(true)
 function finishEntrance(event){if(event.target?.id===event.currentTarget?.id)entering.value=false}
-const name=computed(()=>accountNickname.value||getSession()?.accountName||profile.value?.members.find(m=>m.relation==='本人')?.name||'我')
+const name=computed(()=>accountNickname.value||getSession()?.accountName||profile.value?.selfName||'我')
 const unavailableFeatures = {
 
   devices: '健康设备',
@@ -39,10 +40,15 @@ const settingItems = [
   ...(isCommerceEnabled ? [{ icon: 'pin', name: '收货地址', desc: '', url: '/pages/address/index' }] : []),
   { icon: 'supplier', name: '合作商合作', desc: '填写合作申请', url: '/pages/supplier/index' },
 ]
-let epoch=0
-async function load(){if(busy.value)return;const mine=++epoch;profile.value=null;error.value='';busy.value=true;try{const account=await wechatAuth.restore();if(mine!==epoch)return;if(!account){uni.reLaunch({url:'/pages/index/index'});return}const result=await loadCloudProfile({openConsultation:false,readConfiguration:false});if(mine===epoch)profile.value=result}catch(e){if(mine===epoch)error.value=e.message}finally{if(mine===epoch)busy.value=false}}
-function discard(){epoch++;busy.value=false;profile.value=null;error.value=''}
-onMounted(load);onShow(()=>{void load();void loadAvatar()});onHide(()=>{avatarEpoch++;avatar.value='';accountNickname.value='';entering.value=false;discard()})
+const loader=createMyProfileLoader({state:page,session:getSession,context:storageContext,
+ restore:()=>wechatAuth.restore(),readProfile:()=>loadCloudProfile({openConsultation:false,readConfiguration:false}),
+ readAccount:()=>accountSettings.profile(),readCachedProfile:()=>scopedStorage.getStorageSync('family-profile-v2'),
+ loginRequired:()=>uni.reLaunch({url:'/pages/index/index'}),
+ report:detail=>console.warn('[my profile read]',detail)})
+function load(){return loader.show()}
+function retry(){return loader.show({force:true})}
+function discard(){loader.clear()}
+onMounted(load);onShow(()=>{void load()});onHide(()=>{entering.value=false;loader.hide()});onUnmounted(()=>loader.dispose())
 function go(url){if(Object.hasOwn(unavailableFeatures,url)){unavailable(unavailableFeatures[url]);return}uni.navigateTo({url})}
 function unavailable(name){uni.showModal({title:name,content:'这项功能的正式服务尚未接入，开通后可在这里使用。',showCancel:false})}
 function logout(){uni.showModal({title:'退出账号？',content:'已保存的云端家庭资料不会删除。',success:r=>{if(r.confirm){discard();wechatAuth.logout();uni.reLaunch({url:'/pages/index/index'})}}})}
@@ -50,7 +56,7 @@ function logout(){uni.showModal({title:'退出账号？',content:'已保存的�
 // Reuse the existing entries and commerce visibility; only their presentation changes.
 const quickItems=[planItems[0],planItems[1],dietItems[0],profileItems[0]]
 const commerceItems=isCommerceEnabled?[...planItems.slice(2),settingItems.find(item=>item.url==='/pages/address/index')]:[]
-const serviceItems=[dietItems[1],profileItems[1],settingItems.find(item=>item.url==='/pages/supplier/index')]
+const serviceItems=[{name:'邀请好友',desc:'分享给朋友，一起好好吃饭',url:'/pages/referral/index'},dietItems[1],profileItems[1],settingItems.find(item=>item.url==='/pages/supplier/index')]
 </script>
 <template>
   <view id="my-page" class="screen cloud-my" :class="{'is-entering':entering}" @animationend="finishEntrance">
@@ -60,9 +66,9 @@ const serviceItems=[dietItems[1],profileItems[1],settingItems.find(item=>item.ur
       <view class="profile-identity"><text class="profile-name">{{name}}</text><text class="profile-caption">照顾自己，也照顾家人的每一餐</text></view>
       <button class="settings-button" aria-label="设置" @click="go('/pages/settings/index')"><image src="/static/my/settings.svg" mode="aspectFit" class="settings-icon"/></button>
     </view>
-    <view v-if="error" class="error-state"><text class="inline-error">{{error}}</text><button class="secondary-button" @click="load">重新读取</button></view>
+    <view v-if="error" class="error-state"><text class="inline-error">{{error}}</text><button class="secondary-button" @click="retry">重新读取</button></view>
     <button class="family-card my-surface" @click="go('/pages/profile/index')">
-      <view class="family-copy"><text class="family-title">家庭档案</text><text class="family-caption">{{profile ? profile.members.length+' 位成员 · 家庭健康档案' : '查看与管理家庭健康档案'}}</text></view>
+      <view class="family-copy"><text class="family-title">家庭档案</text><text class="family-caption">{{profile ? profile.memberCount+' 位成员 · 家庭健康档案' : '查看与管理家庭健康档案'}}</text></view>
       <view class="family-cta"><text>管理档案</text><text class="cta-arrow">›</text></view>
     </button>
     <view class="mode-row"><text>使用方式</text><view v-if="profile"><text>{{profile.usageMode}}</text><button @click="go('/pages/onboarding/index')">更改 <text>›</text></button></view><text v-else class="mode-loading" role="status">{{busy?'正在读取云端资料…':'—'}}</text></view>

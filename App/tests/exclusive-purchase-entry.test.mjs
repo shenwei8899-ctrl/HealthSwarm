@@ -25,7 +25,7 @@ function page({purchase=true,denied=false}={}) {
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const instance=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {load,plan,purchaseData,purchaseReference}`)(deps)
   hooks.load({group_id:'group',tier:'economy',purchase:purchase?'1':'0'})
-  return {...instance,calls,receipt,invalidate(){current=false}}
+  return {...instance,calls,receipt,deny(){denied=true},invalidate(){current=false}}
 }
 
 test('purchase entry reads a single receipt and renders server plan metadata',async()=>{
@@ -58,4 +58,12 @@ test('invalidated and denied procurement responses cannot populate the page',asy
   assert.equal(stale.plan.value,null);assert.equal(stale.purchaseData.value,null)
   const denied=page({denied:true});await assert.rejects(denied.load(),/授权已撤回/)
   assert.equal(denied.plan.value,null);assert.equal(denied.purchaseData.value,null)
+})
+
+
+test('refresh keeps editor mounted but access failure clears old receipt',async()=>{
+ const p=page();await p.load();const values=[]
+ const stop=watch(p.purchaseData,v=>values.push(v),{flush:'sync'});await p.load();stop()
+ assert.equal(values.includes(null),false);p.deny();await assert.rejects(p.load(),/授权已撤回/)
+ assert.equal(p.purchaseData.value,null);assert.equal(p.plan.value,null)
 })

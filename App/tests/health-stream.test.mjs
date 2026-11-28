@@ -74,6 +74,22 @@ function fixture({ pollLimit = 45, cancelMode = 'success', queued = false } = {}
 }
 async function start(h) { await h.flow.open(memberId, 'consultation'); await h.flow.createEntry(); await h.flow.submit('今天怎样吃？') }
 
+for(const phase of ['validating','finalizing','reconnecting'])test(`task polling retains ${phase} after public text arrives`,async()=>{
+  const h=fixture();await start(h)
+  try{
+    const stream=h.subscriptions.at(-1)
+    stream.onEvent(delta('已核对的公开内容。'))
+    if(phase==='validating')stream.onEvent({type:'custom',phase:'validating',requestId,runId,threadId,id:'11-0'})
+    else if(phase==='finalizing'){stream.onEvent({type:'end',requestId,runId,threadId,id:'11-0'});await tick()}
+    else stream.onError(Object.assign(new Error('synthetic interruption'),{code:'NETWORK_ERROR'}))
+    await h.flow.refresh()
+    assert.equal(h.flow.getState().streamPhase,phase)
+    assert.equal(h.flow.getState().streamText,'已核对的公开内容。')
+    h.subscriptions.at(-1).onEvent(delta('恢复后的内容。',Array.from('已核对的公开内容。').length,'12-0'))
+    assert.equal(h.flow.getState().streamPhase,'streaming')
+  }finally{h.flow.hide()}
+})
+
 test('SSE parses fragmented Chinese public deltas and progress while filtering raw model/reasoning text', () => {
   const events = [], parse = createHealthEventParser(event => events.push(event))
   const frame = (id, event, data) => `id: ${id}\r\nevent: ${event}\r\ndata: ${JSON.stringify(data)}\r\n\r\n`
@@ -137,12 +153,12 @@ test('a temporary task-read failure keeps polling the accepted request and recov
   assert.equal(h.flow.getState().streamText, '已收到。恢复。')
 })
 
-test('健康任务回读成功后恢复真实running阶段，五次断流后明确使用polling', async () => {
+test('任务回读不能证明流已恢复，五次断流后明确使用polling', async () => {
   const h = fixture(); await start(h)
   for (let attempt = 0; attempt < 5; attempt++) {
     h.subscriptions.at(-1).onError(new Error('合成断流'))
     await h.poll()
-    assert.equal(h.flow.getState().streamPhase, attempt < 4 ? 'running' : 'polling')
+    assert.equal(h.flow.getState().streamPhase, attempt < 4 ? 'reconnecting' : 'polling')
   }
   assert.equal(h.subscriptions.length, 5)
   assert.equal(h.subscriptions.some(row => !row.closed), false)

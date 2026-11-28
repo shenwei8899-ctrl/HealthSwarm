@@ -1,16 +1,19 @@
+import {exclusiveDeliveryPreview} from '../src/services/exclusive-delivery-preview.js'
+import { useReplySelection } from '../src/composables/use-reply-selection.js'
+import { replyQuote } from '../src/utils/reply-selection.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {ref,computed,reactive,effectScope,watch} from 'vue'
 import {referenceIngredientLabel,referenceGapDetail} from '../src/utils/meal-presentation.js'
-import {newMealCommerceState,createMealCommerceController,commerceMealView,nonnegativeInteger,productAmountCents,selectedSubtotalCents} from '../src/services/meal-commerce-state.js'
+import {newMealCommerceState,createMealCommerceController,commerceMealView,nonnegativeInteger,productAmountCents,selectedSubtotalCents,validMealDate,PLAN_DELIVERY_TIMES,deliverySlotTime} from '../src/services/meal-commerce-state.js'
 
-function mount({daily=false,reference=false,exclusive=false,productReference=false,unavailableSpec=false,selection,unified=false,gaps=[]}={}){
+function mount({daily=false,reference=false,exclusive=false,exclusivePage=false,productReference=false,unavailableSpec=false,selection,unified=false,gaps=[],saved=new Map()}={}){
   if(exclusive)reference=true
   const calls=[],hooks={},route={date:'2026-10-21',meal:'dinner',arrangement:'saved-1',version:'2'}
   if(daily){route.meal='daily';route.meals=['breakfast','lunch']}
   let scope='A',linked=false,publicationVersion=2,denied=false,referenceVersion=4
-  const saved=new Map();let publishGate=null
+  let publishGate=null,addressPicker=null
   const items=[{sku_id:'tomato',quantity:1,sku:{sku_id:'tomato',product_name:'合成番茄',price_cent:800,available_quantity:5,net_content:{value:500,unit:'g'},ingredients:[{ingredient_code:'tomato'}]}}]
   const purchase={status:'matched',available:true,catalog_version:'catalog-1',items,gaps,
     ingredient_requirements:[{ingredient_id:'tomato',ingredient_code:'tomato',required_value:'300',required_unit:'g'}]}
@@ -21,11 +24,12 @@ function mount({daily=false,reference=false,exclusive=false,productReference=fal
   const api={
     connect:async()=>{calls.push('connect');if(!linked)throw new Error('请关联商城会员')},session:()=>linked?{token:'synthetic'}:null,
     mealPackage:async()=>structuredClone(menu),cart:async()=>({items:[line]}),addresses:async()=>[{id:1,name:'测试地址',isDefault:true}],
-    slots:async()=>({supported:true,items:[{id:10,available:true},{id:20,available:true}]}),pendingOrder:()=>null,
+    slots:async()=>({supported:true,items:[{id:10,name:'10:00–11:00',available:true},{id:20,name:'11:00–12:00',available:true}]}),pendingOrder:()=>null,
     addMeal:async()=>{calls.push('cart');return {items:[line]}},
     quantity:async(value,quantity)=>{line.quantity=quantity;line.version++;return {items:[line]}},
     quote:async (lines,address,slot)=>{calls.push(['quote',lines.map(item=>item.cart_item_id),slot]);return {checkout_token:'synthetic-quote',expires_at:new Date(Date.now()+60000).toISOString(),items:[],goods_amount_cent:800,shipping_fee_cent:500,payable_amount_cent:1300}},
-    quoteRecommendation:async(sn,version,address,slot,items)=>{if(exclusive&&referenceVersion!==4)throw Object.assign(new Error('计划或商品已变化'),{code:409});if(denied)throw Object.assign(new Error('采购用途授权已撤回'),{code:403});calls.push(['direct-quote',sn,items,slot]);return {checkout_token:'synthetic-quote',expires_at:new Date(Date.now()+60000).toISOString(),items:[],goods_amount_cent:800,shipping_fee_cent:500,payable_amount_cent:1300}},
+    exclusiveDates:async()=>({items:['2026-12-01','2026-12-03']}),
+    quoteRecommendation:async(sn,version,address,slot,items,options)=>{if(exclusive&&referenceVersion!==4)throw Object.assign(new Error('计划或商品已变化'),{code:409});if(denied)throw Object.assign(new Error('采购用途授权已撤回'),{code:403});calls.push(['direct-quote',sn,items,slot]);return {...(exclusive?{exclusive_delivery:{first_meal_date:options.firstMealDate},delivery_batches:[{batch_no:1}]}:{}),checkout_token:'synthetic-quote',expires_at:new Date(Date.now()+60000).toISOString(),items:[],goods_amount_cent:800,shipping_fee_cent:500,payable_amount_cent:1300}},
   }
   const send=async input=>{
     calls.push(input)
@@ -43,20 +47,20 @@ function mount({daily=false,reference=false,exclusive=false,productReference=fal
         ...(unavailableSpec?[{sku_id:'tomato-2000',sku_name:'2千克',price_cent:2500,available_quantity:0,sale_status:'unavailable'}]:[]),
       ]}]
     : [{sku_id:'tomato',product_id:'tomato-product',product_name:'合成番茄',quantity:1}]
-  const uiProps=reactive({unified,visible:true,route,meal:{members:[{id:'member-1'}]},selection,...(reference?{reference:{previewId:'preview',dailyPlanVersion:4,mealTypes:['lunch'],items:referenceItems}}:{})})
+  const uiProps=reactive({unified,exclusivePage,visible:true,route,meal:{members:[{id:'member-1'}]},selection,...(reference?{reference:{previewId:'preview',dailyPlanVersion:4,mealTypes:['lunch'],items:referenceItems}}:{})})
   if(exclusive){uiProps.exclusive={path:'/api/health/v1/families/family/exclusive-plans/group/tiers/standard/purchase',scopeHash:'4'};delete uiProps.reference.dailyPlanVersion}
-  const deps={ref,computed,watch,referenceIngredientLabel,referenceGapDetail,defineEmits:()=>()=>{},defineExpose:()=>{},onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
-    defineOptions:()=>{},defineProps:()=>uiProps,commerce:api,request:send,
+  const deps={exclusiveDeliveryPreview,useReplySelection,replyQuote,ref,computed,watch,referenceIngredientLabel,referenceGapDetail,defineEmits:()=>()=>{},defineExpose:()=>{},onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onHide:fn=>hooks.hide=fn,onUnmounted:fn=>hooks.unmount=fn,
+    openAddressPicker:options=>{addressPicker=options},defineOptions:()=>{},defineProps:()=>uiProps,commerce:api,request:send,
     uni:{showToast:options=>calls.push(['toast',options]),navigateTo:options=>calls.push(['navigate',options])},
-    commerceMealView,nonnegativeInteger,productAmountCents,selectedSubtotalCents,getSession:()=>({householdId:'family-1'}),storageContext:()=>scope,
+    commerceMealView,nonnegativeInteger,productAmountCents,selectedSubtotalCents,validMealDate,PLAN_DELIVERY_TIMES,deliverySlotTime,getSession:()=>({householdId:'family-1'}),storageContext:()=>scope,
     scopedStorage:{getStorageSync:key=>saved.get(scope+key),setStorageSync:(key,value)=>saved.set(scope+key,structuredClone(value))},
     useMealCommercePage:context=>({...createMealCommerceController({state,api,scope:()=>scope,context}),state,
       plan:computed(()=>commerceMealView(state.menu,{...context(),quantities:state.quantities}))})}
   const source=readFileSync(new URL('../src/components/CloudMealPurchase.vue',import.meta.url),'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
   const vueScope=effectScope()
-  const component=vueScope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {refresh,refreshUnified,checkout,submit,toggle,changeQuantity,selected,preview,products,picked,total,totalKnown,state,loginOpen,error,purchaseReady,purchaseGaps,returnKey,quoteWaiting,canSubmit,selectSlot,checkoutOpen,chooseAddress}`)(deps))
-  return {...component,calls,uiProps,api,menu,line,holdPublication(){let release;publishGate=new Promise(resolve=>release=resolve);return release},mounted:()=>hooks.mount(),deny(){denied=true},pending(){purchase.available=false;purchase.confirmation_pending=true;items[0].sku.available_quantity=0},unavailable(){purchase.available=false;purchase.confirmation_pending=false},link(){linked=true},wrongVersion(){publicationVersion=3},switch(){scope='B'},
+  const component=vueScope.run(()=>new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;${source};return {refresh,refreshUnified,checkout,submit,toggle,changeQuantity,selected,preview,products,picked,total,totalKnown,state,loginOpen,error,purchaseReady,purchaseGaps,returnKey,quoteWaiting,canSubmit,selectSlot,selectMealDate,checkoutOpen,chooseAddress,preferredTime}`)(deps))
+  return {...component,calls,uiProps,api,menu,line,holdPublication(){let release;publishGate=new Promise(resolve=>release=resolve);return release},mounted:()=>hooks.mount(),hide:()=>hooks.hide(),selectAddress:id=>addressPicker.onSelected(id),deny(){denied=true},pending(){purchase.available=false;purchase.confirmation_pending=true;items[0].sku.available_quantity=0},unavailable(){purchase.available=false;purchase.confirmation_pending=false},link(){linked=true},wrongVersion(){publicationVersion=3},switch(){scope='B'},
     changeReferenceVersion(){referenceVersion++},show:()=>hooks.show(),dispose(){hooks.unmount();vueScope.stop()}}
 }
 
@@ -67,6 +71,43 @@ test('standalone unified show refreshes through the scoped publication without a
   await new Promise(resolve=>setTimeout(resolve,0))
   assert.equal(f.calls.some(c=>c?.path&&c.method!=='POST'),false)
  }finally{f.dispose()}
+})
+
+test('unconvertible recipe quantity reaches purchase and user changes reach direct quote within mall stock',async()=>{
+ const f=mount({unified:true,selection:{familyId:'family-1',date:'2026-10-21',mealType:'dinner',version:2,dishKeys:['milk']}})
+ try{
+  const item=f.menu.items[0]
+  item.sku.sku_name='950毫升/瓶';item.sku.net_content={value:950,unit:'ml'}
+  item.quantity_basis='needs_confirmation';item.suggested_quantity=1;item.quantity_notice='用量无法换算，请按实际需要调整。'
+  f.link();await f.refreshUnified()
+  const product=f.products.value[0]
+  assert.equal(product.packLabel,'950毫升/瓶')
+  assert.match(product.quantityNotice,/按实际需要调整/)
+  f.changeQuantity(product,1)
+  await new Promise(resolve=>setTimeout(resolve,400))
+  const quoted=f.calls.filter(c=>Array.isArray(c)&&c[0]==='direct-quote').at(-1)
+  assert.equal(quoted[2][0].quantity,2)
+  f.changeQuantity({...f.products.value[0],quantity:5},1)
+  assert.equal(f.products.value[0].quantity,2)
+ }finally{f.dispose()}
+})
+
+test('purchase panel renders mall bottle specification and adjustable quantity notice',async()=>{
+ const template=readFileSync(new URL('../src/components/MealPurchasePanel.vue',import.meta.url),'utf8')
+ const {compile,createSSRApp}=await import('vue'),{renderToString}=await import('vue/server-renderer')
+ const render=compile(template.match(/<template>([\s\S]*?)<\/template>\s*<style/)[1])
+ const html=await renderToString(createSSRApp({render,setup:()=>({
+  accessRequired:false,busy:false,ready:true,choicesReady:false,fixed:false,independent:true,addressReady:true,
+  productsLoading:false,addressError:'',title:'本餐食材',error:'',preparationGaps:[],optionalGaps:[],optionalText:'',
+  address:null,slots:[],slotId:null,timesOpen:false,deliveryText:'待核对',picked:['milk'],pending:false,pricing:false,total:'—',quote:null,
+  products:[{id:'milk',name:'合成牛奶',packLabel:'950毫升/瓶',priceCents:1000,quantity:1,availableQuantity:5,quantityNotice:'用量无法换算，请按实际需要调整。'}],
+  slotName:()=>'',money:value=>'¥'+value/100,showPaymentNotice:()=>{},
+ })}))
+ assert.match(html,/950毫升\/瓶/)
+ assert.match(html,/按实际需要调整/)
+ assert.match(html,/1 件/)
+ assert.doesNotMatch(html,/\/包|1 包|暂不可选/)
+ assert.doesNotMatch(html,/<button[^>]*aria-label="(?:减少|增加)合成牛奶数量"[^>]*disabled[^>]*>＋/)
 })
 
 test('direct refresh requested during submission is queued for the settled operation',()=>{
@@ -86,6 +127,45 @@ test('weekly exclusive purchase binds publication to its tier and scope, then re
   assert.equal(f.state.ready,true);assert.ok(f.state.quote)
   f.changeReferenceVersion();await f.checkout();assert.match(f.error.value||f.state.error||f.state.checkoutError,/计划或商品已变化/)
   assert.equal(f.calls.filter(c=>c?.method==='POST').length,1)
+ }finally{f.dispose()}
+})
+
+test('exclusive dates bind a whole-week quote and changing date immediately invalidates it',async()=>{
+ const f=mount({exclusive:true});try{
+  const purposes=[];const slots=f.api.slots
+  f.api.slots=(address,purpose)=>{purposes.push(purpose);return slots(address,purpose)}
+  f.link();await f.refresh();await f.checkout()
+  assert.ok(purposes.every(purpose=>purpose==='plan'))
+  assert.equal(f.state.firstMealDate,'2026-12-01')
+  let release;const quote=f.api.quoteRecommendation
+  f.api.quoteRecommendation=(...args)=>new Promise(resolve=>{release=()=>resolve(quote(...args))})
+  const changing=f.selectMealDate('2026-12-03')
+  assert.equal(f.state.quote,null)
+  await new Promise(resolve=>setTimeout(resolve,0));release();await changing
+  assert.equal(f.state.quote.exclusive_delivery.first_meal_date,'2026-12-03')
+ }finally{f.dispose()}
+})
+
+test('unavailable meal date stays visible as a choice to correct without accepting another date',async()=>{
+ const f=mount({exclusive:true});try{
+  f.link();await f.refresh();await f.checkout()
+  f.api.exclusiveDates=async()=>({items:['2026-12-03']})
+  await f.checkout()
+  assert.equal(f.state.quote,null);assert.equal(f.state.ready,true)
+  assert.equal(f.state.firstMealDate,'2026-12-01');assert.deepEqual(f.state.mealDates,['2026-12-03'])
+  assert.match(f.state.checkoutError,/重新选择日期/)
+  await f.selectMealDate('2026-12-03');assert.ok(f.state.quote)
+ }finally{f.dispose()}
+})
+
+test('pending storage rules keep products available to edit and never keep a stale quote',async()=>{
+ const f=mount({exclusive:true});try{
+  f.link();await f.refresh();await f.checkout()
+  f.api.exclusiveDates=async()=>{throw Object.assign(new Error('储存规则待核对'),{status:409,code:40963})}
+  await f.checkout()
+  assert.equal(f.state.ready,true);assert.equal(f.state.quote,null)
+  assert.match(f.state.checkoutError,/储存规则待核对/)
+  assert.ok(f.products.value.length)
  }finally{f.dispose()}
 })
 
@@ -371,7 +451,7 @@ test('daily purchase preview and explicit publication reference the chosen meals
 test('daily summary clears former account dishes before awaiting a new read',async()=>{
   const route={arrangement:'saved-1',version:'2',date:'2026-10-21'},hooks={}
   let scope='A',answer={status:'ready',id:'saved-1',version:2,meals:[{members:[],dishes:[{name:'前账号菜品'}]}]},release
-  const deps={ref,computed,watch,referenceIngredientLabel,referenceGapDetail,defineEmits:()=>()=>{},defineExpose:()=>{},onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onUnmounted:fn=>hooks.unmount=fn,
+  const deps={exclusiveDeliveryPreview,useReplySelection,replyQuote,ref,computed,watch,referenceIngredientLabel,referenceGapDetail,defineEmits:()=>()=>{},defineExpose:()=>{},onMounted:fn=>hooks.mount=fn,onShow:fn=>hooks.show=fn,onUnmounted:fn=>hooks.unmount=fn,
     defineProps:()=>({route}),storageContext:()=>scope,getSession:()=>({householdId:scope}),
     request:async()=>answer?{data:answer}:new Promise(resolve=>{release=resolve})}
   const source=readFileSync(new URL('../src/components/CloudDailyPurchase.vue',import.meta.url),'utf8')
@@ -565,4 +645,134 @@ test('closed weekly sheet rejects late publication and never shows its quote',as
   assert.equal(f.state.ready,false);assert.equal(f.state.quote,null)
   assert.equal(f.calls.filter(c=>Array.isArray(c)&&c[0]==='direct-quote').length,0)
  }finally{release();f.dispose()}
+})
+
+
+test('single-page opens and quotes without intermediate checkout',async()=>{
+ const f=mount({exclusive:true,exclusivePage:true});try{
+  f.link();await f.mounted();assert.equal(f.checkoutOpen.value,true);assert.ok(f.state.quote)
+ }finally{f.dispose()}
+})
+test('single-page edits debounce; all deselected products remain available to restore',async()=>{
+ const f=mount({exclusive:true,exclusivePage:true});try{
+  f.link();await f.mounted();f.changeQuantity(f.products.value[0],1);f.changeQuantity(f.products.value[0],1)
+  assert.equal(f.state.quote,null);assert.equal(f.state.quantities.tomato,3)
+  await new Promise(r=>setTimeout(r,320))
+  const quotes=()=>f.calls.filter(c=>Array.isArray(c)&&c[0]==='direct-quote')
+  assert.equal(quotes().length,2);assert.equal(quotes().at(-1)[2][0].quantity,3)
+  f.toggle('tomato');assert.equal(f.state.quote,null);assert.equal(f.products.value.length,1)
+  await new Promise(r=>setTimeout(r,320));assert.equal(quotes().length,2)
+  f.toggle('tomato');await new Promise(r=>setTimeout(r,320))
+  assert.equal(f.state.quantities.tomato,3);assert.equal(quotes().length,3)
+ }finally{f.dispose()}
+})
+test('single-page address return preserves quantities and chosen meal date',async()=>{
+ const f=mount({exclusive:true,exclusivePage:true});try{
+  f.api.addresses=async()=>[{id:1,isDefault:true},{id:2}];f.link();await f.mounted()
+  f.changeQuantity(f.products.value[0],1);await new Promise(r=>setTimeout(r,320))
+  await f.selectMealDate('2026-12-03');f.chooseAddress();f.hide();f.selectAddress(2);f.show()
+  await new Promise(r=>setTimeout(r,30))
+  assert.equal(f.state.address.id,2);assert.equal(f.state.quantities.tomato,2)
+  assert.equal(f.state.firstMealDate,'2026-12-03');assert.ok(f.state.quote)
+ }finally{f.dispose()}
+})
+
+test('a date can be selected while publication loads and the resulting quote uses it',async()=>{
+ const f=mount({exclusive:true,exclusivePage:true}),release=f.holdPublication()
+ try{
+  f.link();const loading=f.mounted();await new Promise(r=>setImmediate(r))
+  assert.equal(f.state.loading,true)
+  await f.selectMealDate('2026-12-03')
+  assert.equal(f.state.firstMealDate,'2026-12-03');assert.equal(f.state.quote,null)
+  release();await loading
+  assert.equal(f.state.quote.exclusive_delivery.first_meal_date,'2026-12-03')
+ }finally{release();f.dispose()}
+})
+
+test('missing delivery configuration does not prevent choosing and restoring a preferred date',async()=>{
+ const saved=new Map(),f=mount({exclusive:true,exclusivePage:true,saved})
+ const missing=async()=>{throw Object.assign(new Error('专属计划规则尚未配置'),{status:503,code:50317})}
+ try{
+  f.api.exclusiveDates=missing;f.link();await f.mounted()
+  assert.deepEqual(f.state.mealDates,[])
+  await f.selectMealDate('2026-12-03')
+  assert.equal(f.state.firstMealDate,'2026-12-03');assert.equal(f.state.quote,null)
+  assert.match(f.state.checkoutError,/尚未配置/)
+  assert.equal(f.calls.some(c=>Array.isArray(c)&&c[0]==='direct-quote'),false)
+ }finally{f.dispose()}
+ const reopened=mount({exclusive:true,exclusivePage:true,saved})
+ try{
+  reopened.api.exclusiveDates=missing;reopened.link();await reopened.mounted()
+  assert.equal(reopened.state.firstMealDate,'2026-12-03');assert.equal(reopened.state.quote,null)
+ }finally{reopened.dispose()}
+})
+
+test('a calendar date that is unavailable is retained for correction and cannot produce a quote',async()=>{
+ const f=mount({exclusive:true,exclusivePage:true})
+ try{
+  f.link();await f.mounted();await f.selectMealDate('2026-12-02')
+  assert.equal(f.state.firstMealDate,'2026-12-02');assert.equal(f.state.quote,null)
+  assert.match(f.state.checkoutError,/不可预约/)
+  await f.selectMealDate('2026-12-03');assert.ok(f.state.quote)
+  await f.selectMealDate('2020-01-01');assert.equal(f.state.firstMealDate,'2026-12-03')
+ }finally{f.dispose()}
+})
+
+test('a newer chosen date rejects the late availability response for an older choice',async()=>{
+ const f=mount({exclusive:true,exclusivePage:true})
+ try{
+  f.link();await f.mounted();let release,calls=0
+  f.api.exclusiveDates=async()=>{if(!calls++)await new Promise(r=>release=r);return {items:['2026-12-01','2026-12-03']}}
+  const old=f.selectMealDate('2026-12-03');await new Promise(r=>setImmediate(r))
+  await f.selectMealDate('2026-12-01');assert.equal(f.state.quote.exclusive_delivery.first_meal_date,'2026-12-01')
+  release();await old
+  assert.equal(f.state.firstMealDate,'2026-12-01');assert.equal(f.state.quote.exclusive_delivery.first_meal_date,'2026-12-01')
+ }finally{f.dispose()}
+})
+
+test('default time can be selected without an address, restored, and bound to the new address slot',async()=>{
+ const saved=new Map(),f=mount({exclusive:true,exclusivePage:true,saved})
+ try{
+  f.api.addresses=async()=>[];f.link();await f.mounted()
+  assert.equal(f.preferredTime.value,'10:00–11:00');assert.equal(f.state.address,null)
+  await f.selectSlot('11:00–12:00')
+  assert.equal(f.preferredTime.value,'11:00–12:00');assert.equal(f.state.slotId,0)
+  assert.equal(f.calls.some(c=>Array.isArray(c)&&c[0]==='direct-quote'),false)
+ }finally{f.dispose()}
+ const next=mount({exclusive:true,exclusivePage:true,saved})
+ try{
+  next.api.addresses=async()=>[];next.link();await next.mounted()
+  assert.equal(next.preferredTime.value,'11:00–12:00')
+  next.api.addresses=async()=>[{id:2,isDefault:true}]
+  next.api.slots=async()=>({supported:true,items:[{id:302,start_time:'11:00',end_time:'12:00',available:true}]})
+  next.chooseAddress();next.hide();next.selectAddress(2);next.show();await new Promise(r=>setTimeout(r,30))
+  assert.equal(next.preferredTime.value,'11:00–12:00');assert.equal(next.state.slotId,302)
+  assert.equal(next.calls.filter(c=>Array.isArray(c)&&c[0]==='direct-quote').at(-1)[3],302)
+ }finally{next.dispose()}
+})
+
+test('choosing during slot loading wins over the late address response default',async()=>{
+ const f=mount({exclusive:true,exclusivePage:true});let release
+ try{
+  f.api.slots=async()=>{await new Promise(r=>release=r);return {supported:true,items:[{id:10,name:'10:00–11:00',available:true},{id:30,name:'12:00–13:00',available:true}]}}
+  f.link();const loading=f.mounted();await new Promise(r=>setImmediate(r))
+  assert.equal(f.state.slotsLoading,true)
+  await f.selectSlot('12:00–13:00');release();await loading
+  assert.equal(f.preferredTime.value,'12:00–13:00');assert.equal(f.state.slotId,30)
+  assert.equal(f.calls.filter(c=>Array.isArray(c)&&c[0]==='direct-quote').at(-1)[3],30)
+ }finally{release?.();f.dispose()}
+})
+
+test('an empty or different server schedule preserves the chosen time without quoting a fabricated slot',async()=>{
+ const f=mount({exclusive:true,exclusivePage:true})
+ try{
+  f.link();await f.mounted();const before=f.calls.filter(c=>Array.isArray(c)&&c[0]==='direct-quote').length
+  f.api.slots=async()=>({supported:true,items:[]})
+  await f.checkout();await f.selectSlot('12:00–13:00')
+  assert.equal(f.preferredTime.value,'12:00–13:00');assert.equal(f.state.slotId,0);assert.equal(f.state.quote,null)
+  f.api.slots=async()=>({supported:true,items:[{id:10,name:'17:00–18:00',available:true}]})
+  await f.checkout()
+  assert.equal(f.preferredTime.value,'12:00–13:00');assert.equal(f.state.slotId,0)
+  assert.equal(f.calls.filter(c=>Array.isArray(c)&&c[0]==='direct-quote').length,before)
+ }finally{f.dispose()}
 })

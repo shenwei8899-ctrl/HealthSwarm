@@ -1,4 +1,5 @@
 import { dishTitle } from '../utils/meal-presentation.js'
+import { recipeCover } from '../utils/recipe-cover.js'
 const mealNames = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐' }
 const dayMs = 86400000
 
@@ -21,8 +22,12 @@ export function archiveMeals(plan) {
   const meals = Array.isArray(plan?.meals) ? plan.meals : []
   return Object.entries(mealNames).map(([type, name]) => {
     const meal = meals.find(row => row.meal_type === type)
-    const dishes = (meal?.dishes || []).map(dish => dishTitle(dish)).filter(Boolean)
-    return { type, name, summary: dishes.join(' · ') || '本餐未记录' }
+    const sourceDishes = Array.isArray(meal?.dishes) ? meal.dishes : []
+    const dishes = sourceDishes.map(dish => dishTitle(dish)).filter(Boolean)
+    // A meal thumbnail must belong to a dish in this saved meal, never another day.
+    const covers = sourceDishes.map(dish => ({src:recipeCover(dish)?.image_url || dish?.cover?.image_url,label:dishTitle(dish)}))
+    const cover = covers.find(row => typeof row.src==='string' && /^(?:\/(?!\/)|https?:\/\/)/.test(row.src))
+    return { type, name, summary: dishes.join(' · ') || '本餐未记录', image:cover?.src||'', imageLabel:cover?.label||'' }
   })
 }
 

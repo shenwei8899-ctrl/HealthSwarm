@@ -215,6 +215,7 @@ class Shop extends Addons
             ['api/v1/commerce/service-plans/:plan_sn/schedule-preview', 'addons/shop/api.v1.commerce_plan/schedulePreview', 'POST'],
             ['api/v1/commerce/service-plans/:plan_sn', 'addons/shop/api.v1.commerce_plan/detail', 'GET'],
             ['api/v1/commerce/checkout/preview', 'addons/shop/api.v1.commerce_checkout/preview', 'POST'],
+            ['api/v1/commerce/checkout/exclusive-dates', 'addons/shop/api.v1.commerce_checkout/exclusiveDates', 'POST'],
             ['api/v1/commerce/checkout/refresh', 'addons/shop/api.v1.commerce_checkout/refresh', 'POST'],
             ['api/v1/commerce/delivery/slots', 'addons/shop/api.v1.commerce_delivery/slots', 'GET'],
             ['api/v1/commerce/delivery/validate', 'addons/shop/api.v1.commerce_delivery/validateDelivery', 'POST'],

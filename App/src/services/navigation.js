@@ -3,14 +3,14 @@ import { resolveAppEntry, immediateShellEntry } from './app-entry.js'
 import { captureInvitation, rememberInvitation } from './family-invitations.js'
 import { storageContext } from './storage.js'
 import { getSession } from './session.js'
-const apiPages = new Set(['pages/index/index', 'pages/invite/index', 'pages/account/index', 'pages/family-shared/index',
+const apiPages = new Set(['pages/referral/index', 'pages/index/index', 'pages/invite/index', 'pages/account/index', 'pages/family-shared/index',
   'pages/records/index', 'pages/meal-photo/index', 'pages/indicators/index', 'pages/chat/agent', 'pages/chat/camera', 'pages/chat/history', 'pages/profile/member', 'pages/scan/index', 'pages/records/detail', 'pages/memories/index', 'pages/feedback/index', 'pages/exclusive-plans/index', 'pages/exclusive-plans/detail', 'pages/exclusive-plans/schedule', 'pages/health/vision', 'pages/health/plans',
   'pages/family-select/index', 'pages/my/index', 'pages/profile/index', 'pages/settings/index', 'pages/settings/privacy', 'pages/settings/feedback',
   'pages/onboarding/index', 'pages/onboarding/preparing', 'pages/chat/index', 'pages/shop/index', 'pages/recipe/index', 'pages/supplier/index',
   'pages/orders/index', 'pages/orders/detail', 'pages/address/index', 'pages/address/edit', 'pages/meals/detail', 'pages/meals/purchase'])
 const commercePages = new Set(['pages/purchase/index'])
 apiPages.add('pages/health/diet-stage')
-const shellPages = new Set(['/pages/exclusive-plans/index', '/pages/profile/index', '/pages/scan/index', '/pages/chat/history', '/pages/my/index', '/pages/supplier/index', '/pages/meals/detail'])
+const shellPages = new Set(['/pages/referral/index', '/pages/exclusive-plans/index', '/pages/profile/index', '/pages/scan/index', '/pages/chat/history', '/pages/my/index', '/pages/supplier/index', '/pages/meals/detail'])
 export function launchRoute(options) {
   const query = Object.entries(options?.query || {}).map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(String(value))).join('&')
   return (options?.path || '') + (query ? '?' + query : '')

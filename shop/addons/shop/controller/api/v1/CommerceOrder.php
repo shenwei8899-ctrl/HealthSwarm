@@ -75,6 +75,11 @@ class CommerceOrder extends Base
                 unset($item['sku_snapshot_json'], $item['ingredient_snapshot_json']);
             }
             $result = ['local_test_payment' => LocalTestPayment::enabled(), 'order' => $order, 'extension' => $ext, 'items' => $items, 'allowed_actions' => \addons\shop\library\v5\OrderActions::forOrder($order + ['payment_status' => $ext['payment_status'] ?? ''])];
+            if (!empty($ext['pricing_snapshot']['exclusive_delivery'])) {
+                $result['delivery_batches'] = $ext['pricing_snapshot']['delivery_batches'];
+                $result['local_test_payment'] = false;
+                $result['allowed_actions'] = array_values(array_diff($result['allowed_actions'], ['pay','repurchase']));
+            }
             if ($order['order_type'] === 'plan') {
                 $planOrder = Db::name('shop_service_plan_order')->where('order_sn', $order_sn)->find();
                 $result['plan_order'] = $planOrder;

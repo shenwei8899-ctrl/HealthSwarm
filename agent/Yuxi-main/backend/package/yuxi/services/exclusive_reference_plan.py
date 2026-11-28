@@ -243,8 +243,9 @@ async def validate_reference_days(session, context, entries):
             or date.fromisoformat(selection["plan_date"]) != date.fromisoformat(history[-1][1]) + timedelta(days=1)
         ):
             raise HealthVisionError("source_invalidated", "计划日期不连续，请重新准备", 410)
-        validate_reference_meal_composition(checked, selection)
-        validate_variety(history[-14:], selection, checked)
+        if not entry.get("roster_preserved_meals"):
+            validate_reference_meal_composition(checked, selection)
+            validate_variety(history[-14:], selection, checked)
         history.append((selection["family_id"], selection["plan_date"], checked))
         entry["meals"] = checked
 
@@ -258,6 +259,8 @@ async def validate_reference_day(session, context, entry, *, require_translation
     documents = context["verified_documents"]
     meals = []
     for meal in entry["meals"]:
+        if meal["meal_type"] in entry.get("roster_preserved_meals", []):
+            continue
         dishes = []
         for dish in meal["dishes"]:
             await verified_reference_document(session, context, dish)
@@ -265,10 +268,20 @@ async def validate_reference_day(session, context, entry, *, require_translation
         meals.append(ReferenceMeal.model_validate({"meal_type": meal["meal_type"], "dishes": dishes}))
     from types import SimpleNamespace
 
-    checked = checked_reference_meals(
-        SimpleNamespace(meals=meals), documents, context["current"]["members"], require_translation=require_translation
+    checked = (
+        checked_reference_meals(
+            SimpleNamespace(meals=meals),
+            documents,
+            context["current"]["members"],
+            require_translation=require_translation,
+        )
+        if meals
+        else []
     )
     selection = context["selection"].model_dump(mode="json") | {"plan_date": entry["day"]["plan_date"]}
+    if entry.get("roster_preserved_meals"):
+        preserved = [m for m in entry["meals"] if m["meal_type"] in entry["roster_preserved_meals"]]
+        return sorted([*checked, *preserved], key=lambda m: ("breakfast", "lunch", "dinner").index(m["meal_type"]))
     validate_reference_meal_composition(checked, selection)
     return checked
 

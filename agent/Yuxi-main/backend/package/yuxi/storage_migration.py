@@ -53,6 +53,7 @@ from yuxi.storage_migrations.v016_family_membership import upgrade_family_member
 from yuxi.storage_migrations.v037_shared_daily_meal_plan import upgrade_shared_daily_meal_plan
 
 from yuxi.storage_migrations.v017_service_notice import upgrade_service_notice
+from yuxi.storage_migrations.v018_friend_referral import upgrade_friend_referral
 
 _QUIESCENCE_TOKEN_ENV = "YUXI_STORAGE_MIGRATION_QUIESCENCE_TOKEN"
 _QUIESCENCE_FILE_ENV = "YUXI_STORAGE_MIGRATION_QUIESCENCE_FILE"
@@ -82,7 +83,7 @@ async def main() -> None:
                 "business",
                 business_version,
                 BUSINESS_SCHEMA_VERSION,
-                upgrade_from=(2, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16),
+                upgrade_from=(2, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17),
             )
             knowledge_version = versions.get("knowledge")
             _require_supported_version(
@@ -158,15 +159,17 @@ async def main() -> None:
             if business_version in {None, 2, 7, 8}:
                 await pg_manager.upgrade_agent_resource_selection()
 
-            if business_version not in (16, BUSINESS_SCHEMA_VERSION):
+            if business_version not in (16, 17, BUSINESS_SCHEMA_VERSION):
                 await upgrade_family_archives(pg_manager)
                 await upgrade_family_care(pg_manager)
                 await upgrade_wechat_identity(pg_manager)
                 await upgrade_product_feedback(pg_manager)
                 await upgrade_family_invitations(pg_manager)
                 await upgrade_family_membership(pg_manager)
-            if business_version != BUSINESS_SCHEMA_VERSION:
+            if business_version not in (17, BUSINESS_SCHEMA_VERSION):
                 await upgrade_service_notice(pg_manager)
+            if business_version != BUSINESS_SCHEMA_VERSION:
+                await upgrade_friend_referral(pg_manager)
 
             if knowledge_version is None:
                 await pg_manager.create_knowledge_tables()

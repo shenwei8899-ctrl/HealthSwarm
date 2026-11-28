@@ -88,15 +88,33 @@ async def read_current_plan(uid, family_id, day, session=None):
             regeneration_participants[kind] = ids
 
     stale_codes = {
+        "memory_changed",
+        "profile_source_changed",
         "policy_changed",
         "reference_product_changed",
         "reference_source_unavailable",
         "reference_restriction_conflict",
         "reference_restriction_unverified",
     }
+    from yuxi.services.meal_roster_service import current_roster
+
+    roster = await current_roster(session, row)
     for kind in MEALS:
         ref = refs.get(kind)
         if not ref:
+            continue
+        policy = roster.get(kind, {})
+        saved = (row.archive_meals or {}).get(kind) if row else None
+        if saved and (policy.get("execution_locked") or policy.get("status") in {"pending", "failed"}):
+            meals.append(
+                {
+                    "meal_type": kind,
+                    "source": ref,
+                    "meal": saved,
+                    "members": saved.get("members", []),
+                    "purchase_ready": False,
+                }
+            )
             continue
         if ref["kind"] == "reference":
             preview = await session.get(HealthInitialPlanPreview, ref["id"])
@@ -216,6 +234,14 @@ async def read_current_plan(uid, family_id, day, session=None):
                     "purchase_ready": False,
                 }
             )
+    saved_items = [item for item in meals if row and item["meal"] is (row.archive_meals or {}).get(item["meal_type"])]
+    if saved_items:
+        from yuxi.services.meal_archive_service import archive_with_images
+
+        displayed = (await archive_with_images(session, [row]))[0]
+        by_kind = {meal["meal_type"]: meal for meal in displayed["meals"]}
+        for item in saved_items:
+            item["meal"] = by_kind[item["meal_type"]]
     meals.sort(key=lambda item: MEALS.index(item["meal_type"]))
     purchase_options = []
     for key, source in sources.items():
@@ -301,6 +327,7 @@ async def read_current_plan(uid, family_id, day, session=None):
                 regeneration_participants[kind] = selection["participant_ids"]
         pending = None
     return {
+        "roster": roster,
         "status": "ready" if meals else "needs_regeneration" if needs_regeneration else "absent",
         "id": row.id if row else None,
         "version": row.version if row else 0,
@@ -321,7 +348,8 @@ def daily_plan_response(plan):
         ref = {key: value for key, value in item["source"].items() if key in {"kind", "id", "version"}}
         meal = {key: value for key, value in item["meal"].items() if key != "dishes"}
         meal["dishes"] = [
-            {key: value for key, value in dish.items() if key != "origin"} for dish in item["meal"]["dishes"]
+            {key: value for key, value in dish.items() if key not in {"origin", "recipe_image_key"}}
+            for dish in item["meal"]["dishes"]
         ]
         meals.append({**item, "source": ref, "meal": meal})
     return {**plan, "meals": meals}
@@ -356,7 +384,8 @@ def shared_meal_view(meal, members):
 
     public["dishes"] = [
         {**dish, "serving_suggestion": public_serving_suggestion(dish.get("serving_suggestion"))}
-        if dish.get("serving_suggestion") else dish
+        if dish.get("serving_suggestion")
+        else dish
         for dish in meal.get("dishes", [])
     ]
     return {**public, "members": members, "memberNotes": []}
@@ -461,6 +490,10 @@ async def require_current_reference_purchase(session, uid, daily, preview_id, pl
     if (row.version if row else 0) != daily["version"]:
         raise HealthVisionError("daily_plan_version_changed", "饮食计划已更新，请重新核对采购", 409)
     refs = dict(row.meal_sources) if row else {}
+    if any(
+        refs.get("_roster", {}).get(m, {}).get("status") in {"pending", "failed"} for m in daily.get("meal_types", [])
+    ):
+        raise HealthVisionError("roster_not_ready", "成员更新尚未完成，请核对后再采购", 409)
     selected = {meal for meal, ref in refs.items() if ref.get("kind") == "reference" and ref.get("id") == preview_id}
     requested = daily.get("meal_types", [])
     if (
@@ -480,6 +513,8 @@ async def require_formal_current_in_session(
     if (row.version if row else 0) != daily_version:
         raise HealthVisionError("daily_plan_version_changed", "饮食计划已更新，请重新读取", 409)
     refs = dict(row.meal_sources) if row else {}
+    if any(refs.get("_roster", {}).get(m, {}).get("status") in {"pending", "failed"} for m in meals):
+        raise HealthVisionError("roster_not_ready", "成员更新尚未完成，请核对后再操作", 409)
     expected = {"kind": "formal", "id": arrangement_id, "version": version}
     if any(refs.get(meal) != expected for meal in meals):
         raise HealthVisionError("daily_plan_source_changed", "所选餐次已调整，请重新读取", 409)
@@ -545,6 +580,10 @@ async def publish_reference_in_session(session, run, content):
     published_types = {meal["meal_type"] for meal in preview.snapshot["meals"]}
     if published_types != set(selection["meal_types"]):
         raise HealthVisionError("daily_plan_scope_invalid", "生成结果餐次与请求不一致", 409)
+    from yuxi.services.meal_roster_service import verify_roster_publish
+
+    await verify_roster_publish(session, row, published_types, selection["participant_ids"])
+    refs = dict(row.meal_sources)
     for meal in preview.snapshot["meals"]:
         merge_archive(row, [await attach_chinese_display(session, meal)], preview.snapshot.get("members", []))
         refs[meal["meal_type"]] = {"kind": "reference", "id": preview_id}
@@ -567,6 +606,13 @@ async def publish_formal_in_session(session, uid, family_id, day, arrangement, b
             id=str(uuid4()), actor_uid=uid, family_id=family_id, plan_date=day, version=0, meal_sources={}
         )
         session.add(row)
+    from yuxi.services.meal_roster_service import verify_roster_publish
+
+    for saved_meal in arrangement.snapshot["meals"]:
+        kind = saved_meal.get("meal_type", saved_meal.get("type"))
+        if not changed_meal or kind == changed_meal:
+            await verify_roster_publish(session, row, [kind], [m["id"] for m in saved_meal.get("members", [])])
+    refs = dict(row.meal_sources)
     source = {"kind": "formal", "id": arrangement.id, "version": arrangement.snapshot["version"]}
     for meal in MEALS:
         previous = refs.get(meal, {})
@@ -579,8 +625,7 @@ async def publish_formal_in_session(session, uid, family_id, day, arrangement, b
         elif (
             previous.get("kind") == "formal"
             and previous.get("id") == arrangement.id
-            and (row.archive_meals or {}).get(meal)
-            == archive_meal(saved_meal, arrangement.snapshot.get("members", []))
+            and (row.archive_meals or {}).get(meal) == archive_meal(saved_meal, arrangement.snapshot.get("members", []))
         ):
             # 未改餐次只有展示内容及成员一致时才沿用新版本。
             refs[meal] = source

@@ -65,10 +65,7 @@ async function fetchCloudProfile({openConsultation=true, readConfiguration=true}
     ? {processor:config.consultation.processor,policy_version:config.policy_version} : null
   if(openConsultation&&!profile.invitationReviewPending&&(profile.completeProfile||profile.onboarded)&&profile.selfMemberId&&profile.analysisPolicy){
     const member=profile.members.find(m=>m.id===profile.selfMemberId)
-    if(member && profile.invitationAnalysisPending === true){
-      profile.consultationConsentRequired = true
-      profile.consultationError = '已加入家庭。请由本人确认咨询授权后，再使用营养师。'
-    }else if(member){
+    if(member){
       const id=newHealthRequestId()
       try{
       const {data:opened}=await request({path:'/api/family/'+encodeURIComponent(session.householdId)+'/miniapp-profile',method:'POST',headers:{'Idempotency-Key':id},data:{action:'open_consultation',client_request_id:id,member_id:member.id,expected_version:member.version}})

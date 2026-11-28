@@ -24,7 +24,7 @@ class PlanScheduleService
         return ['items'=>$items, 'policy_version'=>$policy['version']];
     }
 
-    public function preview(array $policy, array $delivery, $firstDate, $count = 21, $resume = false, $excludeOrder = 0, $frequency = 'daily')
+    public function preview(array $policy, array $delivery, $firstDate, $count = 21, $resume = false, $excludeOrder = 0, $frequency = 'daily', array $ranges = null)
     {
         if (empty($delivery['slot']) || ($delivery['slot']['service_scope'] ?? 'normal')!=='plan') throw new DomainException('请选择专属计划配送时段',40915,409);
         $region = null;
@@ -38,7 +38,7 @@ class PlanScheduleService
             $paused=array_values(array_filter($existing,function($batch){return $batch['status']==='paused';}));
             if (count($paused)!==$count) throw new DomainException('暂停批次已变化，请重新预约',40961,409);
         }
-        $ranges = self::menuRanges($frequency, $count, $paused);
+        $ranges = $ranges ?? self::menuRanges($frequency, $count, $paused);
         $items = self::dates($policy['config']['delivery'], $region, $firstDate, count($ranges), $resume, null, $ranges);
         if ($paused) {
             foreach ($items as $index=>$candidate) foreach ($existing as $fixed) {
@@ -61,7 +61,8 @@ class PlanScheduleService
                 ->where('o.orderstate','not in',[1,2])
                 ->where(function ($q) { $q->where('o.paystate',1)->whereOr('o.orderstate',0); })
                 ->count();
-            if ($used >= $region['daily_capacity']) throw new DomainException('所选日期配送名额已满',40961,409,['delivery_date'=>$item['delivery_date']]);
+            $referenceCapacity = ExclusivePurchaseDeliveryService::reservedCapacity($delivery['area']['id'], $item['delivery_date'], $delivery['slot']['id'] ?? 0);
+            if ($used + $referenceCapacity['area'] >= $region['daily_capacity']) throw new DomainException('所选日期配送名额已满',40961,409,['delivery_date'=>$item['delivery_date']]);
             if (!empty($delivery['slot']['id']) && (int)$delivery['slot']['capacity']>0) {
                 $slotUsed=(int)Db::name('shop_plan_delivery_batch')->alias('b')
                     ->join('shop_service_plan_order p','p.id=b.plan_order_id')->join('shop_order o','o.id=p.order_id')
@@ -69,7 +70,7 @@ class PlanScheduleService
                     ->where('b.status','not in',['paused','cancelled','refund_pending','refunded'])->where('p.id','<>',$resume?0:$excludeOrder)
                     ->where('o.orderstate','not in',[1,2])
                     ->where(function ($q) { $q->where('o.paystate',1)->whereOr('o.orderstate',0); })->count();
-                if ($slotUsed+(int)$delivery['slot']['used_capacity'] >= (int)$delivery['slot']['capacity']) throw new DomainException('所选配送时段名额已满',40961,409,['delivery_date'=>$item['delivery_date']]);
+                if ($slotUsed+$referenceCapacity['slot']+(int)$delivery['slot']['used_capacity'] >= (int)$delivery['slot']['capacity']) throw new DomainException('所选配送时段名额已满',40961,409,['delivery_date'=>$item['delivery_date']]);
             }
             $item['shipping_fee_cent'] = $region['fee_cent'] + (int)($delivery['slot']['extra_fee_cent'] ?? 0);
             $item['delivery_area_id'] = (int)$delivery['area']['id'];

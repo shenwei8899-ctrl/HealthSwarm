@@ -142,6 +142,38 @@
         {
           "type": "file",
           "value": "static/plans/premium-v2.webp"
+        },
+        {
+          "type": "file",
+          "value": "components/ChatConversationPreview.js"
+        },
+        {
+          "type": "file",
+          "value": "components/ChatConversationPreview.json"
+        },
+        {
+          "type": "file",
+          "value": "components/ChatConversationPreview.wxml"
+        },
+        {
+          "type": "file",
+          "value": "components/ChatConversationPreview.wxss"
+        },
+        {
+          "type": "file",
+          "value": "components/ChatMealSuggestionCard.js"
+        },
+        {
+          "type": "file",
+          "value": "components/ChatMealSuggestionCard.json"
+        },
+        {
+          "type": "file",
+          "value": "components/ChatMealSuggestionCard.wxml"
+        },
+        {
+          "type": "file",
+          "value": "components/ChatMealSuggestionCard.wxss"
         }
       ]
     },

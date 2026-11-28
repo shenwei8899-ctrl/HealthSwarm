@@ -127,6 +127,18 @@
   },
   "subPackages": [
     {
+      "root": "pages/referral",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationStyle": "custom",
+            "navigationBarTitleText": "邀请好友"
+          }
+        }
+      ]
+    },
+    {
       "root": "pages/supplier",
       "pages": [
         {

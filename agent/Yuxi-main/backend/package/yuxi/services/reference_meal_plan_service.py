@@ -132,7 +132,7 @@ async def reference_context_in_session(session, uid, anchor, selection, *, inclu
     }
 
 
-async def bound_reference_context(session, uid, binding, *, include_age_bands=False):
+async def bound_reference_context(session, uid, binding, *, include_age_bands=False, history_view=False):
     """资料变化后使旧线程失效，不能继续沿用旧成员快照。"""
     if not reference_binding(binding):
         raise HealthVisionError("reference_mode_required", "当前线程不是日常参考餐单模式", 409)
@@ -145,7 +145,7 @@ async def bound_reference_context(session, uid, binding, *, include_age_bands=Fa
         include_age_bands=include_age_bands,
         use_catalog=fixed.get("use_catalog", False),
     )
-    if input_fingerprint(result["sources"]) != fixed["source_hash"]:
+    if not history_view and input_fingerprint(result["sources"]) != fixed["source_hash"]:
         raise ReferencePlanSourceChanged("成员资料或知识库绑定已更新，请重新生成参考餐单", result["selection"])
     return result
 
@@ -856,11 +856,15 @@ async def reference_meal_media(session, meal):
     return await attach_chinese_display(session, result)
 
 
-async def reference_plan_display(session, plan):
+async def reference_plan_display(session, plan, *, history_view=False):
     """业务回执校验后附加展示内容，不改写快照及工具完成结果。"""
     import copy
 
     result = copy.deepcopy(plan)
+    if history_view:
+        result.pop("purchase_validation_version", None)
+        result.update(history_read_only=True, purchase_ready=False)
+        return result
     from yuxi.services.reference_recipe_presentation import attach_recipe_products
 
     if result.get("product_matches"):
@@ -1318,12 +1322,12 @@ def skus_for_stocked_products(skus):
     return [sku for sku in skus if str(sku.get("product_id") or sku["sku_id"]).strip() in stocked_ids]
 
 
-async def reference_result_in_session(session, run, binding, preview_id):
+async def reference_result_in_session(session, run, binding, preview_id, *, history_view=False):
     """发布及历史读取均重验原 Run、当前档案和每份原文。"""
     from yuxi.services.health_memory_context_service import validate_memory_publication
 
-    await validate_memory_publication(session, run)
-    current = await bound_reference_context(session, run.uid, binding)
+    await validate_memory_publication(session, run, binding=binding, history_view=history_view)
+    current = await bound_reference_context(session, run.uid, binding, history_view=history_view)
     row = await session.get(HealthInitialPlanPreview, str(preview_id))
     if (
         row is None
@@ -1343,9 +1347,9 @@ async def reference_result_in_session(session, run, binding, preview_id):
         )
     ):
         raise HealthVisionError("reference_receipt_invalid", "参考餐单回执不属于当前运行", 409)
-    if row.snapshot.get("catalog_chain_version") != REFERENCE_CATALOG_CHAIN_VERSION:
+    if not history_view and row.snapshot.get("catalog_chain_version") != REFERENCE_CATALOG_CHAIN_VERSION:
         raise HealthVisionError("reference_chain_unverified", "旧餐单缺少商城分类和商品核对回执，请重新安排", 410)
-    if row.snapshot["sources"] != current["sources"]:
+    if not history_view and row.snapshot["sources"] != current["sources"]:
         raise ReferencePlanSourceChanged("参考餐单的成员资料已变化", current["selection"])
     policy_version = row.snapshot.get("meal_policy_version")
     if policy_version in BATCH_REFERENCE_MEAL_POLICY_VERSIONS:
@@ -1359,12 +1363,16 @@ async def reference_result_in_session(session, run, binding, preview_id):
             try:
                 fresh = await recipe_document(session, dish["file_id"], dish["chunk_id"])
             except HealthVisionError as error:
+                if history_view:
+                    raise
                 if error.code != "reference_source_unavailable":
                     raise
                 raise ReferencePlanSourceChanged(error.message, current["selection"]) from error
             if any(fresh[k] != dish["source"][k] for k in ("kb_id", "file_hash", "chunks_hash")):
                 raise ReferencePlanSourceChanged("参考餐单的菜谱来源已变化", current["selection"])
             documents.append(fresh)
+    if history_view:
+        return {"preview_id": row.id, **row.snapshot}
     from yuxi.services.health_memory_context_service import memory_restrictions_for_plan
 
     restrictions = reference_member_restrictions(current["members"]) + await memory_restrictions_for_plan(
@@ -1436,9 +1444,9 @@ def reference_restriction_conflict(content, restrictions):
     return False
 
 
-async def reference_answer_in_session(session, run, binding, answer):
+async def reference_answer_in_session(session, run, binding, answer, *, history_view=False):
     """模型最终只选择同 Run 的持久回执或提出补充问题。"""
-    current = await bound_reference_context(session, run.uid, binding)
+    current = await bound_reference_context(session, run.uid, binding, history_view=history_view)
     if answer.candidate_meals:
         from yuxi.services.health_memory_context_service import memory_restrictions_for_plan
 
@@ -1456,14 +1464,14 @@ async def reference_answer_in_session(session, run, binding, answer):
         )
     if answer.questions:
         return {"status": "needs_input", "questions": answer.questions}
-    result = await reference_result_in_session(session, run, binding, answer.preview_id)
+    result = await reference_result_in_session(session, run, binding, answer.preview_id, history_view=history_view)
     receipts = await tool_payloads(session, run, "save_reference_meal_plan")
     if result not in receipts:
         raise HealthVisionError("reference_receipt_invalid", "当前运行缺少保存参考餐单的完成回执", 409)
     return result
 
 
-async def validate_reference_publication(session, run, binding, content):
+async def validate_reference_publication(session, run, binding, content, *, history_view=False):
     """最终发布不允许模型改写来源、营养缺失或专业状态。"""
     from yuxi.services.health_meal_plan_types import PlannerAnswer
 
@@ -1473,7 +1481,7 @@ async def validate_reference_publication(session, run, binding, content):
         questions=payload.get("questions", []),
         candidate_meals=payload.get("candidate_selection", []),
     )
-    current = await reference_answer_in_session(session, run, binding, answer)
+    current = await reference_answer_in_session(session, run, binding, answer, history_view=history_view)
     if current != payload:
         raise HealthVisionError("source_invalidated", "参考餐单最终内容与当前回执不一致", 410)
 
@@ -1549,12 +1557,12 @@ async def validate_reference_tool_payload(session, context, binding, message):
         raise HealthVisionError("source_invalidated", "参考餐单工具回执无法解析", 410) from None
 
 
-async def read_reference_plan_in_session(session, uid, preview_id):
+async def read_reference_plan_in_session(session, uid, preview_id, *, history_view=False):
     """只公开当前账号已完成 Run 的参考结果，沿用发布校验。"""
     row = await session.get(HealthInitialPlanPreview, str(preview_id))
     if row is None or row.actor_uid != uid or row.selection.get("mode") != "reference":
         raise HealthVisionError("not_found", "参考餐单不存在或不可访问", 404)
-    if row.snapshot.get("catalog_chain_version") != REFERENCE_CATALOG_CHAIN_VERSION:
+    if not history_view and row.snapshot.get("catalog_chain_version") != REFERENCE_CATALOG_CHAIN_VERSION:
         raise HealthVisionError("reference_chain_unverified", "旧餐单缺少商城分类和商品核对回执，请重新安排", 410)
     from yuxi.services.health_consultation_service import require_consultation
     from yuxi.repositories.health_task_repository import HealthTaskRepository
@@ -1564,11 +1572,22 @@ async def read_reference_plan_in_session(session, uid, preview_id):
     if run is None or run.uid != uid or run.status != "completed":
         raise HealthVisionError("reference_not_completed", "参考餐单尚未完成发布", 409)
     await session.refresh(run, ["input_payload"])
-    binding, _ = await require_consultation(
-        session, uid, run.conversation_thread_id, expected=run.input_payload["health_processing"]
-    )
+    if history_view:
+        from yuxi.repositories.health_consultation_repository import HealthConsultationRepository
+
+        binding = await HealthConsultationRepository(session).authorize(
+            uid, run.conversation_thread_id, history_view=True
+        )
+        if (run.input_payload or {}).get("health_processing", {}).get("initial_selection_hash") != input_fingerprint(
+            binding.initial_planner_selection
+        ):
+            raise HealthVisionError("source_invalidated", "参考历史所属运行与当前选择不符", 410)
+    else:
+        binding, _ = await require_consultation(
+            session, uid, run.conversation_thread_id, expected=run.input_payload["health_processing"]
+        )
     message = await HealthTaskRepository(session).final_message(run)
-    await validate_reference_publication(session, run, binding, message.content)
+    await validate_reference_publication(session, run, binding, message.content, history_view=history_view)
     payload = json.loads(message.content)
     if payload.get("preview_id") != str(preview_id):
         raise HealthVisionError("reference_receipt_invalid", "该参考结果未被当前运行最终采用", 409)
@@ -1582,7 +1601,7 @@ async def read_reference_plan(uid, preview_id):
         return await reference_plan_display(session, payload)
 
 
-async def validate_reference_history(session, binding, *, allow_stale_results=False):
+async def validate_reference_history(session, binding, *, allow_stale_results=False, history_view=False):
     """聊天历史只展示当前来源有效的权威完成结果。"""
     from yuxi.repositories.health_task_repository import HealthTaskRepository
     from yuxi.storage.postgres.models_business import AgentRun, Conversation
@@ -1605,9 +1624,10 @@ async def validate_reference_history(session, binding, *, allow_stale_results=Fa
         ):
             raise HealthVisionError("source_invalidated", "参考历史所属运行与当前选择不符", 410)
         message = await HealthTaskRepository(session).final_message(run)
-        await require_consultation(
-            session, run.uid, run.conversation_thread_id, expected=run.input_payload["health_processing"]
-        )
+        if not history_view:
+            await require_consultation(
+                session, run.uid, run.conversation_thread_id, expected=run.input_payload["health_processing"]
+            )
         preview_id = json.loads(message.content).get("preview_id")
         if preview_id:
             preview = await session.get(HealthInitialPlanPreview, str(preview_id))
@@ -1618,10 +1638,13 @@ async def validate_reference_history(session, binding, *, allow_stale_results=Fa
                 or preview.conversation_id != binding.conversation_id
             ):
                 raise HealthVisionError("reference_receipt_invalid", "参考历史餐单不属于当前运行", 409)
-            if (preview.snapshot or {}).get("catalog_chain_version") != REFERENCE_CATALOG_CHAIN_VERSION:
+            if (
+                not history_view
+                and (preview.snapshot or {}).get("catalog_chain_version") != REFERENCE_CATALOG_CHAIN_VERSION
+            ):
                 continue
         try:
-            await validate_reference_publication(session, run, binding, message.content)
+            await validate_reference_publication(session, run, binding, message.content, history_view=history_view)
         except HealthVisionError as error:
             if (
                 not preview_id

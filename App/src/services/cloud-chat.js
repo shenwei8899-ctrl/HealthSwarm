@@ -98,11 +98,11 @@ export function chatMessages(value) {
     const role = ({ human: 'user', user: 'user', ai: 'assistant', assistant: 'assistant' })[item.type || item.role]
     if (!role) return []
     const images = (item.image_contents || (item.image_content ? [item.image_content] : [])).filter(path => typeof path === 'string' && /^data:image\//.test(path))
-    let text=chatText(item.content),business=null,exclusivePlanEntry=false
+    let text=chatText(item.content),business=null,exclusivePlanEntry=false,quoteSelectable=!text.trim().startsWith('{')
     if(role==='user'){const patterns=[['breakfast',/早餐|早饭|早上|今早|明早/],['lunch',/午餐|午饭|中午/],['dinner',/晚餐|晚饭|晚上|今晚|明晚/]];requestedMeals=patterns.filter(([,pattern])=>pattern.test(text)).map(([type])=>type);if(/三餐|全天|一天/.test(text)||!requestedMeals.length)requestedMeals=['breakfast','lunch','dinner']}
     if(role==='assistant'&&text.trim().startsWith('{')){
       try{const data=JSON.parse(text)
-        if(data.result_type==='health_intent'&&['exclusive_plan','needs_clarification'].includes(data.route)){text=typeof data.message==='string'?data.message:'请补充想咨询的问题。';exclusivePlanEntry=data.route==='exclusive_plan'}
+        if(data.result_type==='health_intent'&&['exclusive_plan','needs_clarification'].includes(data.route)){quoteSelectable=true;text=typeof data.message==='string'?data.message:'请补充想咨询的问题。';exclusivePlanEntry=data.route==='exclusive_plan'}
         else if((data.result_type==='needs_input'||data.status==='needs_input')&&Array.isArray(data.questions))text=data.questions.join('\n')
         else if(data.result_type==='meal_feedback'&&data.feedback?.details?.comment)text=data.feedback.details.comment
         else if(data.status==='reference_candidates'||data.scope==='cooking_reference'){
@@ -115,11 +115,11 @@ export function chatMessages(value) {
     }
     const purchaseRequestId = role === 'assistant' && /\[食材包:[A-Za-z0-9_-]{100,4096}\]/.test(text) ? item.request_id || item.extra_metadata?.request_id || undefined : undefined
     if (role === 'assistant') text = text.replace(/\[食材包:[A-Za-z0-9_-]{100,4096}\]/g, '').trim()
-    return [{ id: String(item.id), role, text, business, purchaseRequestId, exclusivePlanEntry,
+    return [{ id: String(item.id), role, text, ...(role==='assistant'?{quoteSelectable}:{}), ...(role==='user' && item.extra_metadata?.reply_quote?{replyQuote:item.extra_metadata.reply_quote}:{}), business, purchaseRequestId, exclusivePlanEntry,
       ...(Array.isArray(item.citations) ? { citations: item.citations } : {}),
       followups:normalizeFollowups(item.followups),
       recordedMeals: business?.kind==='meal_plan_candidates' ? [] : Array.isArray(item.recorded_meals) ? item.recorded_meals : [],
-      ...(business?.data?.scope==='daily_reference'?{planDate:business.data.plan_date,planMeals:requestedMeals||business.data.meals.map(meal=>meal.meal_type)}:{}), createdAt: chatTimestamp(item.created_at),
+      ...(business?.data?.scope==='daily_reference'&&business.data.history_read_only!==true?{planDate:business.data.plan_date,planMeals:requestedMeals||business.data.meals.map(meal=>meal.meal_type)}:{}), createdAt: chatTimestamp(item.created_at),
       requestId: item.request_id || item.extra_metadata?.request_id || '', status: item.delivery_status || 'saved',
       errorCode: typeof item.failure_code === 'string' ? item.failure_code : '',
       ...(images.length ? { image: { localPath: images[0] } } : {}) }]
@@ -147,6 +147,8 @@ export async function readChatSnapshot(threadId, send = request) {
     id: threadId,
     title: typeof metadata.title === 'string' ? conversationTitle(metadata.title, 120) : '',
     agentId: typeof (metadata.agent_id ?? metadata.agentId) === 'string' ? (metadata.agent_id ?? metadata.agentId).slice(0, 120) : '',
+    ...(metadata.history_read_only === true ? { historyReadOnly: true,
+      historyNotice: typeof metadata.history_notice === 'string' ? metadata.history_notice.slice(0, 200) : '此对话仅供历史回看，请新建对话继续。' } : {}),
   } : null
   const related = data?.related_threads || []
   if (!Array.isArray(related) || related.some(row => !conversationUuid.test(row?.thread_id || '') ||

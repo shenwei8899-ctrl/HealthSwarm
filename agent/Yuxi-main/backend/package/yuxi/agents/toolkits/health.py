@@ -113,7 +113,7 @@ async def record_actual_meal(
     day_text: str = "",
     intake_quote: str = "",
 ) -> dict:
-    """已吃事实及成员、餐次明确时自动保存；无需再次确认，份量可未知。缺信息先追问，计划/推荐/问句不保存。"""
+    """已吃事实及成员明确时自动保存；无需再次确认。未说餐次填unknown，份量可未知，不为这些缺项追问。计划/推荐/问句不保存。"""
     from yuxi.services.health_chat_meal_service import record_chat_meal
 
     statement = ChatMealStatement.model_validate(

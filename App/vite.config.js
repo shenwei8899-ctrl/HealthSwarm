@@ -51,10 +51,11 @@ export default defineConfig(({ mode }) => {
         if (!asset || asset.type !== 'asset') return
         const project = JSON.parse(String(asset.source))
         if ((process.env.VITE_SERVICE_MODE || env.VITE_SERVICE_MODE) === 'api') {
-          // These bundle illustrations belong to mock transactions. API chat
-          // still uses oats.webp, which must remain in the main package.
+          // API 模式不打包演示图片，聊天仍使用的 oats.webp 保留。
           const demoImages = ['cucumber', 'eggs', 'fish-veg', 'grains', 'tomato-tofu']
             .map(name => 'static/bundles/' + name + '.webp')
+            .concat(['static/plans/meal-preview.webp'])
+            .concat(['economy','standard','premium'].flatMap(tier => ['static/plans/' + tier + '-v3.webp','static/plans/' + tier + '-v4.jpg']))
           const pack = project.packOptions || {}
           const ignore = pack.ignore || []
           project.packOptions = { ...pack, ignore: [...ignore, ...demoImages

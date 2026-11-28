@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {createRequire} from 'node:module'
 import {ref} from 'vue'
+import {createPhoneLogin} from '../src/services/phone-login.js'
 
 const source=readFileSync(new URL('../src/pages/index/index.vue',import.meta.url),'utf8')
 const script=source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'')
@@ -11,14 +12,14 @@ function deferred(){let resolve,reject;const promise=new Promise((a,b)=>{resolve
 function page(){
  const hooks={},calls={reads:0,views:[],login:[],native:0,authorize:0,restore:0,ack:0}
  let document=structuredClone(original),account=null,read=async()=>document,view=async()=>{}
- let flowOptions
+ let flowOptions,ack=async receipt=>{const status={...receipt,acknowledged:true};account={...account,serviceNotice:status};return status}
  const deps={ref,isMockMode:false,canUseBusinessLogin:false,isCommerceEnabled:true,request(){},
   onShow:f=>hooks.show=f,onHide:f=>hooks.hide=f,onUnload:f=>hooks.unload=f,
   getSession:()=>account,storageContext:()=>String(account?.accountId||'guest'),wechatAppId:'wx1234567890abcdef',commerce:{},
   uni:{getDeviceInfo:()=>({platform:'ios'})},
-  wechatAuth:{restore:async()=>account,cancelPending(){}},service:{login:async value=>{calls.login.push(value)}},
+  wechatAuth:{restore:async()=>account,cancelPending(){}},service:{login:async value=>{calls.login.push(value);account={accountId:'one',token:'synthetic'};return account}},
   readServiceNotice:async()=>{calls.reads++;return read()},viewNoticeDocument:async value=>{calls.views.push(value);await view()},
-  acknowledgeReadNotice:async()=>{calls.ack++},resolveAppEntry:async()=>'/pages/chat/index',
+  acknowledgeReadNotice:async(_send,receipt)=>{calls.ack++;return ack(receipt)},resolveAppEntry:async()=>'/pages/chat/index',
   createPhoneLogin:options=>{flowOptions=options;return {
    beginAuthorization(){calls.native++;options.update({busy:false,error:'',awaitingAuthorization:true})},
    async authorize(){calls.authorize++;await options.auth.login()},
@@ -26,7 +27,7 @@ function page(){
   }},
  }
  const p=new Function('deps',`const {${Object.keys(deps)}}=deps;${script};return {loadLoginNotice,showLoginNotice,changeLoginNotice,requireLoginNotice,authorizePhone,beginPhoneAuthorization,loginWechatAccount,refreshRejectedNotice,loginNotice,noticeDocument,noticeLoading,noticeViewing,loggingIn,awaitingPhoneAuthorization,loginError,phoneLogin}`)(deps)
- return {p,hooks,calls,setRead:f=>read=f,setView:f=>view=f,setDocument:v=>document=v,setAccount:v=>account=v,get flow(){return flowOptions}}
+ return {p,hooks,calls,setRead:f=>read=f,setView:f=>view=f,setDocument:v=>document=v,setAccount:v=>account=v,setAck:f=>ack=f,get account(){return account},get flow(){return flowOptions}}
 }
 const check=h=>h.p.changeLoginNotice({detail:{value:['yes']}})
 const uncheck=h=>h.p.changeLoginNotice({detail:{value:[]}})
@@ -83,7 +84,7 @@ test('the login adapter forwards the checked receipt and saves it for an unbound
  const h=page();h.setAccount({accountId:'one',token:'synthetic'});await h.p.loadLoginNotice();check(h);h.p.phoneLogin()
  await h.flow.auth.restore();assert.equal(h.calls.ack,1);await h.flow.auth.login()
  assert.deepEqual(h.calls.login,[{serviceNotice:{version:original.version,content_hash:original.content_hash,acknowledged:true}}])
- uncheck(h);assert.throws(()=>h.flow.auth.login(),/请先阅读并勾选/)
+ uncheck(h);await assert.rejects(h.flow.auth.login(),/请先阅读并勾选/)
 })
 test('compiled WeChat title uses catchtap outside the checkbox label and follows the login buttons',()=>{
  const require=createRequire(import.meta.url),mpRequire=createRequire(require.resolve('@dcloudio/uni-mp-weixin/package.json'))
@@ -93,4 +94,62 @@ test('compiled WeChat title uses catchtap outside the checkbox label and follows
  assert.ok(link);assert.match(link,/catchtap=/)
  assert.ok(wxml.indexOf('login-notice')>wxml.indexOf('open-type="getPhoneNumber"'))
  assert.match(wxml,/<\/label><view class="login-notice-copy"/)
+})
+
+
+test('an old bound session cannot bypass the login checkbox or manufacture an acknowledgement',async()=>{
+ const h=page();h.setAccount({accountId:'one',token:'synthetic',serviceNotice:{acknowledged:false}});h.p.phoneLogin()
+ await assert.rejects(h.flow.auth.restore(),e=>e.code==='LOGIN_NOTICE_REQUIRED')
+ assert.equal(h.calls.ack,0);assert.equal(h.account.serviceNotice.acknowledged,false)
+})
+
+test('restoring a checked old session waits for a persisted exact receipt before continuing',async()=>{
+ const h=page();h.setAccount({accountId:'one',token:'synthetic',serviceNotice:{acknowledged:false}})
+ await h.p.loadLoginNotice();check(h);h.p.phoneLogin();const saved=deferred();h.setAck(()=>saved.promise)
+ let continued=false;const pending=h.flow.auth.restore().then(value=>{continued=true;return value})
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(continued,false);assert.equal(h.calls.ack,1)
+ saved.resolve({...original,acknowledged:true});const account=await pending
+ assert.equal(continued,true);assert.equal(account.serviceNotice.content_hash,original.content_hash)
+})
+
+test('a failed acknowledgement blocks restored login instead of deferring the error until photo recognition',async()=>{
+ const h=page();h.setAccount({accountId:'one',token:'synthetic',serviceNotice:{acknowledged:false}})
+ await h.p.loadLoginNotice();check(h);h.p.phoneLogin();h.setAck(async()=>{throw Error('synthetic save failed')})
+ await assert.rejects(h.flow.auth.restore(),/synthetic save failed/);assert.equal(h.account.serviceNotice.acknowledged,false)
+})
+
+test('a confirmed returning session neither repeats confirmation nor writes another receipt',async()=>{
+ const h=page();h.setAccount({accountId:'one',token:'synthetic',serviceNotice:{...original,acknowledged:true}});h.p.phoneLogin()
+ const account=await h.flow.auth.restore();assert.equal(account.serviceNotice.acknowledged,true);assert.equal(h.calls.ack,0)
+})
+
+test('fresh login repairs a missing server receipt using only the explicitly checked version',async()=>{
+ const h=page();await h.p.loadLoginNotice();check(h);h.p.phoneLogin();const account=await h.flow.auth.login()
+ assert.equal(h.calls.ack,1);assert.equal(account.serviceNotice.content_hash,original.content_hash)
+ assert.deepEqual(h.calls.login,[{serviceNotice:{version:original.version,content_hash:original.content_hash,acknowledged:true}}])
+})
+
+
+test('the real bound-phone flow cannot navigate until the welcome checkbox has a saved receipt',async()=>{
+ const h=page();h.setAccount({accountId:'one',token:'synthetic',serviceNotice:{acknowledged:false}});h.p.phoneLogin()
+ const navigations=[],states=[]
+ const flow=createPhoneLogin({...h.flow,commerce:{connect:async()=>{},session:()=>({userId:12}),sessionRevision:()=>1,
+  request:async path=>path.endsWith('/config')?{available:true,appid:'wx1234567890abcdef'}:{user_id:12,phone_bound:true,phone_masked:'155****0000',verification_source:'wechat_phone',verified_at:123}},
+  resolveEntry:async()=>'/pages/chat/index',navigate:async url=>navigations.push(url),update:value=>states.push(value)})
+ await flow.restore();assert.deepEqual(navigations,[]);assert.match(states.at(-1).error,/请先阅读并勾选/)
+ await h.p.loadLoginNotice();check(h);const saved=deferred();h.setAck(()=>saved.promise)
+ const pending=flow.login();await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(navigations,[])
+ saved.resolve({...original,acknowledged:true});await pending
+ assert.deepEqual(navigations,['/pages/chat/index']);assert.equal(h.calls.ack,1);assert.equal(states.at(-1).error,'')
+ flow.dispose()
+})
+
+
+test('retrying session restore cannot apply one accounts checkbox to a different account',async()=>{
+ const h=page();h.setAccount({accountId:'one',token:'synthetic',serviceNotice:{acknowledged:false}})
+ await h.p.loadLoginNotice();check(h);h.p.phoneLogin()
+ h.setAccount({accountId:'two',token:'other-token',serviceNotice:{acknowledged:false}})
+ await assert.rejects(h.flow.auth.restore(),e=>e.code==='LOGIN_NOTICE_REQUIRED')
+ assert.equal(h.calls.ack,0);assert.equal(h.account.accountId,'two');assert.equal(h.account.serviceNotice.acknowledged,false)
+ assert.equal(h.p.loginNotice.value,null)
 })

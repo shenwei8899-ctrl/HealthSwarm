@@ -5,6 +5,7 @@ from typing import Literal
 from uuid import UUID
 from pydantic import Field, model_validator
 
+from yuxi.services.health_reply_quote_service import ReplyQuoteInput
 from yuxi.services.health_vision_types import HealthDTO
 
 
@@ -12,6 +13,7 @@ class HealthIntentInput(HealthDTO):
     """只接收待分类的用户文本，不接收健康资料或任务选择。"""
 
     text: str = Field(min_length=1, max_length=4000)
+    reply_quote: ReplyQuoteInput | None = None
     client_request_id: UUID
     thread_id: UUID
     awaiting_meal_details: bool = False

@@ -46,7 +46,7 @@ onShow(load);onHide(hide);onUnload(hide)
   <AppNavBar title="饮食反馈"><template #left><button class="icon-button" aria-label="返回" @click="uni.navigateBack()">‹</button></template></AppNavBar>
   <view class="df39"><text class="df34">每一餐，都有回应</text><text class="df15">从真实记录里，发现饮食的小变化</text></view>
   <view class="df24">
-   <view class="df13"><picker mode="date" :value="date" :disabled="busy" @change="change('date',$event.detail.value)"><view class="df37"><view class="df12"><AppIcon name="calendar" :size="34"/></view><view><view class="df7"><text>{{dayLabel}}</text><text class="df17">⌄</text></view><text class="df10">{{isToday?'今天的饮食反馈':'这一天的饮食反馈'}}</text></view></view></picker></view>
+   <view class="df13"><picker mode="date" :value="date" :disabled="busy" @change="change('date',$event.detail.value)"><view class="df37"><view class="df12"><AppIcon name="calendar" :size="34"/></view><view><view class="df7"><text>{{dayLabel}}</text><view class="df17 disclosure-chevron" aria-hidden="true"/></view><text class="df10">{{isToday?'今天的饮食反馈':'这一天的饮食反馈'}}</text></view></view></picker></view>
    <scroll-view scroll-x class="df19" :show-scrollbar="false"><view class="df9"><button :class="{chosen:scope==='all'}" :aria-pressed="scope==='all'" :disabled="busy" @click="change('scope','all')">全家</button><button v-for="m in members" :key="m.id" :class="{chosen:scope===m.id}" :aria-pressed="scope===m.id" :disabled="busy" @click="change('scope',m.id)"><text>{{name(m.id)}}</text></button></view></scroll-view>
   </view>
   <view class="df35"><button v-for="v in ['当餐','当日','近期趋势']" :key="v" :class="{chosen:view===v}" :aria-pressed="view===v" :disabled="busy" @click="change('view',v)">{{v}}</button></view>
@@ -83,6 +83,7 @@ onShow(load);onHide(hide);onUnload(hide)
  </view>
 </template>
 <style>
+@import "../styles/disclosure-chevron.css";
 .df40{background-color:#f5f6fa;background-image:radial-gradient(ellipse at 0% 0%,rgba(125,174,255,.44),transparent 70%),radial-gradient(ellipse at 100% 0%,rgba(206,178,245,.38),transparent 76%);background-size:100% 490rpx;background-repeat:no-repeat;color:#35343f;font-family:"PingFang SC","Microsoft YaHei",sans-serif}
 .df39{padding:28rpx 4rpx 30rpx}.df34{font-size:44rpx;line-height:1.45;letter-spacing:1rpx}.df15{margin-top:12rpx;font-size:25rpx;color:#74717f;line-height:1.6}
 .df24{padding:24rpx 26rpx 0;border:1px solid rgba(255,255,255,.9);border-radius:32rpx;background:linear-gradient(180deg,rgba(255,255,255,.45),rgba(255,255,255,.96));}.df13{display:flex;justify-content:space-between;gap:12rpx;padding-bottom:22rpx}.df13 picker{flex:1;min-width:0}.df37{display:flex;gap:18rpx;min-height:86rpx}.df12{display:flex;width:74rpx;height:78rpx;background:#eeeaf7;border-radius:22rpx;color:#7e708e}.df7{display:flex;gap:14rpx;font-size:34rpx;white-space:nowrap;line-height:1.4}.df17{font-size:26rpx;color:#8e879a}.df10{margin-top:6rpx;font-size:23rpx;color:#74717f}

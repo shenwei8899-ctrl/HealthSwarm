@@ -6,6 +6,7 @@ import { archiveDate, archiveMeals, archiveCard, plannedGrams } from '../src/ser
 import { createHealthPlanClient, healthPlanState } from '../src/services/health-plan-client.js'
 import { createMealArchiveClient, mealArchiveState } from '../src/services/meal-archive-client.js'
 import { dishTitle } from '../src/utils/meal-presentation.js'
+import { recipeCovers } from '../src/data/recipe-covers.js'
 
 const a = '11111111-1111-4111-8111-111111111111', b = '22222222-2222-4222-8222-222222222222'
 const planId = '33333333-3333-4333-8333-333333333333'
@@ -67,6 +68,24 @@ function mount(override = async () => null, options = { memberId: a }) {
 
 const archived = { id:'saved-day',family_id:'family',plan_date:'2026-11-19',version:4,
   meals:[{meal_type:'dinner',members:[{id:a,name:'本人'}],dishes:[{name:'已保存的晚餐',ingredients:['青菜'],steps:['煮熟'] }]}] }
+
+test('archive thumbnails belong to the same saved meal and keep the source snapshot unchanged',()=>{
+ const snapshot={meals:[{meal_type:'breakfast',dishes:[{name:'无图鸡蛋'},{name:'真实青菜',image_url:'/uploads/greens.jpg'}]},
+  {meal_type:'lunch',dishes:[{name:'无图午餐'}]},
+  {meal_type:'dinner',dishes:[{name:'晚餐',cover:{image_url:'https://example.test/dinner.jpg'}}]}]}
+ const original=structuredClone(snapshot),rows=archiveMeals(snapshot)
+ assert.equal(rows[0].image,'/uploads/greens.jpg');assert.equal(rows[0].imageLabel,'真实青菜')
+ assert.equal(rows[0].summary,'无图鸡蛋 · 真实青菜');assert.equal(rows[1].image,'')
+ assert.equal(rows[2].image,'https://example.test/dinner.jpg');assert.deepEqual(snapshot,original)
+})
+test('only exact immutable recipe sources supply covers; missing meals and malformed image values stay empty',()=>{
+ const cover=recipeCovers[0],source={kb_id:cover.kb_id,file_id:cover.file_id,file_hash:cover.file_hash}
+ const row=dish=>archiveMeals({meals:[{meal_type:'breakfast',dishes:[dish]}]})[0]
+ assert.equal(row({name:'真实菜谱',source}).image,cover.image_url)
+ assert.equal(row({name:'旧版本',source:{...source,file_hash:'changed'}}).image,'')
+ for(const image_url of [{url:'/uploads/wrong.jpg'},'javascript:alert(1)','//foreign.test/image.jpg'])assert.equal(row({name:'无效图片',image_url}).image,'')
+ assert.ok(archiveMeals({meals:[]}).every(meal=>meal.image===''&&meal.summary==='本餐未记录'))
+})
 
 test('My Meals reads successful daily snapshots by default, without querying old member drafts',async()=>{
  const p=mount(async options=>({data:options.path.endsWith('/archive')?archived:{plans:[archived],next_before:null}}),{})

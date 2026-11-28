@@ -59,6 +59,8 @@ async def replace_dish(uid, family_id, day, data):
             require_version(plan, data.version)
             if data.meal_type in plan.get("needs_regeneration", []):
                 raise HealthVisionError("swap_meal_needs_regeneration", "本餐资料已更新，请先重新安排", 409)
+            if data.meal_type in blocked_meals(plan):
+                raise HealthVisionError("roster_not_ready", "本餐已用餐或成员正在更新，保留原安排", 409)
             choices = await plan_candidates(
                 session, uid, family_id, plan, meal_type=data.meal_type, dish_key_filter=data.dish_key
             )
@@ -163,6 +165,10 @@ async def plan_candidates(session, uid, family_id, plan, *, meal_type=None, dish
         and not any(dish_key(dish) == dish_key_filter for meal in selected_meals for dish in meal["meal"]["dishes"])
     ):
         raise HealthVisionError("swap_target_changed", "原菜或餐次已变化，请重新读取餐单", 409)
+    stale_meals = blocked_meals(plan)
+    if all(meal["meal_type"] in stale_meals for meal in selected_meals):
+        return [{"meal_type": meal["meal_type"], "dishes": []} for meal in selected_meals]
+
     rows = await reference_recipe_rows(session)
     documents = await asyncio.to_thread(prepared_swap_documents, tuple(tuple(row) for row in rows))
     verified_documents = {}
@@ -170,7 +176,7 @@ async def plan_candidates(session, uid, family_id, plan, *, meal_type=None, dish
     occupied = set().union(*(dish_keys(d) for m in plan["meals"] for d in m["meal"]["dishes"]))
     result = []
     for meal in selected_meals:
-        if meal["meal_type"] in plan.get("needs_regeneration", []):
+        if meal["meal_type"] in stale_meals:
             result.append({"meal_type": meal["meal_type"], "dishes": []})
             continue
         anchors = [d["origin"].get("anchor", d["origin"]) for d in meal["meal"]["dishes"]]
@@ -269,7 +275,6 @@ def prepared_swap_documents(rows):
     from yuxi.services.reference_recipe_index import prepare_reference_documents
 
     return tuple(prepare_reference_documents(rows, include_recall=False))
-
 
 
 def rank_candidates(original, documents, products, restrictions, policy, *, product_index=None, match_cache=None):
@@ -450,3 +455,19 @@ def require_version(plan, version):
     """过期卡片不能覆盖刚更新的餐单。"""
     if plan["version"] != version:
         raise HealthVisionError("daily_plan_version_changed", "餐单已更新，请刷新后换菜", 409)
+
+
+def blocked_meals(plan):
+    """归档回退及已执行餐次只展示，不作为换菜来源。"""
+    blocked = set(plan.get("needs_regeneration", ()))
+    for meal in plan["meals"]:
+        kind = meal["meal_type"]
+        roster = plan.get("roster", {}).get(kind, {})
+        if (
+            meal.get("purchase_ready") is False
+            or roster.get("execution_locked")
+            or roster.get("status") in {"pending", "failed"}
+            or any(not dish.get("origin") for dish in meal["meal"]["dishes"])
+        ):
+            blocked.add(kind)
+    return blocked

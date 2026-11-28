@@ -30,6 +30,7 @@ def plan_meals(plan):
         }
         for day in plan["days"]
         for dish in day["meals"]
+        if not dish.get("roster_preserved")
     ]
 
 
@@ -151,8 +152,9 @@ async def read_purchase(uid, family_id, group_id, tier):
             start_date=plan["days"][0].get("plan_date"),
             load_documents=False,
         )
-        restrictions = (reference_member_restrictions(context["current"]["members"])
-                        + context["current"].get("memory_restrictions", []))
+        restrictions = reference_member_restrictions(context["current"]["members"]) + context["current"].get(
+            "memory_restrictions", []
+        )
     catalog = await optional_exclusive_catalog()
     return {
         **assemble_purchase(plan, catalog, restrictions),
@@ -182,6 +184,7 @@ async def publish_purchase(uid, family_id, group_id, tier, scope_hash):
         "scope_hash": scope_hash,
         "expires_at": expiry,
         "catalog_version": result["catalog_version"],
+        "delivery_requirements": purchase_delivery_requirements(result),
     }
     source["menu_version_ref"] = "exclusive-purchase:" + input_fingerprint(source)
     task = str(uuid5(NAMESPACE_URL, source["menu_version_ref"]))
@@ -215,8 +218,42 @@ async def validate_purchase_source(source):
     result = await read_purchase(source["uid"], source["family_id"], source["group_id"], source["tier_code"])
     if result["scope_hash"] != source["scope_hash"] or not result["items"]:
         raise HealthVisionError("source_invalidated", "计划依据或商品已变化，请重新采购", 410)
+    if "delivery_requirements" in source and source["delivery_requirements"] != purchase_delivery_requirements(result):
+        raise HealthVisionError("source_invalidated", "配送依据已变化，请重新采购", 410)
     return {
         "available": True,
         "selection_mode": "reference",
         "items": [{"sku_id": item["sku_id"], "quantity": item["quantity"]} for item in result["items"]],
     }
+
+
+def purchase_delivery_requirements(purchase):
+    """仅向商城提供 SKU 使用日及已审核储存依据，不传成员健康或完整菜谱。"""
+    from yuxi.services.exclusive_delivery_suggestions import approved_storage_rule
+
+    suggestions = purchase["delivery_suggestions"]
+    result = []
+    for item in purchase["items"]:
+        uses = [demand for demand in suggestions["demands"] if demand["food"] == item["food"]]
+        entries = [row for batch in suggestions["batches"] for row in batch["items"] if row["food"] == item["food"]]
+        first = entries[0] if entries else {}
+        rule = {
+            "review_status": "approved",
+            "condition": first.get("storage_condition"),
+            "max_days": first.get("storage_max_days"),
+            "version": first.get("storage_rule_version"),
+            "source": first.get("storage_rule_source"),
+        }
+        sku_rule = item["sku"].get("storage_rule")
+        if approved_storage_rule(sku_rule):
+            rule = sku_rule
+        known = all(use["quantity_g"] is not None and use["quantity_g"] > 0 for use in uses)
+        result.append(
+            {
+                "sku_id": item["sku_id"],
+                "food": item["food"],
+                "storage_rule": rule if approved_storage_rule(rule) else None,
+                "uses": [{"day_no": use["day_no"], "weight": use["quantity_g"] if known else 1} for use in uses],
+            }
+        )
+    return {"version": 1, "period_days": EXCLUSIVE_PLAN_DAYS, "items": result}
